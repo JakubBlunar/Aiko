@@ -47,6 +47,12 @@ data/browser-profile/
 !voices/reference/aiko_reference.wav
 # Audition output is regenerable in a minute and there is a lot of it.
 voices/audition/
+# Studio scratch: uploaded references and audition renders.
+voices/studio/
+# Generated training datasets (tools/tts_lab/dataset.py). Hundreds of
+# clips plus manifests, all reproducible from the committed reference
+# voice, so the recipe is worth versioning and the output is not.
+voices/datasets/
 # Per-engine venvs for the TTS lab (tools/tts_lab/envs.py). Disposable by
 # design: candidate engines pin dependencies that would wreck the app's
 # venv, so each gets its own and deleting it uninstalls the experiment.

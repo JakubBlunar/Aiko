@@ -107,6 +107,64 @@ for voice mode.
 Loopback-only by default: it takes microphone audio and writes into
 `voices/`.
 
+## Building a training dataset
+
+The audio her voice was originally cloned from is lost. The only
+surviving copies are two pocket-tts speaker states, so generating from
+them is not a shortcut past recording — it is the only path that keeps
+*her* voice rather than substituting a different one.
+
+```bash
+python -m tools.tts_lab.dataset --dry-run          # corpus check, no audio
+python -m tools.tts_lab.dataset --minutes 10
+python -m tools.tts_lab.dataset --temps 0.6 0.75   # more variety
+python -m tools.tts_lab.dataset --text-file mine.txt
+```
+
+Output is `voices/datasets/<speaker>-<stamp>/` with `wavs/`,
+`metadata.csv` (LJSpeech layout, which most training code reads),
+`<speaker>.list` (GPT-SoVITS's format — the one engine in the options doc
+that would actually fine-tune), and `dataset.json` carrying the full
+provenance including rejections. Both manifests are emitted because the
+trainer is not chosen yet, and that is much cheaper than regenerating
+audio later for a format change.
+
+**One real advantage over a recorded dataset: the transcripts are exact.**
+Recording requires ASR plus forced alignment, and both introduce errors
+that then get trained on as if true. Here the text *is* the input.
+
+Three decisions worth knowing about, since each is a place the obvious
+choice is wrong:
+
+- **Levels are normalised once across the whole set**, not per clip.
+  Per-clip peak normalisation is the reflex and it would erase the level
+  difference between a whisper and an exclamation — part of what makes
+  the voice worth training on. A measured run kept a 3.7× RMS spread
+  while landing the set peak on 0.95 with nothing clipped.
+- **Truncation is screened by duration against character count.** A clip
+  cut off mid-word looks perfectly healthy by peak and RMS, and it
+  teaches the model to stop early. Rejections are reported by reason
+  rather than dropped quietly: if a fifth of the set is being thrown
+  away, the temperature is wrong and that should be visible.
+- **The corpus is Harvard sentences plus conversational lines**, because
+  those cover different things. Harvard (IEEE 1965, public domain) is
+  phonetically balanced and prosodically flat; a voice trained only on it
+  learns to read aloud rather than talk. The conversational half supplies
+  question and exclamation contours. `--dry-run` reports the balance and
+  warns below 8% of either, which is how the first version of this corpus
+  was caught shipping one exclamation-final line in 164.
+
+Everything in the corpus is deliberately generic — no names, nothing that
+happened. A dataset is the easiest artifact to hand someone by accident,
+and this one is her *voice*; it does not need her *life* attached to be
+useful.
+
+Measured: 203 prompts yield 202 clips and ~7.9 minutes in under two
+minutes of generation, at a 0.5% rejection rate. One pass is about eight
+minutes of audio, so a longer target needs extra `--temps` values or a
+bigger `--text-file` — re-rendering the same prompt at the same
+temperature mostly duplicates it.
+
 ## Candidate environments
 
 Candidate engines pin dependencies that would wreck the app's venv —
