@@ -229,6 +229,43 @@ Three practical findings worth keeping:
   4.8 MB, with no measurable generation-speed difference.
   `get_state_for_audio_prompt` takes `truncate: bool = False`.
 
+### Is generated audio good enough to *train* on?
+
+Different question from cloning, and it needs a different answer. Cloning
+carries voice identity, which survives a generation of copying easily.
+Fine-tuning inherits whatever the training audio actually contains.
+
+Measured on `voices/reference/aiko_reference.wav` (generated from the
+live embedding):
+
+| property | value |
+|---|---|
+| sample rate | 24 kHz, Nyquist 12 kHz |
+| 99.9% of energy | below 7.4 kHz |
+| 8–12 kHz relative to the 300–3400 Hz speech band | −30 dB |
+| noise floor | −74.9 dBFS |
+| dynamic range | 74 dB |
+
+The encouraging half: it is **clean**. No hiss, no noise floor problem,
+nothing that would poison a dataset, and the top octave is attenuated
+rather than brickwalled — consistent with ordinary speech, where energy
+does concentrate below 8 kHz.
+
+The limits are real but specific:
+
+- **A permanent 24 kHz ceiling.** Train on this and a 48 kHz engine
+  (MOSS-TTS-Nano, VoxCPM2) can never pay off, because its main advantage
+  has been discarded before training starts.
+- **Inherited quirks.** A student cannot exceed its teacher. Fine-tuning
+  on pocket-tts output bakes in its prosody habits and its Mimi codec's
+  reconstruction as though they were her voice, so the result is a
+  *different* engine with the *same* ceiling.
+
+So: generated audio for zero-shot cloning, yes. For fine-tuning, prefer
+whatever the voice was originally cloned from — one generation closer,
+and possibly higher-rate. This is why the studio accepts mp3/flac/ogg
+rather than demanding WAV.
+
 ### Worth trying first
 
 **Qwen3-TTS** ([QwenLM/Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS),

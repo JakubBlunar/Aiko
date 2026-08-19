@@ -38,7 +38,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from tools.tts_lab import adapters, remote
-from tools.tts_lab.adapters import REPO_ROOT, assess, read_wav, write_wav
+from tools.tts_lab.adapters import REPO_ROOT, assess, read_audio, write_wav
 from tools.tts_lab.page import INDEX_HTML
 from tools.tts_lab.voicebank import PHRASES
 
@@ -127,15 +127,32 @@ def build_app() -> FastAPI:
 
     @app.post("/api/reference/wav")
     async def api_reference_wav(request: Request) -> JSONResponse:
+        """Any format libsndfile reads -- mp3, flac, ogg, wav.
+
+        Worth taking the original source material in whatever shape it
+        already exists: for a voice that was cloned from mp3s, those mp3s
+        are a generation closer to the truth than anything the current
+        engine can regenerate.
+        """
         raw = await request.body()
-        tmp = WORK_DIR / f"upload_{uuid.uuid4().hex[:8]}.wav"
+        # Suffix preserved where the browser sent one, since libsndfile
+        # sniffs content but is happier with a hint.
+        suffix = request.query_params.get("ext") or ""
+        suffix = "." + "".join(
+            c for c in suffix.lstrip(".").lower() if c.isalnum()
+        )[:5] if suffix else ".bin"
+        tmp = WORK_DIR / f"upload_{uuid.uuid4().hex[:8]}{suffix}"
         tmp.write_bytes(raw)
         try:
-            audio, sample_rate = read_wav(tmp)
+            audio, sample_rate = read_audio(tmp)
         except Exception as exc:
-            tmp.unlink(missing_ok=True)
             return JSONResponse(
-                {"error": f"could not read WAV: {exc}. 16-bit PCM only."}
+                {
+                    "error": (
+                        f"could not decode: {exc}. Supported: wav, mp3, "
+                        "flac, ogg."
+                    )
+                }
             )
         finally:
             tmp.unlink(missing_ok=True)
