@@ -354,6 +354,47 @@ class AnaphoricOpenerTests(unittest.TestCase):
 # ── question-saturation band ────────────────────────────────────────
 
 
+class LastTurnAnaphoricTests(unittest.TestCase):
+    """K94's cadence signal, read off K88's window."""
+
+    def test_it_reports_the_most_recent_reply(self) -> None:
+        tracker = _build()
+        tracker.record_turn(_leading_reply("honestly"))
+        self.assertFalse(tracker.last_turn_anaphoric())
+        tracker.record_turn(_anaphoric_reply("that"))
+        self.assertTrue(tracker.last_turn_anaphoric())
+        tracker.record_turn(_leading_reply("well"))
+        self.assertFalse(tracker.last_turn_anaphoric())
+
+    def test_an_empty_window_is_not_evidence(self) -> None:
+        self.assertFalse(_build().last_turn_anaphoric())
+
+    def test_reading_it_does_not_spend_K88s_budget(self) -> None:
+        """It must not go through ``detect``, which ticks cooldowns.
+
+        K94 reads this on every turn; if that consumed a cooldown tick
+        the two features would silently interfere.
+        """
+        tracker = _build(
+            style_tracker_opener_count_threshold=99,
+            style_tracker_opener_topk_share=2.0,
+            style_tracker_question_rate_threshold=2.0,
+            style_tracker_avg_questions_threshold=99.0,
+            style_tracker_length_avg_threshold=999.0,
+        )
+        for subject in ["that", "this", "those", "these"]:
+            tracker.record_turn(_anaphoric_reply(subject))
+        tracker.record_turn(_leading_reply("honestly"))
+        tracker.record_turn(_leading_reply("well"))
+        for _ in range(5):
+            tracker.last_turn_anaphoric()
+        # The band is still available to fire, unspent.
+        result = tracker.detect()
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.band, BAND_ANAPHORIC_OPENER)
+
+
 class QuestionSaturationTests(unittest.TestCase):
     def test_question_end_rate_triggers(self) -> None:
         tracker = _build(

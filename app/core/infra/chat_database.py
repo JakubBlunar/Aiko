@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 37
+_SCHEMA_VERSION = 38
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -1132,6 +1132,8 @@ CREATE TABLE IF NOT EXISTS turn_stance (
     shortlist TEXT NOT NULL DEFAULT '',
     brevity INTEGER NOT NULL DEFAULT 0,
     brevity_reason TEXT NOT NULL DEFAULT '',
+    sequencing INTEGER NOT NULL DEFAULT 0,
+    sequencing_reason TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turn_stance_stance
@@ -1794,11 +1796,18 @@ class ChatDatabase:
         # ``scripts/backfill_turn_stance.py`` to fill the column properly
         # for history; that is the intended path, since the same replay
         # is how the arc-freshness change gets re-measured.
+        # v37 -> v38: K94's sequencing axis, on the same terms. Existing
+        # rows default to 0 for the same reason -- the axis did not exist
+        # when they were written -- and the same replay fills them in.
         for stmt in (
             "ALTER TABLE turn_stance ADD COLUMN brevity INTEGER NOT NULL "
             "DEFAULT 0",
             "ALTER TABLE turn_stance ADD COLUMN brevity_reason TEXT NOT "
             "NULL DEFAULT ''",
+            "ALTER TABLE turn_stance ADD COLUMN sequencing INTEGER NOT "
+            "NULL DEFAULT 0",
+            "ALTER TABLE turn_stance ADD COLUMN sequencing_reason TEXT "
+            "NOT NULL DEFAULT ''",
         ):
             try:
                 conn.execute(stmt)

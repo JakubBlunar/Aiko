@@ -567,6 +567,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             stance_brevity_run=max(
                 1, int(agent_raw.get("stance_brevity_run", 2)),
             ),
+            stance_sequencing_enabled=bool(
+                agent_raw.get("stance_sequencing_enabled", True),
+            ),
             topic_appetite_enabled=bool(
                 agent_raw.get("topic_appetite_enabled", True),
             ),

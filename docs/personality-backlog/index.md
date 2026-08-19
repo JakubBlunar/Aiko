@@ -343,8 +343,8 @@ K77 candor gate · K78 vocal-affect read (prosody-in) ·
 K79 hesitation tell (typing latency) ·
 K82 the dropped sub-topic (he said three things, she answered one) ·
 K83 the right to decline · K84 calibrated jealousy ·
-**K92 conversational stance** · **K93 the substance floor** ·
-**K94 sequencing** · **K95 interruption cost**.
+**K92 conversational stance** (phase 3) · **K93 the substance floor**
+(cue-pool half).
 
 **K92–K95, the third pass at leading, is the newest family and the K90 diff is
 why it exists.** Split on the 9 August ship date, 320 post-ship turns say the
@@ -371,12 +371,38 @@ on it muted her for days — now time-limited to 4 turns (**H39**). Together tho
 move the clamp rate 36.9% → 28.7% and hand 51 turns back to `SHARE`. Phase 2
 renders exactly one T6 block, for `FOLLOW` and brevity, because those are the
 only two *restraint* signals in a family that is otherwise all permission slips.
-K93 is the cheapest and probably the highest-value: **43 of 56 genuine cue
-conversions are `curiosity_seed`**, so ~77% of what she actually brings up is
-free-associative whimsy — dust motes, receipt-back doodles, the weight of a house
-key — and the K53 initiative beat spends the same stock. K94 is a persona-sized
-experiment on where in the reply her own material goes; K95 is insurance against
-the first regression the others will cause. **H29, H30, H31 and H32 all shipped
+**K93, K94 and K95 all shipped 19 Aug too, and all three turned out to be
+duplicated or unenforced decisions rather than missing features** — worth knowing
+before phase 3, which multiplies that class.
+
+*K95 was filed as insurance and was already load-bearing.* Its reader shipped
+inside phase 1 (`compute_ceiling` caps the ladder on a direct question) but nothing
+obeyed it: the stance block speaks only for `FOLLOW` and brevity, while K53 — the
+most deliberate floor-taking move she makes — gated on his message being 240+
+characters. A length proxy protects a long explanation and does nothing for a short
+question. Joining the ledgers: `initiative_block` rendered on 75 turns and **17
+(23%) sat under a `direct_question` ceiling the director could not see**. Enforcing
+it costs no initiative, because K53's counter resets only on a real fire, so the
+beat is *deferred* to the next non-question turn.
+
+*K93's re-measure inverted its own diagnosis.* The seed monopoly **grew**: 217 of
+244 genuine cue conversions are `curiosity_seed`, **88.9%**, up from 77%. H29's
+per-source cap works and is not the lever — seeds hold 4 of 6 ledger slots because
+one goal and one pursuit are all that exist to claim the rest, so tightening the cap
+would shrink the ledger, not add substance. What could not decide is **pressure**,
+which is a pure clock: seeds are minted at 0.15 against a goal's 0.05 and grow at
+the same rate, so the lead never closes (a live seed at 0.60 and a goal at 0.50 were
+the same age to the day), and everything saturates at 1.0 inside four days after
+which the stable sort falls through to *ledger insertion order*, where seeds are
+ingested first. The scarce beats now rank by substance with pressure as tie-break;
+the cue-pool half is still open.
+
+*K94 became a stance axis rather than a persona rule.* The anaphoric rate is flat at
+16–18% across every window after two families of persona rules aimed at it, so the
+missing instruction is a positive account of the reply's *shape*, not another
+prohibition. It fires only on a `FOLLOW_AND_ADD` turn whose previous reply opened
+anaphorically, and stands down when K88's window band is already speaking — **6.4%
+of turns**, against `FOLLOW_AND_ADD`'s 46%, and self-extinguishing by construction. **H29, H30, H31 and H32 all shipped
 13 Aug**, so K93's per-source reservation has a working ledger under it and K92
 has a cue instrument that distinguishes "passed over" from "never in play" —
 though the ledger's effect on pressure cannot be read before ~16 Aug. H31 is

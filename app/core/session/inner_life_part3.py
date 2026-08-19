@@ -1792,6 +1792,12 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                     recent_reply_words=tuple(
                         getattr(self, "_recent_reply_words", ()) or ()
                     ),
+                    # K94. Off K88's tracker rather than recomputed, so
+                    # the cue and the rate it is judged by read the same
+                    # stripped text. Missing tracker (feature disabled)
+                    # reads as False -- no cue rather than a cue on an
+                    # unknown.
+                    last_reply_anaphoric=self._last_reply_was_anaphoric(),
                 ),
                 protected_arc_turns=int(
                     getattr(agent, "stance_protected_arc_turns", 4)
@@ -1800,6 +1806,9 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                     getattr(agent, "stance_brevity_word_floor", 40)
                 ),
                 brevity_run=int(getattr(agent, "stance_brevity_run", 2)),
+                sequencing_enabled=bool(
+                    getattr(agent, "stance_sequencing_enabled", True)
+                ),
             )
             self._last_stance_decision = decision
             block = _stance.render_block(
@@ -1808,10 +1817,11 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             if block:
                 log.info(
                     "stance cue: stance=%s reason=%s brevity=%s "
-                    "arc=%s arc_age=%d",
+                    "sequencing=%s arc=%s arc_age=%d",
                     decision.stance,
                     decision.reason,
                     decision.brevity_reason or "-",
+                    decision.sequencing_reason or "-",
                     getattr(self, "_last_user_arc", None) or "-",
                     int(getattr(self, "_arc_age_turns", 0) or 0),
                 )
@@ -1819,6 +1829,22 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         except Exception:
             log.debug("stance block render failed", exc_info=True)
             return ""
+
+    def _last_reply_was_anaphoric(self) -> bool:
+        """K94's cadence signal, read off K88's rolling window.
+
+        Best-effort by design, like every other input to the stance
+        block: a missing or sick tracker reads as "no evidence", which
+        yields no cue.
+        """
+        tracker = getattr(self, "_aiko_style_tracker", None)
+        if tracker is None:
+            return False
+        try:
+            return bool(tracker.last_turn_anaphoric())
+        except Exception:
+            log.debug("anaphoric read failed", exc_info=True)
+            return False
 
     def _render_emotion_episode_block(self, user_text: str) -> str:
         """K57: render the strongest live directed-emotion episode.

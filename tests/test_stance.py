@@ -349,6 +349,133 @@ class BrevityTests(unittest.TestCase):
         self.assertTrue(d.brevity)
 
 
+class SequencingTests(unittest.TestCase):
+    """K94 — the third axis, and the only one about shape.
+
+    ``wants_block`` offers ``FOLLOW_AND_ADD``, which is the only rung
+    where placement is a question at all.
+    """
+
+    def _turn(self, **kw) -> object:
+        blocks = kw.pop("blocks", frozenset({"wants_block"}))
+        return decide(StanceInputs(
+            blocks=blocks,
+            user_text=kw.pop("user_text", "the deploy finally went out"),
+            last_reply_anaphoric=kw.pop("last_reply_anaphoric", True),
+            **kw,
+        ))
+
+    def test_it_fires_on_a_follow_and_add_after_an_anaphoric_reply(
+        self,
+    ) -> None:
+        d = self._turn()
+        self.assertEqual(d.stance, stance_mod.FOLLOW_AND_ADD)
+        self.assertTrue(d.sequencing)
+        self.assertEqual(d.sequencing_reason, "anaphoric_run")
+
+    def test_no_evidence_no_cue(self) -> None:
+        """The cadence, and what makes this self-extinguishing.
+
+        FOLLOW_AND_ADD is chosen on 45.7% of turns; a clause on all of
+        them would be ambient by K92's own definition and formulaic by
+        K94's own warning.
+        """
+        self.assertFalse(self._turn(last_reply_anaphoric=False).sequencing)
+
+    def test_it_stands_down_when_K88_is_already_speaking(self) -> None:
+        # style_pattern_block says the same thing off a twelve-turn
+        # window. Two voices on one habit is the crowding K92 exists to
+        # arbitrate, and the arbiter is handed the offer set to do it.
+        d = self._turn(
+            blocks=frozenset({"wants_block", "style_pattern_block"}),
+        )
+        self.assertTrue(d.sequencing is False)
+
+    def test_it_does_not_fire_on_other_rungs(self) -> None:
+        # SHARE and INITIATE already have a provider speaking for them,
+        # and "answer him first" is not a coherent ask on a turn that is
+        # not an answer.
+        for block in ("turning_over_block", "initiative_block"):
+            with self.subTest(block=block):
+                d = self._turn(blocks=frozenset({block}))
+                self.assertNotEqual(d.stance, stance_mod.FOLLOW_AND_ADD)
+                self.assertFalse(d.sequencing)
+
+    def test_a_clamped_turn_still_gets_it(self) -> None:
+        """Resolved after the rung, which is the point of that ordering.
+
+        A turn the ceiling pulled down from INITIATE to FOLLOW_AND_ADD is
+        exactly a turn where placement advice is worth having.
+        """
+        d = decide(StanceInputs(
+            blocks=frozenset({"initiative_block"}),
+            user_text="did the parcel arrive?",
+            last_reply_anaphoric=True,
+        ))
+        self.assertEqual(d.stance, stance_mod.FOLLOW_AND_ADD)
+        self.assertEqual(d.desire, stance_mod.INITIATE)
+        self.assertTrue(d.sequencing)
+
+    def test_the_flag_turns_it_off(self) -> None:
+        d = decide(
+            StanceInputs(
+                blocks=frozenset({"wants_block"}),
+                user_text="the deploy went out",
+                last_reply_anaphoric=True,
+            ),
+            sequencing_enabled=False,
+        )
+        self.assertFalse(d.sequencing)
+
+    def test_it_is_orthogonal_to_brevity(self) -> None:
+        d = decide(StanceInputs(
+            blocks=frozenset({"wants_block"}),
+            user_text="mm",
+            recent_reply_words=(60, 60),
+            last_reply_anaphoric=True,
+        ))
+        self.assertTrue(d.sequencing)
+        self.assertTrue(d.brevity)
+
+
+class SequencingRenderTests(unittest.TestCase):
+    def _rendered(self, **kw) -> str:
+        d = decide(StanceInputs(
+            blocks=frozenset({"wants_block"}),
+            user_text=kw.pop("user_text", "the deploy went out"),
+            last_reply_anaphoric=kw.pop("last_reply_anaphoric", True),
+            **kw,
+        ))
+        return stance_mod.render_block(d, user_display_name="Jacob")
+
+    def test_it_asks_for_an_order_not_for_less(self) -> None:
+        text = self._rendered()
+        self.assertIn("first clause", text)
+        self.assertIn("Jacob", text)
+        # The one thing it must not read as: permission to under-answer.
+        self.assertIn("Answer him fully", text)
+
+    def test_it_never_asks_her_to_end_on_a_question(self) -> None:
+        """Her question-ending rate is already 3.1%, from 14.3%.
+
+        "Leave it open" read as "ask him something" would walk back into
+        the interviewing pattern other features were built to suppress,
+        so the closing clause is a statement he can pick up.
+        """
+        text = self._rendered().lower()
+        self.assertNotIn("question", text)
+        self.assertNotIn("ask him", text)
+
+    def test_silent_without_the_cue(self) -> None:
+        self.assertEqual(self._rendered(last_reply_anaphoric=False), "")
+
+    def test_order_when_several_clauses_fire(self) -> None:
+        # Each qualifies the one before: what she answers with, where her
+        # own part goes, how long the whole thing runs.
+        text = self._rendered(user_text="mm", recent_reply_words=(60, 60))
+        self.assertLess(text.index("Shape for this reply"), text.index("run long"))
+
+
 class ShortlistTextTests(unittest.TestCase):
     def test_the_log_column_pairs_stance_with_its_backer(self) -> None:
         d = decide(StanceInputs(
@@ -479,6 +606,65 @@ class RecorderTests(unittest.TestCase):
         host._record_turn_stance(
             assistant_message_id=77, telemetry=telemetry, user_text="hey",
         )  # must not raise
+
+
+class StoreRoundTripTests(unittest.TestCase):
+    """Every axis survives the write, against a real schema.
+
+    The store hand-writes its column list, so a new axis is one
+    miscounted placeholder away from either an exception or -- worse --
+    values landing in the neighbouring column.
+    """
+
+    def _store(self):
+        import tempfile
+        from pathlib import Path
+
+        from app.core.infra.chat_database import ChatDatabase
+        from app.core.memory.turn_stance_store import TurnStanceStore
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = ChatDatabase(Path(tmp.name) / "chat.db")
+        self.addCleanup(lambda: db._get_conn().close())
+        return db, TurnStanceStore(db)
+
+    def test_all_three_axes_round_trip(self) -> None:
+        db, store = self._store()
+        decision = decide(
+            StanceInputs(
+                blocks=frozenset({"wants_block"}),
+                user_text="the deploy went out",
+                recent_reply_words=(60, 60),
+                last_reply_anaphoric=True,
+            ),
+        )
+        self.assertTrue(decision.sequencing)
+        self.assertTrue(decision.brevity)
+        self.assertTrue(store.add_turn(11, decision))
+        row = db._get_conn().execute(
+            "SELECT stance, brevity, brevity_reason, sequencing, "
+            "sequencing_reason FROM turn_stance WHERE "
+            "assistant_message_id = 11"
+        ).fetchone()
+        self.assertEqual(row[0], stance_mod.FOLLOW_AND_ADD)
+        self.assertEqual(row[1], 1)
+        self.assertEqual(row[2], "long_run")
+        self.assertEqual(row[3], 1)
+        self.assertEqual(row[4], "anaphoric_run")
+
+    def test_a_quiet_turn_writes_zeroes_not_nulls(self) -> None:
+        db, store = self._store()
+        decision = decide(StanceInputs(
+            blocks=frozenset({"wants_block"}), user_text="hey",
+        ))
+        self.assertTrue(store.add_turn(12, decision))
+        row = db._get_conn().execute(
+            "SELECT sequencing, sequencing_reason FROM turn_stance "
+            "WHERE assistant_message_id = 12"
+        ).fetchone()
+        self.assertEqual(row[0], 0)
+        self.assertEqual(row[1], "")
 
 
 class RenderTests(unittest.TestCase):

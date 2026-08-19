@@ -69,8 +69,9 @@ class TurnStanceStore:
             conn.execute(
                 "INSERT OR REPLACE INTO turn_stance "
                 "(assistant_message_id, stance, reason, desire, ceiling, "
-                " shortlist, brevity, brevity_reason, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " shortlist, brevity, brevity_reason, sequencing, "
+                " sequencing_reason, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     message_id,
                     str(decision.stance),
@@ -80,6 +81,8 @@ class TurnStanceStore:
                     decision.shortlist_text(),
                     1 if getattr(decision, "brevity", False) else 0,
                     str(getattr(decision, "brevity_reason", "") or ""),
+                    1 if getattr(decision, "sequencing", False) else 0,
+                    str(getattr(decision, "sequencing_reason", "") or ""),
                     stamp,
                 ),
             )

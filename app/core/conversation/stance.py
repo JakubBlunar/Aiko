@@ -247,6 +247,50 @@ SUBSTANTIAL_CHARS = 240
 BREVITY_WORD_FLOOR = 40
 BREVITY_RUN = 2
 
+# ── K94 sequencing: the third axis, and the only one about shape ──────
+#
+# K88's anaphoric-opener rate is the one honest number in this family and
+# the one that has never moved: 18% before the second pass, 18% after,
+# and 16-18% across every window measured since. The persona has carried
+# several rules aimed at it the whole time (lead with the substance, don't
+# parrot, vary the opener, move the reaction word a few words in) and none
+# of them shifted it, which is the evidence for K94's read: the missing
+# instruction is not another prohibition on how to open but a positive
+# account of the reply's *shape*.
+#
+# Responsiveness and opener ownership are only in tension if the reply is
+# treated as one undifferentiated blob. "Answer his point, but not in the
+# first clause" and "put your own thing last" are both compatible with
+# answering him completely, which decouples being a good listener from
+# opening on his words -- the knot the last two families tried to cut by
+# pushing her to change the subject instead, the far more expensive move
+# and the one she sensibly refuses.
+#
+# Three conditions, and each one is load-bearing:
+#
+# ``FOLLOW_AND_ADD`` only
+#     This is the rung that means "answer him and bring something", so it
+#     is the only one where placement is even a question. It also gives
+#     that rung the definition K92 admitted it lacked.
+# her last reply actually opened anaphorically
+#     The cadence, and the reason this is not the eleventh permission
+#     slip. ``FOLLOW_AND_ADD`` is chosen on 45.7% of turns; a clause on
+#     all of them would be ambient by K92's own definition and formulaic
+#     by K94's own warning. Gating on evidence puts it near 8% and makes
+#     it self-extinguishing: stop opening that way and it stops asking.
+# K88's band is not already speaking
+#     ``style_pattern_block`` fires on the same habit from a *window*
+#     (four in twelve, with a cooldown). Two voices on one habit in one
+#     prompt is the crowding K92 exists to arbitrate, and the arbiter is
+#     handed the offer set precisely so it can defer.
+#
+# Deliberately says nothing about ending on a question. Her
+# question-ending rate is already down to 3.1% from 14.3% all-time, and
+# "leave it open" read as "ask him something" would walk straight back
+# into the interviewing pattern several other features were built to
+# suppress. The addition goes last as a statement he can pick up.
+SEQUENCING_REASON_ANAPHORIC = "anaphoric_run"
+
 
 @dataclass(frozen=True, slots=True)
 class StanceInputs:
@@ -267,6 +311,14 @@ class StanceInputs:
     arc: str | None = None
     arc_age_turns: int = 0
     recent_reply_words: tuple[int, ...] = ()
+    # K94. Did her *previous* reply open on a clause that needed his?
+    # Computed by callers with ``persona.anaphora.is_anaphoric_opener`` --
+    # the same function K88's band and the K90 report use, which is that
+    # module's stated reason for existing: a cue and the metric it is
+    # judged by must not be able to drift apart. Defaults to False, so a
+    # caller that has not been taught to supply it gets silence rather
+    # than a cue fired on an unknown.
+    last_reply_anaphoric: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +335,11 @@ class StanceDecision:
     ``brevity`` is the ``HOLD`` axis and is deliberately *not* folded
     into ``stance``: a turn can be both ``SHARE`` and short, and
     collapsing the two would lose whichever of them was asked second.
+
+    ``sequencing`` (K94) is a third axis for the same reason, and it is
+    the only one of the three about *shape* rather than amount: how much
+    of the floor she takes, how many words she uses, and where in the
+    reply her own material goes are three independent questions.
     """
 
     stance: str
@@ -292,6 +349,8 @@ class StanceDecision:
     shortlist: tuple[tuple[str, str], ...] = ()
     brevity: bool = False
     brevity_reason: str = ""
+    sequencing: bool = False
+    sequencing_reason: str = ""
 
     @property
     def clamped(self) -> bool:
@@ -399,6 +458,31 @@ def compute_brevity(
     return False, ""
 
 
+def compute_sequencing(
+    inputs: StanceInputs,
+    stance: str,
+    *,
+    enabled: bool = True,
+) -> tuple[bool, str]:
+    """Should this turn be told where her own material goes? (K94)
+
+    See the constants block above for why each of the three conditions is
+    there. The one worth restating: this defers to
+    ``style_pattern_block``. K88's band already speaks to the same habit
+    off a twelve-turn window, and the arbiter is handed the offer set so
+    that it can decline to be the second voice on one subject.
+    """
+    if not enabled:
+        return False, ""
+    if stance != FOLLOW_AND_ADD:
+        return False, ""
+    if not inputs.last_reply_anaphoric:
+        return False, ""
+    if "style_pattern_block" in (inputs.blocks or frozenset()):
+        return False, ""
+    return True, SEQUENCING_REASON_ANAPHORIC
+
+
 def build_shortlist(blocks: frozenset[str]) -> tuple[tuple[str, str], ...]:
     """Every offer on the table, most floor-taking first.
 
@@ -425,15 +509,23 @@ def decide(
     protected_arc_turns: int = PROTECTED_ARC_FRESH_TURNS,
     brevity_word_floor: int = BREVITY_WORD_FLOOR,
     brevity_run: int = BREVITY_RUN,
+    sequencing_enabled: bool = True,
 ) -> StanceDecision:
     """Pick one stance for the turn. Pure; no I/O, no session state.
 
-    Two independent outputs: a rung on the floor-taking ladder, and the
-    brevity flag. ``FOLLOW`` is the floor of the ladder, so a turn with
-    nothing on the table is a follow rather than a silence -- phase 1
-    reached for ``HOLD`` here and it never fired.
+    Three independent outputs: a rung on the floor-taking ladder, the
+    brevity flag, and K94's sequencing flag. ``FOLLOW`` is the floor of
+    the ladder, so a turn with nothing on the table is a follow rather
+    than a silence -- phase 1 reached for ``HOLD`` here and it never
+    fired.
 
-    The three knobs are settings-backed rather than read off the module
+    Sequencing is resolved *after* the rung, and that ordering is the
+    whole of its cadence: it only applies to ``FOLLOW_AND_ADD``, so it
+    has to see the stance the ceiling actually allowed rather than the one
+    the providers wanted. A turn clamped down to ``FOLLOW_AND_ADD`` from
+    ``INITIATE`` is exactly a turn where placement advice is worth having.
+
+    The knobs are settings-backed rather than read off the module
     constants so the live session and ``backfill_turn_stance.py`` can be
     pointed at the same values; the defaults are the constants.
     """
@@ -446,38 +538,30 @@ def decide(
     )
 
     if not shortlist:
-        return StanceDecision(
-            stance=FOLLOW,
-            reason="no_offer",
-            desire=FOLLOW,
-            ceiling=ceiling,
-            shortlist=(),
-            brevity=brevity,
-            brevity_reason=brevity_reason,
-        )
+        stance, reason, desire = FOLLOW, "no_offer", FOLLOW
+    else:
+        desire, desire_block = shortlist[0]
+        if _RANK[desire] <= _RANK[ceiling]:
+            stance, reason = desire, desire_block
+        else:
+            # Clamped. The reason names the constraint that bound rather
+            # than the offer that lost, because the constraint is the
+            # thing a reader of this row will want to argue with.
+            stance, reason = ceiling, ceiling_reason
 
-    desire, desire_block = shortlist[0]
-    if _RANK[desire] <= _RANK[ceiling]:
-        return StanceDecision(
-            stance=desire,
-            reason=desire_block,
-            desire=desire,
-            ceiling=ceiling,
-            shortlist=shortlist,
-            brevity=brevity,
-            brevity_reason=brevity_reason,
-        )
-    # Clamped. The reason names the constraint that bound rather than
-    # the offer that lost, because the constraint is the thing a reader
-    # of this row will want to argue with.
+    sequencing, sequencing_reason = compute_sequencing(
+        inputs, stance, enabled=sequencing_enabled,
+    )
     return StanceDecision(
-        stance=ceiling,
-        reason=ceiling_reason,
+        stance=stance,
+        reason=reason,
         desire=desire,
         ceiling=ceiling,
         shortlist=shortlist,
         brevity=brevity,
         brevity_reason=brevity_reason,
+        sequencing=sequencing,
+        sequencing_reason=sequencing_reason,
     )
 
 
@@ -486,19 +570,23 @@ def render_block(
     *,
     user_display_name: str = "them",
 ) -> str:
-    """The T6 cue for the two stances that had no voice before phase 2.
+    """The T6 cue for the axes no provider speaks for.
 
-    Renders for ``FOLLOW`` and for the brevity axis, and returns ``""``
-    for everything else. That silence is the whole shape of the phase:
-    every other rung already has a provider putting a sentence in the
-    prompt, and a second sentence agreeing with it would be the eleventh
-    permission slip K92 exists to argue against. Both clauses here are
-    *restraint* -- the one direction the family has never been able to
-    ask for -- so neither one adds to the steer budget it is meant to
-    bring down.
+    Renders for ``FOLLOW``, for brevity, and for K94 sequencing, and
+    returns ``""`` for every other rung. That silence is the shape of the
+    block: the other five rungs already have a provider putting a
+    sentence in the prompt, and a second sentence agreeing with it would
+    be the eleventh permission slip K92 exists to argue against.
 
-    Both can fire on the same turn, in which case brevity goes second:
-    it qualifies how she answers rather than what she answers with.
+    None of the three clauses is a permission to speak. Two are
+    *restraint* -- the direction the family has never been able to ask for
+    -- and the third is *placement*, which asks for nothing extra to be
+    said at all, only for the same reply in a different order. So none of
+    them adds to the steer budget phase 3 has to bring down.
+
+    Order when several fire: stance, then sequencing, then brevity. Each
+    qualifies the one before it -- what she answers with, where her own
+    part goes, how long the whole thing runs.
     """
     name = user_display_name or "them"
     parts: list[str] = []
@@ -508,6 +596,24 @@ def render_block(
             f"owe him an answer -- because it is worth staying with, and "
             f"following something well is its own move. You do not need to "
             f"append anything of your own to earn the turn."
+        )
+    if decision.sequencing:
+        # Says where things go, never what to say or not say. The last
+        # two families tried prohibitions on the opener and the rate did
+        # not move a point; this is the same ask stated as a shape, which
+        # is the whole of K94's argument. The closing clause is
+        # deliberately "something he can pick up" rather than anything
+        # about leaving it open -- her question-ending rate is already at
+        # 3.1% and pointing it back up would undo work several other
+        # features did on purpose.
+        parts.append(
+            f"Shape for this reply: your last one opened on {name}'s "
+            f"sentence. Answer him fully -- just not in your first clause. "
+            f"Open on your own footing (something you noticed, felt, or "
+            f"have been sitting with), let the answer land a beat later, "
+            f"and put your own thing at the end as a statement he can pick "
+            f"up if he wants. Same reply, different order; this is not a "
+            f"licence to say less about what he raised."
         )
     if decision.brevity:
         parts.append(
@@ -530,6 +636,7 @@ __all__ = [
     "INITIATE",
     "PROTECTED_ARC_FRESH_TURNS",
     "REDIRECT",
+    "SEQUENCING_REASON_ANAPHORIC",
     "SHARE",
     "STANCE_LADDER",
     "SUBSTANTIAL_CHARS",
@@ -537,6 +644,7 @@ __all__ = [
     "StanceInputs",
     "build_shortlist",
     "compute_brevity",
+    "compute_sequencing",
     "compute_ceiling",
     "decide",
     "render_block",

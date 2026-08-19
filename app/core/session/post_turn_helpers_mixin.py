@@ -2297,6 +2297,17 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
                     recent_reply_words=tuple(
                         getattr(self, "_recent_reply_words", ()) or ()
                     ),
+                    # ``last_reply_anaphoric`` is deliberately left at its
+                    # default here, so K94's column reads 0 on recomputed
+                    # rows. By this point the style tracker has already
+                    # ingested *this* turn's reply, so reading it would
+                    # ask whether the reply answered the cue that was
+                    # supposed to shape it -- circular, not merely stale
+                    # like the two inputs above. The honest source for
+                    # history is scripts/backfill_turn_stance.py, which
+                    # replays messages in order and can therefore see the
+                    # previous reply. Rows written from the live stash
+                    # (the normal path) carry the real value.
                 ),
                 protected_arc_turns=int(
                     getattr(agent, "stance_protected_arc_turns", 4)
@@ -2309,10 +2320,11 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         if store.add_turn(message_id, decision):
             log.info(
                 "turn stance: msg=%d stance=%s reason=%s desire=%s "
-                "ceiling=%s brevity=%s",
+                "ceiling=%s brevity=%s sequencing=%s",
                 message_id, decision.stance, decision.reason,
                 decision.desire, decision.ceiling,
                 decision.brevity_reason or "-",
+                decision.sequencing_reason or "-",
             )
 
     def _queue_surfaced_cues_for_ledger(self, decisions: Any) -> None:
