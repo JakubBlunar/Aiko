@@ -109,7 +109,7 @@ on top of already-shipped infrastructure.
 | K91 | Lived-in away life — a day she had, not a day she narrated | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated) |
 | K92 | Conversational stance — one decision per turn, not ten permission slips | 🟡 phase 1 shipped 15 Aug (shadow log), phase 2 19 Aug (FOLLOW + brevity render); phase 3 open |
 | K93 | The substance floor — what she takes to the floor, not whether she takes it | 🟡 ledger half shipped 19 Aug (scarce beats rank by substance); cue-pool half open |
-| K94 | Sequencing — answer first, then add, and say where the addition goes | ❌ open |
+| K94 | Sequencing — answer first, then add, and say where the addition goes | ✅ shipped 19 Aug — a third stance axis, fired on evidence at 6.4% of turns |
 | K95 | Interruption cost — a direct question is not an opening | ✅ shipped 19 Aug — reader landed inside K92 phase 1, enforcement in K53's gate walk |
 
 ---
@@ -604,14 +604,22 @@ K92 is the load-bearing entry; K93–K95 are each independently shippable and ea
 targets a specific way the current arrangement wastes the floor when she does
 take it. K93 in particular can ship first and alone, and probably should.
 
-**Status, 19 Aug.** K92 phases 1–2, **K95**, and K93's ledger half have shipped.
-K95 turned out not to be the insurance it was filed as: its reader landed inside
-phase 1 and nothing enforced it, so 17 of 75 initiative directives fired on turns
-where the ceiling had already concluded he asked her something. K93's re-measure
-found the seed monopoly had *grown* (88.9% of conversions, up from 77%) and that
-pressure ranks by age in whimsy's favour at every age, so the scarce beats now rank
-by substance; its cue-pool half is still open. K94 remains open, and K92 phase 3 is
-still the family's real payoff.
+**Status, 19 Aug.** K92 phases 1–2, **K94**, **K95**, and K93's ledger half have
+shipped. K95 turned out not to be the insurance it was filed as: its reader landed
+inside phase 1 and nothing enforced it, so 17 of 75 initiative directives fired on
+turns where the ceiling had already concluded he asked her something. K93's
+re-measure found the seed monopoly had *grown* (88.9% of conversions, up from 77%)
+and that pressure ranks by age in whimsy's favour at every age, so the scarce beats
+now rank by substance; its cue-pool half is still open. K94 became a third stance
+axis fired on evidence rather than a standing rule, at 6.4% of turns.
+
+What remains is **K92 phase 3**, still the family's real payoff and still the
+expensive one, and K93's cue-pool half. The three items that shipped this week share
+a shape worth naming before phase 3 starts: each was a *duplicated or unenforced
+decision* rather than a missing feature — a ceiling recorded and not obeyed, four
+copies of `max(pressure)`, a habit two detectors could both speak to. Phase 3 is
+where the arbiter finally gets to suppress providers instead of reporting on them,
+so it will multiply that class of bug if the picks are not already shared.
 
 ---
 
@@ -1042,6 +1050,64 @@ the trial, then the `FOLLOW_AND_ADD` rendering and
 the real version. Measured by K88's anaphoric rate and the opener histogram in
 [`lead_follow_report.py`](../../scripts/lead_follow_report.py) — the current top
 openers are `that` ×59, `i` ×51, `you` ×43, `then` ×31.
+
+### Shipped 19 Aug — as a stance axis, and the cadence is the whole design
+
+The premise held up on re-measure. The anaphoric-opener rate is **16% over the
+last 7 days, 18% over 30, 17% all-time** — flat across every window, exactly as
+this entry predicted, and still flat after two families of persona rules aimed at
+it. Two other numbers shaped what shipped: own-material is **falling** (75%
+all-time → 69% at 30d → 67% at 7d) while replies got longer (median 26 → 33
+words), which is the "more talkative follower" reading getting worse, not better.
+
+**Attached to the stance, per this entry's own recommendation, as a third axis.**
+`FOLLOW_AND_ADD` is the rung that means "answer him and bring something", so it is
+the only one where placement is even a question — and it gives that rung the
+definition K92 admitted it lacked. Sequencing sits beside `brevity` rather than
+inside `stance` for the same reason brevity does: how much of the floor she takes,
+how many words she uses, and *where in the reply her own material goes* are three
+independent questions, and collapsing any two loses whichever was asked second.
+
+**The cadence is the design, not a tuning detail.** `FOLLOW_AND_ADD` is chosen on
+45.7% of turns. A placement clause on all of them would be ambient by K92's own
+definition — the exact thing that entry exists to argue against — and formulaic by
+this entry's own warning. So it fires only when **her previous reply actually
+opened anaphorically**, read off K88's tracker. That makes it evidence-driven and,
+better, **self-extinguishing**: stop opening that way and it stops asking. Measured
+over the same 683-turn replay it lands on **44 turns (6.4%)**, in the same band as
+brevity's 11.7% and nowhere near 46%.
+
+**It stands down when K88's band is already speaking.** `style_pattern_block`
+addresses the same habit from a twelve-turn window with a cooldown; two voices on
+one habit in one prompt is precisely the crowding K92 exists to arbitrate. The
+check costs nothing because the arbiter is already handed the offer set — the
+suppression is just `"style_pattern_block" in blocks`, which means it also replays
+correctly in the backfill with no new input.
+
+**What the copy deliberately does not say.** Nothing about ending on a question.
+Her question-ending rate is already down to **3.1% from 14.3% all-time**, and this
+entry's "leave it open" phrasing, read by a model as "ask him something", walks
+straight back into the interviewing pattern several other features were built to
+suppress. The addition goes last *as a statement he can pick up*. The clause also
+says "answer him fully — just not in your first clause", because the one way this
+could do real damage is being read as licence to under-answer; a test pins both.
+
+Sequencing is `turn_stance` schema **v38**, gated on
+`agent.stance_sequencing_enabled`, and `backfill_turn_stance.py` replays it with a
+`--no-sequencing` A/B. One honest limitation, documented at the seam: the
+**post-turn recompute path leaves the column at 0**. By then the style tracker has
+already ingested this turn's reply, so reading it would ask whether the reply
+answered the cue meant to shape it — circular rather than merely stale like the
+other two inputs there. The backfill replays `messages` in order and can see the
+previous reply, so it is the honest source for history.
+
+**What to read in a week.** The anaphoric rate in
+[`lead_follow_report.py`](../../scripts/lead_follow_report.py), against the 16% /
+18% / 17% baseline above, plus the opener histogram (currently `i` ×73, `that` ×49,
+`then` ×41, `you` ×34 — note `i` has already overtaken `that` since this entry was
+filed). Two ways this fails that the rate alone will not show: replies that open on
+her own footing and then *thin out* the answer, and a formulaic shape appearing on
+the 6.4%. Both need reading turns, not counting them.
 
 ---
 

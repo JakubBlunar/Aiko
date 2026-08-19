@@ -43,6 +43,7 @@ from app.core.conversation.stance import (  # noqa: E402
     StanceInputs,
     decide,
 )
+from app.core.persona.anaphora import is_anaphoric_opener  # noqa: E402
 
 DEFAULT_DB = REPO_ROOT / "data" / "chat_sessions.db"
 
@@ -70,6 +71,20 @@ def _load_turns(conn: sqlite3.Connection, *, brevity_run: int) -> list[dict]:
         *excludes* the turn being replayed: at assembly the reply does
         not exist yet, and including it would let a long answer suppress
         its own length.
+
+    ``last_reply_anaphoric``
+        Whether her *previous* reply opened on a clause of his (K94).
+        Same exclusion and the same reason. Computed with the shared
+        ``persona.anaphora`` predicate, which is also what K88's live
+        tracker and the K90 report use, so a rule swept here means the
+        same thing it will mean in the session.
+
+        One honest difference from live: the tracker sees the reply
+        *after* meta-tag stripping and skips turns under two words, while
+        this reads the stored text. Rows written from history can
+        therefore disagree with a live row on a turn whose reply was
+        mostly tags. The alternative is duplicating the stripping rules
+        in a backfill, which is a worse failure -- it would drift.
     """
     blocks_by_turn: dict[int, set[str]] = {}
     for mid, block in conn.execute(
@@ -86,6 +101,7 @@ def _load_turns(conn: sqlite3.Connection, *, brevity_run: int) -> list[dict]:
     last_arc: dict[str, str | None] = {}
     arc_age: dict[str, int] = {}
     replies: dict[str, list[int]] = {}
+    last_anaphoric: dict[str, bool] = {}
     for mid, session, role, content, act, arc, created in conn.execute(
         "SELECT id, session_id, role, content, dialogue_act, arc, created_at "
         "FROM messages ORDER BY id"
@@ -112,6 +128,7 @@ def _load_turns(conn: sqlite3.Connection, *, brevity_run: int) -> list[dict]:
                 "arc": turn_arc,
                 "arc_age_turns": int(arc_age.get(key, 0)),
                 "recent_reply_words": tuple(replies.get(key, ())[:window]),
+                "last_reply_anaphoric": bool(last_anaphoric.get(key, False)),
             })
         # Advance the per-session sequences whether or not this turn had
         # recorded blocks. A turn with no assembly still happened, and
@@ -126,6 +143,7 @@ def _load_turns(conn: sqlite3.Connection, *, brevity_run: int) -> list[dict]:
             len(str(content or "").split()),
             *replies.get(key, []),
         ][:window]
+        last_anaphoric[key] = is_anaphoric_opener(str(content or ""))
     return turns
 
 
@@ -152,6 +170,10 @@ def main() -> int:
         "--brevity-run", type=int, default=BREVITY_RUN,
         help="how many long replies in a row engage the brevity brake",
     )
+    ap.add_argument(
+        "--no-sequencing", action="store_true",
+        help="replay without K94's reply-shape clause (the A/B)",
+    )
     args = ap.parse_args()
 
     path = Path(args.db)
@@ -175,6 +197,7 @@ def main() -> int:
     wanted: Counter[str] = Counter()
     clamps: Counter[tuple[str, str]] = Counter()
     brevity_hits = 0
+    sequencing_hits = 0
     written = 0
 
     store = None
@@ -193,15 +216,19 @@ def main() -> int:
                 arc=turn["arc"],
                 arc_age_turns=turn["arc_age_turns"],
                 recent_reply_words=turn["recent_reply_words"],
+                last_reply_anaphoric=turn["last_reply_anaphoric"],
             ),
             protected_arc_turns=args.protected_arc_turns,
             brevity_word_floor=args.brevity_word_floor,
             brevity_run=args.brevity_run,
+            sequencing_enabled=not args.no_sequencing,
         )
         chosen[decision.stance] += 1
         wanted[decision.desire] += 1
         if decision.brevity:
             brevity_hits += 1
+        if decision.sequencing:
+            sequencing_hits += 1
         if decision.clamped:
             clamps[(decision.reason, decision.desire)] += 1
         if store is not None and store.add_turn(
@@ -236,6 +263,16 @@ def main() -> int:
     print(
         f"  brevity asked for: {brevity_hits} "
         f"({100.0*brevity_hits/total:.1f}% of turns)"
+    )
+    print(
+        f"  sequencing asked for: {sequencing_hits} "
+        f"({100.0*sequencing_hits/total:.1f}% of turns)"
+    )
+    print(
+        "     K94 fires only on a FOLLOW_AND_ADD turn whose previous reply\n"
+        "     opened anaphorically, and stands down when style_pattern_block\n"
+        "     is already saying it. A share near FOLLOW_AND_ADD's own would\n"
+        "     mean the cadence is not working."
     )
     print(
         f"     rules: arc veto {args.protected_arc_turns} turns, "

@@ -292,6 +292,25 @@ class AikoStylePatternTracker:
     def window_size(self) -> int:
         return len(self._window)
 
+    def last_turn_anaphoric(self) -> bool:
+        """Did her most recent recorded reply open on a clause of his?
+
+        K94 reads this to decide whether to ask for the reply's shape.
+        Read-only on purpose: :meth:`detect` ticks the per-band cooldowns
+        as a side effect, so a caller that only wants the feature must
+        not go through it or it would silently consume K88's budget.
+
+        Sourced here rather than recomputed at the call site because this
+        window holds the *stripped* reply text the user actually heard,
+        fed post-turn after meta-tag removal. Re-deriving the flag from
+        raw model output would measure a different string than the one
+        K88's band and the K90 report measure, which is precisely the
+        drift :mod:`app.core.persona.anaphora` exists to prevent.
+        """
+        if not self._window:
+            return False
+        return bool(self._window[-1].anaphoric_opener)
+
     # ── internals ─────────────────────────────────────────────────────
 
     def _setting(self, name: str, default: Any) -> Any:

@@ -997,6 +997,13 @@ class AgentSettings:
     # p75; her median ran 19 words before the drift and 34 after it.
     stance_brevity_word_floor: int = 40
     stance_brevity_run: int = 2
+    # ── K94 sequencing — where her own material goes ──────────────────
+    # Ask for the reply's shape (answer him, but not in the first clause;
+    # her own thing last) on a FOLLOW_AND_ADD turn whose previous reply
+    # opened anaphorically, unless K88's window band is already speaking.
+    # No threshold of its own: the cadence is the evidence, which is what
+    # keeps it near 8% of turns instead of FOLLOW_AND_ADD's 46%.
+    stance_sequencing_enabled: bool = True
     # ── K54 topic appetite — she's allowed to be bored ────────────────
     # Master switch for the once-per-conversation "tapped out on this
     # topic, here's my offer instead" permission slip.
