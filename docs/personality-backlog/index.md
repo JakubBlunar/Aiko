@@ -539,14 +539,20 @@ of 1,759) across five topic-gated cues — one finding, not five, and exactly wh
 H30's entry already said. `caught_mid_activity`'s supply turned out to be a live kv
 blob rather than pool stock, running at 24% open beats against a designed 30%.
 
-One row survives, in a sharper form: **`self_callback` is *never eligible*** — 0
-surfaced and 0 eligible declines against 401 structural ones, 399 `cadence_block`.
-An empty denominator is undefined reach, not low reach, and it is the next cue-lane
-item: is a gate that closed on 399 consecutive attempts a rate limit or a deadlock?
-The durable fix for the measurement itself is `scripts/cue_reach_report.py`, which
-imports the production predicate: the mistake was possible because the correct
-denominator existed only in code and in an MCP tool needing a running app, while
-offline forensics is when the question gets asked ([`health.md`](health.md)).
+`self_callback` looked like the one survivor — *never eligible*, 0 surfaced against
+401 structural declines, 399 `cadence_block` — and it was **the same mistake a third
+time**: the type carries a ten-day `surface_cooldown_hours`, 78.5h of it were still
+to run, and its two surfacings sit exactly 10.0 days apart. The lane is empty; the
+finding is `topic_miss` alone.
+
+The durable fix is `scripts/cue_reach_report.py`, and the lesson is that prose
+warnings did not work — all three passes were made by someone who had read the
+warning, because a *number* was reported where a *verdict* was computable. The
+script now imports the production predicate rather than restating it, and resolves
+each cue's cooldown against its own policy to print `inside cooldown, by design
+(+78.5h remaining)` instead of a row that invites the wrong reading. The one shape
+that would be a bug — a `cadence_block` dated after the window elapsed — gets its
+own section, and nothing qualifies ([`health.md`](health.md)).
 
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
