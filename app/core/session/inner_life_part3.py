@@ -794,6 +794,7 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             # generation below is the main path. The bails after it are
             # what actually decide the turn.
             note_as=None,
+            user_text=user_text or "",
         )
         if retry is not None:
             log.info(

@@ -2838,7 +2838,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 ---
 
-## The twenty recurring shapes
+## The twenty-two recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3124,6 +3124,53 @@ print the verdict, not the input.** `2 of 452` invites a conclusion and `+78.5h
 remaining of a 240h cooldown, by design` forecloses one. Ranking an undefined value
 as `0.0%` is the same error in miniature — give the empty denominator its own
 section rather than a row.
+
+**21. A predicate blamed for a system's behaviour that is far too permissive to be
+causing it.** A gate accounts for nearly all of some outcome in the ledger, so it
+gets read as the thing doing the deciding — and every fix proposed for it is a
+tightening. Nobody measures the one number that would settle it: **what fraction
+of candidates does it actually accept?** H43: `topic_relevant` was 94.5% of all
+eligible cue declines and accepts **33.2% of every real subject-message pair**,
+which on a five-cue shelf is an ~87% chance of matching something every turn. It
+was very nearly a no-op, so it could not have been declining those turns; the
+declines were a *different* gate wearing its label (see shape 22). Tightening it
+would have cut five cue types by 9× to fix a problem they never had.
+
+The same measurement redirects the fix. A gate accepting a third of everything,
+combined with **first-past-the-post selection**, means the choice among admitted
+candidates is being made by whatever the query's `ORDER BY` happens to be — here
+surfacings then recency, neither of which is about the live subject. So the signal
+was not too weak to gate with, it was being *used* to gate when it should have been
+used to rank. Generalised: **a signal good enough to rank with is rarely good
+enough to gate on, because gating discards exactly the cases the signal is only
+approximately right about.** K93's wants ledger had already learned this; H43 is
+the second instance in a fortnight.
+
+**Rule: before tightening a gate that "causes" an outcome, measure its acceptance
+rate on the real candidate population. If it accepts most of them it is not the
+cause, and if it also feeds a first-match selection, the bug is in the ordering.**
+The corollary is cheap and worth doing unprompted: **for any threshold on a
+similarity score, measure the null** — the score between pairs known to be
+unrelated. Word overlap's hits sat at cosine 0.370 against a null median of 0.369,
+which is the whole finding in two numbers, and neither was expensive to get.
+
+**22. A decline reason inferred from overlapping causes, biased in one direction.**
+Two gates can both refuse the same turn, and when the reason is *reconstructed*
+afterwards from state rather than recorded at the point of decision, the tie-break
+is a guess. H43's `take_pool_cue` asked "did the predicate reject anything" and "is
+this type cadence-blocked" — but a cadence hold removes most of the shelf *before*
+the predicate runs, so the survivors' refusal was scored as the predicate's.
+
+What makes this more than untidy is that the two labels sit on **opposite sides of
+a denominator**: `topic_miss` is an eligible decline and `cadence_block` is not. So
+the mislabelling could only ever inflate the population that every reach figure is
+measured against, and it did so for the largest bucket in the ledger. Shape 15's
+proxy-arming problem is the sibling — same lesson, different field.
+
+**Rule: when several gates can refuse the same turn, have the walk return counts
+per cause rather than letting the caller infer from residual state. Where inference
+is unavoidable, pick the tie-break that under-counts the bucket your metric is most
+sensitive to.**
 
 ---
 
@@ -4583,6 +4630,148 @@ written-down warning, re-violated, because the metric is easier to reach than th
 correction.** H42 is one of its exhibits — `topic_miss` at 382 of 444 was named as
 the deeper question here, and the very next reading pass buried it under four cues
 that were not broken at all.
+
+*Answered by **H43**, and not in the direction this entry expected: the gate is
+not too strict, and `topic_miss` was never mostly the gate.*
+
+---
+
+## H43. The gate blamed for 94.5% of her silences accepts a third of everything
+
+Started as the deeper question H42 deferred and H30 named twice: `topic_miss` is
+**1,873 of 1,981 eligible cue declines, 94.5%**, and all of it comes from five
+providers — `concept_hypothesis`, `curiosity_gradient`, `interest_drift`,
+`associative_wander`, `knowledge_gap_notice` — sharing one fourteen-line
+predicate. One shared word of three or more characters between the cue's label
+and his message.
+
+The obvious reading is that the gate is too strict. It is the opposite, and
+getting there required discarding two of my own hypotheses first, which is worth
+recording because both looked like findings.
+
+### Two dead ends, and why they were dead
+
+**The pick window.** `pick_pool_cue` applies the predicate to the first `limit=8`
+rows only, and I measured shelves of 22 to 45 — so 30-odd cues never examined.
+That measurement was wrong. It reconstructed "what was pending at time T" as
+`created_at <= T <= expires_at`, which ignores `not_before` (the re-ask cooldown)
+and the `pending`/`surfaced` state split. The **actually available** shelf is 0 to
+5 rows per type. The window has never once been binding.
+
+**Missing labels.** Two sampled `concept_hypothesis` payloads appeared to have no
+`label` key, which the gate reads — and an empty topic returns `False`
+unconditionally, so those cues would be permanently unreachable. All 47 have
+labels. My probe filtered payload values by length for display, so the long ones
+vanished from the printout and not from the data.
+
+Both were caught by the same discipline and it is the transferable part of this
+entry: **a reconstruction of past state needs an arm whose answer is known in
+advance.** Mine replayed the gate over turns it had already declined, so the
+"what the gate saw" arm had to come back at ~0%. It came back at 55–82%, which
+said the reconstruction was wrong before any conclusion was drawn off it.
+
+### What the calibration data said, once someone read it
+
+The *consumption* half of the cue system has been banking a cosine on every
+verdict for months against exactly this question, with a note in `_match_cue`
+that the read was worth retrying once verdicts accumulated. Retried:
+
+| population | median cosine |
+|---|---|
+| verdicts decided by word overlap | **0.370** |
+| verdicts decided semantically | 0.530 (p10 0.510) |
+| **null** — 4,000 random message × cue pairs | **0.369** |
+
+The first and third are the same number. **When word overlap said "this is the
+moment", the two texts were as related as two texts drawn at random.** Controls
+bracket it: hand-checked related pairs land 0.55–0.69, unrelated 0.25–0.36.
+
+Why: counting which tokens actually carry the matches, **82% are function words.**
+`and` (39k), `the` (34k), `you` (26k), then `your`, `with`, `that`, `when`, `for`
+— plus her own name at 5.5k, because cue subjects are written *about* the two of
+them and he addresses her by name constantly. A three-character floor was doing
+the job a stoplist should do, and English's commonest words are three and four
+letters long.
+
+### The number that inverted the fix
+
+Over every real (subject, message) pair, the gate **as shipped accepts 33.2%**.
+With a shelf of five that is an ~87% chance something "matches" every turn: the
+gate is very nearly a **no-op**. So it cannot have been what declined those 1,873
+turns — and it wasn't. That was an attribution bug (below).
+
+Which kills the tightening. Stoplist plus a null-calibrated cosine floor accept
+3.8%, a **9× tightening**, on five cue types that the entire K92–K95 family
+exists to make *more* forthcoming. Correct-looking, and it would have made her
+markedly quieter in service of a problem she did not have.
+
+### The fix: rank, don't gate
+
+What the numbers indict is not admission but **choice**. `pick_pool_cue` returned
+the *first* admitted row, ordered by surfacings then recency — nothing to do with
+what he just said. A shelf where a third of everything "matches", plus
+first-past-the-post, is precisely how a cue surfaces on a shared `and`.
+
+So the cosine orders the admitted candidates instead of vetoing them. The
+acceptance set is untouched, so **reach cannot fall**; only which cue she is
+handed changes. Same correction K93 made to the wants ledger, for the same
+reason: *a signal good enough to rank with is rarely good enough to gate on,
+because gating discards the cases the signal is only approximately right about.*
+
+Dry-run against the live shelf, 120 real messages:
+
+| cue | fired | winner changed | median cosine, old → new |
+|---|---|---|---|
+| `concept_hypothesis` | 106 | **49.1%** | 0.417 → 0.456 |
+| `curiosity_gradient` | 108 | **49.1%** | 0.344 → 0.393 |
+| `associative_wander` | 78 | 29.5% | 0.417 → 0.428 |
+| `knowledge_gap_notice` | 86 | 8.1% | 0.510 → 0.521 |
+| `interest_drift` | 72 | 2.8% | 0.414 → 0.414 |
+
+The cosine arm *is* additive at admission (+1.2% of pairs), catching what word
+overlap structurally cannot — the same subject in different words. Its floor is
+sited on the measured null (~2% of unrelated pairs clear 0.55) rather than picked.
+The stoplist is implemented, measured, and **off at admission**: ranking removes
+most of its value, and 30.7% of pairs is a change to make on production evidence.
+What it drops is genuinely noise (median cosine 0.380 against a null of 0.392).
+
+### The attribution bug underneath the headline number
+
+`take_pool_cue` inferred its decline reason from what it could still see: "did the
+predicate reject anything" and "is this type cadence-blocked". Those overlap. A
+cadence hold restricts the pick to cues that have already had a showing, removing
+most of the shelf **before** the predicate sees it; the survivors then fail, and
+the turn was recorded `topic_miss`.
+
+That only ever pushes one way. `topic_miss` is **eligible**, `cadence_block` is
+**ineligible**, so every mislabelled turn inflates the denominator every reach
+figure is measured against. `note_as` now requires that the predicate was the
+*only* thing that refused — an undercount when both apply, which is the safe
+direction for the largest bucket in the ledger.
+
+`pick_pool_cue` returns a `CuePick` carrying the counts, so the caller no longer
+infers. `considered` is also the **only** record anywhere of shelf depth on a
+given turn: `state`, `not_before` and `surfaced_count` are all last-value-only, so
+availability history is unrecoverable after the fact. It is logged for that reason.
+
+### What this does not fix
+
+The winners above still sit near the null. Ranking picks the best of a thin shelf,
+and on most turns the shelf's best is *still* not about what he said — 0 to 5
+live cues against open-ended conversation. That is the supply problem, K93's open
+cue-pool half, and it is the follow-up rather than a caveat: 66–90% of cues expire
+unused and `concept_hypothesis` is **0 used of 47 ever created**.
+
+Re-read `scripts/cue_reach_report.py` after a few days: with attribution fixed,
+`topic_miss` should fall sharply and `cadence_block` should rise by roughly as
+much. If it doesn't, the tie-break is wrong and not the measurement.
+
+### Shapes 21 and 22
+
+Added above: **a predicate blamed for a system's behaviour that was too permissive
+to be causing it, because nobody measured its acceptance rate** — and its
+enabler, **a decline reason inferred from overlapping causes, biased in one
+direction.**
 
 ---
 

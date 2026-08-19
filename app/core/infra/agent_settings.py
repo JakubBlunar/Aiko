@@ -1474,6 +1474,29 @@ class AgentSettings:
     # cooldowns are the follow-up), so turning it off costs only the
     # measurement.
     cue_accounting_enabled: bool = True
+    # ── H43 topic-gate ranking ───────────────────────────────────────
+    # Five cue providers share one word-overlap test for "is his message
+    # about this cue's subject", and measured over every real
+    # subject-message pair it accepts 33.2% of them -- with a shelf of
+    # five cues, an ~87% chance something "matches" every turn. So the
+    # gate was nearly a no-op, and the cue that surfaced was whichever
+    # of several nominal matches the surfacings-then-recency order put
+    # first. Verdicts decided that way sit at cosine 0.370 against a
+    # measured null of 0.369: no better than chance.
+    #
+    # On makes the pick choose among the *same* admitted set by cosine
+    # to the live message. Reach cannot fall -- only which cue she is
+    # handed changes. Off restores first-past-the-post for the A/B, and
+    # is also the automatic behaviour whenever no embedder is wired or
+    # the message is too short to embed.
+    cue_topic_ranking: bool = True
+    # The additive semantic arm: admit a cue the word test refused when
+    # its subject is this close to the message anyway, which is the case
+    # word overlap structurally cannot see. Sited on the measured null
+    # (~2% of unrelated pairs clear 0.55), not picked by feel -- re-run
+    # ``scripts/topic_gate_report.py`` before changing it. Negative
+    # disables the arm while leaving ranking on.
+    cue_topic_min_cosine: float = 0.55
     # ── K90 prompt-block accounting ──────────────────────────────────
     # One row per block that RENDERED, per turn. Wider than the cue
     # ledger above, which only sees the ~15 registered cues and only

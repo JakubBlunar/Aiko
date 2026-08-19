@@ -1007,11 +1007,24 @@ tier, so the debug view answers "what would she raise next?" rather than "what h
 waited longest?".
 
 **Still open: the cue-pool half.** This entry has two halves and only the ledger
-one has shipped. `CuePolicy.substance` and the `pick_pool_cue` ordering seam are
-untouched, so the 88.9% conversion monopoly is unaddressed at source — what
-changed is which want reaches the floor once it is in the ledger, not which cue
-becomes a want. Re-read the conversion table before starting that half; H42 has
-just changed `concept_hypothesis`'s supply and this measurement is the baseline.
+one has shipped. `CuePolicy.substance` is untouched, so the 88.9% conversion
+monopoly is unaddressed at source — what changed is which want reaches the floor
+once it is in the ledger, not which cue becomes a want. Re-read the conversion
+table before starting that half; H42 has just changed `concept_hypothesis`'s
+supply and this measurement is the baseline.
+
+**H43 took the `pick_pool_cue` ordering seam and sharpened what remains.** That
+seam is no longer untouched: the pick now ranks admitted cues by cosine against
+the live message instead of taking the first in surfacings-then-recency order,
+which is this entry's own "rank, don't gate" argument applied one layer down. What
+it also established is that the *gate* is not the constraint — `topic_relevant`
+accepts 33.2% of all subject-message pairs — and that the remaining problem is
+**supply**, in the specific sense this half is about. The shelf carries 0-5 live
+cues per type against open-ended conversation, 66-90% of cues expire unused, and
+`concept_hypothesis` is **0 used of 47 ever created**. So ranking reliably picks
+the best thing available and the best thing available is still, on most turns, not
+about what he said. That is the case for `CuePolicy.substance` restated as a
+measurement rather than an intuition, and it is the next piece of work.
 
 ---
 

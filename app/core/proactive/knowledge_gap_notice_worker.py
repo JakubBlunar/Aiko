@@ -34,10 +34,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.proactive import topic_match
 from app.core.proactive.cue_producer import CueProducer, StoreProvider
 from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
@@ -53,8 +53,6 @@ log = logging.getLogger("app.knowledge_gap_notice_worker")
 # provider reads.
 KNOWLEDGE_GAP_JOURNAL_KEY = "aiko.knowledge_gap_notices"
 _KV_TOPIC_COOLDOWNS = "knowledge_gap_notice.topic_cooldowns"
-
-_WORD_RE = re.compile(r"[a-z0-9]+")
 
 
 def _utcnow() -> datetime:
@@ -348,12 +346,20 @@ def topic_relevant(topic: str, user_text: str) -> bool:
     short (a 2-5 word phrase), so a single shared content word is a
     reasonable "we're talking about this right now" signal — enough to
     keep the gap notice in context without an embedding round-trip.
+
+    Measured, that reasoning is wrong in an interesting way: the test
+    accepts a third of all subject-message pairs, and the pairs it accepts
+    are no more semantically related than random ones, because 82% of the
+    tokens carrying its matches are function words. It is kept as the
+    *admission* rule anyway -- being nearly a no-op means tightening it
+    would cost five cue types most of their reach -- and the fix is that
+    :func:`~app.core.proactive.cue_producer.pick_pool_cue` now chooses
+    among everything this admits by relevance instead of by recency. See
+    :mod:`app.core.proactive.topic_match` for the numbers.
     """
-    topic_words = {w for w in _WORD_RE.findall((topic or "").lower()) if len(w) >= 3}
-    if not topic_words:
-        return False
-    user_words = {w for w in _WORD_RE.findall((user_text or "").lower()) if len(w) >= 3}
-    return bool(topic_words & user_words)
+    return bool(
+        topic_match.lexical_overlap(topic, user_text, drop_stopwords=False)
+    )
 
 
 __all__ = [
