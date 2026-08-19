@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
+from app.core.memory.memory_store import _RELEVANCE_WINDOW
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import Memory, MemoryStore
@@ -52,10 +53,14 @@ log = logging.getLogger("app.memory_decay_worker")
 # the user is actually at the gym.
 _FUTURE_TO_PAST_BUFFER = timedelta(hours=1)
 # Window past_event memories stay available in normal RAG before the
-# decay worker demotes them to ``archive``. Matches the LLM
-# extractor's default for past_event so freshly-extracted history
-# rolls off after a week.
-_PAST_EVENT_RELEVANCE_WINDOW = timedelta(days=7)
+# decay worker demotes them to ``archive``. Read from the store's table
+# rather than restated here: this worker rewrites ``relevance_until`` on
+# every reclassify, so a private copy is a rule that can silently
+# disagree with the one the writer applies (the H40 near-miss, one lane
+# over).
+_PAST_EVENT_RELEVANCE_WINDOW = (
+    _RELEVANCE_WINDOW["past_event"] or timedelta(days=7)
+)
 # Slack past ``relevance_until`` before a plan the user never pinned to
 # a clock is treated as history. Deliberately much longer than that
 # column implies: for a clockless plan ``relevance_until`` is only

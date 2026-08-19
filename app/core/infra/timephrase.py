@@ -139,6 +139,14 @@ def humanize_past(when_iso: str, now: datetime) -> str:
     Precise register ("3 days ago", "2 weeks ago"). ``in the past`` is the
     safe fallback when parsing fails. Moved verbatim from
     ``rag_retriever._humanize_past`` (K-time5 consolidation).
+
+    A timestamp in the *future* is not a near-miss to be rounded off. It
+    means the caller is describing something that has not happened as
+    though it had, and answering "moments ago" made 54 stored plans read
+    as brand-new for a median of 15 hours each -- including a courier due
+    the next morning, which is how Aiko came to ask about a delivery she
+    had already helped unpack (H40). The honest answer is the vague one:
+    say nothing about recency, because there is none to report.
     """
     when = parse_iso(when_iso)
     if when is None:
@@ -146,7 +154,7 @@ def humanize_past(when_iso: str, now: datetime) -> str:
     now = to_aware(now)
     delta = (now - when).total_seconds()
     if delta < 0:
-        return "moments ago"
+        return "in the past"
     if delta < HOUR_SECONDS:
         minutes = max(1, int(delta // 60))
         return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
@@ -247,7 +255,17 @@ def temporal_suffix(
     if t == "ongoing":
         return " (ongoing)"
     if t == "past_event":
-        anchor = event_time or created_at
+        # Prefer ``event_time``, but only while it is actually in the
+        # past. A past event stamped ahead of now is a contradiction the
+        # store now blocks at write time; rows already carrying one keep
+        # arriving here, and for those ``created_at`` is the anchor we
+        # genuinely know -- the note was written, whatever it claims about
+        # its subject. Falling back keeps the tag informative ("9 hours
+        # ago") where using the stated time would erase it (H40).
+        anchor = event_time
+        when = parse_iso(anchor) if anchor else None
+        if when is None or when > to_aware(now):
+            anchor = created_at or anchor
         if not anchor:
             return ""
         return f" ({humanize_past(anchor, now)})"
@@ -273,10 +291,15 @@ def temporal_suffix(
 # The list is deliberately conservative -- only phrases that genuinely
 # re-anchor to whenever they are next read. Words like "always" or
 # "usually" describe a standing pattern and are left alone.
-_RELATIVE_DEICTICS: tuple[str, ...] = (
+#
+# Split by which way the word *points*, because the two groups license
+# opposite conclusions and conflating them was H40: a backstop read
+# "tomorrow" as evidence the memory described something that had already
+# happened, and stamped it at write time. Staleness and direction are
+# separate questions about the same word, and only the first one is
+# shared by the whole list.
+_PAST_DEICTICS: tuple[str, ...] = (
     "today",
-    "tonight",
-    "tomorrow",
     "yesterday",
     "currently",
     "right now",
@@ -286,31 +309,77 @@ _RELATIVE_DEICTICS: tuple[str, ...] = (
     "this afternoon",
     "this evening",
     "this week",
-    "this weekend",
-    "next week",
     "these days",
     "lately",
     "recently",
+)
+
+# "tonight" and "this weekend" sit here rather than above because a note
+# is written *during* a day and these still name an unspent part of it.
+# The failure they cause when mis-grouped is the loud one -- a plan filed
+# as history -- so the tie is broken toward the future.
+_FUTURE_DEICTICS: tuple[str, ...] = (
+    "tomorrow",
+    "tonight",
+    "this weekend",
+    "next week",
     "soon",
 )
 
-_DEICTIC_RE = re.compile(
-    r"\b(" + "|".join(re.escape(word) for word in _RELATIVE_DEICTICS) + r")\b",
-    re.IGNORECASE,
-)
+_RELATIVE_DEICTICS: tuple[str, ...] = _PAST_DEICTICS + _FUTURE_DEICTICS
+
+PAST = "past"
+FUTURE = "future"
+
+
+def _deictic_re(words: tuple[str, ...]) -> re.Pattern[str]:
+    return re.compile(
+        r"\b(" + "|".join(re.escape(w) for w in words) + r")\b",
+        re.IGNORECASE,
+    )
+
+
+_DEICTIC_RE = _deictic_re(_RELATIVE_DEICTICS)
+_PAST_DEICTIC_RE = _deictic_re(_PAST_DEICTICS)
+_FUTURE_DEICTIC_RE = _deictic_re(_FUTURE_DEICTICS)
 
 
 def has_relative_deictic(text: str | None) -> bool:
     """True when ``text`` contains wording that will go stale once stored.
 
-    The predicate behind the ``MemoryStore.add`` backstop. It answers a
-    narrow question -- "will this sentence still mean what it says in a
-    month?" -- and nothing more; deciding what to *do* about it is the
-    caller's business.
+    Answers a narrow question -- "will this sentence still mean what it
+    says in a month?" -- and nothing more. In particular it says nothing
+    about *which way* the wording points, so a caller that needs to know
+    whether the sentence describes something done or something coming
+    must ask :func:`deictic_direction` instead.
     """
     if not text:
         return False
     return _DEICTIC_RE.search(str(text)) is not None
+
+
+def deictic_direction(text: str | None) -> str | None:
+    """Which way ``text``'s relative wording points: ``PAST``, ``FUTURE``, None.
+
+    ``None`` means no relative wording at all, which is not the same as
+    "present" -- a caller must not read it as licence to stamp a time.
+
+    Where a sentence carries both ("he finished the report today and
+    ships it tomorrow") the **future** wins. The asymmetry is deliberate:
+    mis-filing a plan as history strands it in a lane with no upkeep --
+    nothing retires it, the upcoming-horizon block cannot see it, and it
+    reads as already-true for as long as it survives -- whereas mis-filing
+    history as a plan is self-correcting, since the decay worker demotes
+    an overdue plan within the hour.
+    """
+    if not text:
+        return None
+    s = str(text)
+    if _FUTURE_DEICTIC_RE.search(s) is not None:
+        return FUTURE
+    if _PAST_DEICTIC_RE.search(s) is not None:
+        return PAST
+    return None
 
 
 # What each deictic becomes once it is read on a later day. The vaguer

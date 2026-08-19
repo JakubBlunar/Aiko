@@ -2838,7 +2838,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 ---
 
-## The sixteen recurring shapes
+## The seventeen recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3022,6 +3022,22 @@ signal that never describes a single turn should not answer per-turn questions.
 The visible tell is a rule that dominates its siblings: one of five caps
 accounting for 65% of all clamps was legible for four days before anyone asked
 why.**
+
+**17. A predicate answering a narrower question than its caller needs.** Not
+shape 6 (one rule copied into N sites, wrong in N−1) — here there is exactly one
+predicate, one caller, and nothing to disagree with. H40's
+`has_relative_deictic` answers "will this wording go stale?", correctly, for all
+eighteen words it matches. Its caller needed "…and which way does it point",
+helped itself to the boolean it had, and so read `tomorrow` as evidence that
+something had already happened: a courier due the next morning was filed as
+history and stamped at write time, into a lane with no upkeep pass and no
+retirement. The predicate's docstring was accurate the whole time; the bug lived
+in the gap between what it promised and what the branch below it decided.
+**Rule: when a boolean gates a branch that does more than one thing, check the
+question it asks decides all of them. A predicate whose name is a strict subset
+of the decision it drives — `has_X` gating *what kind of* X — is the tell, and
+the cheap guard is a test asserting the predicate is silent about what it does
+not know.**
 
 ---
 
@@ -3921,7 +3937,7 @@ Aiko chose herself.
 
 ### The shape worth keeping
 
-This is [recurring shape 15](#the-sixteen-recurring-shapes) and the first
+This is [recurring shape 15](#the-seventeen-recurring-shapes) and the first
 instance of it here: **a missing value coerced to a valid one**. `or 0.0` is not
 a default, it is a fabrication, and it is most dangerous where zero is a
 *meaningful* value in the domain — temperature, valence, confidence, price. The
@@ -3986,7 +4002,7 @@ property `arc` was wrongly assumed to have.
 
 ### The shape worth keeping
 
-**[Recurring shape 16](#the-sixteen-recurring-shapes): a signal reused at the
+**[Recurring shape 16](#the-seventeen-recurring-shapes): a signal reused at the
 wrong timescale.** Every
 input here was correct — the arc tagger is doing its job, and 110 turns of
 `support` is an accurate description of that conversation. The defect is entirely
@@ -4010,7 +4026,157 @@ as a number instead of as a mood.
 
 ---
 
-## What Part 2 changes about priority
+## H40. She asked about a delivery she had already helped unpack
+
+**Severity: high — fixed 19 Aug. Found by the user: "aiko is tangling dates. I
+told her that it should come today and she remembered that it will come today.
+But courier surprised me yesterday and i build everything and also discussed it
+with her and she asked me today about the delivery."**
+
+Two lines of code, one at write time and one at read time, between them
+guaranteed she could not tell a plan from its outcome. The LLM's date arithmetic
+is also imperfect, and that is the part everyone looks at first, but it is not
+what caused this.
+
+### The write: a word that means "not yet" read as "already"
+
+The K-time10 backstop exists for a good reason. `durable` is the default
+temporal type and renders with **no time tag at all**, so a note worded "Jacob
+mowed the lawn today" keeps reaching the prompt months later still asserting the
+present. Re-reading such a row as an event anchored at write time is the honest
+interpretation:
+
+```python
+if temporal_type_normalized in (
+    "durable", "preference",
+) and timephrase.has_relative_deictic(cleaned):
+    temporal_type_normalized = "past_event"
+    if event_time_clean is None:
+        event_time_clean = now
+```
+
+`has_relative_deictic` answers one narrow question — *will this sentence still
+mean what it says in a month?* — and answers it correctly for all eighteen words
+it matches. But **five of them point at the future**: `tomorrow`, `tonight`,
+`next week`, `soon`, `this weekend`. For those, the word is proof the thing has
+*not happened*, and the branch concludes that it has, then stamps it at the
+moment of writing. Staleness and direction are two different questions about the
+same word, and the code asked one and used the answer for the other.
+
+Being wrongly filed as `past_event` is the worst available outcome, because that
+lane has no upkeep. Nothing retires it — `MemoryDecayWorker` only ever moves rows
+*into* `past_event`. The "Coming up for Jacob" block (K-time3) reads
+`future_plan` exclusively, so it never saw the courier at all. And **17 of 2,095
+rows had ever reached `future_plan`, 0.8%**, while 54 plans sat in `past_event`
+dated into their own future — the feature was starved and nobody noticed, because
+a starved feature and a quiet week look identical.
+
+### The read: a fabricated recency
+
+Then the retrieval bullet finished the job. Asked to describe a past event whose
+timestamp is in the future, `humanize_past` did not refuse:
+
+```python
+delta = (now - when).total_seconds()
+if delta < 0:
+    return "moments ago"
+```
+
+So the row claimed to be brand new for the whole interval between being written
+and its own event time. **54 rows, a median of 14.8 hours each, 1,316 hours in
+total.** The worst was a candlelit wine date that reported having just happened
+for **188 consecutive hours**. The test covering this was named
+`test_future_input_is_defensive` and asserted `"moments ago"` — it was written as
+a guard and was in fact pinning the fabrication.
+
+### What the prompt actually said
+
+This is the pile she was reading on Wednesday morning, verbatim:
+
+```
+Jacob expects a courier with the first hardware package tomorrow morning. (moments ago)
+Jacob's new hardware arrived unexpectedly yesterday, August 19, 2026 (moments ago)
+Jacob assembled his new Ryzen 9 9950X3D workstation today after receiving the courier. (moments ago)
+New PC components arrive tomorrow for Jacob's workstation upgrade on Tuesday, August 18. (20 hours ago)
+Jacob received the new hardware delivery on August 19, 2026
+Jacob promised: Sleep before courier arrives on August 19, 2026. (by 2026-08-19)
+```
+
+Six contradictory statements, four of them stamped **equally fresh**, two
+carrying no time tag at all. Two days of events collapsed onto one instant, with
+"a courier comes tomorrow" presented as the most recent thing he had said.
+Asking about the delivery was the only thing she could have done with that.
+
+The LLM errors are real and secondary. `[3201]` resolved "Wednesday" to Tuesday
+25 August from a Sunday; `[3475]` wrote "yesterday, August 19, 2026" *on* August
+19. The extractor prompt told the model to resolve relative phrases against
+"today" while the transcript it receives carries per-line `[age]` stamps the
+prompt never mentioned — the promise worker names them explicitly, so the
+extractor was the one worker missing the better operand.
+
+### Fixed
+
+`_RELATIVE_DEICTICS` is now two lists and `deictic_direction` reports which way a
+sentence points. Future-pointing wording becomes `future_plan`; past-pointing
+keeps the old behaviour, which was right for its half. Note the asymmetry in what
+each branch may invent: a past deictic licenses "it happened when this was
+written", true by construction, while a future one licenses **no timestamp at
+all** — "soon" does not name a moment, and guessing one is the same fabrication
+in a different costume. Where a sentence carries both, future wins, because
+mis-filing a plan as history strands it in the lane with no upkeep whereas the
+reverse self-corrects within the hour.
+
+`humanize_past` returns `"in the past"` for a future timestamp, and
+`temporal_suffix` prefers `event_time` only while it is actually past, falling
+back to `created_at` — the anchor we genuinely know, since the note was written
+whatever it claims about its subject. That keeps the tag informative ("3 hours
+ago") where using the stated time would erase it.
+
+A direction check now runs at the store: a `past_event` dated after the moment it
+was recorded is two fields disagreeing about whether the thing happened, and
+`event_time` wins because it is the more specific claim and the label is the
+field producers get wrong. It compares against the **write time, not against
+now**, so replaying an old row cannot re-decide it.
+
+One near-miss worth recording, because it would have been a worse bug than the
+one being fixed. A type carries an expiry rule, and `derive_relevance_until` ran
+*upstream* in the extractor — so the first version of this fix reclassified rows
+while leaving them holding `durable`'s `relevance_until`, which is `None`, and
+`list_by_temporal_type` **skips rows whose `relevance_until` is NULL**. Every
+promoted row would have been invisible to every upkeep pass that could retire it:
+immortal. The derivation now lives beside the writer that can change the type,
+and the pre-existing `durable → past_event` path turns out to have had the same
+hole since K-time10.
+
+Finally, the extractor prompt now points at the per-line stamps like the promise
+worker does, is told not to write a weekday or calendar date into `content`
+unless the user stated it outright, and is told that the past/future split is the
+one distinction that matters because the two are handled by different machinery.
+
+### The shape worth keeping
+
+**[Recurring shape 17](#the-seventeen-recurring-shapes): a predicate answering a
+narrower question than its caller needs.** `has_relative_deictic` is correct, its
+docstring is accurate, and its tests pass — it says "this wording will go stale".
+The caller needed "and which way does it point", helped itself to the answer it
+had, and inverted a third of its inputs. This is not the shared-predicate problem
+of shape 6 (one rule copied into six call sites and wrong in four); here there is
+exactly one predicate, one caller, and no disagreement to find. **Rule: when a
+boolean gates a branch that does more than one thing, check that the question it
+asks decides all of them. A predicate whose name is a strict subset of the
+decision it drives — `has_X` gating *what kind of* X — is the tell.** The cheap
+guard is a test that asserts the predicate is *silent* on the thing it does not
+know, which is what `test_it_says_nothing_about_direction` now does.
+
+The second lesson is about defaults at the boundary, and it is
+[shape 15](#the-seventeen-recurring-shapes) again in a place nobody thought to
+look: **an impossible input should be refused, not rounded**. A past event in the
+future is not a near-miss to smooth over, and "moments ago" was the single most
+destructive string in the chain — it took four memories written across two days
+and made them indistinguishable. Where H38's fabrication came from a partial API
+response, this one came from a *display helper*, which is why it survived so long:
+nobody audits a formatter for correctness. **A formatter that cannot represent
+its input should say less, not guess.**
 
 *Superseded — H9 and H10 both shipped. Kept for the reasoning, which held up:
 H9 was the difference between a companion who has feelings about things and one
