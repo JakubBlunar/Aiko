@@ -1436,17 +1436,38 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                         chat_db.kv_get(_wl.KV_WANTS_LEDGER)
                     )
                     if state.wants:
-                        strongest = max(
-                            state.wants, key=lambda w: w.pressure,
+                        substance_first = bool(
+                            getattr(
+                                agent,
+                                "wants_substance_ordering",
+                                True,
+                            )
                         )
-                        want_text = strongest.text
                         threshold = float(
                             getattr(
                                 agent, "wants_imperative_threshold", 0.7,
                             )
                         )
+                        # K93: the directive's content is the most
+                        # substantial want, not the oldest. No pressure
+                        # floor here -- any live want may be the thing
+                        # she opens with, and this beat is exactly the
+                        # scarce slot that was going to free association.
+                        pick = _wl.strongest_for_floor(
+                            state.wants, substance_first=substance_first,
+                        )
+                        want_text = pick.text if pick else None
+                        # Separate question, and it must stay keyed to
+                        # pressure alone: this gate exists to avoid two
+                        # floor-grabs on one turn, so it has to predict
+                        # whether the *wants block* will go imperative.
                         wants_imperative_active = (
-                            strongest.pressure >= threshold
+                            _wl.strongest_for_floor(
+                                state.wants,
+                                min_pressure=threshold,
+                                substance_first=substance_first,
+                            )
+                            is not None
                         )
                 except Exception:
                     want_text = None
@@ -1683,17 +1704,32 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             )
             if self._debug_overrides.take("wants_force_imperative", False):
                 threshold = 0.0
+            substance_first = bool(
+                getattr(agent, "wants_substance_ordering", True)
+            )
             block = _wl.render_block(
                 matured, now,
                 user_display_name=self.user_display_name,
                 imperative_threshold=threshold,
+                substance_first=substance_first,
             )
             if block.startswith("Something you've been wanting"):
-                strongest = max(matured.wants, key=lambda w: w.pressure)
+                # Same call the render just made, not a second guess at
+                # it: this pick becomes the K55 thread topic and the want
+                # post-turn charges, so a disagreement would open a
+                # thread on a subject the prompt never raised.
+                strongest = _wl.strongest_for_floor(
+                    matured.wants,
+                    min_pressure=threshold,
+                    substance_first=substance_first,
+                )
                 log.info(
                     "wants-ledger imperative fire: id=%s pressure=%.2f "
-                    "source=%s",
-                    strongest.id, strongest.pressure, strongest.source,
+                    "source=%s tier=%d",
+                    strongest.id,
+                    strongest.pressure,
+                    strongest.source,
+                    _wl.substance_tier(strongest),
                 )
                 # K55: an imperative want directive opens Aiko's
                 # thread just like a K53 initiative turn does.
@@ -2116,11 +2152,32 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                         chat_db.kv_get(_wl.KV_WANTS_LEDGER)
                     )
                     if state.wants:
-                        strongest = max(
-                            state.wants, key=lambda w: w.pressure,
+                        # K93, filtered by this block's own bar rather
+                        # than reordered across it: negotiating the topic
+                        # needs an offer worth the interruption, so the
+                        # pick is the most substantial want that already
+                        # clears ``appetite_min_want_pressure``. Ranking
+                        # first and gating second would let a fresh goal
+                        # displace a qualifying seed and then fail the
+                        # gate, turning a better offer into no offer.
+                        pick = _wl.strongest_for_floor(
+                            state.wants,
+                            min_pressure=float(
+                                getattr(
+                                    agent,
+                                    "appetite_min_want_pressure",
+                                    0.35,
+                                )
+                            ),
+                            substance_first=bool(
+                                getattr(
+                                    agent, "wants_substance_ordering", True,
+                                )
+                            ),
                         )
-                        want_text = strongest.text
-                        want_pressure = float(strongest.pressure)
+                        if pick is not None:
+                            want_text = pick.text
+                            want_pressure = float(pick.pressure)
                 except Exception:
                     want_text = None
                     want_pressure = 0.0

@@ -480,6 +480,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             wants_per_source_cap=max(
                 0, int(agent_raw.get("wants_per_source_cap", 4)),
             ),
+            wants_substance_ordering=bool(
+                agent_raw.get("wants_substance_ordering", True),
+            ),
             wants_max_age_days=max(
                 1.0, float(agent_raw.get("wants_max_age_days", 14.0)),
             ),

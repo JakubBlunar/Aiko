@@ -891,6 +891,17 @@ class AgentSettings:
     # claim one at all (H29). Half the ledger is the default so no
     # producer can own it outright.
     wants_per_source_cap: int = 4
+    # K93: order the scarce beats (the imperative band, K53's directive,
+    # K54's offer) by how much substance a want carries, using pressure
+    # only as the tie-break. The cap above stopped one producer owning
+    # the ledger; this decides which of the survivors is worth saying.
+    # Pressure alone cannot: it is a pure clock, and seeds start 0.11
+    # ahead of goals and pursuits and grow at the same rate, so the lead
+    # never closes — then everything saturates at 1.0 inside four days
+    # and the tie-break falls to insertion order, where seeds are first.
+    # Off restores pressure-only ordering for the A/B. The soft wants
+    # list stays in pressure order either way, so whimsy keeps its floor.
+    wants_substance_ordering: bool = True
     # Wants never acted on expire after this many days — an itch
     # that old has faded, and dropping it keeps the ledger from
     # becoming a guilt list.

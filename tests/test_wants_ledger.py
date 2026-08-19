@@ -439,6 +439,191 @@ class DropSourceRefsTests(unittest.TestCase):
         self.assertEqual(len(after.wants), 1)
 
 
+def _sourced(
+    source: str,
+    *,
+    kind: str = "ask",
+    pressure: float = 0.2,
+    text: str = "",
+    wid: str = "",
+) -> wl.Want:
+    iso = _NOW.isoformat()
+    return wl.Want(
+        id=wid or f"w-{source}-{kind}",
+        text=text or f"a {source} want",
+        kind=kind,
+        source=source,
+        source_ref=f"{source}:1",
+        created_at=iso,
+        pressure=pressure,
+        last_growth_at=iso,
+    )
+
+
+class SubstanceTierTests(unittest.TestCase):
+    """K93 — pressure is a clock, so it cannot express substance."""
+
+    def test_the_ordering_puts_whimsy_last(self) -> None:
+        self.assertGreater(
+            wl.substance_tier(_sourced("goal", kind="steer")),
+            wl.substance_tier(_sourced("curiosity_seed")),
+        )
+        self.assertGreater(
+            wl.substance_tier(_sourced("pursuit", kind="share")),
+            wl.substance_tier(_sourced("curiosity_seed")),
+        )
+
+    def test_one_source_two_shapes(self) -> None:
+        """K87 split forward-curiosity; the tiers follow that split.
+
+        A ``share`` is a subject of hers. An ``ask`` is the interview
+        line the worker's own comment warns about, so it must not ride
+        in on the same tier.
+        """
+        hers = _sourced("forward_curiosity", kind="share")
+        about_him = _sourced("forward_curiosity", kind="ask")
+        self.assertGreater(
+            wl.substance_tier(hers), wl.substance_tier(about_him),
+        )
+
+    def test_an_unknown_source_lands_in_the_middle(self) -> None:
+        # A producer added later must not silently inherit whimsy's
+        # demotion, nor outrank a goal without saying so.
+        tier = wl.substance_tier(_sourced("something_new"))
+        self.assertEqual(tier, wl.TIER_ABOUT_HIM)
+        self.assertGreater(tier, wl.TIER_WHIMSY)
+        self.assertLess(tier, wl.TIER_ANCHORED)
+
+
+class RankForFloorTests(unittest.TestCase):
+    def test_substance_beats_a_higher_pressure_seed(self) -> None:
+        """The measured case, with the measured numbers.
+
+        A live seed at 0.60 and a goal at 0.50 were exactly the same age
+        (1.8 days) -- the seed led only because it was minted at 0.15
+        against the goal's 0.05.
+        """
+        seed = _sourced("curiosity_seed", pressure=0.60)
+        goal = _sourced("goal", kind="steer", pressure=0.50)
+        pick = wl.strongest_for_floor([seed, goal])
+        self.assertEqual(pick.source, "goal")
+
+    def test_pressure_still_orders_within_a_tier(self) -> None:
+        old = _sourced("goal", kind="steer", pressure=0.8, wid="old")
+        new = _sourced("pursuit", kind="share", pressure=0.2, wid="new")
+        self.assertEqual(wl.strongest_for_floor([new, old]).id, "old")
+
+    def test_saturated_pressures_no_longer_tie_on_insertion_order(
+        self,
+    ) -> None:
+        """The second inversion: everything hits 1.0 inside four days.
+
+        At that point pressure carries no information at all and the
+        stable sort fell through to ledger order, where seeds are ingested
+        first. Substance is what breaks the tie now.
+        """
+        seed = _sourced("curiosity_seed", pressure=1.0)
+        pursuit = _sourced("pursuit", kind="share", pressure=1.0)
+        self.assertEqual(
+            wl.strongest_for_floor([seed, pursuit]).source, "pursuit",
+        )
+
+    def test_the_floor_filters_before_it_ranks(self) -> None:
+        """Reordering across a caller's own bar would silence it.
+
+        K54 requires an offer at >= 0.35. A fresh goal must not displace
+        a qualifying seed and then fail that gate — that turns "a better
+        offer" into "no offer".
+        """
+        seed = _sourced("curiosity_seed", pressure=0.60)
+        fresh_goal = _sourced("goal", kind="steer", pressure=0.05)
+        pick = wl.strongest_for_floor(
+            [seed, fresh_goal], min_pressure=0.35,
+        )
+        self.assertEqual(pick.source, "curiosity_seed")
+
+    def test_an_empty_ledger_and_an_unmet_floor_both_give_none(self) -> None:
+        self.assertIsNone(wl.strongest_for_floor([]))
+        self.assertIsNone(
+            wl.strongest_for_floor(
+                [_sourced("goal", kind="steer", pressure=0.1)],
+                min_pressure=0.7,
+            )
+        )
+
+    def test_the_flag_restores_pressure_only_order(self) -> None:
+        seed = _sourced("curiosity_seed", pressure=0.60)
+        goal = _sourced("goal", kind="steer", pressure=0.50)
+        pick = wl.strongest_for_floor(
+            [seed, goal], substance_first=False,
+        )
+        self.assertEqual(pick.source, "curiosity_seed")
+
+
+class ImperativeBandTests(unittest.TestCase):
+    """Which want gets the scarce beat, and whether the band still fires."""
+
+    def test_whether_the_band_fires_is_unchanged(self) -> None:
+        """K93 changes the pick, never the trigger.
+
+        The qualifying set is a prefix of pressure order, so it is
+        non-empty on exactly the turns ``max(pressure) >= threshold``
+        admitted. Nothing here may make her go imperative more often.
+        """
+        below = _state_with(
+            _sourced("curiosity_seed", pressure=0.60),
+            _sourced("goal", kind="steer", pressure=0.50),
+        )
+        block = wl.render_block(below, _NOW, imperative_threshold=0.7)
+        self.assertFalse(block.startswith("Something you've been wanting"))
+
+        above = _state_with(
+            _sourced("curiosity_seed", pressure=0.95),
+            _sourced("goal", kind="steer", pressure=0.75),
+        )
+        block = wl.render_block(above, _NOW, imperative_threshold=0.7)
+        self.assertTrue(block.startswith("Something you've been wanting"))
+
+    def test_the_imperative_spends_itself_on_the_anchored_want(self) -> None:
+        state = _state_with(
+            _sourced(
+                "curiosity_seed", pressure=0.95, text="why fonts feel angry",
+            ),
+            _sourced(
+                "goal", kind="steer", pressure=0.75, text="the thing of hers",
+            ),
+        )
+        block = wl.render_block(state, _NOW, imperative_threshold=0.7)
+        self.assertIn("the thing of hers", block)
+        self.assertNotIn("why fonts feel angry", block)
+
+    def test_whimsy_keeps_its_floor_in_the_soft_list(self) -> None:
+        """The asymmetry is the design, not an oversight.
+
+        Free association converts better than anything else on the shelf,
+        so it keeps its voice; what it loses is the scarce slots.
+        """
+        state = _state_with(
+            _sourced(
+                "curiosity_seed", pressure=0.60, text="why fonts feel angry",
+            ),
+            _sourced(
+                "goal", kind="steer", pressure=0.50, text="the thing of hers",
+            ),
+        )
+        block = wl.render_block(state, _NOW, imperative_threshold=0.7)
+        self.assertIn("why fonts feel angry", block)
+        self.assertIn("the thing of hers", block)
+
+    def test_the_soft_list_stays_in_pressure_order(self) -> None:
+        state = _state_with(
+            _sourced("curiosity_seed", pressure=0.60, text="the whim"),
+            _sourced("goal", kind="steer", pressure=0.50, text="the goal"),
+        )
+        block = wl.render_block(state, _NOW, imperative_threshold=0.7)
+        self.assertLess(block.index("the whim"), block.index("the goal"))
+
+
 class RenderTests(unittest.TestCase):
     def test_empty_ledger_silent(self) -> None:
         self.assertEqual(wl.render_block(wl.LedgerState(), _NOW), "")

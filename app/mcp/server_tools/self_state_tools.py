@@ -1372,11 +1372,18 @@ def register(mcp, session: "SessionController") -> None:
                         "source_ref": w.source_ref,
                         "pressure": round(float(w.pressure), 3),
                         "age_days": round(_wl.age_days(w, now), 2),
+                        # K93 tier: 3 anchored (goal / pursuit / hers),
+                        # 2 a question for him, 1 free association.
+                        "substance_tier": _wl.substance_tier(w),
                     }
-                    for w in sorted(
+                    # Listed in the order the scarce beats actually pick,
+                    # so this view answers "what would she raise next?"
+                    # rather than "what has waited longest?".
+                    for w in _wl.rank_for_floor(
                         state.wants,
-                        key=lambda w: w.pressure,
-                        reverse=True,
+                        substance_first=bool(
+                            getattr(agent, "wants_substance_ordering", True)
+                        ),
                     )
                 ],
                 "recently_acted": dict(state.recently_acted),
@@ -1385,6 +1392,9 @@ def register(mcp, session: "SessionController") -> None:
                     user_display_name=session.user_display_name,
                     imperative_threshold=float(
                         getattr(agent, "wants_imperative_threshold", 0.7)
+                    ),
+                    substance_first=bool(
+                        getattr(agent, "wants_substance_ordering", True)
                     ),
                 ) or None,
                 "force_imperative_armed": bool(

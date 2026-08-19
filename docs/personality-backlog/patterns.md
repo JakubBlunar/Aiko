@@ -108,7 +108,7 @@ on top of already-shipped infrastructure.
 | K90 | Lead/follow metrics — make the whole family measurable | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k90-leadfollow-metrics--make-the-whole-family-measurable) |
 | K91 | Lived-in away life — a day she had, not a day she narrated | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated) |
 | K92 | Conversational stance — one decision per turn, not ten permission slips | 🟡 phase 1 shipped 15 Aug (shadow log), phase 2 19 Aug (FOLLOW + brevity render); phase 3 open |
-| K93 | The substance floor — what she takes to the floor, not whether she takes it | ❌ open |
+| K93 | The substance floor — what she takes to the floor, not whether she takes it | 🟡 ledger half shipped 19 Aug (scarce beats rank by substance); cue-pool half open |
 | K94 | Sequencing — answer first, then add, and say where the addition goes | ❌ open |
 | K95 | Interruption cost — a direct question is not an opening | ✅ shipped 19 Aug — reader landed inside K92 phase 1, enforcement in K53's gate walk |
 
@@ -604,11 +604,14 @@ K92 is the load-bearing entry; K93–K95 are each independently shippable and ea
 targets a specific way the current arrangement wastes the floor when she does
 take it. K93 in particular can ship first and alone, and probably should.
 
-**Status, 19 Aug.** K92 phases 1–2 and **K95** have shipped. K95 turned out not to
-be the insurance it was filed as: its reader landed inside phase 1 and nothing
-enforced it, so 17 of 75 initiative directives fired on turns where the ceiling had
-already concluded he asked her something. K93 and K94 remain open, and K92 phase 3
-is still the family's real payoff.
+**Status, 19 Aug.** K92 phases 1–2, **K95**, and K93's ledger half have shipped.
+K95 turned out not to be the insurance it was filed as: its reader landed inside
+phase 1 and nothing enforced it, so 17 of 75 initiative directives fired on turns
+where the ceiling had already concluded he asked her something. K93's re-measure
+found the seed monopoly had *grown* (88.9% of conversions, up from 77%) and that
+pressure ranks by age in whimsy's favour at every age, so the scarce beats now rank
+by substance; its cue-pool half is still open. K94 remains open, and K92 phase 3 is
+still the family's real payoff.
 
 ---
 
@@ -917,6 +920,90 @@ ordering seam (`surfaced_count ASC, created_at DESC`); the ledger side is
 is deciding the ordering and resisting the urge to express it as a float per
 cue. Verify against the K90 own-material rate and, better, by reading twenty
 consecutive `used` cues and asking whether a friend would have said them.
+
+### The ledger half shipped 19 Aug — and re-measuring first changed the diagnosis
+
+Re-measured before designing, because the numbers above predate H29's per-source
+cap. **The monopoly got worse, not better**: `curiosity_seed` is now **217 of 244
+genuine conversions (88.9%)**, up from 43 of 56 (77%). The rest of the shelf is
+unchanged in character — `knowledge_gap_notice` 85 surfaced → 3 used,
+`concept_hypothesis` 12 → 0, `turning_over` 22 → 1, `curiosity_gradient` 29 → 1.
+
+**H29's cap works and is not the lever.** The live ledger holds 6 wants, of which
+seeds hold 4 — exactly at `wants_per_source_cap`. That reads like the monopoly
+persisting, and it is worth being careful here: the cap *is* holding four slots
+open for other producers, and only two got claimed, because one goal and one
+pursuit are all that exist to claim them. **The two empty slots are a supply
+problem, so tightening the cap would only shrink the ledger, not add substance.**
+Which is what this entry said in the first place — the cap is a blunt
+anti-monopoly rule, and K93 is what decides which of the survivors is worth the
+floor.
+
+**Pressure cannot decide that, and measuring why found two mechanisms rather than
+one.** Pressure is a pure clock (`pressure += growth_per_day * elapsed_days`), so
+ranking by it ranks by age — a fine tie-break and the wrong first key. Both of the
+following favour whimsy at every age:
+
+1. **A starting offset that never closes.** Seeds and forward-curiosity wants are
+   minted at 0.15, goals at 0.05, pursuits at 0.04, and all then grow at the same
+   0.25/day. A seed therefore carries a permanent ~0.11 lead — about half a day —
+   over the two sources carrying anything durable. Straight off the live ledger:
+   the seed at 0.60 and the goal at 0.50 are **exactly the same age (1.8 days)**.
+   The seed led only because of where it started.
+2. **Saturation makes it worse.** At 0.25/day every want reaches the 1.0 clamp in
+   under four days, well inside the 14-day TTL, after which they all tie. `sorted`
+   is stable, so the tie-break became ledger insertion order — and the worker
+   ingests seeds first. Whimsy won the top slot structurally once the ledger was
+   more than a few days old.
+
+So the fix is ordering, and substance is the first key with pressure as the
+tie-break — a small ordered table, not a float per want, on the same argument K92
+made about handing an LLM `0.63` against `0.58`. Tiers: **anchored** (`goal`,
+`pursuit`, and a `forward_curiosity` *share*, which is a subject of hers) >
+**about him** (a `forward_curiosity` *ask*) > **whimsy** (`curiosity_seed`).
+Unknown sources land in the middle so a producer added later inherits neither
+whimsy's demotion nor a goal's promotion silently.
+
+**One deviation from the ordering above, stated because it is arguable.** This
+entry ranked "something she noticed about him" *above* "a pursuit of her own".
+That is inverted, for two reasons: K93's own shipping test is the K90
+**own-material** rate, and the only source on that tier emits a literal
+`ask {name} …` line — the interview shape K87 shipped a quota to suppress, and
+which the worker's own comment already calls "an interview line under a different
+label". Promoting it would move the metric this entry exists to move, downward.
+
+**Where it applies, and the one trap.** Every site that picks a want to *say* now
+goes through `strongest_for_floor` — there were four picking independently with a
+copy of the same `max(…, key=pressure)`, and two of them are supposed to agree
+*exactly* (the imperative render, and the K55 thread-open recording what she was
+told to raise; divergence there opens a thread on a subject the prompt never
+mentioned). The trap is that every consumer already had a pressure bar of its own,
+so the helper **filters before it ranks**: reorder across K54's
+`appetite_min_want_pressure` and a fresh goal displaces a qualifying seed and then
+fails the gate, turning "a better offer" into no offer at all. Filter, then rank,
+and each caller's fire rate is untouched.
+
+Two things deliberately unchanged. The **soft wants list stays in pressure order**,
+so whimsy keeps its voice — it is part of her character and still converts better
+than anything else on the shelf; what it loses is the scarce slots. And whether the
+imperative band fires at all is untouched: the qualifying set is a prefix of
+pressure order, so it is non-empty on exactly the turns the old test admitted. A
+test pins that, because a change here that made her go imperative *more* often
+would be a regression wearing this entry's clothes.
+
+Dry-run against the live ledger, which is the whole of the claim: K53's directive
+content and K54's offer both move from a seed at 0.60 to her goal at 0.50, and the
+imperative band stays empty. Gated on `agent.wants_substance_ordering` (default
+on) for the A/B, and `get_wants_state` now lists wants in pick order with their
+tier, so the debug view answers "what would she raise next?" rather than "what has
+waited longest?".
+
+**Still open: the cue-pool half.** This entry has two halves and only the ledger
+one has shipped. `CuePolicy.substance` and the `pick_pool_cue` ordering seam are
+untouched, so the 88.9% conversion monopoly is unaddressed at source — what
+changed is which want reaches the floor once it is in the ledger, not which cue
+becomes a want. Re-read the conversion table before starting that half; H42 has
+just changed `concept_hypothesis`'s supply and this measurement is the baseline.
 
 ---
 
