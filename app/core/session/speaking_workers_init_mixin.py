@@ -673,6 +673,7 @@ class SpeakingWorkersInitMixin:
             initiative=self._render_initiative_block,
             thread_ownership=self._render_thread_ownership_block,
             topic_appetite=self._render_topic_appetite_block,
+            stance=self._render_stance_block,
             taste_lean=self._render_taste_lean_block,
             pursuit_lean=self._render_pursuit_lean_block,
             conduct_notice=self._render_conduct_notice_block,

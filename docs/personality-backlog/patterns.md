@@ -107,7 +107,7 @@ on top of already-shipped infrastructure.
 | K89 | Sustained thread — leading past one turn | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k89-sustained-thread--leading-past-one-turn) |
 | K90 | Lead/follow metrics — make the whole family measurable | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k90-leadfollow-metrics--make-the-whole-family-measurable) |
 | K91 | Lived-in away life — a day she had, not a day she narrated | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated) |
-| K92 | Conversational stance — one decision per turn, not ten permission slips | 🟡 phase 1 shipped 15 Aug (shadow log); phases 2–3 open |
+| K92 | Conversational stance — one decision per turn, not ten permission slips | 🟡 phase 1 shipped 15 Aug (shadow log), phase 2 19 Aug (FOLLOW + brevity render); phase 3 open |
 | K93 | The substance floor — what she takes to the floor, not whether she takes it | ❌ open |
 | K94 | Sequencing — answer first, then add, and say where the addition goes | ❌ open |
 | K95 | Interruption cost — a direct question is not an opening | ❌ open |
@@ -759,6 +759,90 @@ is not whether she takes the floor but what she has to take it *with*.
 Phases 2 and 3 are unchanged and still gated on reading this against the K90
 metrics over real use — the table above is a replay of turns that happened
 before the arbiter existed, which is exactly as much as it claims to be.
+
+### Phase 2 shipped 19 Aug — both of phase 1's findings turned out to be measurement errors
+
+Phase 1 handed phase 2 two problems and a plan to render around them. Measuring
+both before building says neither was what it looked like, so phase 2 is mostly
+the two corrections and only then the block.
+
+**`HOLD` was a category error, not a mis-tuned threshold.** Over 682 turns it
+fired zero times, and the replay says why twice over: only 2.5% of turns have an
+empty shortlist, *and his turns are never short* — 78% run 60–239 characters and
+1.2% fall under the 25-character backchannel bar. Of the five turns that did
+clear the bar, two are "Sorry :(" and "See you later then Aiko.", where
+under-responding would be a plain error. So the rule could not be rescued by
+moving the number. Every other rung answers *how much of the floor do I take*;
+`HOLD` answers *how many words do I use*, and the two are independent — she can
+bring something of her own in fifteen words. Brevity is therefore a **second,
+orthogonal output**, keyed off her own recent replies rather than off the size of
+his turn: two replies of 40+ words in a row engages it. That is also where the
+measured regression actually lives (median 19 words over messages 400–1600, 34
+over the last 200), so the new signal points at the problem the old one only
+gestured toward. A direct question overrides it — answering something in six
+words is a non-answer, not restraint.
+
+**`arc_protected` was gagging her for days.** Phase 1 flagged it as suspicious
+because the arc list was inherited from K53; the truth is worse than a broad
+list. `arc` is a *conversation-level* label, not a per-turn read: over 2,355
+turns it forms 137 runs averaging **17 turns**, with **not one run of length 1**,
+and the longest protected spans reach **110 turns of `support` across eight
+days**. Used as a per-turn hard filter, one hard thing he said on Monday
+suppressed her through Thursday. K53 fires once in six turns so a sticky arc
+merely damped it; a ceiling consulted every turn is a different exposure
+entirely. The cap now applies only while the span is fresh
+(`PROTECTED_ARC_FRESH_TURNS = 4`), which keeps the protection where it was
+earned. The per-turn caps (`vent`, `direct_question`) are untouched and keep
+working for exactly as long as their signal is present — which is the property
+`arc` was wrongly assumed to have.
+
+Replaying the same corpus under both corrections:
+
+| | phase 1 rules | phase 2 rules |
+| --- | --- | --- |
+| held back by his turn | 252 (36.9%) | **196 (28.7%)** |
+| `arc_protected` clamps | 164 (65.1% of clamps) | **79 (40.3%)** |
+| `SHARE` chosen | 189 (27.7%) | **238 (34.8%)** |
+| `FOLLOW_AND_ADD` chosen | 369 (54.0%) | **312 (45.7%)** |
+| brevity asked for | unreachable | 80 (11.7%) |
+
+Fifty-one turns move from "answer him and append something" to "her own
+material", and the binding constraint is now `direct_question` (68) at roughly
+the same weight as the arc (79) — a per-turn signal rather than a stale label.
+
+**What renders, and what deliberately does not.** One T6 block
+(`stance_block`, last in `T6_detectors`, behind `agent.stance_block_enabled`)
+that speaks for `FOLLOW` and for brevity and returns `""` for every other rung.
+The silence is the shape of the phase: the other five rungs already have a
+provider putting a sentence in the prompt, and a second sentence agreeing with it
+is the eleventh permission slip K92 exists to argue against. Both clauses it does
+render are *restraint* — the one direction this family has never been able to ask
+for — so neither adds to the steer budget phase 3 has to bring down.
+
+**The ledger records the decision the prompt was built from, not a
+reconstruction.** `_render_stance_block` computes the decision at assembly time
+and stashes it; `_record_turn_stance` prefers the stash and only recomputes when
+there is none (rendering disabled, or a backfill). This is not tidiness. By
+post-turn, `_recent_reply_words` has already grown by this turn's reply and the
+dialogue-act tagger has re-run, so a recomputation answers a slightly different
+question and the row quietly stops describing the prompt it exists to explain.
+Two tests pin it: the stash is preferred, and it is consumed so it cannot
+describe two turns.
+
+Two inputs are new session state, both reset on session switch and wipe:
+`_arc_age_turns` (incremented post-turn when the new arc matches the previous
+one) and `_recent_reply_words`. Both are stale by one turn at assembly, which is
+fine and deliberate — an arc changes once every seventeen turns, and the case
+where a stale act would matter, *he asked something*, is caught independently off
+the question mark on the live text. `brevity` and `brevity_reason` are schema
+v37; the three thresholds are settings-backed so the live session and
+`backfill_turn_stance.py` can be pointed at the same values, and the backfill now
+replays both new inputs per session and prints its rule set with its numbers.
+
+Phase 3 is unchanged and still the expensive one. What phase 2 adds to its case:
+`wants_block` now renders on **93%** of turns and `hobby_block` on **100%**, so
+the two largest steers in the system are ambient by any definition, and the
+arbiter's `FOLLOW_AND_ADD` share is mostly just reporting that fact back.
 
 ---
 

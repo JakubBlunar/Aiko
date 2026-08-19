@@ -1,6 +1,6 @@
-"""K92 phase 1 -- the stance arbiter, its ledger, and its silence.
+"""K92 -- the stance arbiter, its two axes, and what it may say.
 
-Three things are worth pinning here, in descending order of how badly a
+Five things are worth pinning here, in descending order of how badly a
 regression would hurt:
 
 1. **The arbiter is keyed on real block names.** Every name in
@@ -12,12 +12,20 @@ regression would hurt:
 2. **The ceiling is a filter, not a weight.** An accumulated want must
    not be able to outvote a direct question, because that is the exact
    regression K95 exists to insure against.
-3. **Phase 1 renders nothing.** The contract is that the stance is
-   recorded and never reaches the prompt.
+3. **The protected-arc veto expires.** It is the single most consequential
+   number in the module -- 65% of all clamps -- and an untimed version
+   suppressed her for days at a stretch (H39). The tests below pin both
+   halves: it applies while the beat is fresh, and it stops.
+4. **Brevity is a second axis, not a rung.** A turn can be both ``SHARE``
+   and short. Phase 1 put ``HOLD`` at the bottom of the ladder and it was
+   chosen zero times in 682 turns.
+5. **Phase 2 may only ask for restraint.** The block renders for
+   ``FOLLOW`` and for brevity and for nothing else -- a line agreeing
+   with a steer that already rendered is the eleventh permission slip
+   this whole family exists to argue against.
 """
 from __future__ import annotations
 
-import re
 import unittest
 from unittest.mock import MagicMock
 
@@ -33,6 +41,7 @@ from app.core.conversation.stance import (
     STANCE_LADDER,
     StanceInputs,
     decide,
+    render_block,
 )
 from app.core.conversation import stance as stance_mod
 
@@ -65,14 +74,25 @@ class BlockNameTests(unittest.TestCase):
 
 
 class LadderTests(unittest.TestCase):
-    def test_the_ladder_runs_from_silence_to_taking_the_floor(self) -> None:
+    def test_the_ladder_runs_from_following_to_taking_the_floor(self) -> None:
         # Order is the mechanism -- ``min`` over it is the clamp -- so a
         # reshuffle is a behaviour change and should fail loudly.
         self.assertEqual(
             STANCE_LADDER,
-            (HOLD, FOLLOW, FOLLOW_AND_ADD, ASK, CALLBACK, SHARE,
+            (FOLLOW, FOLLOW_AND_ADD, ASK, CALLBACK, SHARE,
              REDIRECT, INITIATE),
         )
+
+    def test_hold_is_not_a_rung(self) -> None:
+        """The phase-2 correction, pinned as a structural fact.
+
+        ``HOLD`` answers "how many words", every rung answers "how much
+        of the floor". Mixing them is what made it unreachable: as the
+        bottom rung it could only be chosen when *nothing* was offered,
+        and something is offered on 97.5% of turns.
+        """
+        self.assertNotIn(HOLD, STANCE_LADDER)
+        self.assertNotIn(HOLD, stance_mod._RANK)
 
 
 class CeilingTests(unittest.TestCase):
@@ -200,25 +220,133 @@ class DesireTests(unittest.TestCase):
         self.assertEqual(d.stance, REDIRECT)
 
 
-class HoldTests(unittest.TestCase):
-    def test_a_bare_backchannel_with_nothing_on_the_table_holds(self) -> None:
-        d = decide(StanceInputs(blocks=frozenset({"persona"}), user_text="mhm"))
-        self.assertEqual(d.stance, HOLD)
-        self.assertEqual(d.reason, "no_offer_backchannel")
+class ProtectedArcTests(unittest.TestCase):
+    """H39: the veto is real, and it expires.
 
-    def test_a_short_question_is_not_an_invitation_to_hold(self) -> None:
-        d = decide(StanceInputs(blocks=frozenset(), user_text="you ok?"))
-        self.assertEqual(d.stance, FOLLOW)
+    ``arc`` is a conversation-level label -- 137 runs over 2,355 turns,
+    mean length 17, not one run of length 1 -- so an untimed cap does not
+    protect a moment, it removes a capability for the rest of the day.
+    """
 
-    def test_hold_is_unreachable_once_anything_is_offered(self) -> None:
-        # Recorded because it is the finding, not an accident: over 432
-        # replayed turns HOLD was chosen zero times, since some provider
-        # is always offering something. The rule needs a different shape
-        # before phase 2 can render it.
-        d = decide(StanceInputs(
-            blocks=frozenset({"wants_block"}), user_text="mhm",
+    def _share_turn(self, *, arc: str, age: int):
+        return decide(StanceInputs(
+            blocks=frozenset({"turning_over_block"}),
+            user_text="that was a rough one honestly",
+            arc=arc,
+            arc_age_turns=age,
         ))
+
+    def test_a_fresh_protected_arc_still_holds_her_back(self) -> None:
+        d = self._share_turn(arc="support", age=0)
+        self.assertEqual(d.desire, SHARE)
         self.assertEqual(d.stance, FOLLOW_AND_ADD)
+        self.assertEqual(d.reason, "arc_protected")
+        self.assertTrue(d.clamped)
+
+    def test_the_veto_covers_the_whole_opening_beat(self) -> None:
+        for age in range(stance_mod.PROTECTED_ARC_FRESH_TURNS):
+            with self.subTest(age=age):
+                self.assertEqual(
+                    self._share_turn(arc="support", age=age).stance,
+                    FOLLOW_AND_ADD,
+                )
+
+    def test_it_stops_once_the_arc_is_no_longer_fresh(self) -> None:
+        d = self._share_turn(
+            arc="support", age=stance_mod.PROTECTED_ARC_FRESH_TURNS,
+        )
+        self.assertEqual(d.stance, SHARE)
+        self.assertFalse(d.clamped)
+
+    def test_a_stale_arc_does_not_shield_a_live_vent(self) -> None:
+        # The per-turn caps are untouched by the freshness window: they
+        # describe what he is doing *now* rather than what the
+        # conversation was about an hour ago.
+        d = decide(StanceInputs(
+            blocks=frozenset({"turning_over_block"}),
+            user_text="i am so done with all of it",
+            dialogue_act="vent",
+            arc="support",
+            arc_age_turns=99,
+        ))
+        self.assertEqual(d.stance, FOLLOW)
+        self.assertEqual(d.reason, "vent")
+
+    def test_the_window_can_be_switched_off_entirely(self) -> None:
+        d = decide(
+            StanceInputs(
+                blocks=frozenset({"turning_over_block"}),
+                user_text="mm that is rough",
+                arc="support",
+                arc_age_turns=0,
+            ),
+            protected_arc_turns=0,
+        )
+        self.assertEqual(d.stance, SHARE)
+
+    def test_an_unprotected_arc_never_caps(self) -> None:
+        d = self._share_turn(arc="playful", age=0)
+        self.assertEqual(d.stance, SHARE)
+
+
+class BrevityTests(unittest.TestCase):
+    """The axis ``HOLD`` became: her verbosity, not the size of his turn."""
+
+    def _turn(self, words: tuple[int, ...], **kw):
+        return decide(StanceInputs(
+            blocks=frozenset({"wants_block"}),
+            user_text=kw.pop("user_text", "yeah that tracks"),
+            recent_reply_words=words,
+            **kw,
+        ))
+
+    def test_a_run_of_long_replies_asks_for_a_short_one(self) -> None:
+        d = self._turn((55, 48))
+        self.assertTrue(d.brevity)
+        self.assertEqual(d.brevity_reason, "long_run")
+
+    def test_one_long_reply_is_not_a_run(self) -> None:
+        self.assertFalse(self._turn((55, 12)).brevity)
+
+    def test_short_replies_leave_the_brake_off(self) -> None:
+        self.assertFalse(self._turn((14, 20)).brevity)
+
+    def test_too_little_history_leaves_the_brake_off(self) -> None:
+        # Session start and post-restart both land here. The brake needs
+        # evidence, not the absence of it.
+        self.assertFalse(self._turn((99,)).brevity)
+        self.assertFalse(self._turn(()).brevity)
+
+    def test_a_direct_question_overrides_it(self) -> None:
+        # Being asked something and answering in six words is a
+        # non-answer, not restraint.
+        d = self._turn((80, 80), user_text="so did the parcel arrive?")
+        self.assertFalse(d.brevity)
+
+    def test_brevity_is_orthogonal_to_the_stance(self) -> None:
+        # The whole point of taking it off the ladder: she can bring
+        # something of her own *and* be brief about it.
+        d = decide(StanceInputs(
+            blocks=frozenset({"turning_over_block"}),
+            user_text="mm",
+            recent_reply_words=(60, 60),
+        ))
+        self.assertEqual(d.stance, SHARE)
+        self.assertTrue(d.brevity)
+
+    def test_the_thresholds_are_tunable(self) -> None:
+        words = (30, 30, 30)
+        self.assertFalse(self._turn(words).brevity)
+        d = decide(
+            StanceInputs(
+                blocks=frozenset({"wants_block"}),
+                user_text="right",
+                recent_reply_words=words,
+            ),
+            brevity_word_floor=25,
+            brevity_run=3,
+        )
+        self.assertTrue(d.brevity)
 
 
 class ShortlistTextTests(unittest.TestCase):
@@ -237,6 +365,7 @@ class RecorderTests(unittest.TestCase):
     """The post-turn seam, with the store stubbed."""
 
     def _host(self):
+        from app.core.infra.agent_settings import AgentSettings
         from app.core.session.post_turn_helpers_mixin import (
             PostTurnHelpersMixin,
         )
@@ -247,8 +376,60 @@ class RecorderTests(unittest.TestCase):
                 self._turn_stance_store.add_turn.return_value = True
                 self._last_user_dialogue_act = None
                 self._last_user_arc = None
+                self._arc_age_turns = 0
+                self._recent_reply_words: tuple[int, ...] = ()
+                self._last_stance_decision = None
+                self._settings = MagicMock()
+                self._settings.agent = AgentSettings()
 
         return Host()
+
+    def test_it_prefers_the_decision_the_assembler_rendered_from(
+        self,
+    ) -> None:
+        """The ledger has to describe the prompt, not improve on it.
+
+        By post-turn the reply-length window has grown and the act tagger
+        has re-run, so a recomputation is a different question. Here the
+        stashed decision disagrees with anything a recompute could
+        produce, which is the only way to tell the two paths apart.
+        """
+        from app.core.conversation.stance import StanceDecision
+
+        host = self._host()
+        host._last_stance_decision = StanceDecision(
+            stance=REDIRECT, reason="stashed", desire=REDIRECT,
+            ceiling=INITIATE, brevity=True, brevity_reason="long_run",
+        )
+        telemetry = MagicMock()
+        telemetry.block_chars = {"initiative_block": 400}
+        host._record_turn_stance(
+            assistant_message_id=5, telemetry=telemetry, user_text="hey",
+        )
+        _, decision = host._turn_stance_store.add_turn.call_args[0]
+        self.assertEqual(decision.reason, "stashed")
+        self.assertTrue(decision.brevity)
+
+    def test_the_stash_is_consumed_so_it_cannot_describe_two_turns(
+        self,
+    ) -> None:
+        from app.core.conversation.stance import StanceDecision
+
+        host = self._host()
+        host._last_stance_decision = StanceDecision(
+            stance=REDIRECT, reason="stashed", desire=REDIRECT,
+            ceiling=INITIATE,
+        )
+        telemetry = MagicMock()
+        telemetry.block_chars = {"initiative_block": 400}
+        host._record_turn_stance(
+            assistant_message_id=5, telemetry=telemetry, user_text="hey",
+        )
+        host._record_turn_stance(
+            assistant_message_id=6, telemetry=telemetry, user_text="hey",
+        )
+        _, second = host._turn_stance_store.add_turn.call_args[0]
+        self.assertEqual(second.reason, "initiative_block")
 
     def test_it_records_the_decision_for_the_turn(self) -> None:
         host = self._host()
@@ -300,36 +481,97 @@ class RecorderTests(unittest.TestCase):
         )  # must not raise
 
 
-class PhaseOneIsSilentTests(unittest.TestCase):
-    def test_nothing_that_builds_the_prompt_imports_the_arbiter(self) -> None:
-        """The phase-1 contract: computed, recorded, never rendered.
+class RenderTests(unittest.TestCase):
+    """Phase 2's contract, which replaces phase 1's import-edge test.
 
-        Checked as an import edge rather than by reading a rendered
-        prompt, because the failure worth guarding against is a later
-        phase wiring the arbiter in while phase 1's baseline is still
-        being collected -- at which point the numbers would describe a
-        prompt the arbiter had already changed, and nothing would say so.
+    Phase 1 pinned "nothing that builds the prompt may import the
+    arbiter". That was a statement about *when*, and its time is up. What
+    survives it is the reason it existed: the arbiter must not become
+    another voice asking her to speak.
+    """
 
-        Delete this test when phase 2 starts. It is a statement about
-        *when*, not about what is allowed to exist.
-        """
-        from pathlib import Path
+    def _decide(self, blocks: set[str], **kw):
+        return decide(StanceInputs(
+            blocks=frozenset(blocks),
+            user_text=kw.pop("user_text", "mm"),
+            **kw,
+        ))
 
-        import app.core.session.inner_life_part1 as part1
-        import app.core.session.inner_life_part2 as part2
-        import app.core.session.inner_life_part3 as part3
-        import app.core.session.prompt_assembler as assembler
+    def test_it_says_nothing_for_a_stance_that_already_has_a_provider(
+        self,
+    ) -> None:
+        # The shipping test for the whole phase. Every rung above FOLLOW
+        # has a block putting a sentence in the prompt already; a second
+        # sentence agreeing with it is the eleventh permission slip.
+        for block, stance in (
+            ("initiative_block", INITIATE),
+            ("topic_appetite_block", REDIRECT),
+            ("turning_over_block", SHARE),
+            ("thread_ownership_block", CALLBACK),
+            ("curiosity_seeds_block", ASK),
+            ("wants_block", FOLLOW_AND_ADD),
+        ):
+            with self.subTest(block=block):
+                d = self._decide({block})
+                self.assertEqual(d.stance, stance)
+                self.assertEqual(render_block(d), "")
 
-        # ``\b`` rather than a substring: ``stance_persistence`` is a
-        # real sibling module that several of these legitimately import.
-        edge = re.compile(r"conversation(?:\.|\s+import\s+)stance\b")
-        for module in (assembler, part1, part2, part3):
-            source = Path(module.__file__).read_text(encoding="utf-8")
-            self.assertIsNone(
-                edge.search(source),
-                f"{module.__name__} imports the stance arbiter -- phase 1 "
-                f"is shadow-only",
-            )
+    def test_it_gives_following_a_voice(self) -> None:
+        d = self._decide({"persona"}, user_text="yeah that makes sense")
+        self.assertEqual(d.stance, FOLLOW)
+        text = render_block(d, user_display_name="Jacob")
+        self.assertIn("Jacob", text)
+        self.assertNotIn("{", text)
+
+    def test_the_follow_line_does_not_ask_her_to_add_anything(self) -> None:
+        # A "following" cue that reads as "and also bring something" is
+        # just the permission slip again, and the measured regression is
+        # replies growing while own material fell.
+        text = render_block(self._decide({"persona"}))
+        self.assertNotIn("bring up", text.lower())
+
+    def test_brevity_renders_on_its_own(self) -> None:
+        d = decide(StanceInputs(
+            blocks=frozenset({"wants_block"}),
+            user_text="mm",
+            recent_reply_words=(70, 70),
+        ))
+        self.assertEqual(d.stance, FOLLOW_AND_ADD)
+        self.assertEqual(render_block(d).count("\n\n"), 0)
+        self.assertIn("shorter", render_block(d))
+
+    def test_both_clauses_can_land_and_brevity_goes_second(self) -> None:
+        d = decide(StanceInputs(
+            blocks=frozenset({"persona"}),
+            user_text="yeah that makes sense",
+            recent_reply_words=(70, 70),
+        ))
+        self.assertEqual(d.stance, FOLLOW)
+        self.assertTrue(d.brevity)
+        parts = render_block(d).split("\n\n")
+        self.assertEqual(len(parts), 2)
+        self.assertIn("Stance this turn", parts[0])
+        self.assertIn("shorter", parts[1])
+
+    def test_the_block_is_registered_in_the_tier_ladder(self) -> None:
+        # Unregistered means ``block_char_table`` never measures it, so
+        # it would be invisible to the report that judges this phase --
+        # and to the arbiter's own offer set.
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        self.assertIn("stance_block", _PROMPT_BLOCK_TIERS["T6_detectors"])
+
+    def test_it_lands_last_so_it_can_see_every_steer(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        self.assertEqual(
+            _PROMPT_BLOCK_TIERS["T6_detectors"][-1], "stance_block",
+        )
+
+    def test_the_stance_block_offers_no_stance_of_its_own(self) -> None:
+        # It reports on the offers; if it were also an offer it would
+        # feed itself on the next turn.
+        self.assertNotIn("stance_block", stance_mod._OFFER_OF)
 
 
 if __name__ == "__main__":  # pragma: no cover

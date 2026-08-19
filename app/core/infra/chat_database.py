@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 36
+_SCHEMA_VERSION = 37
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -1118,6 +1118,10 @@ CREATE INDEX IF NOT EXISTS idx_turn_prompt_blocks_message
 -- ceiling clamped it, ``ceiling`` is the most floor-taking stance the
 -- user's turn permitted, and ``stance`` is the lesser of the two. Their
 -- disagreement is the measurement this table exists for.
+-- ``brevity`` (v37) is the second, orthogonal output: whether the turn
+-- also asked her to be short. Its own column rather than a stance value
+-- because a turn can be both SHARE and brief, and folding it into
+-- ``stance`` would lose whichever of the two was asked second.
 CREATE TABLE IF NOT EXISTS turn_stance (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     assistant_message_id INTEGER NOT NULL UNIQUE,
@@ -1126,6 +1130,8 @@ CREATE TABLE IF NOT EXISTS turn_stance (
     desire TEXT NOT NULL,
     ceiling TEXT NOT NULL,
     shortlist TEXT NOT NULL DEFAULT '',
+    brevity INTEGER NOT NULL DEFAULT 0,
+    brevity_reason TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turn_stance_stance
@@ -1780,6 +1786,24 @@ class ChatDatabase:
             )
         except sqlite3.OperationalError:
             pass
+        # v36 -> v37: K92 phase 2's brevity axis on ``turn_stance``.
+        # Existing rows default to 0, which is honest rather than a
+        # convenience: the axis did not exist when they were written, and
+        # phase 1's ``HOLD`` -- the rung it replaces -- was chosen zero
+        # times, so there is nothing to carry forward. Re-run
+        # ``scripts/backfill_turn_stance.py`` to fill the column properly
+        # for history; that is the intended path, since the same replay
+        # is how the arc-freshness change gets re-measured.
+        for stmt in (
+            "ALTER TABLE turn_stance ADD COLUMN brevity INTEGER NOT NULL "
+            "DEFAULT 0",
+            "ALTER TABLE turn_stance ADD COLUMN brevity_reason TEXT NOT "
+            "NULL DEFAULT ''",
+        ):
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         # Only now can anything be indexed on the columns just added.
         for stmt in _DEPENDENT_LEDGER_INDICES:
             try:

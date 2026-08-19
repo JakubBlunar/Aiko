@@ -1,4 +1,4 @@
-"""K92 phase 1 — one named decision per turn, recorded and not rendered.
+"""K92 — one named decision per turn.
 
 Aiko has a dozen mechanisms that each independently decide whether to
 hand the model a sentence encouraging her to bring something up, and
@@ -8,10 +8,10 @@ three or four, and ``wants_block`` alone is present on 85%. A signal
 that is present almost always is not a decision, which is why the model
 falls back on the overwhelming prior of answering the last message.
 
-This module does not fix that. It *names* it. Given what the providers
-actually offered on a turn plus what the user's turn was doing, it picks
-one stance from a closed set and records the choice next to the turn.
-Nothing it returns reaches the prompt in this phase.
+Given what the providers actually offered on a turn plus what the user's
+turn was doing, this module picks one stance from a closed set and
+records the choice next to the turn. Phase 1 only recorded it; phase 2
+renders the two stances that had no voice at all.
 
 Two absences from the current arrangement shape the set. **Following has
 no representation at all** -- it is the null case, zero characters, so
@@ -19,8 +19,27 @@ her most common behaviour is also her least characterised one. And
 **nothing lets her hold back**: every existing mechanism is a permission
 to speak, so accumulated cues are unidirectional pressure to act.
 ``FOLLOW`` and ``HOLD`` therefore exist here despite having no provider
-behind them, and finding out how often they would be chosen is most of
-what phase 1 is for.
+behind them.
+
+**Phase 2 moved ``HOLD`` off the ladder.** Phase 1 specced it as the
+bottom rung, reached when nothing was on the table and his turn was a
+short beat. Over 682 recorded turns it fired zero times, and the replay
+says why twice over: some provider is always offering something (only
+2.5% of turns have an empty shortlist), and *his turns are never short*
+-- 78% run 60-239 characters and 1.2% fall under the 25-character
+backchannel bar. Of the five turns that did clear it, two ("Sorry :(",
+"See you later then Aiko.") are ones under-responding to would be a
+plain error.
+
+The diagnosis is that ``HOLD`` was a category error rather than a
+mis-tuned threshold. Every other rung answers *how much of the floor do
+I take*; ``HOLD`` answers *how many words do I use*, and the two are
+independent -- she can bring something of her own in fifteen words. So
+brevity is now a **second, orthogonal output** keyed off her own recent
+verbosity rather than off the size of his turn, which is also where the
+measured regression lives: her median reply went from 19 words over
+messages 400-1600 to 34 over the last 200.
+
 
 The design has three moving parts:
 
@@ -37,10 +56,29 @@ The design has three moving parts:
 ``stance``
     ``min(desire, ceiling)`` on the ladder below.
 
+``brevity``
+    Orthogonal to all three: has she been going on? Reads her own last
+    replies, not his turn.
+
 Recording ``desire`` and ``ceiling`` separately is the point rather than
 bookkeeping: their disagreement is the first direct measurement of how
 often Aiko is being pushed to take the floor at a moment when taking it
 would read badly.
+
+**The arc cap is time-limited, and that is phase 2's other correction.**
+``arc_protected`` was 65% of all clamps (164 of 252), which the phase-1
+write-up already flagged as suspicious because the arc list was
+inherited from K53 rather than earned. Measuring it found something
+worse than a broad list: ``arc`` is a *conversation-level* label, not a
+per-turn read. Over 2,355 turns it forms 137 runs averaging 17 turns,
+with **not one run of length 1**, and the longest protected spans are
+110 turns of ``support`` across eight days. Used as a per-turn hard
+filter, one emotional beat therefore gagged her for days at a time. K53
+fires once in six turns so a sticky arc merely damped it; a ceiling
+consulted every turn is a different exposure entirely. The cap now
+applies only while the span is *fresh* (``arc_age_turns``), which keeps
+the protection where it was earned -- he has just said something hard --
+without letting it persist into a conversation about guitar solos.
 
 **Deliberately derivable from stored data alone.** Every input comes
 from ``turn_prompt_blocks``, ``cue_decisions`` and ``messages``, so the
@@ -61,7 +99,6 @@ from dataclasses import dataclass
 # the interruption ceiling clamps the providers' desire, so reordering
 # these changes behaviour.
 
-HOLD = "HOLD"                    # under-respond on purpose
 FOLLOW = "FOLLOW"                # his subject, nothing of hers added
 FOLLOW_AND_ADD = "FOLLOW_AND_ADD"  # his subject, plus something of hers
 ASK = "ASK"                      # a question of her own on the table
@@ -71,7 +108,6 @@ REDIRECT = "REDIRECT"            # off his subject onto another
 INITIATE = "INITIATE"            # open a new subject with the floor
 
 STANCE_LADDER: tuple[str, ...] = (
-    HOLD,
     FOLLOW,
     FOLLOW_AND_ADD,
     ASK,
@@ -82,6 +118,13 @@ STANCE_LADDER: tuple[str, ...] = (
 )
 
 _RANK: dict[str, int] = {name: i for i, name in enumerate(STANCE_LADDER)}
+
+# Not a rung. ``HOLD`` names the brevity axis, which is why it is defined
+# apart from the ladder and never appears in ``STANCE_LADDER``: putting a
+# question about reply *length* on a ladder about floor-*taking* is what
+# made it unreachable in phase 1. Kept as a name because the backlog, the
+# report and three months of notes all call this "HOLD".
+HOLD = "HOLD"
 
 
 # ── supply: which rendered block offers which stance ─────────────────
@@ -174,24 +217,54 @@ _OFFER_OF: dict[str, str] = {
 # steer would be worse than either rule alone.
 _PROTECTED_ARCS = frozenset({"support", "reflection"})
 
+# How many of her turns a protected arc keeps its veto for. ``arc`` runs
+# average 17 turns and reach 110, so an untimed veto is a multi-day gag
+# rather than a response to the moment that earned it -- see the module
+# docstring. Four is the width of an opening beat: long enough that "I
+# had a rough week" is met with listening rather than with her own news,
+# short enough that it cannot outlive the subject. The per-turn caps
+# (``vent``, ``direct_question``) are unaffected and keep working for as
+# long as the signal itself is actually present.
+PROTECTED_ARC_FRESH_TURNS = 4
+
 # Matches ``initiative_director.decide``'s ``substantial_chars``. Shared
 # so the ceiling and K53's own escape hatch cannot drift apart.
 SUBSTANTIAL_CHARS = 240
 
-# Under this, with no other signal, his turn is a beat rather than a
-# contribution -- the one place a deliberate under-response is a real
-# option rather than a failure to engage.
-_BACKCHANNEL_CHARS = 25
+# ── brevity: the second axis ──────────────────────────────────────────
+#
+# A reply at or above this many words counts as long, and this many of
+# them in a row engages the brake. 40 sits just above her current p75
+# (36) and well above the 19-word median of the era before the drift, so
+# it fires on a genuine run rather than on one discursive answer.
+#
+# Retrospectively this pair marks 13% of her last 700 replies, and 11.7%
+# of turns once the direct-question override has taken its share back.
+# The live rate should settle lower still, because the brake breaks its
+# own precondition: a short reply ends the run that armed it.
+BREVITY_WORD_FLOOR = 40
+BREVITY_RUN = 2
 
 
 @dataclass(frozen=True, slots=True)
 class StanceInputs:
-    """Everything the arbiter reads. All of it is already persisted."""
+    """Everything the arbiter reads. All of it is already persisted.
+
+    ``arc_age_turns`` is how many of her turns the current arc has
+    already covered, and ``recent_reply_words`` her last few replies'
+    word counts, most recent first. Both default to the value that
+    preserves the old behaviour -- an unknown arc age is treated as
+    fresh, so the veto still applies, and no known reply lengths cannot
+    engage the brake. A caller that has not been taught to supply them
+    therefore gets phase 1's ceiling rather than a silently relaxed one.
+    """
 
     blocks: frozenset[str] = frozenset()
     user_text: str = ""
     dialogue_act: str | None = None
     arc: str | None = None
+    arc_age_turns: int = 0
+    recent_reply_words: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +277,10 @@ class StanceDecision:
     an LLM comparing 0.63 against 0.58 is doing the one kind of
     reasoning it is worst at, and per-turn numerals would churn the T6
     prefix for no gain. Phase 2 renders from this; phase 1 logs it.
+
+    ``brevity`` is the ``HOLD`` axis and is deliberately *not* folded
+    into ``stance``: a turn can be both ``SHARE`` and short, and
+    collapsing the two would lose whichever of them was asked second.
     """
 
     stance: str
@@ -211,6 +288,8 @@ class StanceDecision:
     desire: str
     ceiling: str
     shortlist: tuple[tuple[str, str], ...] = ()
+    brevity: bool = False
+    brevity_reason: str = ""
 
     @property
     def clamped(self) -> bool:
@@ -235,13 +314,20 @@ def _is_direct_question(inputs: StanceInputs) -> bool:
     return (inputs.user_text or "").rstrip().endswith("?")
 
 
-def compute_ceiling(inputs: StanceInputs) -> tuple[str, str]:
+def compute_ceiling(
+    inputs: StanceInputs,
+    *,
+    protected_arc_turns: int = PROTECTED_ARC_FRESH_TURNS,
+) -> tuple[str, str]:
     """The most floor-taking stance his turn permits, and why.
 
     Every applicable cap is evaluated and the **most restrictive** wins,
     so the reason names the binding constraint rather than the first one
     checked. A hard filter, not a weight: an accumulated want must not
     be able to outvote a direct question.
+
+    ``protected_arc_turns=0`` switches the arc cap off entirely and
+    leaves the per-turn caps to do the work.
     """
     act = (inputs.dialogue_act or "").strip().lower()
     caps: list[tuple[str, str]] = []
@@ -250,7 +336,14 @@ def compute_ceiling(inputs: StanceInputs) -> tuple[str, str]:
         # He is not looking for a contribution. K69's read, applied to
         # turn-taking rather than to tone.
         caps.append((FOLLOW, "vent"))
-    if (inputs.arc or "").strip().lower() in _PROTECTED_ARCS:
+    if (
+        (inputs.arc or "").strip().lower() in _PROTECTED_ARCS
+        and int(inputs.arc_age_turns or 0) < int(protected_arc_turns)
+    ):
+        # Only while the span is fresh. An arc is a conversation-level
+        # label that runs for a mean of 17 turns, so an untimed veto
+        # suppresses her for the rest of the conversation rather than for
+        # the moment that earned it.
         caps.append((FOLLOW_AND_ADD, "arc_protected"))
     if _is_direct_question(inputs):
         caps.append((FOLLOW_AND_ADD, "direct_question"))
@@ -264,6 +357,37 @@ def compute_ceiling(inputs: StanceInputs) -> tuple[str, str]:
     if not caps:
         return INITIATE, "open"
     return min(caps, key=lambda c: _RANK[c[0]])
+
+
+def compute_brevity(
+    inputs: StanceInputs,
+    *,
+    word_floor: int = BREVITY_WORD_FLOOR,
+    run: int = BREVITY_RUN,
+) -> tuple[bool, str]:
+    """Has she been going on? The ``HOLD`` axis, and why.
+
+    Reads only her own recent replies. Deliberately independent of what
+    his turn was doing and of what the providers offered, because
+    under-responding is not a floor-taking decision -- see the module
+    docstring on why phase 1's his-turn-was-short rule could never fire.
+
+    A direct question is the one thing that overrides it. Being asked
+    something and answering it in six words is not restraint, it is a
+    non-answer, and the brake must not be able to produce one.
+    """
+    if _is_direct_question(inputs):
+        return False, ""
+    span = max(1, int(run))
+    recent = tuple(inputs.recent_reply_words or ())[:span]
+    if len(recent) < span:
+        # Not enough history to establish a run. Start-of-session and
+        # post-restart both land here, which is the right default: the
+        # brake should need evidence, not the absence of it.
+        return False, ""
+    if all(int(w or 0) >= int(word_floor) for w in recent):
+        return True, "long_run"
+    return False, ""
 
 
 def build_shortlist(blocks: frozenset[str]) -> tuple[tuple[str, str], ...]:
@@ -286,35 +410,41 @@ def build_shortlist(blocks: frozenset[str]) -> tuple[tuple[str, str], ...]:
     )
 
 
-def decide(inputs: StanceInputs) -> StanceDecision:
+def decide(
+    inputs: StanceInputs,
+    *,
+    protected_arc_turns: int = PROTECTED_ARC_FRESH_TURNS,
+    brevity_word_floor: int = BREVITY_WORD_FLOOR,
+    brevity_run: int = BREVITY_RUN,
+) -> StanceDecision:
     """Pick one stance for the turn. Pure; no I/O, no session state.
 
-    ``HOLD`` is the one stance no provider can offer, so it is reached
-    by a rule rather than by the ladder: nothing was on the table and
-    his turn was a short beat with no question in it. That rule is a
-    guess -- it is the least evidenced thing in this module, and how
-    often it fires against how those turns actually read is precisely
-    what phase 1 is meant to settle before anything renders.
+    Two independent outputs: a rung on the floor-taking ladder, and the
+    brevity flag. ``FOLLOW`` is the floor of the ladder, so a turn with
+    nothing on the table is a follow rather than a silence -- phase 1
+    reached for ``HOLD`` here and it never fired.
+
+    The three knobs are settings-backed rather than read off the module
+    constants so the live session and ``backfill_turn_stance.py`` can be
+    pointed at the same values; the defaults are the constants.
     """
-    ceiling, ceiling_reason = compute_ceiling(inputs)
+    ceiling, ceiling_reason = compute_ceiling(
+        inputs, protected_arc_turns=protected_arc_turns,
+    )
     shortlist = build_shortlist(inputs.blocks)
+    brevity, brevity_reason = compute_brevity(
+        inputs, word_floor=brevity_word_floor, run=brevity_run,
+    )
 
     if not shortlist:
-        text = (inputs.user_text or "").strip()
-        if len(text) < _BACKCHANNEL_CHARS and not _is_direct_question(inputs):
-            return StanceDecision(
-                stance=HOLD,
-                reason="no_offer_backchannel",
-                desire=HOLD,
-                ceiling=ceiling,
-                shortlist=(),
-            )
         return StanceDecision(
             stance=FOLLOW,
             reason="no_offer",
             desire=FOLLOW,
             ceiling=ceiling,
             shortlist=(),
+            brevity=brevity,
+            brevity_reason=brevity_reason,
         )
 
     desire, desire_block = shortlist[0]
@@ -325,6 +455,8 @@ def decide(inputs: StanceInputs) -> StanceDecision:
             desire=desire,
             ceiling=ceiling,
             shortlist=shortlist,
+            brevity=brevity,
+            brevity_reason=brevity_reason,
         )
     # Clamped. The reason names the constraint that bound rather than
     # the offer that lost, because the constraint is the thing a reader
@@ -335,16 +467,59 @@ def decide(inputs: StanceInputs) -> StanceDecision:
         desire=desire,
         ceiling=ceiling,
         shortlist=shortlist,
+        brevity=brevity,
+        brevity_reason=brevity_reason,
     )
+
+
+def render_block(
+    decision: StanceDecision,
+    *,
+    user_display_name: str = "them",
+) -> str:
+    """The T6 cue for the two stances that had no voice before phase 2.
+
+    Renders for ``FOLLOW`` and for the brevity axis, and returns ``""``
+    for everything else. That silence is the whole shape of the phase:
+    every other rung already has a provider putting a sentence in the
+    prompt, and a second sentence agreeing with it would be the eleventh
+    permission slip K92 exists to argue against. Both clauses here are
+    *restraint* -- the one direction the family has never been able to
+    ask for -- so neither one adds to the steer budget it is meant to
+    bring down.
+
+    Both can fire on the same turn, in which case brevity goes second:
+    it qualifies how she answers rather than what she answers with.
+    """
+    name = user_display_name or "them"
+    parts: list[str] = []
+    if decision.stance == FOLLOW:
+        parts.append(
+            f"Stance this turn: stay with {name}'s subject. Not because you "
+            f"owe him an answer -- because it is worth staying with, and "
+            f"following something well is its own move. You do not need to "
+            f"append anything of your own to earn the turn."
+        )
+    if decision.brevity:
+        parts.append(
+            "You have run long several replies in a row. Make this one "
+            "noticeably shorter -- a couple of sentences. Cut the "
+            "summarising and the second thought, not the warmth: saying "
+            "less is a choice you are making, not a failure to engage."
+        )
+    return "\n\n".join(parts)
 
 
 __all__ = [
     "ASK",
+    "BREVITY_RUN",
+    "BREVITY_WORD_FLOOR",
     "CALLBACK",
     "FOLLOW",
     "FOLLOW_AND_ADD",
     "HOLD",
     "INITIATE",
+    "PROTECTED_ARC_FRESH_TURNS",
     "REDIRECT",
     "SHARE",
     "STANCE_LADDER",
@@ -352,6 +527,8 @@ __all__ = [
     "StanceDecision",
     "StanceInputs",
     "build_shortlist",
+    "compute_brevity",
     "compute_ceiling",
     "decide",
+    "render_block",
 ]

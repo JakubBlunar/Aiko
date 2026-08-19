@@ -2241,17 +2241,25 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
         telemetry: Any = None,
         user_text: str = "",
     ) -> None:
-        """K92 phase 1: record the stance this turn's blocks add up to.
+        """K92: record the stance this turn's blocks add up to.
 
         Third read of the same ``telemetry.block_chars``, for the same
         reason the other two take it as an argument rather than off
         ``get_last_system_prompt()``: that snapshot is stamped after
         post-turn runs, so it would describe the previous assembly.
 
-        Shadow only. The decision is written to ``turn_stance`` and
-        never rendered, so this method cannot change a single character
-        of what Aiko reads. That is the phase-1 contract and
-        ``tests/test_stance.py`` pins it.
+        With phase 2 on, the row is the decision the assembler *rendered
+        from*, handed over on ``_last_stance_decision`` rather than
+        recomputed here. Recomputing would quietly answer a different
+        question: by this point the reply-length window has grown by this
+        turn's reply and the dialogue-act tagger has re-run on it, so the
+        brevity axis and the ceiling could both come out differently from
+        the ones Aiko was actually given. A ledger that disagrees with
+        the prompt it describes is worse than no ledger.
+
+        The recompute stays as the path for ``stance_block_enabled =
+        False``, which is phase 1's shadow behaviour: switching the cue
+        off must not also switch the measurement off.
         """
         store = getattr(self, "_turn_stance_store", None)
         if store is None:
@@ -2268,21 +2276,43 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
 
         from app.core.conversation.stance import StanceInputs, decide
 
-        decision = decide(StanceInputs(
-            blocks=frozenset(
-                name for name, chars in block_chars.items()
-                if name and int(chars or 0) > 0
-            ),
-            user_text=user_text or "",
-            dialogue_act=getattr(self, "_last_user_dialogue_act", None),
-            arc=getattr(self, "_last_user_arc", None),
-        ))
+        decision = getattr(self, "_last_stance_decision", None)
+        self._last_stance_decision = None
+        if decision is None:
+            agent = self._settings.agent
+            decision = decide(
+                StanceInputs(
+                    blocks=frozenset(
+                        name for name, chars in block_chars.items()
+                        if name and int(chars or 0) > 0
+                    ),
+                    user_text=user_text or "",
+                    dialogue_act=getattr(
+                        self, "_last_user_dialogue_act", None,
+                    ),
+                    arc=getattr(self, "_last_user_arc", None),
+                    arc_age_turns=int(
+                        getattr(self, "_arc_age_turns", 0) or 0
+                    ),
+                    recent_reply_words=tuple(
+                        getattr(self, "_recent_reply_words", ()) or ()
+                    ),
+                ),
+                protected_arc_turns=int(
+                    getattr(agent, "stance_protected_arc_turns", 4)
+                ),
+                brevity_word_floor=int(
+                    getattr(agent, "stance_brevity_word_floor", 40)
+                ),
+                brevity_run=int(getattr(agent, "stance_brevity_run", 2)),
+            )
         if store.add_turn(message_id, decision):
             log.info(
                 "turn stance: msg=%d stance=%s reason=%s desire=%s "
-                "ceiling=%s",
+                "ceiling=%s brevity=%s",
                 message_id, decision.stance, decision.reason,
                 decision.desire, decision.ceiling,
+                decision.brevity_reason or "-",
             )
 
     def _queue_surfaced_cues_for_ledger(self, decisions: Any) -> None:

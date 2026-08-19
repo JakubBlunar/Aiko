@@ -1066,6 +1066,18 @@ class PostTurnMixin(PostTurnHelpersMixin):
                 state = arc_store.get(self._user_id)
                 user_arc_value = state.arc if state is not None else None
                 assistant_arc_value = self_tagged_arc or user_arc_value
+                # K92: how long this arc has held, in her turns. The
+                # stance ceiling reads it so a protected arc's veto
+                # expires with the beat that earned it instead of running
+                # for the 17 turns an arc lasts on average (H39). Counted
+                # here rather than queried because it is the one place
+                # that already knows both the old and the new value.
+                if user_arc_value == getattr(self, "_last_user_arc", None):
+                    self._arc_age_turns = (
+                        int(getattr(self, "_arc_age_turns", 0) or 0) + 1
+                    )
+                else:
+                    self._arc_age_turns = 0
                 self._last_user_arc = user_arc_value
                 if user_arc_value and user_message_id:
                     self._chat_db.update_message_arc(
@@ -1524,10 +1536,10 @@ class PostTurnMixin(PostTurnHelpersMixin):
         except Exception:
             log.debug("prompt block accounting raised", exc_info=True)
 
-        # K92 phase 1: the one decision those blocks add up to. Reads
-        # the same telemetry as the two calls above and writes nothing
-        # to the prompt -- this phase exists to find out whether the
-        # closed stance set is the right one before anything renders.
+        # K92: the one decision those blocks add up to. Records the
+        # decision the assembler actually rendered from when phase 2 is
+        # on, and recomputes it when the block is switched off -- either
+        # way the row describes the prompt this turn had.
         try:
             self._record_turn_stance(
                 assistant_message_id=assistant_message_id,
@@ -1536,6 +1548,24 @@ class PostTurnMixin(PostTurnHelpersMixin):
             )
         except Exception:
             log.debug("turn stance accounting raised", exc_info=True)
+
+        # K92 brevity axis: remember how long this reply ran, after the
+        # recorder above has read the pre-turn window. Most recent first,
+        # and only as deep as the longest run any setting can ask for --
+        # this is a brake on a run of long replies, not a transcript.
+        try:
+            words = len((assistant_text or "").split())
+            window = max(
+                2, int(
+                    getattr(
+                        self._settings.agent, "stance_brevity_run", 2,
+                    ) or 2
+                ),
+            )
+            recent = [words, *list(getattr(self, "_recent_reply_words", ()))]
+            self._recent_reply_words = tuple(recent[:window])
+        except Exception:
+            log.debug("reply-length window update raised", exc_info=True)
 
         # L37: settle the previous reply's surfaced items with the
         # engagement just observed, then record this reply's. Placed

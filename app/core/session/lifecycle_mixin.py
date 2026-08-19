@@ -227,6 +227,12 @@ class LifecycleMixin(DebugOverridesHostMixin):
         self._pending_thread_open = None
         # K52 — an unresolved imperative charge doesn't cross sessions.
         self._pending_want_imperative = None
+        # K92 — the brevity brake measures a run of long replies, and a
+        # session switch breaks the run. The arc age resets too: a new
+        # session's opening beat has earned the protected-arc veto again.
+        self._recent_reply_words = ()
+        self._arc_age_turns = 0
+        self._last_stance_decision = None
         # K54 — the once-per-conversation appetite slip re-arms.
         self._topic_appetite_fired = False
         # K81 — the once-per-conversation taste-lean slip re-arms.
@@ -383,6 +389,11 @@ class LifecycleMixin(DebugOverridesHostMixin):
         self._pending_thread_open = None
         # K52 — an unresolved imperative charge goes with the history.
         self._pending_want_imperative = None
+        # K92 — the reply-length run and the arc age went with the
+        # history they were measured over.
+        self._recent_reply_words = ()
+        self._arc_age_turns = 0
+        self._last_stance_decision = None
         # K54 — a wiped history re-arms the appetite slip.
         self._topic_appetite_fired = False
         # K81 — a wiped history re-arms the taste-lean slip.

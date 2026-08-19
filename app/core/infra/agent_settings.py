@@ -957,6 +957,26 @@ class AgentSettings:
     # drift before she reads it as "not biting" and retires the
     # remaining return instead of spending it.
     thread_cooling_margin: float = 0.05
+    # ── K92 conversational stance — one decision per turn ─────────────
+    # Master switch for the rendered half (phase 2). Off means the
+    # arbiter still runs and still records a row, which is phase 1's
+    # shadow behaviour, so this is a real off switch rather than a
+    # measurement blackout.
+    stance_block_enabled: bool = True
+    # How many of her turns a protected arc (support / reflection)
+    # keeps its veto over floor-taking for. An arc is a
+    # conversation-level label averaging 17 turns and reaching 110, so
+    # an untimed veto suppressed her for whole conversations rather
+    # than for the beat that earned it (H39). Raise to widen the
+    # listening window; 0 disables the arc cap entirely and leaves the
+    # per-turn caps (vent, a direct question) doing the work.
+    stance_protected_arc_turns: int = 4
+    # ── the brevity axis (what HOLD became) ──────────────────────────
+    # A reply at or above this many words counts as long, and this many
+    # in a row asks the next one to be short. 40 sits just above her
+    # p75; her median ran 19 words before the drift and 34 after it.
+    stance_brevity_word_floor: int = 40
+    stance_brevity_run: int = 2
     # ── K54 topic appetite — she's allowed to be bored ────────────────
     # Master switch for the once-per-conversation "tapped out on this
     # topic, here's my offer instead" permission slip.

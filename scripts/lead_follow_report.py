@@ -180,7 +180,7 @@ def _render(data: dict[str, Any]) -> str:
     if stance.get("turns"):
         out.append("")
         out.append(
-            f"K92 stance (shadow, {stance['turns']} recorded turns)"
+            f"K92 stance ({stance['turns']} recorded turns)"
         )
         for row in stance["rows"]:
             if not (row["chosen"] or row["wanted"]):
@@ -195,6 +195,16 @@ def _render(data: dict[str, Any]) -> str:
             f"  held back by his turn: {stance['clamped']} "
             f"({stance['clamped_pct']:.1f}% of turns)"
         )
+        for row in stance.get("clamp_reasons") or []:
+            out.append(
+                f"    {row['reason']:<18} {row['turns']:>5} "
+                f"({row['share_of_clamps']:>4.1f}% of clamps)"
+            )
+        if stance.get("brevity") is not None:
+            out.append(
+                f"  brevity asked for: {stance['brevity']} "
+                f"({stance['brevity_pct']:.1f}% of turns)"
+            )
         out.append(
             "  chosen  the stance the arbiter settled on"
         )
@@ -210,45 +220,88 @@ def _render(data: dict[str, Any]) -> str:
             "          pushed toward at moments that cannot carry it."
         )
         out.append(
-            "  Nothing here reaches the prompt: phase 1 records the "
-            "decision only."
+            "  brevity the second axis (what HOLD became): orthogonal to "
+            "the rung,"
+        )
+        out.append(
+            "          so a turn can be both SHARE and short."
+        )
+        out.append(
+            "  Rows written before a rule change describe the old rules. "
+            "Re-run"
+        )
+        out.append(
+            "          scripts/backfill_turn_stance.py to bring history "
+            "onto the new ones."
         )
 
     return "\n".join(out)
 
 
 def _collect_stance(conn: sqlite3.Connection) -> dict[str, Any]:
-    """K92 phase 1's shadow log, read straight off ``turn_stance``.
+    """K92's decision log, read straight off ``turn_stance``.
 
     Kept in the script rather than in ``lead_follow_corpus`` -- unlike
     every other number here, the stance set is explicitly provisional
-    and phase 1 exists to change it. Promoting it into the shared
-    corpus (and therefore onto the diagnostics panel) is a phase-2 job,
+    and the phases exist to change it. Promoting it into the shared
+    corpus (and therefore onto the diagnostics panel) is a later job,
     once the set has stopped moving.
+
+    ``reason`` is grouped separately for the clamped turns because the
+    binding constraint is the actionable half: ``arc_protected`` at 65%
+    of clamps is what sent phase 2 looking at arc stickiness (H39), and
+    that share is the number to watch after the freshness window.
     """
     from app.core.conversation.stance import STANCE_LADDER
 
+    # ``brevity`` arrives in schema v37; a database that has not migrated
+    # yet must still produce the rest of the readout rather than nothing.
     try:
         rows = conn.execute(
-            "SELECT stance, desire FROM turn_stance"
+            "SELECT stance, desire, reason, brevity FROM turn_stance"
         ).fetchall()
+        has_brevity = True
     except sqlite3.OperationalError:
-        return {}
+        try:
+            rows = conn.execute(
+                "SELECT stance, desire, reason FROM turn_stance"
+            ).fetchall()
+            has_brevity = False
+        except sqlite3.OperationalError:
+            return {}
     if not rows:
         return {}
     total = len(rows)
     chosen: dict[str, int] = {}
     wanted: dict[str, int] = {}
+    clamp_reasons: dict[str, int] = {}
     clamped = 0
+    brevity = 0
     for row in rows:
         chosen[row["stance"]] = chosen.get(row["stance"], 0) + 1
         wanted[row["desire"]] = wanted.get(row["desire"], 0) + 1
         if row["stance"] != row["desire"]:
             clamped += 1
+            reason = str(row["reason"] or "?")
+            clamp_reasons[reason] = clamp_reasons.get(reason, 0) + 1
+        if has_brevity and int(row["brevity"] or 0):
+            brevity += 1
     return {
         "turns": total,
         "clamped": clamped,
         "clamped_pct": 100.0 * clamped / total,
+        "clamp_reasons": [
+            {
+                "reason": reason,
+                "turns": n,
+                "share_of_clamps": 100.0 * n / max(1, clamped),
+            }
+            for reason, n in sorted(
+                clamp_reasons.items(), key=lambda kv: -kv[1],
+            )
+        ],
+        "brevity": brevity if has_brevity else None,
+        "brevity_pct": (100.0 * brevity / total) if has_brevity else None,
         "rows": [
             {
                 "stance": name,

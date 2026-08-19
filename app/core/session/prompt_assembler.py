@@ -378,9 +378,16 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "curiosity_gradient_block",
         # The handling notes for whichever hoisted blocks rendered above,
         # lifted out of the persona so they cost nothing on the turns
-        # their block is absent. Last in the tier because it is the only
-        # block that is *about* the others.
+        # their block is absent. Second-last in the tier because it is
+        # about the others.
         "handling_notes_block",
+        # K92 phase 2: the one stance the blocks above add up to. Dead
+        # last, and it has to be -- it reads which of them rendered, and
+        # it is the only block permitted to argue with them (a FOLLOW or
+        # a brevity ask contradicts whatever steer lost). Renders on a
+        # minority of turns by design: the rungs that already have a
+        # provider get nothing here.
+        "stance_block",
     ),
 }
 
@@ -1045,6 +1052,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # ``last_mean``) and after the K52 wants provider has matured
         # the ledger this turn.
         self._topic_appetite_provider: Callable[[], str] | None = None
+        # K92 phase 2 conversational stance. Unlike every other provider
+        # here it is handed *what the other blocks decided* -- the set of
+        # ladder names that rendered non-empty, plus the live user text --
+        # because its whole job is to name the one decision they add up
+        # to. It must therefore run last; see the call site.
+        self._stance_provider: (
+            Callable[[frozenset[str], str], str] | None
+        ) = None
         # K81 taste lean. A rare, lull-gated permission slip to steer toward a
         # topic Aiko genuinely enjoys (an active ``taste`` concept). Reads the
         # K18 standing lull reading, so it must run after the stagnation
@@ -3494,6 +3509,28 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # present on a small minority of them, and an instruction about
             # a cue that isn't there is not guidance, it's ballast.
             system_parts.append(handling_notes_block)
+
+        # K92 phase 2: name the single stance every steer above adds up
+        # to. Resolved off this frame's locals for the same reason the
+        # handling notes are, and computed *here* rather than post-turn
+        # because the row in ``turn_stance`` has to describe the prompt
+        # that was actually built -- a decision recomputed later from
+        # fresher inputs would be a better answer to a question nobody
+        # asked. The offer set is taken before ``stance_block`` exists as
+        # a local so the block can never read itself.
+        stance_offers = frozenset(
+            name for name, text in _resolve_blocks(locals()) if text
+        )
+        stance_block = ""
+        if self._stance_provider is not None:
+            provider = self._stance_provider
+            stance_block = _safe_provider(
+                lambda: provider(stance_offers, user_text or ""),
+                timing_sink=provider_ms,
+                timing_name="stance",
+            )
+        if stance_block:
+            system_parts.append(stance_block)
 
         # ── T3 relevant_context: reserve the surfacing budget BEFORE
         #    history is packed. Join the system BASE (everything except the
