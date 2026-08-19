@@ -11,15 +11,32 @@ that produces the samples.
 ## Where we are
 
 `app/tts/pocket_tts_service.py` wraps Kyutai's **pocket-tts**: a ~100M
-parameter streaming LM over the Mimi neural codec, 24 kHz mono,
-MIT-licensed, CPU-only by design. Torch in this venv is `2.13.0+cpu`,
-so there is no CUDA path even though the box has an RTX 5090 — and
-that is deliberate. TTS on the GPU would land as bursts of compute
-between game frames; on CPU it stays out of the way.
+parameter LM over the Mimi neural codec, 24 kHz mono, MIT-licensed,
+CPU-only by design. Torch in this venv is `2.10.0+cpu`, so there is no
+CUDA path even though the box has an RTX 5090 — and that is deliberate.
+TTS on the GPU would land as bursts of compute between game frames; on
+CPU it stays out of the way.
 
 It does the important thing well: zero-shot voice cloning from a few
 seconds of reference audio, which is where `aiko1_refined.safetensors`
 comes from.
+
+**It does not stream generation, and it reads as if it does.** The
+service emits ~50 ms PCM chunks, but `_speak_worker` runs
+`generate_audio` to completion and only then paces the finished array
+out through `_emit_pcm`. So first audio waits for the last token:
+measured on the 9950X3D, a 2.3 s utterance starts after 0.58 s and an
+8.7 s one after **2.16 s**. Production stays responsive only because
+text arrives a sentence at a time. Chunked playback is not chunked
+generation, and an engine that genuinely streams would be a real
+latency win rather than a like-for-like swap.
+
+**Her voice is not backed up.** `voices/` holds two `.safetensors`
+speaker states and no audio, so the voice is currently recoverable only
+by running the engine we are trying to replace. `tools/tts_lab/voicebank.py`
+extracts a portable reference WAV — both as a backup and as the cloning
+source every candidate needs. Measured on this box: 24 kHz, RTF ~0.25,
+model load ~2.3 s.
 
 ## The actual constraint
 
