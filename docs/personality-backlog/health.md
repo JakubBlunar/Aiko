@@ -702,7 +702,9 @@ are defensible — probing a belief about someone is the heaviest thing she can
 open a gap with — and both are now *measurable* against the split reasons, so
 they should be judged on the next reason mix rather than adjusted on suspicion.
 Watch for the first non-zero `hypotheses.asked_count`; until one cue surfaces,
-the adjudication half of L30 remains untested end to end.
+the adjudication half of L30 remains untested end to end. **That happened, and
+the third pass below records it** — the note stayed here in the present tense for
+twelve days after the thing it was waiting for arrived.
 
 **Ninth recurring shape:** *a broken gate can be the only thing containing a
 broken producer, so measure what the fix releases before shipping it.* H19 and
@@ -710,6 +712,46 @@ H20 were both safe to repair on sight; this one was not, and the difference was
 visible only by reading the payloads the gate was rejecting. **Rule: when a
 filter has been rejecting 100% of something, look at what it was rejecting
 before you make it stop.**
+
+### Third pass: it adjudicates now, and graduation is the leg that never ran
+
+Found by an audit of "still open" notes rather than by looking at this entry, and
+that is the finding as much as the numbers are. The thing the second pass told
+the reader to watch for happened on **7 August** and the entry still said
+`asked_count` was zero across the board twelve days later.
+
+**The loop asks, and it adjudicates.** Five rows carry `asked_count = 1`, and two
+verdicts exist: one **refuted** (asked, contradicted, closed in the same instant
+the verdict landed) and one **supported** with an answer memory attached. The
+title of this entry is now wrong in its second half — the closing machinery runs
+end to end, including `last_tested_at`, `refute_count`, and the answer-memory
+link.
+
+**But the ask-to-verdict conversion is 1 in 5, and that is the real gap.** Of the
+five asked rows, four are still `open` with `support_count = 0` and
+`refute_count = 0`: she asked, he answered, and nothing classified the answer.
+The one refutation is the exception, not the pattern. Three of those four have
+been sitting asked-and-unclassified for 182, 224 and 287 hours. So the second
+pass's "the adjudication half is unmeasurable until a cue surfaces" has been
+replaced by a sharper problem: cues surface, and the resolver mostly does not
+fire on the answer.
+
+**And the supported row was never asked at all.** It has `asked_count = 0` with
+`support_count = 1` — confirmation arrived through the passive path, from an
+answer that happened to bear on it, not from the ask-then-learn loop this entry
+is about. One verdict from five asks, one from zero asks.
+
+Both of those are the same missing measurement, so the follow-up is [H44](#h44-nothing-has-ever-graduated-and-at-this-calibration-nothing-can),
+which also carries the graduation finding this pass turned up.
+
+**[Twenty-third recurring shape](#recurring-shapes):** *"watch for X" is not a
+measurement, it is a hope.* A note that defers to a future observation needs
+something that will actually make the observation — a script, a report line, a
+test — or it becomes a claim that quietly inverts and keeps being read as current.
+This entry's watch-for outlived its own truth by twelve days, and the only reason
+it surfaced is that someone went looking for stale notes on purpose. **Rule: if a
+finding depends on a number moving, leave behind the thing that checks the
+number.**
 
 ---
 
@@ -2840,7 +2882,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 <a id="recurring-shapes"></a>
 
-## The twenty-two recurring shapes
+## The twenty-three recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3180,7 +3222,29 @@ per cause rather than letting the caller infer from residual state. Where infere
 is unavoidable, pick the tie-break that under-counts the bucket your metric is most
 sensitive to.**
 
----
+**23. A note that defers to a future observation, and outlives its own truth.**
+"Watch for the first non-zero `asked_count`" is not a measurement, it is a hope,
+and hopes do not run. H7's second pass ended on exactly that sentence; the counter
+went non-zero eight days later and the entry went on saying zero for another
+twelve, because nothing was going to notice. Every "still open" note in the
+backlog is this shape waiting to happen — a claim written in the present tense
+about a state that is free to change, stored in a file nothing re-reads.
+
+Two of the three claims this audit checked were stale, and one of them
+([G-CLEANUP](workers.md#g-cleanup-consolidator_statelast_cluster_index-is-not-dead-weight--do-not-drop-it))
+had turned actively dangerous: its recommended fix would have broken a feature
+built after it was filed. The failure is not that the notes were wrong when
+written — they were all correct — it is that **correctness has a shelf life and
+nothing was stamping it.**
+
+**Rule: if a finding depends on a number moving, leave behind the thing that
+checks the number** — a line in an existing report, a test that fails when the
+state changes, a script. Where that is genuinely not worth it, write the claim in
+the past tense with its date ("as of 12 Aug, `asked_count` was 0") so a later
+reader can see it is a snapshot rather than a status. Prefer the report line: the
+cue lane's three misreads in shape 20 were all cured by
+[`scripts/cue_reach_report.py`](../../scripts/cue_reach_report.py) printing the
+verdict, not by another paragraph asking people to be careful.
 
 ---
 
@@ -4792,6 +4856,73 @@ H16's dedupe first — see the current ordering below.*
 
 ---
 
+## H44. Nothing has ever graduated, and at this calibration nothing can
+
+**Severity: medium — the L30 loop's last exit has never once been taken, and the
+arithmetic says it is not waiting on more data.**
+
+Found while auditing "still open" notes (see [H7's third
+pass](#third-pass-it-adjudicates-now-and-graduation-is-the-leg-that-never-ran)).
+The forward half of L30 invents, the middle now asks and occasionally adjudicates
+— and the exit that turns a settled guess into a durable concept or belief has
+**zero instances, lifetime**. `graduated_concept_id` and `graduated_memory_id` are
+`NULL` on all 23 rows.
+
+**This is not a bug, which is what makes it worth an entry.** Every part works as
+built. `is_ready` requires `refute_count == 0`, `support_count >= 2`
+(`hypothesis_graduate_min_support`) and `credence >= 0.7`, and `supported` is
+correctly a live status, so a confirmed row genuinely remains eligible. The
+problem is that the bar was set without anyone computing what the pipeline can
+deliver against it — [shape 2](#recurring-shapes), drain rate below arrival rate,
+in its subtlest form yet: not a cap versus a cadence, but **a two-event
+requirement against a window that only ever sees one event.**
+
+**The arithmetic.** The TTL is 336 hours (`hypothesis_ttl_hours`, 14 days).
+Graduation needs two independent confirmations landing on the *same row* inside
+that window. Observed over the corpus:
+
+| | |
+| --- | --- |
+| Rows ever asked | 5, all `asked_count = 1` |
+| Asks that produced any verdict | 1 of 5 |
+| Rows that reached `support_count = 1` | 1 (and it was never asked) |
+| Rows that reached `support_count = 2` | **0** |
+| Exits actually taken | 10 `expired`, 1 `refuted`, 0 graduated |
+
+The single `supported` row has held `support_count = 1` for 182 of its 336 hours
+with `credence = 0.95` — everything but the second confirmation. It will expire
+around 26 Aug. So expiry is not one exit among several, it is **the** exit: ten of
+eleven closed rows, and the one exception was a refutation.
+
+**Two candidate readings, and they want different fixes.** Either (a) the
+ask-to-verdict conversion is the real defect and `min_support = 2` is fine once
+answers get classified — H7's third pass found four rows asked, answered, and
+never scored, which is where the confirmations *should* be coming from; or (b) two
+confirmations inside 14 days is the wrong shape for a belief about a person, since
+the natural evidence for "he organises commits by mood" arrives every few weeks,
+not twice a fortnight. These are distinguishable: fix the resolver first and
+re-read, because under (a) the bar needs no change and under (b) no amount of
+resolver work will produce a graduation.
+
+**Do the resolver first, and do not touch the bar yet.** This is
+[shape 9](#recurring-shapes) — the gate may be the only thing containing a
+producer that has not been measured. Lowering `min_support` to 1 today would let
+the *one* passively-confirmed row graduate, and a row that was never asked and
+never contradicted is exactly the kind of guess that should not become a durable
+belief about him on a single ambient signal.
+
+**Sequencing.** After [H7](#h7-the-hypothesis-loop-invents-and-never-adjudicates)'s
+resolver gap, and it should be measured with a report line rather than a note that
+says to watch for it, per [shape 23](#recurring-shapes). The natural home is a
+`--hypotheses` section in
+[`scripts/cue_reach_report.py`](../../scripts/cue_reach_report.py), which already
+owns "did the lane spend what it produced" for the cue side.
+
+**Effort.** Small to measure and to add the report line; the resolver work behind
+it is medium and belongs to H7.
+
+---
+
 ## Suggested order
 
 Refreshed after the wants-ledger pass (H28). Roughly by value per unit of risk,
@@ -4877,6 +5008,13 @@ anything else, since three of them alter the inputs to everything below:
 
 **Then, in order:**
 
+0. **H7's resolver gap, then H44.** Newest and the cheapest real defect on the
+   list: four hypotheses were asked, answered, and never scored, which is where
+   graduation's missing second confirmation should be coming from. Do that before
+   touching `hypothesis_graduate_min_support` — under one reading the bar needs no
+   change at all, and the numbers are now printed by
+   [`scripts/cue_reach_report.py`](../../scripts/cue_reach_report.py) rather than
+   waiting on someone to check.
 1. **H11** — the ratio itself, and now the decision is live: H10 just put a
    generative kind into the lane boundary has been dominating (28.6% of
    surfacings against `affective`'s 7.1%). Judge it on the post-H10 mix.

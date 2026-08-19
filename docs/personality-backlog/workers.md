@@ -173,14 +173,36 @@ copy.
 
 ---
 
-## G-CLEANUP. `consolidator_state.last_cluster_index` is dead weight
+## G-CLEANUP. `consolidator_state.last_cluster_index` is not dead weight — do not drop it
 
-Trivial cleanup item, parked here so it doesn't get forgotten.
-The schema carries
-[`consolidator_state.last_cluster_index`](../../app/core/memory/memory_consolidator.py)
-but nothing reads it — the comment in the source flags it as
-unused. Either wire incremental clustering (the original intent)
-or drop the column in the next schema bump. Effort: trivial.
+Filed as a trivial cleanup ("nothing reads it, drop the column in the next schema
+bump") on the strength of the comment in
+[`memory_consolidator.py`](../../app/core/memory/memory_consolidator.py), which
+does say the field is unused. The comment is accurate about *the consolidator*
+and misleading about the column, and the original suggested fix would have
+broken a shipped feature.
+
+[`relationship_pulse.py`](../../app/core/relationship/relationship_pulse.py)
+stores its own state in `consolidator_state` under a namespaced key
+(`_relationship_pulse_state:<user_id>`) and uses `last_cluster_index` to hold
+**the relationship's `total_turns` as of the last pulse** — nothing to do with
+clusters. `_read_state` reads it back and the value gates the pulse:
+`if current_turns - last_turns < self._min_turns: return False`. Live, the row
+reads `last_cluster_index = 1699`. Drop the column and the pulse either raises
+on its `SELECT` or, if the read is removed along with it, silently loses its
+"enough has happened since last time" gate and fires on elapsed hours alone.
+
+**So the actual cleanup is the opposite of the one filed.** Either rename the
+column to something both callers can honestly share (a schema bump plus two
+call sites), or give the pulse its own `kv_meta` key and leave the consolidator's
+column genuinely unused. Prefer the second: the pulse is squatting, and the
+namespaced-key trick that makes the squat work is itself the tell. Whichever
+way, the source comment should say "unused *by the consolidator*; see
+`relationship_pulse`", because that comment is what made this look safe.
+
+**Recurring shape:** a comment saying a field is unused is a claim about one
+reader, not about the field. Grep the column name, not the module. Effort:
+small.
 
 For perf / observability gaps that aren't workers in their own
 right (turn-level embed budget, idle-worker queue visibility,
