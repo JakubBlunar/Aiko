@@ -266,6 +266,24 @@ whatever the voice was originally cloned from — one generation closer,
 and possibly higher-rate. This is why the studio accepts mp3/flac/ogg
 rather than demanding WAV.
 
+**The original mp3s are lost**, which settles it: generating from the
+embedding is the only path that keeps her voice rather than substituting
+a different one. `tools/tts_lab/dataset.py` does it —
+203 prompts to 202 clips and ~7.9 min in under two minutes, at a 0.5%
+rejection rate, with LJSpeech and GPT-SoVITS manifests and exact
+transcripts (the text was the input, so there is no ASR or alignment
+error in the labels).
+
+Worth being clear about what a fine-tune on that set can and cannot buy.
+It **cannot** exceed pocket-tts in fidelity, because that is the ceiling
+of the training audio. It **can** still be a large win, because the
+things we actually want are architectural rather than acoustic: native
+rate control that lights up the dark half of the cadence layer, an
+emotion parameter the reaction label can drive, inline `[laugh]` in her
+own voice, and streaming generation. Those come from the model, not from
+the data. Framing this as "quality upgrade" would be wrong; framing it as
+"same voice, controllable" is right.
+
 ### Worth trying first
 
 **Qwen3-TTS** ([QwenLM/Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS),
