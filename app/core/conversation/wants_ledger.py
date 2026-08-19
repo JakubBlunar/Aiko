@@ -440,6 +440,138 @@ def detect_acted(
     return hits
 
 
+# ── K93: which want is worth a scarce slot ──────────────────────────
+#
+# Pressure answers *how long has this sat unacted*, and nothing else:
+# ``pressure += growth_per_day * elapsed_days``. Ranking by it therefore
+# ranks by age, which is the right tie-break and the wrong first key --
+# and measured over this install it is the wrong first key twice over,
+# both times in whimsy's favour:
+#
+# 1. **A starting offset that never closes.** Seeds and forward-curiosity
+#    wants are minted at 0.15, goals at 0.05, pursuits at 0.04, and all
+#    of them then grow at the same rate. So a seed carries a permanent
+#    ~0.11 lead -- about half a day -- over the two sources with the most
+#    substance behind them. Read off the live ledger: a seed at 0.60 and
+#    a goal at 0.50 are *exactly the same age* (1.8 days). The seed was
+#    ahead because of where it started.
+# 2. **Saturation makes it worse, not better.** At 0.25/day everything
+#    reaches the 1.0 clamp in under four days, well inside the 14-day
+#    TTL, after which every live want ties. ``sorted`` is stable, so the
+#    tie-break becomes ledger insertion order -- and ``_candidates``
+#    yields seeds first. Whimsy wins the top slot structurally at every
+#    age.
+#
+# The consequence is the K93 finding: 217 of 244 genuine cue conversions
+# (88.9%) are ``curiosity_seed``, and the scarce beats -- K53's "this
+# turn is yours" directive and the imperative band -- spend themselves on
+# free association because they ask for the strongest want and pressure
+# cannot express substance.
+#
+# So substance is the first key and pressure the tie-break. A small
+# ordered table, not a float per want: this is exactly the comparison
+# K92 argued an LLM should never be handed as ``0.63`` vs ``0.58``, and
+# the same logic applies to picking with it.
+TIER_ANCHORED = 3
+"""Hers, with accumulated state behind it -- a goal or an active pursuit."""
+TIER_ABOUT_HIM = 2
+"""A question for him. Substance, but the interview shape needs watching."""
+TIER_WHIMSY = 1
+"""Free-associative curiosity. Keeps its floor; loses the scarce slots."""
+
+# Keyed by ``source``, and by ``(source, kind)`` where one source
+# produces both shapes.
+_SUBSTANCE_TIERS: dict[str, int] = {
+    "goal": TIER_ANCHORED,
+    "pursuit": TIER_ANCHORED,
+    # K87's predicate already split this source in the worker: an entry
+    # of *hers* becomes a ``share`` ("say what you've been chewing on")
+    # and one about him becomes an ``ask`` ("ask {name} ..."). The
+    # worker's own comment calls the ask shape "an interview line under a
+    # different label", so the two do not belong on the same tier.
+    "forward_curiosity:share": TIER_ANCHORED,
+    "forward_curiosity:ask": TIER_ABOUT_HIM,
+    "curiosity_seed": TIER_WHIMSY,
+}
+# Anything unrecognised -- a hand-added want, an MCP ``force_want``, a
+# source added later -- sits in the middle rather than at either end. A
+# new producer should not silently inherit whimsy's demotion, and should
+# not outrank a goal without saying so.
+_DEFAULT_TIER = TIER_ABOUT_HIM
+
+
+def substance_tier(want: Want) -> int:
+    """How much this want is worth spending a scarce beat on.
+
+    Deliberately coarse. The ordering that is well evidenced is *whimsy
+    last*; the gradations above it are a reading of K93's ladder and are
+    meant to be arguable without the numbers moving much.
+
+    One deviation from K93 as filed, which ranked "something she noticed
+    about him" above "a pursuit of her own". Inverted here because K93's
+    own shipping test is the K90 **own-material** rate, and because the
+    only source on that tier produces a literal ``ask {name} ...`` line
+    -- the interview shape K87 shipped a quota to suppress. Promoting it
+    would move the metric K93 exists to move, in the wrong direction.
+    """
+    source = str(getattr(want, "source", "") or "")
+    kind = str(getattr(want, "kind", "") or "")
+    keyed = _SUBSTANCE_TIERS.get(f"{source}:{kind}")
+    if keyed is not None:
+        return keyed
+    return _SUBSTANCE_TIERS.get(source, _DEFAULT_TIER)
+
+
+def rank_for_floor(
+    wants: "tuple[Want, ...] | list[Want]",
+    *,
+    min_pressure: float = 0.0,
+    substance_first: bool = True,
+) -> tuple[Want, ...]:
+    """Wants worth the floor, best first.
+
+    ``min_pressure`` filters *before* ordering, and that order matters
+    more than it looks. Every consumer of this already had a pressure
+    bar of its own -- the imperative band, K54's ``min_want_pressure``
+    -- and reordering without filtering would hand them a want that
+    fails their own gate, silently turning "she picked a better thing to
+    say" into "she said nothing". Filter, then rank: the pick clears the
+    caller's bar by construction and the caller's fire rate is untouched.
+
+    ``substance_first=False`` restores pure pressure order for the A/B.
+    """
+    live = [
+        w for w in wants
+        if float(getattr(w, "pressure", 0.0) or 0.0) >= float(min_pressure)
+    ]
+    if substance_first:
+        live.sort(key=lambda w: (substance_tier(w), w.pressure), reverse=True)
+    else:
+        live.sort(key=lambda w: w.pressure, reverse=True)
+    return tuple(live)
+
+
+def strongest_for_floor(
+    wants: "tuple[Want, ...] | list[Want]",
+    *,
+    min_pressure: float = 0.0,
+    substance_first: bool = True,
+) -> Want | None:
+    """The one want to spend a scarce beat on, or ``None``.
+
+    Every site that picks a want to *say* goes through here. There were
+    four of them picking independently with a copy of the same
+    ``max(..., key=pressure)``, two of which are supposed to agree
+    exactly -- ``render_block``'s imperative and the K55 thread-open that
+    records what she was told to raise. Divergence there would open a
+    thread on a different subject than the prompt asked for.
+    """
+    ranked = rank_for_floor(
+        wants, min_pressure=min_pressure, substance_first=substance_first,
+    )
+    return ranked[0] if ranked else None
+
+
 # ── Render ──────────────────────────────────────────────────────────
 
 
@@ -450,17 +582,30 @@ def render_block(
     user_display_name: str = "them",
     imperative_threshold: float = 0.7,
     soft_max: int = 2,
+    substance_first: bool = True,
 ) -> str:
     """Format the prompt cue for the current ledger.
 
     Two bands:
 
-    - **Imperative** — the single strongest want at or above
-      ``imperative_threshold`` gets a directive paragraph: bring it up
-      this conversation, changing the subject is allowed.
+    - **Imperative** — one want at or above ``imperative_threshold``
+      gets a directive paragraph: bring it up this conversation, changing
+      the subject is allowed. *Which* one is K93's question — the most
+      substantial of those that clear the bar, not merely the oldest.
     - **Soft** — otherwise, up to ``soft_max`` wants (highest pressure
       first) render as a short list with the K56 "a lull is opening
       enough" framing.
+
+    The asymmetry between the bands is deliberate. The imperative is a
+    scarce, expensive beat and gets the substance ordering; the soft list
+    stays in pressure order so free-associative curiosity keeps its floor
+    — it is genuinely part of her character and still converts better
+    than anything else on the shelf (K93). What it loses is the scarce
+    slots, not its voice.
+
+    Whether the band fires is unchanged: the imperative set is a prefix
+    of pressure order, so it is non-empty on exactly the turns the old
+    ``max(pressure) >= threshold`` test admitted.
 
     Empty ledger -> ``""`` (silent).
     """
@@ -468,8 +613,12 @@ def render_block(
         return ""
     name = user_display_name or "them"
     ranked = sorted(state.wants, key=lambda w: w.pressure, reverse=True)
-    strongest = ranked[0]
-    if strongest.pressure >= imperative_threshold:
+    strongest = strongest_for_floor(
+        state.wants,
+        min_pressure=imperative_threshold,
+        substance_first=substance_first,
+    )
+    if strongest is not None:
         days = age_days(strongest, now)
         if days >= 2:
             since = f"for about {int(round(days))} days"
@@ -502,11 +651,17 @@ __all__ = [
     "add_want",
     "age_days",
     "apply_growth",
+    "TIER_ABOUT_HIM",
+    "TIER_ANCHORED",
+    "TIER_WHIMSY",
     "content_words",
     "deserialize",
     "detect_acted",
     "drop_source_refs",
     "mark_acted",
+    "rank_for_floor",
+    "strongest_for_floor",
+    "substance_tier",
     "render_block",
     "serialize",
 ]
