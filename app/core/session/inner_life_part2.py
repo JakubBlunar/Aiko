@@ -3621,18 +3621,34 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             )
         except (TypeError, ValueError):
             age_text = "a while ago"
+        # A promise that named a time and missed it gets said out loud as
+        # late. Without this the cue reported only how long ago she said
+        # it, so "by lunch" and "sometime" produced the same line and the
+        # one obligation she could actually have broken went unmentioned.
+        late_text = ""
+        overdue_hours = pending.get("overdue_hours")
+        if overdue_hours is not None:
+            try:
+                late_text = (
+                    f" That was due {lifecycle.humanize_age(float(overdue_hours))}"
+                    ", so it's late."
+                )
+            except (TypeError, ValueError):
+                late_text = ""
         log.info(
-            "promise-followthrough fire: memory_id=%s age=%s what=%r",
+            "promise-followthrough fire: memory_id=%s age=%s overdue_h=%s "
+            "what=%r",
             pending.get("memory_id"),
             age_text,
+            overdue_hours if overdue_hours is not None else "-",
             what[:80],
         )
         return (
             f"Heads-up: {age_text} you told {self.user_display_name} you'd "
-            f"{what} — you haven't closed that loop. If it fits this turn, "
-            "mention what you found, or own that you haven't gotten to it "
-            "yet. One casual line, not a production — and don't pretend you "
-            "did it if you didn't."
+            f"{what} — you haven't closed that loop.{late_text} If it fits "
+            "this turn, mention what you found, or own that you haven't "
+            "gotten to it yet. One casual line, not a production — and don't "
+            "pretend you did it if you didn't."
         )
 
     def _render_rupture_block(self) -> str:

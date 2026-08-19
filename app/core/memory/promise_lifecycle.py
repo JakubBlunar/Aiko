@@ -19,8 +19,24 @@ on the existing v7 ``metadata`` JSON column — no schema change:
 Sidedness rides ``metadata.promise_who`` (stamped by
 :class:`PromiseExtractor` going forward); legacy rows fall back to the
 ``"Aiko promised:"`` content prefix. Only **assistant-side** promises
-participate in follow-through — the user's own commitments are the
-:class:`FollowUpWorker` / proactive-callback territory.
+are ever *surfaced* by follow-through: chasing the user over his own
+commitments is a different and much louder product decision than Aiko
+closing her own loops.
+
+Both sides age out, though, and H41 is why that sentence had to be
+written down. This module used to say the user's commitments were
+:class:`FollowUpWorker` territory, and the worker on the other end of
+that handoff selects on ``temporal_type == "future_plan"`` — which no
+promise has ever had, since :meth:`MemoryStore.add` defaults promises to
+``durable``. So the delegation named a real worker that could not see a
+single row, and every user-side promise stayed ``open`` forever: 86 of
+them, the oldest 86 days, still scoring into retrieval. Nothing logged
+anything, because nothing was failing — the two halves simply never met.
+
+A promise also carries ``metadata.promise_deadline`` when the transcript
+named one, and *when it is due* is a separate axis from *how long ago it
+was made*. Keeping them apart is the difference between noticing a
+commitment was missed and noticing one is merely old.
 
 That makes ``promise_who`` load-bearing rather than descriptive, so the
 extractor refuses to guess it: a ``who`` naming neither side is dropped
@@ -37,6 +53,7 @@ post-turn hook and the idle worker own persistence.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -82,22 +99,78 @@ def is_assistant_promise(memory: Any) -> bool:
     return content.startswith(_ASSISTANT_PREFIX)
 
 
+#: The trailing ``(by …)`` the worker writes into promise content. Only
+#: matched at the end, so a promise that mentions a bracketed aside
+#: mid-sentence keeps it.
+_DEADLINE_SUFFIX_RE = re.compile(r"\s*\(by [^)]{0,60}\)\s*$", re.IGNORECASE)
+
+
 def promise_what(memory: Any) -> str:
-    """Strip the "<actor> promised:" prefix so cues read naturally."""
+    """The bare action, without the "<actor> promised:" or "(by …)" wrapping.
+
+    Both halves are storage format rather than content. Dropping the
+    deadline suffix here rather than at each call site keeps it out of
+    three places at once: the spoken cue (which states the timing in its
+    own words, from the parsed deadline), the dedupe fingerprint (where
+    the date tokens made two takes on one commitment look unalike), and
+    the fulfilment overlap check (where they could never match a reply
+    and so only raised the bar).
+    """
     content = str(getattr(memory, "content", "") or "").strip()
     head, sep, tail = content.partition("promised:")
-    if sep and len(head) <= 40:
-        return tail.strip() or content
-    return content
+    body = tail.strip() if (sep and len(head) <= 40) else content
+    return _DEADLINE_SUFFIX_RE.sub("", body).strip() or body
 
 
 def promise_age_hours(memory: Any, *, now: datetime | None = None) -> float | None:
-    """Age of the promise in hours, or ``None`` on unparseable timestamps."""
+    """Age of the promise in hours, or ``None`` on unparseable timestamps.
+
+    Age is how long ago the commitment was *made*, which is a different
+    question from whether it is late; see :func:`overdue_hours`.
+    """
     created = _parse_iso(getattr(memory, "created_at", None))
     if created is None:
         return None
     ref = now or timephrase.utcnow()
     return max(0.0, (ref - created).total_seconds() / 3600.0)
+
+
+def promise_deadline(memory: Any) -> datetime | None:
+    """When the promise is owed by, or ``None`` when it never said.
+
+    Read from ``metadata.promise_deadline``, stamped at extraction by
+    :class:`PromiseExtractionWorker`. ``None`` is the common answer --
+    most commitments name no time -- and it means *unknown*, never "not
+    due yet".
+    """
+    metadata = getattr(memory, "metadata", None) or {}
+    return _parse_iso(metadata.get("promise_deadline"))
+
+
+def overdue_hours(memory: Any, *, now: datetime | None = None) -> float | None:
+    """How many hours past its deadline the promise is, else ``None``.
+
+    ``None`` covers both "no deadline was stated" and "not late yet", and
+    callers only ever branch on truthiness, so collapsing them is safe
+    here in a way it is not in :func:`promise_deadline`.
+
+    This is the distinction the worker lacked until H41: it measured
+    lateness with :func:`promise_age_hours` and a fixed threshold, so a
+    promise made this morning and due by lunch read as fresh all
+    afternoon, while a standing commitment with no deadline at all read
+    as late purely for having been made a while ago.
+    """
+    deadline = promise_deadline(memory)
+    if deadline is None:
+        return None
+    ref = now or timephrase.utcnow()
+    late = (ref - deadline).total_seconds() / 3600.0
+    return late if late > 0.0 else None
+
+
+def is_overdue(memory: Any, *, now: datetime | None = None) -> bool:
+    """True when the promise stated a deadline and that deadline passed."""
+    return overdue_hours(memory, now=now) is not None
 
 
 def humanize_age(age_hours: float) -> str:
@@ -175,6 +248,9 @@ __all__ = [
     "is_assistant_promise",
     "promise_what",
     "promise_age_hours",
+    "promise_deadline",
+    "overdue_hours",
+    "is_overdue",
     "humanize_age",
     "find_fulfilled",
 ]

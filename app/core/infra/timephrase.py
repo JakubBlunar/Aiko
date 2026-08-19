@@ -463,6 +463,246 @@ def resolve_deictics(
     return _DEICTIC_RE.sub(_swap, text)
 
 
+# ── loose date parsing: reading a time back off a model's answer ──────────
+# :func:`parse_iso` is for timestamps *we* wrote and can therefore trust
+# the shape of. This half is for the other direction -- a date an LLM put
+# in a JSON field, where the schema said "a day or time" and the model
+# was free to answer in whatever register the conversation was using.
+#
+# It exists because asking for ISO and hoping is not enough. Over 160
+# stored promises the deadline field came back in six shapes --
+# ``2026-08-19``, ``Monday, August 17, 2026``, ``August 14, 2026``,
+# ``2026-08-17T23:30:00.000Z``, ``Before August 18, 2026`` and a bare
+# ``tomorrow`` -- so a caller that only tried ``fromisoformat`` got a
+# datetime for 24 of them and nothing for the other 13.
+_MONTH_NUMBERS: dict[str, int] = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+_WEEKDAY_NUMBERS: dict[str, int] = {
+    "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
+}
+
+_MONTH_ALT = "|".join(_MONTH_NUMBERS)
+_WEEKDAY_ALT = "|".join(_WEEKDAY_NUMBERS)
+
+# "August 14, 2026" / "Aug 14" / "August 14th 2026". The ``(?!\d)`` after
+# the day is load-bearing: without it "14 August 2026" matches this
+# pattern first and reads the "20" of the year as the day.
+_MONTH_DAY_RE = re.compile(
+    rf"\b(?P<month>{_MONTH_ALT})[a-z]*\.?\s+(?P<day>\d{{1,2}})(?!\d)(?:st|nd|rd|th)?"
+    rf"(?:\s*,?\s*(?P<year>\d{{4}}))?",
+    re.IGNORECASE,
+)
+# "14 August 2026" / "14th Aug"
+_DAY_MONTH_RE = re.compile(
+    rf"\b(?P<day>\d{{1,2}})(?!\d)(?:st|nd|rd|th)?\s+(?P<month>{_MONTH_ALT})[a-z]*\.?"
+    rf"(?:\s*,?\s*(?P<year>\d{{4}}))?",
+    re.IGNORECASE,
+)
+_ISO_DAY_RE = re.compile(r"\b(?P<y>\d{4})-(?P<m>\d{2})-(?P<d>\d{2})\b")
+_ISO_STAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+_WEEKDAY_RE = re.compile(rf"\b(?P<weekday>{_WEEKDAY_ALT})[a-z]*\b", re.IGNORECASE)
+_CLOCK_RE = re.compile(
+    r"\b(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)\b"
+    r"|\b(?P<hour24>\d{1,2}):(?P<minute24>\d{2})\b",
+    re.IGNORECASE,
+)
+
+#: Hour used for a day named with no clock time, when the caller wants a
+#: midpoint rather than a boundary. Noon local: far enough from either
+#: edge that a timezone wobble cannot move the date.
+_BARE_DAY_HOUR = 12
+
+# Words that name a part of a day rather than a clock reading. Only the
+# ones a deadline realistically uses; anything else falls through to the
+# bare-day hour.
+_DAYPART_HOURS: dict[str, int] = {
+    "morning": 9,
+    "noon": 12,
+    "afternoon": 15,
+    "evening": 19,
+    "tonight": 22,
+    "night": 22,
+    "midnight": 23,
+}
+
+
+def parse_loose_datetime(
+    text: str | None,
+    *,
+    anchor: datetime | None = None,
+    day_end: bool = False,
+) -> datetime | None:
+    """Best-effort parse of a human/LLM-written day or time.
+
+    Understands ISO (delegating to :func:`parse_iso`), month-name dates
+    in either order, bare weekday names, and the handful of relative
+    words a model actually reaches for. Returns ``None`` -- never a
+    guess -- for wording that names no moment at all ("soon",
+    "eventually", "when I get to it"), because a caller treating a
+    fabricated timestamp as a deadline will happily report something
+    overdue that was never due.
+
+    ``anchor`` is the moment the text was written, which is what
+    relative wording resolves against; it defaults to :func:`now`.
+    Passing it matters for stored text, where "tomorrow" means the day
+    after the *writing*, not the day after the reading.
+
+    ``day_end`` picks the convention for a day named without a clock
+    time. The default puts it at local noon, a neutral midpoint. Deadline
+    callers want ``True``: "by August 19" is not breached at 00:01 on the
+    19th, so the moment to compare against is that evening.
+
+    Ambiguity is resolved toward the anchor: a date with no year takes
+    the anchor's year, and a bare weekday means its next occurrence.
+    """
+    if not text:
+        return None
+    raw = str(text).strip()
+    if not raw:
+        return None
+    ref = (to_aware(anchor) if anchor is not None else now()).astimezone()
+
+    # Full ISO timestamps carry their own clock, so they are taken as-is.
+    # A bare ISO *day* deliberately does not come through here:
+    # ``fromisoformat`` would put it at UTC midnight, which is the
+    # previous evening in some zones and ignores ``day_end`` in all of
+    # them.
+    #
+    # An offset-less stamp is read as **local**, which is where this
+    # parts company with :func:`parse_iso`. That function promotes naive
+    # to UTC because it reads timestamps we wrote, and we write UTC. Here
+    # the text came from a model describing somebody's afternoon, so the
+    # same promotion would silently shift every offset-less deadline by
+    # the local offset.
+    stamp = _ISO_STAMP_RE.search(raw)
+    if stamp is not None:
+        try:
+            exact = datetime.fromisoformat(
+                raw[stamp.start():].replace(" ", "T", 1).replace("Z", "+00:00")
+            )
+        except ValueError:
+            exact = None
+        if exact is not None:
+            return exact if exact.tzinfo else exact.replace(tzinfo=ref.tzinfo)
+
+    day: "datetime | None" = None
+    lowered = raw.lower()
+
+    iso_day = _ISO_DAY_RE.search(raw)
+    if iso_day is not None:
+        try:
+            day = ref.replace(
+                year=int(iso_day.group("y")),
+                month=int(iso_day.group("m")),
+                day=int(iso_day.group("d")),
+            )
+        except ValueError:
+            day = None
+
+    if day is None:
+        day = _match_month_day(raw, ref)
+
+    if day is None:
+        day = _match_relative_day(lowered, ref)
+
+    if day is None:
+        day = _match_weekday(lowered, ref)
+
+    if day is None:
+        return None
+
+    hour, minute = _match_time_of_day(lowered)
+    if hour is None:
+        hour, minute = (23, 59) if day_end else (_BARE_DAY_HOUR, 0)
+    return day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _match_month_day(raw: str, ref: datetime) -> datetime | None:
+    """A date written with a month name, in either field order."""
+    for pattern in (_MONTH_DAY_RE, _DAY_MONTH_RE):
+        match = pattern.search(raw)
+        if match is None:
+            continue
+        month = _MONTH_NUMBERS.get(match.group("month")[:3].lower())
+        if month is None:
+            continue
+        year_raw = match.group("year")
+        year = int(year_raw) if year_raw else ref.year
+        try:
+            return ref.replace(year=year, month=month, day=int(match.group("day")))
+        except ValueError:
+            # Feb 30 and friends: the model named a day that does not
+            # exist, which is not something to round off.
+            return None
+    return None
+
+
+def _match_relative_day(lowered: str, ref: datetime) -> datetime | None:
+    """``today`` / ``tomorrow`` / ``tonight`` / ``this weekend`` / ``next week``."""
+    if "tomorrow" in lowered:
+        return ref + timedelta(days=1)
+    if "yesterday" in lowered:
+        return ref - timedelta(days=1)
+    if "today" in lowered or "tonight" in lowered:
+        return ref
+    if "weekend" in lowered:
+        # The coming Saturday; a Saturday or Sunday anchor already is one.
+        ahead = (5 - ref.weekday()) % 7
+        return ref + timedelta(days=ahead)
+    if "next week" in lowered:
+        return ref + timedelta(days=7)
+    if "this week" in lowered:
+        # The end of it, i.e. Sunday. A deadline of "this week" is not
+        # owed on the Monday.
+        return ref + timedelta(days=(6 - ref.weekday()) % 7)
+    return None
+
+
+def _match_weekday(lowered: str, ref: datetime) -> datetime | None:
+    """A bare weekday name, read as its next occurrence after ``ref``.
+
+    "Monday" said on a Monday means the Monday coming, not the one
+    passing -- a deadline naming the current day would have been written
+    as "today".
+    """
+    match = _WEEKDAY_RE.search(lowered)
+    if match is None:
+        return None
+    target = _WEEKDAY_NUMBERS.get(match.group("weekday")[:3].lower())
+    if target is None:
+        return None
+    ahead = (target - ref.weekday()) % 7 or 7
+    return ref + timedelta(days=ahead)
+
+
+def _match_time_of_day(lowered: str) -> tuple[int | None, int]:
+    """``(hour, minute)`` from a clock reading or a named part of the day."""
+    match = _CLOCK_RE.search(lowered)
+    if match is not None:
+        if match.group("hour24") is not None:
+            hour = int(match.group("hour24"))
+            minute = int(match.group("minute24") or 0)
+            if 0 <= hour <= 23:
+                return hour, minute
+        else:
+            hour = int(match.group("hour"))
+            minute = int(match.group("minute") or 0)
+            meridiem = (match.group("ampm") or "").lower()
+            if 1 <= hour <= 12:
+                if meridiem == "pm" and hour != 12:
+                    hour += 12
+                elif meridiem == "am" and hour == 12:
+                    hour = 0
+                return hour, minute
+    for word, hour in _DAYPART_HOURS.items():
+        if re.search(rf"\b{word}\b", lowered):
+            return hour, 0
+    return None, 0
+
+
 # ── K-time1 history-message age phrase ───────────────────────────────────
 def age_prefix(created_at_iso: str | None, now: datetime) -> str:
     """Clock-anchored relative age for a chat-history / transcript message.

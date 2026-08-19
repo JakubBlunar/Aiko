@@ -9,14 +9,21 @@ gotten to it yet.
 
 This worker is the silent producer half. During a quiet window it:
 
-  * scans assistant-side promise memories whose lifecycle status
+  * scans promise memories whose lifecycle status
     (``metadata.promise_status``, see
     :mod:`app.core.memory.promise_lifecycle`) is still ``open``,
-  * flips rows older than ``drop_after_days`` to ``dropped`` (a 3-week-
-    old "I'll check" resurfacing is weirder than letting it go),
-  * picks the **oldest** promise past ``min_age_hours`` (longest-owed
-    first), stamps it ``surfaced``, and writes a one-shot pending cue
-    into kv_meta (``promise_followthrough.pending``).
+  * retires rows that have run out of road — ``dropped`` (a 3-week-old
+    "I'll check" resurfacing is weirder than letting it go). This half
+    covers **both sides**: see :meth:`_should_retire` for why the user's
+    own promises had never once been retired before H41,
+  * picks the **most overdue** promise, falling back to the oldest, from
+    the assistant-side rows past ``min_age_hours``, stamps it
+    ``surfaced``, and writes a one-shot pending cue into kv_meta
+    (``promise_followthrough.pending``).
+
+Only Aiko's own promises are ever surfaced. Chasing the user over his
+commitments is a much louder product decision, and the cue's whole
+premise is her closing her own loops.
 
 The consumer is
 :meth:`InnerLifeProvidersMixin._render_promise_followthrough_block`,
@@ -162,15 +169,15 @@ class PromiseFollowthroughWorker:
         — reporting zero pressure only deprioritises, it does not stop
         a worker whose interval has elapsed.
 
-        Overdue promises count even though they arm nothing: retiring
+        Retirable promises count even though they arm nothing: retiring
         them is the other half of what ``run`` does.
         """
         if not self._enabled():
             return False
         if self._blocked(now) is not None:
             return False
-        armable, overdue = self._survey(now)
-        return bool(armable or overdue)
+        armable, retirable = self._survey(now)
+        return bool(armable or retirable)
 
     def demand(
         self,
@@ -193,22 +200,22 @@ class PromiseFollowthroughWorker:
         write. Both walk the same in-memory ``promise`` mirror.
 
         Only one promise is armed per run, so a single eligible one is
-        already full pressure; overdue-only rows are bookkeeping with no
-        deadline and rank at the floor.
+        already full pressure; rows that are only there to be retired are
+        silent bookkeeping and rank at the floor.
         """
         if not self._enabled():
             return WorkSignal(pressure=0.0, reason="disabled")
         blocked = self._blocked(now)
         if blocked is not None:
             return WorkSignal(pressure=0.0, reason=blocked)
-        armable, overdue = self._survey(now)
+        armable, retirable = self._survey(now)
         if armable:
             return WorkSignal(
                 pressure=1.0, reason=f"{armable} owed",
             )
-        if overdue:
+        if retirable:
             return WorkSignal(
-                pressure=0.0, reason=f"{overdue} to retire",
+                pressure=0.0, reason=f"{retirable} to retire",
             )
         return WorkSignal(pressure=0.0, reason="nothing owed")
 
@@ -231,22 +238,20 @@ class PromiseFollowthroughWorker:
         return None
 
     def _survey(self, now: datetime) -> "tuple[int, int]":
-        """``(armable, overdue)`` over the promise mirror — no writes."""
+        """``(armable, retirable)`` over the promise mirror — no writes."""
         armable = 0
-        overdue = 0
+        retirable = 0
         for mem in self._iter_promises():
             if lifecycle.promise_status(mem) != lifecycle.STATUS_OPEN:
                 continue
+            if self._should_retire(mem, now):
+                retirable += 1
+                continue
             if not lifecycle.is_assistant_promise(mem):
                 continue
-            age_hours = lifecycle.promise_age_hours(mem, now=now)
-            if age_hours is None:
-                continue
-            if age_hours > self._drop_after_days * 24.0:
-                overdue += 1
-            elif age_hours >= self._min_age_hours:
+            if self._is_armable(mem, now):
                 armable += 1
-        return armable, overdue
+        return armable, retirable
 
     def run(self) -> dict[str, Any]:
         if not self._enabled():
@@ -271,8 +276,18 @@ class PromiseFollowthroughWorker:
         if not candidates:
             return {"armed": 0, "dropped": dropped, "eligible": 0}
 
-        # Longest-owed first.
-        candidates.sort(key=lambda pair: pair[1], reverse=True)
+        # Missed deadlines first, then longest-owed. Ordering on age alone
+        # buried the interesting rows: a promise made last week with no
+        # deadline outranked one made this morning and due by lunch, so
+        # the only promises with a definite obligation attached were the
+        # ones least likely to be raised.
+        candidates.sort(
+            key=lambda pair: (
+                lifecycle.overdue_hours(pair[0], now=now) or 0.0,
+                pair[1],
+            ),
+            reverse=True,
+        )
         mem, age_hours = candidates[0]
         if not self._arm(mem, age_hours=age_hours, now=now):
             return {"armed": 0, "dropped": dropped, "errored": True}
@@ -328,34 +343,91 @@ class PromiseFollowthroughWorker:
             )
             return []
 
+    def _should_retire(self, mem: "Memory", now: datetime) -> bool:
+        """Whether this promise has run out of road.
+
+        Three cases, and the deadline decides which one applies:
+
+        * **Still ahead of its deadline** — never retired, however old.
+          A commitment made three weeks early is not stale, it is early,
+          and the old rule dropped one agreed three weeks ahead on the
+          very day it fell due.
+        * **Past its deadline** — kept for a full grace window measured
+          *from the deadline*, not from when it was made. This is the
+          "stay visible" case: a missed promise is the most interesting
+          kind there is, so it earns its own window rather than
+          inheriting whatever was left of the creation-age one.
+        * **No deadline at all** — the original rule, on creation age. A
+          standing "I'll help when you ask" has no moment to miss, so age
+          is the only thing left to judge it by.
+
+        Applies to both sides, unlike arming. The user's promises were
+        documented as another worker's problem and that worker filters on
+        a field promises never carry, so nothing had ever retired one
+        (H41).
+        """
+        window_hours = self._drop_after_days * 24.0
+        deadline = lifecycle.promise_deadline(mem)
+        if deadline is not None:
+            late = lifecycle.overdue_hours(mem, now=now)
+            if late is None:
+                return False
+            return late > window_hours
+        age_hours = lifecycle.promise_age_hours(mem, now=now)
+        if age_hours is None:
+            return False
+        return age_hours > window_hours
+
+    def _is_armable(self, mem: "Memory", now: datetime) -> bool:
+        """Whether this promise is ripe enough to raise.
+
+        ``min_age_hours`` exists so Aiko doesn't ask about something she
+        said twenty minutes ago. A passed deadline overrides it: the
+        commitment is late by its own terms, and waiting out a settling
+        period to mention it is exactly the flakiness the cue is for.
+        """
+        if lifecycle.is_overdue(mem, now=now):
+            return True
+        age_hours = lifecycle.promise_age_hours(mem, now=now)
+        return age_hours is not None and age_hours >= self._min_age_hours
+
     def _scan(self, now: datetime) -> "tuple[list[tuple[Memory, float]], int]":
-        """Return (eligible open assistant promises with ages, dropped count)."""
+        """Return (armable open assistant promises with ages, dropped count).
+
+        Retirement sweeps both sides; arming stays assistant-only.
+        """
         eligible: "list[tuple[Memory, float]]" = []
         dropped = 0
         for mem in self._iter_promises():
             if lifecycle.promise_status(mem) != lifecycle.STATUS_OPEN:
                 continue
-            if not lifecycle.is_assistant_promise(mem):
-                continue
-            age_hours = lifecycle.promise_age_hours(mem, now=now)
-            if age_hours is None:
-                continue
-            if age_hours > self._drop_after_days * 24.0:
+            if self._should_retire(mem, now):
                 if self._mark(mem, status=lifecycle.STATUS_DROPPED, now=now):
                     dropped += 1
                 continue
-            if age_hours < self._min_age_hours:
+            if not lifecycle.is_assistant_promise(mem):
+                continue
+            if not self._is_armable(mem, now):
+                continue
+            age_hours = lifecycle.promise_age_hours(mem, now=now)
+            if age_hours is None:
                 continue
             eligible.append((mem, age_hours))
         return eligible, dropped
 
     def _arm(self, mem: "Memory", *, age_hours: float, now: datetime) -> bool:
+        overdue = lifecycle.overdue_hours(mem, now=now)
         payload = {
             "memory_id": int(mem.id),
             "what": lifecycle.promise_what(mem)[:200],
             "age_hours": round(float(age_hours), 2),
             "at": now.isoformat(),
         }
+        # Only present when the promise actually named a time and missed
+        # it, so the consumer can read its absence as "no deadline known"
+        # rather than "comfortably on time".
+        if overdue is not None:
+            payload["overdue_hours"] = round(float(overdue), 2)
         try:
             self._kv_set(PENDING_KEY, json.dumps(payload))
             self._kv_set(_KV_LAST_FIRED_AT, now.isoformat())
@@ -366,9 +438,11 @@ class PromiseFollowthroughWorker:
             return False
         self._mark(mem, status=lifecycle.STATUS_SURFACED, now=now)
         log.info(
-            "promise-followthrough armed: memory_id=%s age_h=%.1f what=%r",
+            "promise-followthrough armed: memory_id=%s age_h=%.1f "
+            "overdue_h=%s what=%r",
             mem.id,
             age_hours,
+            f"{overdue:.1f}" if overdue is not None else "-",
             payload["what"][:80],
         )
         return True

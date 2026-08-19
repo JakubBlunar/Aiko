@@ -163,6 +163,26 @@ class PromiseWhatTests(unittest.TestCase):
             lifecycle.promise_what(mem), "look into LanceDB indexing",
         )
 
+    def test_strips_the_deadline_suffix(self) -> None:
+        # The cue states the timing itself, from the parsed deadline, so
+        # leaving the suffix in read the storage format out loud: "you'd
+        # call the dentist (by Wed Aug 19)".
+        mem = _FakeMemory(
+            1, "Jacob promised: call the dentist (by Wed Aug 19)",
+        )
+        self.assertEqual(
+            lifecycle.promise_what(mem), "call the dentist",
+        )
+
+    def test_keeps_a_bracketed_aside_that_is_not_a_deadline(self) -> None:
+        mem = _FakeMemory(
+            1, "Aiko promised: check the logs (the noisy ones) tonight",
+        )
+        self.assertEqual(
+            lifecycle.promise_what(mem),
+            "check the logs (the noisy ones) tonight",
+        )
+
 
 class AgeHelpersTests(unittest.TestCase):
     def test_age_hours(self) -> None:
@@ -181,6 +201,55 @@ class AgeHelpersTests(unittest.TestCase):
         self.assertEqual(lifecycle.humanize_age(72.0), "3 days ago")
         self.assertEqual(lifecycle.humanize_age(7 * 24.0), "a week ago")
         self.assertIn("weeks ago", lifecycle.humanize_age(20 * 24.0))
+
+
+class DeadlineHelpersTests(unittest.TestCase):
+    """Late and old are different questions (H41).
+
+    Everything used to be decided from creation age, so a promise made
+    this morning and due by lunch read as fresh all afternoon while a
+    standing commitment with no deadline read as late for having been
+    made a while back.
+    """
+
+    def test_no_deadline_is_never_overdue(self) -> None:
+        mem = _FakeMemory(1, "Aiko promised: help when asked",
+                          created_at=_iso_ago(30 * 24.0))
+        self.assertIsNone(lifecycle.promise_deadline(mem))
+        self.assertIsNone(lifecycle.overdue_hours(mem))
+        self.assertFalse(lifecycle.is_overdue(mem))
+
+    def test_a_passed_deadline_is_overdue_however_young_the_promise(self) -> None:
+        mem = _FakeMemory(
+            1,
+            "Jacob promised: call the dentist",
+            created_at=_iso_ago(3.0),
+            metadata={"promise_deadline": _iso_ago(1.0)},
+        )
+        late = lifecycle.overdue_hours(mem)
+        assert late is not None
+        self.assertAlmostEqual(late, 1.0, delta=0.1)
+        self.assertTrue(lifecycle.is_overdue(mem))
+
+    def test_a_future_deadline_is_not_overdue_however_old_the_promise(self) -> None:
+        mem = _FakeMemory(
+            1,
+            "Jacob promised: book the flight",
+            created_at=_iso_ago(20 * 24.0),
+            metadata={
+                "promise_deadline": (
+                    datetime.now(timezone.utc) + timedelta(days=2)
+                ).isoformat(),
+            },
+        )
+        self.assertFalse(lifecycle.is_overdue(mem))
+
+    def test_an_unreadable_deadline_is_treated_as_absent(self) -> None:
+        mem = _FakeMemory(
+            1, "x", metadata={"promise_deadline": "next Tuesday-ish"},
+        )
+        self.assertIsNone(lifecycle.promise_deadline(mem))
+        self.assertFalse(lifecycle.is_overdue(mem))
 
 
 class FindFulfilledTests(unittest.TestCase):
@@ -352,6 +421,149 @@ class WorkerArmingTests(unittest.TestCase):
         kv = _FakeKv()
         result = _make_worker(store, kv).run()
         self.assertEqual(result["armed"], 0)
+
+
+class OverdueArmingTests(unittest.TestCase):
+    """A missed deadline is the most interesting promise there is (H41)."""
+
+    def test_a_missed_deadline_outranks_a_merely_older_promise(self) -> None:
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Aiko promised: look into LanceDB indexing",
+                created_at=_iso_ago(60.0),
+            ),
+            _FakeMemory(
+                2, "Aiko promised: send the hardware build notes",
+                created_at=_iso_ago(9.0),
+                metadata={"promise_deadline": _iso_ago(2.0)},
+            ),
+        ])
+        kv = _FakeKv()
+        result = _make_worker(store, kv).run()
+        self.assertEqual(result["armed"], 1)
+        pending = load_pending(kv.get)
+        assert pending is not None
+        # Ordering on age alone would have taken row 1, leaving the only
+        # promise with a definite broken obligation unmentioned.
+        self.assertEqual(pending["memory_id"], 2)
+        self.assertGreater(pending["overdue_hours"], 0.0)
+
+    def test_overdue_bypasses_the_settling_period(self) -> None:
+        # min_age_hours exists so she doesn't ask about something she said
+        # twenty minutes ago. A promise already late by its own terms has
+        # nothing to gain from waiting the period out.
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Aiko promised: check the logs before bed",
+                created_at=_iso_ago(1.0),
+                metadata={"promise_deadline": _iso_ago(0.5)},
+            ),
+        ])
+        kv = _FakeKv()
+        result = _make_worker(store, kv, min_age_hours=4.0).run()
+        self.assertEqual(result["armed"], 1)
+
+    def test_a_promise_with_no_deadline_carries_no_overdue_claim(self) -> None:
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Aiko promised: look into LanceDB indexing",
+                created_at=_iso_ago(9.0),
+            ),
+        ])
+        kv = _FakeKv()
+        _make_worker(store, kv).run()
+        pending = load_pending(kv.get)
+        assert pending is not None
+        self.assertNotIn("overdue_hours", pending)
+
+
+class RetirementTests(unittest.TestCase):
+    """Who ages out, and on which clock (H41).
+
+    Retirement used to be assistant-only, on creation age, with no notion
+    of a deadline. That left 86 user-side promises permanently ``open`` --
+    the oldest 86 days -- because this module documented them as the
+    follow-up worker's job and that worker selects on a field promises
+    never carry.
+    """
+
+    def test_a_stale_user_promise_is_retired(self) -> None:
+        # 84 days is not a round number: it is the age of the oldest row
+        # still sitting `open` on the live store when this was found.
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Jacob promised: water the plants",
+                created_at=_iso_ago(84 * 24.0),
+                metadata={"promise_who": "user", "promise_status": "open"},
+            ),
+        ])
+        kv = _FakeKv()
+        result = _make_worker(store, kv, drop_after_days=14.0).run()
+        self.assertEqual(result["dropped"], 1)
+        self.assertEqual(lifecycle.promise_status(store.get(1)), "dropped")
+
+    def test_a_stale_user_promise_is_retired_but_never_surfaced(self) -> None:
+        # Retiring his promises is upkeep; raising them is nagging, and
+        # that stays out of scope.
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Jacob promised: call the dentist about the filling",
+                created_at=_iso_ago(50.0),
+                metadata={"promise_who": "user", "promise_status": "open"},
+            ),
+        ])
+        kv = _FakeKv()
+        result = _make_worker(store, kv).run()
+        self.assertEqual(result["armed"], 0)
+        self.assertEqual(lifecycle.promise_status(store.get(1)), "open")
+
+    def test_a_deadline_still_ahead_protects_an_old_promise(self) -> None:
+        # A commitment agreed three weeks ahead of the day it falls due:
+        # the old rule dropped it for being old on that very day.
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Jacob promised: book the flight",
+                created_at=_iso_ago(20 * 24.0),
+                metadata={
+                    "promise_who": "user",
+                    "promise_deadline": (
+                        datetime.now(timezone.utc) + timedelta(days=1)
+                    ).isoformat(),
+                },
+            ),
+        ])
+        kv = _FakeKv()
+        result = _make_worker(store, kv, drop_after_days=14.0).run()
+        self.assertEqual(result["dropped"], 0)
+        self.assertEqual(lifecycle.promise_status(store.get(1)), "open")
+
+    def test_an_overdue_promise_keeps_a_window_of_its_own(self) -> None:
+        # Grace runs from the deadline, not from creation, so a promise
+        # that fell due yesterday is not retired for having been made a
+        # month ago -- it stays visible while it is worth noticing.
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Aiko promised: send the recap",
+                created_at=_iso_ago(40 * 24.0),
+                metadata={"promise_deadline": _iso_ago(24.0)},
+            ),
+        ])
+        kv = _FakeKv()
+        result = _make_worker(store, kv, drop_after_days=14.0).run()
+        self.assertEqual(result["dropped"], 0)
+        self.assertEqual(result["armed"], 1)
+
+    def test_an_overdue_promise_eventually_runs_out_of_road(self) -> None:
+        store = _FakeMemoryStore([
+            _FakeMemory(
+                1, "Aiko promised: send the recap",
+                created_at=_iso_ago(40 * 24.0),
+                metadata={"promise_deadline": _iso_ago(20 * 24.0)},
+            ),
+        ])
+        kv = _FakeKv()
+        result = _make_worker(store, kv, drop_after_days=14.0).run()
+        self.assertEqual(result["dropped"], 1)
 
 
 class WorkerDemandTests(unittest.TestCase):

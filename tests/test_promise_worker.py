@@ -20,6 +20,7 @@ from app.core.memory.promise_lifecycle import is_assistant_promise
 from app.core.memory.promise_worker import (
     PromiseExtractionWorker,
     _is_low_quality,
+    _read_deadline,
     resolve_promise_who,
 )
 
@@ -253,15 +254,24 @@ class QualityGateTests(unittest.TestCase):
 
 class ParseTests(unittest.TestCase):
     def test_basic_object_with_deadline(self) -> None:
+        # A relative deadline is resolved against the moment the
+        # transcript was read, and lands on its own field rather than
+        # inside the body. "this weekend" written on a Wednesday means
+        # that Saturday, and must not still say "this weekend" in a note
+        # read the following month (H41).
+        anchor = datetime(2026, 8, 19, 10, 31, tzinfo=timezone.utc)
         raw = json.dumps([
             {"who": "user", "what": "start running", "deadline": "this weekend"},
         ])
-        out = PromiseExtractionWorker._parse_promises(raw)
+        out = PromiseExtractionWorker._parse_promises(raw, anchor=anchor)
         assert out is not None
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].who, "user")
-        self.assertIn("start running", out[0].text)
-        self.assertIn("by this weekend", out[0].text)
+        self.assertEqual(out[0].text, "start running")
+        assert out[0].deadline is not None
+        self.assertEqual(out[0].deadline.astimezone().date().isoformat(), "2026-08-22")
+        self.assertNotIn("weekend", out[0].to_memory_content())
+        self.assertIn("by Sat Aug 22", out[0].to_memory_content())
 
     def test_assistant_mapping(self) -> None:
         raw = json.dumps([
@@ -307,6 +317,115 @@ class ParseTests(unittest.TestCase):
         assert out is not None
         self.assertEqual(len(out), 1)
         self.assertIn("send the staging config", out[0].text)
+
+
+class DeadlineTests(unittest.TestCase):
+    """A deadline nothing can read is a deadline nothing can enforce (H41).
+
+    The prompt asks for ISO. These are the registers the field actually
+    arrived in across 160 stored promises, all of which have to survive
+    the trip to a datetime -- before this, 13 of the 37 promises that
+    named a day named it only to a human reader, and every lifecycle
+    decision was made on creation age instead.
+    """
+
+    # Wednesday, 12:31 local (Europe/Prague).
+    ANCHOR = datetime(2026, 8, 19, 10, 31, tzinfo=timezone.utc)
+
+    def _parse(self, text: str | None):
+        return _read_deadline(text, anchor=self.ANCHOR)
+
+    def test_every_register_the_live_store_contains_parses(self) -> None:
+        cases = {
+            "2026-08-19": "2026-08-19",
+            "2026-08-20": "2026-08-20",
+            "Monday, August 17, 2026": "2026-08-17",
+            "Wednesday, August 19, 2026": "2026-08-19",
+            "August 14, 2026": "2026-08-14",
+            "August 18, 2026": "2026-08-18",
+            "Before August 18, 2026": "2026-08-18",
+            "tomorrow": "2026-08-20",
+            "2026-08-18T08:00:00+00:00": "2026-08-18",
+            "2026-08-17T23:30:00.000Z": "2026-08-18",
+        }
+        for raw, expected_day in cases.items():
+            with self.subTest(raw=raw):
+                when, _ = self._parse(raw)
+                assert when is not None, raw
+                self.assertEqual(
+                    when.astimezone().date().isoformat(), expected_day,
+                )
+
+    def test_vague_wording_names_no_moment(self) -> None:
+        # Refusing is the point. A fabricated deadline would have the
+        # worker report a promise overdue that was never due.
+        for raw in ("soon", "sometime", "eventually", "when I get to it",
+                    "null", "none", "", None):
+            with self.subTest(raw=raw):
+                when, _ = self._parse(raw)
+                self.assertIsNone(when)
+
+    def test_a_bare_day_is_owed_by_the_end_of_it(self) -> None:
+        # "by August 19" is not breached at 00:01 on the 19th, so the
+        # comparison moment is that evening.
+        when, _ = self._parse("2026-08-19")
+        assert when is not None
+        local = when.astimezone()
+        self.assertEqual((local.hour, local.minute), (23, 59))
+
+    def test_a_stated_clock_time_is_kept(self) -> None:
+        when, text = self._parse("tomorrow at 9am")
+        assert when is not None
+        self.assertEqual(when.astimezone().strftime("%H:%M"), "09:00")
+        self.assertIn("09:00", text)
+
+    def test_stored_text_never_keeps_a_relative_word(self) -> None:
+        # The sentence outlives the day it was written on, so "tomorrow"
+        # has to become a date before it is stored -- the same rule H40
+        # applied to memory content.
+        _, text = self._parse("tomorrow")
+        self.assertEqual(text, "Thu Aug 20")
+
+    def test_unparseable_wording_survives_only_if_it_stays_true(self) -> None:
+        # Wording that names no moment but will still read the same next
+        # month is kept verbatim -- it is weak, but it is not a lie.
+        _, keeps = self._parse("before the end of the quarter")
+        self.assertEqual(keeps, "before the end of the quarter")
+        # Wording pinned to the day it was written is dropped instead,
+        # because the sentence outlives that day.
+        _, drops = self._parse("lately, whenever")
+        self.assertEqual(drops, "")
+
+    def test_a_week_named_as_a_deadline_falls_at_its_end(self) -> None:
+        # "this week" is not owed on the Monday, and the whole phrase is
+        # relative, so failing to resolve it would drop it entirely.
+        when, text = self._parse("this week")
+        assert when is not None
+        self.assertEqual(when.astimezone().date().isoformat(), "2026-08-23")
+        self.assertEqual(text, "Sun Aug 23")
+
+    def test_the_display_form_carries_a_weekday(self) -> None:
+        # The model getting weekday arithmetic wrong is one of the ways
+        # H40 happened, so the stored sentence answers it outright rather
+        # than leaving a raw ISO date to be worked out at read time.
+        _, text = self._parse("2026-08-19")
+        self.assertEqual(text, "Wed Aug 19")
+
+    def test_an_impossible_date_is_refused_not_rounded(self) -> None:
+        when, _ = self._parse("Feb 30, 2026")
+        self.assertIsNone(when)
+
+    def test_persisted_promise_carries_the_deadline_in_metadata(self) -> None:
+        promise = Promise(
+            who="user",
+            text="call the dentist",
+            deadline=datetime(2026, 8, 19, 21, 59, tzinfo=timezone.utc),
+            deadline_text="Wed Aug 19",
+        )
+        self.assertEqual(
+            promise.to_memory_content(user_display_name="Jacob"),
+            "Jacob promised: call the dentist (by Wed Aug 19)",
+        )
 
 
 class AttributionTests(unittest.TestCase):

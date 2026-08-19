@@ -36,6 +36,7 @@ import numpy as np
 
 from app.core.infra import timephrase as _tp
 from app.core.infra.time_expr import TimeWindow, parse_time_window
+from app.core.memory import promise_lifecycle
 from app.core.rag.rag_store import MessageRecord, RagHit
 from app.core.infra import timephrase
 
@@ -436,14 +437,30 @@ _FUTURE_PLAN_PENALTY = -0.05
 
 
 def _temporal_filter_drops(mem, now: datetime) -> bool:
-    """True if the v10 temporal fields say this memory should be skipped.
+    """True if this memory has outlived its usefulness in the live block.
 
-    Currently only ``past_event`` rows whose ``relevance_until`` is in
-    the past are dropped — they've outlived their freshness window
-    and continuing to surface them in normal RAG produces the exact
-    "asking about progress on something that already finished" bug
-    this work targets. Other temporal types are kept.
+    Two rules, both answering "would surfacing this produce the exact
+    'asking about progress on something that already finished' bug":
+
+    * ``past_event`` rows whose ``relevance_until`` is in the past have
+      outlived their freshness window.
+    * ``dropped`` promises. A promise the follow-through worker retired is
+      one nobody is owed any more, and H41 found the rule above could
+      never reach them: promises are written ``durable`` with a NULL
+      ``relevance_until``, so the guard built for this failure was
+      structurally blind to the rows most likely to cause it. Rows nearly
+      three months old were still scoring into the block.
+
+    ``fulfilled`` promises deliberately stay. Those happened, which makes
+    them ordinary shared history and worth remembering; it is the ones
+    that quietly expired unkept that read as inattentive when raised.
+
+    Rows are only hidden from the live block, never deleted — archive and
+    reflection paths still see everything.
     """
+    if (getattr(mem, "kind", None) or "").lower() == "promise":
+        if promise_lifecycle.promise_status(mem) == promise_lifecycle.STATUS_DROPPED:
+            return True
     temporal_type = getattr(mem, "temporal_type", None)
     if temporal_type != "past_event":
         return False

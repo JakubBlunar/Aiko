@@ -502,6 +502,125 @@ class ResolveDeicticsTests(unittest.TestCase):
         self.assertEqual(tp.resolve_deictics(once, self._WRITTEN, _NOW), once)
 
 
+class ParseLooseDatetimeTests(unittest.TestCase):
+    """Reading a time back off an answer we did not get to format.
+
+    :func:`tp.parse_iso` handles timestamps we wrote and can trust the
+    shape of. This is the other direction, and it exists because asking a
+    model for ISO and hoping is not enough: over 160 stored promise
+    deadlines the field came back in six registers, so a caller that only
+    tried ``fromisoformat`` understood 24 of the 37 that named a day.
+    """
+
+    # A Wednesday, deliberately: several cases turn on the weekday.
+    ANCHOR = datetime(2026, 8, 19, 12, 31, tzinfo=timezone.utc)
+
+    def _day(self, text: str, **kw) -> str | None:
+        got = tp.parse_loose_datetime(text, anchor=self.ANCHOR, **kw)
+        return got.astimezone().date().isoformat() if got else None
+
+    def test_iso_day_and_stamp(self) -> None:
+        self.assertEqual(self._day("2026-08-19"), "2026-08-19")
+        self.assertEqual(self._day("2026-08-18T08:00:00+00:00"), "2026-08-18")
+        self.assertEqual(self._day("2026-08-17T23:30:00.000Z"), "2026-08-18")
+
+    def test_month_name_in_either_field_order(self) -> None:
+        self.assertEqual(self._day("August 14, 2026"), "2026-08-14")
+        self.assertEqual(self._day("14 August 2026"), "2026-08-14")
+        self.assertEqual(self._day("Aug 14th"), "2026-08-14")
+
+    def test_a_year_is_not_mistaken_for_a_day(self) -> None:
+        # "14 August 2026" matches the month-first pattern too, and
+        # without a guard it read the "20" of the year as the day.
+        self.assertEqual(self._day("14 August 2026"), "2026-08-14")
+
+    def test_words_that_name_no_moment_are_refused(self) -> None:
+        for text in ("soon", "eventually", "sometime", "when I get to it",
+                     "", None, "asap"):
+            with self.subTest(text=text):
+                self.assertIsNone(
+                    tp.parse_loose_datetime(text, anchor=self.ANCHOR),
+                )
+
+    def test_relative_words_resolve_against_the_anchor_not_the_reader(self) -> None:
+        self.assertEqual(self._day("tomorrow"), "2026-08-20")
+        self.assertEqual(self._day("yesterday"), "2026-08-18")
+        self.assertEqual(self._day("tonight"), "2026-08-19")
+        self.assertEqual(self._day("this weekend"), "2026-08-22")
+        self.assertEqual(self._day("next week"), "2026-08-26")
+
+    def test_a_bare_weekday_means_its_next_occurrence(self) -> None:
+        self.assertEqual(self._day("Friday"), "2026-08-21")
+        # Said on a Wednesday, "Wednesday" is the one coming: a deadline
+        # naming today would have been written as "today".
+        self.assertEqual(self._day("Wednesday"), "2026-08-26")
+
+    def test_day_end_switches_the_convention_for_a_bare_day(self) -> None:
+        noon = tp.parse_loose_datetime("2026-08-19", anchor=self.ANCHOR)
+        assert noon is not None
+        self.assertEqual(noon.astimezone().hour, 12)
+        end = tp.parse_loose_datetime(
+            "2026-08-19", anchor=self.ANCHOR, day_end=True,
+        )
+        assert end is not None
+        self.assertEqual((end.astimezone().hour, end.astimezone().minute), (23, 59))
+
+    def test_a_stated_clock_time_wins_over_the_convention(self) -> None:
+        for text, expected in (
+            ("2026-08-19 18:00", "18:00"),
+            ("tomorrow at 9am", "09:00"),
+            ("Friday 7pm", "19:00"),
+            ("August 19 at 6:30pm", "18:30"),
+        ):
+            with self.subTest(text=text):
+                got = tp.parse_loose_datetime(
+                    text, anchor=self.ANCHOR, day_end=True,
+                )
+                assert got is not None, text
+                self.assertEqual(got.astimezone().strftime("%H:%M"), expected)
+
+    def test_an_offsetless_stamp_is_local_where_parse_iso_calls_it_utc(self) -> None:
+        # The two functions read text from opposite sources and so must
+        # disagree here. ``parse_iso`` handles timestamps we wrote, and we
+        # write UTC. This one handles a model describing somebody's
+        # afternoon, so promoting to UTC would shift every offset-less
+        # deadline by the local offset.
+        naive = "2026-08-19T18:00"
+        loose = tp.parse_loose_datetime(naive, anchor=self.ANCHOR)
+        assert loose is not None
+        self.assertEqual(loose.astimezone().strftime("%H:%M"), "18:00")
+        self.assertEqual(tp.parse_iso(naive).tzinfo, timezone.utc)
+
+    def test_an_explicit_offset_is_respected(self) -> None:
+        got = tp.parse_loose_datetime(
+            "2026-08-19T18:00:00+00:00", anchor=self.ANCHOR,
+        )
+        assert got is not None
+        self.assertEqual(got.astimezone(timezone.utc).strftime("%H:%M"), "18:00")
+
+    def test_a_named_part_of_the_day_is_a_time_too(self) -> None:
+        got = tp.parse_loose_datetime(
+            "tomorrow morning", anchor=self.ANCHOR, day_end=True,
+        )
+        assert got is not None
+        self.assertEqual(got.astimezone().strftime("%H:%M"), "09:00")
+
+    def test_an_impossible_date_is_refused_rather_than_rounded(self) -> None:
+        self.assertIsNone(self._day("Feb 30, 2026"))
+        self.assertIsNone(self._day("2026-02-30"))
+
+    def test_surrounding_words_do_not_prevent_a_match(self) -> None:
+        self.assertEqual(self._day("Before August 18, 2026"), "2026-08-18")
+        self.assertEqual(self._day("Monday, August 17, 2026"), "2026-08-17")
+
+    def test_the_anchor_defaults_to_now(self) -> None:
+        got = tp.parse_loose_datetime("today")
+        assert got is not None
+        self.assertEqual(
+            got.astimezone().date(), tp.now().astimezone().date(),
+        )
+
+
 class TimeRuleTests(unittest.TestCase):
     """Two halves of one contract, and they must stay distinguishable.
 
