@@ -73,6 +73,61 @@ The page also prints two tables that matter more than the audio:
   RTF and "runs on CPU" claims are the most optimistic numbers in any
   model card.
 
+## Cloning and testing a voice
+
+```bash
+python -m tools.tts_lab.serve --open        # http://127.0.0.1:6280
+```
+
+Record a reference in the browser (or drop in a 16-bit WAV), clone it
+into any installed engine, audition a phrase, and save it to `voices/`.
+It reads out the clip's quality numbers as you record and shows the same
+phrase set `voicebank.py` uses as a script to read, so the reference
+covers her range rather than being thirty seconds of one flat sentence.
+
+Saving means one of two things. For pocket-tts it exports a real speaker
+embedding via `export_voice()` — the same `.safetensors` the app loads
+today, and the call the deleted Qt dialog used to make. For everything
+else the engine clones per call from a clip, so the clip *is* the voice
+and it gets copied into `voices/`.
+
+Capture is raw PCM through the Web Audio API rather than
+`MediaRecorder`, which would hand back WebM/Opus and need ffmpeg to
+decode for the one job of writing a WAV. The app already works this way
+for voice mode.
+
+Loopback-only by default: it takes microphone audio and writes into
+`voices/`.
+
+## Candidate environments
+
+Candidate engines pin dependencies that would wreck the app's venv —
+Chatterbox alone wants **torch 2.6.0 over our 2.10.0**, plus
+`transformers 5.2`, `safetensors 0.5.3`, `pandas`, `numba` and `gradio`.
+So each engine gets its own venv under `.venvs/`, and the bench talks to
+it over a subprocess (`sidecar.py` on the far side, `remote.py` on this
+one). The `Adapter` seam hides the difference, so the bench cannot tell
+a local engine from a remote one.
+
+```bash
+python -m tools.tts_lab.envs list
+python -m tools.tts_lab.envs install chatterbox       # Turbo + original
+python -m tools.tts_lab.envs install chatterbox-git   # master, for Nano
+python -m tools.tts_lab.envs remove chatterbox        # uninstalls entirely
+```
+
+Two traps found the hard way, both recorded in `envs.py`:
+
+- **`setuptools<81` is load-bearing** for Chatterbox. `resemble-perth`
+  imports `pkg_resources`, setuptools 81 removed it, and perth swallows
+  the ImportError and leaves its watermarker class as `None` — which
+  then fails six frames deeper as `TypeError: 'NoneType' object is not
+  callable`.
+- **PyPI trails the README.** `chatterbox-tts` 0.1.7 has no
+  `nano=True`, so Nano needs the git env. The sidecar detects this by
+  introspection and says so, rather than passing the argument and
+  letting a `TypeError` escape a subprocess.
+
 ## Adding an engine
 
 1. Write a class in `adapters.py` (or its own module beside it)
@@ -83,11 +138,27 @@ The page also prints two tables that matter more than the audio:
    `voice_from_id`.
 3. Register the factory in `REGISTRY`.
 
-Keep it lazy — import the engine's package inside `_load`, not at module
-scope, so a missing optional dependency shows up as one line in the
-report's "would not run" list instead of breaking the whole bench.
+If the engine's dependencies conflict with the app's — assume they do —
+subclass `Remote` instead and add the engine to `sidecar.py`'s registry
+and `envs.py`'s. Keep imports lazy either way: import the engine's
+package inside `_load`, not at module scope, so a missing dependency
+shows up as one line in the report's "would not run" list instead of
+breaking the whole bench.
 
-Two rules worth honouring, both learned the hard way here:
+Rules worth honouring, all learned the hard way here:
+
+- **Discard a warmup generation before timing.** Chatterbox Turbo
+  reports RTF 3.93 on its first call and 1.5 on its second. Timing the
+  first would have rejected it on a number 2.5× worse than the truth,
+  and the effect size differs per engine so it cannot be corrected for
+  afterwards.
+- **Run an engine at its own defaults**, read off the installed code, not
+  at numbers from a README. Turbo defaults to `exaggeration=0.0,
+  cfg_weight=0.0` while every published tip says 0.5 / 0.5 — because the
+  tips are about a different model in the same family.
+- **State the thread count.** "3× realtime on 8 cores" is not
+  reproducible without it. (It turned out not to be the lever here:
+  Turbo is 1.51 at 16 threads and 1.67 at 8.)
 
 - **Do not emulate a capability the engine lacks.** If there is no
   native rate control, ignore the `rate` argument and leave
@@ -102,12 +173,15 @@ Two rules worth honouring, both learned the hard way here:
 
 ## What is not here yet
 
-- A browser-side cloning UI (record or drop a clip, hear it, save it to
-  `voices/`). The plumbing it needs already exists — `set_voice()`
-  hot-swaps at runtime and clears the audio cache, and `export_voice()`
-  is still in the service hanging off nothing since the Qt dialog was
-  deleted.
-- A pitch-preserving time-stretch stage, which is the fix that lights up
-  the cadence layer regardless of which engine wins. See the options
-  doc; it has to work on ~50 ms chunks, which rules out the convenient
-  offline helpers.
+- **A pitch-preserving time-stretch stage**, which is the fix that lights
+  up the cadence layer's dark speed channel regardless of which engine
+  wins. See the options doc; it has to work on ~50 ms chunks, which rules
+  out the convenient offline helpers.
+- **Streaming through the sidecar.** The protocol is request/response, so
+  a remote engine's first-audio figure is its whole clip latency. That is
+  the harness's limit, not the engine's, and it is only worth fixing for
+  an engine that survives the first audition.
+- **The other candidates** in the options doc: PocketTTS.cpp (our exact
+  model on ONNX, which would delete PyTorch from the audio path and keep
+  the voice bit-for-bit), Qwen3-TTS via its C runtime (the best control
+  surface on the list), MOSS-TTS-Nano, TTS Lite.

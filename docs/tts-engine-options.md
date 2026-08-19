@@ -132,11 +132,16 @@ reference clip, "colour" means curating several Aiko references
 already hot-swaps at runtime and clears the audio cache, so the
 plumbing exists.
 
-What is missing is the UI. The voice cloning dialog died with the Qt
-app; `get_model()` and `export_voice()` are still in the service
-hanging off nothing. Rebuilding it in the web settings drawer is worth
-doing **regardless of engine**, because every candidate below clones
-from a reference clip.
+The UI for this now exists as `python -m tools.tts_lab.serve`: record or
+upload a reference, clone it into any installed engine, audition it, and
+save it — as a `.safetensors` embedding for pocket-tts (via the
+`export_voice` that had been sitting in the service unused since the Qt
+dialog was deleted) or as a reference clip for engines that clone per
+call. It is deliberately a standalone tool: cloning loads candidate
+engines with their own torch, and a prototype that can break should not
+be able to break the thing Aiko talks through. If an engine wins, the
+*narrow* version — pick from saved voices, no cloning — is what belongs
+in the settings drawer.
 
 ## The selection criterion
 
@@ -178,6 +183,51 @@ Verified against upstream Aug 2026. "RT" = realtime factor.
 | IndexTTS2 | — | GPU-oriented | zero-shot | 8-dim emotion vector | see repo |
 | Kokoro-82M | 82M | fastest here | **no** | — | Apache 2.0 |
 | XTTS-v2 | — | ~5× RT — too slow | yes | explicit speed | CPML |
+
+### Measured here, 20 Aug 2026 (9950X3D, 16 threads, CPU)
+
+Auditioned with `tools/tts_lab/`, every engine cloned from the *same*
+reference clip so the comparison isolates the engine. Steady-state
+figures — the first generation is discarded, because Turbo reports RTF
+3.93 cold and 1.5 warm and the size of that effect varies per engine.
+
+| engine | RTF | first audio, 2.3 s line | load | notes |
+|---|---|---|---|---|
+| pocket-tts | **0.24** | **~570 ms** | 2.2 s | incumbent |
+| chatterbox-nano (110M) | 0.59–0.87 | ~1920 ms | 37 s cold | tags work |
+| chatterbox-turbo (350M) | 1.37–1.66 | ~4150 ms | 8.9 s | slower than realtime |
+
+Since **neither engine streams generation**, RTF *is* responsiveness:
+first audio equals full generation. Nano beats realtime and would still
+mean roughly a two-second pause before every sentence, against
+pocket-tts's ~0.6 s. Upstream's "3× realtime on 8 cores" for Nano (RTF
+0.33) is about twice as optimistic as this box measures.
+
+Thread count is not the lever: Turbo runs RTF 1.51 at 16 threads and
+1.67 at 8, so there is no configuration where it becomes viable.
+
+Three practical findings worth keeping:
+
+- **Chatterbox needs `setuptools<81`.** `resemble-perth` imports
+  `pkg_resources`, setuptools 81 removed it, and perth's `__init__`
+  catches the ImportError and leaves `PerthImplicitWatermarker = None`.
+  The failure then surfaces six frames later inside model construction
+  as `TypeError: 'NoneType' object is not callable`. This is almost
+  certainly the "CPU loading bugs" this family is known for, and pinning
+  setuptools is the fix — stubbing perth out would also work and would
+  be us disabling someone's watermarking to save a pin.
+- **PyPI is behind the README.** `chatterbox-tts` 0.1.7 has no
+  `from_pretrained(nano=True)` despite the documented example; Nano
+  needs a git install. Turbo *does* accept `exaggeration` and
+  `cfg_weight`, but its defaults are `0.0 / 0.0`, not the `0.5 / 0.5`
+  every published tip quotes — those tips are about the original model.
+  Benchmarking Turbo at 0.5 would have auditioned a configuration its
+  authors did not choose.
+- **A longer reference is not a better one for pocket-tts.** The speaker
+  state keeps the whole clip, so file size tracks clip length: a 27 s
+  reference produced a 16 MB `.safetensors` against `aiko1_refined`'s
+  4.8 MB, with no measurable generation-speed difference.
+  `get_state_for_audio_prompt` takes `truncate: bool = False`.
 
 ### Worth trying first
 
