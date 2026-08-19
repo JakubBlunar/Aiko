@@ -150,6 +150,18 @@ def run(
             continue
 
         for voice_label, voice in voices:
+            # Discard one generation before timing anything. Measured on
+            # Chatterbox Turbo, the first call reports RTF 3.93 and the
+            # second 1.58 -- lazy kernel selection and allocator warmup,
+            # not the engine's steady state. Timing the first call would
+            # have rejected an engine on a number 2.5x worse than the
+            # truth, and the size of the effect varies per engine, so it
+            # cannot be corrected for after the fact.
+            try:
+                engine.synth("Warming up, one moment.", voice)
+            except Exception as exc:
+                print(f"  warmup failed on {voice_label}: {exc!r}")
+
             for phrase_id, text in phrases:
                 try:
                     synth = engine.synth(text, voice)
@@ -462,7 +474,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--engines", nargs="+", default=None,
-        help=f"default: every registered engine ({', '.join(adapters.available())})",
+        help="default: every registered engine",
     )
     p.add_argument(
         "--voice-ref", type=Path, default=DEFAULT_REF,
@@ -483,6 +495,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Sidecar engines register themselves here rather than at import
+    # time, so ``adapters`` stays free of any knowledge of subprocesses.
+    from tools.tts_lab import remote
+
+    remote.register()
+
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     names = args.engines or adapters.available()
 

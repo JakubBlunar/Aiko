@@ -47,6 +47,10 @@ data/browser-profile/
 !voices/reference/aiko_reference.wav
 # Audition output is regenerable in a minute and there is a lot of it.
 voices/audition/
+# Per-engine venvs for the TTS lab (tools/tts_lab/envs.py). Disposable by
+# design: candidate engines pin dependencies that would wreck the app's
+# venv, so each gets its own and deleting it uninstalls the experiment.
+.venvs/
 *.log
 *.log.*
 realtimesst.log
