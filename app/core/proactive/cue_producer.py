@@ -12,7 +12,9 @@ subjects are already spoken for" (which replaces the per-topic cooldown
 maps), and "queue this one".
 
 :func:`pick_pool_cue` is the provider's side: hand it the pool and a
-relevance test and it returns the cue to render, or ``None``.
+relevance test and it returns the cue to render, or ``None`` -- wrapped in
+a :class:`CuePick` that also says what the walk did, because "no cue" has
+several causes and G4 counts them separately.
 
 Both degrade to ``None`` when no store is available, so a worker or
 provider constructed without one behaves exactly as it did before the
@@ -22,8 +24,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.core.proactive import topic_match
 from app.core.proactive.cue_accounting import (
     PICK_OLDEST,
     CuePolicy,
@@ -201,6 +205,50 @@ class CueProducer:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class CuePick:
+    """The chosen cue, plus what the walk had to step over to not find one.
+
+    An empty pick used to be a bare ``None``, and the caller reconstructed
+    the reason from state it could still see: "did the predicate reject
+    anything" and "is the type cadence-blocked". Those two overlap, and
+    the overlap was scored wrong. When a cadence hold restricts the pick
+    to retries, it removes most of the shelf *before* the predicate sees
+    it; the one or two survivors then fail a topic test, and the turn was
+    recorded as ``topic_miss`` -- an **eligible** decline -- when the cue
+    had in fact been under its own clock, which is **ineligible**.
+
+    That mislabelling only ever pushes one way. ``topic_miss`` is by far
+    the largest bucket in the ledger (1,873 of 1,981 eligible declines),
+    so every turn wrongly in it inflates the denominator that reach is
+    measured against, and makes five cue types look more starved than
+    they are. Hence the counts: the caller no longer has to infer.
+
+    ``considered`` is also the only record anywhere of how deep the shelf
+    was on a given turn. Nothing else keeps it -- ``state``, ``not_before``
+    and ``surfaced_count`` are all last-value-only, so the availability
+    history is unrecoverable after the fact. It is logged for that reason.
+    """
+
+    row: "CueRow | None" = None
+    # Rows the query actually returned, i.e. the live shelf up to ``limit``.
+    considered: int = 0
+    # Skipped before the predicate ran, because a cadence hold restricted
+    # this pick to cues that had already had a showing.
+    held_for_cadence: int = 0
+    # Rows the provider's own predicate looked at and refused.
+    rejected: int = 0
+    # How many cleared admission, i.e. the set the winner was chosen from.
+    admitted: int = 0
+    # Which arm admitted the winner, and how close it was to the live
+    # message. ``None`` when there was nothing to compare against.
+    arm: str = topic_match.ARM_NONE
+    cosine: float | None = None
+
+    def __bool__(self) -> bool:
+        return self.row is not None
+
+
 def pick_pool_cue(
     store: "CueStore | None",
     cue_type: str,
@@ -209,7 +257,9 @@ def pick_pool_cue(
     force: bool = False,
     limit: int = 8,
     allow_first_claim: bool = True,
-) -> "CueRow | None":
+    user_vec: Any = None,
+    min_cosine: float | None = None,
+) -> CuePick:
     """The best pending cue of this type that fits the moment.
 
     ``relevant`` is the provider's own gate, applied to the cue's payload
@@ -224,12 +274,32 @@ def pick_pool_cue(
     cues first: rejecting the row it returns would hide a legitimate
     retry sitting directly behind a fresh cue that is merely early.
 
+    **"Best" used to mean "first".** With ``user_vec`` supplied this walks
+    the whole window and returns the admitted row whose subject sits
+    closest to the live message, instead of whichever one the
+    surfacings-then-recency order happened to put in front. H43 is why:
+    the providers' own topic predicate accepts a third of all
+    subject-message pairs, so first-past-the-post was choosing among
+    several nominal matches on a criterion unrelated to what he said, and
+    the cue that surfaced was regularly the one sharing only a function
+    word with him. Ordering by relevance leaves the acceptance set alone
+    -- so reach cannot fall -- and only changes *which* of the accepted
+    cues she is handed.
+
+    ``min_cosine`` additionally admits a row the predicate refused when
+    its subject is close enough to the message anyway, which is the case
+    a word-overlap test structurally cannot see. Purely additive.
+
+    Degrades exactly to the old behaviour: with no ``user_vec`` (no
+    embedder, or a message too short to embed) every cosine is ``None``,
+    the sort is stable, and the first admitted row wins as before.
+
     Does **not** mark the cue surfaced. The provider does that, after it
     has decided the cue is actually going into the prompt, because a cue
     inspected and rejected must not spend one of its two surfacings.
     """
     if store is None:
-        return None
+        return CuePick()
     policy = policy_for(cue_type)
     try:
         # With embeddings: the row is handed to post-turn matching after
@@ -245,13 +315,48 @@ def pick_pool_cue(
         )
     except Exception:
         log.debug("cue pool read failed: type=%s", cue_type, exc_info=True)
-        return None
+        return CuePick()
+    held = 0
+    rejected = 0
+    # (row, arm, cosine) for everything that cleared admission, kept in
+    # shelf order because that is the tie-break.
+    admitted: list[tuple["CueRow", str, float | None]] = []
     for row in rows:
         if not allow_first_claim and row.surfaced_count <= 0:
+            held += 1
             continue
+        score = topic_match.cosine(row.embedding, user_vec)
         if force or relevant is None or relevant(row.payload):
-            return row
-    return None
+            admitted.append((row, topic_match.ARM_LEXICAL, score))
+            continue
+        if (
+            min_cosine is not None
+            and score is not None
+            and score >= float(min_cosine)
+        ):
+            admitted.append((row, topic_match.ARM_COSINE, score))
+            continue
+        rejected += 1
+    if not admitted:
+        return CuePick(
+            considered=len(rows), held_for_cadence=held, rejected=rejected,
+        )
+    # ``max`` returns the *first* maximal element, so with every cosine
+    # absent this is the shelf's own first admitted row -- the previous
+    # behaviour, reached without a special case for it.
+    best = max(
+        admitted,
+        key=lambda item: item[2] if item[2] is not None else float("-inf"),
+    )
+    return CuePick(
+        row=best[0],
+        considered=len(rows),
+        held_for_cadence=held,
+        rejected=rejected,
+        admitted=len(admitted),
+        arm=best[1],
+        cosine=best[2],
+    )
 
 
-__all__ = ["CueProducer", "pick_pool_cue"]
+__all__ = ["CueProducer", "CuePick", "pick_pool_cue"]

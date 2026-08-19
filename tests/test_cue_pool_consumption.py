@@ -156,6 +156,42 @@ class DeclineReasonTests(_Fixture):
         self.assertIsNone(self.host.take_pool_cue("self_callback"))
         self.assertEqual(self._reason("self_callback"), REASON_CADENCE_BLOCK)
 
+    def test_a_cadence_hold_outranks_the_predicate_it_starved(self) -> None:
+        """H43. The hold restricts the pick to cues that have already had a
+        showing, which removes most of the shelf *before* the predicate
+        sees any of it. Scoring the survivors' refusal as ``topic_miss``
+        moved the turn into the **eligible** denominator when the cue had
+        in fact been under its own clock, inflating the very ratio
+        ``topic_miss`` is read off -- and it was the largest bucket in the
+        ledger by an order of magnitude.
+        """
+        self.store.add("self_callback", "a", "cue a")
+        self.assertIsNotNone(self.host.take_pool_cue("self_callback"))
+        take_decline_notes(self.host)
+        # Now blocked. A never-shown cue behind the hold plus a predicate
+        # that refuses everything is the exact shape that mis-scored.
+        self.store.add("self_callback", "b", "cue b")
+        self.assertIsNone(
+            self.host.take_pool_cue(
+                "self_callback", relevant=lambda payload: False,
+            )
+        )
+        self.assertEqual(self._reason("self_callback"), REASON_CADENCE_BLOCK)
+
+    def test_a_topic_miss_still_reads_as_one_when_it_is_the_only_gate(
+        self,
+    ) -> None:
+        """The other side of the tie-break: nothing was held, so the
+        predicate genuinely is what refused, and the undercount must not
+        swallow the real signal."""
+        self.store.add("interest_drift", "film photography", "cue")
+        self.assertIsNone(
+            self.host.take_pool_cue(
+                "interest_drift", relevant=lambda payload: False,
+            )
+        )
+        self.assertEqual(self._reason("interest_drift"), REASON_TOPIC_MISS)
+
     def test_none_means_the_caller_owns_the_accounting(self) -> None:
         """The dual-mode providers fall through rather than deciding, so
         a note from here would beat the reason that actually applied."""

@@ -48,6 +48,7 @@ from app.core.proactive.cue_accounting import (
     note_decline,
     policy_for,
 )
+from app.core.proactive import topic_match
 from app.core.proactive.cue_producer import pick_pool_cue
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
@@ -117,6 +118,7 @@ class CuePoolMixin:
         relevant: Callable[[dict[str, Any]], bool] | None = None,
         force: bool = False,
         note_as: str | None = REASON_TOPIC_MISS,
+        user_text: str = "",
     ) -> "CueRow | None":
         """Claim one pending cue for the prompt, or ``None``.
 
@@ -132,40 +134,84 @@ class CuePoolMixin:
         names the predicate-rejection case -- almost always a topic gate,
         hence the default -- and ``None`` means the caller is doing its own
         accounting and this should stay quiet.
+
+        **The three causes overlap, and the tie-break matters.** A cadence
+        hold restricts the pick to cues that have already had a showing,
+        which removes most of the shelf before the predicate sees any of
+        it. The survivors then fail a topic test, and the old rule -- "any
+        rejection means ``note_as``" -- called that a topic miss. It is
+        not: the cue was under its own clock, and the shape of the shelf it
+        was allowed to draw from was decided by the hold. Since
+        ``topic_miss`` counts as an **eligible** decline and
+        ``cadence_block`` does not, guessing wrong here inflates the
+        denominator that every reach figure is measured against.
+
+        So ``note_as`` now requires that the predicate was the *only*
+        thing that refused. That makes it an undercount when both apply,
+        which is the safe direction for a number this load-bearing: it is
+        the largest bucket in the ledger by an order of magnitude, and the
+        five cue types that share one topic gate are read as starving on
+        the strength of it.
         """
         store = self._cue_pool_store()
-        rejected = 0
-        gate = relevant
-        if relevant is not None:
-            def gate(payload: dict[str, Any]) -> bool:
-                nonlocal rejected
-                ok = bool(relevant(payload))
-                if not ok:
-                    rejected += 1
-                return ok
-
         blocked = self._cadence_blocked(cue_type)
-        row = pick_pool_cue(
+        user_vec, min_cosine = self._topic_rank_inputs(user_text)
+        pick = pick_pool_cue(
             store,
             cue_type,
-            relevant=gate,
+            relevant=relevant,
             force=force,
             allow_first_claim=force or not blocked,
+            user_vec=user_vec,
+            min_cosine=min_cosine,
         )
+        row = pick.row
         if row is None or store is None:
             if note_as is not None:
-                if rejected:
+                if pick.held_for_cadence:
+                    # The hold shrank the shelf before the gate ran, so
+                    # whatever the gate then said is downstream of it.
+                    reason = REASON_CADENCE_BLOCK
+                elif pick.rejected:
                     reason = note_as
                 elif blocked and not force:
                     reason = REASON_CADENCE_BLOCK
                 else:
                     reason = REASON_NO_STOCK
                 note_decline(self, cue_type, reason)
+            # The only record of shelf depth that exists: nothing else
+            # keeps per-turn availability, so a decline that is really a
+            # thin-shelf problem is otherwise indistinguishable from a
+            # gate problem when read back later.
+            log.debug(
+                "cue pick empty: type=%s shelf=%d held=%d rejected=%d "
+                "blocked=%s",
+                cue_type,
+                pick.considered,
+                pick.held_for_cadence,
+                pick.rejected,
+                blocked,
+            )
             return None
         try:
             store.mark_surfaced(row.id)
         except Exception:
             log.debug("cue mark_surfaced failed: id=%s", row.id, exc_info=True)
+        if pick.admitted > 1 or pick.arm == topic_match.ARM_COSINE:
+            # Only when the choice was real. Logged because H43's whole
+            # claim is that picking among nominal matches on relevance
+            # beats picking on recency, and that is only checkable if the
+            # size of the choice and the winning margin are on the record.
+            log.info(
+                "cue pick: type=%s arm=%s cos=%s admitted=%d shelf=%d "
+                "subject=%r",
+                cue_type,
+                pick.arm,
+                f"{pick.cosine:.3f}" if pick.cosine is not None else "-",
+                pick.admitted,
+                pick.considered,
+                row.subject[:60],
+            )
         self._register_surfaced_cue(row)
         # K-time10. The note goes on a copy: the registered row is what
         # post-turn accounting judges, and it should see the cue exactly
@@ -582,6 +628,43 @@ class CuePoolMixin:
                 + timedelta(hours=max(0.0, policy.reask_cooldown_hours)),
                 evidence="unanswered",
             )
+
+    def _topic_rank_inputs(
+        self, user_text: str,
+    ) -> tuple[Any, float | None]:
+        """``(user_vec, min_cosine)`` for ranking this turn's candidates.
+
+        One embed per turn in the worst case, and usually zero extra: the
+        embedder caches on the text, and the five topic-gated providers all
+        pass the same message. Returning ``(None, None)`` is a full
+        fall-back to the pre-H43 first-past-the-post pick, so every reason
+        this can fail -- no embedder, memory off, a message too short to
+        mean anything, the setting turned off -- degrades to the behaviour
+        that shipped rather than to no cue at all.
+        """
+        agent = getattr(getattr(self, "_settings", None), "agent", None)
+        if not bool(getattr(agent, "cue_topic_ranking", True)):
+            return None, None
+        text = (user_text or "").strip()
+        if len(text) < 4:
+            return None, None
+        embedder = getattr(self, "_embedder", None)
+        if embedder is None:
+            return None, None
+        try:
+            vec = embedder.embed(text[:2000])
+        except Exception:
+            log.debug("cue topic embed failed", exc_info=True)
+            return None, None
+        raw = getattr(agent, "cue_topic_min_cosine", None)
+        try:
+            floor = (
+                topic_match.DEFAULT_MIN_COSINE if raw is None else float(raw)
+            )
+        except (TypeError, ValueError):
+            floor = topic_match.DEFAULT_MIN_COSINE
+        # Negative disables the additive arm while leaving ranking on.
+        return vec, (None if floor < 0 else floor)
 
     def _user_vec_for(self, rows: list["CueRow"], user_text: str) -> Any:
         """Embed the user's message, but only if a cue could use it.

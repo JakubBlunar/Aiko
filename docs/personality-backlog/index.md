@@ -580,6 +580,33 @@ each cue's cooldown against its own policy to print `inside cooldown, by design
 that would be a bug — a `cadence_block` dated after the window elapsed — gets its
 own section, and nothing qualifies ([`health.md`](health.md)).
 
+**H43 is the one to read before you tighten a gate, and it is the fourth correction
+to that same `topic_miss` figure.** The number survived three passes because
+everyone argued about the *denominator* and nobody measured the *predicate*.
+`topic_relevant` — fourteen lines, shared by all five topic-gated cues — **accepts
+33.2% of every real (subject, message) pair**, which on a 0–5 cue shelf is an ~87%
+chance of matching something every turn. It is very nearly a no-op, so it cannot
+have been declining those 1,873 turns, and it wasn't: `take_pool_cue` inferred its
+reason from residual state, and a **cadence hold strips the shelf before the
+predicate runs**, so the survivors' refusal was scored as a topic miss — a label on
+the *eligible* side of the denominator standing in for one on the ineligible side.
+
+The gate's real defect is quality, and tightening was exactly the wrong response.
+The consumption half of the cue system had been banking a cosine on every verdict
+for months against this precise question: word-overlap verdicts sit at **0.370**
+against a measured null of **0.369**, i.e. *no better than chance*, because **82% of
+the tokens carrying its matches are function words** (`and` 39k, `the` 34k, `you`
+26k, plus her own name). But stoplist-plus-threshold accepts 3.8% — a **9×
+tightening** on the five cue types K92–K95 exists to make *more* forthcoming. So the
+cosine now **ranks** the admitted set instead of vetoing it: acceptance unchanged
+(reach cannot fall), and the cue she is handed changes on **49% of
+`concept_hypothesis` and `curiosity_gradient` turns**. Same correction K93 made to
+the wants ledger a fortnight earlier — *a signal good enough to rank with is rarely
+good enough to gate on.* Two new shapes, **21** and **22**, plus the transferable
+method: **measure a similarity threshold's null before trusting it**, and **give any
+replay of past decisions an arm whose answer you already know** — the reconstruction
+that died here had to return ~0% and returned 55–82% ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

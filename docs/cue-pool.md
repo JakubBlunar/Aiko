@@ -86,7 +86,7 @@ so.
 | `fulfilment` | `spoken` (she said it), `answered` (she said it *and* the user engaged), `either_party` (the conversation landed on the subject, no matter who steered it there). |
 | `match_mode` | `lexical` or `lexical_or_cosine`. |
 | `match_scope` | Match her reply, or the whole turn. |
-| `pick_order` | Which waiting cue to reach for first among those with the same number of chances. `newest` (the default) because a cue is built from context and the freshest framing still fits; `oldest` only for `tease_ledger`, where the wait *is* the content. |
+| `pick_order` | Which waiting cue to reach for first among those with the same number of chances. `newest` (the default) because a cue is built from context and the freshest framing still fits; `oldest` only for `tease_ledger`, where the wait *is* the content. **Since H43 this is the tie-break rather than the rule** — see "Choosing among the matches" below. |
 | `handling_section` / `block` | The persona header hoisted into T6 alongside this cue, and the prompt block whose presence triggers it — see below. |
 
 The `match_mode` split is the non-obvious one. **A cue whose subject is
@@ -156,6 +156,51 @@ hide a legitimate retry sitting directly behind a fresh cue that is
 merely early. The clock is `CueStore.last_surfaced_at()`, the newest
 `last_surfaced_at` for the type across *all* states — a cue she used is
 the strongest possible reason not to open another.
+
+**The hold is also why a decline reason cannot be inferred afterwards.**
+It removes most of the shelf *before* the provider's predicate runs, so
+"the predicate rejected something" and "this type is cadence-blocked" are
+both true on the same turn, and `take_pool_cue` used to resolve that in
+favour of `topic_miss`. Those two labels sit on opposite sides of the
+reach denominator (`topic_miss` is eligible, `cadence_block` is not), so
+the guess could only ever inflate it — for the largest bucket in the
+ledger. `pick_pool_cue` now returns a `CuePick` carrying `considered`,
+`held_for_cadence` and `rejected`, and `topic_miss` is recorded only when
+the predicate was the sole refuser (H43).
+
+## Choosing among the matches
+
+The provider's topic predicate is an **admission** test, not a ranking,
+and it is far looser than it looks: `topic_relevant` accepts **33.2% of
+every real (subject, message) pair**, so on a normal shelf several cues
+"match" every turn. `pick_pool_cue` returned the first of them in
+`pending()` order — surfacings, then `pick_order` — which is a criterion
+with no relationship to what the user just said. Combined, that is how a
+cue got surfaced on a shared `and`: verdicts decided by word overlap sit
+at cosine **0.370** against a measured null of **0.369**.
+
+So the cue's stored `embedding` is compared against the live message and
+used to **order the admitted set**, with the highest cosine winning.
+Three properties are load-bearing:
+
+- **Admission is untouched, so reach cannot fall.** Only *which* accepted
+  cue she is handed changes — on 49% of `concept_hypothesis` and
+  `curiosity_gradient` turns, measured.
+- **It degrades to the old behaviour.** No embedder, memory off, or a
+  message too short to embed means every cosine is `None`, and `max`
+  returns the first maximal element — the shelf's own order.
+- **Ranking never reaches past the predicate.** A closer cue the provider
+  refused does not win on cosine alone; that is the separate additive arm
+  below, which is what `cue_topic_min_cosine` controls.
+
+`cue_topic_min_cosine` (default `0.55`, sited on the measured null rather
+than picked) admits a cue the word test refused when its subject is close
+enough anyway — the same-subject-in-different-words case word overlap
+structurally cannot see. Negative disables the arm and leaves ranking on.
+Run [`scripts/topic_gate_report.py`](../scripts/topic_gate_report.py)
+before changing it; it prints the null distribution first, because a
+similarity threshold means nothing until you know the score between pairs
+known to be unrelated.
 
 ## Production: demand instead of caps
 

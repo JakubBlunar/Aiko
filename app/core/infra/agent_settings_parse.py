@@ -1014,6 +1014,15 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             cue_accounting_enabled=bool(
                 agent_raw.get("cue_accounting_enabled", True),
             ),
+            cue_topic_ranking=bool(
+                agent_raw.get("cue_topic_ranking", True),
+            ),
+            # Unclamped on purpose: negative is the documented "rank but
+            # do not admit on cosine" setting, and above 1.0 is a valid
+            # way to disable the arm without losing the configured value.
+            cue_topic_min_cosine=float(
+                agent_raw.get("cue_topic_min_cosine", 0.55),
+            ),
             prompt_block_accounting_enabled=bool(
                 agent_raw.get("prompt_block_accounting_enabled", True),
             ),

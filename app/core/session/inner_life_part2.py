@@ -1567,6 +1567,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 # dual-mode cue, so a topic miss here is a fallthrough to
                 # the gap path rather than the turn's decision.
                 note_as=None,
+                user_text=text,
             )
             if row is not None:
                 log.info(
@@ -2449,6 +2450,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                     str(payload.get("topic") or ""), text,
                 ),
                 force=force_next,
+                user_text=text,
             )
             if row is None:
                 return ""
@@ -2556,6 +2558,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 "associative_wander",
                 relevant=lambda payload: wander_relevant(payload, text),
                 force=force_next,
+                user_text=text,
             )
             if row is None:
                 return ""
@@ -2672,6 +2675,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 "interest_drift",
                 relevant=lambda payload: drift_relevant(payload, text),
                 force=force_next,
+                user_text=text,
             )
             if row is None:
                 return ""
@@ -2934,6 +2938,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 "curiosity_gradient",
                 relevant=lambda payload: gradient_relevant(payload, text),
                 force=force_next,
+                user_text=text,
             )
             if row is None:
                 return ""
