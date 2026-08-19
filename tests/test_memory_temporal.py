@@ -1149,6 +1149,32 @@ class TestRetrieverTemporalAnnotation(unittest.TestCase):
         # future_plan is never dropped by this filter.
         self.assertFalse(_temporal_filter_drops(_MemFuture(), now))
 
+    def test_temporal_filter_drops_retired_promises(self) -> None:
+        # H41: promises are written ``durable`` with a NULL
+        # relevance_until, so the rule above could never reach them -- the
+        # guard against "asking about progress on something that already
+        # finished" was structurally blind to the rows most likely to
+        # cause it, and rows nearly three months old were still scoring
+        # into the block.
+        now = datetime(2026, 8, 19, 12, 0, tzinfo=timezone.utc)
+
+        class _Promise:
+            kind = "promise"
+            temporal_type = "durable"
+            relevance_until = None
+            content = "Jacob promised: water the plants"
+
+            def __init__(self, status: str) -> None:
+                self.metadata = {"promise_status": status}
+
+        self.assertTrue(_temporal_filter_drops(_Promise("dropped"), now))
+        self.assertFalse(_temporal_filter_drops(_Promise("open"), now))
+        self.assertFalse(_temporal_filter_drops(_Promise("surfaced"), now))
+        # Fulfilled deliberately stays: it happened, which makes it
+        # ordinary shared history. It is the ones that quietly expired
+        # unkept that read as inattentive when raised.
+        self.assertFalse(_temporal_filter_drops(_Promise("fulfilled"), now))
+
 
 # ── 5. Decay reclassification ────────────────────────────────────────
 

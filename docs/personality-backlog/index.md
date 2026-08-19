@@ -472,6 +472,31 @@ fix: the first version left reclassified rows holding `durable`'s NULL
 `relevance_until`, and `list_by_temporal_type` skips those — every promoted row
 would have been immortal ([`health.md`](health.md)).
 
+**H41 is the one to read before you trust a docstring that says another
+component handles it.** Following H40's loose thread — a promise's deadline is
+written into the middle of its content sentence — turned up a lane running on one
+side only: **86 of 160 promises were his, and all 86 were still `open`**, the
+oldest 86 days, 36 past the bar that retires hers, all still scoring into
+retrieval. `promise_lifecycle` said the user's commitments were `FollowUpWorker`'s
+territory, and that worker is real and scheduled and selects
+`temporal_type == "future_plan"` — while promises are written `durable`, so the
+delegation named a component that could not match a row. Nothing failed, so
+nothing logged; the comment was worse than silence, because a reader asking "who
+retires these?" got a confident answer and stopped. Two more leaks alongside it:
+`prepared_nudge` never read `promise_status`, leaving **14 of 33 resolved
+promises** eligible to be raised as open loops through *"did you ever get to
+…?"*, and the deadline was prose in six registers that nothing parsed, so
+lateness was measured by `created_at` — a promise due by lunch read as fresh all
+afternoon, and one agreed three weeks out was due to be dropped for staleness on
+the day it fell due. Fixed with a loose-date parser, a real `overdue_hours` axis
+that outranks age and bypasses the settling period, retirement on both sides
+running on whichever clock applies, and a grace window measured from the deadline
+so a missed promise stays visible instead of inheriting what was left of the
+creation-age one. The two portable shapes: **a handoff documented in prose that no
+code implements** is shape 14 with the upkeep *assigned* rather than missing, and
+**structured data written into prose is write-only** — if the only grep hit for a
+field is the line that writes it, it does not exist ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

@@ -2838,7 +2838,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 ---
 
-## The seventeen recurring shapes
+## The eighteen recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3038,6 +3038,31 @@ question it asks decides all of them. A predicate whose name is a strict subset
 of the decision it drives — `has_X` gating *what kind of* X — is the tell, and
 the cheap guard is a test asserting the predicate is silent about what it does
 not know.**
+
+**18. A handoff documented in prose that no code implements.** Shape 14 (write and
+read but no upkeep) with the twist that lets it survive far longer: the upkeep pass
+was not missing, it was **assigned**. H41's `promise_lifecycle` stated that the
+user's own commitments were `FollowUpWorker`'s territory; that worker is real and
+scheduled and selects on `temporal_type == "future_plan"`, while promises are
+written `durable` — so the delegation named a component that could not match a
+single row, and **86 of 86 user-side promises had never once been resolved**, the
+oldest 86 days. Nothing was failing on either side, so nothing logged. The comment
+was worse than silence would have been: shape 14 is found by asking "what retires
+these?" and hearing nothing, whereas here you ask and get a confident name, so the
+audit stops one step early. **Rule: when a docstring delegates a responsibility,
+check that the selection criteria on the far side actually admit this data, and
+prefer a test over the prose. A seam between two correct components is covered by
+neither one's tests — assert that the receiving side sees the sending side's
+output.**
+
+Its sibling, from the same entry: **structured data written into prose is
+write-only.** The promise deadline was extracted, formatted, stored and shown to
+the model, and was still unreadable by every mechanism that needed it, because it
+lived inside a sentence (`"… (by 2026-08-19)"`) instead of a field. It reviews as
+complete, since the information is visibly *there*. **The tell is a field that
+exists in the producer's schema and in no consumer's** — grep for the name; if the
+only hit is the line that writes it, the data does not exist as far as the system
+is concerned.
 
 ---
 
@@ -3937,7 +3962,7 @@ Aiko chose herself.
 
 ### The shape worth keeping
 
-This is [recurring shape 15](#the-seventeen-recurring-shapes) and the first
+This is [recurring shape 15](#the-eighteen-recurring-shapes) and the first
 instance of it here: **a missing value coerced to a valid one**. `or 0.0` is not
 a default, it is a fabrication, and it is most dangerous where zero is a
 *meaningful* value in the domain — temperature, valence, confidence, price. The
@@ -4002,7 +4027,7 @@ property `arc` was wrongly assumed to have.
 
 ### The shape worth keeping
 
-**[Recurring shape 16](#the-seventeen-recurring-shapes): a signal reused at the
+**[Recurring shape 16](#the-eighteen-recurring-shapes): a signal reused at the
 wrong timescale.** Every
 input here was correct — the arc tagger is doing its job, and 110 turns of
 `support` is an accurate description of that conversation. The defect is entirely
@@ -4084,28 +4109,33 @@ if delta < 0:
 
 So the row claimed to be brand new for the whole interval between being written
 and its own event time. **54 rows, a median of 14.8 hours each, 1,316 hours in
-total.** The worst was a candlelit wine date that reported having just happened
-for **188 consecutive hours**. The test covering this was named
+total.** The worst single row reported having just happened for **188 consecutive
+hours**. The test covering this was named
 `test_future_input_is_defensive` and asserted `"moments ago"` — it was written as
 a guard and was in fact pinning the fabrication.
 
 ### What the prompt actually said
 
-This is the pile she was reading on Wednesday morning, verbatim:
+Six rows about the one delivery reached her together. Paraphrased to the same
+shape, with the real time tags:
 
 ```
-Jacob expects a courier with the first hardware package tomorrow morning. (moments ago)
-Jacob's new hardware arrived unexpectedly yesterday, August 19, 2026 (moments ago)
-Jacob assembled his new Ryzen 9 9950X3D workstation today after receiving the courier. (moments ago)
-New PC components arrive tomorrow for Jacob's workstation upgrade on Tuesday, August 18. (20 hours ago)
-Jacob received the new hardware delivery on August 19, 2026
-Jacob promised: Sleep before courier arrives on August 19, 2026. (by 2026-08-19)
+<he> expects the courier tomorrow morning.                      (moments ago)
+<he> says it arrived unexpectedly yesterday, August 19, 2026    (moments ago)
+<he> assembled it today after the courier came.                 (moments ago)
+The parts arrive tomorrow, for the upgrade on Tuesday 18 Aug.   (20 hours ago)
+<he> received the delivery on August 19, 2026                   [no tag]
+<he> promised: sleep before the courier arrives (by 2026-08-19) [no tag]
 ```
 
-Six contradictory statements, four of them stamped **equally fresh**, two
-carrying no time tag at all. Two days of events collapsed onto one instant, with
-"a courier comes tomorrow" presented as the most recent thing he had said.
-Asking about the delivery was the only thing she could have done with that.
+Four stamped **equally fresh**, two carrying no time tag at all, and the set
+contradicts itself in three places — arriving tomorrow, arriving yesterday, and
+already assembled. Two days of events collapsed onto one instant, with "a courier
+comes tomorrow" presented as the most recent thing he had said. Asking about the
+delivery was the only thing she could have done with that.
+
+The last line is its own finding, and became H41: a promise's deadline is written
+into the middle of the sentence, where nothing but the model can read it.
 
 The LLM errors are real and secondary. `[3201]` resolved "Wednesday" to Tuesday
 25 August from a Sunday; `[3475]` wrote "yesterday, August 19, 2026" *on* August
@@ -4155,7 +4185,7 @@ one distinction that matters because the two are handled by different machinery.
 
 ### The shape worth keeping
 
-**[Recurring shape 17](#the-seventeen-recurring-shapes): a predicate answering a
+**[Recurring shape 17](#the-eighteen-recurring-shapes): a predicate answering a
 narrower question than its caller needs.** `has_relative_deictic` is correct, its
 docstring is accurate, and its tests pass — it says "this wording will go stale".
 The caller needed "and which way does it point", helped itself to the answer it
@@ -4169,7 +4199,7 @@ guard is a test that asserts the predicate is *silent* on the thing it does not
 know, which is what `test_it_says_nothing_about_direction` now does.
 
 The second lesson is about defaults at the boundary, and it is
-[shape 15](#the-seventeen-recurring-shapes) again in a place nobody thought to
+[shape 15](#the-eighteen-recurring-shapes) again in a place nobody thought to
 look: **an impossible input should be refused, not rounded**. A past event in the
 future is not a near-miss to smooth over, and "moments ago" was the single most
 destructive string in the chain — it took four memories written across two days
@@ -4177,6 +4207,184 @@ and made them indistinguishable. Where H38's fabrication came from a partial API
 response, this one came from a *display helper*, which is why it survived so long:
 nobody audits a formatter for correctness. **A formatter that cannot represent
 its input should say less, not guess.**
+
+---
+
+## H41. Not one of his promises had ever been resolved, and no deadline was readable
+
+**Severity: high — fixed 19 Aug. Found by following H40's loose thread: the
+deadline a promise states is written into the middle of the content sentence, so
+nothing but the model can read it.**
+
+That thread turned out to be the smallest of three findings. Promises are the one
+memory kind with an explicit state machine —
+`open → surfaced → fulfilled | dropped`, plus sidedness — and on a store of 160
+rows the machine was running on one side only:
+
+| side | open | surfaced | fulfilled | dropped |
+|---|---|---|---|---|
+| Aiko | 18 | 23 | 26 | 7 |
+| Jacob | **86** | 0 | 0 | 0 |
+
+**Every user-side promise ever recorded was still `open`.** The oldest was 86
+days old; 36 were past the 14-day bar that would have retired an equivalent
+promise of hers. They were all still scoring into retrieval, so a fragment of
+small talk from May — one of the many rows that were never really commitments,
+still carrying salience 0.93 — remained eligible to be quoted back at him. And
+the lane is not slowing down: 44 promises were written in week 33 and **57 in
+week 34**, about eight a day.
+
+### The handoff that never met
+
+`promise_lifecycle`'s docstring said why the worker only scanned her side, and it
+read like a decision rather than a gap:
+
+> Only **assistant-side** promises participate in follow-through — the user's own
+> commitments are the `FollowUpWorker` / proactive-callback territory.
+
+`FollowUpWorker` is real, is scheduled, and does retire things. It selects with
+`list_by_temporal_type("future_plan")`, and that predicate opens
+`if mem.temporal_type != normalized: continue`. Promises are written by
+`PromiseExtractionWorker._persist`, which passes no `temporal_type` at all, so
+every one of them is `durable`. **The delegation named a worker that could not
+match a single row.**
+
+Nothing failed, so nothing logged. Both halves are individually correct and both
+have passing tests. The comment is worse than no comment would have been: a
+reader asking "who retires the user's promises?" got a confident answer and
+stopped looking. It survived from K43 to now on the strength of one sentence.
+
+### A deadline nothing could read
+
+37 of the 160 promises state a deadline. It is folded into the content string at
+extraction —
+
+```python
+if deadline_str and deadline_str.lower() not in {"null", "none", ""}:
+    body = f"{what} (by {deadline_str})"
+```
+
+— and `grep` for anything that reads it back finds nothing. `promise_deadline`,
+`deadline`, `(by ` : the only match in `app/` is the line that writes it. So
+every lifecycle decision was made from `promise_age_hours`, i.e. from
+`created_at`, and the two questions came apart in both directions: **a promise
+made this morning and due by lunch read as fresh all afternoon, while a standing
+"I'll help when you ask" read as late purely for being old.** Retirement had the
+same blind spot in the more expensive direction: a commitment agreed three weeks
+ahead of the day it fell due was scheduled to be dropped for staleness on that
+very day.
+
+The prompt had asked for "a specific time or day if one was stated" without
+naming a format, and got six:
+
+| register | n |
+|---|---|
+| `2026-08-19` | 22 |
+| `Monday, August 17, 2026` | 8 |
+| other prose (`Before August 18, 2026`) | 4 |
+| `2026-08-17T23:30:00.000Z` | 2 |
+| `tomorrow` | 1 |
+
+All 37 reached the prompt verbatim, **24 of them already past** — so she was
+being handed raw ISO dates and asked to work out whether they had happened, which
+is the arithmetic H40 exists to stop her doing. The literal `tomorrow` is the
+same bug as H40's stored deictics, in a field nobody had thought of as stored
+text: it re-anchors to whenever it is next read, forever.
+
+### The nudge that ignored the lifecycle
+
+`prepared_nudge._collect_candidates` treats a promise like a callback or a
+reflection: filter by kind, cap by `use_count`, rank by salience. It never read
+`promise_status`. **14 of the 33 resolved promises were sitting inside that
+window** — the top one at salience 0.89, marked `fulfilled`, never used, one of
+hers and a tender one — waiting to be spoken through the template
+`"Quick check — did you ever get to {x}?"`. Asking after something she already
+did is worse than saying nothing; it reads as not having been paying attention.
+
+The RAG guard against exactly this failure was blind for a structural reason
+worth recording. `_temporal_filter_drops` says in its own docstring that expired
+rows are dropped because surfacing them "produces the exact *asking about
+progress on something that already finished* bug this work targets" — but it
+inspects `past_event` rows with a `relevance_until`. Promises are `durable` with
+`relevance_until` NULL. **The check written for this failure mode could not see
+the rows most likely to cause it.**
+
+### Fixed
+
+`timephrase.parse_loose_datetime` reads a day or time out of text we did not get
+to format — ISO, month names in either field order, bare weekdays, and the
+handful of relative words a model actually reaches for. It returns `None` rather
+than a guess for wording that names no moment, because a fabricated deadline
+means reporting something overdue that was never due. All six live registers
+parse; the prompt now asks for ISO so the parser is a backstop rather than the
+plan. Two details are load-bearing: an offset-less stamp is read as **local**,
+where `parse_iso` promotes to UTC — that function reads timestamps we wrote, and
+we write UTC, while this one reads a model describing somebody's afternoon — and
+a bare day lands at **23:59**, since "by August 19" is not breached at 00:01 on
+the 19th.
+
+The parsed value goes to `metadata.promise_deadline`, deliberately not to
+`event_time`. `event_time` means "when this happened or happens" and the decay
+worker retires rows by it, which is the wrong reflex here: an unkept promise is
+the point, not expired bookkeeping. Keeping it out of the temporal columns leaves
+`promise_status` the single authority on a promise's fate. The stored sentence now
+carries an absolute, weekday-bearing form (`(by Wed Aug 19)`) so nothing goes
+stale and nobody does calendar arithmetic; unparseable wording is kept verbatim
+only while it would still be true next month.
+
+Lateness is now its own axis — `promise_deadline` / `overdue_hours` /
+`is_overdue` — and the worker uses it three ways: a missed deadline **outranks**
+mere age when choosing what to raise, it **bypasses** the settling period that
+exists so she doesn't ask about something she said twenty minutes ago, and the
+cue **says so** ("That was due 3 days ago, so it's late") instead of reporting
+only how long ago she made it. Retirement now runs on both sides, on whichever
+clock applies: a deadline still ahead protects a promise however old, a passed one
+earns a full grace window measured from itself rather than inheriting what was
+left of the creation-age one, and no deadline at all falls back to the original
+rule. Surfacing stays assistant-only — retiring his promises is upkeep, raising
+them is nagging, and that is a separate decision. Retired promises are also hidden
+from the live RAG block; `fulfilled` ones stay, because those happened and that
+makes them ordinary shared history.
+
+Dry-run against the live store: **37 deadlines become readable** (from zero),
+**36 stale user rows retire** on the first sweep, **33 resolved promises leave the
+nudge pool**, and **19 promises are currently late but inside their grace
+window** — 8 of them hers, so the cue has real material for the first time.
+Existing rows keep their deadline only in the content string, so
+`scripts/backfill_promise_deadlines.py` re-reads the suffix with the same parser,
+anchored to each row's own `created_at` so a relative word resolves against the
+day it was written. It is a re-read of a date the model already committed to, not
+an inference, and it is `--dry-run` by default.
+
+### The shape worth keeping
+
+**[Recurring shape 18](#the-eighteen-recurring-shapes): a handoff documented in
+prose that no code implements.** This is shape 14 (a store with write and read but
+no upkeep) with a twist that made it survive far longer: the upkeep pass was not
+missing, it was **assigned**. One sentence in a docstring named a real, scheduled
+worker as the owner, and that worker selected on a field the producer never set.
+Every component was correct in isolation, every test passed, and the accumulating
+side had no symptom other than getting slowly worse.
+
+The reason it lasted is that the comment answered the question a reader would
+have asked. Shape 14's version is found by asking "what retires these?" and
+getting silence. Here you ask and get a name — so the check has to go one step
+further. **Rule: when a docstring delegates a responsibility to another
+component, verify the selection criteria on the far side actually admit this
+data, and prefer stating it as a testable claim over prose. A handoff between two
+correct components is not covered by either component's tests, and the seam
+produces no log line because nothing on either side is failing.** The cheap guard
+is a test that asserts the *receiving* side sees the sending side's output — which
+is what `RetirementTests.test_a_stale_user_promise_is_retired` now does, on the
+real 84-day-old row.
+
+Second, smaller lesson, and the one that generalises furthest: **structured data
+written into prose is write-only.** The deadline was extracted, formatted, stored
+and shown to the model, and was still unreadable by every mechanism that needed
+it — because it lived inside a sentence rather than in a field. It looked
+complete at every review, since the information is visibly *there*. The tell is a
+field that exists in the producer's schema (the LLM was asked for `deadline`) and
+in no consumer's.
 
 *Superseded — H9 and H10 both shipped. Kept for the reasoning, which held up:
 H9 was the difference between a companion who has feelings about things and one

@@ -137,7 +137,10 @@ _SYSTEM_PROMPT = (
     "its object so it stands on its own. Resolve pronouns and vague "
     "references using the transcript -- write 'bring Jacob some tea', "
     "not 'bring you some'; 'fix the deploy script', not 'fix it'.\n"
-    "  - deadline: a specific time or day if one was stated, else null.\n"
+    "  - deadline: when it is owed by, as an ISO-8601 date "
+    "(YYYY-MM-DD) or date-time, resolved against the transcript's own "
+    "timestamps. Use null when no time was stated or the wording was "
+    "vague ('soon', 'sometime') -- do not invent one.\n"
     "Rules:\n"
     "- A promise is a concrete intent to DO, find out, follow up on, or "
     "remember something specific. Idioms and figures of speech are NOT "
@@ -218,6 +221,61 @@ def resolve_promise_who(
         if token == (str(name) or "").strip().lower():
             return "user"
     return ""
+
+
+_NULL_WORDS: frozenset[str] = frozenset({"", "null", "none", "n/a", "unknown"})
+
+
+def _read_deadline(
+    raw: str | None, *, anchor: datetime | None = None,
+) -> tuple[datetime | None, str]:
+    """Turn the model's ``deadline`` field into ``(when, display_text)``.
+
+    The prompt asks for ISO, and this is what happens when the answer is
+    something else. Across 160 stored promises the field arrived in six
+    registers, so the parse is a backstop rather than a formality --
+    without it 13 of the 37 promises that named a day named it only to a
+    human reader.
+
+    Both halves of the return matter and they fail independently:
+
+    * ``when`` is ``None`` for wording that names no moment. Nothing
+      downstream may treat that as "not yet due" -- it means the promise
+      has no clock at all, which is the normal case (123 of 160).
+    * ``display_text`` is what gets written into the stored sentence. An
+      absolute day carrying its weekday, because the alternative is a
+      reader doing calendar arithmetic on a raw ``2026-08-19`` and the
+      model getting the weekday wrong is one of the ways H40 happened.
+
+    Unparseable wording keeps its raw form only while it would still be
+    true next month: ``"before the end of the quarter"`` survives, a bare
+    ``"tomorrow"`` does not, because the sentence outlives the day.
+    """
+    text = (raw or "").strip()
+    if text.lower() in _NULL_WORDS:
+        return None, ""
+    when = timephrase.parse_loose_datetime(text, anchor=anchor, day_end=True)
+    if when is None:
+        return None, "" if timephrase.has_relative_deictic(text) else text[:60]
+    return when, _format_deadline(when, anchor=anchor)
+
+
+def _format_deadline(when: datetime, *, anchor: datetime | None = None) -> str:
+    """Absolute, weekday-bearing rendering of a deadline for stored text.
+
+    The clock is shown only when the deadline actually carries one --
+    a day parsed with no stated time lands on its final minute, and
+    printing "23:59" would dress a whole-day deadline up as a precise
+    one.
+    """
+    local = when.astimezone()
+    ref = (anchor or timephrase.now()).astimezone()
+    stamp = local.strftime("%a %b %d").replace(" 0", " ")
+    if local.year != ref.year:
+        stamp = f"{stamp}, {local.year}"
+    if (local.hour, local.minute) != (23, 59):
+        stamp = f"{stamp} {local.strftime('%H:%M')}"
+    return stamp
 
 
 def _is_low_quality(what: str) -> bool:
@@ -686,6 +744,7 @@ class PromiseExtractionWorker:
                 self._assistant_name_provider()
                 if self._assistant_name_provider else None
             ),
+            anchor=self._clock(),
         )
         if parsed is None:
             log.info(
@@ -702,6 +761,7 @@ class PromiseExtractionWorker:
         *,
         user_names: list[str] | None = None,
         assistant_name: str | None = None,
+        anchor: datetime | None = None,
     ) -> list[Promise] | None:
         """Parse the LLM's JSON answer into typed promises.
 
@@ -714,6 +774,9 @@ class PromiseExtractionWorker:
 
         An item whose ``who`` names neither side is dropped rather than
         assigned one; see :func:`resolve_promise_who`.
+
+        ``anchor`` is the moment the transcript was read, which any
+        relative deadline resolves against.
         """
         parsed = parse_json_array_answer(
             raw, key="promises", item_hint_keys=_PROMISE_ITEM_KEYS,
@@ -741,19 +804,19 @@ class PromiseExtractionWorker:
             what = str(item.get("what") or "").strip()
             if len(what) < 4:
                 continue
-            deadline = item.get("deadline")
-            deadline_str = ""
-            if isinstance(deadline, str):
-                deadline_str = deadline.strip()
-            body = what
-            if deadline_str and deadline_str.lower() not in {"null", "none", ""}:
-                body = f"{what} (by {deadline_str})"
+            deadline_raw = item.get("deadline")
+            when, when_text = _read_deadline(
+                deadline_raw if isinstance(deadline_raw, str) else None,
+                anchor=anchor,
+            )
             out.append(
                 Promise(
                     who=who,
-                    text=body[:200],
+                    text=what[:200],
                     source="llm",
                     confidence=0.8,
+                    deadline=when,
+                    deadline_text=when_text,
                 )
             )
         return out
@@ -809,6 +872,19 @@ class PromiseExtractionWorker:
         except Exception:
             log.debug("promise-worker embed failed", exc_info=True)
             return False
+        metadata: dict[str, Any] = {
+            "promise_who": promise.who,
+            "promise_status": "open",
+        }
+        # The deadline lives here and nowhere else. ``event_time`` was the
+        # obvious alternative and is the wrong shape: it means "when this
+        # happened / happens", the decay worker retires rows by it, and a
+        # promise whose date has passed is the one row that must stay
+        # visible -- an unkept commitment is the point, not expired
+        # bookkeeping. Keeping it out of the temporal columns leaves
+        # ``promise_status`` the single authority on a promise's fate.
+        if promise.deadline is not None:
+            metadata["promise_deadline"] = promise.deadline.isoformat()
         try:
             mem = store.add(
                 content=content,
@@ -817,10 +893,7 @@ class PromiseExtractionWorker:
                 salience=0.6,
                 source_session=session_key,
                 source_message_id=promise.source_turn_id,
-                metadata={
-                    "promise_who": promise.who,
-                    "promise_status": "open",
-                },
+                metadata=metadata,
                 tier="long_term",
                 confidence=0.85,
             )
@@ -829,9 +902,10 @@ class PromiseExtractionWorker:
             return False
         if mem is not None:
             log.info(
-                "promise-worker upsert: id=%s who=%s content=%r",
+                "promise-worker upsert: id=%s who=%s deadline=%s content=%r",
                 getattr(mem, "id", "?"),
                 promise.who,
+                promise.deadline.isoformat() if promise.deadline else "-",
                 _preview(content),
             )
         return mem is not None

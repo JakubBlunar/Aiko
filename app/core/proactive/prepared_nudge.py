@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.memory import promise_lifecycle
 from app.core.proactive.proactive_line_guard import validate_proactive_line
 from app.core.session.session_text_utils import resolve_user_name
 from app.core.infra import timephrase
@@ -514,6 +515,19 @@ class NarrativeWeaver:
                     content, getattr(mem, "created_at", None),
                 )
                 if kind == "promise":
+                    # A promise carries a lifecycle the other kinds don't,
+                    # and this surface used to ignore it — so a promise
+                    # already marked fulfilled could still be picked up and
+                    # spoken through the "did you ever get to {x}?"
+                    # template. On the live store 14 of 33 resolved
+                    # promises were sitting inside the salience + use_count
+                    # window, the top one at 0.89 and never used (H41).
+                    # Asking after something she already did is worse than
+                    # silence: it says she wasn't paying attention.
+                    if promise_lifecycle.promise_status(mem) not in (
+                        promise_lifecycle.ACTIVE_STATUSES
+                    ):
+                        continue
                     # Promise memories are stored as
                     # "{actor} promised: {predicate}" (see
                     # ``Promise.to_memory_content``). Feeding that whole

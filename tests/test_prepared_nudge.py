@@ -246,6 +246,56 @@ class PromisePrefixStripTests(unittest.TestCase):
             f.close()
 
 
+class ResolvedPromiseTests(unittest.TestCase):
+    """A kept promise must not come back as an open loop (H41).
+
+    This surface ranks promises by salience and caps them by
+    ``use_count``, but never read ``promise_status`` -- so a fulfilled
+    promise could still be spoken through the "did you ever get to {x}?"
+    template. On the live store 14 of 33 resolved promises sat inside the
+    window, the top one at salience 0.89 and never used. Asking after
+    something she already did is worse than saying nothing: it reads as
+    not having been paying attention.
+    """
+
+    def _candidates_for(self, status: str):
+        f = _Fixture()
+        try:
+            f.memory.add(
+                "Aiko promised: send the recap",
+                "promise",
+                _emb(7),
+                salience=0.89,
+                metadata={"promise_who": "assistant", "promise_status": status},
+            )
+            weaver = NarrativeWeaver(
+                ollama=_FakeOllama(),
+                store=f.store,
+                memory_store=f.memory,
+                agenda_store=f.agenda,
+                model="m",
+            )
+            return [
+                c for c in weaver._collect_candidates("local")
+                if c.kind == "promise"
+            ]
+        finally:
+            f.close()
+
+    def test_a_fulfilled_promise_is_not_a_candidate(self):
+        self.assertEqual(self._candidates_for("fulfilled"), [])
+
+    def test_a_dropped_promise_is_not_a_candidate(self):
+        self.assertEqual(self._candidates_for("dropped"), [])
+
+    def test_an_open_promise_still_is(self):
+        self.assertEqual(len(self._candidates_for("open")), 1)
+
+    def test_a_surfaced_promise_still_is(self):
+        # Surfaced means a cue was armed, not that the loop closed.
+        self.assertEqual(len(self._candidates_for("surfaced")), 1)
+
+
 class NarrativeWeaverTests(unittest.TestCase):
     def _seed_memories(self, memory: MemoryStore):
         memory.add(
