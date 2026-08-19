@@ -408,7 +408,12 @@ def write_wav(path: Path, audio: np.ndarray, sample_rate: int) -> Path:
 
 
 def read_wav(path: Path) -> tuple[np.ndarray, int]:
-    """Read a WAV as mono float32, averaging any extra channels."""
+    """Read 16-bit PCM WAV as mono float32, averaging extra channels.
+
+    Stdlib only, for the hot path: the bench reads back one of these per
+    synthesis and does not want a decoder in the loop. Use
+    :func:`read_audio` for anything a human supplied.
+    """
     with wave.open(str(path), "rb") as wf:
         channels = wf.getnchannels()
         width = wf.getsampwidth()
@@ -420,6 +425,44 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
     if channels > 1:
         data = data.reshape(-1, channels).mean(axis=1)
     return data, int(rate)
+
+
+def read_audio(path: Path) -> tuple[np.ndarray, int]:
+    """Read any format libsndfile knows, as mono float32.
+
+    Exists because the highest-quality reference material available is
+    whatever the voice was *originally* cloned from, and that arrives as
+    whatever the person happened to have -- mp3, flac, 24-bit wav. Making
+    them convert first is how a good source clip gets replaced by a
+    convenient bad one. libsndfile 1.2.2 covers MP3, FLAC, OGG and WAV
+    at any bit depth; the stdlib fallback keeps 16-bit WAV working if
+    soundfile is ever missing.
+    """
+    try:
+        import soundfile as sf
+
+        data, rate = sf.read(str(path), dtype="float32", always_2d=True)
+        return np.asarray(data, dtype=np.float32).mean(axis=1), int(rate)
+    except ImportError:
+        return read_wav(path)
+
+
+def resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Linear resample. Adequate here, and deliberately not more.
+
+    Conditioning clips get downsampled to an engine's rate, where linear
+    interpolation's artefacts sit far below what the codec already does.
+    Anything destined for *training* should be resampled with a proper
+    windowed-sinc filter instead -- or better, not resampled at all.
+    """
+    if src_rate == dst_rate or audio.size == 0:
+        return np.asarray(audio, dtype=np.float32).reshape(-1)
+    flat = np.asarray(audio, dtype=np.float32).reshape(-1)
+    count = int(round(flat.size * dst_rate / float(src_rate)))
+    if count <= 1:
+        return flat
+    src_idx = np.linspace(0.0, flat.size - 1.0, count, dtype=np.float64)
+    return np.interp(src_idx, np.arange(flat.size), flat).astype(np.float32)
 
 
 @dataclass

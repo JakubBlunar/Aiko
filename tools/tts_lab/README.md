@@ -79,8 +79,16 @@ The page also prints two tables that matter more than the audio:
 python -m tools.tts_lab.serve --open        # http://127.0.0.1:6280
 ```
 
-Record a reference in the browser (or drop in a 16-bit WAV), clone it
-into any installed engine, audition a phrase, and save it to `voices/`.
+Record a reference in the browser (or drop in a **wav, mp3, flac or
+ogg** — verified through the endpoint, not just claimed by libsndfile),
+clone it into any installed engine, audition a phrase, and save it to
+`voices/`.
+
+Uploading matters as much as recording. If a voice was originally cloned
+from mp3s, **those mp3s are the best material available** — a generation
+closer to the source than anything the current engine can regenerate.
+Making someone convert to WAV first is how a good source clip quietly
+gets replaced by a convenient bad one.
 It reads out the clip's quality numbers as you record and shows the same
 phrase set `voicebank.py` uses as a script to read, so the reference
 covers her range rather than being thirty seconds of one flat sentence.

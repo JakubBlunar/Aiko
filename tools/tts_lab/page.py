@@ -88,8 +88,9 @@ it does not touch the running app.</p>
     <div class="row">
       <button id="rec" class="primary">Record</button>
       <button id="stop" disabled>Stop</button>
-      <button id="pick">Upload WAV</button>
-      <input type="file" id="file" accept=".wav,audio/wav" hidden>
+      <button id="pick">Upload audio</button>
+      <input type="file" id="file"
+             accept=".wav,.mp3,.flac,.ogg,.opus,audio/*" hidden>
     </div>
     <div class="meter"><i id="level"></i></div>
     <div class="stat" id="recstat">Aim for 20&ndash;30 seconds. Read the
@@ -236,8 +237,10 @@ $('pick').onclick = () => $('file').click();
 $('file').onchange = async (ev) => {
   const f = ev.target.files[0];
   if (!f) return;
+  $('recstat').textContent = 'decoding ' + f.name + '\u2026';
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
   const body = await f.arrayBuffer();
-  const r = await fetch('api/reference/wav', {
+  const r = await fetch('api/reference/wav?ext=' + encodeURIComponent(ext), {
     method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
     body,
   }).then(r => r.json());
@@ -258,7 +261,9 @@ function applyReference(r) {
   refId = r.id;
   $('refplay').src = 'api/audio/' + r.file + '?t=' + Date.now();
   const q = r.quality;
-  const bits = [q.duration_s.toFixed(1) + 's', 'peak ' + q.peak.toFixed(2),
+  const bits = [q.duration_s.toFixed(1) + 's',
+                (r.sample_rate / 1000).toFixed(1) + ' kHz',
+                'peak ' + q.peak.toFixed(2),
                 'rms ' + q.rms.toFixed(3),
                 (q.silence_share * 100).toFixed(0) + '% silence'];
   let html = bits.join(' \u00b7 ');
