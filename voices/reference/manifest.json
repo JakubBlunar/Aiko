@@ -1,0 +1,87 @@
+{
+  "built_at": "2026-08-19T22:15:47.469767+00:00",
+  "source_engine": "pocket-tts",
+  "source_voice": "aiko1_refined.safetensors",
+  "sample_rate": 24000,
+  "reference": "aiko_reference.wav",
+  "reference_duration_s": 27.2,
+  "reference_warnings": [],
+  "clips_used": 9,
+  "gap_ms": 220,
+  "holdout": "Hey, I was just thinking about something and I wanted to tell you.",
+  "parts": [
+    {
+      "phrase": "So, where should I start with all of this?",
+      "file": "part01.wav",
+      "duration_s": 2.0,
+      "warnings": []
+    },
+    {
+      "phrase": "The quick brown fox jumps over the lazy dog, apparently.",
+      "file": "part02.wav",
+      "duration_s": 3.04,
+      "warnings": []
+    },
+    {
+      "phrase": "I think it went about as well as anyone could have hoped.",
+      "file": "part03.wav",
+      "duration_s": 2.574,
+      "warnings": []
+    },
+    {
+      "phrase": "Oh! I did not expect that at all.",
+      "file": "part04.wav",
+      "duration_s": 2.314,
+      "warnings": []
+    },
+    {
+      "phrase": "Um, hang on, let me actually think about it for a second.",
+      "file": "part05.wav",
+      "duration_s": 2.797,
+      "warnings": []
+    },
+    {
+      "phrase": "It is half past three in the afternoon, and nothing is finished.",
+      "file": "part06.wav",
+      "duration_s": 3.262,
+      "warnings": []
+    },
+    {
+      "phrase": "Would you mind saying that one more time, a little slower?",
+      "file": "part07.wav",
+      "duration_s": 2.64,
+      "warnings": []
+    },
+    {
+      "phrase": "Honestly? That is the funniest thing I have heard all week.",
+      "file": "part08.wav",
+      "duration_s": 3.465,
+      "warnings": []
+    },
+    {
+      "phrase": "Six or seven, maybe eight, but certainly no more than that.",
+      "file": "part09.wav",
+      "duration_s": 3.349,
+      "warnings": []
+    },
+    {
+      "phrase": "Right, okay, fine, I will admit you were probably correct.",
+      "file": "part10.wav",
+      "duration_s": 3.066,
+      "warnings": []
+    },
+    {
+      "phrase": "It is quiet now, and the light through the window has gone orange.",
+      "file": "part11.wav",
+      "duration_s": 3.84,
+      "warnings": []
+    },
+    {
+      "phrase": "Why would anyone choose to do it that way round?",
+      "file": "part12.wav",
+      "duration_s": 2.4,
+      "warnings": []
+    }
+  ],
+  "note": "Generated from the pocket-tts embedding, not recorded. This is a bootstrap: see roundtrip.wav files for what it costs."
+}
