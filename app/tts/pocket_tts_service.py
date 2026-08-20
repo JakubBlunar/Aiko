@@ -186,6 +186,14 @@ class PocketTtsService(PcmPlaybackMixin):
         self._pitch_preserving_speed: bool = bool(
             getattr(settings, "pitch_preserving_speed", True)
         )
+        # Gated level every clip is matched to before affect gain, or 0.0
+        # for the engine's raw output. Applies here too, not only to the
+        # cloning engines: pocket-tts's own per-sentence spread measured
+        # 8.4 dB over a twelve-sentence turn, which was simply never
+        # looked at until a second engine made it worth measuring.
+        self._loudness_target_dbfs: float = float(
+            getattr(settings, "loudness_target_dbfs", 0.0) or 0.0
+        )
 
         if TTSModel is not None and np is not None:
             threading.Thread(target=self._load_model, daemon=True, name="pocket-tts-load").start()
