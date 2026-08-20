@@ -30,6 +30,7 @@ import threading
 import uuid
 import webbrowser
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -37,13 +38,19 @@ import numpy as np
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from tools.tts_lab import adapters, remote
+from tools.tts_lab import adapters, labeled, remote
 from tools.tts_lab.adapters import REPO_ROOT, assess, read_audio, write_wav
 from tools.tts_lab.page import INDEX_HTML
 from tools.tts_lab.voicebank import PHRASES
 
 VOICES_DIR = REPO_ROOT / "voices"
 WORK_DIR = VOICES_DIR / "studio"
+
+#: Subtrees of ``voices/`` that hold generated output rather than voices.
+#: Without this the picker lists every bench render and every intermediate
+#: from ``voicebank.py`` -- forty-odd rows to find the three real ones,
+#: which is the same as not having a picker.
+_SCRATCH = ("studio/", "datasets/", "audition/", "reference/parts/")
 
 #: Engines are expensive to load (2 s for pocket-tts, up to 37 s for a
 #: cold Chatterbox), so they are kept alive across requests. Guarded
@@ -54,6 +61,11 @@ _engines: dict[str, adapters.Adapter] = {}
 _engine_lock = threading.Lock()
 #: reference id -> wav path
 _references: dict[str, Path] = {}
+#: dataset clip id -> (decoded wav, original filename). Separate from
+#: ``_references`` because these are training material, not conditioning
+#: clips: dozens to hundreds of them, each carrying a transcript, and
+#: none of them normalised individually (see ``normalise_set``).
+_clips: dict[str, tuple[Path, str]] = {}
 
 
 def _engine(name: str) -> adapters.Adapter:
@@ -106,12 +118,30 @@ def build_app() -> FastAPI:
 
     @app.get("/api/voices")
     def api_voices() -> dict:
+        """Saved voices, including the committed reference clip.
+
+        Recursive on purpose. The one portable copy of Aiko's voice lives
+        in ``voices/reference/``, and a flat glob left it invisible here
+        -- so the studio offered no way to audition the voice it exists
+        to protect without first re-recording something.
+        """
         rows = []
-        for path in sorted(VOICES_DIR.glob("*")):
-            if path.is_dir() or path.suffix not in (".safetensors", ".wav", ".mp3"):
+        for path in sorted(VOICES_DIR.rglob("*")):
+            if path.is_dir() or path.suffix not in (
+                ".safetensors", ".wav", ".mp3", ".flac"
+            ):
+                continue
+            rel = path.relative_to(VOICES_DIR).as_posix()
+            if any(rel.startswith(p) for p in _SCRATCH) or "roundtrip" in rel:
                 continue
             rows.append(
-                {"name": path.name, "kb": path.stat().st_size / 1024.0}
+                {
+                    "name": rel,
+                    "kb": path.stat().st_size / 1024.0,
+                    # A .safetensors is a pocket-tts speaker state and
+                    # means nothing to an engine that clones from audio.
+                    "audio": path.suffix != ".safetensors",
+                }
             )
         return {"voices": rows}
 
@@ -137,10 +167,7 @@ def build_app() -> FastAPI:
         raw = await request.body()
         # Suffix preserved where the browser sent one, since libsndfile
         # sniffs content but is happier with a hint.
-        suffix = request.query_params.get("ext") or ""
-        suffix = "." + "".join(
-            c for c in suffix.lstrip(".").lower() if c.isalnum()
-        )[:5] if suffix else ".bin"
+        suffix = _safe_suffix(request.query_params.get("ext") or "")
         tmp = WORK_DIR / f"upload_{uuid.uuid4().hex[:8]}{suffix}"
         tmp.write_bytes(raw)
         try:
@@ -171,23 +198,23 @@ def build_app() -> FastAPI:
     async def api_synth(request: Request) -> JSONResponse:
         body = await request.json()
         name = str(body.get("engine") or "")
-        ref_id = str(body.get("reference") or "")
         text = str(body.get("text") or "").strip()
         kwargs = body.get("kwargs") or {}
         if not text:
             return JSONResponse({"error": "nothing to say"})
-        ref = _references.get(ref_id)
-        if ref is None or not ref.exists():
-            return JSONResponse({"error": "record or upload a reference first"})
         try:
             engine = _engine(name)
         except Exception as exc:
             return JSONResponse({"error": f"{name} unavailable: {exc}"})
         try:
+            source = _resolve_voice_path(body)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)})
+        try:
             with _engine_lock:
                 if isinstance(engine, remote.Remote):
                     engine.overrides = dict(kwargs)
-                voice = engine.voice_from_reference(ref)
+                voice = _load_voice(engine, source)
                 result = engine.synth(text, voice)
         except Exception as exc:
             return JSONResponse({"error": f"{type(exc).__name__}: {exc}"})
@@ -222,7 +249,7 @@ def build_app() -> FastAPI:
         if _saves_as(name) == "safetensors":
             try:
                 engine = _engine(name)
-                state = engine.voice_from_reference(ref)
+                state = _load_voice(engine, ref)
                 dest = VOICES_DIR / f"{stem}.safetensors"
                 # export_voice is a staticmethod on the *service*, not on
                 # the adapter wrapping it. This is the call the deleted Qt
@@ -252,7 +279,207 @@ def build_app() -> FastAPI:
             }
         )
 
+    # ── dataset panel ──
+
+    @app.get("/api/dataset/asr")
+    def api_dataset_asr() -> dict:
+        from tools.tts_lab import transcribe
+
+        t = transcribe.shared()
+        return {
+            "available": t.available,
+            "model": t.model_name,
+            "cached": transcribe.cached_models(),
+        }
+
+    @app.post("/api/dataset/add")
+    async def api_dataset_add(request: Request) -> JSONResponse:
+        """One training clip. Decoded, measured, kept as-is otherwise.
+
+        Deliberately *not* run through ``_store_reference``: that trims
+        and peak-normalises, which is right for a conditioning clip and
+        wrong for training material. Level differences between a whisper
+        and an exclamation are part of what a fine-tune should learn, so
+        gain is applied once across the whole set at save time instead.
+        """
+        raw = await request.body()
+        source = request.query_params.get("name") or "clip"
+        ext = request.query_params.get("ext") or ""
+        suffix = _safe_suffix(ext)
+        tmp = WORK_DIR / f"in_{uuid.uuid4().hex[:8]}{suffix}"
+        tmp.write_bytes(raw)
+        try:
+            audio, sample_rate = read_audio(tmp)
+        except Exception as exc:
+            return JSONResponse({"error": f"could not decode {source}: {exc}"})
+        finally:
+            tmp.unlink(missing_ok=True)
+
+        clip_id = uuid.uuid4().hex[:12]
+        path = write_wav(WORK_DIR / f"clip_{clip_id}.wav", audio, sample_rate)
+        _clips[clip_id] = (path, Path(source).name)
+        quality = assess(audio, sample_rate)
+        notes = list(quality.warnings)
+        if quality.duration_s > labeled.MAX_SECONDS:
+            notes.append(
+                f"{quality.duration_s:.0f}s is too long -- most trainers "
+                f"window at {labeled.MAX_SECONDS:.0f}s, so cut it up"
+            )
+        elif quality.duration_s < labeled.MIN_SECONDS:
+            notes.append("under a second, too short to learn prosody from")
+        return JSONResponse(
+            {
+                "id": clip_id,
+                "file": path.name,
+                "source": Path(source).name,
+                "sample_rate": sample_rate,
+                "quality": asdict(quality),
+                "notes": notes,
+            }
+        )
+
+    @app.post("/api/dataset/transcribe")
+    async def api_dataset_transcribe(request: Request) -> JSONResponse:
+        """Draft one clip's transcript. One per call, so the page can
+        show progress and the operator can stop a long run early."""
+        body = await request.json()
+        entry = _clips.get(str(body.get("id") or ""))
+        if entry is None:
+            return JSONResponse({"error": "unknown clip"})
+        from tools.tts_lab.transcribe import shared
+
+        transcriber = shared()
+        if not transcriber.available:
+            return JSONResponse(
+                {
+                    "error": (
+                        "no faster-whisper model in the HuggingFace cache; "
+                        "transcription would need a download"
+                    )
+                }
+            )
+        try:
+            with _engine_lock:
+                # Shares the lock with synthesis on purpose: both are
+                # CPU-saturating, and letting them overlap would make
+                # every latency number in the studio meaningless.
+                line = transcriber.transcribe(entry[0])
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"})
+        return JSONResponse(line.to_dict())
+
+    @app.post("/api/dataset/save")
+    async def api_dataset_save(request: Request) -> JSONResponse:
+        body = await request.json()
+        raw_name = str(body.get("name") or "").strip()
+        stem = "".join(
+            c for c in raw_name if c.isalnum() or c in ("-", "_")
+        ).strip("-_")
+        speaker = "".join(
+            c for c in str(body.get("speaker") or "aiko")
+            if c.isalnum() or c in ("-", "_")
+        ) or "aiko"
+        items = []
+        for row in body.get("items") or []:
+            entry = _clips.get(str(row.get("id") or ""))
+            text = str(row.get("text") or "").strip()
+            if entry is None or not text:
+                continue
+            items.append(labeled.Item(entry[0], text))
+        if not items:
+            return JSONResponse({"error": "nothing with both audio and text"})
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        out_dir = labeled.OUT_ROOT / (stem or f"{speaker}-labelled-{stamp}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            result, rate_info = labeled.build(items, out_dir)
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"})
+        if not result.samples:
+            return JSONResponse(
+                {
+                    "error": "every clip was rejected",
+                    "rejects": [
+                        {"file": r.text, "reason": r.reason}
+                        for r in result.rejects
+                    ],
+                }
+            )
+        gain = labeled.normalise_set(result, out_dir)
+        labeled.write_manifests(result, out_dir, speaker=speaker)
+        report = labeled.write_report(
+            result, out_dir, rate_info=rate_info, gain=gain
+        )
+        return JSONResponse(
+            {
+                "path": str(out_dir.relative_to(REPO_ROOT)),
+                "clips": len(result.samples),
+                "minutes": report["audio"]["total_minutes"],
+                "sample_rate": result.sample_rate,
+                "rate_reason": rate_info["rate_reason"],
+                "rejects": [
+                    {"file": r.text, "reason": r.reason} for r in result.rejects
+                ],
+            }
+        )
+
     return app
+
+
+def _safe_suffix(ext: str) -> str:
+    """A filename hint for libsndfile, with nothing of the caller's in it."""
+    cleaned = "".join(c for c in ext.lstrip(".").lower() if c.isalnum())[:5]
+    return f".{cleaned}" if cleaned else ".bin"
+
+
+def _resolve_voice_path(body: dict) -> Path:
+    """Where the voice for this request comes from.
+
+    Two routes, and having only the first was the bug: the studio
+    required a freshly recorded or uploaded reference before it would
+    synthesise anything, which made auditioning an already-saved voice
+    impossible -- including the committed reference clip that is the only
+    portable copy of Aiko's voice. A saved voice is a perfectly good
+    starting point, so it is now one.
+    """
+    ref_id = str(body.get("reference") or "")
+    if ref_id:
+        ref = _references.get(ref_id)
+        if ref is None or not ref.exists():
+            raise ValueError("that reference has expired -- upload it again")
+        return ref
+
+    saved = str(body.get("voice") or "").strip()
+    if saved:
+        # Resolved under voices/ and checked to still be inside it, so a
+        # crafted name cannot read elsewhere on disk.
+        path = (VOICES_DIR / saved).resolve()
+        if not path.is_relative_to(VOICES_DIR.resolve()) or not path.exists():
+            raise ValueError(f"no saved voice named {saved!r}")
+        return path
+
+    raise ValueError("pick a saved voice, or record or upload a reference")
+
+
+def _load_voice(engine: adapters.Adapter, source: Path) -> Any:
+    """Turn a path into an engine voice handle.
+
+    A ``.safetensors`` is a pocket-tts speaker state, not audio, so it
+    goes through the named-voice route; everything else is a clip to
+    clone from. Engines that cannot read an embedding say so plainly
+    rather than failing inside a tensor load.
+    """
+    if source.suffix == ".safetensors":
+        try:
+            return engine.voice_from_id(str(source))
+        except NotImplementedError:
+            raise ValueError(
+                f"{engine.caps.name} clones from audio and cannot read a "
+                "pocket-tts embedding -- pick a .wav, or make one with "
+                "'python -m tools.tts_lab.voicebank'"
+            ) from None
+    return engine.voice_from_reference(source)
 
 
 def _availability(name: str) -> bool:

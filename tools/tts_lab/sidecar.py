@@ -119,6 +119,15 @@ class Engine:
     def synth(self, text: str, voice: Any, kwargs: dict) -> np.ndarray:
         raise NotImplementedError
 
+    def metadata(self) -> dict[str, Any]:
+        """Anything engine-specific the parent should know after loading.
+
+        Read off the installed package rather than declared, for the same
+        reason ``accepts`` is: a language list in a README is a claim
+        about some release, not about this one.
+        """
+        return {}
+
 
 class Chatterbox(Engine):
     """Resemble AI Chatterbox: Turbo (350M), Nano (110M), or the original.
@@ -172,6 +181,9 @@ class Chatterbox(Engine):
             kwargs["nano"] = True
 
         self._model = cls.from_pretrained(**kwargs)
+        self._introspect()
+
+    def _introspect(self) -> None:
         try:
             sig = inspect.signature(self._model.generate)
             self._accepts = [
@@ -231,11 +243,141 @@ class Chatterbox(Engine):
         return _to_numpy(self._model.generate(text, **call))
 
 
+class ChatterboxMultilingual(Chatterbox):
+    """The 23-language model, for cross-lingual cloning.
+
+    The point of it here is not localisation. Voice identity and
+    linguistic content are separate paths in this architecture, so a
+    reference clip in one language can speak text in another -- which
+    matters when the available candidate voices for a character are
+    overwhelmingly Japanese and the character speaks English.
+
+    Accent comes along with the timbre, because the speaker encoder
+    captures phonetic habit as well as vocal tract. For most products
+    that is a defect to engineer around; for an anime-styled companion it
+    may be the desired result, so nothing here tries to suppress it.
+
+    ``language_id`` is a *required* positional on this model's
+    ``generate`` -- no default, unlike every other knob -- so it is
+    injected rather than left to the caller. Forgetting it is a
+    ``TypeError`` from inside a subprocess, which is a poor way to find
+    out. Note also that the defaults here are ``exaggeration=0.5,
+    cfg_weight=0.5``, matching the original model rather than Turbo's
+    ``0.0 / 0.0``.
+    """
+
+    #: What to speak when the caller does not say. English because that
+    #: is what Aiko speaks; the reference clip's language is a separate
+    #: question and deliberately not tied to this.
+    DEFAULT_LANGUAGE = "en"
+
+    def load(self) -> None:
+        from chatterbox.mtl_tts import ChatterboxMultilingualTTS as cls
+
+        if self._nano:
+            raise RuntimeError("there is no Nano variant of the multilingual model")
+        self._model = cls.from_pretrained(device=self._device)
+        self._introspect()
+
+    def metadata(self) -> dict[str, Any]:
+        languages: list[str] = []
+        try:
+            from chatterbox.mtl_tts import SUPPORTED_LANGUAGES
+
+            languages = sorted(SUPPORTED_LANGUAGES)
+        except Exception:
+            getter = getattr(self._model, "get_supported_languages", None)
+            if callable(getter):
+                try:
+                    languages = sorted(getter())
+                except Exception:
+                    languages = []
+        return {"languages": languages, "default_language": self.DEFAULT_LANGUAGE}
+
+    def defaults(self) -> dict[str, Any]:
+        base = super().defaults()
+        # Surfaced as a default even though generate() has none, so the
+        # parent can show and override it like any other knob.
+        base["language_id"] = self.DEFAULT_LANGUAGE
+        return base
+
+    def synth(self, text: str, voice: Any, kwargs: dict) -> np.ndarray:
+        call = dict(kwargs or {})
+        call.setdefault("language_id", self.DEFAULT_LANGUAGE)
+        return super().synth(text, voice, call)
+
+
 REGISTRY = {
-    "chatterbox-turbo": lambda: Chatterbox(variant="turbo"),
-    "chatterbox-nano": lambda: Chatterbox(variant="turbo", nano=True),
-    "chatterbox-full": lambda: Chatterbox(variant="full"),
+    "chatterbox-turbo": lambda device="cpu": Chatterbox(
+        variant="turbo", device=device
+    ),
+    "chatterbox-nano": lambda device="cpu": Chatterbox(
+        variant="turbo", nano=True, device=device
+    ),
+    "chatterbox-full": lambda device="cpu": Chatterbox(
+        variant="full", device=device
+    ),
+    "chatterbox-multilingual": lambda device="cpu": ChatterboxMultilingual(
+        device=device
+    ),
 }
+
+
+def _device_report(requested: str) -> dict:
+    """Check the device is real *before* loading, and say what it is.
+
+    A CUDA request that silently ran on CPU would be the worst outcome
+    available: Turbo needs a GPU to reach real time, so a quiet
+    downgrade produces an engine that stutters for a reason nobody can
+    see from the setting. Worse, the venvs here were installed with
+    CPU-only torch wheels, so this is the likely case rather than an
+    exotic one -- and on a 5090 there is a second trap behind it, since
+    Blackwell is sm_120 and needs a cu128 build.
+
+    So this refuses up front with a message naming the fix, rather than
+    letting ``from_pretrained`` fail six frames deep in a foreign venv.
+    """
+    want = (requested or "cpu").strip().lower()
+    try:
+        import torch
+    except Exception as exc:
+        return {"error": f"torch is not importable in this venv: {exc}"}
+
+    build = getattr(torch.version, "cuda", None)
+    report = {
+        "device": want,
+        "device_requested": want,
+        "torch": torch.__version__,
+        "cuda_build": build,
+    }
+    if want != "cuda":
+        return report
+
+    if not build:
+        report["error"] = (
+            f"cuda requested but this venv has a CPU-only torch "
+            f"({torch.__version__}); reinstall the env with a CUDA wheel"
+        )
+        return report
+    if not torch.cuda.is_available():
+        report["error"] = (
+            f"cuda requested but torch {torch.__version__} "
+            f"(cuda {build}) cannot see a device"
+        )
+        return report
+    try:
+        major, minor = torch.cuda.get_device_capability()
+        report["compute_capability"] = f"{major}.{minor}"
+        report["gpu"] = torch.cuda.get_device_name(0)
+        if f"sm_{major}{minor}" not in torch.cuda.get_arch_list():
+            report["error"] = (
+                f"{report['gpu']} is sm_{major}{minor} but this torch "
+                f"({torch.__version__}, cuda {build}) was built for "
+                f"{','.join(torch.cuda.get_arch_list())}"
+            )
+    except Exception as exc:
+        report["error"] = f"cuda probe failed: {exc}"
+    return report
 
 
 def _set_threads(count: int) -> dict:
@@ -272,10 +414,15 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="torch thread count; 0 leaves the library default alone",
     )
+    p.add_argument(
+        "--device",
+        default="cpu",
+        help="cpu or cuda; the reply to 'load' reports what was actually got",
+    )
     args = p.parse_args(argv if argv is not None else sys.argv[1:])
 
     thread_info = _set_threads(args.threads)
-    engine = REGISTRY[args.engine]()
+    engine = REGISTRY[args.engine](device=args.device)
     voices: list[Any] = []
 
     for line in sys.stdin:
@@ -294,6 +441,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if op == "load":
+                device_info = _device_report(args.device)
+                if device_info.get("error"):
+                    _reply({"ok": False, "error": device_info["error"]})
+                    continue
                 t0 = time.monotonic()
                 # Loaders and download bars must not touch stdout.
                 with redirect_stdout(sys.stderr):
@@ -306,6 +457,8 @@ def main(argv: list[str] | None = None) -> int:
                         "accepts": engine.accepts(),
                         "defaults": engine.defaults(),
                         "python": sys.version.split()[0],
+                        **device_info,
+                        **engine.metadata(),
                         **thread_info,
                     }
                 )

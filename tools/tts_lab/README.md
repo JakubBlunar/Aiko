@@ -84,6 +84,17 @@ ogg** — verified through the endpoint, not just claimed by libsndfile),
 clone it into any installed engine, audition a phrase, and save it to
 `voices/`.
 
+**You do not need a reference to audition.** The Voice picker in step 2
+also lists everything already saved under `voices/`, and it defaults to
+`reference/aiko_reference.wav` — so the page can speak in her voice the
+moment it loads. Requiring a fresh recording first was a real dead end:
+the whole point of committing that clip is that it *is* her voice, and
+the studio offered no way to hear it. Pick a `.safetensors` and you get
+the pocket-tts embedding route; pick a `.wav` and the engine clones from
+it per call. The picker says which is happening, and refuses the
+combination that cannot work (an embedding is meaningless to an engine
+that clones from audio).
+
 Uploading matters as much as recording. If a voice was originally cloned
 from mp3s, **those mp3s are the best material available** — a generation
 closer to the source than anything the current engine can regenerate.
@@ -107,7 +118,81 @@ for voice mode.
 Loopback-only by default: it takes microphone audio and writes into
 `voices/`.
 
+## Auditioning a voice in another language
+
+`chatterbox-multilingual` clones **across** languages: the reference clip
+and the target text need not share one. So a Japanese voice clip can
+speak English, which is the difference between "no suitable candidate
+voices exist" and "most of them are in the wrong language".
+
+To try one, upload the clip in studio step 1, pick
+`chatterbox-multilingual` in step 2, type English, and Speak. The
+sidecar defaults `language_id` to `en`; override it in the generation
+options box (`{"language_id": "ja"}`) to hear the same voice in its own
+language for comparison.
+
+Two things to expect. **Accent comes with the voice** — the speaker
+encoder carries phonetic habit as well as timbre, so a Japanese
+reference gives accented English. That is not suppressed, because for an
+anime-styled companion it may well be the point. And it is **slow**:
+measured RTF 2.96 here, twice Turbo's, so treat it as an audition and
+dataset-generation tool rather than a deployment candidate. Also no
+`[laugh]` / `[sigh]` tags, which Turbo has.
+
 ## Building a training dataset
+
+Two routes, and they are not equivalent. **Generating** from her existing
+embedding always works and always inherits a ceiling. **Labelling real
+audio** has no ceiling but needs audio to exist.
+
+### From real files (`labeled.py`, or studio step 4)
+
+Prefer this whenever any real recording survives. Real audio carries no
+generational loss and none of pocket-tts's habits, so a fine-tune on it
+can come out *better* than the current voice rather than a slightly worse
+copy of it.
+
+The expensive part is not the audio, it is the labels — a transcript per
+clip, matching what was actually said. Typing a few hundred by ear is
+where this kind of project gets abandoned half-done, and a half-labelled
+set is worth nothing. So **faster-whisper drafts them and you correct**,
+which turns hours of transcription into minutes of proofreading.
+
+```bash
+python -m tools.tts_lab.labeled --dir clips/ --transcribe
+python -m tools.tts_lab.labeled --manifest labels.tsv     # path<TAB>text
+```
+
+Or step 4 of the studio, which is the same code with players and editable
+transcripts: drop the files in, hit **Draft missing transcripts**, fix
+what is wrong, build. Typed text is kept in `localStorage` keyed by
+filename and size, so a reload or a server restart does not cost you the
+afternoon.
+
+Whisper's drafts are drafts. It normalises numbers ("2026", not "twenty
+twenty six"), guesses proper nouns, and punctuates to taste — and for TTS
+training the transcript must match the *sounds*, so all three are wrong.
+Clips are therefore flagged for review on low confidence, poor speech
+coverage, non-English detection, and **any digit in the output**. That
+last one fired immediately on the first real run, on "It arrived at 4.15,
+which is 20 minutes earlier" — exactly the line a human needs to rewrite.
+
+Three screens reject rather than quietly accept, because each one costs a
+training run to discover otherwise:
+
+- **Over 15 s** — most fine-tuners window shorter and would truncate the
+  clip, wasting the label typed for it. Cut the file up first.
+- **Transcript far longer than the audio can hold** — means a cut-off
+  clip, a label from the wrong file, or a pairing that slipped by one.
+  All three teach a mispronunciation, and none are visible in a waveform.
+- **Mixed sample rates** are converged on the *most common* rate present,
+  not the highest, so the majority of the set is untouched and only
+  outliers are converted. Conversion goes through a polyphase filter:
+  linear interpolation leaves an alias from a 10 kHz tone at **63% of
+  full scale** when going 48 k → 16 k, against −57 dB for polyphase, and
+  in a training set that folded noise is permanent.
+
+### From her existing voice (`dataset.py`)
 
 The audio her voice was originally cloned from is lost. The only
 surviving copies are two pocket-tts speaker states, so generating from
@@ -119,7 +204,17 @@ python -m tools.tts_lab.dataset --dry-run          # corpus check, no audio
 python -m tools.tts_lab.dataset --minutes 10
 python -m tools.tts_lab.dataset --temps 0.6 0.75   # more variety
 python -m tools.tts_lab.dataset --text-file mine.txt
+python -m tools.tts_lab.dataset --engine chatterbox-turbo --minutes 10
 ```
+
+That last one matters more than it looks. **Generation is offline, so
+generation speed is irrelevant here.** An engine at RTF 1.5 is
+disqualifying for live conversation and costs nothing but wall time for a
+dataset — and since the teacher's quality is the ceiling of whatever gets
+trained on the output, the set should be built by whichever engine
+*sounds* best, not the one that would ship. Temperature is delivered
+however each engine expresses it: at load time for pocket-tts, as a
+generate keyword for the Chatterbox family.
 
 Output is `voices/datasets/<speaker>-<stamp>/` with `wavs/`,
 `metadata.csv` (LJSpeech layout, which most training code reads),
@@ -177,10 +272,15 @@ a local engine from a remote one.
 
 ```bash
 python -m tools.tts_lab.envs list
-python -m tools.tts_lab.envs install chatterbox       # Turbo + original
+python -m tools.tts_lab.envs install chatterbox       # Turbo, original, multilingual
 python -m tools.tts_lab.envs install chatterbox-git   # master, for Nano
 python -m tools.tts_lab.envs remove chatterbox        # uninstalls entirely
 ```
+
+One venv hosts several models, which is why `env_name` and
+`sidecar_engine` are separate fields on `Remote`: `chatterbox-turbo`,
+`chatterbox-full` and `chatterbox-multilingual` all live in the
+`chatterbox` env and differ only by which class the sidecar imports.
 
 Two traps found the hard way, both recorded in `envs.py`:
 
@@ -239,6 +339,13 @@ Rules worth honouring, all learned the hard way here:
 
 ## What is not here yet
 
+- **A trainer.** Both dataset routes stop at manifests. Picking the
+  fine-tuning target is the next decision, and it is the one that decides
+  whether the labelled route was worth the transcription effort.
+- **Clip splitting.** A 40-minute recording is rejected as too long
+  rather than cut into sentences, so long-form source material needs
+  chopping elsewhere first. Whisper already returns segment boundaries,
+  so this is mostly wiring.
 - **A pitch-preserving time-stretch stage**, which is the fix that lights
   up the cadence layer's dark speed channel regardless of which engine
   wins. See the options doc; it has to work on ~50 ms chunks, which rules
