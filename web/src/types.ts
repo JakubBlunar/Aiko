@@ -327,6 +327,22 @@ export interface CompanionSettings {
   intimacy_pacing_enabled: boolean;
 }
 
+/** One entry in the TTS engine catalogue. Unavailable engines are sent
+ *  too, with a `reason` naming the install command: a greyed-out row
+ *  explaining what to run is more use than an option that never appears. */
+export interface TtsProviderInfo {
+  name: string;
+  label: string;
+  available: boolean;
+  /** Why it cannot be used, when `available` is false. */
+  reason: string;
+  /** `embedding` (a saved speaker state) or `clip` (a reference wav the
+   *  engine clones from). Determines what the voice list means. */
+  voice_kind: string;
+  devices: string[];
+  notes: string;
+}
+
 export interface AssistantSettings {
   chat: {
     model: string;
@@ -338,6 +354,11 @@ export interface AssistantSettings {
     provider: string;
     voice: string;
     enabled: boolean;
+    /** The device actually in use, not the one requested. A CUDA request
+     *  against a CPU-only torch wheel is refused by the engine, and
+     *  showing the request would hide that. */
+    device?: string;
+    providers?: TtsProviderInfo[];
   };
   stt: {
     model: string;

@@ -7,11 +7,15 @@ contract:
   - ``speak_async(text, reaction=…)`` derives speed from the reaction
     table and clamps to the safe range.
   - ``speak_async(text, speed=…)`` overrides the reaction default.
-  - ``_speak_worker`` emits PCM through ``pcm_listener`` at the
-    playback rate (samplerate scaled by ``speed``); this is the
-    actual mechanism that makes Aiko speak faster / slower.
-  - The amplitude pacer is fed the playback rate, not the synthesis
-    rate, so lip-sync stays in step.
+  - ``_speak_worker`` emits PCM through ``pcm_listener`` at the true
+    synthesis rate, having changed the *sample count* to realise the
+    requested speed. This is the mechanism that makes Aiko speak faster
+    or slower without her pitch moving with it.
+  - The old varispeed path (scaled sample rate, pitch coupled) remains
+    reachable via ``tts.pitch_preserving_speed=False`` for A/B listening,
+    and is asserted so the escape hatch cannot rot.
+  - The amplitude pacer is fed the same rate the PCM is declared at, so
+    lip-sync stays in step.
 
 The fragility budget is small because we touch only the contract
 between cadence → TtsQueue → speak_async → pcm_listener. Internal
@@ -33,7 +37,11 @@ from app.tts.pocket_tts_service import (
 )
 
 
-def _make_service(*, runtime_speed_enabled: bool = True) -> PocketTtsService:
+def _make_service(
+    *,
+    runtime_speed_enabled: bool = True,
+    pitch_preserving_speed: bool = True,
+) -> PocketTtsService:
     """Build a PocketTtsService with the model loader bypassed.
 
     The Layer 5 ``_runtime_speed_enabled`` gate defaults to ``False`` in
@@ -47,6 +55,10 @@ def _make_service(*, runtime_speed_enabled: bool = True) -> PocketTtsService:
     """
     settings = MagicMock()
     settings.enabled = True
+    # Explicit rather than left to MagicMock, whose attributes are
+    # truthy by accident -- which would silently pin these tests to the
+    # pitch-preserving path and make the varispeed-fallback test a lie.
+    settings.pitch_preserving_speed = pitch_preserving_speed
     # Bypass the auto-load thread spun up in __init__: stub TTSModel
     # to None so the constructor records "missing" and doesn't try to
     # import anything heavy. We then wire fakes in by hand.
@@ -274,33 +286,75 @@ class RuntimeSpeedGateOffTests(unittest.TestCase):
 
 
 class SpeakWorkerSamplerateTests(unittest.TestCase):
-    """``_speak_worker`` is what actually emits PCM through the
-    listener; it must scale the samplerate by ``speed`` so playback
-    runs faster / slower on the client side.
+    """Where the rate change is actually realised.
+
+    This is the contract that changed when the pitch-preserving stretch
+    landed. It used to be "declare a scaled sample rate and let the
+    client play the same samples faster", which is varispeed and moves
+    pitch with duration. It is now "change the sample count and declare
+    the true rate", which does not.
+
+    The distinction is worth asserting precisely, because both produce
+    audio of the right duration and only one of them keeps her voice.
     """
 
-    def _capture_first_rate(self, speed: float) -> int:
-        svc = _make_service()
-        captured: list[int] = []
+    def _capture(
+        self, speed: float, *, pitch_preserving: bool = True
+    ) -> tuple[int, int]:
+        """Returns (declared rate, total samples emitted)."""
+        svc = _make_service(pitch_preserving_speed=pitch_preserving)
+        rates: list[int] = []
+        total = 0
 
-        def _listener(rate: int, _channels: int, _pcm: bytes) -> None:
-            captured.append(rate)
+        def _listener(rate: int, _channels: int, pcm: bytes) -> None:
+            nonlocal total
+            rates.append(rate)
+            total += len(pcm) // 2  # Int16 mono
 
         svc.set_pcm_listener(_listener)
         done = threading.Event()
         svc._speak_worker(
             "hello", on_done=done.set, speed=speed, on_amplitude=None,
         )
-        done.wait(timeout=1.0)
-        return captured[0]
+        done.wait(timeout=2.0)
+        return rates[0], total
 
-    def test_play_called_with_scaled_samplerate(self) -> None:
-        playback_rate = self._capture_first_rate(1.05)
-        self.assertEqual(playback_rate, int(16000 * 1.05))
+    def test_declares_the_true_rate_not_a_scaled_one(self) -> None:
+        """The whole point: no lie to the client, so no pitch shift."""
+        rate, _ = self._capture(1.05)
+        self.assertEqual(rate, 16000)
+
+    def test_duration_change_lives_in_the_sample_count(self) -> None:
+        """Faster must mean fewer samples, since the rate is now fixed.
+
+        If the rate is honest and the sample count is unchanged, nothing
+        happened at all -- so this is the assertion that proves the
+        stretch ran, not just that the varispeed was removed.
+        """
+        _, at_one = self._capture(1.0)
+        _, faster = self._capture(1.05)
+        _, slower = self._capture(0.95)
+        self.assertLess(faster, at_one)
+        self.assertGreater(slower, at_one)
 
     def test_play_uses_native_samplerate_at_speed_one(self) -> None:
-        playback_rate = self._capture_first_rate(1.0)
-        self.assertEqual(playback_rate, 16000)
+        rate, _ = self._capture(1.0)
+        self.assertEqual(rate, 16000)
+
+    def test_unity_speed_is_not_resampled_at_all(self) -> None:
+        """A 1.0x request must be a genuine no-op, not a round trip
+        through the stretcher that costs an artefact for nothing."""
+        _, total = self._capture(1.0)
+        # 1600 samples of fake audio + 150 ms of guard silence at 16 kHz.
+        self.assertEqual(total, 1600 + int(16000 * 0.15))
+
+    def test_varispeed_fallback_still_scales_the_rate(self) -> None:
+        """The escape hatch has to actually reach the old behaviour,
+        otherwise it is not an A/B and the setting is decoration."""
+        rate, total = self._capture(1.05, pitch_preserving=False)
+        self.assertEqual(rate, int(16000 * 1.05))
+        # Varispeed changes no samples; the client plays them faster.
+        self.assertEqual(total, 1600 + int(16000 * 0.15))
 
 
 if __name__ == "__main__":

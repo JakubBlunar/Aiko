@@ -144,6 +144,10 @@ def _build_client() -> tuple[TestClient, MagicMock, _SettingsStub]:
     session.max_tokens = 512
     session.tts_provider = "fake"
     session.tts_voice = "fake"
+    # The TTS block reports the effective device and engine catalogue; a
+    # bare MagicMock for either is not JSON-serialisable.
+    session.get_tts_device.return_value = "cpu"
+    session.describe_tts_providers.return_value = []
     session.stt_model = "fake"
     session.vad_level_threshold = 0.02
     session.vad_silence_seconds = 1.0

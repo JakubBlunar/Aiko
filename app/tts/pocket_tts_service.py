@@ -18,6 +18,14 @@ from pathlib import Path
 import threading
 
 from app.core.infra.settings import TtsSettings
+from app.tts.pcm_playback import PcmPlaybackMixin
+from app.tts.reactions import (
+    REACTION_SPEED,
+    REACTION_SPEED_CAPS,
+    SPEED_MAX,
+    SPEED_MIN,
+    resolve_speed_caps,
+)
 
 
 log = logging.getLogger("app.tts.pocket_tts_service")
@@ -42,98 +50,15 @@ PcmEndListener = Callable[[], None]
 
 _BUILTIN_VOICES = ["alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma"]
 
-# Reaction-to-speed multipliers. Capped to ±8% so the samplerate-only
-# pitch shift in :meth:`PocketTtsService._speak_worker` doesn't fall
-# into chipmunk territory at the high end or "underwater" at the low
-# end. These are the *baseline* per-reaction speeds; the cadence layer
-# can further nudge per-sentence via the ``speed`` kwarg on
-# :meth:`speak_async`. Must cover every name in
-# ``app.core.affect.reactions.REACTIONS`` (locked by
-# ``tests/test_reaction_table_coverage.py``): the lookup falls back to
-# 1.0, so a canonical reaction missing here is not an error, just a
-# permanently flat delivery for that shade.
-_REACTION_SPEED: dict[str, float] = {
-    "excited":      1.08,
-    "enthusiastic": 1.07,
-    "cheerful":     1.06,
-    "amused":       1.05,
-    "playful":      1.05,
-    "surprised":    1.06,
-    "curious":      1.04,
-    "friendly":     1.02,
-    "warm":         1.00,
-    "tender":       0.97,
-    "neutral":      1.00,
-    "thoughtful":   0.96,
-    "wistful":      0.95,
-    "calm":         0.95,
-    "serious":      0.95,
-    "concerned":    0.94,
-    "sad":          0.93,
-    "melancholy":   0.93,
-    # ``cry`` is the slowest reaction — choked / strained delivery
-    # right at the safe-range floor (any lower would cross into
-    # underwater-pitch territory after the samplerate-only shift).
-    "cry":          0.92,
-    "tired":        0.93,
-    "gentle":       0.94,
-    "angry":        1.04,
-    "frustrated":   1.03,
-    "confused":     0.97,
-    "embarrassed":  1.01,
-    "nervous":      1.04,
-    "defiant":      1.02,
-    "smug":         1.01,
-    "pouty":        1.01,
-    "sulky":        0.95,
-    "mischievous":  1.04,
-}
-
-# Hard caps applied AFTER any caller-supplied speed, so a runaway
-# cadence multiplier can't push us into uncanny territory. The base
-# floor and ceiling are widened slightly from the historic ±8% to
-# ±12% so the loudest / quietest reactions can stretch further; the
-# per-reaction sub-cap table below pins each reaction back to a
-# safe band so only the ones that actually want the extra room
-# (cry, tired, sad, excited, surprised) get to use it.
-_SPEED_MIN = 0.88
-_SPEED_MAX = 1.12
-
-# Per-reaction sub-caps. A reaction that isn't listed falls back to
-# the historic ±8% band ``[0.92, 1.08]`` -- the same envelope the
-# samplerate-only pitch shift was originally tuned against. Only the
-# entries below get to use the wider outer band.
-_REACTION_SPEED_CAPS: dict[str, tuple[float, float]] = {
-    # Lower-end stretch: sob / strained / drained delivery. ``cry``
-    # already sat at the old floor, ``tired`` and ``sad`` /
-    # ``melancholy`` had no headroom to drop further when the
-    # context piled on (drowsy circadian, noisy room).
-    "cry":        (0.88, 1.00),
-    "tired":      (0.90, 1.00),
-    "sad":        (0.91, 1.00),
-    "melancholy": (0.91, 1.00),
-    # Upper-end stretch: a genuine "!" beat and surprise reaction
-    # both want to outrun the regular cheerful band by a hair.
-    "excited":    (1.00, 1.12),
-    "surprised":  (1.00, 1.10),
-}
-
-
-def _resolve_speed_caps(reaction: str | None) -> tuple[float, float]:
-    """Return the ``(min, max)`` clamp for ``reaction``.
-
-    Falls back to the legacy ±8% envelope when the reaction has no
-    explicit override. Used by :meth:`PocketTtsService.speak_async`
-    and the ``tools/tts_speed_ab.py`` ear-test helper.
-    """
-    if not (reaction or "").strip():
-        return 0.92, 1.08
-    return _REACTION_SPEED_CAPS.get(
-        (reaction or "").strip().lower(),
-        (0.92, 1.08),
-    )
-
-
+# Reaction speed tables now live in :mod:`app.tts.reactions`, shared with
+# the Chatterbox engine -- how fast she talks when excited describes Aiko,
+# not whichever model is rendering her. Re-exported under the old private
+# names so existing callers and tests are unaffected.
+_REACTION_SPEED = REACTION_SPEED
+_REACTION_SPEED_CAPS = REACTION_SPEED_CAPS
+_SPEED_MIN = SPEED_MIN
+_SPEED_MAX = SPEED_MAX
+_resolve_speed_caps = resolve_speed_caps
 # Layer 1c: per-reaction temperature deltas applied on top of the
 # settings baseline -- ONLY when ``_runtime_temp_enabled`` is true
 # (gated by ``agent.tts_runtime_temp_enabled``, default OFF). A
@@ -184,8 +109,14 @@ _LENGTH_SCALE_MIN = 0.85
 _LENGTH_SCALE_MAX = 1.15
 
 
-class PocketTtsService:
-    """TTS using Kyutai Pocket TTS. Runs on CPU, supports voice cloning."""
+class PocketTtsService(PcmPlaybackMixin):
+    """TTS using Kyutai Pocket TTS. Runs on CPU, supports voice cloning.
+
+    Synthesis only. Everything from "here is a clip" onward -- chunking,
+    pacing, gain, the pitch-preserving stretch, lip-sync amplitude --
+    comes from :class:`~app.tts.pcm_playback.PcmPlaybackMixin`, which the
+    Chatterbox engine shares.
+    """
 
     def __init__(
         self,
@@ -229,21 +160,32 @@ class PocketTtsService:
         )
         self._runtime_temp_enabled: bool = False
         # Layer 5 gate: per-reaction speed sub-caps + cadence-supplied
-        # ``speed_hint`` are silenced unless this is flipped on. Default
-        # OFF so every sentence plays at the engine's tuned 1.0×
-        # baseline. Pocket-TTS implements speed by scaling the playback
-        # ``sample_rate`` -- a varispeed effect that couples speed and
-        # pitch (10% faster ≈ 1.6 semitones higher). With per-reaction
-        # caps active, that pitch-couples to the affect channel and
-        # the user perceives "her voice keeps changing" between
-        # sentences. The user-facing
-        # ``agent.tts_runtime_speed_enabled`` flips it back on once a
-        # voice has been validated to handle the band gracefully. The
-        # user's pacing slider (``assistant.tts_length_scale``) is
-        # always honoured regardless of this gate -- it's a
-        # deliberate, static, user-controlled knob, not per-sentence
-        # affect drift.
+        # ``speed_hint`` are silenced unless this is flipped on.
+        #
+        # It was switched off for a specific reason that no longer holds.
+        # Speed used to be varispeed -- a scaled playback sample rate --
+        # so per-sentence pacing dragged pitch with it at ~1.6 semitones
+        # per 10%, and driving that from the affect channel came across
+        # as "her voice keeps changing between sentences". With
+        # ``pitch_preserving_speed`` the rate change no longer touches
+        # pitch, which removes that objection.
+        #
+        # Still defaulting OFF, because the objection was only half the
+        # story: even at constant pitch, per-sentence pacing is an
+        # audible personality change and that is the user's call to make,
+        # not a default to flip on their behalf. The user-facing
+        # ``agent.tts_runtime_speed_enabled`` turns it on.
+        #
+        # The pacing slider (``assistant.tts_length_scale``) is honoured
+        # regardless -- a deliberate static knob, not affect drift.
         self._runtime_speed_enabled: bool = False
+        # Whether a rate change goes through the pitch-preserving stretch
+        # or the old varispeed trick. On by default; the escape hatch is
+        # for A/B listening, since "does WSOLA add an artefact on *her*
+        # voice" is a question only a listen can answer.
+        self._pitch_preserving_speed: bool = bool(
+            getattr(settings, "pitch_preserving_speed", True)
+        )
 
         if TTSModel is not None and np is not None:
             threading.Thread(target=self._load_model, daemon=True, name="pocket-tts-load").start()
@@ -503,16 +445,19 @@ class PocketTtsService:
     def set_runtime_speed_enabled(self, enabled: bool) -> None:
         """Layer 5 gate: enable or disable per-reaction speed jitter.
 
-        Default ``False``. When OFF, :meth:`speak_async` ignores both
-        the cadence layer's ``speed_hint`` AND the per-reaction
-        sub-cap table, pinning every sentence to ``1.0×`` before the
-        user's :attr:`_length_scale` is applied. Pocket-TTS implements
-        speed via ``sample_rate`` scaling, so per-sentence speed
-        variation also pitches the voice -- with the gate on it
-        sounds like the model swapped voices between sentences. The
-        gate flips back on through ``agent.tts_runtime_speed_enabled``
-        once a voice has been listened-tested through
-        ``tools/tts_speed_ab.py`` at the proposed band.
+        Default ``False``. Historically that was because rate changes
+        pitch-shifted the voice; ``pitch_preserving_speed`` fixed that, so
+        what remains is simply that per-sentence pacing is an audible
+        personality choice the user should opt into.
+
+        When OFF, :meth:`speak_async` ignores both the cadence layer's
+        ``speed_hint`` AND the per-reaction sub-cap table, pinning every
+        sentence to ``1.0×`` before the user's :attr:`_length_scale` is
+        applied -- so the whole affect-driven pacing channel is inert.
+
+        Flipped on through ``agent.tts_runtime_speed_enabled``, ideally
+        after a listen through ``tools/tts_speed_ab.py`` at the proposed
+        band.
         """
         self._runtime_speed_enabled = bool(enabled)
 
@@ -834,8 +779,6 @@ class PocketTtsService:
         gain_factor: float = 1.0,
         runtime_temp: float | None = None,
     ) -> None:
-        amplitude_thread: threading.Thread | None = None
-        amplitude_stop = threading.Event()
         chunk_chars = len(text)
         gen_t0 = time.monotonic()
         log.debug(
@@ -845,8 +788,6 @@ class PocketTtsService:
             float(gain_factor),
             float(runtime_temp if runtime_temp is not None else self._temp_baseline),
         )
-        played_ms = 0.0
-        playback_duration_s = 0.0
         try:
             result = self.generate_audio(text, speed, temp=runtime_temp)
             if result is None or self._stop_requested.is_set():
@@ -862,54 +803,14 @@ class PocketTtsService:
                     None,
                 )
 
-            silence = np.zeros(int(sample_rate * 0.15), dtype=np.float32)
-            audio_data = np.concatenate([audio_data, silence])
             generate_ms = (time.monotonic() - gen_t0) * 1000.0
-            play_t0 = time.monotonic()
-            # Pocket-TTS doesn't expose a native speed knob; the
-            # samplerate trick below rescales playback rate to match the
-            # requested ``speed``. Side effect: pitch shifts by the same
-            # factor, which is acceptable inside the ±8% cap (`_SPEED_*`).
-            playback_rate = (
-                int(sample_rate * speed)
-                if abs(speed - 1.0) > 1e-3
-                else sample_rate
+            played_ms = self._play_clip(
+                audio_data,
+                sample_rate,
+                speed=speed,
+                gain_factor=gain_factor,
+                on_amplitude=on_amplitude,
             )
-            playback_duration_s = float(audio_data.size) / float(playback_rate)
-
-            # Spawn the lip-sync amplitude pacer in parallel with the
-            # PCM emission so amplitude callbacks line up with what the
-            # client will play.
-            if on_amplitude is not None:
-                amplitude_thread = threading.Thread(
-                    target=self._amplitude_pacer,
-                    args=(audio_data, playback_rate, on_amplitude, amplitude_stop),
-                    daemon=True,
-                    name="pocket-tts-amp",
-                )
-                amplitude_thread.start()
-
-            self._emit_pcm(audio_data, playback_rate, gain_factor=gain_factor)
-
-            # ``_emit_pcm`` returns the moment the bytes leave the WS;
-            # the actual playback on the client takes
-            # ``playback_duration_s`` seconds. We block here so:
-            #   - the amplitude pacer runs its full natural course
-            #     (lip sync stays in frame for the whole utterance);
-            #   - ``on_done`` only fires after the audio has finished
-            #     playing on the client, which is what
-            #     :class:`TtsQueue` relies on to dispatch the next
-            #     sentence at the right wall-clock moment.
-            # We poll the stop flag so barge-in still cuts cleanly.
-            deadline = play_t0 + playback_duration_s
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0.0:
-                    break
-                if self._stop_requested.wait(timeout=min(remaining, 0.05)):
-                    break
-
-            played_ms = (time.monotonic() - play_t0) * 1000.0
             log.debug(
                 "TTS play done: chunk_chars=%d generate_ms=%.0f played_ms=%.0f speed=%.2f",
                 chunk_chars, generate_ms, played_ms, speed,
@@ -921,194 +822,8 @@ class PocketTtsService:
                 chunk_chars, exc,
             )
         finally:
-            amplitude_stop.set()
-            if amplitude_thread is not None:
-                amplitude_thread.join(timeout=0.25)
-            if on_amplitude is not None:
-                try:
-                    on_amplitude(0.0)
-                except Exception:
-                    pass
             if on_done:
                 try:
                     on_done()
                 except Exception:
                     pass
-
-    # ── PCM emission ─────────────────────────────────────────────────
-
-    # Emit ~50 ms chunks so the client scheduler has predictable buffer
-    # sizes and so the WS message rate caps at ~20 frames/sec/clip.
-    _EMIT_CHUNK_SECONDS: float = 0.05
-    # Number of chunks shipped immediately before we start pacing the
-    # rest at real-time. ~250 ms is enough to ride out typical network
-    # / GC jitter on the client without underrunning the audio
-    # scheduler, while keeping the per-frame burst size small enough
-    # that the avatar render thread doesn't stutter.
-    _PRE_ROLL_CHUNKS: int = 5
-
-    def _emit_pcm(
-        self,
-        audio: "np.ndarray",
-        sample_rate: int,
-        *,
-        gain_factor: float = 1.0,
-    ) -> None:
-        """Push the synthesised clip out through ``pcm_listener``.
-
-        Audio arrives as float32 in roughly ``[-1, 1]``. We convert to
-        Int16 LE in 50 ms slices and call the listener once per slice;
-        an empty bytes payload follows so the client knows the clip is
-        finished and can flush its scheduler.
-
-        Layer 1b / Layer 3: ``gain_factor`` (default 1.0) is a linear
-        sample multiplier applied before the float-to-Int16 conversion.
-        Values < 1.0 attenuate (whisper / soft prosody / quiet rooms);
-        values > 1.0 boost (firm prosody / noisy rooms). The
-        ``np.clip(..., -1.0, 1.0)`` saturation below already handles
-        peaks for boosts; the caller is expected to keep ``gain_factor``
-        inside the range produced by :meth:`_gain_db_to_factor`.
-
-        After an initial pre-roll of :attr:`_PRE_ROLL_CHUNKS` slices,
-        the rest of the chunks are paced at real-time wall-clock so
-        that:
-          - the WebSocket doesn't burst 20+ binary frames in a single
-            tick (which forced a matching burst of AudioBuffer /
-            AudioBufferSourceNode allocations on the client and
-            stuttered the Live2D render thread);
-          - long utterances spread the encoder / network load evenly
-            instead of front-loading it;
-          - barge-in stops shipping the rest of the clip the moment
-            ``stop_requested`` flips.
-        """
-        listener = self._pcm_listener
-        if np is None:
-            return
-        flat = audio.reshape(-1) if audio.ndim > 1 else audio
-        if flat.size == 0:
-            return
-        if listener is None:
-            # Without a listener there's no place to play the audio
-            # locally any more — we just discard it. The end callback
-            # still fires so any state machine waiting on clip-end
-            # bookkeeping (e.g. UI ducking) advances.
-            end_listener = self._clip_end_listener
-            if end_listener is not None:
-                try:
-                    end_listener()
-                except Exception:
-                    pass
-            return
-
-        # ``playback_rate`` already encodes the speed nudge, so the
-        # client only needs to know the effective sample rate.
-        chunk_samples = max(1, int(sample_rate * self._EMIT_CHUNK_SECONDS))
-        total = flat.size
-        # Apply the gain factor BEFORE the saturation clip so a +6 dB
-        # boost lifts quiet samples without smearing the peaks beyond
-        # the safe range. ``flat * gain_factor`` is implicit by the
-        # multiply below (np broadcast); fold it into the pre-clip step.
-        if abs(float(gain_factor) - 1.0) > 1e-3:
-            scaled = np.clip(flat * float(gain_factor), -1.0, 1.0) * 32767.0
-        else:
-            scaled = np.clip(flat, -1.0, 1.0) * 32767.0
-        # Astype rounds toward zero — use ``.round()`` first so the
-        # quietest samples don't all collapse to zero asymmetrically.
-        pcm16 = scaled.round().astype(np.int16, copy=False)
-        ship_t0 = time.monotonic()
-        chunk_index = 0
-        try:
-            for start in range(0, total, chunk_samples):
-                if self._stop_requested.is_set():
-                    break
-                end = min(start + chunk_samples, total)
-                listener(int(sample_rate), 1, pcm16[start:end].tobytes())
-                chunk_index += 1
-                # Pre-roll: ship the first few chunks back-to-back so
-                # the client has audio ready before its scheduler
-                # needs the first sample. Then pace at real-time —
-                # the deadline for the *next* chunk to leave is
-                # ``ship_t0 + (chunk_index - PRE_ROLL_CHUNKS) * chunk_seconds``.
-                if chunk_index > self._PRE_ROLL_CHUNKS:
-                    target = (
-                        ship_t0
-                        + (chunk_index - self._PRE_ROLL_CHUNKS)
-                        * self._EMIT_CHUNK_SECONDS
-                    )
-                    delay = target - time.monotonic()
-                    if delay > 0.0:
-                        # ``Event.wait`` returns True when the flag is
-                        # set, so we cut over to the stop branch on
-                        # barge-in without waiting out the rest of
-                        # the chunk's slice.
-                        if self._stop_requested.wait(timeout=delay):
-                            break
-        finally:
-            end_listener = self._clip_end_listener
-            if end_listener is not None:
-                try:
-                    end_listener()
-                except Exception:
-                    pass
-
-    def _amplitude_pacer(
-        self,
-        audio: "np.ndarray",
-        sample_rate: int,
-        on_amplitude: Callable[[float], None],
-        stop_event: threading.Event,
-    ) -> None:
-        """Compute RMS in ~50 ms windows and emit them at audio-clock pace."""
-        if np is None or audio.size == 0:
-            return
-        # ``audio`` arrives shaped as (N,) here -- we add the trailing silence
-        # and never reshape this local copy.
-        flat = audio.reshape(-1) if audio.ndim > 1 else audio
-        hop_seconds = 0.05
-        hop = max(1, int(sample_rate * hop_seconds))
-        n_chunks = (flat.size + hop - 1) // hop
-        if n_chunks <= 0:
-            return
-
-        # Pre-compute RMS for every window and a robust normalization factor.
-        rms_values: list[float] = []
-        for i in range(n_chunks):
-            start = i * hop
-            end = min(start + hop, flat.size)
-            chunk = flat[start:end]
-            if chunk.size == 0:
-                rms_values.append(0.0)
-                continue
-            rms_values.append(float(np.sqrt(np.mean(chunk * chunk))))
-        # Use the 95th percentile rather than the absolute peak so a single
-        # loud syllable doesn't flatten the rest of the curve.
-        if rms_values:
-            sorted_vals = sorted(v for v in rms_values if v > 0.0)
-            if sorted_vals:
-                peak = sorted_vals[max(0, int(len(sorted_vals) * 0.95) - 1)] or 1.0
-            else:
-                peak = 1.0
-        else:
-            peak = 1.0
-        if peak < 1e-6:
-            peak = 1.0
-
-        start_time = time.monotonic()
-        for i, rms in enumerate(rms_values):
-            if stop_event.is_set() or self._stop_requested.is_set():
-                return
-            target = start_time + i * hop_seconds
-            delay = target - time.monotonic()
-            if delay > 0.001:
-                # Sleep in small slices so stop is responsive.
-                if stop_event.wait(timeout=delay):
-                    return
-            normalized = rms / peak
-            if normalized > 1.0:
-                normalized = 1.0
-            elif normalized < 0.0:
-                normalized = 0.0
-            try:
-                on_amplitude(normalized)
-            except Exception:
-                pass

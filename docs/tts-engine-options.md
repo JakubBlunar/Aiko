@@ -17,6 +17,14 @@ CUDA path even though the box has an RTX 5090 — and that is deliberate.
 TTS on the GPU would land as bursts of compute between game frames; on
 CPU it stays out of the way.
 
+**Since Aug 2026 it is no longer the only engine.**
+[`app/tts/registry.py`](../app/tts/registry.py) holds a provider
+catalogue, `tts.provider` is actually honoured, and the Chatterbox
+variants run as a subprocess in their own virtualenv. See
+[Shipped: the provider registry](#shipped-the-provider-registry) below —
+including why several conclusions in this file were CPU-only conclusions
+that a GPU would overturn.
+
 It does the important thing well: zero-shot voice cloning from a few
 seconds of reference audio, which is where `aiko1_refined.safetensors`
 comes from.
@@ -58,73 +66,93 @@ from voice identity in that representation. **Any engine in this
 category will have the same shape**, so "switch to a nicer engine" is
 not by itself a route to a speed slider.
 
-### What we do instead, and what it costs
+### What we used to do instead, and what it cost
 
-Because there is no speed parameter, the service implements speed by
-**scaling the playback sample rate** — a varispeed effect, tape-style,
-that couples rate and pitch at roughly 1.6 semitones per 10% of rate.
+Because there is no speed parameter, the service used to implement
+speed by **scaling the playback sample rate** — a varispeed effect,
+tape-style, that coupled rate and pitch at roughly 1.6 semitones per
+10% of rate.
 
-Two features are gated off by default as a direct result
-(`pocket_tts_service.py`, the `_runtime_*_enabled` flags):
+That coupling is why the cadence layer's whole speed channel was dark.
+`cadence.py` computes a per-sentence `speed_hint` from mood, arousal,
+circadian state and ambient noise; `[[prosody:slow]]` and
+`[[prosody:fast]]` parse; and none of it reached the audio, because
+`agent.tts_runtime_speed_enabled` defaulted to off. With it on,
+affect-driven pacing detuned her and the voice audibly changed identity
+between sentences. The planner was talking to itself.
 
-- `agent.tts_runtime_speed_enabled` — silences the cadence layer's
-  per-sentence `speed_hint` and the per-reaction speed sub-caps. With
-  it on, affect-driven pacing pitch-couples to the affect channel and
-  the voice audibly changes identity between sentences.
-- `agent.tts_runtime_temp_enabled` — same story for runtime
-  temperature variation.
+The `[[prosody:…]]` overlay table shows the shape of it — only the
+speed column was affected:
 
-So Aiko already has a cadence layer that derives per-sentence pacing
-from affect, and **its speed channel is permanently dark** because the
-only mechanism available to express it also detunes her.
+| tag | speed | gain | audible before | audible now |
+|---|---|---|---|---|
+| `whisper` | 0.97 | −6 dB | yes, via gain | yes |
+| `firm` | — | + | yes, via gain | yes |
+| `slow` | 0.95 | 0 dB | **no** | yes |
+| `fast` | 1.05 | 0 dB | **no** | yes |
 
-This reaches the `[[prosody:…]]` tag. The overlay table in
-[`cadence.py`](../app/core/voice/cadence.py) maps each label to a
-`(speed_mult, gain_db_delta, pause_before_ms)` triple, and only the
-speed column is gated:
+## Shipped: pitch-preserving time-stretch
 
-| tag | speed | gain | audible today? |
-|---|---|---|---|
-| `whisper` | 0.97 | −6 dB | yes, via gain |
-| `firm` | — | + | yes, via gain |
-| `slow` | 0.95 | 0 dB | **no** |
-| `fast` | 1.05 | 0 dB | **no** |
+[`app/audio/timestretch.py`](../app/audio/timestretch.py)
+implements **WSOLA** (waveform-similarity overlap-add) and
+`_speak_worker` now runs the PCM through it, declaring the *true* sample
+rate to the client instead of a scaled one. Duration lives in the sample
+count; pitch stays put.
 
-`slow` and `fast` have no channel other than speed, so Aiko can emit
-`[[prosody:slow]]` today and nothing changes in the audio. Worth
-noting the band is only ±5% — about 0.8 semitones of detune at the
-coupling rate — so the gate may be more conservative than it needs to
-be. `tools/tts_speed_ab.py` exists to listen-test before flipping it.
+Measured on her own voice via `python -m tools.tts_speed_ab --speeds
+0.88 0.95 1.0 1.06 1.12`, as a spectral-centroid ratio against the
+untouched source:
 
-The user's static pacing slider (`assistant.tts_length_scale`) is
-honoured regardless, since it is a deliberate constant rather than
-per-sentence drift.
+| speed | stretch | varispeed |
+|---|---|---|
+| 0.88 | 0.995x | 0.880x |
+| 0.95 | 0.995x | 0.950x |
+| 1.00 | 1.000x | 1.000x |
+| 1.06 | 1.003x | 1.060x |
+| 1.12 | 0.974x | 1.120x |
 
-That is the concrete cost of the current design, and it is the thing
-to fix first.
+Varispeed tracks the speed factor exactly, because it is a pure
+relabelling of the rate. The stretch holds the spectrum within half a
+percent across most of the band, drifting to 2.6% at the 1.12 edge —
+about 0.44 semitones, against varispeed's 1.96 there.
 
-## Two fixes that need no engine change
+Notes worth keeping:
 
-**Speed — pitch-preserving time-stretch.** A WSOLA or phase-vocoder
-stage on the PCM before it leaves the service decouples rate from
-pitch. It is small, engine-independent, survives any future engine
-swap, and it is what unlocks the cadence layer. This is the highest
-value item on this page.
+- **Cost is negligible**: ~0.2% of audio duration (6 ms for a
+  three-second sentence), so this is not a latency tradeoff. Getting
+  there needed the candidate search to use `np.correlate` plus a prefix
+  sum of squares for the norms rather than a per-candidate norm; the
+  naive version was 18x slower and would have been a real regression.
+- **The "must be incremental on ~50 ms chunks" constraint did not
+  bind.** It was written assuming a streaming engine. pocket-tts does
+  not stream generation — `generate_audio` returns a finished array and
+  `_emit_pcm` merely paces chunks out of it — so the whole clip is in
+  hand and a one-shot stretch is the actual shape of the problem. A
+  streaming engine would need this to become stateful; deliberately not
+  written until one exists.
+- **The input is zero-padded** so the overlap-add loop can reach the end.
+  Without that it stopped when a whole frame no longer fitted and
+  dropped up to 30 ms off the tail — 1% of a long sentence, 14% of "Oh!",
+  and exactly where a clipped final consonant is audible.
+- Licence-wise this stayed in-house: Rubber Band is excellent and has a
+  realtime API, but it is GPL/commercial dual, awkward if Aiko is ever
+  distributed. This is ~80 lines of numpy instead.
+- A phase vocoder was not used — it smears transients, i.e. consonants.
+  Full WORLD-style F0 resynthesis was not either: we never needed
+  arbitrary pitch contours, only rate that does not drag pitch, and
+  stacking analysis/resynthesis on an already codec-decoded signal
+  mostly buys artefacts.
+- `tts.pitch_preserving_speed=false` restores varispeed for A/B
+  listening. It is not a performance switch.
 
-It has to work **incrementally on ~50 ms chunks**, which rules out the
-convenient offline helpers (`librosa.effects.time_stretch` and
-friends) — they want the whole clip and are slow. WSOLA-family
-libraries suit speech better than a phase vocoder anyway. Watch the
-licence: Rubber Band is excellent and has a realtime API but is
-GPL/commercial dual, which is fine for personal use and awkward if
-Aiko is ever distributed.
+**Still off by default:** `agent.tts_runtime_speed_enabled`. The
+technical objection is gone, but per-sentence pacing is an audible
+personality change, so it stays the user's call rather than a default
+flipped on their behalf. `assistant.tts_length_scale` is honoured
+regardless and is now pitch-clean, so it is the easiest way to hear the
+difference.
 
-Full F0 resynthesis (WORLD-style analysis into pitch contour, spectral
-envelope and aperiodicity) is the heavier hammer and worth *not*
-reaching for first. We do not need arbitrary pitch contours; we need
-rate that does not drag pitch along with it. Adding a full
-analysis/resynthesis pass on top of an already codec-decoded signal
-mostly buys artefacts.
+## The other fix that needs no engine change
 
 **Voice colour — a library, not a dial.** Since timbre lives in the
 reference clip, "colour" means curating several Aiko references
@@ -196,6 +224,7 @@ figures — the first generation is discarded, because Turbo reports RTF
 | pocket-tts | **0.24** | **~570 ms** | 2.2 s | incumbent |
 | chatterbox-nano (110M) | 0.59–0.87 | ~1920 ms | 37 s cold | tags work |
 | chatterbox-turbo (350M) | 1.37–1.66 | ~4150 ms | 8.9 s | slower than realtime |
+| chatterbox-multilingual (500M) | 2.86–3.04 | ~9400 ms | 45 s cold | 23 languages, cross-lingual |
 
 Since **neither engine streams generation**, RTF *is* responsiveness:
 first audio equals full generation. Nano beats realtime and would still
@@ -277,12 +306,86 @@ error in the labels).
 Worth being clear about what a fine-tune on that set can and cannot buy.
 It **cannot** exceed pocket-tts in fidelity, because that is the ceiling
 of the training audio. It **can** still be a large win, because the
-things we actually want are architectural rather than acoustic: native
-rate control that lights up the dark half of the cadence layer, an
+things we actually want are architectural rather than acoustic: an
 emotion parameter the reaction label can drive, inline `[laugh]` in her
-own voice, and streaming generation. Those come from the model, not from
+own voice, and streaming generation. (Rate control has dropped off that
+list — the WSOLA stage above supplies it, engine-independently.) Those come from the model, not from
 the data. Framing this as "quality upgrade" would be wrong; framing it as
 "same voice, controllable" is right.
+
+#### The teacher does not have to be the engine that ships
+
+One consequence of the above that is easy to miss: **RTF is irrelevant
+when building a dataset.** Generation is offline, so an engine at RTF 1.5
+costs wall time and nothing else — while the same 1.5 is disqualifying
+for live conversation. Since the teacher's quality is the ceiling of
+whatever gets trained on its output, the set should be generated by
+whichever engine *sounds* best, not by the one that could ship.
+
+Concretely: on listening, chatterbox-turbo preserved her voice well and
+pronounced more naturally than the incumbent, but at RTF 1.37–1.66 it can
+never be the live engine. It is a perfectly good teacher.
+`tools/tts_lab/dataset.py --engine chatterbox-turbo` exists for exactly
+that, and it defeats the "cannot exceed pocket-tts" ceiling above by
+changing which engine sets it.
+
+The chain has a cost worth stating: pocket-tts embedding → reference clip
+→ Turbo clone → generated set is *two* generations of copying, against
+one for generating with pocket-tts directly. Whether the better teacher
+outweighs the extra generation is an empirical question, and the honest
+answer is to build both sets and listen. Neither is settled here.
+
+#### Cross-lingual cloning: a Japanese voice speaking English
+
+Worth knowing because it changes what counts as a candidate voice. In
+this architecture speaker identity and linguistic content are separate
+paths, so **the reference clip and the target text do not have to share a
+language**. A Japanese reference can speak English. That matters when the
+available voices for an anime-styled companion are overwhelmingly
+Japanese — a constraint that looked like a dead end and is not one.
+
+`chatterbox-multilingual` is registered in the lab for exactly this.
+Verified against the installed wheel rather than the README:
+
+- **23 languages, `ja` included** — read from `SUPPORTED_LANGUAGES` in
+  `chatterbox.mtl_tts`, not from the docs.
+- **`language_id` is a required positional** on `generate`, with no
+  default, unlike every other knob. The sidecar injects `"en"` so a
+  forgotten argument is not a `TypeError` from inside a subprocess.
+- **Defaults are `exaggeration=0.5, cfg_weight=0.5`** — the original
+  model's tuning, not Turbo's `0.0 / 0.0`.
+- **No `t3_model` parameter**, so PyPI 0.1.7 gives Multilingual **V2**.
+  The README describes V3 (better speaker similarity, fewer
+  hallucinations); as with `nano=True`, the docs are ahead of the wheel.
+- **No paralinguistic tags**, so it loses Turbo's `[laugh]` / `[sigh]` —
+  the most Aiko-shaped feature on this page.
+
+**Accent travels with the timbre.** Resemble's own description says the
+model captures "timbre, accent, and rhythm" and holds them across target
+languages, so a Japanese reference produces English with a Japanese
+accent. For most products that is a defect to engineer around; for this
+character it is plausibly the desired result, so nothing in the lab tries
+to suppress it.
+
+Measured here at **RTF 2.96** (16 threads, 24 kHz), roughly ten seconds
+of compute per three seconds of speech and about twice Turbo's cost — as
+expected from 500M against 350M. That rules it out of the conversation
+loop completely. It does **not** rule it out as a dataset teacher, since
+generation is offline: audition a Japanese voice, and if it lands better
+than the current one, use this model to generate the English training set
+in that voice and fine-tune something fast on the result.
+
+#### Real audio beats both, when it exists
+
+`tools/tts_lab/labeled.py` (and step 4 of the studio) takes real files
+plus transcripts. Real audio has no generational loss and no inherited
+engine habits, so it is the only route with no ceiling at all. It needs
+labels, which is why faster-whisper drafts them for correction — see the
+lab README for what the drafts get wrong and why every one is reviewed.
+
+For Aiko specifically the original mp3s are gone, so this route is empty
+today. It is built anyway because the moment any real recording turns up,
+it is worth more than everything generated.
 
 ### Worth trying first
 
@@ -358,9 +461,10 @@ Our pipeline constrains the choice more than raw quality scores do:
 - **Cloning from a clip we already have**, ideally without a
   transcript, so `aiko1_refined` can be regenerated from the same
   source audio rather than re-recorded.
-- **Native duration or rate control.** Rare in this class — if a
-  candidate has it, that is a genuine differentiator and it retires
-  the time-stretch stage.
+- **Native duration or rate control.** Rare in this class. Now a
+  nice-to-have rather than a differentiator: it would retire the WSOLA
+  stage, but that stage already works and costs 0.2% of audio duration,
+  so there is little left to win here.
 - **Thread behaviour under a lock.** `generate_audio` is serialised by
   `self._lock`; anything spawning its own worker pool needs the same
   treatment.
@@ -381,3 +485,87 @@ Our pipeline constrains the choice more than raw quality scores do:
 Star counts are recorded because two of the most interesting options
 are single-author projects, and that should be re-checked before
 anything depends on them.
+
+## Shipped: the provider registry
+
+Chatterbox is now a live engine option, not only a bench candidate.
+
+**Why a subprocess.** Chatterbox requires `torch==2.6.0`; this app runs
+`2.10.0`. That is not a version range to negotiate, so the engine cannot
+be imported into this process at any price. It runs in its own venv under
+`.venvs/` and speaks the same JSON protocol the audition bench uses —
+which means the engine Aiko speaks with is byte-for-byte the one that was
+auditioned, rather than a reimplementation that might differ in exactly
+the ways a listening test was meant to settle.
+
+**What is shared and what is not.** `ChatterboxTtsService` is synthesis
+plus process supervision. Everything after "here is a clip" — chunk
+sizing, pre-roll depth, real-time pacing, barge-in, gain, the
+pitch-preserving stretch, lip-sync amplitude, and the block that keeps
+`TtsQueue`'s sentence timing honest — lives in
+[`app/tts/pcm_playback.py`](../app/tts/pcm_playback.py), shared with
+pocket-tts. Those constants were tuned against observed client behaviour
+(pre-roll against audio-scheduler underruns, chunk size against Live2D
+render stutter); a second copy would have drifted silently and produced
+an engine that sounded worse for reasons nobody would trace to a number
+in another file. Reaction-to-speed moved to
+[`app/tts/reactions.py`](../app/tts/reactions.py) for the same reason:
+how fast she talks when excited describes *her*, not the model.
+
+**Nothing heavy is imported until an engine is chosen.** Availability is
+answered from the filesystem — pocket-tts by `find_spec`, Chatterbox by
+whether its venv exists. Probing by importing would be impossible for
+Chatterbox and would cost ~0.6–1 GB of PyTorch for pocket-tts, so an
+uninstalled engine costs nothing at startup and a selected one pays only
+its own price.
+
+### Measured, 20 Aug 2026 (9950X3D, CPU, Nano via the real service)
+
+The sentence was 4.3 s of audio, cloned from `reference/aiko_reference.wav`:
+
+| threads | synthesis RTF |
+|---|---|
+| 4 | 0.78 |
+| 8 | 0.78 |
+| 16 | 0.93 |
+
+**Torch's default of one thread per core is the wrong default here.** A
+small autoregressive model hits memory bandwidth and sync overhead well
+before it runs out of cores, so 16 threads is *slower* than 8 as well as
+taking the whole machine. `registry.default_threads()` therefore uses half
+the cores capped at 8 — faster and leaves room for whatever else is
+running, which is the point of keeping TTS off the GPU.
+
+**First audio is the real cost, and it grows with the sentence.**
+Chatterbox generates the entire clip before emitting a byte, so
+first-audio *is* the full synthesis: 3.5 s for that 4.3 s sentence,
+against pocket-tts's flat ~570 ms. `TtsQueue`'s lookahead pre-generates
+while the previous sentence plays, so only the *first* sentence of a
+reply pays it — but that first sentence is exactly where a conversational
+pause is felt. This is the trade against Nano's better pronunciation, and
+it is a trade rather than a win.
+
+### The CPU-only conclusions in this file
+
+Several judgements above — that only Nano can ship, that Turbo and
+Multilingual are dataset teachers rather than live engines — follow from
+CPU RTF alone. On a GPU the ordering changes: rough scaling for models
+this size is 10–30×, which would put Turbo near RTF 0.1 and Multilingual
+near 0.3, making the *sound* the deciding factor rather than the speed.
+
+Two things block that today, and neither is a settings flag. Both venvs
+carry **CPU-only torch wheels** (`2.10.0+cpu` and `2.6.0+cpu`), and
+Chatterbox pins `torch==2.6.0`, which cannot drive a Blackwell card —
+a 5090 is sm_120 and needs torch 2.7+ with CUDA 12.8. The pin has a door
+in it, though:
+
+```
+torch==2.6.0; python_version < "3.14"
+torch>=2.9.0; python_version >= "3.14"
+```
+
+So the GPU route is a **Python 3.14 sidecar venv with a cu128 torch**,
+where upstream itself allows a Blackwell-capable version — not a fight
+with the pin. `uv` can fetch cpython-3.14.3 today. Until someone does
+that, `_device_report` in the sidecar refuses a CUDA request up front and
+says why, rather than letting it silently run on CPU and stutter.
