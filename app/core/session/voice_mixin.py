@@ -236,6 +236,7 @@ class VoiceMixin:
         except Exception:
             pass
         self._rebuild_tts_engine()
+        self._persist_tts_selection()
         self._trace("tts.device", f"{provider} now on {resolved}")
         return resolved
 
@@ -299,6 +300,7 @@ class VoiceMixin:
                 set_voice(normalized)
             except Exception:
                 log.debug("tts engine rejected voice switch", exc_info=True)
+        self._persist_tts_selection()
 
     def get_tts_model_status(self) -> tuple[str, str]:
         getter = getattr(self._tts_engine, "model_status", None)
@@ -410,6 +412,46 @@ class VoiceMixin:
                 except Exception:
                     log.debug("outgoing tts engine release failed", exc_info=True)
 
+    def _persist_tts_selection(self) -> None:
+        """Write the engine choice to ``user.json``.
+
+        Every other runtime setter that the drawer exposes persists — the
+        avatar scale, the search provider, the weather location, her name.
+        These three did not, so picking an engine, a device or a voice
+        lasted exactly as long as the process: the setting was applied,
+        broadcast, and read back correctly from memory, which is why it
+        looked like it had been saved. The tell was only ever visible
+        after a restart, and it presented as "I have to re-select
+        Chatterbox every boot".
+
+        Written as a per-provider entry rather than a flat field so the
+        choice survives a round trip through another engine, and empty
+        values are skipped — a cloning engine with no voice set picks its
+        own reference clip, and recording that absence as ``""`` would
+        just be noise in the file.
+        """
+        from app.core.infra.settings import persist_user_overrides
+
+        tts = self._settings.tts
+        provider = tts.provider
+        entry = tts.for_provider(provider)
+        per_provider: dict[str, Any] = {}
+        if entry.voice:
+            per_provider["voice"] = entry.voice
+        if entry.device:
+            per_provider["device"] = entry.device
+        patch: dict[str, Any] = {"tts": {"provider": provider}}
+        if per_provider:
+            patch["tts"]["providers"] = {provider: per_provider}
+        try:
+            persist_user_overrides(patch)
+        except Exception:
+            # Best-effort, like the rest of them: a locked or read-only
+            # file must not undo a switch the user can already hear.
+            log.warning(
+                "failed to persist tts selection to user.json", exc_info=True,
+            )
+
     def set_tts_provider(self, provider: str) -> None:
         from app.tts import registry
 
@@ -434,6 +476,7 @@ class VoiceMixin:
             pass
         self._settings.tts.provider = normalized
         self._rebuild_tts_engine()
+        self._persist_tts_selection()
         device = self.get_tts_device()
         self._trace(
             "tts.provider",
