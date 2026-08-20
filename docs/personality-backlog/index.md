@@ -657,6 +657,28 @@ actually followed: the funnel is now a printed section of
 [`scripts/cue_reach_report.py`](../../scripts/cue_reach_report.py), not another
 paragraph asking someone to check ([`health.md`](health.md)).
 
+**H45 is the one to read before you debug anything that "does not stick", and it
+is the second investigation of the same report.** The app kept reopening an old
+conversation; the pointer logic was never at fault. `config/user.json` said
+`4f909abd` while `read_user_overrides()` in a fresh process returned `s2` — two
+answers to one question, which is the whole diagnosis. **The test suite was
+writing the live install's config**: 14 tests reach `_touch_last_active_session`
+while exercising merge buffers and log levels, and the ids they use are real
+(`main` is a session from May, `s2` one from 12 Aug), so the app honoured the
+pointer perfectly and opened May. The first investigation had blamed
+`switch_session` recording intent and added the write-on-first-turn mechanism —
+sound reasoning, wrong layer, and its partial success is precisely what hid the
+cause for a month, since it repaired the pointer one turn after every launch.
+Fixed by isolation rather than more compensation: `tests/conftest.py` redirects
+`USER_CONFIG_PATH` autouse and session-scoped, redirects `gate_tuning_store`'s
+by-value *copy* of it (the trap that makes per-test patching look sufficient),
+and **fails the run if the live file changed** — the redirect covers the paths
+you thought of, the tripwire covers the next one. Second bug found by asking the
+same question of TTS: the engine/device/voice setters never persisted at all, so
+picking Chatterbox lasted exactly as long as the process. New **shape 24** — *the
+test suite writes live state and the damage is diagnosed as a product bug*
+([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

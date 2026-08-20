@@ -1799,7 +1799,7 @@ Backend log discipline. The companion file `data/app.log` is the source of truth
 
 Some runtime state belongs in `user.json` because it's hyper-local and never appears in `default.json`. The settings loader doesn't validate these against any dataclass — they're consumed directly by their owners.
 
-- `session.last_active_id` *(string)* — id of the chat session re-opened on boot. Written by `SessionController.shutdown()`, read on next boot. Don't hand-edit unless you know which session id you're picking.
+- `session.last_active_id` *(string)* — id of the chat session re-opened on boot. Written at two moments and **not** on shutdown (this line said `SessionController.shutdown()` for a long time; there is no such write): immediately on an explicit `switch_session`, and immediately on your first message in a session (`_touch_last_active_session`). A session you open but never speak in is therefore not remembered, which is deliberate — it keeps "New session" → close → reopen on the fresh empty one. Don't hand-edit unless you know which session id you're picking; if it ever disagrees with the newest row in `messages`, see [H45](personality-backlog/health.md#h45-the-test-suite-was-choosing-which-conversation-she-woke-up-in).
 - `desktop.persona_window.width` / `desktop.persona_window.height` *(int)* — geometry of the transparent persona window in the Tauri shell. Also managed by `tauri-plugin-window-state`; this block is a fallback for first-launch sizing.
 
 ---

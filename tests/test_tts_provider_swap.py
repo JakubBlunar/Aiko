@@ -22,7 +22,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 from app.core.infra.settings import TtsProviderSettings, TtsSettings
@@ -398,6 +397,105 @@ def test_voices_survive_a_round_trip_between_providers() -> None:
     assert session.tts.for_provider("chatterbox-nano").voice == (
         "reference/aiko_reference.wav"
     )
+
+
+# ── surviving a restart ──
+
+
+@pytest.fixture
+def user_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Redirect ``user.json`` and hand back a reader for it."""
+    from app.core.infra import settings as settings_mod
+
+    target = tmp_path / "user.json"
+    monkeypatch.setattr(settings_mod, "USER_CONFIG_PATH", target)
+    settings_mod._config_cache.pop(str(target), None)
+
+    def read() -> dict:
+        if not target.is_file():
+            return {}
+        settings_mod._config_cache.pop(str(target), None)
+        return json.loads(target.read_text(encoding="utf-8"))
+
+    return read
+
+
+def test_picking_an_engine_survives_a_restart(user_json) -> None:
+    """It did not. Every other setter the drawer exposes persists — the
+    avatar scale, the search provider, her name — and these three only
+    mutated memory, so the choice lasted exactly as long as the process
+    and had to be re-made on every boot."""
+    session = _Session()
+    with patch.object(registry, "availability", return_value=(True, "")):
+        session.set_tts_provider("chatterbox-nano")
+    assert user_json()["tts"]["provider"] == "chatterbox-nano"
+
+
+def test_a_device_choice_survives_a_restart(user_json) -> None:
+    session = _Session()
+    with patch.object(registry, "resolve_device", return_value="cuda"):
+        session.set_tts_device("cuda")
+    stored = user_json()["tts"]["providers"]["pocket-tts"]
+    assert stored["device"] == "cuda"
+
+
+def test_a_voice_is_stored_against_its_own_engine(user_json) -> None:
+    """Flat would be wrong: a ``.safetensors`` embedding means nothing to
+    an engine that clones from a reference clip."""
+    session = _Session(provider="chatterbox-nano")
+    session.set_tts_voice("reference/aiko_reference.wav")
+    stored = user_json()["tts"]["providers"]["chatterbox-nano"]
+    assert stored["voice"] == "reference/aiko_reference.wav"
+
+
+def test_a_refused_provider_is_not_persisted(user_json, tmp_path: Path) -> None:
+    """Otherwise the next boot reads a setting the engine already
+    rejected, and falls back while the config claims otherwise."""
+    session = _Session()
+    with patch.object(registry, "VENV_ROOT", tmp_path / "empty"):
+        session.set_tts_provider("chatterbox-turbo")
+    assert user_json().get("tts", {}).get("provider") != "chatterbox-turbo"
+
+
+def test_an_empty_voice_is_not_written(user_json) -> None:
+    """A cloning engine with no voice set picks its own reference;
+    recording that absence as an empty string is just noise."""
+    session = _Session(provider="chatterbox-nano")
+    session.tts.voice = ""
+    with patch.object(registry, "resolve_device", return_value="cpu"):
+        session.set_tts_device("cpu")
+    stored = user_json()["tts"]["providers"]["chatterbox-nano"]
+    assert "voice" not in stored
+
+
+def test_persisting_survives_a_read_only_config(user_json) -> None:
+    """A locked file must not undo a switch the user can already hear."""
+    session = _Session()
+    with (
+        patch.object(registry, "availability", return_value=(True, "")),
+        patch(
+            "app.core.infra.settings.persist_user_overrides",
+            side_effect=OSError("read-only volume"),
+        ),
+    ):
+        session.set_tts_provider("chatterbox-nano")
+    assert session.tts.provider == "chatterbox-nano"
+    assert session.rebuilds == 1
+
+
+def test_the_round_trip_lands_back_on_the_chosen_engine(user_json) -> None:
+    """End to end: what the setter wrote is what a fresh load reads."""
+    from app.core.infra.settings import _parse_tts_providers
+
+    session = _Session()
+    with patch.object(registry, "availability", return_value=(True, "")):
+        session.set_tts_provider("chatterbox-nano")
+    session.set_tts_voice("reference/aiko_reference.wav")
+
+    body = user_json()
+    assert body["tts"]["provider"] == "chatterbox-nano"
+    reloaded = _parse_tts_providers(body["tts"]["providers"])
+    assert reloaded["chatterbox-nano"].voice == "reference/aiko_reference.wav"
 
 
 # ── thread default ──

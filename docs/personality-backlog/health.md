@@ -2882,7 +2882,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 <a id="recurring-shapes"></a>
 
-## The twenty-three recurring shapes
+## The twenty-four recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3245,6 +3245,36 @@ reader can see it is a snapshot rather than a status. Prefer the report line: th
 cue lane's three misreads in shape 20 were all cured by
 [`scripts/cue_reach_report.py`](../../scripts/cue_reach_report.py) printing the
 verdict, not by another paragraph asking people to be careful.
+
+**24. The test suite writes the live install's state, and the damage is
+diagnosed as a product bug.** A test drives real production code, that code
+persists something by design, and the path it persists to is the developer's
+own. The write is correct, the test passes, and nothing in the run mentions it —
+so the corruption surfaces later, detached from its cause, wearing the costume
+of a feature that does not work. H45: fourteen tests rewrote
+`session.last_active_id`, leaving the app pointed at a conversation from May,
+and the first investigation concluded the *pointer logic* was at fault and
+shipped a mechanism to compensate.
+
+What makes this shape nasty rather than merely untidy is that **the compensating
+fix appears to work.** K91's write-on-first-turn genuinely repaired the pointer —
+one turn after every launch — so the symptom became intermittent instead of
+constant, which is the signature of a fix aimed one layer above the cause.
+Compare shape 15: a proxy standing in for the thing you meant to measure.
+
+The give-away is available in one step and was not taken: **compare the file on
+disk against what the code reads back.** `config/user.json` said `4f909abd`
+while `read_user_overrides()` in a fresh process returned `s2` — at which point
+there is nothing left to theorise about.
+
+**Rule: any state a test can reach that also belongs to the running install must
+be redirected in `conftest.py`, autouse and session-scoped, plus a teardown
+tripwire that fails the run if the live artefact changed.** Two corollaries,
+both learned here. Per-test `mock.patch.object(settings, "USER_CONFIG_PATH", …)`
+is not sufficient and is worse than nothing, because it makes the suite look
+isolated: a module that did `from … import USER_CONFIG_PATH` holds a *copy* that
+the patch never reaches. And prefer the tripwire to the redirect list — the
+redirect covers the paths you thought of, the tripwire covers the next one.
 
 ---
 
@@ -5216,3 +5246,121 @@ both of which moved the headline and are now noted in the script: bare `provider
 stops at zero on 13 Aug, so a 30-day window fills 58% with declines whose reason was
 never recorded; and `created_at` carries a `+00:00` offset and is compared as text,
 so a bound built from local time silently shifts the window by that offset.
+
+---
+
+## H45. The test suite was choosing which conversation she woke up in
+
+**Severity: high — it corrupted live install state on every full run, and the
+first investigation of the symptom blamed the wrong component and shipped a
+mechanism to compensate for it.**
+
+Reported as "the last conversation is still not working properly, I am at an old
+conversation usually, and need to switch to the latest one after restarting" —
+*still*, because this was looked at once before and declared fixed.
+
+### The one-step tell
+
+The restore pointer is `session.last_active_id` in `config/user.json`.
+
+| | |
+| --- | --- |
+| The file, read directly | `4f909abd` — correct, the newest session |
+| `read_user_overrides()`, fresh process | `s2` |
+
+Two different answers to the same question means the theorising is over. `s2`
+was not a stale value the app had written: **it was written by the test suite,
+minutes earlier, into the developer's live config.**
+
+### Mechanism
+
+Any test that drives a real `SessionController` through a turn reaches
+`_touch_last_active_session`, which persists the pointer *by design* — that is
+K91, the mechanism added by the previous investigation. A guard that reported
+every write to the live path put the count at **14 tests**, all through that
+method plus one via `switch_session`, across `test_voice_merge.py`,
+`test_post_turn_timing.py` and others. None of them had any interest in the
+config file; they were exercising merge buffers and log levels.
+
+The reason this presented as *an old conversation* rather than an obviously
+broken one is that the ids the tests use are plausible, and two of them are real:
+
+| id a test wrote | in the live DB |
+| --- | --- |
+| `main` | 8 messages, last used 23 May |
+| `s2` | 157 messages, last used 12 Aug |
+
+So the app booted, honoured the pointer exactly as specified, and opened a
+conversation from May. Everything downstream worked perfectly.
+
+### The previous investigation got this backwards
+
+The earlier entry concluded that `switch_session` records *intent*, so the
+pointer could name a session the user had moved on from, and added
+`_touch_last_active_session` to also record *activity*. Every word of that
+reasoning is sound and the mechanism is worth keeping. It was not the cause.
+
+Worse, it **hid** the cause: writing the pointer on the first user turn repairs
+it one turn after every launch, so the corruption became intermittent — visible
+only if you restarted, looked, and had not yet spoken — instead of constant. A
+fix aimed one layer above the cause, whose partial success is what buys the real
+cause another month. This is [shape 24](#recurring-shapes), and its exhibit.
+
+### The fix is isolation, not more compensation
+
+An autouse session-scoped fixture in `tests/conftest.py` points
+`USER_CONFIG_PATH` at a throwaway file for the whole run. It starts **empty**
+rather than as a copy of the live file, so no result can depend on whose machine
+it ran on.
+
+Two details that are the actual content of this fix:
+
+- **`gate_tuning_store` is redirected too.** It binds the path with `from … import
+  USER_CONFIG_PATH`, so it holds a *copy* and is untouched by patching the
+  settings module. This is why the per-test
+  `mock.patch.object(settings_mod, "USER_CONFIG_PATH", …)` calls in
+  `test_session_controller_session_restore.py` — which are correct, and which
+  that file needs because it asserts on contents — were never going to be
+  enough as a general answer.
+- **A teardown tripwire.** The fixture hashes the live file before the run and
+  fails loudly if it changed. The redirect covers the two globals that exist
+  today; the tripwire covers the third one somebody adds, a hardcoded path, or a
+  subprocess. Confirmed on a full run: `writes to the real config/user.json:
+  none`, hash unchanged.
+
+`tests/test_session_controller_session_restore.py` also gains three tests
+asserting the suite cannot reach the live path, because the failure mode is
+invisible from inside a green run.
+
+### A second bug, found by asking the same question of TTS
+
+The engine picker had the same "it does not stick" complaint, and it was a plain
+omission rather than anything subtle: `set_tts_provider`, `set_tts_device` and
+`set_tts_voice` mutated `self._settings.tts` and never called
+`persist_user_overrides`. Every neighbouring setter does — the avatar scale, the
+search provider, the weather location, her display name — so the choice applied,
+broadcast, and read back correctly from memory, and lasted exactly as long as the
+process.
+
+Now persisted as a **per-provider** entry (`tts.providers.<engine>.voice/device`)
+rather than a flat field, so a round trip pocket-tts → Chatterbox → pocket-tts
+returns to the voice that was set; a refused provider is not written, so the next
+boot cannot read a setting the engine already rejected; and empty values are
+skipped, since a cloning engine with no voice picks its own reference clip and
+recording that absence as `""` is noise.
+
+### Answering "when is it saved?"
+
+Worth stating plainly, because the question is reasonable and the answer was not
+written down anywhere:
+
+| | |
+| --- | --- |
+| On an explicit switch in the sidebar | immediately (`switch_session`) |
+| On your first message in a session | immediately (`_touch_last_active_session`) |
+| On close / shutdown | **never** — and `docs/configuration.md` said it did |
+
+So a session you open and never speak in is not remembered, which is deliberate
+(it keeps "New session" → close → reopen on the fresh empty one). The
+`configuration.md` line claiming `SessionController.shutdown()` writes it was
+simply wrong and is corrected.

@@ -12,6 +12,7 @@ from its front rather than its back.
 from __future__ import annotations
 
 import json
+import re
 import unittest
 
 from app.core.infra.chat_database import ChatDatabase, MessageRow
@@ -202,14 +203,19 @@ class WatermarkTests(unittest.TestCase):
     def test_e_a_turn_is_never_offered_as_material_twice(self) -> None:
         db = _FakeDb(count=6)
         seen: list[set[str]] = []
-        for run in range(4):
+        for _run in range(4):
             ollama = _FakeOllama(['{"memories": []}'])
             _build(db, ollama, context_messages=0).extract_for_session("s")
             if ollama.prompts:
                 body = ollama.prompts[0].split("Extract ONLY")[-1]
-                seen.append({
-                    ln for ln in body.split() if ln.isdigit()
-                })
+                # Match the line *number*, not every digit in the prompt.
+                # The loose version collected the ``13`` out of the
+                # ``[Aug 13 12:00]`` stamp each transcript line now
+                # carries, so it reported a duplicate on every run while
+                # the windows were in fact disjoint (1-6, 7-12, 13-18,
+                # 19-24) -- a red test guarding a working property, which
+                # is worse than no test.
+                seen.append(set(re.findall(r"line (\d+)", body)))
             for _ in range(6):
                 db.append()
         # Four runs, six new messages each, and no line offered twice.

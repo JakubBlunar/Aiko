@@ -15,6 +15,19 @@ involves two pieces:
 The tests below construct a partially-instantiated controller (via
 ``__new__``) so they can exercise just the resolver / switch surface
 without booting the full app stack (TTS, MCP, model client, …).
+
+A correction, because it cost a second investigation. The live symptom
+that prompted the ``_touch_last_active_session`` work below — "it always
+reopens an old conversation" — was **not** caused by the pointer
+recording intent. It was caused by *this suite* writing the developer's
+real ``config/user.json``: any test that drives a controller through a
+turn reaches the persist call, and the ids they use are plausible enough
+to be real (``main`` and ``s2`` are both genuine conversations in the
+live install). Every full test run therefore repointed the app at a
+months-old thread. The pointer logic was doing its job the whole time.
+That is now prevented in ``conftest.py`` by an autouse redirect plus a
+tripwire that fails the run if the live file is touched; the tests here
+keep their own per-test redirect because they assert on file contents.
 """
 from __future__ import annotations
 
@@ -211,6 +224,48 @@ class TouchLastActiveSessionTests(unittest.TestCase):
             controller._touch_last_active_session()
         # Still dirty, so a later turn retries rather than giving up.
         self.assertEqual(controller._persisted_last_active_id, "")
+
+
+class LiveConfigIsolationTests(unittest.TestCase):
+    """The suite must not be able to reach the real ``user.json``.
+
+    Stated as a test rather than left to the fixture, because the failure
+    mode is invisible from inside the run: the tests all pass, and the
+    damage shows up days later as the app reopening a conversation from
+    May. Anything that reintroduces a live-config write should fail here
+    first, and in ``conftest.py``'s teardown tripwire second.
+    """
+
+    def test_the_configured_path_is_not_the_repo_config(self) -> None:
+        live = Path(__file__).resolve().parents[1] / "config" / "user.json"
+        self.assertNotEqual(
+            settings_mod.USER_CONFIG_PATH.resolve(), live.resolve(),
+            "tests are pointed at the live user config; the autouse "
+            "redirect in conftest.py is not in effect",
+        )
+
+    def test_the_by_value_importer_is_redirected_too(self) -> None:
+        """``gate_tuning_store`` binds the path with ``from ... import``,
+        so it holds a copy that patching the settings module does not
+        reach — the trap that makes a per-test patch look sufficient."""
+        from app.core.infra import gate_tuning_store
+
+        live = Path(__file__).resolve().parents[1] / "config" / "user.json"
+        self.assertNotEqual(
+            Path(gate_tuning_store.USER_CONFIG_PATH).resolve(),
+            live.resolve(),
+        )
+
+    def test_a_persist_lands_somewhere_disposable(self) -> None:
+        """The end-to-end version: write through the real function and
+        confirm the bytes went to the redirect."""
+        settings_mod.persist_user_overrides(
+            {"session": {"last_active_id": "isolation-probe"}}
+        )
+        body = json.loads(
+            settings_mod.USER_CONFIG_PATH.read_text(encoding="utf-8")
+        )
+        self.assertEqual(body["session"]["last_active_id"], "isolation-probe")
 
 
 class SwitchSessionPersistenceTests(unittest.TestCase):
