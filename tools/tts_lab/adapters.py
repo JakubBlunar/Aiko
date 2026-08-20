@@ -448,16 +448,42 @@ def read_audio(path: Path) -> tuple[np.ndarray, int]:
 
 
 def resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
-    """Linear resample. Adequate here, and deliberately not more.
+    """Rate-convert, anti-aliased where scipy is available.
 
-    Conditioning clips get downsampled to an engine's rate, where linear
-    interpolation's artefacts sit far below what the codec already does.
-    Anything destined for *training* should be resampled with a proper
-    windowed-sinc filter instead -- or better, not resampled at all.
+    Polyphase (``resample_poly``) rather than the linear interpolation
+    this used to do, because linear is only defensible upward.
+    Downsampling with it aliases: every component above the new Nyquist
+    folds back down as inharmonic noise, and speech has plenty up there
+    -- fricatives are broadband to 16 kHz and beyond. On a conditioning
+    clip that is a subtle wrongness you would blame on the engine; baked
+    into a *training* set it is permanent, because the model learns the
+    folded noise as part of the voice.
+
+    scipy is a hard dependency of the app, so the linear path below is a
+    fallback for a stripped environment rather than a real branch. It
+    warns instead of failing: a rate conversion refusing to happen would
+    stop a dataset build, and a noisy conversion the operator was told
+    about is the better of two bad options.
     """
     if src_rate == dst_rate or audio.size == 0:
         return np.asarray(audio, dtype=np.float32).reshape(-1)
     flat = np.asarray(audio, dtype=np.float32).reshape(-1)
+    try:
+        from math import gcd
+
+        from scipy.signal import resample_poly
+
+        divisor = gcd(int(src_rate), int(dst_rate))
+        return np.asarray(
+            resample_poly(flat, dst_rate // divisor, src_rate // divisor),
+            dtype=np.float32,
+        )
+    except ImportError:
+        if dst_rate < src_rate:
+            print(
+                f"  warning: downsampling {src_rate} -> {dst_rate} without "
+                "scipy; expect aliasing"
+            )
     count = int(round(flat.size * dst_rate / float(src_rate)))
     if count <= 1:
         return flat

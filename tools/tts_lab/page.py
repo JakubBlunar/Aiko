@@ -73,34 +73,50 @@ th { color: #8b919c; font-weight: 600; }
 code { background: #23272e; padding: 1px 5px; border-radius: 4px;
        font-size: 12px; }
 .hint { font-size: 12px; color: #6b7280; margin-top: 8px; }
+/* dataset table: one row per clip, transcript editable in place */
+#dstable td { vertical-align: top; }
+#dstable audio { height: 30px; margin: 0; min-width: 190px; }
+#dstable textarea { min-height: 46px; font-size: 13px; }
+#dstable tr.review textarea { border-color: #6b5424; }
+#dstable .who { font-size: 12px; color: #8b919c; word-break: break-all;
+                max-width: 150px; }
+#dstable .kill { background: none; padding: 4px 8px; color: #8b919c; }
+#dstable .kill:hover { color: #e07a7a; background: none; }
+.pill { font-size: 11px; padding: 1px 6px; border-radius: 10px;
+        background: #23272e; color: #8b919c; }
+.pill.review { background: #3b2f14; color: #e0a458; }
 </style>
 </head>
 <body>
 <h1>Aiko voice studio</h1>
-<p class="sub">Record a reference, clone it into any installed engine,
-audition it, and save it to <code>voices/</code>. Prototype tool &mdash;
-it does not touch the running app.</p>
+<p class="sub">Audition a saved voice, clone a new one from audio, or
+build a training set from labelled files. Prototype tool &mdash; it does
+not touch the running app.</p>
 
 <div class="grid">
 
   <div class="card">
-    <h2>1 &middot; Reference clip</h2>
+    <h2>1 &middot; New reference clip <span class="pill">optional</span></h2>
+    <p class="sub" style="margin:0 0 12px">Only needed to clone a
+    <em>new</em> voice. To hear one that already exists, skip straight to
+    step 2 and pick it there.</p>
     <div class="row">
-      <button id="rec" class="primary">Record</button>
-      <button id="stop" disabled>Stop</button>
-      <button id="pick">Upload audio</button>
+      <button id="pick" class="primary">Upload audio</button>
       <input type="file" id="file"
              accept=".wav,.mp3,.flac,.ogg,.opus,audio/*" hidden>
+      <button id="rec">Record</button>
+      <button id="stop" disabled>Stop</button>
     </div>
     <div class="meter"><i id="level"></i></div>
-    <div class="stat" id="recstat">Aim for 20&ndash;30 seconds. Read the
-      script below so the clip covers her range.</div>
+    <div class="stat" id="recstat">Upload takes wav, mp3, flac or ogg.
+      10&ndash;30 seconds of clean speech is plenty.</div>
     <audio id="refplay" controls preload="none"></audio>
     <div class="stat" id="refqual"></div>
     <div class="script" id="script"></div>
-    <div class="hint">Click a line to mark it read. The set is the same
-      one <code>voicebank.py</code> uses &mdash; phonetically broad,
-      varied intonation, deliberately dull content.</div>
+    <div class="hint">If you are recording, that script is the set
+      <code>voicebank.py</code> uses &mdash; phonetically broad, varied
+      intonation, deliberately dull content. Click a line to mark it
+      read.</div>
   </div>
 
   <div class="card">
@@ -108,6 +124,9 @@ it does not touch the running app.</p>
     <label for="engine">Engine</label>
     <select id="engine"></select>
     <div class="stat" id="engstat"></div>
+    <label for="voice">Voice</label>
+    <select id="voice"></select>
+    <div class="stat" id="voicestat"></div>
     <label for="text">Phrase</label>
     <textarea id="text">Hey, I was just thinking about you. How did the build go?</textarea>
     <label for="knobs">Generation options (JSON, blank = engine defaults)</label>
@@ -128,6 +147,35 @@ it does not touch the running app.</p>
     </div>
     <div class="hint" id="savehint"></div>
     <table id="voices"><tr><th>existing voices</th><th>size</th></tr></table>
+  </div>
+
+  <div class="card wide">
+    <h2>4 &middot; Training dataset</h2>
+    <p class="sub" style="margin:0 0 14px">Cloning above needs seconds of
+    audio and copies the voice as it is. A <em>fine-tune</em> needs many
+    labelled clips and can beat the original &mdash; but only if the audio
+    is real. Drop the files in, fix the drafted transcripts, build.</p>
+    <div class="row">
+      <button id="dspick" class="primary">Add audio files</button>
+      <input type="file" id="dsfile" multiple
+             accept=".wav,.mp3,.flac,.ogg,.opus,.m4a,audio/*" hidden>
+      <button id="dsdraft">Draft missing transcripts</button>
+      <button id="dsclear">Clear</button>
+      <span class="stat" id="dsasr"></span>
+    </div>
+    <table id="dstable"></table>
+    <div class="row" style="margin-top:14px">
+      <input type="text" id="dsname" placeholder="aiko-real"
+             style="max-width:200px">
+      <input type="text" id="dsspeaker" value="aiko" style="max-width:110px">
+      <button id="dssave" class="primary" disabled>Build dataset</button>
+      <span class="stat" id="dsstat"></span>
+    </div>
+    <div class="hint">Transcripts must match the <em>sounds</em>, so spell
+    numbers out &mdash; write &ldquo;four fifteen&rdquo;, not
+    &ldquo;4:15&rdquo;. Clips over 15s are rejected: most trainers window
+    shorter and would truncate them. Text is kept in this browser per
+    filename, so a reload will not lose your typing.</div>
   </div>
 
 </div>
@@ -165,7 +213,56 @@ function showEngine() {
     : 'This engine clones per call, so saving stores the reference clip as ' +
       'the voice. Point the engine at the .wav.';
 }
-$('engine').onchange = showEngine;
+$('engine').onchange = () => { showEngine(); showVoice(); };
+
+// ── voice source ──
+// The audition used to require a freshly recorded reference, which made
+// it impossible to hear an already-saved voice -- including the one
+// committed copy of Aiko's. A saved voice is a legitimate starting point.
+let savedVoices = [];
+function fillVoices() {
+  const sel = $('voice');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  const ref = document.createElement('option');
+  ref.value = '@ref';
+  ref.textContent = refId ? 'the clip from step 1' : 'step 1 clip (none yet)';
+  ref.disabled = !refId;
+  sel.appendChild(ref);
+  savedVoices.forEach(v => {
+    const o = document.createElement('option');
+    o.value = v.name; o.textContent = v.name;
+    sel.appendChild(o);
+  });
+  // Prefer whatever was already chosen, then her committed reference, so
+  // the page opens on something that can actually speak.
+  const wanted = [prev, 'reference/aiko_reference.wav'].filter(Boolean);
+  for (const w of wanted) {
+    if ([...sel.options].some(o => o.value === w && !o.disabled)) {
+      sel.value = w; break;
+    }
+  }
+  showVoice();
+}
+function showVoice() {
+  const v = $('voice').value;
+  const e = engines[$('engine').value];
+  const usable = v === '@ref' ? !!refId : true;
+  let note = '';
+  if (v === '@ref') {
+    note = refId ? 'using the clip from step 1'
+                 : 'record or upload above, or pick a saved voice';
+  } else if (v.endsWith('.safetensors')) {
+    note = e && e.saves_as === 'safetensors'
+      ? 'a pocket-tts speaker embedding'
+      : 'embeddings are pocket-tts only \u2014 this engine needs a .wav';
+  } else {
+    note = 'cloned from this clip on every call';
+  }
+  $('voicestat').textContent = note;
+  $('synth').disabled = !usable;
+}
+$('voice').onchange = showVoice;
 
 // ── reading script ──
 async function loadScript() {
@@ -272,7 +369,9 @@ function applyReference(r) {
     : ' <span class="good">\u2014 looks usable</span>';
   $('refqual').innerHTML = html;
   $('recstat').textContent = 'reference ready';
-  $('synth').disabled = false; $('save').disabled = false;
+  $('save').disabled = false;
+  $('voice').value = '@ref';
+  fillVoices();
 }
 
 // ── synth ──
@@ -285,12 +384,12 @@ $('synth').onclick = async () => {
   }
   $('synth').disabled = true;
   $('synthstat').textContent = 'generating\u2026 (first call loads the model)';
+  const pick = $('voice').value;
+  const body = { engine: $('engine').value, text: $('text').value, kwargs };
+  if (pick === '@ref') body.reference = refId; else body.voice = pick;
   const r = await fetch('api/synth', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      engine: $('engine').value, reference: refId,
-      text: $('text').value, kwargs,
-    }),
+    body: JSON.stringify(body),
   }).then(r => r.json());
   $('synth').disabled = false;
   if (r.error) { $('synthstat').innerHTML = '<span class="bad">' + r.error + '</span>'; return; }
@@ -327,14 +426,205 @@ $('save').onclick = async () => {
 
 async function loadVoices() {
   const r = await fetch('api/voices').then(r => r.json());
+  savedVoices = r.voices;
   const rows = r.voices.map(v =>
     '<tr><td><code>' + v.name + '</code></td><td>'
     + (v.kb > 1024 ? (v.kb / 1024).toFixed(1) + ' MB' : v.kb.toFixed(0) + ' KB')
     + '</td></tr>').join('');
   $('voices').innerHTML = '<tr><th>existing voices</th><th>size</th></tr>' + rows;
+  fillVoices();
 }
 
-loadEngines(); loadScript(); loadVoices();
+// ── dataset ──
+// Transcripts are the expensive part, so they are kept in localStorage
+// keyed by filename and size rather than by the server's clip id: ids die
+// with the process, and losing an afternoon of typing to a restart is how
+// a half-labelled set happens.
+const LABELS = 'aiko.tts.labels';
+const labelKey = (f) => f.name + ':' + f.size;
+function labelsRead() {
+  try { return JSON.parse(localStorage.getItem(LABELS) || '{}'); }
+  catch (e) { return {}; }
+}
+function labelSave(key, text) {
+  const all = labelsRead();
+  if (text) all[key] = text; else delete all[key];
+  try { localStorage.setItem(LABELS, JSON.stringify(all)); } catch (e) {}
+}
+
+let clips = [];
+$('dspick').onclick = () => $('dsfile').click();
+$('dsfile').onchange = async (ev) => {
+  const files = [...ev.target.files];
+  ev.target.value = '';
+  const known = labelsRead();
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    $('dsstat').textContent = 'reading ' + (i + 1) + '/' + files.length
+      + ' \u2014 ' + f.name;
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    const url = 'api/dataset/add?ext=' + encodeURIComponent(ext)
+      + '&name=' + encodeURIComponent(f.name);
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: await f.arrayBuffer(),
+      }).then(r => r.json());
+    } catch (e) { r = { error: String(e) }; }
+    if (r.error) { clips.push({ bad: r.error, source: f.name }); continue; }
+    r.key = labelKey(f);
+    r.text = known[r.key] || '';
+    clips.push(r);
+  }
+  $('dsstat').textContent = '';
+  renderClips();
+};
+
+$('dsclear').onclick = () => {
+  if (clips.length && !confirm('Remove all ' + clips.length
+      + ' clips from the list? Typed transcripts are kept.')) return;
+  clips = []; renderClips();
+};
+
+function renderClips() {
+  const t = $('dstable');
+  if (!clips.length) {
+    t.innerHTML = '';
+    $('dssave').disabled = true;
+    return;
+  }
+  t.innerHTML = '<tr><th>file</th><th>clip</th><th>transcript</th>'
+    + '<th>notes</th><th></th></tr>';
+  clips.forEach((c, i) => {
+    const tr = document.createElement('tr');
+    if (c.bad) {
+      tr.innerHTML = '<td class="who">' + c.source + '</td>'
+        + '<td colspan="3" class="bad">' + c.bad + '</td>';
+    } else {
+      const q = c.quality;
+      const secs = q.duration_s.toFixed(1) + 's \u00b7 '
+        + (c.sample_rate / 1000).toFixed(1) + ' kHz';
+      const notes = (c.notes || []).map(n =>
+        '<div class="warn" style="font-size:12px">' + n + '</div>').join('');
+      const flag = c.review
+        ? '<span class="pill review">check</span> ' : '';
+      tr.innerHTML =
+        '<td class="who">' + c.source + '<div class="stat">' + secs
+          + '</div></td>'
+        + '<td><audio controls preload="none" src="api/audio/' + c.file
+          + '"></audio></td>'
+        + '<td style="min-width:290px"><textarea>' + escapeHtml(c.text || '')
+          + '</textarea></td>'
+        + '<td>' + flag + notes + (c.asr || '') + '</td>';
+      const box = tr.querySelector('textarea');
+      box.oninput = () => {
+        c.text = box.value;
+        labelSave(c.key, box.value);
+        updateSave();
+      };
+      if (c.review) tr.classList.add('review');
+    }
+    const kill = document.createElement('td');
+    const b = document.createElement('button');
+    b.className = 'kill'; b.textContent = '\u00d7';
+    b.title = 'remove from the list';
+    b.onclick = () => { clips.splice(i, 1); renderClips(); };
+    kill.appendChild(b);
+    tr.appendChild(kill);
+    t.appendChild(tr);
+  });
+  updateSave();
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+}
+
+function updateSave() {
+  const ready = clips.filter(c => !c.bad && (c.text || '').trim()).length;
+  $('dssave').disabled = ready === 0;
+  const total = clips.filter(c => !c.bad).length;
+  $('dsstat').textContent = total
+    ? ready + ' of ' + total + ' labelled' : '';
+}
+
+$('dsdraft').onclick = async () => {
+  const todo = clips.filter(c => !c.bad && !(c.text || '').trim());
+  if (!todo.length) { $('dsstat').textContent = 'all labelled already'; return; }
+  $('dsdraft').disabled = true;
+  for (let i = 0; i < todo.length; i++) {
+    const c = todo[i];
+    $('dsstat').textContent = 'transcribing ' + (i + 1) + '/' + todo.length
+      + ' \u2014 ' + c.source;
+    const r = await fetch('api/dataset/transcribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: c.id }),
+    }).then(r => r.json()).catch(e => ({ error: String(e) }));
+    if (r.error) { c.asr = '<div class="bad">' + r.error + '</div>'; continue; }
+    c.text = r.text;
+    c.review = r.needs_review;
+    c.asr = (r.warnings || []).map(w =>
+      '<div class="warn" style="font-size:12px">' + w + '</div>').join('');
+    labelSave(c.key, r.text);
+    renderClips();
+  }
+  $('dsdraft').disabled = false;
+  updateSave();
+};
+
+$('dssave').onclick = async () => {
+  const items = clips.filter(c => !c.bad && (c.text || '').trim())
+    .map(c => ({ id: c.id, text: c.text }));
+  $('dssave').disabled = true;
+  $('dsstat').textContent = 'building\u2026';
+  const r = await fetch('api/dataset/save', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: $('dsname').value.trim(),
+      speaker: $('dsspeaker').value.trim() || 'aiko',
+      items,
+    }),
+  }).then(r => r.json()).catch(e => ({ error: String(e) }));
+  $('dssave').disabled = false;
+  if (r.error) {
+    let msg = '<span class="bad">' + r.error + '</span>';
+    (r.rejects || []).forEach(x => {
+      msg += '<div class="warn" style="font-size:12px">' + x.file + ': '
+        + x.reason + '</div>';
+    });
+    $('dsstat').innerHTML = msg;
+    return;
+  }
+  let msg = '<span class="good">' + r.clips + ' clips, '
+    + r.minutes.toFixed(1) + ' min at ' + r.sample_rate + ' Hz \u2014 '
+    + r.path + '</span>';
+  if (r.minutes < 10) {
+    msg += ' <span class="warn">\u2014 thin for a fine-tune; 10\u201330 min '
+      + 'is where it starts beating zero-shot cloning.</span>';
+  }
+  (r.rejects || []).forEach(x => {
+    msg += '<div class="warn" style="font-size:12px">skipped ' + x.file
+      + ': ' + x.reason + '</div>';
+  });
+  $('dsstat').innerHTML = msg;
+};
+
+async function loadAsr() {
+  const r = await fetch('api/dataset/asr').then(r => r.json());
+  if (!r.available) {
+    $('dsasr').innerHTML = '<span class="warn">no cached whisper model '
+      + '\u2014 transcripts must be typed</span>';
+    $('dsdraft').disabled = true;
+    return;
+  }
+  $('dsasr').textContent = 'whisper ' + r.model
+    + (r.cached.length > 1 ? ' (also: ' + r.cached.slice(1).join(', ') + ')' : '');
+}
+
+loadEngines(); loadScript(); loadVoices(); loadAsr();
 </script>
 </body>
 </html>

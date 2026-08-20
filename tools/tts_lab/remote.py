@@ -82,6 +82,8 @@ class Remote(Adapter):
         #: Interpreter and thread facts from the sidecar, so a CPU RTF
         #: comes with the conditions it was measured under.
         self.runtime: dict[str, Any] = {}
+        #: Filled at load for multilingual engines; empty otherwise.
+        self.languages: list[str] = []
 
     # ── process ──
 
@@ -126,6 +128,9 @@ class Remote(Adapter):
             for k in ("threads", "interop_threads", "torch", "python")
             if k in reply
         }
+        #: Language codes the loaded model actually supports, empty for a
+        #: monolingual one. Read off the package by the sidecar.
+        self.languages: list[str] = list(reply.get("languages") or [])
         if self.runtime.get("threads"):
             print(
                 f"  {self.caps.name}: torch {self.runtime.get('torch')} on "
@@ -335,6 +340,41 @@ class ChatterboxNano(ChatterboxTurbo):
     )
 
 
+class ChatterboxMultilingual(ChatterboxTurbo):
+    """500M, 23 languages, and the only route to a cross-lingual clone.
+
+    Here for a specific reason rather than for language coverage. Good
+    candidate voices for an anime-styled companion are overwhelmingly
+    Japanese, and this architecture keeps speaker identity separate from
+    linguistic content -- so a Japanese reference clip can speak English
+    text. Accent travels with the timbre, which for this use is arguably
+    the feature.
+
+    At 500M against Turbo's 350M it will be slower than Turbo's measured
+    RTF 1.37-1.66, so it is not a live-conversation candidate. That does
+    not disqualify it: dataset generation is offline, and a teacher only
+    has to sound good.
+    """
+
+    sidecar_engine = "chatterbox-multilingual"
+    caps = replace(
+        ChatterboxTurbo.caps,
+        name="chatterbox-multilingual",
+        params="500M",
+        # The original model's tuning, not Turbo's, and no paralinguistic
+        # tags -- confirmed by introspection at load, not from the README.
+        inline_tags=(),
+        notes=(
+            "23 languages including Japanese, and cross-lingual by "
+            "design: the reference clip and the target text need not "
+            "share a language. Accent transfers with the voice. "
+            "'language_id' is a required generate() argument, defaulted "
+            "to 'en' by the sidecar. Defaults are exaggeration=0.5, "
+            "cfg_weight=0.5, unlike Turbo's 0.0/0.0."
+        ),
+    )
+
+
 class ChatterboxFull(ChatterboxTurbo):
     """The original 500M model. Slower, and the reference for quality.
 
@@ -364,6 +404,9 @@ def register() -> None:
     adapters.REGISTRY.setdefault("chatterbox-turbo", ChatterboxTurbo)
     adapters.REGISTRY.setdefault("chatterbox-nano", ChatterboxNano)
     adapters.REGISTRY.setdefault("chatterbox-full", ChatterboxFull)
+    adapters.REGISTRY.setdefault(
+        "chatterbox-multilingual", ChatterboxMultilingual
+    )
 
 
 if __name__ == "__main__":

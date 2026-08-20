@@ -49,6 +49,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -72,11 +73,17 @@ LONG_RATIO = 2.2
 class Sample:
     index: int
     text: str
-    temp: float
     file: str
     duration_s: float
     peak: float
     rms: float
+    #: Generation temperature, for synthesised sets. Meaningless for
+    #: labelled real audio, which carries ``source`` instead.
+    temp: float = 0.0
+    #: Original filename, for labelled sets. Kept because provenance is
+    #: the first question asked of a training set that misbehaves, and
+    #: the answer is unrecoverable once clips are renamed to an index.
+    source: str = ""
 
 
 @dataclass
@@ -124,12 +131,61 @@ def _screen(audio: np.ndarray, sample_rate: int, text: str) -> str:
     return ""
 
 
+def build_source(
+    engine_name: str,
+    temp: float,
+    *,
+    voice_ref: Path | None,
+    voice_id: str = "",
+) -> tuple[Any, Any, str]:
+    """An engine at a given temperature, plus a voice. Returns a label too.
+
+    Temperature is not one concept across engines. pocket-tts takes it at
+    load time on the model, while the Chatterbox family takes
+    ``temperature`` as a generate keyword -- so the same requested value
+    has to be delivered two different ways, and an engine that has no
+    such knob should simply not be told about it rather than be handed a
+    kwarg it will discard politely.
+
+    Worth doing at all because the fastest engine is not necessarily the
+    one that should *make* the dataset. Generation is offline, so an
+    engine at RTF 1.5 costs nothing here while being disqualifying for
+    live conversation, and the teacher's quality is the ceiling of
+    whatever gets trained on the result.
+    """
+    if engine_name == "pocket-tts":
+        engine = PocketTts(temp=temp)
+        engine.load()
+        resolved = voice_id
+        if not resolved:
+            from app.core.infra.settings import load_settings
+
+            resolved = load_settings().tts.pocket_tts_voice
+        return engine, engine.voice_from_id(resolved), resolved
+
+    from tools.tts_lab import adapters, remote
+
+    remote.register()
+    engine = adapters.build(engine_name)
+    engine.load()
+    if isinstance(engine, remote.Remote) and "temperature" in engine.accepts:
+        engine.overrides = {"temperature": float(temp)}
+    if voice_ref is None or not voice_ref.exists():
+        raise SystemExit(
+            f"{engine_name} clones from a clip; pass --voice-ref (or build "
+            "one with 'python -m tools.tts_lab.voicebank')"
+        )
+    return engine, engine.voice_from_reference(voice_ref), voice_ref.name
+
+
 def generate(
     prompts: list[str],
     temps: list[float],
     *,
     target_minutes: float,
     out_dir: Path,
+    engine_name: str = "pocket-tts",
+    voice_ref: Path | None = None,
     voice_id: str = "",
 ) -> Build:
     wav_dir = out_dir / "wavs"
@@ -139,15 +195,10 @@ def generate(
     index = 0
 
     for temp in temps:
-        engine = PocketTts(temp=temp)
-        engine.load()
-        resolved = voice_id
-        if not resolved:
-            from app.core.infra.settings import load_settings
-
-            resolved = load_settings().tts.pocket_tts_voice
-        voice = engine.voice_from_id(resolved)
-        print(f"temp {temp:.2f}: voice {resolved}")
+        engine, voice, resolved = build_source(
+            engine_name, temp, voice_ref=voice_ref, voice_id=voice_id
+        )
+        print(f"{engine_name} temp {temp:.2f}: voice {resolved}")
 
         for text in prompts:
             if build.total_seconds >= target_seconds:
@@ -189,7 +240,10 @@ def generate(
                     f"  {len(build.samples)} kept, "
                     f"{build.total_seconds / 60.0:.1f} min"
                 )
-        engine.service  # noqa: B018 -- keep the reference alive until the loop ends
+        close = getattr(engine, "close", None)
+        if callable(close):
+            # Sidecar engines hold a subprocess and a temp dir per pass.
+            close()
         if build.total_seconds >= target_seconds:
             break
     return build
@@ -254,6 +308,7 @@ def write_report(
     temps: list[float],
     gain: float,
     voice_id: str,
+    engine_name: str = "pocket-tts",
 ) -> dict:
     durations = [s.duration_s for s in build.samples]
     reasons: dict[str, int] = {}
@@ -264,16 +319,16 @@ def write_report(
     report = {
         "built_at": datetime.now(timezone.utc).isoformat(),
         "source": {
-            "engine": "pocket-tts",
+            "engine": engine_name,
             "voice": voice_id,
             "temps": temps,
             "generated_not_recorded": True,
             "caveat": (
-                "Generated from the pocket-tts embedding because the "
-                "original source audio was lost. Inherits a 24 kHz "
-                "ceiling and pocket-tts's prosody; a model trained on "
-                "this cannot exceed it in fidelity. Transcripts are "
-                "exact, since the text was the input."
+                f"Generated by {engine_name} because the original source "
+                "audio was lost, so this inherits that engine's ceiling "
+                "and habits and a model trained on it cannot exceed them "
+                "in fidelity. Transcripts are exact, since the text was "
+                "the input."
             ),
         },
         "audio": {
@@ -330,7 +385,20 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
             "variety at the cost of consistency; live value is 0.6"
         ),
     )
+    p.add_argument(
+        "--engine", default="pocket-tts",
+        help=(
+            "engine to generate with (default pocket-tts). Generation is "
+            "offline, so a slow engine costs only wall time here -- use "
+            "whichever sounds best, since the teacher is the ceiling"
+        ),
+    )
     p.add_argument("--voice", default="", help="embedding (default: live setting)")
+    p.add_argument(
+        "--voice-ref", type=Path,
+        default=REPO_ROOT / "voices" / "reference" / "aiko_reference.wav",
+        help="reference clip, required by engines that clone per call",
+    )
     p.add_argument("--text-file", type=Path, default=None,
                    help="one prompt per line, replacing the built-in corpus")
     p.add_argument("--out", type=Path, default=None)
@@ -398,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     voice_id = args.voice
-    if not voice_id:
+    if not voice_id and args.engine == "pocket-tts":
         from app.core.infra.settings import load_settings
 
         voice_id = load_settings().tts.pocket_tts_voice
@@ -413,6 +481,8 @@ def main(argv: list[str] | None = None) -> int:
         list(args.temps),
         target_minutes=args.minutes,
         out_dir=out_dir,
+        engine_name=args.engine,
+        voice_ref=args.voice_ref,
         voice_id=voice_id,
     )
     if not build.samples:
@@ -423,7 +493,8 @@ def main(argv: list[str] | None = None) -> int:
     write_manifests(build, out_dir, speaker=args.speaker)
     report = write_report(
         build, out_dir, prompts=prompts, temps=list(args.temps),
-        gain=gain, voice_id=voice_id,
+        gain=gain, voice_id=voice_id or args.voice_ref.name,
+        engine_name=args.engine,
     )
 
     audio = report["audio"]
