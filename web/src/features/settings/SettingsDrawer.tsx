@@ -375,6 +375,21 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       setActivityAwarenessEnabled(
         Boolean(next.activity?.awareness_enabled),
       );
+      // Switching TTS engine replaces the engine, and what counts as a
+      // "voice" changes with it: pocket-tts offers .safetensors speaker
+      // embeddings, Chatterbox offers reference clips it clones from.
+      // The list is otherwise only fetched when the drawer opens, so
+      // without this the picker keeps showing the previous engine's
+      // voices -- which reads as "the new engine has no voices".
+      const tts = patch.tts as Record<string, unknown> | undefined;
+      if (tts && ("provider" in tts || "device" in tts)) {
+        try {
+          setVoices(await api.listVoices());
+        } catch {
+          // Non-fatal: the engine may still be loading. The list
+          // refreshes on the next drawer open regardless.
+        }
+      }
     } catch (err) {
       setError(String(err));
     } finally {

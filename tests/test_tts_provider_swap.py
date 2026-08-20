@@ -143,6 +143,46 @@ def test_speaking_emits_paced_pcm_and_fires_clip_end(fake_engine) -> None:
     assert amplitudes
 
 
+def test_the_voice_list_hides_generated_scratch(fake_engine, tmp_path) -> None:
+    """``voices/`` accumulates audition renders, fine-tuning datasets and
+    studio takes. Unfiltered, the settings dropdown was 279 entries deep
+    on a real machine, which is the same as having no picker."""
+    voices = tmp_path / "voices"
+    for rel in (
+        "reference/aiko_reference.wav",
+        "saved/my_clip.wav",
+        "audition/chatterbox-nano__cloned__plain.wav",
+        "datasets/aiko-1/wavs/aiko_00001.wav",
+        "studio/synth_09b5e32a.wav",
+        "speed_ab/ab_1p00_stretch.wav",
+        "reference/parts/part01.wav",
+        "reference/roundtrip_original.wav",
+    ):
+        target = voices / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"")
+
+    with patch("app.tts.chatterbox_service.VOICES_DIR", voices):
+        listed = fake_engine.list_voices()
+
+    assert listed == ["reference/aiko_reference.wav", "saved/my_clip.wav"]
+
+
+def test_her_reference_sorts_first(fake_engine, tmp_path) -> None:
+    """It is the answer nearly always wanted, so it should not be buried
+    alphabetically below whatever else has been saved."""
+    voices = tmp_path / "voices"
+    for rel in ("reference/aiko_reference.wav", "aaa_earlier_alphabetically.wav"):
+        target = voices / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"")
+
+    with patch("app.tts.chatterbox_service.VOICES_DIR", voices):
+        listed = fake_engine.list_voices()
+
+    assert listed[0] == "reference/aiko_reference.wav"
+
+
 def test_reaction_speed_matches_pocket_tts(fake_engine) -> None:
     """Her pacing describes her, not the model rendering her, so a swap
     must not quietly change how fast she talks when excited."""
@@ -306,6 +346,39 @@ def test_a_device_the_engine_cannot_use_is_not_written() -> None:
     session.set_tts_device("tpu")
     assert "pocket-tts" not in session.tts.providers
     assert session.rebuilds == 0
+
+
+def test_the_reported_voice_belongs_to_the_current_provider() -> None:
+    """The drawer showed a pocket-tts ``.safetensors`` selected while
+    Chatterbox was running, matching no option in a list of reference
+    clips -- because this read the flat ``tts.voice`` field, which holds
+    whatever was last set on *any* engine."""
+    session = _Session()
+    session.tts.providers["pocket-tts"] = TtsProviderSettings(
+        voice="aiko1_refined.safetensors"
+    )
+    session.tts.providers["chatterbox-nano"] = TtsProviderSettings(
+        voice="reference/aiko_reference.wav"
+    )
+    # The flat field is deliberately left pointing at the pocket voice,
+    # which is the state a real switch leaves behind.
+    session.tts.voice = "aiko1_refined.safetensors"
+
+    assert session.tts_voice == "aiko1_refined.safetensors"
+    with patch.object(registry, "availability", return_value=(True, "")):
+        session.set_tts_provider("chatterbox-nano")
+    assert session.tts_voice == "reference/aiko_reference.wav"
+
+
+def test_an_unconfigured_provider_reports_what_the_engine_loaded() -> None:
+    """Rather than a blank dropdown. A fresh switch has no per-provider
+    voice yet, but the engine has already picked its default."""
+    session = _Session(provider="chatterbox-nano")
+    session.tts.voice = ""
+    session._tts_engine = SimpleNamespace(
+        describe=lambda: {"voice": "reference/aiko_reference.wav"}
+    )
+    assert session.tts_voice == "reference/aiko_reference.wav"
 
 
 def test_voices_survive_a_round_trip_between_providers() -> None:

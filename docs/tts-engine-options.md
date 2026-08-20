@@ -512,6 +512,21 @@ in another file. Reaction-to-speed moved to
 [`app/tts/reactions.py`](../app/tts/reactions.py) for the same reason:
 how fast she talks when excited describes *her*, not the model.
 
+**A "voice" means different things per engine, and the drawer has to
+follow.** Pocket-TTS voices are `.safetensors` speaker embeddings;
+Chatterbox voices are reference clips it clones from at load. So the
+picker's contents change with the engine — and three things had to be
+fixed before that worked. The list was only fetched when the drawer
+opened, so after a switch it kept showing the previous engine's voices,
+which reads as "the new engine has no voices". `tts_voice` reported the
+flat `tts.voice` field, which holds whatever was last set on *any*
+engine, so a pocket embedding showed as selected in a list of clips —
+matching no option at all; it now reads the per-provider entry and falls
+back to what the engine actually loaded. And `list_voices` returned every
+wav under `voices/`, which on this box is 279 entries of audition
+renders, fine-tuning datasets and studio takes; it now excludes the same
+scratch subtrees the voice studio does, leaving 1.
+
 **Nothing heavy is imported until an engine is chosen.** Availability is
 answered from the filesystem — pocket-tts by `find_spec`, Chatterbox by
 whether its venv exists. Probing by importing would be impossible for

@@ -63,6 +63,10 @@ VOICES_DIR = Path("voices")
 #: engine can reproduce it. The default for every Chatterbox variant.
 DEFAULT_REFERENCE = "reference/aiko_reference.wav"
 
+#: Subtrees of ``voices/`` holding generated output rather than voices.
+#: Kept in step with ``_SCRATCH`` in ``tools/tts_lab/serve.py``.
+_SCRATCH = ("studio/", "datasets/", "audition/", "speed_ab/", "reference/parts/")
+
 #: A model download on first run can take minutes; a warm load is
 #: seconds. Generous because the alternative to waiting is a mute
 #: companion and a confusing error.
@@ -328,13 +332,24 @@ class ChatterboxTtsService(PcmPlaybackMixin):
     # ── voices ───────────────────────────────────────────────────────
 
     def list_voices(self) -> list[str]:
-        """Reference clips, as paths relative to ``voices/``."""
+        """Reference clips, as paths relative to ``voices/``.
+
+        Scratch subtrees are excluded. ``voices/`` also accumulates
+        audition renders, generated fine-tuning datasets and studio takes,
+        which on this machine made the settings dropdown 279 entries deep
+        -- indistinguishable from having no picker at all. Same rule as
+        the voice studio's own list (``_SCRATCH`` in
+        ``tools/tts_lab/serve.py``), so the app and the lab agree on what
+        counts as a voice.
+        """
         if not VOICES_DIR.is_dir():
             return []
-        found = [
-            str(path.relative_to(VOICES_DIR)).replace("\\", "/")
-            for path in sorted(VOICES_DIR.rglob("*.wav"))
-        ]
+        found: list[str] = []
+        for path in sorted(VOICES_DIR.rglob("*.wav")):
+            rel = path.relative_to(VOICES_DIR).as_posix()
+            if any(rel.startswith(p) for p in _SCRATCH) or "roundtrip" in rel:
+                continue
+            found.append(rel)
         # Her canonical reference first: it is the answer nearly always
         # wanted, and being top of the list makes the default obvious.
         found.sort(key=lambda name: (name != DEFAULT_REFERENCE, name))
