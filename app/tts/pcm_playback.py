@@ -27,6 +27,13 @@ A host class must provide:
     Gated speech level every clip is matched to, or ``0.0`` to leave
     levels as the engine produced them. Optional: it defaults off here,
     so an engine written before this existed still works.
+``_tilt_target_db`` / ``_tilt_limit_db``
+    Spectral tilt every clip is shelved toward, or ``None`` to leave
+    brightness alone. Also optional, and unset for engines that have no
+    reference clip to derive a target from.
+``_rate_target_syl_s`` / ``_rate_limit``
+    Tempo every clip is stretched toward, in syllables per second, or
+    ``None`` to leave pacing alone. Optional on the same terms.
 """
 
 from __future__ import annotations
@@ -39,6 +46,9 @@ from collections.abc import Callable
 import numpy as np
 
 from app.audio.loudness import correction_factor
+from app.audio.speech_rate import MAX_CORRECTION as MAX_RATE_CORRECTION
+from app.audio.speech_rate import correction_factor as rate_correction_factor
+from app.audio.timbre import MAX_CORRECTION_DB, match_tilt
 from app.audio.timestretch import time_stretch
 
 log = logging.getLogger(__name__)
@@ -67,8 +77,12 @@ class PcmPlaybackMixin:
     _clip_end_listener: Callable[[], None] | None
     _stop_requested: threading.Event
     _pitch_preserving_speed: bool
-    # Defaulted so an engine written before this existed still works.
+    # Defaulted so an engine written before these existed still works.
     _loudness_target_dbfs: float = 0.0
+    _tilt_target_db: float | None = None
+    _tilt_limit_db: float = MAX_CORRECTION_DB
+    _rate_target_syl_s: float | None = None
+    _rate_limit: float = MAX_RATE_CORRECTION
 
     # ── the whole playback of one clip ───────────────────────────────
 
@@ -79,11 +93,16 @@ class PcmPlaybackMixin:
         *,
         speed: float = 1.0,
         gain_factor: float = 1.0,
+        text: str = "",
         on_amplitude: Callable[[float], None] | None = None,
     ) -> float:
         """Rate-adjust, ship, and block for the real playback duration.
 
         Returns milliseconds actually spent playing, for logging.
+
+        ``text`` is what was spoken, and is used only to measure the
+        clip's delivered tempo. Optional so a caller that has not got it
+        still works, with tempo matching simply inactive.
 
         The block at the end is not padding. ``_emit_pcm`` returns as soon
         as the bytes are on the socket, but the client is still playing
@@ -93,6 +112,26 @@ class PcmPlaybackMixin:
         """
         stop_amplitude = threading.Event()
         amplitude_thread: threading.Thread | None = None
+
+        # Brightness before level, because the shelf changes the level it
+        # would otherwise be measured against. Off unless the engine set
+        # a target: only Chatterbox has a reference clip to aim at, and
+        # pocket-tts is not audibly drifting.
+        tilt_target = getattr(self, "_tilt_target_db", None)
+        if tilt_target is not None:
+            try:
+                audio = match_tilt(
+                    audio,
+                    sample_rate,
+                    target_tilt_db=float(tilt_target),
+                    limit_db=float(
+                        getattr(self, "_tilt_limit_db", MAX_CORRECTION_DB)
+                    ),
+                )
+            except Exception as exc:
+                # A sentence in the wrong shade of warm beats no
+                # sentence, so this never propagates.
+                log.warning("timbre match failed, using the clip as-is: %r", exc)
 
         # Match this clip to the standing level before anything else
         # touches it. Measured on the raw speech, so the guard silence
@@ -105,6 +144,26 @@ class PcmPlaybackMixin:
             gain_factor = float(gain_factor) * correction_factor(
                 audio, sample_rate, target_dbfs=target
             )
+
+        # Tempo: fold the per-clip correction into the speed factor
+        # rather than stretching twice. Only when the stretch is
+        # pitch-preserving -- correcting rate through varispeed would
+        # trade a tempo wobble for a pitch wobble, which is worse.
+        rate_target = getattr(self, "_rate_target_syl_s", None)
+        if rate_target is not None and self._pitch_preserving_speed and text:
+            try:
+                speed = float(speed) * rate_correction_factor(
+                    audio,
+                    sample_rate,
+                    text,
+                    target_syl_s=float(rate_target),
+                    intended=float(speed),
+                    limit=float(
+                        getattr(self, "_rate_limit", MAX_RATE_CORRECTION)
+                    ),
+                )
+            except Exception as exc:
+                log.warning("tempo match failed, using the clip as-is: %r", exc)
 
         # Rate change on the speech only, before the guard silence is
         # appended -- stretching a fixed tail would make the guard itself

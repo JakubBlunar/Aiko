@@ -18,12 +18,17 @@ from pathlib import Path
 import threading
 
 from app.core.infra.settings import TtsSettings
+from app.tts.clip_cache import ClipCache, SynthesisGate
 from app.tts.pcm_playback import PcmPlaybackMixin
 from app.tts.reactions import (
+    LENGTH_SCALE_MAX,
+    LENGTH_SCALE_MIN,
     REACTION_SPEED,
     REACTION_SPEED_CAPS,
     SPEED_MAX,
     SPEED_MIN,
+    clamp_length_scale,
+    resolve_playback_speed,
     resolve_speed_caps,
 )
 
@@ -98,15 +103,8 @@ _REACTION_TEMP_DELTA: dict[str, float] = {
 _TEMP_MIN = 0.30
 _TEMP_MAX = 1.20
 
-# Hard caps on the user-facing pacing slider. The slider feeds
-# :meth:`PocketTtsService.set_length_scale`; values outside this
-# band are clamped silently. The band is narrower than ``[0.65, 1.35]``
-# in :class:`AssistantSettings` because the pacing slider stacks
-# multiplicatively with reaction speed AND the cadence layer's
-# per-sentence ``speed_hint``, so a 0.65 slider would routinely
-# blow past the per-reaction floor and chip into chipmunk territory.
-_LENGTH_SCALE_MIN = 0.85
-_LENGTH_SCALE_MAX = 1.15
+_LENGTH_SCALE_MIN = LENGTH_SCALE_MIN
+_LENGTH_SCALE_MAX = LENGTH_SCALE_MAX
 
 
 class PocketTtsService(PcmPlaybackMixin):
@@ -133,8 +131,8 @@ class PocketTtsService(PcmPlaybackMixin):
         self._stop_requested = threading.Event()
         self._speech_thread: threading.Thread | None = None
         self._loaded = threading.Event()
-        self._audio_cache: dict[str, tuple] = {}
-        self._cache_lock = threading.Lock()
+        self._audio_cache = ClipCache()
+        self._synth_gate = SynthesisGate()
         # Latched once if the installed Pocket-TTS predates ``frames_after_eos``,
         # so the TypeError probe costs one utterance rather than every one.
         self._frames_after_eos_unsupported = False
@@ -296,8 +294,7 @@ class PocketTtsService(PcmPlaybackMixin):
             new_state = self._resolve_voice(model, voice_id)
             with self._lock:
                 self._voice_state = new_state
-            with self._cache_lock:
-                self._audio_cache.clear()
+            self._audio_cache.clear()
             self._settings.pocket_tts_voice = voice_id
             log.info("TTS voice switched: voice=%s", voice_id)
             return True
@@ -391,8 +388,7 @@ class PocketTtsService(PcmPlaybackMixin):
 
     def stop(self) -> None:
         self._stop_requested.set()
-        with self._cache_lock:
-            self._audio_cache.clear()
+        self._audio_cache.clear()
         # Fire the end-of-clip notification so listeners can flush any
         # buffered audio on the client. PCM emitter itself is stateless.
         end_listener = self._clip_end_listener
@@ -431,15 +427,7 @@ class PocketTtsService(PcmPlaybackMixin):
         so it stacks multiplicatively with the per-reaction baseline
         and the cadence layer's per-sentence ``speed_hint``.
         """
-        try:
-            value = float(scale)
-        except (TypeError, ValueError):
-            value = 1.0
-        if value <= 0.0:
-            value = 1.0
-        self._length_scale = max(
-            _LENGTH_SCALE_MIN, min(_LENGTH_SCALE_MAX, value),
-        )
+        self._length_scale = clamp_length_scale(scale)
 
     def get_length_scale(self) -> float:
         return self._length_scale
@@ -561,36 +549,18 @@ class PocketTtsService(PcmPlaybackMixin):
         if not self._settings.enabled or not (text or "").strip():
             return
         self._stop_requested.clear()
-        if not self._runtime_speed_enabled:
-            # Gate OFF (default): pin every sentence to 1.0× before
-            # length-scale. Per-reaction sub-caps and any caller-
-            # supplied ``speed=`` from the cadence layer are ignored
-            # so the voice stays at the engine's tuned baseline pitch
-            # across the whole reply. The user's pacing slider
-            # (``_length_scale``) still applies below.
-            final_speed = 1.0
-        else:
-            if speed is None:
-                final_speed = self.reaction_to_speed(reaction)
-            else:
-                try:
-                    final_speed = float(speed)
-                except (TypeError, ValueError):
-                    final_speed = self.reaction_to_speed(reaction)
-            # Per-reaction sub-cap first, then the global outer envelope.
-            sub_min, sub_max = _resolve_speed_caps(reaction)
-            final_speed = max(sub_min, min(sub_max, final_speed))
-            final_speed = max(_SPEED_MIN, min(_SPEED_MAX, final_speed))
-        # Length-scale stacks AFTER the reaction clamp so a slow user
-        # pacing setting doesn't fight the per-reaction floor (cry
-        # already sits near 0.92; dividing by 1.10 lands at ~0.84,
-        # which is below ``_SPEED_MIN`` -- the final clamp below
-        # catches that case so we never produce unsafe values).
-        if abs(self._length_scale - 1.0) > 1e-3:
-            final_speed = final_speed / self._length_scale
-        final_speed = max(_SPEED_MIN, min(_SPEED_MAX, final_speed))
+        final_speed = resolve_playback_speed(
+            reaction,
+            speed,
+            runtime_speed_enabled=self._runtime_speed_enabled,
+            length_scale=self._length_scale,
+        )
         gain_factor = self._gain_db_to_factor(gain_db)
         runtime_temp = self._resolve_runtime_temp(reaction, temp)
+        # Claimed here rather than in the worker: the point is to be
+        # ahead of any prefetch, and a claim inside the thread would be
+        # subject to the scheduling race it exists to close.
+        self._synth_gate.claim()
         self._speech_thread = threading.Thread(
             target=self._speak_worker,
             args=(
@@ -603,7 +573,14 @@ class PocketTtsService(PcmPlaybackMixin):
             ),
             daemon=True,
         )
-        self._speech_thread.start()
+        try:
+            self._speech_thread.start()
+        except Exception:
+            # The worker's ``finally`` is what releases the claim, so a
+            # thread that never ran would hold the gate shut and stall
+            # every later prefetch behind its timeout.
+            self._synth_gate.release()
+            raise
 
     def speak_silence_async(
         self,
@@ -689,14 +666,15 @@ class PocketTtsService(PcmPlaybackMixin):
         except Exception:
             pass
 
-    def _cache_key(self, text: str, speed: float, temp: float = 0.0) -> str:
-        # ``temp`` participates in the cache key only when a non-default
-        # value is in effect (Layer 1c per-reaction delta or caller
-        # override). Stays out of the key for the bulk of calls so the
-        # baseline cache hit rate doesn't regress.
+    def _cache_key(self, text: str, temp: float = 0.0) -> str:
+        # ``temp`` participates in the key only when a non-default value
+        # is in effect (Layer 1c per-reaction delta or caller override).
+        # Stays out of the key for the bulk of calls so the baseline hit
+        # rate doesn't regress. ``speed`` is not a component at all --
+        # see :meth:`ClipCache.key` for why it stopped being one.
         if abs(temp - self._temp_baseline) < 1e-3:
-            return f"{text}||{speed:.3f}"
-        return f"{text}||{speed:.3f}||t{temp:.3f}"
+            return ClipCache.key(text)
+        return ClipCache.key(text, temp)
 
     def _generate(self, model, voice_state, text: str):
         """Synthesise ``text``, bounding the audio decoded after EOS.
@@ -744,16 +722,33 @@ class PocketTtsService(PcmPlaybackMixin):
         the baseline value is restored. A ``None`` ``temp`` keeps the
         baseline in place — the path the lookahead synthesiser takes
         when it doesn't know the reaction yet.
+
+        ``speed`` is accepted and unused: the time-stretch runs at
+        emission time, so the generated clip is speed-independent. The
+        result stays cached for the playback call that follows a
+        prefetch; :meth:`_speak_worker` discards it once played.
+
+        This is the *prefetch* entry point, so it yields to any sentence
+        currently being spoken. Playback goes through
+        :meth:`_warm_clip` instead -- routing it through here would have
+        it wait on its own claim.
         """
+        if not self._synth_gate.wait_for_idle():
+            return None
         runtime_temp = (
             float(temp) if temp is not None else self._temp_baseline
         )
-        key = self._cache_key(text, speed, runtime_temp)
-        with self._cache_lock:
-            cached = self._audio_cache.get(key)
-            if cached is not None:
-                return cached
+        return self._warm_clip(text, runtime_temp)
 
+    def _warm_clip(self, text: str, runtime_temp: float) -> tuple | None:
+        """Cached synthesis, ungated. One generation per key across threads."""
+        return self._audio_cache.warm(
+            self._cache_key(text, runtime_temp),
+            lambda: self._synthesise(text, runtime_temp),
+        )
+
+    def _synthesise(self, text: str, runtime_temp: float) -> tuple | None:
+        """Run the model once. Called through the cache, never directly."""
         if not self._loaded.wait(timeout=30.0):
             return None
         with self._lock:
@@ -779,15 +774,7 @@ class PocketTtsService(PcmPlaybackMixin):
         audio_data = audio_tensor.numpy().astype(np.float32)
         if audio_data.size == 0:
             return None
-
-        sample_rate = model.sample_rate
-        result = (audio_data, sample_rate)
-        with self._cache_lock:
-            self._audio_cache[key] = result
-            if len(self._audio_cache) > 8:
-                oldest = next(iter(self._audio_cache))
-                del self._audio_cache[oldest]
-        return result
+        return audio_data, model.sample_rate
 
     def _speak_worker(
         self,
@@ -807,20 +794,21 @@ class PocketTtsService(PcmPlaybackMixin):
             float(gain_factor),
             float(runtime_temp if runtime_temp is not None else self._temp_baseline),
         )
+        effective_temp = (
+            runtime_temp if runtime_temp is not None else self._temp_baseline
+        )
         try:
-            result = self.generate_audio(text, speed, temp=runtime_temp)
+            try:
+                result = self._warm_clip(text, effective_temp)
+            finally:
+                # Released as soon as *this* synthesis is settled, so the
+                # prefetch of the next sentence overlaps playback of this
+                # one -- which is the whole point of prefetching.
+                self._synth_gate.release()
             if result is None or self._stop_requested.is_set():
                 return
             audio_data, sample_rate = result
-            with self._cache_lock:
-                self._audio_cache.pop(
-                    self._cache_key(
-                        text,
-                        speed,
-                        runtime_temp if runtime_temp is not None else self._temp_baseline,
-                    ),
-                    None,
-                )
+            self._audio_cache.discard(self._cache_key(text, effective_temp))
 
             generate_ms = (time.monotonic() - gen_t0) * 1000.0
             played_ms = self._play_clip(
@@ -828,6 +816,7 @@ class PocketTtsService(PcmPlaybackMixin):
                 sample_rate,
                 speed=speed,
                 gain_factor=gain_factor,
+                text=text,
                 on_amplitude=on_amplitude,
             )
             log.debug(

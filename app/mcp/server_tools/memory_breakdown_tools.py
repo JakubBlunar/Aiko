@@ -174,7 +174,10 @@ def tts_snapshot(session: "SessionController") -> dict[str, Any]:
     out["torch_runtime_avoided"] = bool(getattr(engine, "is_null_engine", False))
     out["weights_loaded"] = getattr(engine, "_model", None) is not None
     cache = getattr(engine, "_audio_cache", None)
-    if isinstance(cache, dict):
+    pending = getattr(cache, "pending", None)
+    if callable(pending):
+        out["audio_cache_entries"] = pending()
+    elif isinstance(cache, dict):
         out["audio_cache_entries"] = len(cache)
     return out
 

@@ -408,6 +408,31 @@ class TtsSettings:
     # changing loudness. Set 0.0 to disable and hear the engine raw.
     # See ``app/audio/loudness.py``.
     loudness_target_dbfs: float = -26.0
+    # Ceiling on the per-clip brightness correction, in dB of shelf gain.
+    # Engines that clone from a reference clip shelve each sentence toward
+    # that clip's spectral tilt, which flattens the timbre drift between
+    # sentences (the same sentence regenerated moved 4.2 dB) and closes
+    # the high-frequency deficit that reads as muffled. Bounded because
+    # content changes brightness legitimately -- an excited opener really
+    # is brighter -- so this absorbs the noise without flattening her.
+    # Set 0.0 to disable. Only Chatterbox uses it; pocket-tts has no
+    # reference clip and is not audibly drifting. See
+    # ``app/audio/timbre.py``.
+    timbre_match_limit_db: float = 4.0
+    # Ceiling on the per-clip tempo correction, as a fraction. Third of
+    # the per-clip drifts, after level and brightness: regenerating the
+    # same sentence moved the delivered tempo by 10-21%, and across every
+    # clip measured the spread was 28% -- which is why one sentence in a
+    # reply lands "much slower" than the one before it while the pacing
+    # settings are identical for both. Engines that can measure their
+    # reference's tempo stretch each sentence toward it. Bounded because
+    # real speech varies its pace by sentence (her own reference parts
+    # span 5.71-8.52 syl/s), so this absorbs the noise without flattening
+    # the expression. 0.15 is the measured knee: it takes the delivered
+    # spread from 28.2% to 10.2%, where 0.10 leaves the tails uncorrected
+    # and 0.20 buys only two more points. Set 0.0 to disable. See
+    # ``app/audio/speech_rate.py``.
+    speech_rate_match_limit: float = 0.15
     # Per-engine voice and device, keyed by provider name. Absent keys
     # are fine and resolve to defaults, so a config written before this
     # existed keeps working -- see :meth:`for_provider`.
@@ -1119,6 +1144,52 @@ def _parse_loudness_target(value: Any) -> float:
         )
         return -26.0
     return target
+
+
+def _parse_timbre_limit(value: Any) -> float:
+    """Ceiling on the brightness correction, in dB. ``0.0`` disables it.
+
+    Capped at 12 dB because past a few dB the shelf stops correcting the
+    engine's noise and starts rewriting her voice; a figure that large is
+    a misunderstanding of the knob rather than a preference.
+    """
+    try:
+        limit = abs(float(value))
+    except (TypeError, ValueError):
+        return 4.0
+    if limit == 0.0:
+        return 0.0
+    if limit > 12.0:
+        log.warning(
+            "tts.timbre_match_limit_db=%s is more shelf than correction; "
+            "using the default of 4.0",
+            value,
+        )
+        return 4.0
+    return limit
+
+
+def _parse_speech_rate_limit(value: Any) -> float:
+    """Ceiling on the tempo correction, as a fraction. ``0.0`` disables it.
+
+    Capped at 0.25 because beyond a quarter the stretch stops removing
+    the model's noise and starts overriding the pacing of the sentence,
+    and WSOLA artefacts become audible on top of that.
+    """
+    try:
+        limit = abs(float(value))
+    except (TypeError, ValueError):
+        return 0.15
+    if limit == 0.0:
+        return 0.0
+    if limit > 0.25:
+        log.warning(
+            "tts.speech_rate_match_limit=%s would override her pacing "
+            "rather than steady it; using the default of 0.15",
+            value,
+        )
+        return 0.15
+    return limit
 
 
 def _parse_tts_providers(value: Any) -> dict[str, TtsProviderSettings]:
@@ -2228,6 +2299,12 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             loudness_target_dbfs=_parse_loudness_target(
                 tts.get("loudness_target_dbfs", -26.0),
+            ),
+            timbre_match_limit_db=_parse_timbre_limit(
+                tts.get("timbre_match_limit_db", 4.0),
+            ),
+            speech_rate_match_limit=_parse_speech_rate_limit(
+                tts.get("speech_rate_match_limit", 0.15),
             ),
             providers=_parse_tts_providers(tts.get("providers")),
         ),
