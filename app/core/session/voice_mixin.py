@@ -241,7 +241,28 @@ class VoiceMixin:
 
     @property
     def tts_voice(self) -> str:
-        return self._settings.tts.voice or ""
+        """The voice the *current* provider is using.
+
+        Reads the per-provider entry, not the flat ``tts.voice`` field.
+        The flat field holds whatever was last set on any engine, which
+        after a switch to Chatterbox is a pocket-tts ``.safetensors``
+        name -- so the settings drawer showed a speaker embedding selected
+        in a list of reference clips, matching no option at all.
+        """
+        provider = self.tts_provider
+        resolved = self._settings.tts.for_provider(provider).voice
+        if resolved:
+            return resolved
+        # Nothing configured for this engine yet: report what it actually
+        # loaded, so the drawer shows the real default rather than blank.
+        engine = getattr(self, "_tts_engine", None)
+        described = getattr(engine, "describe", None)
+        if callable(described):
+            try:
+                return str(described().get("voice") or "")
+            except Exception:
+                pass
+        return ""
 
     def list_tts_voices(self) -> list[str]:
         list_voices = getattr(self._tts_engine, "list_voices", None)
