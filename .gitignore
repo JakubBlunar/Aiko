@@ -36,6 +36,16 @@ data/*.sqlite3
 models/
 data/browser-profile/
 *.wav
+# The guard has to cover every format the studio accepts, or it only
+# guards the format we happened to think of. voices/sounds/ arrived as
+# mp3 and was untracked but not ignored -- the same near-miss the
+# data/*.db comment above records, one ``git add .`` from publishing
+# somebody else's audio.
+*.mp3
+*.flac
+*.ogg
+*.opus
+*.m4a
 # One carve-out. The blanket rule above is a licensing guard -- audition
 # material comes from all over and none of it should reach a commit by
 # accident -- but it also swallowed the only portable copy of Aiko's own
@@ -49,6 +59,11 @@ data/browser-profile/
 voices/audition/
 # Studio scratch: uploaded references and audition renders.
 voices/studio/
+# Licensed third-party voice assets, present only as cloning references.
+# Directory rule as well as the extension rules above, so dropping a
+# .zip or a .json of transcripts beside them stays out too. Bought for
+# use elsewhere, which does not extend to redistributing them here.
+voices/sounds/
 # Generated training datasets (tools/tts_lab/dataset.py). Hundreds of
 # clips plus manifests, all reproducible from the committed reference
 # voice, so the recipe is worth versioning and the output is not.
