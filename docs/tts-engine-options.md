@@ -383,29 +383,38 @@ Measured 21 Aug 2026:
 | clipped samples | 0 of 71 | 0 of 27 | 0 |
 | total | 2.00 min, median clip 1.04 s | 1.45 min | 8 s |
 
-Two cautions on that table. Identity is *consistent with* but not proven
-by F0 — 374 against her 333 Hz is a 12% gap, and a TTS render can shift
-pitch on its own, so the claim rests on provenance rather than
-measurement. And gated SNR is meaningless on this material: half the
+On identity, provenance is direct: the owner cloned the original voice
+from almost all of the English clips in this pack, and that is what
+became the safetensors. So the 12% F0 gap — 374 Hz here against her
+333 — is the render shifting pitch, not evidence of a second speaker,
+which also puts a number on how much pocket-tts moves before anything
+else does. Gated SNR, separately, is meaningless on this material: half the
 clips carry digital-silence padding (arbitrarily high) and the
 one-second ones are wall-to-wall speech (arbitrarily low). What holds is
 zero clipping across both packs and no measurable floor where silence
 exists.
 
-**The find that matters: 12.07 seconds of her speaking English**, across
-nine clips (`MERRY XMAS`, `READY`, `SCRAMBLE`, `THANK YOU (EN)`,
-`HAPPY HELLOWEEN`, `GO`, `zero`, two of `WOW`). That is more than
-`DEC_COND_LEN`, so an *all-English* reference from her original speaker at
-44.1 kHz is possible — which is what the years-old search for English
-lines of a similar voice was trying to buy.
+The pack holds 12.07 seconds of English across nine clips (`MERRY XMAS`,
+`READY`, `SCRAMBLE`, `THANK YOU (EN)`, `HAPPY HELLOWEEN`, `GO`, `zero`,
+two of `WOW`) — and **these are the clips the original clone was
+conditioned on**, which reframes the whole experiment.
 
-It does not make accent a non-issue, and may sharpen it: the owner hears
-`zero` as "yero", so her recorded English already carries a Japanese flap.
-A faithful clone reproduces that, because it is a property of the speaker
-rather than of our pipeline. Which gives tomorrow a clean A/B instead of
-a guess — English-only reference (maximum fidelity to how she really
-sounds in English) against Japanese-only (timbre only, letting the
-English model's own phonetics dominate). Listen to /r/ in both.
+It means accent was never the open question. Her incumbent voice is
+already the product of English conditioning, pronounced cleanly, and any
+English-versus-Japanese-reference A/B would only re-run a choice already
+made correctly years ago. What is actually recoverable is narrower and
+better defined: **the same source clips, one generation of loss shorter.**
+The chain today is clips → pocket-tts conditioning (8 s of it, through
+Mimi at 24 kHz) → 27 s render → Chatterbox clone. Handing Chatterbox the
+original 44.1 kHz clips deletes the middle two steps and raises what
+reaches its 24 kHz decoder path from 6.2 kHz of content to 15.7.
+
+So the experiment is not a choice of language, it is a bypass. Build a
+ten-second reference from the English clips directly and A/B it against
+`aiko_reference.wav`. Same voice, same words, same engine — the only
+variable removed is pocket-tts standing in the middle. Expect the
+brightness matching in playback to have less to do, and check /r/ anyway,
+since the conditioning path is different even though the source is not.
 
 Also useful: every filename carries its own transcript in romaji plus an
 English gloss, so a fine-tune needs no ASR pass. What it does need is
