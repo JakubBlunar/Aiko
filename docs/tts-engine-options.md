@@ -367,18 +367,52 @@ Two follow-ups this leaves open:
 
 #### The licensed corpus, and why cloning needs almost none of it
 
-`voices/sounds/` holds 27 licensed Japanese game voice lines — the voice
-she was *originally* meant to have, found in a backup after the English
-material could not be. Gitignored: bought for use elsewhere, which does
-not extend to redistributing them. Measured 21 Aug 2026:
+`voices/sounds/` holds two licensed packs, both gitignored — bought for
+use elsewhere, which does not extend to redistributing them. The game
+pack (`RFB_*`, 27 lines) is the voice she was *originally* meant to have.
+`girl-voice/` (71 clips) is better than that: the actual source the
+pocket-tts state was cloned from, recovered from a school backup.
+Measured 21 Aug 2026:
 
-| | licensed clips | her current origin |
-|---|---|---|
-| source | 44.1 kHz mono recordings | pocket-tts render of ~8 s |
-| real bandwidth (99.9% energy) | 11.0 kHz median, 8.0–14.9 | 7.4 kHz |
-| SNR (gated speech vs 10th-pct floor) | 61.7 dB median, 37.8 low | synthetic |
-| clipped samples | 0 of all 27 | 0 |
-| total | 1.45 min, 27 clips, mean 3.2 s | 8 s |
+| | girl-voice | game pack | her current origin |
+|---|---|---|---|
+| source | 44.1 kHz recordings | 44.1 kHz recordings | pocket-tts render of ~8 s |
+| real bandwidth (99.9% energy) | **15.7 kHz** median | 11.0 kHz | 6.2 kHz |
+| spectral centroid | **4345 Hz** | 3284 Hz | 1818 Hz |
+| median F0 | 374 Hz (p10–p90 264–485) | 345 Hz | 333 Hz |
+| clipped samples | 0 of 71 | 0 of 27 | 0 |
+| total | 2.00 min, median clip 1.04 s | 1.45 min | 8 s |
+
+Two cautions on that table. Identity is *consistent with* but not proven
+by F0 — 374 against her 333 Hz is a 12% gap, and a TTS render can shift
+pitch on its own, so the claim rests on provenance rather than
+measurement. And gated SNR is meaningless on this material: half the
+clips carry digital-silence padding (arbitrarily high) and the
+one-second ones are wall-to-wall speech (arbitrarily low). What holds is
+zero clipping across both packs and no measurable floor where silence
+exists.
+
+**The find that matters: 12.07 seconds of her speaking English**, across
+nine clips (`MERRY XMAS`, `READY`, `SCRAMBLE`, `THANK YOU (EN)`,
+`HAPPY HELLOWEEN`, `GO`, `zero`, two of `WOW`). That is more than
+`DEC_COND_LEN`, so an *all-English* reference from her original speaker at
+44.1 kHz is possible — which is what the years-old search for English
+lines of a similar voice was trying to buy.
+
+It does not make accent a non-issue, and may sharpen it: the owner hears
+`zero` as "yero", so her recorded English already carries a Japanese flap.
+A faithful clone reproduces that, because it is a property of the speaker
+rather than of our pipeline. Which gives tomorrow a clean A/B instead of
+a guess — English-only reference (maximum fidelity to how she really
+sounds in English) against Japanese-only (timbre only, letting the
+English model's own phonetics dominate). Listen to /r/ in both.
+
+Also useful: every filename carries its own transcript in romaji plus an
+English gloss, so a fine-tune needs no ASR pass. What it does need is
+longer material — median clip 1.04 s and only 18 clips at or above 1.5 s
+(62 s total), all isolated words and set phrases, which teaches sentence
+prosody badly. Cloning wants ten good seconds and has them; training
+would want a different corpus.
 
 1.45 minutes reads thin for training and is *irrelevant* for cloning,
 because Chatterbox truncates the reference hard:
