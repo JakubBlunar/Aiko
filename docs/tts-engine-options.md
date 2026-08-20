@@ -305,7 +305,9 @@ The limits are real but specific:
 
 - **A permanent 24 kHz ceiling.** Train on this and a 48 kHz engine
   (MOSS-TTS-Nano, VoxCPM2) can never pay off, because its main advantage
-  has been discarded before training starts.
+  has been discarded before training starts. True of *generated* audio,
+  which is all we had when this was written; the licensed 44.1 kHz clips
+  below reopen the option.
 - **Inherited quirks.** A student cannot exceed its teacher. Fine-tuning
   on pocket-tts output bakes in its prosody habits and its Mimi codec's
   reconstruction as though they were her voice, so the result is a
@@ -316,9 +318,11 @@ whatever the voice was originally cloned from — one generation closer,
 and possibly higher-rate. This is why the studio accepts mp3/flac/ogg
 rather than demanding WAV.
 
-**The original mp3s are lost**, which settles it: generating from the
-embedding is the only path that keeps her voice rather than substituting
-a different one. `tools/tts_lab/dataset.py` does it —
+**The original mp3s are lost**, which settled it at the time: generating
+from the embedding is the only path that keeps her voice rather than
+substituting a different one. Still true of *her* voice, and superseded
+as the plan — see the licensed corpus below.
+`tools/tts_lab/dataset.py` does it —
 203 prompts to 202 clips and ~7.9 min in under two minutes, at a 0.5%
 rejection rate, with LJSpeech and GPT-SoVITS manifests and exact
 transcripts (the text was the input, so there is no ASR or alignment
@@ -360,6 +364,49 @@ Two follow-ups this leaves open:
   owner, who reports her voice is close to several anime characters and
   does not mind a small change. Preserve the option to go back: the
   safetensors are the sole copy of the incumbent voice.
+
+#### The licensed corpus, and why cloning needs almost none of it
+
+`voices/sounds/` holds 27 licensed Japanese game voice lines — the voice
+she was *originally* meant to have, found in a backup after the English
+material could not be. Gitignored: bought for use elsewhere, which does
+not extend to redistributing them. Measured 21 Aug 2026:
+
+| | licensed clips | her current origin |
+|---|---|---|
+| source | 44.1 kHz mono recordings | pocket-tts render of ~8 s |
+| real bandwidth (99.9% energy) | 11.0 kHz median, 8.0–14.9 | 7.4 kHz |
+| SNR (gated speech vs 10th-pct floor) | 61.7 dB median, 37.8 low | synthetic |
+| clipped samples | 0 of all 27 | 0 |
+| total | 1.45 min, 27 clips, mean 3.2 s | 8 s |
+
+1.45 minutes reads thin for training and is *irrelevant* for cloning,
+because Chatterbox truncates the reference hard:
+`DEC_COND_LEN = 10 * S3GEN_SR` and `ENC_COND_LEN = 15 * S3_SR`
+(`chatterbox/tts_turbo.py`, which Nano subclasses). **Ten seconds reach
+the decoder and fifteen the tokenizer; the rest of the file is dropped.**
+Two consequences worth acting on:
+
+- The 27-second `aiko_reference.wav` is over half wasted, and because the
+  cut is a truncation of a concatenation rather than a selection, *part
+  order decides which of her phrases condition the clone at all*.
+- Cloning from the licensed clips needs the best ten seconds, which
+  exists many times over. Try that before any training: it costs minutes
+  and would raise the conditioning bandwidth from 7.4 kHz to the 12 kHz
+  the decoder path can actually use.
+
+On language: timbre is language-independent, phonetics and prosody are
+not. Fine-tuning on Japanese is the case to avoid — Japanese has one
+liquid where English has two, so /r/ and /l/ collapse, which is precisely
+what the owner hit on the first attempt years ago and why the search for
+English lines started. Cloning is the safer direction, since an
+English-trained model supplies pronunciation and borrows only the voice.
+Not risk-free: the reference enters twice, as a speaker embedding
+(timbre, safe) and as `t3_cond_prompt_tokens`, actual speech tokens that
+prime the autoregressive model and can pull articulation with them.
+So listen for /r/ specifically. If accent does leak, Multilingual is a
+usable offline teacher for an English corpus in her timbre — RTF 3.27
+costs nothing when generation is not live.
 
 Worth being clear about what a fine-tune on that set can and cannot buy.
 It **cannot** exceed pocket-tts in fidelity, because that is the ceiling
@@ -609,10 +656,26 @@ energy above 4 kHz as a fraction of the total — her reference clip
 0.43%, pocket-tts 0.34%, Chatterbox Nano 0.20%. The 99% rolloff and
 spectral centroid agree (2904 Hz / 905 Hz against pocket's 3213 / 962).
 So Chatterbox reproduces a little under 60% of the incumbent's high end,
-which is the "muffled" impression, and it is architectural rather than a
-setting: the S3 tokenizer and speaker encoder condition at 16 kHz, so
-everything above 8 kHz is gone from the conditioning before the 24 kHz
-vocoder reconstructs. Its noise floor, incidentally, measures *better*
+which is the "muffled" impression. **Called architectural here first, and
+that was half wrong** — worth keeping as written, because the correction
+is the useful part. The tokenizer and speaker encoder do condition at
+16 kHz, losing everything above 8 kHz, but they are not the only path in:
+
+```python
+s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR)   # 24 kHz
+ref_16k_wav = librosa.resample(s3gen_ref_wav, ..., target_sr=S3_SR)
+s3gen_ref_wav = s3gen_ref_wav[:self.DEC_COND_LEN]           # 10 seconds
+s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR, ...)
+```
+
+The *decoder* reference stays at 24 kHz, so 12 kHz of bandwidth reaches
+the part that reconstructs waveforms. Her reference clip carries content
+only to 7.4 kHz, which means she has been feeding that path a little over
+half of what it can use — so some of the dullness is the reference rather
+than the engine, and a brighter reference is an untried lever that
+brightness matching in playback has been compensating for. Untested at
+the time of writing only because no brighter recording of her existed;
+`voices/sounds/` changes that. Its noise floor, incidentally, measures *better*
 than pocket-tts's and far more consistently (-77.4 dBFS mean over a
 5.2 dB range, against -75.7 over 41.9 dB), so perceived noise is not a
 floor problem.
