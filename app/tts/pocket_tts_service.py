@@ -256,6 +256,17 @@ class PocketTtsService(PcmPlaybackMixin):
         if path.exists():
             return model.get_state_for_audio_prompt(str(path))
 
+        # Substituting a stock speaker keeps her talking, which is the
+        # right call -- but doing it silently cost a Docker release its
+        # voice with nothing in the log to explain it: the image shipped
+        # config/default.json naming ``aiko1_refined.safetensors`` and no
+        # ``voices/`` directory, so every container spoke as "alba" and
+        # read as working. A wrong voice is not a quiet failure.
+        log.warning(
+            "TTS voice %r not found at %s; falling back to the stock "
+            "'alba' speaker. She will not sound like herself.",
+            voice_id, path,
+        )
         return model.get_state_for_audio_prompt("alba")
 
     # ── Public model access for Voice Cloning dialog ──
