@@ -527,6 +527,39 @@ wav under `voices/`, which on this box is 279 entries of audition
 renders, fine-tuning datasets and studio takes; it now excludes the same
 scratch subtrees the voice studio does, leaving 1.
 
+**Every clip is levelled before it plays.** Each sentence is an
+independent synthesis and no engine levels its own output, so over one
+twelve-sentence turn gated speech level varied by **8.3 dB on Chatterbox
+Nano and 8.4 dB on pocket-tts** — indistinguishable, and both audible as
+her microphone moving between sentences.
+[`app/audio/loudness.py`](../app/audio/loudness.py) matches each clip to
+-26 dBFS gated (where pocket-tts already averages, so consistency
+improves without loudness changing), which takes the spread to 0.0 dB
+measured through the real playback path. It also makes `gain_db` work for
+the first time: ambient compensation and `[[prosody:…]]` deltas were
+being applied on top of a random base, so a tag asking for 3 dB softer
+was routinely swamped by an 8 dB swing the other way. `tts.loudness_target_dbfs
+= 0.0` disables it.
+
+Worth recording because the first pass got it wrong: on a five-sentence
+sample Chatterbox looked three times worse than pocket-tts here. On equal
+footing over twelve they are the same. Level drift was never the thing
+that distinguished the engines.
+
+**What *is* Chatterbox-specific: it is duller.** Same twelve sentences,
+energy above 4 kHz as a fraction of the total — her reference clip
+0.43%, pocket-tts 0.34%, Chatterbox Nano 0.20%. The 99% rolloff and
+spectral centroid agree (2904 Hz / 905 Hz against pocket's 3213 / 962).
+So Chatterbox reproduces a little under 60% of the incumbent's high end,
+which is the "muffled" impression, and it is architectural rather than a
+setting: the S3 tokenizer and speaker encoder condition at 16 kHz, so
+everything above 8 kHz is gone from the conditioning before the 24 kHz
+vocoder reconstructs. A high-shelf tilt could raise the measurement;
+whether it raises quality is a listening question, not a numbers one.
+Its noise floor, incidentally, measures *better* than pocket-tts's and
+far more consistently (-77.4 dBFS mean over a 5.2 dB range, against
+-75.7 over 41.9 dB), so perceived noise is not a floor problem.
+
 **Nothing heavy is imported until an engine is chosen.** Availability is
 answered from the filesystem — pocket-tts by `find_spec`, Chatterbox by
 whether its venv exists. Probing by importing would be impossible for

@@ -121,6 +121,9 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         self._pitch_preserving_speed = bool(
             getattr(settings, "pitch_preserving_speed", True)
         )
+        self._loudness_target_dbfs = float(
+            getattr(settings, "loudness_target_dbfs", 0.0) or 0.0
+        )
 
         self._scratch = Path(tempfile.mkdtemp(prefix="aiko-chatterbox-"))
         threading.Thread(

@@ -398,6 +398,16 @@ class TtsSettings:
     # stretch costs ~0.2% of audio duration, so it is not a performance
     # switch. See ``app/audio/timestretch.py``.
     pitch_preserving_speed: bool = True
+    # Match every clip to this gated speech level (dBFS) before applying
+    # affect gain, so consecutive sentences sit at one volume. Each
+    # sentence is a separate synthesis and engines do not level their own
+    # output: measured over a twelve-sentence turn, gated level varied by
+    # 8.3 dB on Chatterbox Nano and 8.4 dB on pocket-tts, which sounds
+    # like her microphone moving between sentences. -26 dBFS is where
+    # pocket-tts already averages, so this changes consistency without
+    # changing loudness. Set 0.0 to disable and hear the engine raw.
+    # See ``app/audio/loudness.py``.
+    loudness_target_dbfs: float = -26.0
     # Per-engine voice and device, keyed by provider name. Absent keys
     # are fine and resolve to defaults, so a config written before this
     # existed keeps working -- see :meth:`for_provider`.
@@ -1084,6 +1094,31 @@ def _normalize_tts_length_scale(value: Any) -> float:
         return max(0.65, min(f, 1.35))
     except (TypeError, ValueError):
         return 1.0
+
+
+def _parse_loudness_target(value: Any) -> float:
+    """dBFS target for clip normalisation. ``0.0`` disables it.
+
+    Clamped to a range that is a level rather than a mistake. A positive
+    figure is not a quiet target, it is a misunderstanding of dBFS, and
+    honouring it would ask for gain above full scale on every clip; below
+    -40 is quieter than most rooms' noise floor. Either way, falling back
+    to the default beats shipping a voice nobody can hear.
+    """
+    try:
+        target = float(value)
+    except (TypeError, ValueError):
+        return -26.0
+    if target == 0.0:
+        return 0.0
+    if not (-40.0 <= target <= -6.0):
+        log.warning(
+            "tts.loudness_target_dbfs=%s is outside -40..-6 dBFS; "
+            "using the default of -26.0",
+            value,
+        )
+        return -26.0
+    return target
 
 
 def _parse_tts_providers(value: Any) -> dict[str, TtsProviderSettings]:
@@ -2190,6 +2225,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             pitch_preserving_speed=bool(
                 tts.get("pitch_preserving_speed", True),
+            ),
+            loudness_target_dbfs=_parse_loudness_target(
+                tts.get("loudness_target_dbfs", -26.0),
             ),
             providers=_parse_tts_providers(tts.get("providers")),
         ),

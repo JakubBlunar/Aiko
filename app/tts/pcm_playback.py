@@ -23,6 +23,10 @@ A host class must provide:
     stop cuts mid-clip rather than at the end of it.
 ``_pitch_preserving_speed``
     Whether a rate change goes through the stretch or the old varispeed.
+``_loudness_target_dbfs``
+    Gated speech level every clip is matched to, or ``0.0`` to leave
+    levels as the engine produced them. Optional: it defaults off here,
+    so an engine written before this existed still works.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from collections.abc import Callable
 
 import numpy as np
 
+from app.audio.loudness import correction_factor
 from app.audio.timestretch import time_stretch
 
 log = logging.getLogger(__name__)
@@ -62,6 +67,8 @@ class PcmPlaybackMixin:
     _clip_end_listener: Callable[[], None] | None
     _stop_requested: threading.Event
     _pitch_preserving_speed: bool
+    # Defaulted so an engine written before this existed still works.
+    _loudness_target_dbfs: float = 0.0
 
     # ── the whole playback of one clip ───────────────────────────────
 
@@ -86,6 +93,18 @@ class PcmPlaybackMixin:
         """
         stop_amplitude = threading.Event()
         amplitude_thread: threading.Thread | None = None
+
+        # Match this clip to the standing level before anything else
+        # touches it. Measured on the raw speech, so the guard silence
+        # below cannot drag the gate's estimate down, and folded into
+        # ``gain_factor`` rather than multiplied into the array -- the
+        # emission path already has exactly one multiply for this and a
+        # second pass over a 3-second clip buys nothing.
+        target = float(getattr(self, "_loudness_target_dbfs", 0.0) or 0.0)
+        if target < 0.0:
+            gain_factor = float(gain_factor) * correction_factor(
+                audio, sample_rate, target_dbfs=target
+            )
 
         # Rate change on the speech only, before the guard silence is
         # appended -- stretching a fixed tail would make the guard itself
