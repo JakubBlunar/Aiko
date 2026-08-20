@@ -4,6 +4,7 @@ import { Toggle } from "@/components/Toggle";
 import { useAssistantStore } from "../../store";
 import { MobileAudioSection } from "./MobileAudioSection";
 import { Row, Section } from "./SettingsSection";
+import { TtsEnginePicker } from "./TtsEnginePicker";
 
 export interface DeviceLists {
   inputs: { deviceId: string; label: string; groupId: string }[];
@@ -85,7 +86,9 @@ export function VoiceTab({
       <MobileAudioSection />
 
       <Section title="Voice (TTS)">
-        <label className="block text-xs text-ink-100/60">Voice</label>
+        <TtsEnginePicker settings={settings} apply={apply} />
+
+        <label className="mt-3 block text-xs text-ink-100/60">Voice</label>
         <select
           value={settings.tts.voice}
           onChange={(e) =>
@@ -108,7 +111,6 @@ export function VoiceTab({
         >
           Speak responses out loud
         </Toggle>
-        <Row label="Provider" value={settings.tts.provider} />
       </Section>
 
       <Section title="Audio devices">

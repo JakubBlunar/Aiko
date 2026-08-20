@@ -1524,9 +1524,28 @@ Server-side audio knobs. The browser / Tauri client owns the mic + speakers; onl
 
 ## `tts` — `TtsSettings`
 
-- `tts.provider` *(string, `"pocket-tts"`)* — TTS engine. Currently `"pocket-tts"` is the supported provider.
-- `tts.voice` *(string, `"aiko1_refined.safetensors"`)* — voice file used by the active engine.
+- `tts.provider` *(string, `"pocket-tts"`)* — which engine speaks. One of `pocket-tts`, `chatterbox-nano`, `chatterbox-turbo`, `chatterbox-multilingual`; the catalogue lives in [`app/tts/registry.py`](../app/tts/registry.py). Switchable at runtime from the Voice tab without a restart, and honoured at boot — before the provider registry this field was stored, exposed and ignored, so every selection resolved to pocket-tts regardless.
+
+  The Chatterbox variants run **in their own virtualenv as a subprocess**, because Chatterbox requires `torch==2.6.0` against this app's `2.10.0` — two incompatible ABIs, not a range to negotiate. Install one with `python -m tools.tts_lab.envs install chatterbox` (or `chatterbox-git` for Nano); until then the provider reports as unavailable and selecting it is refused rather than silently falling back. Availability is probed from the filesystem, never by importing, so an uninstalled engine costs nothing at startup.
+- `tts.voice` *(string, `"aiko1_refined.safetensors"`)* — voice for the active engine. Superseded by `tts.providers.<name>.voice`, which is what the UI now writes; this remains the fallback for pocket-tts so existing installs keep her voice untouched.
+- `tts.providers` *(object, `{}`)* — per-engine settings, keyed by provider name. Kept per-engine rather than global because neither field means the same thing across engines:
+
+  - `voice` *(string)* — a pocket-tts voice is a `.safetensors` **speaker embedding**; a Chatterbox voice is a reference **wav it clones from on every load**, given as a path relative to `voices/` (default `reference/aiko_reference.wav`, the portable copy of her voice extracted from pocket-tts). One shared field could only ever be right for whichever engine was selected last, and a round trip between them lost the other's setting.
+  - `device` *(string, `"auto"`)* — `auto`, `cpu` or `cuda`. `auto` resolves to each engine's own preference, which differs by engine rather than by machine: pocket-tts is CPU-only, Nano is comfortably real-time on CPU so spending VRAM on it buys nothing, Turbo and Multilingual cannot reach real time without a GPU. A device an engine cannot use is downgraded with a warning rather than refused. Note the app cannot verify CUDA without importing torch, so the *engine* checks on load and refuses clearly — a CUDA request against a CPU-only wheel is a likely mistake here, and a silent downgrade would produce stuttering for an invisible reason.
+  - `threads` *(int, `0` → decide automatically)* — CPU threads for a sidecar engine. Worth leaving on automatic: measured on a 16-core 9950X3D, Nano synthesises at **RTF 0.78 on 8 threads and 0.93 on 16**, so torch's default of one thread per core is both slower *and* takes the whole machine. The automatic value is half the cores capped at 8.
+
+  ```json
+  "tts": {
+    "provider": "chatterbox-nano",
+    "providers": {
+      "pocket-tts": { "voice": "aiko1_refined.safetensors" },
+      "chatterbox-nano": { "voice": "reference/aiko_reference.wav", "device": "cpu" },
+      "chatterbox-turbo": { "device": "cuda" }
+    }
+  }
+  ```
 - `tts.enabled` *(bool, `true`)* — master switch. Off → typed-only output. Since P28 this is also a memory setting: booting with it `false` substitutes a no-op engine, so `app.tts.pocket_tts_service` is never imported and the PyTorch CPU runtime (~0.6-1 GB resident) is never pulled in. Toggling it off at runtime is weaker — it releases the ~100M-param voice weights, but a live process cannot un-import PyTorch. Toggling back on loads the engine on a background thread; the first utterance waits on it.
+- `tts.pitch_preserving_speed` *(bool, `true`)* — change speech rate with a WSOLA time-stretch on the PCM rather than by declaring a scaled sample rate to the client. Varispeed moved pitch with duration at ~1.6 semitones per 10% of rate, which is the sole reason `agent.tts_runtime_speed_enabled` was off. Set `false` for an A/B listen; the stretch costs ~0.2% of audio duration, so it is not a performance switch. See [`app/audio/timestretch.py`](../app/audio/timestretch.py).
 - `tts.pocket_tts_voice` *(string, `"alba"`)* — Pocket-TTS voice file name (mirrors `tts.voice` for Pocket-TTS specifically). The Settings drawer keeps these in sync.
 - `tts.pocket_tts_temp` *(float, `0.6`)* — Pocket-TTS sampling temperature baseline. Pocket-TTS is sensitive here; ±0.05 can produce audible artefacts. Tune on your voice with `tools/tts_speed_ab.py`.
 - `tts.pocket_tts_custom_voices_dir` *(string, `""`)* — extra directory of custom Pocket-TTS voices (`.safetensors`). Empty → only the bundled ones.

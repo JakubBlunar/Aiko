@@ -184,6 +184,12 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "provider": session.tts_provider,
                 "voice": session.tts_voice,
                 "enabled": bool(s.tts.enabled),
+                # The device actually in use, not the one requested: a
+                # CUDA request against a CPU-only torch wheel is refused
+                # by the engine, and without surfacing that the user is
+                # left wondering why a GPU engine stutters.
+                "device": session.get_tts_device(),
+                "providers": session.describe_tts_providers(),
             },
             "stt": {
                 "model": session.stt_model,
@@ -423,6 +429,14 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                     400, f"weather reconfigure failed: {exc}",
                 )
         tts = payload.get("tts") or {}
+        # Provider before voice, and device before voice: a voice is
+        # per-provider, so applying the incoming voice to the outgoing
+        # engine would write it against the wrong key and then be
+        # discarded by the rebuild.
+        if "provider" in tts:
+            session.set_tts_provider(str(tts["provider"]))
+        if "device" in tts:
+            session.set_tts_device(str(tts["device"]))
         if "voice" in tts:
             session.set_tts_voice(str(tts["voice"]))
         if "enabled" in tts:

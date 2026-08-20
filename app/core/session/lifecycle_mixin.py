@@ -654,21 +654,31 @@ class LifecycleMixin(DebugOverridesHostMixin):
 
     @staticmethod
     def _build_tts_service(settings: AppSettings) -> Any:
-        # Lean v1 ships only pocket-tts (matches the active user.json config).
-        # Playback now flows through ``set_pcm_listener`` -> WS hub
-        # -> connected clients; the engine no longer holds a device handle.
+        # Playback flows through ``set_pcm_listener`` -> WS hub ->
+        # connected clients, so the engine never holds a device handle and
+        # swapping one for another is invisible downstream.
         #
-        # P28: honour ``tts.enabled``. The import alone pulls in the
-        # PyTorch runtime and the constructor starts a load thread for the
-        # voice model, so a TTS-off install used to pay ~0.6-1 GB for an
-        # engine it would never call. ``set_tts_enabled`` upgrades the null
-        # engine to the real one if TTS is switched on at runtime.
+        # P28: honour ``tts.enabled``. Constructing a real engine pulls
+        # its whole runtime -- PyTorch, ~0.6-1 GB resident -- and starts a
+        # load thread, so a TTS-off install used to pay for an engine it
+        # would never call. ``set_tts_enabled`` upgrades the null engine
+        # to the real one if TTS is switched on at runtime.
         if not bool(getattr(settings.tts, "enabled", True)):
             from app.tts.null_tts_service import NullTtsService
             log.info("TTS disabled in settings: engine not loaded")
             return NullTtsService(settings.tts)
-        from app.tts.pocket_tts_service import PocketTtsService
-        return PocketTtsService(settings.tts)
+
+        # The provider setting was previously stored and switchable but
+        # never read here, so every engine choice resolved to pocket-tts.
+        # The registry decides what is installed and imports only the one
+        # asked for; it also degrades rather than raising, because a
+        # missing experimental venv should not stop the app from booting.
+        from app.tts import registry
+
+        provider = (
+            getattr(settings.tts, "provider", "") or registry.DEFAULT_PROVIDER
+        )
+        return registry.build_with_fallback(provider, settings.tts)
 
     def _touch_user_activity(self) -> None:
         """Mark "the user just did something". Resets the idle gate.

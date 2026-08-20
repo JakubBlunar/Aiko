@@ -172,7 +172,72 @@ class VoiceMixin:
         return (self._settings.tts.provider or "pocket-tts").strip().lower() or "pocket-tts"
 
     def list_tts_providers(self) -> list[str]:
-        return ["pocket-tts"]
+        """Providers that could actually be selected right now.
+
+        Availability is probed from the filesystem, never by importing --
+        Chatterbox pins ``torch==2.6.0`` against this app's ``2.10.0``, so
+        "try it and see" is not an option that exists.
+        """
+        from app.tts import registry
+
+        names = registry.usable_names()
+        # The current selection stays listed even if it just became
+        # unusable, so the UI can show what is configured rather than
+        # silently appearing to be set to something else.
+        current = self.tts_provider
+        if current and current not in names:
+            names.append(current)
+        return names
+
+    def describe_tts_providers(self) -> list[dict]:
+        """The full catalogue with availability and reasons, for the UI.
+
+        Unavailable engines are returned rather than filtered out: a
+        greyed-out row saying "run this command to install" is far more
+        use than an option that never appears.
+        """
+        from app.tts import registry
+
+        return registry.describe()
+
+    def get_tts_device(self) -> str:
+        """The device the *current* provider is configured to use."""
+        from app.tts import registry
+
+        provider = self.tts_provider
+        return registry.resolve_device(
+            provider, self._settings.tts.for_provider(provider).device
+        )
+
+    def set_tts_device(self, device: str) -> str:
+        """Set the current provider's device, rebuilding if it changed.
+
+        Per-provider rather than global because the right answer differs
+        by engine: pocket-tts is CPU-only, Nano is real-time on CPU and
+        spending VRAM on it buys nothing, Turbo cannot reach real time
+        without a GPU.
+        """
+        from app.core.infra.settings import TtsProviderSettings
+        from app.tts import registry
+
+        provider = self.tts_provider
+        want = (device or "auto").strip().lower()
+        if want not in {"auto", "cpu", "cuda"}:
+            return self.get_tts_device()
+        current = self._settings.tts.for_provider(provider)
+        if want == current.device:
+            return self.get_tts_device()
+        self._settings.tts.providers[provider] = TtsProviderSettings(
+            voice=current.voice, device=want,
+        )
+        resolved = registry.resolve_device(provider, want)
+        try:
+            self._tts.stop()
+        except Exception:
+            pass
+        self._rebuild_tts_engine()
+        self._trace("tts.device", f"{provider} now on {resolved}")
+        return resolved
 
     @property
     def tts_voice(self) -> str:
@@ -193,6 +258,19 @@ class VoiceMixin:
         normalized = (voice or "").strip()
         if not normalized:
             return
+        from app.core.infra.settings import TtsProviderSettings
+
+        provider = self.tts_provider
+        current = self._settings.tts.for_provider(provider)
+        # Recorded against the provider as well as flat, so a round trip
+        # pocket-tts -> chatterbox -> pocket-tts comes back to the voice
+        # that was set rather than to the default. A voice is not portable
+        # between engines -- one wants a .safetensors embedding, the other
+        # a reference clip -- so one shared field could only ever be
+        # correct for whichever engine was selected last.
+        self._settings.tts.providers[provider] = TtsProviderSettings(
+            voice=normalized, device=current.device,
+        )
         self._settings.tts.voice = normalized
         set_voice = getattr(self._tts_engine, "set_voice", None)
         if callable(set_voice):
@@ -312,8 +390,22 @@ class VoiceMixin:
                     log.debug("outgoing tts engine release failed", exc_info=True)
 
     def set_tts_provider(self, provider: str) -> None:
-        normalized = (provider or "").strip().lower() or "pocket-tts"
+        from app.tts import registry
+
+        normalized = (
+            (provider or "").strip().lower() or registry.DEFAULT_PROVIDER
+        )
         if normalized == self.tts_provider:
+            return
+        # Checked before the swap rather than after. ``build_with_fallback``
+        # would keep her talking either way, but silently landing on
+        # pocket-tts while the setting reads "chatterbox-turbo" is the
+        # kind of state that wastes an hour of listening for a difference
+        # that was never applied.
+        usable, reason = registry.availability(normalized)
+        if not usable:
+            log.warning("refusing TTS provider %s: %s", normalized, reason)
+            self._trace("tts.provider", f"{normalized} unavailable: {reason}")
             return
         try:
             self._tts.stop()
@@ -321,7 +413,11 @@ class VoiceMixin:
             pass
         self._settings.tts.provider = normalized
         self._rebuild_tts_engine()
-        self._trace("tts.provider", f"Switched TTS provider to {normalized}")
+        device = self.get_tts_device()
+        self._trace(
+            "tts.provider",
+            f"Switched TTS provider to {normalized} on {device}",
+        )
 
     def prewarm_tts(self) -> None:
         # P28: with TTS off there is nothing to warm, and on the real

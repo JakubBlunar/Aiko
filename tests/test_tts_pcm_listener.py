@@ -6,8 +6,9 @@ pin the contract:
 
   - :class:`PocketTtsService` emits Int16 LE chunks through the
     listener and never tries to import / call sounddevice.
-  - The listener receives the *playback rate* (samplerate × speed),
-    not the model's native rate.
+  - The listener receives the model's true native rate. Speed is
+    realised by changing the sample count (a pitch-preserving stretch),
+    not by declaring a scaled rate as it once was.
   - :class:`EarconPlayer` emits its synthesised tones through the
     same callback shape.
   - ``_speak_worker`` blocks for the audio's real-time duration before
@@ -61,17 +62,33 @@ class PocketTtsListenerTests(unittest.TestCase):
         # PCM is Int16 LE → length must be even, samples in range.
         self.assertEqual(len(pcm) % 2, 0)
 
-    def test_pcm_listener_rate_scales_with_speed(self) -> None:
-        svc = _make_tts()
-        captured: list[int] = []
+    def test_pcm_listener_rate_stays_native_under_speed_change(self) -> None:
+        """Speed no longer rides on a falsified sample rate.
 
-        def _listener(rate: int, _channels: int, _pcm: bytes) -> None:
-            captured.append(rate)
+        It used to: the listener was handed ``rate x speed`` and the
+        client played the same samples faster, shifting pitch. The
+        pitch-preserving stretch changes the sample count instead, so the
+        rate the client is told is the real one.
+        """
+        svc = _make_tts()
+        rates: list[int] = []
+        samples = 0
+
+        def _listener(rate: int, _channels: int, pcm: bytes) -> None:
+            nonlocal samples
+            rates.append(rate)
+            samples += len(pcm) // 2
 
         svc.set_pcm_listener(_listener)
         svc._speak_worker("hello", on_done=None, speed=1.05, on_amplitude=None)
-        self.assertTrue(captured)
-        self.assertEqual(captured[0], int(8000 * 1.05))
+        self.assertTrue(rates)
+        self.assertEqual(rates[0], 8000)
+        self.assertTrue(
+            all(r == 8000 for r in rates), "rate changed mid-clip"
+        )
+        # 800 samples of speech + 150 ms guard silence, sped up: the
+        # speech shrinks, the guard does not.
+        self.assertLess(samples, 800 + int(8000 * 0.15))
 
     def test_clip_end_listener_fires_after_pcm(self) -> None:
         svc = _make_tts()

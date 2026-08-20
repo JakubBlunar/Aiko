@@ -338,6 +338,37 @@ class SttSettings:
 
 
 @dataclass(slots=True)
+class TtsProviderSettings:
+    """Per-engine choices that only make sense for one engine at a time.
+
+    Voice is per-provider because a voice is not portable between them: a
+    pocket-tts voice is a ``.safetensors`` speaker embedding, while
+    Chatterbox clones from a reference ``.wav`` per call. A single
+    ``tts.voice`` field forced one to be wrong, and switching engine then
+    silently reset it -- so a round trip pocket-tts -> chatterbox ->
+    pocket-tts lost the setting.
+
+    Device is per-provider because the right answer differs by engine
+    rather than by machine. pocket-tts is CPU-only. Nano is comfortably
+    real-time on CPU and spending VRAM on it buys nothing. Turbo cannot
+    reach real time without a GPU. One global ``tts.device`` would be
+    wrong for at least one of them.
+    """
+
+    voice: str = ""
+    #: ``auto`` resolves to the provider's own preference; see
+    #: ``app/tts/registry.py``. Only ``cuda`` and ``cpu`` are otherwise
+    #: accepted.
+    device: str = "auto"
+    #: CPU threads for the engine, 0 for "decide for me". Not a
+    #: performance footgun to leave alone: measured on a 9950X3D, Nano
+    #: synthesises at RTF 0.78 on 8 threads and 0.93 on 16, so torch's
+    #: default of one thread per core is both slower *and* takes the whole
+    #: CPU. Ignored by engines that do not run on CPU.
+    threads: int = 0
+
+
+@dataclass(slots=True)
 class TtsSettings:
     provider: str
     voice: str
@@ -357,6 +388,53 @@ class TtsSettings:
     # frame 2 often matches it in level), hence a default of 1. Set to
     # ``None`` to restore the library's behaviour.
     pocket_tts_frames_after_eos: int | None = 1
+    # Change speech rate with a pitch-preserving time-stretch (WSOLA) on
+    # the PCM, instead of the varispeed trick of declaring a scaled
+    # sample rate to the client. Varispeed moves pitch with duration at
+    # ~1.6 semitones per 10% of rate, which is the sole reason
+    # ``agent.tts_runtime_speed_enabled`` has been off: her whole
+    # affect-driven pacing channel was unusable, not unimplemented.
+    # Set False to get the old behaviour back for an A/B listen; the
+    # stretch costs ~0.2% of audio duration, so it is not a performance
+    # switch. See ``app/audio/timestretch.py``.
+    pitch_preserving_speed: bool = True
+    # Per-engine voice and device, keyed by provider name. Absent keys
+    # are fine and resolve to defaults, so a config written before this
+    # existed keeps working -- see :meth:`for_provider`.
+    providers: dict[str, TtsProviderSettings] = field(default_factory=dict)
+
+    def for_provider(self, name: str) -> TtsProviderSettings:
+        """Settings for one engine, falling back to the legacy flat fields.
+
+        The back-compat arm matters: ``pocket_tts_voice`` has been the
+        real voice setting since before there was more than one engine,
+        and it is what sits in the shipped ``config/default.json``.
+        Reading the new nested block first and that second means existing
+        installs keep her voice without anyone editing a config file,
+        while a per-provider entry can override once written.
+        """
+        key = (name or "").strip().lower()
+        entry = self.providers.get(key)
+        return TtsProviderSettings(
+            voice=(entry.voice if entry else "") or self._legacy_voice(key),
+            device=(entry.device if entry else "") or "auto",
+            threads=(entry.threads if entry else 0),
+        )
+
+    def _legacy_voice(self, key: str) -> str:
+        """The pre-per-provider voice field, where it still means something.
+
+        Only for pocket-tts. The flat ``voice`` / ``pocket_tts_voice``
+        fields hold a ``.safetensors`` speaker embedding, which is
+        meaningless to an engine that clones from a reference clip --
+        handing it over would fail deep inside a tensor load rather than
+        at the setting. Cloning engines get no legacy default and pick
+        their own (her committed reference wav); see
+        ``ChatterboxTtsService``.
+        """
+        if key == "pocket-tts":
+            return self.pocket_tts_voice or self.voice or ""
+        return ""
 
 
 @dataclass(slots=True)
@@ -1006,6 +1084,39 @@ def _normalize_tts_length_scale(value: Any) -> float:
         return max(0.65, min(f, 1.35))
     except (TypeError, ValueError):
         return 1.0
+
+
+def _parse_tts_providers(value: Any) -> dict[str, TtsProviderSettings]:
+    """Parse ``tts.providers``, tolerating anything.
+
+    Unknown provider names are kept rather than dropped: an entry for an
+    engine that is not installed yet is a perfectly reasonable thing to
+    have written, and silently discarding it would lose the voice a user
+    configured before running the installer.
+
+    A bad ``device`` falls back to ``auto`` instead of raising. The
+    registry has the final say on whether a device is usable for a given
+    engine anyway, so validating twice would only add a way to fail at
+    startup over a typo.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, TtsProviderSettings] = {}
+    for name, raw in value.items():
+        key = str(name).strip().lower()
+        if not key or not isinstance(raw, dict):
+            continue
+        device = str(raw.get("device", "auto") or "auto").strip().lower()
+        try:
+            threads = max(0, int(raw.get("threads", 0) or 0))
+        except (TypeError, ValueError):
+            threads = 0
+        out[key] = TtsProviderSettings(
+            voice=str(raw.get("voice", "") or "").strip(),
+            device=device if device in {"auto", "cpu", "cuda"} else "auto",
+            threads=threads,
+        )
+    return out
 
 
 def _parse_frames_after_eos(value: Any) -> int | None:
@@ -2077,6 +2188,10 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             pocket_tts_frames_after_eos=_parse_frames_after_eos(
                 tts.get("pocket_tts_frames_after_eos", 1),
             ),
+            pitch_preserving_speed=bool(
+                tts.get("pitch_preserving_speed", True),
+            ),
+            providers=_parse_tts_providers(tts.get("providers")),
         ),
         agent=parse_agent_settings(agent_raw),
         logging=LoggingSettings(
