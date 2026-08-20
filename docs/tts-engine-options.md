@@ -152,6 +152,20 @@ flipped on their behalf. `assistant.tts_length_scale` is honoured
 regardless and is now pitch-clean, so it is the easiest way to hear the
 difference.
 
+**Both of those were pocket-tts-only for a while, and the failure was
+silent.** `set_length_scale` and `set_runtime_speed_enabled` lived on
+`PocketTtsService` alone, and `_apply_assistant_preferences` reaches them
+through `getattr` — so on Chatterbox they were *absent* rather than
+broken. The pacing slider did nothing at all, and the gate being off did
+not stop the cadence layer's per-sentence hints being applied in full and
+uncapped. The user-visible symptom was only "she is too fast on this
+engine": an excited sentence ran at 1.12× where pocket-tts pinned it to
+1.00×. Both knobs now come from
+[`app/tts/reactions.py`](../app/tts/reactions.py) via
+`resolve_playback_speed()`, which is where anything describing *her*
+rather than a model belongs, and `tests/test_tts_pacing_parity.py` holds
+the two engines to the same answer.
+
 ## The other fix that needs no engine change
 
 **Voice colour — a library, not a dial.** Since timbre lives in the
@@ -227,10 +241,17 @@ figures — the first generation is discarded, because Turbo reports RTF
 | chatterbox-multilingual (500M) | 2.86–3.04 | ~9400 ms | 45 s cold | 23 languages, cross-lingual |
 
 Since **neither engine streams generation**, RTF *is* responsiveness:
-first audio equals full generation. Nano beats realtime and would still
-mean roughly a two-second pause before every sentence, against
-pocket-tts's ~0.6 s. Upstream's "3× realtime on 8 cores" for Nano (RTF
-0.33) is about twice as optimistic as this box measures.
+first audio equals full generation. Upstream's "3× realtime on 8 cores"
+for Nano (RTF 0.33) is about twice as optimistic as this box measures.
+
+RTF sets the *opening* latency and nothing else, though. Every sentence
+after the first is prefetched while the previous one plays, so on a
+three-sentence turn the real measured dead air on Nano is **0.03 s at
+each boundary after the first**, not the ~2 s its RTF implies — see
+[the prefetch](#the-prefetch-is-what-makes-a-sub-realtime-engine-usable)
+below. The bound to watch is therefore RTF < 1.0 (generation finishes
+inside the previous sentence's playback), which Nano clears and Turbo
+does not.
 
 Thread count is not the lever: Turbo runs RTF 1.51 at 16 threads and
 1.67 at 8, so there is no configuration where it becomes viable.
@@ -554,11 +575,75 @@ So Chatterbox reproduces a little under 60% of the incumbent's high end,
 which is the "muffled" impression, and it is architectural rather than a
 setting: the S3 tokenizer and speaker encoder condition at 16 kHz, so
 everything above 8 kHz is gone from the conditioning before the 24 kHz
-vocoder reconstructs. A high-shelf tilt could raise the measurement;
-whether it raises quality is a listening question, not a numbers one.
-Its noise floor, incidentally, measures *better* than pocket-tts's and
-far more consistently (-77.4 dBFS mean over a 5.2 dB range, against
--75.7 over 41.9 dB), so perceived noise is not a floor problem.
+vocoder reconstructs. Its noise floor, incidentally, measures *better*
+than pocket-tts's and far more consistently (-77.4 dBFS mean over a
+5.2 dB range, against -75.7 over 41.9 dB), so perceived noise is not a
+floor problem.
+
+**Every clip is also brightness-matched, and that turned out to fix the
+dullness too.** With the level drift gone the remaining report was that
+"she is changing the warmth and level a little between sentences" — and
+level measured flat by then (0.00 dB gated, 0.23 dB K-weighted), so the
+level half of that was brightness being *heard* as level. The
+measurement that settled what the warmth half is: regenerating **the same
+sentence** six times moved the low/high band ratio by 4.2 dB and the
+centroid by 206 Hz. Identical words, so none of it is her delivery — the
+model re-samples timbre per call.
+
+[`app/audio/timbre.py`](../app/audio/timbre.py) shelves each clip toward
+the spectral tilt of the reference clip being cloned. Measured through
+the real playback path over a five-sentence turn: spread **5.79 → 0.69
+dB**, and the same sentence five times **2.07 → 0.41 dB**. Because the
+target is her reference rather than the engine's own average, it closes
+the dullness at the same time — mean tilt went from **+1.96 dB warmer
+than the reference to +0.15 dB** — which retires the "a high-shelf could
+raise the measurement, but is it quality?" question above in favour of
+"aim it at her reference and it is both". `tts.timbre_match_limit_db`
+bounds the correction (default 4 dB, `0.0` disables) because content
+changes brightness legitimately; only Chatterbox uses it, since
+pocket-tts has no reference clip and is not audibly drifting.
+
+**And every clip is tempo-matched, which is the same story a third
+time.** With level and brightness pinned, the next report was that the
+first sentence of a reply "was spoken really great" and the second "much
+slower". The obvious suspects are the pacing slider and the affect-driven
+speed channel, and both are innocent by inspection:
+`agent.tts_runtime_speed_enabled` is off, so `resolve_playback_speed`
+handed *both* sentences the identical multiplier. Synthesising the same
+sentence six times moves the delivered tempo **10.7–20.9%** depending on
+the sentence, and across every clip measured the spread was **24–28%**.
+
+[`app/audio/speech_rate.py`](../app/audio/speech_rate.py) stretches each
+clip toward the tempo of the voice being cloned — measured from the
+`manifest.json` beside the reference, since a rate needs text as well as
+audio — folded into the WSOLA pass that already applies `speed`, so it is
+free. Through the real service over eight sentences: spread **24.1% →
+5.9%**, worst clip **12.6% → 3.1%** off her pace, **8 of 8** within 5%.
+It also removes a standing bias: Nano's raw output averages **6.26 syl/s
+against her incumbent 6.55**, so it had been running ~5% slow all along,
+which is why the complaint was "needs speeding up" rather than "keeps
+changing".
+
+Two measurement traps here, both of which produced a wrong answer first.
+**Characters per second is not tempo** — it made the long sentence look
+14% slower, and in syllables per second the two were identical, so that
+number was measuring letter density. And **rate must be measured over
+voiced seconds**, or every comma reads as slow speech. The correction
+composes with intent rather than replacing it (it aims at `target ×
+intended`), so if the affect channel is ever switched on, a sentence asked
+to be 6% faster is *delivered* 6% faster instead of landing somewhere in a
+±14% cloud — which is arguably the first time that channel could work at
+all.
+
+Three dead ends, recorded so they are not re-tried. **Sampling
+parameters do nothing for this**: `temperature` at 0.5 / 0.6 / 0.7,
+`cfg_weight`, `min_p` and `repetition_penalty` all land in the same
+200–275 Hz centroid band, and an early single-run result suggesting
+temperature 0.6 was a threefold improvement did not survive repetition.
+**It is not the worse engine**: pocket-tts drifts *more* on centroid
+(394 Hz against Nano's 245 Hz). **And it is not new** — fixing the
+inter-sentence pauses is what made it audible, by putting sentences next
+to each other instead of 2.5 s apart.
 
 **Nothing heavy is imported until an engine is chosen.** Availability is
 answered from the filesystem — pocket-tts by `find_spec`, Chatterbox by
@@ -587,11 +672,70 @@ running, which is the point of keeping TTS off the GPU.
 **First audio is the real cost, and it grows with the sentence.**
 Chatterbox generates the entire clip before emitting a byte, so
 first-audio *is* the full synthesis: 3.5 s for that 4.3 s sentence,
-against pocket-tts's flat ~570 ms. `TtsQueue`'s lookahead pre-generates
-while the previous sentence plays, so only the *first* sentence of a
-reply pays it — but that first sentence is exactly where a conversational
-pause is felt. This is the trade against Nano's better pronunciation, and
-it is a trade rather than a win.
+against pocket-tts's flat ~570 ms. `TtsQueue` prefetches so that only
+the *first* sentence of a reply pays it — but that first sentence is
+exactly where a conversational pause is felt. This is the trade against
+Nano's better pronunciation, and it is a trade rather than a win.
+
+### The prefetch is what makes a sub-realtime engine usable
+
+Everything above assumes the prefetch works, so it is worth stating what
+it does and what it cost to get right. Measured end to end through the
+real sidecar, three sentences with a 250 ms cadence pause between each:
+
+| | boundary 1 | boundary 2 | total dead air |
+|---|---|---|---|
+| before | 2.52 s | 2.47 s | **5.07 s** |
+| after | 0.58 s | 0.03 s | **0.70 s** |
+
+"Dead air" is gap *minus* the pause the cadence layer intended, i.e. the
+part that is just waiting. The residual 0.58 s is a floor, not a bug: the
+opener is a one-second clip and cannot cover the three-second generation
+of a long second sentence. Later boundaries reach zero because by then
+playback is long enough to hide synthesis, which is what RTF < 1.0 buys.
+On pocket-tts the same run reaches **0.00 s** at every boundary.
+
+Four separate defects had to be fixed, and the reason to record them is
+that each was individually invisible — the prefetch existed, was called,
+and delivered nothing:
+
+1. **It looked one chunk ahead and gave up unless that chunk was text.**
+   The cadence layer brackets nearly every sentence with `pause_before` /
+   `pause_after` silences, so the next chunk was almost always a pause,
+   and the prefetch never ran in a real turn. The pause then hid the gap
+   it was itself causing: what a listener heard was one unnaturally long
+   beat, not a pause followed by a wait.
+2. **Chatterbox had no clip cache.** The prefetch calls `generate_audio`
+   and discards the result, which only pays off if the engine remembered
+   it. pocket-tts did; Chatterbox synthesised, dropped it, and then
+   synthesised the same sentence again for playback behind the sidecar's
+   one-request pipe — strictly worse than no prefetch.
+3. **The cache key included speed.** Speed is applied by the
+   time-stretch at emission, so the clip does not depend on it. The
+   prefetch guessed speed from the cadence hint while `speak_async` pins
+   it to 1.0 whenever the runtime speed gate is off (the default), so the
+   two disagreed on every sentence carrying prosody and the cached entry
+   was never read.
+4. **A sentence enqueued mid-playback was not prefetched.** Sentences
+   arrive from the LLM stream while she is already talking, and only
+   *dispatch* spawned a prefetch — so the newest sentence stayed cold
+   until the chunk before it was dispatched, which on a two-sentence
+   reply is after the first has finished. `enqueue` now spawns one too.
+
+Making the prefetch fire then introduced a fifth problem worth naming,
+because it is the failure mode any future work here will hit: a prefetch
+that reaches the engine first **delays the sentence being spoken**. Both
+engines synthesise under a single lock, so sentence two can take the pipe
+and push sentence one behind it. That converts a mid-turn gap into a
+silence at the top of the reply, which is worse. Two things prevent it —
+`SynthesisGate` (playback claims; prefetch waits for idle) and the
+ordering in `TtsQueue._dispatch` (hand the text to the engine, *then*
+spawn the prefetch). It is not theoretical: with the spawn ordered first,
+the real sidecar took 3.1 s to first audio on a one-second opener.
+
+`tests/test_tts_queue_prefetch.py` pins all of it; the invariant it
+enforces is **one synthesis per sentence, in sentence order, and the
+sentence being spoken is never delayed by the next one**.
 
 ### The CPU-only conclusions in this file
 

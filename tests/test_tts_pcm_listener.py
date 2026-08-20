@@ -38,7 +38,10 @@ def _make_tts() -> PocketTtsService:
     svc._model = MagicMock()  # type: ignore[assignment]
     svc._voice_state = {}  # type: ignore[assignment]
     audio = (np.sin(np.linspace(0, 4 * np.pi, 800, dtype=np.float32)) * 0.3)
-    svc.generate_audio = MagicMock(return_value=(audio, 8000))  # type: ignore[method-assign]
+    # Stub the model call, not ``generate_audio``: playback reaches the
+    # clip through the cache, so stubbing the prefetch entry point would
+    # test a path she never takes.
+    svc._synthesise = MagicMock(return_value=(audio, 8000))  # type: ignore[method-assign]
     return svc
 
 
@@ -118,7 +121,7 @@ class PocketTtsListenerTests(unittest.TestCase):
         # actually measure the wait. ``_make_tts`` uses 8000 Hz, so
         # 3200 samples at speed=1.0 → 0.4 s of playback time.
         long_audio = np.zeros(3200, dtype=np.float32)
-        svc.generate_audio = MagicMock(  # type: ignore[method-assign]
+        svc._synthesise = MagicMock(  # type: ignore[method-assign]
             return_value=(long_audio, 8000),
         )
         svc.set_pcm_listener(lambda *_args: None)
@@ -171,7 +174,7 @@ class PocketTtsListenerTests(unittest.TestCase):
         # acknowledging the stop signal.
         svc = _make_tts()
         long_audio = np.zeros(8000 * 5, dtype=np.float32)  # 5 s clip
-        svc.generate_audio = MagicMock(  # type: ignore[method-assign]
+        svc._synthesise = MagicMock(  # type: ignore[method-assign]
             return_value=(long_audio, 8000),
         )
         svc.set_pcm_listener(lambda *_args: None)

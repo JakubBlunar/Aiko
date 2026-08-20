@@ -43,13 +43,24 @@ import time
 import wave
 from collections.abc import Callable
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 import numpy as np
 
 from app.core.infra.settings import TtsSettings
+from app.audio.speech_rate import (
+    MAX_CORRECTION as MAX_RATE_CORRECTION,
+    measured_rate,
+)
+from app.audio.timbre import MAX_CORRECTION_DB, spectral_tilt_db
+from app.tts.clip_cache import ClipCache, SynthesisGate
 from app.tts.pcm_playback import PcmPlaybackMixin
-from app.tts.reactions import reaction_to_speed as _reaction_to_speed
+from app.tts.reactions import (
+    clamp_length_scale,
+    reaction_to_speed as _reaction_to_speed,
+    resolve_playback_speed,
+)
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +122,13 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         # one-line-in/one-line-out with no request ids, so two concurrent
         # callers would read each other's replies.
         self._io_lock = threading.Lock()
+        self._clip_cache = ClipCache()
+        self._synth_gate = SynthesisGate()
+        # Pacing, matching pocket-tts. Defaults are "no global change"
+        # and "affect channel off", the same as the incumbent, so a
+        # provider swap is not also a pacing change.
+        self._length_scale: float = 1.0
+        self._runtime_speed_enabled: bool = False
         self._loaded = threading.Event()
         self._stop_requested = threading.Event()
         self._speak_thread: threading.Thread | None = None
@@ -124,6 +142,21 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         self._loudness_target_dbfs = float(
             getattr(settings, "loudness_target_dbfs", 0.0) or 0.0
         )
+        # Brightness matching. The target is not known until a reference
+        # clip has been cloned, so it starts unset and ``_clone`` fills
+        # it; the limit is read up front so it can be logged there.
+        self._tilt_limit_db = float(
+            getattr(settings, "timbre_match_limit_db", MAX_CORRECTION_DB)
+        )
+        self._tilt_matching = self._tilt_limit_db > 0.0
+        self._tilt_target_db: float | None = None
+        # Tempo matching. Same story as brightness: the target comes from
+        # the reference, so it is unknown until a clone has happened.
+        self._rate_limit = float(
+            getattr(settings, "speech_rate_match_limit", MAX_RATE_CORRECTION)
+        )
+        self._rate_matching = self._rate_limit > 0.0
+        self._rate_target_syl_s: float | None = None
 
         self._scratch = Path(tempfile.mkdtemp(prefix="aiko-chatterbox-"))
         threading.Thread(
@@ -250,6 +283,112 @@ class ChatterboxTtsService(PcmPlaybackMixin):
             {"op": "clone", "ref": str(reference)}, LOAD_TIMEOUT_S
         )
         self._voice = voice
+        self._adopt_tilt_target(reference)
+        self._adopt_rate_target(reference)
+
+    def _adopt_tilt_target(self, reference: Path) -> None:
+        """Take the brightness target from the clip being cloned.
+
+        The reference is what her voice is supposed to sound like, which
+        makes it a better target than any constant: it both flattens the
+        per-sentence timbre drift and closes the 1.2-1.5 dB high-frequency
+        deficit that reads as "a little muffled". Failing to read it is
+        not fatal -- brightness matching is an improvement, not a
+        requirement, so the engine still speaks without it.
+        """
+        if not self._tilt_matching:
+            return
+        try:
+            audio, rate = _read_wav(reference)
+            target = spectral_tilt_db(audio, rate)
+        except Exception as exc:
+            self._tilt_target_db = None
+            log.warning(
+                "%s could not measure the reference clip's timbre, "
+                "brightness matching is off: %r",
+                self._engine_key,
+                exc,
+            )
+            return
+        if not target:
+            self._tilt_target_db = None
+            return
+        self._tilt_target_db = float(target)
+        log.info(
+            "%s matching brightness to %s (tilt %.2f dB, limit %.1f dB)",
+            self._engine_key,
+            reference.name,
+            target,
+            self._tilt_limit_db,
+        )
+
+    def _adopt_rate_target(self, reference: Path) -> None:
+        """Take the tempo target from the reference clip's own manifest.
+
+        Measuring a rate needs text as well as audio, so unlike the
+        brightness target this cannot be read off the wav. What it can be
+        read off is the ``manifest.json`` the reference was built with,
+        which lists each part's phrase beside its file: measure every part
+        and take the median, which is robust to one phrase's syllable
+        estimate being off.
+
+        No manifest means no target and no correction, which is the right
+        default for a voice somebody dropped in as a bare wav -- guessing
+        a tempo for a stranger's clip would be worse than leaving pacing
+        alone.
+        """
+        if not self._rate_matching:
+            return
+        self._rate_target_syl_s = None
+        manifest = reference.parent / "manifest.json"
+        if not manifest.is_file():
+            log.info(
+                "%s: no manifest beside %s, tempo matching is off",
+                self._engine_key,
+                reference.name,
+            )
+            return
+        try:
+            body = json.loads(manifest.read_text(encoding="utf-8"))
+            rates: list[float] = []
+            for part in body.get("parts") or []:
+                phrase = str(part.get("phrase") or "")
+                name = str(part.get("file") or "")
+                if not phrase or not name:
+                    continue
+                clip = manifest.parent / "parts" / name
+                if not clip.is_file():
+                    continue
+                audio, rate = _read_wav(clip)
+                measured = measured_rate(audio, rate, phrase)
+                if measured > 0.0:
+                    rates.append(measured)
+        except Exception as exc:
+            log.warning(
+                "%s could not measure the reference tempo, matching is "
+                "off: %r",
+                self._engine_key,
+                exc,
+            )
+            return
+        if len(rates) < 3:
+            log.info(
+                "%s: only %d measurable reference parts, tempo matching "
+                "is off",
+                self._engine_key,
+                len(rates),
+            )
+            return
+        target = float(median(rates))
+        self._rate_target_syl_s = target
+        log.info(
+            "%s matching tempo to %s (%.2f syl/s over %d parts, limit %.0f%%)",
+            self._engine_key,
+            reference.name,
+            target,
+            len(rates),
+            self._rate_limit * 100.0,
+        )
 
     def _resolve_voice(self, voice: str) -> Path | None:
         name = (voice or "").strip()
@@ -372,6 +511,9 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         except Exception as exc:
             log.warning("voice switch to %r failed: %s", name, exc)
             return False
+        # Clips are voice-specific and the key is text-only, so a
+        # surviving entry would speak the next repeat in the old voice.
+        self._clip_cache.clear()
         log.info("%s now cloning from %s", self._engine_key, name)
         return True
 
@@ -380,6 +522,34 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         # her pacing -- the mapping is a property of her character, not of
         # whichever model is rendering it.
         return _reaction_to_speed(reaction)
+
+    # ── pacing ───────────────────────────────────────────────────────
+    #
+    # Both knobs below existed only on pocket-tts, and the wiring in
+    # ``_apply_assistant_preferences`` reaches them through ``getattr``,
+    # so on Chatterbox they were absent rather than broken: the user's
+    # pacing slider silently did nothing, and the affect-speed gate being
+    # off did not stop the cadence layer's per-sentence hints from being
+    # applied here in full. The result was simply that she spoke faster
+    # on this engine than on the other one.
+
+    def set_length_scale(self, scale: float) -> None:
+        """Set the global pacing multiplier. Above 1.0 is slower."""
+        self._length_scale = clamp_length_scale(scale)
+
+    def get_length_scale(self) -> float:
+        return self._length_scale
+
+    def set_runtime_speed_enabled(self, enabled: bool) -> None:
+        """Gate the affect-driven speed channel (default off).
+
+        Off pins every sentence to 1.0 before the pacing slider, so
+        reaction baselines and cadence ``speed_hint`` values are ignored.
+        """
+        self._runtime_speed_enabled = bool(enabled)
+
+    def get_runtime_speed_enabled(self) -> bool:
+        return self._runtime_speed_enabled
 
     # ── synthesis ────────────────────────────────────────────────────
 
@@ -392,9 +562,34 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         rate control, and the shared playback path applies the stretch at
         emission time. Accepting the argument and doing nothing with it
         keeps the engine interchangeable with pocket-tts.
+
+        The clip stays in :attr:`_clip_cache` for the playback call that
+        follows a prefetch. Without that, the lookahead thread paid the
+        full synthesis and dropped the result on the floor, and playback
+        then queued a second synthesis of the same sentence behind the
+        sidecar's pipe lock -- so a prefetch made the gap *worse* than no
+        prefetch at all.
         """
         prepared = (text or "").strip()
-        if not prepared or not self._loaded.wait(timeout=LOAD_TIMEOUT_S):
+        if not prepared:
+            return None
+        # Yields to the sentence being spoken. Mandatory here rather than
+        # merely tidy: the sidecar takes one request at a time, so a
+        # prefetch that wins the pipe delays the audio being waited on by
+        # a full generation.
+        if not self._synth_gate.wait_for_idle():
+            return None
+        return self._warm_clip(prepared)
+
+    def _warm_clip(self, prepared: str) -> tuple[np.ndarray, int] | None:
+        """Cached synthesis, ungated. One round trip per text across threads."""
+        return self._clip_cache.warm(
+            ClipCache.key(prepared), lambda: self._synthesise(prepared),
+        )
+
+    def _synthesise(self, prepared: str) -> tuple[np.ndarray, int] | None:
+        """One round trip to the sidecar. Called through the cache."""
+        if not self._loaded.wait(timeout=LOAD_TIMEOUT_S):
             return None
         out = self._scratch / f"synth-{time.monotonic_ns()}.wav"
         try:
@@ -438,19 +633,27 @@ class ChatterboxTtsService(PcmPlaybackMixin):
             if on_done:
                 on_done()
             return
-        effective = (
-            float(speed)
-            if speed is not None
-            else self.reaction_to_speed(reaction)
+        effective = resolve_playback_speed(
+            reaction,
+            speed,
+            runtime_speed_enabled=self._runtime_speed_enabled,
+            length_scale=self._length_scale,
         )
         self._stop_requested.clear()
+        # Claimed from the caller's thread so it is ordered ahead of any
+        # in-flight prefetch; the worker releases it once synthesised.
+        self._synth_gate.claim()
         self._speak_thread = threading.Thread(
             target=self._speak_worker,
             args=(prepared, effective, gain_db, on_done, on_amplitude),
             daemon=True,
             name="chatterbox-speak",
         )
-        self._speak_thread.start()
+        try:
+            self._speak_thread.start()
+        except Exception:
+            self._synth_gate.release()
+            raise
 
     def _speak_worker(
         self,
@@ -462,7 +665,13 @@ class ChatterboxTtsService(PcmPlaybackMixin):
     ) -> None:
         gen_t0 = time.monotonic()
         try:
-            result = self.generate_audio(text)
+            try:
+                result = self._warm_clip(text)
+            finally:
+                # Freed the moment this sentence is synthesised, so the
+                # next one is prefetched while this one plays.
+                self._synth_gate.release()
+            self._clip_cache.discard(ClipCache.key(text))
             if result is None or self._stop_requested.is_set():
                 return
             audio, rate = result
@@ -472,6 +681,7 @@ class ChatterboxTtsService(PcmPlaybackMixin):
                 rate,
                 speed=speed,
                 gain_factor=_gain_to_factor(gain_db),
+                text=text,
                 on_amplitude=on_amplitude,
             )
             log.debug(
@@ -530,6 +740,7 @@ class ChatterboxTtsService(PcmPlaybackMixin):
 
     def stop(self) -> None:
         self._stop_requested.set()
+        self._clip_cache.clear()
 
     def is_speaking(self) -> bool:
         thread = self._speak_thread

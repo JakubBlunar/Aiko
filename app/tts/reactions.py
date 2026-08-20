@@ -116,3 +116,75 @@ def reaction_to_speed(reaction: str | None) -> float:
     if not key:
         return 1.0
     return float(REACTION_SPEED.get(key, 1.0))
+
+
+# Hard caps on the user-facing pacing slider, which feeds
+# ``set_length_scale``. Values outside this band are clamped silently.
+# Narrower than the ``[0.65, 1.35]`` of :class:`AssistantSettings`
+# because the slider stacks multiplicatively with reaction speed AND the
+# cadence layer's per-sentence ``speed_hint``, so a 0.65 slider would
+# routinely blow past the per-reaction floor.
+LENGTH_SCALE_MIN = 0.85
+LENGTH_SCALE_MAX = 1.15
+
+
+def clamp_length_scale(scale: float) -> float:
+    """The pacing slider, bounded. Non-numeric and zero read as 1.0."""
+    try:
+        value = float(scale)
+    except (TypeError, ValueError):
+        return 1.0
+    if value <= 0.0:
+        return 1.0
+    return max(LENGTH_SCALE_MIN, min(LENGTH_SCALE_MAX, value))
+
+
+def resolve_playback_speed(
+    reaction: str | None,
+    requested: float | None,
+    *,
+    runtime_speed_enabled: bool,
+    length_scale: float = 1.0,
+) -> float:
+    """The final rate multiplier for one sentence.
+
+    Shared rather than per-engine for the same reason as the tables
+    above: this is how *Aiko* paces herself, so a provider swap must not
+    change it. It did. Only pocket-tts implemented the gate and the
+    slider, so on Chatterbox the affect-driven speed channel ran
+    unrestrained and uncapped while the incumbent pinned it flat, and the
+    user's pacing slider silently did nothing at all — she simply spoke
+    faster on one engine than the other, for no stated reason.
+
+    Two independent knobs, deliberately:
+
+    * ``runtime_speed_enabled`` gates the *affect* channel. Off (the
+      default) pins every sentence to 1.0 before the slider, ignoring
+      both the per-reaction baseline and any cadence ``speed_hint``, so
+      delivery stays flat across a reply.
+    * ``length_scale`` is the user's static pacing preference and applies
+      either way — a deliberate global knob, not affect drift. Above 1.0
+      is slower.
+    """
+    if not runtime_speed_enabled:
+        speed = 1.0
+    else:
+        if requested is None:
+            speed = reaction_to_speed(reaction)
+        else:
+            try:
+                speed = float(requested)
+            except (TypeError, ValueError):
+                speed = reaction_to_speed(reaction)
+        # Per-reaction sub-cap first, then the global outer envelope, so
+        # a runaway cadence multiplier cannot reach uncanny territory.
+        sub_min, sub_max = resolve_speed_caps(reaction)
+        speed = max(sub_min, min(sub_max, speed))
+        speed = max(SPEED_MIN, min(SPEED_MAX, speed))
+    # Applied after the reaction clamp so a slow pacing preference does
+    # not fight the per-reaction floor (cry sits near 0.92; dividing by
+    # 1.10 lands at ~0.84, below SPEED_MIN — the final clamp catches it).
+    scale = clamp_length_scale(length_scale)
+    if abs(scale - 1.0) > 1e-3:
+        speed = speed / scale
+    return max(SPEED_MIN, min(SPEED_MAX, speed))

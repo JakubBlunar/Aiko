@@ -66,14 +66,16 @@ def _make_service(
          patch("app.tts.pocket_tts_service.np", np):
         svc = PocketTtsService(settings)
 
-    # Fake out the model + voice state so generate_audio works without
-    # real inference. ``generate_audio`` is overridden directly so we
-    # don't need to satisfy TTSModel's API.
+    # Fake out the model + voice state so synthesis works without real
+    # inference. ``_synthesise`` is the seam rather than
+    # ``generate_audio``: the latter is the prefetch entry point, and
+    # stubbing it would bypass the clip cache and the synthesis gate that
+    # the playback path really goes through.
     svc._loaded.set()
     svc._model = MagicMock()  # type: ignore[assignment]
     svc._voice_state = {}  # type: ignore[assignment]
     fake_audio = np.zeros(1600, dtype=np.float32)
-    svc.generate_audio = MagicMock(return_value=(fake_audio, 16000))  # type: ignore[method-assign]
+    svc._synthesise = MagicMock(return_value=(fake_audio, 16000))  # type: ignore[method-assign]
     svc.set_runtime_speed_enabled(runtime_speed_enabled)
     return svc
 

@@ -1,8 +1,11 @@
 """Thread-safe sequential TTS queue.
 
-Plays text chunks one at a time on the chosen TTS backend. Pre-generates the
-next chunk's audio in a daemon thread (lookahead) so playback transitions are
-seamless on backends that take >1s to synthesise.
+Plays text chunks one at a time on the chosen TTS backend, interleaving
+text with real timed silences and stage-direction earcons on one serial
+pipeline. The next *sentence* is pre-generated in a daemon thread while
+the current chunk plays -- looking past any silence or earcon between
+them -- so transitions stay seamless on backends that take >1s to
+synthesise. See :meth:`TtsQueue._spawn_lookahead`.
 
 Decoupled from PySide6 / Qt; the only inputs are the TTS engine (the
 ``TtsEngine``-like object from ``app/tts``) and the optional ``state_listener``
@@ -66,6 +69,10 @@ class TtsQueue:
         self._pending: list[
             tuple[str, str, str | None, float | None, float]
         ] = []
+        # Text of the sentence a prefetch was last started for, so the
+        # several chunks dispatched while it is in flight don't each
+        # spawn their own. Guarded by ``_lock``.
+        self._lookahead_text: str | None = None
         self._playing = False
         self._session_started_at: float | None = None
         self._chunks_played = 0
@@ -117,10 +124,19 @@ class TtsQueue:
             self._pending.append(
                 ("text", cleaned, reaction, speed, gain_value),
             )
-            if self._playing:
-                return
-            self._playing = True
-            chunk = self._pending.pop(0)
+            busy = self._playing
+            if not busy:
+                self._playing = True
+                chunk = self._pending.pop(0)
+        if busy:
+            # Start synthesising the moment the sentence exists, rather
+            # than waiting for a chunk boundary to come round. Sentences
+            # arrive from the LLM stream while she is already talking, so
+            # dispatch-time prefetching alone left the newest sentence
+            # cold until the chunk *before* it was dispatched -- which on
+            # a two-sentence reply is after the first one has finished.
+            self._spawn_lookahead()
+            return
         self._dispatch(chunk)
 
     # Layer 2: real timed pauses. The cadence layer already produces
@@ -190,6 +206,7 @@ class TtsQueue:
             self._pending.clear()
             was_playing = self._playing
             self._playing = False
+            self._lookahead_text = None
         try:
             self._tts.stop()
         except Exception:
@@ -236,17 +253,81 @@ class TtsQueue:
         chunk: tuple[str, str, str | None, float | None, float],
     ) -> None:
         kind, content, reaction, speed, gain_db = chunk
+        # A pause or an earcon buys time for the next sentence just as
+        # playback does, so the prefetch is spawned for every kind of
+        # chunk -- not only from the text path as it once was.
         if kind == "earcon":
+            self._spawn_lookahead()
             self._start_earcon(content)
             return
         if kind == "silence":
+            self._spawn_lookahead()
             try:
                 duration_ms = int(content)
             except (TypeError, ValueError):
                 duration_ms = 0
             self._start_silence(duration_ms)
             return
+        # Ordered deliberately: ``_start_chunk`` hands the text to the
+        # engine, which stakes its claim on the synthesis gate before
+        # returning. Spawning the prefetch first instead lets it reach the
+        # engine while the gate still looks idle, and it takes the
+        # single-request pipe -- which is not a theoretical race. It cost
+        # the real sidecar 3.1s to first audio on a one-second opener,
+        # because the whole of sentence two was synthesised in front of it.
         self._start_chunk(content, reaction, speed, gain_db=gain_db)
+        self._spawn_lookahead()
+
+    def _spawn_lookahead(self) -> None:
+        """Pre-synthesise the next *text* chunk on a daemon thread.
+
+        Both engines produce a whole clip before emitting a byte, so
+        without this every sentence boundary costs a full synthesis of
+        silence -- around 2s on chatterbox-nano, whose RTF is 0.78. The
+        engine caches the clip, so the playback call that follows is a
+        cache hit rather than a second generation.
+
+        Scanning forward past silence and earcon entries is the part that
+        matters. The previous version peeked at one chunk and gave up
+        unless it was text, but the cadence layer brackets nearly every
+        sentence with ``pause_before`` / ``pause_after`` silences, so the
+        chunk after a sentence is almost always a pause -- meaning the
+        prefetch quietly never ran in a real turn, on either engine. The
+        pause was doing double damage: it hid the gap it was itself
+        causing, so the whole thing read as one unnaturally long beat
+        after every sentence.
+
+        Timing is safe by construction: a prefetch yields to the sentence
+        being spoken (see :class:`~app.tts.clip_cache.SynthesisGate`), so
+        the worst case is that it does not finish in time, never that it
+        delays the audio that is playing.
+        """
+        generate = getattr(self._tts, "generate_audio", None)
+        if not callable(generate):
+            return
+        with self._lock:
+            target = next(
+                (chunk for chunk in self._pending if chunk[0] == "text"), None,
+            )
+            if target is None:
+                return
+            _, text, reaction, speed, _gain = target
+            # One prefetch per sentence: a pause between two sentences
+            # dispatches several chunks that all see the same target, and
+            # duplicate threads would contend for the engine.
+            if text == self._lookahead_text:
+                return
+            self._lookahead_text = text
+        r2s = getattr(self._tts, "reaction_to_speed", None)
+        hint = speed if speed is not None else (
+            r2s(reaction) if callable(r2s) else 1.0
+        )
+        threading.Thread(
+            target=generate,
+            args=(text, hint),
+            daemon=True,
+            name="tts-lookahead",
+        ).start()
 
     def _start_silence(self, ms: int) -> None:
         """Layer 2: emit ``ms`` of silent PCM via the engine, then
@@ -311,26 +392,6 @@ class TtsQueue:
         *,
         gain_db: float = 0.0,
     ) -> None:
-        # Spawn lookahead synth for the *next* chunk if the backend supports
-        # offline generation — keeps latency low across multi-sentence
-        # responses without coupling to the avatar's envelope. We only
-        # pre-synth text chunks; earcons are pre-cached by EarconPlayer.
-        generate = getattr(self._tts, "generate_audio", None)
-        with self._lock:
-            peek = self._pending[0] if self._pending else None
-        if peek is not None and peek[0] == "text" and callable(generate):
-            r2s = getattr(self._tts, "reaction_to_speed", None)
-            _, peek_text, peek_reaction, peek_speed, _peek_gain = peek
-            speed_for_lookahead = peek_speed if peek_speed is not None else (
-                r2s(peek_reaction) if callable(r2s) else 1.0
-            )
-            threading.Thread(
-                target=generate,
-                args=(peek_text, speed_for_lookahead),
-                daemon=True,
-                name="tts-lookahead",
-            ).start()
-
         self._notify("start", {"text": text, "reaction": reaction or ""})
         amplitude_cb = self._amplitude_listener
         try:
