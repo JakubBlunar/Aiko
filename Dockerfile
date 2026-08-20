@@ -138,6 +138,23 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # whatever a user chooses to mount.
 COPY config ./config
 COPY --from=web-build /web/dist ./web/dist
+# Her voice: ~10 MB of Pocket-TTS speaker embeddings, which the shipped
+# config/default.json already names. Without them the full profile boots,
+# works, and speaks as "alba" -- Pocket-TTS resolves a missing voice file
+# by substituting a stock speaker, so the symptom was a companion with the
+# wrong voice and, until the warning added alongside this, nothing in the
+# log to explain it.
+#
+# Globbed to the embeddings rather than copying the directory. `voices/`
+# also accumulates audition renders, generated fine-tuning datasets and
+# studio takes -- 34 MB of untracked scratch at the time of writing, and
+# growing with every experiment. Copying the directory swept all of it
+# into the image. The reference wav is deliberately left out too: its only
+# consumer is a cloning engine, and none ships here (see docs/docker.md).
+#
+# Copied in both profiles because 10 MB is not worth a conditional, and a
+# slim install later switched to full then already has what it needs.
+COPY voices/*.safetensors ./voices/
 # Persona text + the Live2D avatar bundle are baked OUTSIDE the data
 # volume and seeded into it on first boot (the volume would otherwise
 # shadow anything baked under /app/data). Persona text is copied in by

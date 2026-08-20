@@ -49,7 +49,7 @@ The `PROFILE` build arg controls how big the image is:
 | Profile | Size (approx) | What you get |
 |---|---|---|
 | `slim` (default) | ~1–1.5 GB | Text chat, Live2D avatar, memory, RAG, tools, proactivity |
-| `full` | ~4–6 GB | Everything above **plus** server-side voice (RealtimeSTT + Pocket-TTS) |
+| `full` | ~4–6 GB | Everything above **plus** server-side voice (RealtimeSTT + Pocket-TTS on CPU) |
 
 The split is real: `realtimestt` + `pocket-tts` (and the PyTorch/whisper stack
 they pull) live behind a `voice` extra in `pyproject.toml`. The slim image
@@ -82,6 +82,48 @@ NVIDIA Container Toolkit story as the Ollama GPU section below.)
 
 `stt.device` defaults to `auto`, so the same image picks CUDA when the container
 can see a GPU and CPU when it can't. No config change is needed either way.
+
+### TTS: Pocket-TTS on CPU, and nothing else
+
+The app supports several TTS engines ([`app/tts/registry.py`](../app/tts/registry.py)),
+but **the image ships exactly one: Pocket-TTS on CPU.** The Chatterbox variants
+appear in the Voice tab as unavailable, with a reason saying so. That is
+deliberate on three counts:
+
+- **Size.** Chatterbox pins `torch==2.6.0` while the app runs `2.10.0`. They
+  cannot share an interpreter, so Chatterbox runs as a subprocess in its own
+  virtualenv — meaning a *second* PyTorch, plus `transformers 5.2`, plus model
+  weights. That roughly doubles an image already at 4–6 GB, for an engine most
+  people would not pick.
+- **Latency.** Pocket-TTS synthesises at RTF 0.24 with a flat ~570 ms to first
+  audio. Chatterbox Nano — the only variant that manages real time on a CPU at
+  all — runs at RTF 0.78, and because it generates a whole clip before emitting
+  a byte, first audio *is* the full synthesis (~3.5 s for a 4.3 s sentence).
+  Without a GPU that is a clear regression in responsiveness.
+- **Her voice.** Aiko's voice *is* a Pocket-TTS speaker embedding, shipped in the
+  image as `voices/aiko1_refined.safetensors`. A cloning engine re-derives it
+  from a reference clip and lands close but not identical. The lightest engine is
+  also the only one that reproduces her exactly, so the default costs nothing.
+
+If you want Chatterbox, run from source — `python -m tools.tts_lab.envs install
+chatterbox` — and see [`tts-engine-options.md`](tts-engine-options.md). The
+container has no `tools/` directory, so there is nothing to install against;
+`registry.availability()` reports that rather than pointing you at a command
+that cannot work.
+
+**If she sounds like a stranger**, the speaker embedding is missing. The image
+copies `voices/*.safetensors` and `config/default.json` names which one to use;
+when the file is absent Pocket-TTS substitutes a stock speaker called `alba` and
+keeps working, which reads as success. Confirm with:
+
+```bash
+docker compose exec aiko ls -l /app/voices
+docker compose logs aiko | grep "not found"
+```
+
+An empty directory means the build lost the embeddings — check `.dockerignore`
+hasn't grown a rule that swallows them. The log line naming the fallback is a
+`WARNING`; a full profile that never prints it is fine.
 
 ### Memory: the full profile needs real RAM
 
