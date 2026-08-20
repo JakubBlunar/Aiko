@@ -324,6 +324,43 @@ rejection rate, with LJSpeech and GPT-SoVITS manifests and exact
 transcripts (the text was the input, so there is no ASR or alignment
 error in the labels).
 
+#### What her voice file actually is, and why the original is unrecoverable
+
+"Lost" turned out to be stronger than lost-off-the-internet. The two
+March files in `voices/` are not audio and not speaker embeddings: each
+holds six layers of transformer self-attention KV cache, F32, shaped
+`[2, 1, N, 16, 64]`, with `N` = 99 for `aiko1_refined.safetensors` and
+108 for the unused `aiko1.safetensors`. A pocket-tts "voice" is a
+*prefilled attention state* — the model's frozen impression of a
+reference clip, not the clip.
+
+At Mimi's 12.5 Hz frame rate (`pocket_tts/config/b6369a24.yaml`) those
+sequence lengths put an upper bound of **7.9 and 8.6 seconds** on the
+audio she was ever cloned from, and the prompt also carries text and
+speaker tokens, so the true figure is lower. Recovering audio from a KV
+cache is not an analytic inversion, so there is nothing to extract: the
+download never contained a recording, and no amount of searching for the
+original files would produce one. Rendering through pocket-tts is not one
+option among several, it is the only way audio has ever existed for her.
+
+Which sets the real scale of the chain: `aiko_reference.wav` is 27
+seconds generated from under 8 seconds of frozen attention state, and
+Chatterbox then clones that. Two of the artefacts corrected in playback —
+the 7.4 kHz energy ceiling and the narrow band that read as muffled —
+trace to that origin rather than to any engine in the current path.
+
+Two follow-ups this leaves open:
+
+- `aiko1.safetensors` has 9% more conditioning than the file in use and
+  has never been auditioned. Cheap to check before assuming `_refined`
+  is the better of the two.
+- A real single-speaker corpus is now the *only* way to beat the ceiling,
+  because the teacher-swap above still starts from the same 8 seconds.
+  That trades exact identity for genuine recordings — acceptable per the
+  owner, who reports her voice is close to several anime characters and
+  does not mind a small change. Preserve the option to go back: the
+  safetensors are the sole copy of the incumbent voice.
+
 Worth being clear about what a fine-tune on that set can and cannot buy.
 It **cannot** exceed pocket-tts in fidelity, because that is the ceiling
 of the training audio. It **can** still be a large win, because the
