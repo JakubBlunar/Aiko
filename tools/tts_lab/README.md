@@ -236,7 +236,7 @@ app used to send no generation kwargs at all, so every voice spoke on its
 engine's shipped defaults and a value found here had nowhere to go. So
 the loop is: pick clips, build, audition on an engine, tune until it
 sounds right, save. Switch that engine in Aiko's settings and she sounds
-like the audition did.
+like the audition did — which is only true because of the next section.
 
 They are stored **per engine within the voice**, and saving on a second
 engine adds to the first rather than replacing it — one reference tuned
@@ -253,6 +253,61 @@ Two measured things worth knowing before you turn anything. Every
 stability knob is paid for in tempo — on Nano, `min_p=0.05` costs about
 as much as dropping temperature to 0.5 — and the reference matters more
 than any of them, so fix the clips before the dials.
+
+### Play it as Aiko will sound
+
+Aiko does not play what the engine generates. Four stages sit between
+synthesis and the socket — brightness shelved toward the reference's own
+spectral tilt, level matched to a target, tempo stretched toward the
+reference's syllable rate, and the pitch-preserving stretch that carries
+all of it — and the lab used to apply **none** of them. It wrote
+`generate_audio`'s array to a wav and played that. So the lab auditioned
+the engine while Aiko played the engine plus four corrections, and the
+predictable thing happened: a reference that sounded right here sounded
+wrong from her.
+
+The checkbox under **Speak** is on by default and runs the app's own
+`app.tts.shaping.shape_clip` on the clip, with the targets derived exactly
+as the service derives them on clone. The line under it reports what each
+stage did, which is the part worth reading:
+
+```
+as Aiko: level +1.7 dB to -26.0 dBFS · brightness -6.5 → -2.8 dB
+         (target 11.32) · tempo ×0.936 toward 6.55 syl/s
+```
+
+Turn it **off** to hear the engine raw. That comparison is the diagnostic:
+if a voice is good raw and bad shaped, the problem is a target, not the
+clips or the knobs.
+
+Which is not hypothetical. One phrase through `chatterbox-nano`, her two
+references, measured:
+
+| | `reference/aiko_reference.wav` | `aiko2/reference.wav` |
+| --- | --- | --- |
+| tilt target | +11.32 dB | −2.16 dB |
+| level applied | −3.27 dB | **+2.24 dB** |
+| brightness applied | 11.62 → 11.54 | 1.67 → **−1.70** |
+| tempo applied | ×1.15 (at the cap) | none — no target |
+
+Higher tilt is more low-band energy, so `aiko2` — built from anime
+voice-pack exclamations — asks to be 13.5 dB **brighter** than her
+pocket-tts reference. Nano generates dark, so `aiko2` gets every sentence
+brightened 3.4 dB *and* boosted 2.24 dB, on top of the excited register
+already cloned from those clips. Brighter, louder, more excited: that is
+the chipmunk, and all three push the same way. Her committed reference is
+the opposite — attenuated, and tonally left alone because the generation
+already matches it. None of this was audible here before this section
+existed.
+
+Two things to notice in that table beyond the chipmunk. `aiko2` has no
+tempo target at all, because deriving one needs three parts with `phrase`
+text and it has none — so its pacing is whatever Nano felt like. And the
+tempo correction on her *real* reference is **saturated**: ×1.15 is the
+`tts.speech_rate_match_limit` ceiling, meaning Nano runs more than 15%
+slower than her declared 6.55 syl/s and the stage gives back all it is
+allowed to. A saturated corrector passes variance straight through, so
+that is the number to look at first if sentences still differ in pace.
 
 ## Auditioning a voice in another language
 
@@ -492,6 +547,11 @@ Rules worth honouring, all learned the hard way here:
   a remote engine's first-audio figure is its whole clip latency. That is
   the harness's limit, not the engine's, and it is only worth fixing for
   an engine that survives the first audition.
+- **A multi-sentence audition.** The shaping now matches the app, but the
+  lab still speaks one phrase where Aiko speaks a queue of them, and the
+  between-sentence drift those stages exist to correct is therefore still
+  not something you can hear here. Every complaint about her sounding
+  inconsistent has been about sentence *two*.
 - **The other candidates** in the options doc: PocketTTS.cpp (our exact
   model on ONNX, which would delete PyTorch from the audio path and keep
   the voice bit-for-bit), Qwen3-TTS via its C runtime (the best control

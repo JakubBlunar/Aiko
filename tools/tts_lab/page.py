@@ -219,6 +219,14 @@ save. Prototype tool &mdash; it does not touch the running app.</p>
           <button id="synth" class="primary" disabled>Speak</button>
           <span class="stat" id="synthstat"></span>
         </div>
+        <label class="row" style="margin-top:8px;font-weight:normal"
+               title="The app matches brightness, level and tempo after
+synthesis. Off plays the engine's own output, which is what the lab used
+to do -- and why a voice could sound good here and worse from Aiko.">
+          <input type="checkbox" id="asapp" checked>
+          <span>Play it as Aiko will sound</span>
+        </label>
+        <div class="stat" id="shapestat"></div>
         <audio id="out" controls preload="none"></audio>
       </div>
       <div>
@@ -813,7 +821,8 @@ $('synth').onclick = async () => {
   $('synth').disabled = true;
   $('synthstat').textContent = 'generating\u2026 (first call loads the model)';
   const pick = $('voice').value;
-  const body = { engine: $('engine').value, text: $('text').value, kwargs };
+  const body = { engine: $('engine').value, text: $('text').value, kwargs,
+                 raw: !$('asapp').checked };
   if (pick === '@ref') body.reference = refId; else body.voice = pick;
   const r = await fetch('api/synth', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -826,7 +835,42 @@ $('synth').onclick = async () => {
   $('synthstat').textContent = r.duration_s.toFixed(2) + 's in '
     + r.total_ms.toFixed(0) + 'ms \u00b7 rtf ' + r.rtf.toFixed(2)
     + ' \u00b7 ' + r.sample_rate + ' Hz';
+  $('shapestat').innerHTML = shapingNote(r);
 };
+
+// What the app did to the clip, so a difference from the raw engine has a
+// reason attached rather than being left to the ear alone.
+function shapingNote(r) {
+  if (r.raw) return '<span class="warn">engine output, unshaped \u2014 '
+    + 'not what Aiko will sound like</span>';
+  const s = r.shaping;
+  if (!s) return '';
+  if (s.error) return '<span class="bad">shaping failed, playing it raw: '
+    + escapeHtml(String(s.error)) + '</span>';
+  if (s.inert || !(s.stages || []).length) {
+    return '<span class="good">nothing to apply \u2014 this engine ships '
+      + 'its output as generated</span>';
+  }
+  const bits = [];
+  if (s.level_gain_db && Math.abs(s.level_gain_db) > 0.05) {
+    bits.push('level ' + (s.level_gain_db > 0 ? '+' : '')
+      + s.level_gain_db.toFixed(1) + ' dB to ' + s.level_target_dbfs
+      + ' dBFS');
+  }
+  if (s.tilt_before_db != null && s.tilt_after_db != null) {
+    bits.push('brightness ' + s.tilt_before_db.toFixed(1) + ' \u2192 '
+      + s.tilt_after_db.toFixed(1) + ' dB (target '
+      + s.tilt_target_db + ')');
+  }
+  if (Math.abs(s.tempo_factor - 1) > 0.005) {
+    bits.push('tempo \u00d7' + s.tempo_factor.toFixed(3) + ' toward '
+      + s.rate_target_syl_s + ' syl/s');
+  }
+  if (Math.abs(s.speed - 1) > 0.001) {
+    bits.push('stretched to ' + s.speed.toFixed(3) + '\u00d7');
+  }
+  return 'as Aiko: ' + bits.join(' \u00b7 ');
+}
 
 // ── save ──
 $('save').onclick = async () => {

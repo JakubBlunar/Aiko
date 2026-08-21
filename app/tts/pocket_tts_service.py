@@ -19,7 +19,8 @@ import threading
 
 from app.core.infra.settings import TtsSettings
 from app.tts.clip_cache import ClipCache, SynthesisGate
-from app.tts.pcm_playback import PcmPlaybackMixin, resolve_loudness_target
+from app.tts.pcm_playback import PcmPlaybackMixin
+from app.tts.shaping import loudness_target_for
 from app.tts.reactions import (
     LENGTH_SCALE_MAX,
     LENGTH_SCALE_MIN,
@@ -200,8 +201,8 @@ class PocketTtsService(PcmPlaybackMixin):
         #
         # ``tts.providers.pocket-tts.loudness_target_dbfs`` turns it back
         # on for an A/B without touching the global default.
-        self._loudness_target_dbfs: float = resolve_loudness_target(
-            settings, "pocket-tts", default=0.0,
+        self._loudness_target_dbfs: float = loudness_target_for(
+            "pocket-tts", settings,
         )
 
         if TTSModel is not None and np is not None:

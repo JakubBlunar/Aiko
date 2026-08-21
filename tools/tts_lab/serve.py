@@ -46,7 +46,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from tools.tts_lab import adapters, labeled, refset, remote
+from tools.tts_lab import adapters, asheard, labeled, refset, remote
 from tools.tts_lab.adapters import REPO_ROOT, assess, read_audio, write_wav
 from tools.tts_lab.page import INDEX_HTML
 
@@ -439,10 +439,18 @@ def build_app() -> FastAPI:
 
     @app.post("/api/synth")
     async def api_synth(request: Request) -> JSONResponse:
+        """Speak one phrase, shaped the way the app will shape it.
+
+        ``raw`` skips the shaping and plays the engine's own output, which
+        is what this endpoint used to do unconditionally. Keeping it is
+        what makes the difference audible: "worse in the app than in the
+        lab" is only diagnosable if both are one click apart.
+        """
         body = await request.json()
         name = str(body.get("engine") or "")
         text = str(body.get("text") or "").strip()
         kwargs = body.get("kwargs") or {}
+        raw = bool(body.get("raw"))
         if not text:
             return JSONResponse({"error": "nothing to say"})
         try:
@@ -461,15 +469,32 @@ def build_app() -> FastAPI:
                 result = engine.synth(text, voice)
         except Exception as exc:
             return JSONResponse({"error": f"{type(exc).__name__}: {exc}"})
+
+        audio, rate = result.audio, result.sample_rate
+        shaping: dict[str, object] | None = None
+        if not raw:
+            try:
+                preview = asheard.apply(
+                    audio, rate, engine=name, reference=source, text=text,
+                )
+                audio, rate = preview.audio, preview.sample_rate
+                shaping = preview.report
+            except Exception as exc:
+                # An audition of the raw clip beats no audition, and the
+                # note says which one is playing so the ear is not misled.
+                shaping = {"error": f"{type(exc).__name__}: {exc}"}
+
         out = WORK_DIR / f"synth_{uuid.uuid4().hex[:8]}.wav"
-        write_wav(out, result.audio, result.sample_rate)
+        write_wav(out, audio, rate)
         return JSONResponse(
             {
                 "file": out.name,
                 "duration_s": result.duration_s,
                 "total_ms": result.total_ms,
                 "rtf": result.rtf,
-                "sample_rate": result.sample_rate,
+                "sample_rate": rate,
+                "raw": raw,
+                "shaping": shaping,
             }
         )
 

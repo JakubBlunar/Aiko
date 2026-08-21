@@ -56,7 +56,6 @@ from tools.tts_lab.adapters import (
     Adapter,
     PocketTts,
     assess,
-    read_wav,
     write_wav,
 )
 
