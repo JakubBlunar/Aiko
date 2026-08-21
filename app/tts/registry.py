@@ -313,6 +313,7 @@ def build(name: str, tts_settings: Any) -> Any:
             if per_provider.threads > 0
             else default_threads()
         ),
+        generate=dict(per_provider.generate),
     )
 
 

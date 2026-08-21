@@ -76,7 +76,10 @@ DEFAULT_REFERENCE = "reference/aiko_reference.wav"
 
 #: Subtrees of ``voices/`` holding generated output rather than voices.
 #: Kept in step with ``_SCRATCH`` in ``tools/tts_lab/serve.py``.
-_SCRATCH = ("studio/", "datasets/", "audition/", "speed_ab/", "reference/parts/")
+#: ``sounds/`` is found source material -- the clips a reference gets
+#: *built from*, of which this machine has 98. The built reference is the
+#: voice; its ingredients are not.
+_SCRATCH = ("studio/", "datasets/", "audition/", "speed_ab/", "sounds/")
 
 #: A model download on first run can take minutes; a warm load is
 #: seconds. Generous because the alternative to waiting is a mute
@@ -103,6 +106,7 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         device: str = "cpu",
         voice: str = "",
         threads: int = 0,
+        generate: dict[str, float] | None = None,
     ) -> None:
         self._settings = settings
         self._interpreter = Path(interpreter)
@@ -157,6 +161,14 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         )
         self._rate_matching = self._rate_limit > 0.0
         self._rate_target_syl_s: float | None = None
+        # Sampling knobs. Settings win where set; otherwise the voice's
+        # manifest supplies them, so ``_clone`` fills this in too.
+        self._settings_kwargs = {
+            key: float(value)
+            for key, value in dict(generate or {}).items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        self._generate_kwargs: dict[str, object] = {}
 
         self._scratch = Path(tempfile.mkdtemp(prefix="aiko-chatterbox-"))
         threading.Thread(
@@ -285,6 +297,78 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         self._voice = voice
         self._adopt_tilt_target(reference)
         self._adopt_rate_target(reference)
+        self._adopt_generate_kwargs(reference)
+
+    def _adopt_generate_kwargs(self, reference: Path) -> None:
+        """Take tuned sampling knobs from the reference's own manifest.
+
+        The app used to send none, so every voice spoke on its engine's
+        shipped defaults and anything tuned in the studio was unreachable
+        from here. Which mattered: a reproducible artifact on an
+        utterance-initial /h/ ("Hey, ...") clears up at a colder
+        temperature, and there was no way to carry that finding across.
+
+        Stored per voice, because that is the level the tuning belongs to
+        -- knobs that steady one reference say nothing about another --
+        and within that, **per engine**. The values are absolute while
+        the defaults they were chosen against are not: Nano ships
+        ``min_p=0.0`` where the full model ships ``0.05``, so the same
+        number is a real intervention on one and a no-op on the other.
+        An engine with no entry gets its own defaults rather than
+        somebody else's numbers.
+        """
+        self._generate_kwargs = {}
+        if self._settings_kwargs:
+            # An explicit setting outranks the voice: it is the lever for
+            # a bare wav with no manifest, and for trying a value in the
+            # live app without rebuilding a reference to hold it.
+            self._generate_kwargs = dict(self._settings_kwargs)
+            log.info(
+                "%s generating with %s (from settings)",
+                self._engine_key,
+                self._generate_kwargs,
+            )
+            return
+        manifest = reference.parent / "manifest.json"
+        if not manifest.is_file():
+            return
+        try:
+            body = json.loads(manifest.read_text(encoding="utf-8"))
+            block = body.get("generate")
+            if not isinstance(block, dict):
+                return
+            mine = block.get(self._engine_key)
+            if not isinstance(mine, dict) or not mine:
+                if block:
+                    log.info(
+                        "%s: %s carries tuning for %s but not for this "
+                        "engine, using shipped defaults",
+                        self._engine_key,
+                        reference.name,
+                        ", ".join(sorted(block)),
+                    )
+                return
+            kwargs = {
+                key: float(value)
+                for key, value in mine.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+            if not kwargs:
+                return
+            self._generate_kwargs = kwargs
+            log.info(
+                "%s generating with %s (tuned on %s)",
+                self._engine_key,
+                kwargs,
+                reference.name,
+            )
+        except Exception as exc:
+            log.warning(
+                "%s could not read generation knobs from %s: %r",
+                self._engine_key,
+                manifest,
+                exc,
+            )
 
     def _adopt_tilt_target(self, reference: Path) -> None:
         """Take the brightness target from the clip being cloned.
@@ -336,6 +420,15 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         default for a voice somebody dropped in as a bare wav -- guessing
         a tempo for a stranger's clip would be worse than leaving pacing
         alone.
+
+        A manifest may also **declare** ``target_syl_s`` outright, which
+        the measured route cannot always reach. Her recovered source pack
+        is Japanese game audio: the clips are unquestionably her voice,
+        and there is no honest English transcript to measure a rate from,
+        so a reference built out of them gets no target and delivers
+        about 8% slow with nothing able to correct it. Declaring the
+        target says "this is her, hold her to her own pace" and is the
+        one case where a constant beats a measurement.
         """
         if not self._rate_matching:
             return
@@ -350,6 +443,18 @@ class ChatterboxTtsService(PcmPlaybackMixin):
             return
         try:
             body = json.loads(manifest.read_text(encoding="utf-8"))
+            declared = float(body.get("target_syl_s") or 0.0)
+            if declared > 0.0:
+                self._rate_target_syl_s = declared
+                log.info(
+                    "%s matching tempo to %s (%.2f syl/s declared by its "
+                    "manifest, limit %.0f%%)",
+                    self._engine_key,
+                    reference.name,
+                    declared,
+                    self._rate_limit * 100.0,
+                )
+                return
             rates: list[float] = []
             for part in body.get("parts") or []:
                 phrase = str(part.get("phrase") or "")
@@ -491,6 +596,13 @@ class ChatterboxTtsService(PcmPlaybackMixin):
             rel = path.relative_to(VOICES_DIR).as_posix()
             if any(rel.startswith(p) for p in _SCRATCH) or "roundtrip" in rel:
                 continue
+            # Fragments of a reference, not voices. A segment match
+            # rather than a prefix one: the prefix rule covered the one
+            # ``reference/parts/`` that existed when it was written, and
+            # every reference set built in the studio since has its own
+            # ``<name>/parts/`` holding a dozen more.
+            if "parts" in path.relative_to(VOICES_DIR).parent.parts:
+                continue
             found.append(rel)
         # Her canonical reference first: it is the answer nearly always
         # wanted, and being top of the list makes the default obvious.
@@ -593,15 +705,18 @@ class ChatterboxTtsService(PcmPlaybackMixin):
             return None
         out = self._scratch / f"synth-{time.monotonic_ns()}.wav"
         try:
-            self._request(
-                {
-                    "op": "synth",
-                    "text": prepared,
-                    "voice": 0,
-                    "out": str(out),
-                },
-                SYNTH_TIMEOUT_S,
-            )
+            request: dict[str, object] = {
+                "op": "synth",
+                "text": prepared,
+                "voice": 0,
+                "out": str(out),
+            }
+            if self._generate_kwargs:
+                # The sidecar drops anything this engine's generate()
+                # does not accept, so a knob that moved between versions
+                # is inert rather than fatal.
+                request["kwargs"] = dict(self._generate_kwargs)
+            self._request(request, SYNTH_TIMEOUT_S)
             audio, rate = _read_wav(out)
         except Exception as exc:
             self._last_error = str(exc)

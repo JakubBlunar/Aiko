@@ -1533,13 +1533,18 @@ Server-side audio knobs. The browser / Tauri client owns the mic + speakers; onl
   - `voice` *(string)* — a pocket-tts voice is a `.safetensors` **speaker embedding**; a Chatterbox voice is a reference **wav it clones from on every load**, given as a path relative to `voices/` (default `reference/aiko_reference.wav`, the portable copy of her voice extracted from pocket-tts). One shared field could only ever be right for whichever engine was selected last, and a round trip between them lost the other's setting.
   - `device` *(string, `"auto"`)* — `auto`, `cpu` or `cuda`. `auto` resolves to each engine's own preference, which differs by engine rather than by machine: pocket-tts is CPU-only, Nano is comfortably real-time on CPU so spending VRAM on it buys nothing, Turbo and Multilingual cannot reach real time without a GPU. A device an engine cannot use is downgraded with a warning rather than refused. Note the app cannot verify CUDA without importing torch, so the *engine* checks on load and refuses clearly — a CUDA request against a CPU-only wheel is a likely mistake here, and a silent downgrade would produce stuttering for an invisible reason.
   - `threads` *(int, `0` → decide automatically)* — CPU threads for a sidecar engine. Worth leaving on automatic: measured on a 16-core 9950X3D, Nano synthesises at **RTF 0.78 on 8 threads and 0.93 on 16**, so torch's default of one thread per core is both slower *and* takes the whole machine. The automatic value is half the cores capped at 8.
+  - `generate` *(object, `{}`)* — sampling knobs passed to the engine's own `generate()`, e.g. `{"temperature": 0.5}`. Empty means the engine's shipped defaults, which is what every voice used before Aug 2026 — the app sent no generation kwargs at all, so anything tuned in the studio was unreachable from here. **Overrides a voice's own tuning** (its `manifest.json`'s `generate` block, written by the studio's Save and keyed by engine, so one reference can hold different numbers for Nano and Turbo), which makes this the lever for a bare wav with no manifest and for trying a value without rebuilding a reference to hold it. Reach for it when a word is reliably mangled rather than occasionally: an utterance-initial /h/ ("Hey, …") clears at a colder temperature, and `min_p` is the upstream stability knob that Nano ships *off* at `0.0`. Both are **paid for in tempo** — on Nano `min_p=0.05` costs about as much pace as `temperature=0.5`, ~8 points each — so fix the reference clips first, which are worth twice as much. Knob names and defaults are per engine and **not portable**: Nano ships `min_p=0.0`, `exaggeration=0.0`, `cfg_weight=0.0` where the full model ships `0.05 / 0.5 / 0.5`, so any published "lower `cfg_weight` to 0.3" advice is about a different model. Values are not validated against a whitelist — the set moves between releases and the sidecar filters against the *installed* signature, so an unknown key is inert rather than fatal. Read the real ones with the studio's **Read this engine's knobs**.
 
   ```json
   "tts": {
     "provider": "chatterbox-nano",
     "providers": {
       "pocket-tts": { "voice": "aiko1_refined.safetensors" },
-      "chatterbox-nano": { "voice": "reference/aiko_reference.wav", "device": "cpu" },
+      "chatterbox-nano": {
+        "voice": "reference/aiko_reference.wav",
+        "device": "cpu",
+        "generate": { "min_p": 0.05 }
+      },
       "chatterbox-turbo": { "device": "cuda" }
     }
   }

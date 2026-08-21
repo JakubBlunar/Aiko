@@ -213,6 +213,49 @@ def test_device_set_without_voice_keeps_the_legacy_voice() -> None:
     assert resolved.device == "cpu"
 
 
+def test_generate_knobs_are_read_per_provider() -> None:
+    from app.core.infra.settings import _parse_tts_providers
+
+    parsed = _parse_tts_providers(
+        {"chatterbox-nano": {"generate": {"temperature": 0.5, "min_p": 0.05}}}
+    )
+    assert parsed["chatterbox-nano"].generate == {
+        "temperature": 0.5,
+        "min_p": 0.05,
+    }
+
+
+def test_knob_names_are_not_validated_against_a_whitelist() -> None:
+    """On purpose. The knob set differs by engine and moves between
+    releases, and the sidecar filters against the *installed*
+    ``generate()`` signature -- the only check that can be right. A list
+    here could only reject something that works."""
+    from app.core.infra.settings import _parse_tts_providers
+
+    parsed = _parse_tts_providers(
+        {"chatterbox-nano": {"generate": {"some_future_knob": 2}}}
+    )
+    assert parsed["chatterbox-nano"].generate == {"some_future_knob": 2.0}
+
+
+def test_a_non_numeric_knob_is_dropped_rather_than_passed_on() -> None:
+    """Every knob these engines expose is a number; a string would fail
+    inside the model, a long way from the config that caused it."""
+    from app.core.infra.settings import _parse_tts_providers
+
+    parsed = _parse_tts_providers(
+        {"chatterbox-nano": {"generate": {"temperature": "warm", "min_p": 0.05}}}
+    )
+    assert parsed["chatterbox-nano"].generate == {"min_p": 0.05}
+
+
+def test_a_config_without_generate_gets_no_knobs() -> None:
+    from app.core.infra.settings import _parse_tts_providers
+
+    parsed = _parse_tts_providers({"chatterbox-nano": {"device": "cpu"}})
+    assert parsed["chatterbox-nano"].generate == {}
+
+
 def test_unconfigured_provider_resolves_to_defaults() -> None:
     resolved = _settings().for_provider("chatterbox-turbo")
     assert resolved.device == "auto"
