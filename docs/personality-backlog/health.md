@@ -2882,7 +2882,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 <a id="recurring-shapes"></a>
 
-## The twenty-six recurring shapes
+## The twenty-seven recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3307,6 +3307,24 @@ and the smell is strongest when the tool predates the pipeline. Distinct from sh
 12: there two correct components fault at their interface, here two correct
 components never meet, and the only instrument that can notice is a human saying
 "it sounded better in the other one".
+
+**27. A lossy transform whose output is well-formed.** The corruption survives
+because it does not look like corruption. H50 deleted every character without an
+ASCII spelling from her stored replies — for the entire history, 448k characters
+with not one survivor — and went unnoticed because what it produced was clean,
+readable, plausible text: "Kamenn Poruba" reads like a place, where mojibake
+("KamennÃ¡") or a replacement character would have been reported within a day. The
+severity and the detectability ran in opposite directions, so a filter with a 100%
+loss rate was quieter than one that mangles a single byte.
+
+Two tells. A filter defined by what it *keeps* rather than by what it removes —
+`32 <= ord(ch) <= 126` names an allowed set and is silent about the cost of
+everything outside it, where "drop control characters" names the target and cannot
+overreach. And an invariant that is never asserted anywhere: no test said her
+transcript could hold a letter she can pronounce, so nothing failed. When a store
+is a lossy funnel, compare it against a sibling store that is not — memories and
+concepts had been keeping accents the whole time, and one query across both would
+have shown it.
 
 The tell is grammatical, which makes it cheap to grep for: the benefit is
 written as a number and the cost as an adverb. "Dramatically quieter",
@@ -5817,4 +5835,97 @@ afterwards. Each stage was added with a test proving it did its job; none had a
 reason to ask whether the audition still previewed anything. H46's four
 between-sentence fixes each widened this gap, and the person who reported it was
 the only instrument that could.
+
+## H50. Her transcript could not hold the words she said
+
+Reported from a reload: *"when it loaded messages from history they have problem
+with special characters like á, °"*, with the line quoted as *"about a 97% chance in
+Kamenn Poruba. Around 17 to 25C too"*. Phrased as a display bug, and the reporter's
+own guess — *"i think it is badly saved in db"* — was right.
+
+### Not an encoding problem
+
+The distinction that makes this quick: the characters were **absent**, not mangled.
+Mojibake ("KamennÃ¡") means a charset mismatch; silent removal means something
+filtered. Confirmed before reading any code — 447,888 characters of stored
+assistant replies containing **zero** non-ASCII characters. A model writing that
+much English without one curly apostrophe is not a model, it is a filter.
+
+The filter was in `sanitize_assistant_text`:
+
+```python
+if 32 <= code <= 126:
+    out_chars.append(ch)
+```
+
+`á` (U+00E1) and `°` (U+00B0) both fall outside it and were dropped whole. NFKC on
+the way in made it worse rather than better: NFKC *composes*, so `á` arrives as one
+codepoint and the base letter goes with the accent. NFKD would have decomposed it
+and left "Kamenna" — still wrong, but with the letter intact.
+
+### Nothing was being protected
+
+The plausible defence is speech: pocket-tts is grapheme-driven and has no phoneme
+control, so an ASCII-only transcript sounds like caution. It is not, and
+`prepare_tts_text` says so in its own comment — *"the streaming voice path hands us
+raw model text, so this cannot be left to `sanitize_assistant_text` — that only
+cleans the copy destined for the transcript, and by then the audio has played."*
+
+On a normal turn `turn_runner` feeds the TTS buffer from `body_text`, the raw model
+output, and only the persisted copy goes through the sanitiser. So the engine has
+been receiving `á` and `°` daily regardless, the strip bought nothing, and it broke
+the project's own standing rule that TTS text processing applies to the spoken
+stream and never the transcript.
+
+The other stores settle it. Over the same period, with the same author:
+
+| store | non-ASCII |
+| --- | --- |
+| assistant messages (447,888 chars) | **zero** |
+| memories (263,663 chars) | 112 `’`, 30 `—`, plus `á é č à € 👋` |
+| concepts (660,355 chars) | 214 `—`, plus `á č é €` |
+
+Her memory of the weather could hold `Kamenná`; the message where she said it could
+not. A single query across both would have found this at any point in the history.
+
+### The part that is not cosmetic
+
+She reads her own transcript back as context, which makes it the source she learns
+her own writing from. This codebase already paid for that lesson once: a
+punctuation whitelist ate the `<` of an incoming `<3`, 230 stored turns read "I love
+you 3", and **she copied the habit into her own replies** until TTS said "three"
+out loud. Same mechanism here, one level quieter — the place name is spelled
+correctly in her memories and wrongly in all five messages she used it in, so the
+two halves of her own history disagree.
+
+### The fix, and what it does not fix
+
+A category filter replaces the range: drop the `C` classes (control, format,
+surrogate, private-use) and the line/paragraph separators, keep letters, marks,
+numbers, punctuation and symbols. Emoji are now dropped by name via the shared
+`_EMOJI_RE` rather than as a side effect of the range, because losing that
+implicitly while fixing this would have been an unrequested behaviour change. The
+curly-quote and dash *substitutions* stay: those lose nothing and read better.
+
+Two live consequences worth stating. Proactive lines speak the sanitised copy
+(`prepare_tts_text(cleaned)`) rather than raw text, so `°` now reaches the engine on
+that path — which makes proactive consistent with every normal turn rather than
+introducing anything new, but it is a change to spoken input and was not made
+silently. And NFKC still flattens superscripts, so `m²` persists as `m2`; that is
+the price of the same pass folding non-breaking spaces onto real ones, and
+`tests/test_transcript_unicode.py` pins it as a known cost rather than leaving it to
+be rediscovered as a bug.
+
+The existing history is **not** recoverable in general — you cannot know that
+"Kamenn" was "Kamenná" without knowing the word. The exception is proper nouns that
+came from config, where the canonical spelling still exists
+(`weather.location_name`), and there the whole repairable set is five messages.
+
+### Shape
+
+New: [shape 27](#recurring-shapes), **a lossy transform whose output is
+well-formed.** The loss rate was 100% and it survived the entire history because
+what it produced was clean readable text. Had it emitted `KamennÃ¡` or `Kamenn?`
+it would have been reported in a day. Detectability and severity ran in opposite
+directions.
 
