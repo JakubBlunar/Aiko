@@ -5920,6 +5920,17 @@ The existing history is **not** recoverable in general — you cannot know that
 "Kamenn" was "Kamenná" without knowing the word. The exception is proper nouns that
 came from config, where the canonical spelling still exists
 (`weather.location_name`), and there the whole repairable set is five messages.
+[`scripts/repair_transcript_accents.py`](../../scripts/repair_transcript_accents.py)
+does that lookup, dry-run by default.
+
+It repairs **both** stores, which is the part worth remembering:
+`RagStore.search_messages` returns the Lance mirror's own `content` column, so
+fixing SQLite alone would leave the wrong spelling reachable through retrieval —
+the exact half-fix that would have looked complete. The mirror row is rewritten
+carrying its existing vector rather than re-embedded, since one accent does not
+move a sentence's meaning and re-embedding would pull the model into a five-row
+text fix. Run it with the app closed: concurrent Lance writes from two processes
+are what the native crash in the LanceDB upgrade was about.
 
 ### Shape
 
