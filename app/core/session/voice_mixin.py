@@ -72,6 +72,7 @@ class VoiceMixin:
         listener: Callable[[str, int, int, bytes], None] | None,
         *,
         end_listener: Callable[[str], None] | None = None,
+        cancel_listener: Callable[[str], None] | None = None,
     ) -> None:
         """Install a sink for outbound TTS / earcon PCM.
 
@@ -79,9 +80,14 @@ class VoiceMixin:
         as ``0x10 tts_pcm`` / ``0x11 earcon_pcm`` frames to every
         connected client. ``stream`` is ``"tts"`` or ``"earcon"`` so
         the hub picks the right frame type.
+
+        ``cancel_listener`` carries the "drop the pre-roll" signal for a
+        clip that was cut rather than finished; see
+        :mod:`app.web.audio_frames` for why that is a separate frame.
         """
         self._audio_frame_listener = listener
         self._audio_frame_end_listener = end_listener
+        self._audio_frame_cancel_listener = cancel_listener
 
     def _emit_audio_frame(
         self,
@@ -106,6 +112,15 @@ class VoiceMixin:
             end_listener(stream)
         except Exception:
             log.debug("audio frame end listener raised", exc_info=True)
+
+    def _emit_audio_frame_cancel(self, stream: str) -> None:
+        cancel_listener = getattr(self, "_audio_frame_cancel_listener", None)
+        if cancel_listener is None:
+            return
+        try:
+            cancel_listener(stream)
+        except Exception:
+            log.debug("audio frame cancel listener raised", exc_info=True)
 
     def barge_in_enabled(self) -> bool:
         return bool(getattr(self._settings.audio, "barge_in_enabled", False))
@@ -388,6 +403,7 @@ class VoiceMixin:
         self._tts_engine.set_pcm_listener(
             lambda rate, ch, pcm: self._emit_audio_frame("tts", rate, ch, pcm),
             end_listener=lambda: self._emit_audio_frame_end("tts"),
+            cancel_listener=lambda: self._emit_audio_frame_cancel("tts"),
         )
         self._tts = TtsQueue(
             self._tts_engine,

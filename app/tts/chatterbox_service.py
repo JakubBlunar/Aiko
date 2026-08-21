@@ -140,6 +140,7 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         # Playback contract (see PcmPlaybackMixin).
         self._pcm_listener: Callable[[int, int, bytes], None] | None = None
         self._clip_end_listener: Callable[[], None] | None = None
+        self._clip_cancel_listener: Callable[[], None] | None = None
         self._pitch_preserving_speed = bool(
             getattr(settings, "pitch_preserving_speed", True)
         )
@@ -849,13 +850,18 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         listener: Callable[[int, int, bytes], None] | None,
         *,
         end_listener: Callable[[], None] | None = None,
+        cancel_listener: Callable[[], None] | None = None,
     ) -> None:
         self._pcm_listener = listener
         self._clip_end_listener = end_listener
+        self._clip_cancel_listener = cancel_listener
 
     def stop(self) -> None:
         self._stop_requested.set()
         self._clip_cache.clear()
+        # See PocketTtsService.stop: the client is holding pre-roll this
+        # engine has decided not to finish.
+        self._fire_clip_cancel()
 
     def is_speaking(self) -> bool:
         thread = self._speak_thread

@@ -44,13 +44,18 @@ class NullTtsService:
         self._model = None
         self._pcm_listener = None
         self._clip_end_listener = None
+        self._clip_cancel_listener = None
 
     # ── playback wiring ──────────────────────────────────────────────
 
-    def set_pcm_listener(self, listener, *, end_listener=None) -> None:
+    def set_pcm_listener(
+        self, listener, *, end_listener=None, cancel_listener=None,
+    ) -> None:
         self._pcm_listener = listener
         if end_listener is not None:
             self._clip_end_listener = end_listener
+        if cancel_listener is not None:
+            self._clip_cancel_listener = cancel_listener
 
     # ── TtsEngine protocol ───────────────────────────────────────────
 
@@ -70,14 +75,14 @@ class NullTtsService:
         return False
 
     def stop(self) -> None:
-        # Still fire the end-of-clip hook: a client that somehow has
-        # buffered audio should get its flush signal either way.
-        end_listener = self._clip_end_listener
-        if end_listener is not None:
-            try:
-                end_listener()
-            except Exception:
-                pass
+        # Still fire both hooks: a client that somehow has buffered
+        # audio should get told to drop it either way.
+        for hook in (self._clip_cancel_listener, self._clip_end_listener):
+            if hook is not None:
+                try:
+                    hook()
+                except Exception:
+                    pass
 
     def is_speaking(self) -> bool:
         return False

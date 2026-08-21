@@ -15,10 +15,12 @@
 
 import { debugLog } from "../log";
 import {
+  FRAME_AUDIO_CANCEL,
   FRAME_AUDIO_END,
   FRAME_AUDIO_START,
   FRAME_EARCON_PCM,
   FRAME_TTS_PCM,
+  parseAudioCancel,
   parseAudioEnd,
   parseAudioStart,
   streamName,
@@ -389,6 +391,14 @@ export class AudioOutputManager {
       this._onAudioEnd(tag);
       return tag;
     }
+    if (type === FRAME_AUDIO_CANCEL) {
+      const streamByte = parseAudioCancel(body);
+      if (streamByte === null) return null;
+      const tag = streamName(streamByte);
+      if (tag === "unknown") return null;
+      this._onAudioCancel(tag);
+      return tag;
+    }
     if (type === FRAME_TTS_PCM) {
       void this._enqueuePcm("tts", body);
       return "tts";
@@ -695,9 +705,32 @@ export class AudioOutputManager {
     // We could prune the ``active`` list but it's bounded by the
     // clip length and the GC reclaims the buffers shortly after each
     // ``onended`` fires.
+    //
+    // "Every chunk has been sent" is genuinely not "stop playing". The
+    // discard case arrives as ``audio_cancel``; see `_onAudioCancel`.
     this._streams[tag].active = this._streams[tag].active.filter(
       (src) => (src as unknown as { _stopped?: boolean })._stopped !== true,
     );
+  }
+
+  /**
+   * Drop scheduled audio that has not been played.
+   *
+   * The server ships ~250 ms ahead of real time so the scheduler never
+   * underruns, which means a cut clip leaves us holding audio the server
+   * has already given up on. Left alone the Web Audio graph plays it: a
+   * quarter-second of speech, mid-word, after the sentence appeared to
+   * end. `_stopStream` both stops the scheduled sources and rewinds
+   * `nextStartTime`, so the next clip starts from now instead of
+   * chaining onto a schedule that no longer exists.
+   */
+  private _onAudioCancel(tag: StreamTag): void {
+    this._stopStream(tag);
+    debugLog.log({
+      source: "audio",
+      kind: "audioCancelled",
+      payload: { stream: tag },
+    });
   }
 
   /**

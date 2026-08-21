@@ -5364,3 +5364,93 @@ So a session you open and never speak in is not remembered, which is deliberate
 (it keeps "New session" → close → reopen on the fresh empty one). The
 `configuration.md` line claiming `SessionController.shutdown()` writes it was
 simply wrong and is corrected.
+
+---
+
+## H46. A quarter-second of speech after the sentence, that nothing could retract
+
+**Severity: medium — audible on every engine, and neither half of the cause is a
+bug on its own.**
+
+Reported as a fragment occasionally spoken after a sentence ends, "when the
+buffer ends", and — the detail that made it worth chasing — *still happening on
+the new engine*. An artifact that survives replacing the entire synthesiser is
+not the synthesiser's.
+
+### Two wrong theories, each cheap to kill
+
+Worth recording because both were plausible and the measurements that ruled them
+out are reusable.
+
+**The text.** The reported sound was a word-like syllable, and she emits inline
+tags (`[[remember:…]]` and a dozen more) that are stripped before speaking. A
+partial tag leaking at a chunk boundary would be exactly this. So: stream 14 tag
+shapes through the real `safe_visible_prefix` → `drain_tts_stream_chunks` →
+`prepare_tts_text` path at one, three and seven characters per delta, and
+compare what reaches the engine against the fully-stripped reply. Zero
+mismatches, including unclosed tags, tags with a `]` inside, back-to-back tags,
+and a tag glued to a sentence stop. The holdback is sound.
+
+**The engine.** Autoregressive TTS is known for trailing noise. Measured the
+tail after speech ends on eight sentences: 0.22–0.40 s at 2–6% of body RMS,
+which is decay. The first pass at this used an energy gate and was the wrong
+instrument — anything loud enough to hear is loud enough to be classified as
+speech, so the measurement hides what it is looking for. Re-cut as speech/silence
+runs, asking whether the *last* run is detached from the body by a real gap:
+zero of eight clips end in a detached sound.
+
+Neither the text nor the audio. Which leaves the part in between.
+
+### The cause: two correct decisions that are wrong together
+
+| | |
+| --- | --- |
+| `PcmPlaybackMixin._PRE_ROLL_CHUNKS = 5` | ship ~250 ms immediately, then pace at real time, so the client's scheduler never underruns |
+| `AudioOutputManager._onAudioEnd` | "Nothing to flush here" — the next sentence chains onto this one's tail, so discarding would clip every sentence short |
+
+Both are right, and each has a comment explaining why. Together they mean the
+client is **permanently holding ~250 ms of speech that has not been heard**, and
+when a clip is cut — barge-in, a stop between sentences — the server stops
+sending and fires clip-end, while the audio already scheduled in the Web Audio
+graph plays anyway. A quarter-second of her voice, mid-word, after the sentence
+appeared to end.
+
+Engine-independent because the pre-roll lives in the mixin both engines share.
+Occasional because it needs a cut to land while audio is in flight. And
+unfixable from either side alone: the protocol had exactly one frame for "this
+clip is over" (`0x13 audio_end`), whose docstring said *flush the matching
+queue* while the client deliberately did not — a contract mismatch that had been
+sitting in the two files for as long as both comments.
+
+### The fix is a second frame, because there are two questions
+
+`0x14 audio_cancel` means *drop what you have not played*, and is sent only for
+a cut. `audio_end` keeps its existing meaning and its existing no-flush handling,
+so sentences still chain. The mixin distinguishes the cases by whether its emit
+loop was broken or exhausted; `stop()` also fires cancel directly, which covers
+a stop landing between clips while the client still holds the previous
+pre-roll. On the client, cancel stops the scheduled sources and rewinds
+`nextStartTime`, so the next clip starts from now rather than chaining onto a
+schedule that was just thrown away.
+
+Deliberately not gated on the server's `_stream_started` flag: an `audio_end`
+closes the sending side but the client is still playing, so a cancel arriving
+just after one has to go out anyway.
+
+### Shape
+
+A third instance of [shape 12](#recurring-shapes) — two components each
+individually correct, with the fault living in the contract between them, and
+each side's comment explaining why its own behaviour is right. Neither file's
+tests could have caught it: the mixin's would have to know what the browser does
+with a scheduled buffer, and the client's would have to know the server runs
+ahead of real time. The new tests state the *pairing* on both sides — a cut must
+cancel, a natural end must not — which is the only place the invariant is
+expressible.
+
+### Also found
+
+`tools/tts_lab/adapters.py` reached for a `_cache_lock` that the `ClipCache`
+refactor absorbed, so auditioning pocket-tts in the lab had been raising
+`AttributeError` — invisible, because the lab was only ever used for the
+engine being evaluated.

@@ -672,9 +672,24 @@ def create_web_app(session: "SessionController") -> FastAPI:
             hub.send_audio_bytes(_frames.build_audio_end(stream_byte))
             _stream_started[stream] = False
 
+    def _on_audio_frame_cancel(stream: str) -> None:
+        stream_byte = _frames.stream_byte(stream)
+        if stream_byte == 0:
+            return
+        # Deliberately not gated on ``_stream_started``. An ``audio_end``
+        # closes the *sending* side but the client keeps playing what it
+        # already holds, so a stop landing just after one still has to
+        # reach a client with ~250 ms queued. Clearing the flag makes the
+        # next clip re-announce its format, which is what we want: the
+        # client has thrown its schedule away and needs a fresh start.
+        hub.send_audio_bytes(_frames.build_audio_cancel(stream_byte))
+        _stream_started[stream] = False
+
     try:
         session.set_audio_frame_listener(
-            _on_audio_frame, end_listener=_on_audio_frame_end,
+            _on_audio_frame,
+            end_listener=_on_audio_frame_end,
+            cancel_listener=_on_audio_frame_cancel,
         )
     except Exception:
         log.debug("audio frame listener wiring failed", exc_info=True)

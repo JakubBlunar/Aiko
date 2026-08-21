@@ -852,6 +852,7 @@ class SessionController(
         # CLI / tests without a connected client).
         self._audio_frame_listener: Callable[[str, int, int, bytes], None] | None = None
         self._audio_frame_end_listener: Callable[[str], None] | None = None
+        self._audio_frame_cancel_listener: Callable[[str], None] | None = None
 
         self._tts_engine = self._build_tts_service(settings)
         # Earcon player must be created before TtsQueue so the queue can
@@ -863,6 +864,7 @@ class SessionController(
         self._tts_engine.set_pcm_listener(
             lambda rate, ch, pcm: self._emit_audio_frame("tts", rate, ch, pcm),
             end_listener=lambda: self._emit_audio_frame_end("tts"),
+            cancel_listener=lambda: self._emit_audio_frame_cancel("tts"),
         )
         self._earcons.set_pcm_listener(
             lambda rate, ch, pcm: self._emit_audio_frame("earcon", rate, ch, pcm),

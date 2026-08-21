@@ -21,6 +21,11 @@ A host class must provide:
 ``_stop_requested``
     A ``threading.Event`` for barge-in. Checked between chunks, so a
     stop cuts mid-clip rather than at the end of it.
+``_clip_cancel_listener``
+    Fired instead of a plain clip-end when a clip was *cut* rather than
+    finished, so the client can drop what it is still holding. Optional:
+    defaults to ``None``, and an engine that leaves it unset behaves
+    exactly as before.
 ``_pitch_preserving_speed``
     Whether a rate change goes through the stretch or the old varispeed.
 ``_loudness_target_dbfs``
@@ -78,6 +83,7 @@ class PcmPlaybackMixin:
     _stop_requested: threading.Event
     _pitch_preserving_speed: bool
     # Defaulted so an engine written before these existed still works.
+    _clip_cancel_listener: Callable[[], None] | None = None
     _loudness_target_dbfs: float = 0.0
     _tilt_target_db: float | None = None
     _tilt_limit_db: float = MAX_CORRECTION_DB
@@ -286,9 +292,11 @@ class PcmPlaybackMixin:
         pcm16 = scaled.round().astype(np.int16, copy=False)
         ship_t0 = time.monotonic()
         chunk_index = 0
+        cut = False
         try:
             for start in range(0, total, chunk_samples):
                 if self._stop_requested.is_set():
+                    cut = True
                     break
                 end = min(start + chunk_samples, total)
                 listener(int(sample_rate), 1, pcm16[start:end].tobytes())
@@ -305,14 +313,36 @@ class PcmPlaybackMixin:
                         # barge-in cuts over without waiting out the
                         # rest of this chunk's slice.
                         if self._stop_requested.wait(timeout=delay):
+                            cut = True
                             break
         finally:
+            # Order matters. We are up to ``_PRE_ROLL_CHUNKS`` ahead of
+            # what the client has actually played, so a cut leaves it
+            # holding audio nobody wants -- tell it to drop that before
+            # anything else reacts to the clip being over.
+            if cut:
+                self._fire_clip_cancel()
             end_listener = self._clip_end_listener
             if end_listener is not None:
                 try:
                     end_listener()
                 except Exception:
                     pass
+
+    def _fire_clip_cancel(self) -> None:
+        """Ask the client to drop scheduled audio it has not played yet.
+
+        Safe to call more than once for one cut: discarding an empty
+        queue is a no-op, and ``stop()`` and the emit loop both notice
+        the same barge-in.
+        """
+        cancel_listener = self._clip_cancel_listener
+        if cancel_listener is None:
+            return
+        try:
+            cancel_listener()
+        except Exception:
+            pass
 
     # ── lip sync ─────────────────────────────────────────────────────
 

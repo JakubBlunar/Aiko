@@ -211,6 +211,7 @@ class PocketTtsService(PcmPlaybackMixin):
         listener: PcmListener | None,
         *,
         end_listener: PcmEndListener | None = None,
+        cancel_listener: PcmEndListener | None = None,
     ) -> None:
         """Install / replace the PCM emitter.
 
@@ -221,6 +222,8 @@ class PocketTtsService(PcmPlaybackMixin):
         self._pcm_listener = listener
         if end_listener is not None:
             self._clip_end_listener = end_listener
+        if cancel_listener is not None:
+            self._clip_cancel_listener = cancel_listener
 
     def _load_model(self) -> None:
         t0 = time.monotonic()
@@ -389,8 +392,13 @@ class PocketTtsService(PcmPlaybackMixin):
     def stop(self) -> None:
         self._stop_requested.set()
         self._audio_cache.clear()
-        # Fire the end-of-clip notification so listeners can flush any
-        # buffered audio on the client. PCM emitter itself is stateless.
+        # A stop is unambiguously a cut, so ask the client to drop the
+        # pre-roll it is holding. The emit loop notices the same event
+        # and asks again; discarding twice costs nothing, and this path
+        # also covers a stop that lands between clips.
+        self._fire_clip_cancel()
+        # Then the ordinary end-of-clip notification, so state machines
+        # waiting on it (UI ducking) still advance.
         end_listener = self._clip_end_listener
         if end_listener is not None:
             try:
