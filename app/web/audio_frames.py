@@ -20,7 +20,19 @@ Frame catalog (single source of truth — keep
     0x12  audio_start ``<uint8 stream><uint32 sample_rate><uint8 channels>``
                      where ``stream`` is 0x10 (tts) or 0x11 (earcon);
                      tells the client to spin up a playback queue.
-    0x13  audio_end   ``<uint8 stream>`` — flush the matching queue.
+    0x13  audio_end   ``<uint8 stream>`` — every chunk of this clip has
+                     been sent. NOT a flush: the client keeps whatever
+                     it has scheduled, because the next sentence chains
+                     onto the tail of this one and discarding here would
+                     clip every sentence short.
+    0x14  audio_cancel ``<uint8 stream>`` — drop whatever is scheduled and
+                     not yet heard. The counterpart to ``audio_end``, and
+                     the reason both exist: the server runs ~250 ms ahead
+                     of real time (``PcmPlaybackMixin._PRE_ROLL_CHUNKS``),
+                     so when a clip is cut mid-way the client is already
+                     holding audio the server has stopped sending. Without
+                     a way to say "throw that away" it plays out anyway --
+                     a quarter-second of speech after the sentence ended.
 
 All integers are big-endian unsigned (network byte order). The
 helpers below are intentionally tiny so both sides can match them
@@ -38,6 +50,7 @@ FRAME_TTS_PCM: int = 0x10
 FRAME_EARCON_PCM: int = 0x11
 FRAME_AUDIO_START: int = 0x12
 FRAME_AUDIO_END: int = 0x13
+FRAME_AUDIO_CANCEL: int = 0x14
 
 
 # DSP flag bits used by ``mic_start``. The browser sets these to
@@ -71,6 +84,11 @@ def build_audio_start(stream: int, sample_rate: int, channels: int) -> bytes:
 def build_audio_end(stream: int) -> bytes:
     """Build a ``0x13 audio_end`` frame."""
     return bytes([FRAME_AUDIO_END, int(stream) & 0xFF])
+
+
+def build_audio_cancel(stream: int) -> bytes:
+    """Build a ``0x14 audio_cancel`` frame."""
+    return bytes([FRAME_AUDIO_CANCEL, int(stream) & 0xFF])
 
 
 def build_tts_pcm(pcm: bytes) -> bytes:

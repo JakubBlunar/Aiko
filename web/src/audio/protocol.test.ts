@@ -3,6 +3,7 @@ import {
   DSP_AUTO_GAIN_CONTROL,
   DSP_ECHO_CANCELLATION,
   DSP_NOISE_SUPPRESSION,
+  FRAME_AUDIO_CANCEL,
   FRAME_AUDIO_END,
   FRAME_AUDIO_START,
   FRAME_EARCON_PCM,
@@ -11,6 +12,7 @@ import {
   FRAME_TTS_PCM,
   buildMicPcm,
   buildMicStart,
+  parseAudioCancel,
   parseAudioEnd,
   parseAudioStart,
   streamName,
@@ -26,6 +28,7 @@ describe("frame type bytes", () => {
     expect(FRAME_EARCON_PCM).toBe(0x11);
     expect(FRAME_AUDIO_START).toBe(0x12);
     expect(FRAME_AUDIO_END).toBe(0x13);
+    expect(FRAME_AUDIO_CANCEL).toBe(0x14);
   });
 
   it("declares DSP flag bits used in mic_start", () => {
@@ -104,6 +107,18 @@ describe("parseAudioEnd", () => {
 
   it("returns null on an empty body", () => {
     expect(parseAudioEnd(new Uint8Array(0))).toBeNull();
+  });
+});
+
+describe("parseAudioCancel", () => {
+  it("returns the stream byte", () => {
+    expect(parseAudioCancel(new Uint8Array([FRAME_TTS_PCM]))).toBe(
+      FRAME_TTS_PCM,
+    );
+  });
+
+  it("returns null on an empty body", () => {
+    expect(parseAudioCancel(new Uint8Array(0))).toBeNull();
   });
 });
 

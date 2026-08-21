@@ -31,10 +31,16 @@ class TtsEngine(Protocol):
         listener: Callable[[int, int, bytes], None] | None,
         *,
         end_listener: Callable[[], None] | None = None,
+        cancel_listener: Callable[[], None] | None = None,
     ) -> None:
         """Install a callback that receives synthesised Int16 LE PCM
         chunks. The session controller routes the bytes to the WS hub
-        which broadcasts them to every connected client."""
+        which broadcasts them to every connected client.
+
+        ``end_listener`` fires when a clip's chunks have all been sent.
+        ``cancel_listener`` fires instead when a clip was cut, and means
+        "drop what you have not played" -- the engine ships ahead of
+        real time, so the two cases need different answers."""
         ...
 
     def speak_async(

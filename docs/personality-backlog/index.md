@@ -679,6 +679,22 @@ picking Chatterbox lasted exactly as long as the process. New **shape 24** — *
 test suite writes live state and the damage is diagnosed as a product bug*
 ([`health.md`](health.md)).
 
+**H46 is the one to read before you blame a synthesiser for an artifact, and it
+is a third instance of shape 12.** A fragment of speech played *after* the
+sentence, occasionally, and — the detail that made it tractable — it survived
+replacing the entire engine. Neither the text nor the audio: the tag-stripping
+path was fuzzed at 1/3/7 chars per delta across 14 tag shapes with zero leaks,
+and no generated clip ended in a detached sound (tails are 0.22–0.40 s at 2–6%
+of body RMS, i.e. decay). The cause was the contract between two decisions that
+are each correct and each carry a comment saying so: the mixin ships ~250 ms
+ahead of real time so the client never underruns, and the client refuses to
+discard on `audio_end` because the next sentence chains onto that tail. Together
+the browser permanently holds unheard speech that nothing can retract, so a cut
+clip played its pre-roll out. `0x14 audio_cancel` is the retraction, sent only
+for a cut. Also worth taking from it: the *first* measurement of the tail used an
+energy gate, which hides its own subject, since anything loud enough to hear is
+classified as speech ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AudioOutputManager } from "./AudioOutputManager";
 import {
+  FRAME_AUDIO_CANCEL,
   FRAME_AUDIO_END,
   FRAME_AUDIO_START,
   FRAME_EARCON_PCM,
@@ -878,5 +879,98 @@ describe("AudioOutputManager error handling", () => {
     await Promise.resolve();
     await mgr.setSinkId("device-x");
     expect(errors.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * The half-second of speech that arrives after the sentence.
+ *
+ * The server ships ~250 ms ahead of real time so this scheduler never
+ * underruns, which means it is always holding audio that has not been
+ * heard. `audio_end` deliberately does not discard that — the next
+ * sentence chains onto it — so a *cut* clip needs its own frame or the
+ * pre-roll plays out as a fragment with nothing to retract it.
+ */
+describe("AudioOutputManager cancel", () => {
+  const cancelFrame = (stream: number): ArrayBuffer =>
+    new Uint8Array([FRAME_AUDIO_CANCEL, stream]).buffer;
+
+  it("stops sources that were scheduled but not played", async () => {
+    const mgr = new AudioOutputManager();
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    // A second of audio, scheduled ahead of the clock: exactly the
+    // pre-roll a barge-in leaves behind.
+    expect(mgr.handleFrame(ttsPcmFrame(16000))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    const clip = ctx.activeSources.filter((s) => !s.loop);
+    expect(clip.length).toBe(1);
+    expect(clip[0].stopped).toBe(false);
+
+    expect(mgr.handleFrame(cancelFrame(FRAME_TTS_PCM))).toBe("tts");
+    expect(clip[0].stopped).toBe(true);
+  });
+
+  it("leaves a finished clip alone, so sentences still chain", async () => {
+    // The regression guard for the fix itself. If cancel and end were
+    // ever collapsed into one signal, every sentence would lose its
+    // tail to the next one.
+    const mgr = new AudioOutputManager();
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(16000))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    const clip = ctx.activeSources.filter((s) => !s.loop);
+    mgr.handleFrame(new Uint8Array([FRAME_AUDIO_END, FRAME_TTS_PCM]).buffer);
+    expect(clip[0].stopped).toBe(false);
+  });
+
+  it("does not touch the other stream", async () => {
+    // Cancelling TTS mid-sentence must not cut an earcon playing
+    // alongside it; they are separate schedules.
+    const mgr = new AudioOutputManager();
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(8000))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    const before = ctx.activeSources.filter((s) => !s.loop);
+    expect(before.length).toBe(1);
+
+    expect(mgr.handleFrame(cancelFrame(FRAME_EARCON_PCM))).toBe("earcon");
+    expect(before[0].stopped).toBe(false);
+  });
+
+  it("rewinds the schedule so the next clip does not wait out the cut", async () => {
+    // Chaining is what makes sentences seamless, but after a cancel the
+    // schedule it would chain onto is gone. The next clip has to start
+    // from now, not from where the abandoned audio would have ended.
+    const mgr = new AudioOutputManager();
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(16000))).toBe("tts");
+    await flush();
+    mgr.handleFrame(cancelFrame(FRAME_TTS_PCM));
+
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    await flush();
+
+    const ctx = createdContexts[0];
+    const fresh = ctx.activeSources.filter((s) => !s.loop && !s.stopped);
+    expect(fresh.length).toBe(1);
+    // Not pushed out behind the second of audio we just threw away.
+    expect(fresh[0].startedAt as number).toBeLessThan(1.0);
+  });
+
+  it("ignores a cancel for an unknown stream", () => {
+    const mgr = new AudioOutputManager();
+    expect(mgr.handleFrame(cancelFrame(0xfe))).toBe(null);
+  });
+
+  it("survives a cancel before anything has played", () => {
+    const mgr = new AudioOutputManager();
+    expect(() => mgr.handleFrame(cancelFrame(FRAME_TTS_PCM))).not.toThrow();
   });
 });

@@ -332,11 +332,13 @@ class PocketTts(Adapter):
         sink: ChunkSink | None = None,
     ) -> Synth:
         service = self.service
-        # The service memoises the last 8 clips on (text, speed, temp).
-        # Left alone, a repeated phrase would be timed at ~0 ms and the
-        # bench would report a fictional latency.
-        with service._cache_lock:  # noqa: SLF001 -- prototype, see docstring
-            service._audio_cache.clear()  # noqa: SLF001
+        # The service memoises clips by text, so a repeated phrase would
+        # be timed at ~0 ms and the bench would report a fictional
+        # latency. ``ClipCache`` carries its own lock; this used to take
+        # a ``_cache_lock`` off the service, which the cache absorbed --
+        # leaving pocket-tts auditioning broken with an AttributeError,
+        # visible only on the engine nobody was auditioning.
+        service._audio_cache.clear()  # noqa: SLF001 -- prototype, see docstring
 
         prior = getattr(service, "_voice_state", None)
         with service._lock:  # noqa: SLF001

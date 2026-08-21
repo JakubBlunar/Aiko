@@ -13,6 +13,17 @@ export const FRAME_TTS_PCM = 0x10;
 export const FRAME_EARCON_PCM = 0x11;
 export const FRAME_AUDIO_START = 0x12;
 export const FRAME_AUDIO_END = 0x13;
+/**
+ * `0x14 audio_cancel` — drop scheduled audio that has not been heard.
+ *
+ * Distinct from `audio_end` on purpose. The server runs ~250 ms ahead of
+ * real time, so `audio_end` cannot mean "discard": the next sentence
+ * chains onto the tail of the current one, and flushing there would clip
+ * every sentence short. This frame is the other half of that split, sent
+ * only when a clip was cut, and without it the pre-roll plays out as a
+ * fragment after the sentence has finished.
+ */
+export const FRAME_AUDIO_CANCEL = 0x14;
 
 /** Browser DSP flag bits sent in `mic_start.dsp_flags`. */
 export const DSP_ECHO_CANCELLATION = 0b0000_0001;
@@ -86,6 +97,12 @@ export function parseAudioStart(body: Uint8Array): AudioStartFrame | null {
 
 /** Parse a `0x13 audio_end` frame body. Returns the stream byte. */
 export function parseAudioEnd(body: Uint8Array): number | null {
+  if (body.byteLength < 1) return null;
+  return body[0];
+}
+
+/** Parse a `0x14 audio_cancel` frame body. Same shape as `audio_end`. */
+export function parseAudioCancel(body: Uint8Array): number | null {
   if (body.byteLength < 1) return null;
   return body[0];
 }
