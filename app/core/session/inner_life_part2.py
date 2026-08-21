@@ -1561,7 +1561,11 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             row = self.take_pool_cue(
                 "concept_hypothesis",
                 relevant=lambda payload: _unclaimed(payload)
-                and topic_relevant(str(payload.get("label") or ""), text),
+                and topic_relevant(
+                    str(payload.get("label") or ""),
+                    text,
+                    options=self._topic_gate_options(),
+                ),
                 force=force_next,
                 # This provider does its own accounting: it is the only
                 # dual-mode cue, so a topic miss here is a fallthrough to
@@ -2447,7 +2451,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             row = self.take_pool_cue(
                 "knowledge_gap_notice",
                 relevant=lambda payload: topic_relevant(
-                    str(payload.get("topic") or ""), text,
+                    str(payload.get("topic") or ""),
+                    text,
+                    options=self._topic_gate_options(),
                 ),
                 force=force_next,
                 user_text=text,
@@ -2477,7 +2483,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             if not force_next:
                 if key and key in surfaced:
                     continue
-                if not topic_relevant(topic, text):
+                if not topic_relevant(
+                    topic, text, options=self._topic_gate_options(),
+                ):
                     continue
             chosen = entry
             break
@@ -2556,7 +2564,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if pool is not None:
             row = self.take_pool_cue(
                 "associative_wander",
-                relevant=lambda payload: wander_relevant(payload, text),
+                relevant=lambda payload: wander_relevant(
+                    payload, text, options=self._topic_gate_options(),
+                ),
                 force=force_next,
                 user_text=text,
             )
@@ -2565,7 +2575,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             # Post-turn asks "did she pivot onto the far topic", and which
             # topic that is depends on the turn we are in right now -- so
             # it is recorded here rather than at production time.
-            row.payload["match_subject"] = distant_half(row.payload, text)
+            row.payload["match_subject"] = distant_half(
+                row.payload, text, options=self._topic_gate_options(),
+            )
             log.info(
                 "associative-wander fire: a=%r b=%r",
                 str(row.payload.get("topic_a") or "")[:60],
@@ -2593,7 +2605,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             if not force_next:
                 if key and key in surfaced:
                     continue
-                if not wander_relevant(entry, text):
+                if not wander_relevant(
+                    entry, text, options=self._topic_gate_options(),
+                ):
                     continue
             chosen = entry
             break
@@ -2673,7 +2687,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if getattr(self, "_cue_store", None) is not None:
             row = self.take_pool_cue(
                 "interest_drift",
-                relevant=lambda payload: drift_relevant(payload, text),
+                relevant=lambda payload: drift_relevant(
+                    payload, text, options=self._topic_gate_options(),
+                ),
                 force=force_next,
                 user_text=text,
             )
@@ -2705,7 +2721,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             if not force_next:
                 if key and key in surfaced:
                     continue
-                if not drift_relevant(entry, text):
+                if not drift_relevant(
+                    entry, text, options=self._topic_gate_options(),
+                ):
                     continue
             chosen = entry
             break
@@ -2936,7 +2954,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if pool is not None:
             row = self.take_pool_cue(
                 "curiosity_gradient",
-                relevant=lambda payload: gradient_relevant(payload, text),
+                relevant=lambda payload: gradient_relevant(
+                    payload, text, options=self._topic_gate_options(),
+                ),
                 force=force_next,
                 user_text=text,
             )
@@ -2969,7 +2989,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             if not force_next:
                 if key and key in surfaced:
                     continue
-                if not gradient_relevant(entry, text):
+                if not gradient_relevant(
+                    entry, text, options=self._topic_gate_options(),
+                ):
                     continue
             chosen = entry
             break

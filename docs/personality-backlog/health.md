@@ -2882,7 +2882,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 <a id="recurring-shapes"></a>
 
-## The twenty-four recurring shapes
+## The twenty-five recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3275,6 +3275,34 @@ is not sufficient and is worse than nothing, because it makes the suite look
 isolated: a module that did `from … import USER_CONFIG_PATH` holds a *copy* that
 the patch never reaches. And prefer the tripwire to the redirect list — the
 redirect covers the paths you thought of, the tripwire covers the next one.
+
+**25. A change declined on a cost that was never measured, beside a benefit
+that was measured exhaustively.** The report runs, the upside is quantified to
+three decimal places, and the change is then held back by a *sentence* about
+what it would cost — which reads as caution and is actually the one number in
+the decision nobody computed. H43 measured what the stoplist drops (median
+cosine 0.378 against a null of 0.384; 3.3% above the null's p95) and declined to
+ship it because "it would make five cue types dramatically quieter", where the
+scarcity of what they'd be quieter *with* was assumed. Measured a week later:
+of 652 expired cues, **604 (92.6%) had already been rendered into her prompt,
+1.4 to 2.0 times each, and passed over.** Reach was never scarce. The cost being
+protected against did not exist.
+
+Distinct from shape 23, which is a claim that was true when written and went
+stale. This one was never checked. And distinct from shape 21, where the
+*accused* gate went unmeasured — here it is the objection to the fix.
+
+The tell is grammatical, which makes it cheap to grep for: the benefit is
+written as a number and the cost as an adverb. "Dramatically quieter",
+"markedly worse", "most of their reach" — every one is a quantity in prose
+clothing, and each of them is a query.
+
+**Rule: a trade-off needs both sides measured before either is acted on, and
+the deferral note has to say which query would settle it.** H43 did the honest
+half of this — it wrote down "a change to make on production evidence" — and it
+is worth seeing why that was not enough: nothing was going to run that query,
+because nobody owned it (shape 23 again, one level up). Name the report and the
+number that would decide, or expect the deferral to be permanent.
 
 ---
 
@@ -5454,3 +5482,123 @@ expressible.
 refactor absorbed, so auditioning pocket-tts in the lab had been raising
 `AttributeError` — invisible, because the lab was only ever used for the
 engine being evaluated.
+
+---
+
+## H47. She was shown 604 of them and said nothing, which is not a supply problem
+
+Started from his question, which was better than the one I was going to ask.
+Told that `topic_miss` is the largest eligible cue decline, he asked whether it
+is a problem at all — *"maybe Aiko didn't want to bring it up because it did not
+fit the current mood of conversation."*
+
+The mechanism does not work that way: `topic_relevant` is word overlap plus a
+cosine arm, with no notion of mood in it. But the instinct was right about the
+conclusion and it inverted the investigation, because the honest version of his
+question is **"when she declines, is she right to?"** — and that is answerable.
+
+### What the ledger says once "unused" is split in two
+
+`63.5% of cues expire unused` has been quoted as a supply problem, including by
+me earlier in the same session. It is not one. Splitting expired rows by whether
+they ever reached her prompt:
+
+| | rows | share |
+|---|---|---|
+| expired, **never** rendered to her | 48 | 7.4% |
+| expired, **rendered and passed over** | 604 | **92.6%** |
+
+Per-cue showings run 1.4 to 2.0 for every type except two. She was not short of
+material. She was handed it, repeatedly, and declined it — which is what being
+handed a cue matched on `and` looks like from the inside.
+
+Two exceptions, and they are the real starvation: `concept_hypothesis` at **0.4
+showings per cue with 22 of 49 never shown**, and `forward_curiosity` at 0.4
+with 15 of 30. Those two are a separate problem from this one and are not fixed
+here.
+
+### Three of my own numbers that did not survive contact
+
+Worth recording because each looked like a finding and each was an artefact of
+the instrument.
+
+**The reach improvement.** Splitting `cue_decisions` at the H43 commit showed
+reach jumping 11.2% → 28.9%, which I read as the fix working. The split was
+wrong: a *second* instrument change (12 Aug, `b4b3386`) had closed the
+`provider` bucket — the fallback for a provider that declined without saying
+why — and every one of its 2,836 rows predates `2026-08-12T16:05`. Since
+`provider` counted as an *eligible* decline, its disappearance alone moves every
+reach figure. Re-cut so both eras have attribution complete, the gain is real
+but smaller, and H43's stated prediction only half held: `topic_miss` fell
+42.1% → 33.6% as forecast, `cadence_block` rose 1.5pp rather than absorbing it,
+and the difference became **surfacings** rather than another decline reason.
+
+**The used-rate table.** `curiosity_seed` converts at 41.6% and
+`concept_hypothesis` at 0%, which is a 13× gap and looks like proof that
+conversation-seeded production beats graph-seeded. It compares two different
+verbs. `curiosity_seed` is `FULFILMENT_EITHER` on a post-turn cosine at 0.50 —
+the conversation *touching* the subject retires the row, whether or not she ever
+raised it — while the failing types need `answered`. Cross-type conversion rates
+in this pool are not comparable without reading `CUE_POLICIES` first.
+
+**`concept_hypothesis` has never reached her mouth.** It has surfaced 19 times
+and she asked 7 of them. The zero is `used`, meaning *answered*, which is H44's
+finding and not this one.
+
+### The change
+
+H43 built the stoplist, measured it, and left it **off at admission**, writing
+that 30.7% of pairs "is a change to make on production evidence rather than on a
+pair-population estimate". This is that evidence, and it points the opposite way
+from the fear that held it back — the reach being protected was not scarce.
+
+So the stoplist is on. Re-running `scripts/topic_gate_report.py` against current
+data, at the shipped 0.55 floor:
+
+| | share of pairs |
+|---|---|
+| gate as shipped | 32.3% |
+| stoplisted lexical arm | 1.8% |
+| cosine arm | 2.0% |
+| **new admission (either arm)** | **3.6%** |
+
+and what it drops sits at **median cosine 0.378 against a null median of
+0.384** — very slightly *less* related than two texts drawn at random — with
+3.3% above the null's p95. The carriers are unchanged from H43's count: `and`
+(6,372), `the` (1,225), `with` (690), then **`aiko` at 580**, because cue
+subjects are written about the two of them and he addresses her by name
+constantly. The names are not hardcoded; `GateOptions` carries them from
+`assistant.name` / `assistant.user_name`, since only a caller holding settings
+can know them.
+
+`GateOptions` exists rather than two more parameters because the strictness and
+the names always travel together through six providers and four shared helpers,
+and threading two arguments through all of that is how the original predicate
+acquired the shape nobody could see into. `GateOptions.shipped()` reproduces the
+pre-H47 gate exactly, which is what `agent.cue_topic_stoplist=false` returns and
+what the tests assert against.
+
+### What to watch, and the dial
+
+This is a 9× tightening and it is the largest single change made to her
+forthcomingness. The prediction: `topic_miss` should *rise* as a share of
+decisions, because refusing is now the honest answer more often — and per-cue
+**conversion** should rise, because what reaches her is on-topic. If reach falls
+and conversion does not move, the trade failed and the exit is one setting.
+
+Prefer relaxing `agent.cue_topic_min_cosine` to 0.50 over turning the stoplist
+back off: that widens the semantic arm (7.3% of unrelated pairs clear 0.50
+against 1.8% at 0.55) rather than readmitting function-word noise wholesale.
+0.45 admits 20.2% of unrelated pairs and is not worth having.
+
+Re-read `scripts/cue_reach_report.py` in a few days, and split expired rows by
+`surfaced_count` — that ratio, not the expiry rate, is the number this entry
+exists to move.
+
+### Shape 25
+
+Added above: **a change declined on a cost that was never measured, beside a
+benefit that was measured exhaustively.** The tell is grammatical — the benefit
+written as a number, the cost as an adverb — which makes it cheap to look for.
+Also a second instance of [shape 23](#recurring-shapes) one level up: H43 said
+what evidence would settle it and nothing was going to go and get it.

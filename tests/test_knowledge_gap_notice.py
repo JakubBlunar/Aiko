@@ -191,6 +191,12 @@ class _Host(InnerLifePart2Mixin):
         self._chat_db = _KV()
         self.debug_overrides.disarm("knowledge_gap_notice_force_next")
 
+    def _topic_gate_options(self):
+        """What ``CuePoolMixin`` supplies in a real session (H47)."""
+        from app.core.proactive import topic_match
+
+        return topic_match.DEFAULT_OPTIONS
+
 
 class ProviderTests(unittest.TestCase):
     def _seed(self, host: _Host, topic: str = "python debugging") -> None:
