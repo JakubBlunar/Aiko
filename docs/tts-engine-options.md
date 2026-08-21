@@ -368,13 +368,13 @@ Two follow-ups this leaves open:
 #### The licensed corpus, and why cloning needs almost none of it
 
 `voices/sounds/` holds two licensed packs, both gitignored — bought for
-use elsewhere, which does not extend to redistributing them. The game
-pack (`RFB_*`, 27 lines) is the voice she was *originally* meant to have.
-`girl-voice/` (71 clips) is better than that: the actual source the
+use elsewhere, which does not extend to redistributing them. `other/`
+(`RFB_*`, 27 lines) is the voice she was *originally* meant to have.
+`aiko-original/` (71 clips) is better than that: the actual source the
 pocket-tts state was cloned from, recovered from a school backup.
 Measured 21 Aug 2026:
 
-| | girl-voice | game pack | her current origin |
+| | aiko-original | other pack | her current origin |
 |---|---|---|---|
 | source | 44.1 kHz recordings | 44.1 kHz recordings | pocket-tts render of ~8 s |
 | real bandwidth (99.9% energy) | **15.7 kHz** median | 11.0 kHz | 6.2 kHz |
@@ -416,6 +416,125 @@ variable removed is pocket-tts standing in the middle. Expect the
 brightness matching in playback to have less to do, and check /r/ anyway,
 since the conditioning path is different even though the source is not.
 
+The studio does this now (`tools/tts_lab/refset.py`, steps 1–2): pick
+clips, order them against the two conditioning cutoffs, build, audition,
+save as a reference set. A first build of five English clips measured
+**17.6 kHz wide against her reference's 6.2** at 44.1 kHz — the predicted
+gain, present before any listening.
+
+### Pacing clones along with timbre
+
+The first real reference built this way sounded correct in the player and
+came out **slow** the moment it was cloned — noticed immediately, since
+1.5× in a browser player was needed to make the audition tolerable. Not a
+bug in the path: the sidecar hands the reference to Chatterbox, which
+resamples it itself, and the output header is the engine's own rate.
+Measured on the same sentence and engine, 21 Aug 2026:
+
+| reference | parts | median part | delivered |
+| --- | --- | --- | --- |
+| `reference/aiko_reference.wav` | 12 | 3.04 s | 6.83 syl/s |
+| built from brightest clips | 10 | 0.92 s | 5.26 syl/s |
+| built from sentence clips | 2 | 6.61 s | 6.07 syl/s |
+
+**Chatterbox clones speaking rate along with voice.** The pack is game
+audio, so its brightest clips are single drawled words followed by a gap,
+and ten of those teach a clone to drawl — 24% slow, which is past the
+app's 15% correction cap and therefore permanent. Two sentence-length
+clips from the same pack, same speaker, land at 8% and inside the cap.
+
+Selecting on brightness alone caused this, so `rank` now takes connected
+speech first and brightness within it (`MIN_CONNECTED_S`, 1.4 s), falling
+back to short clips only to top up a budget nothing else can fill. The
+build report states the shape — part count, median part, gap share — and
+says plainly when a reference is a list of words. And **Check pace**
+speaks one probe sentence through the candidate and measures the result,
+which is the only way to see this before saving: the reference clip
+itself gives no hint, and every quality number the studio had was green.
+
+That leaves the residual 8%, which the app cannot correct either, because
+correction needs a tempo target and a target needs English transcripts
+these Japanese clips do not have. So a manifest may now **declare**
+`target_syl_s` outright and `_adopt_rate_target` honours it ahead of
+measuring parts — "this is her, hold her to her own pace". A declaration
+is an instruction where measured parts are an inference, so it wins when
+both are present. It is a checkbox in the studio rather than a default,
+since forcing her pace onto a genuinely different voice would be wrong.
+
+### Sampling knobs, and what stability costs in pace
+
+A reproducible artifact on the utterance-initial /h/ of "Hey, …" — the
+hardest onset in that sentence, aspiration noise with no acoustic context
+before it to anchor — clears up at a colder temperature. It is not free.
+Measured on `chatterbox-full`, same voice and text, two draws each:
+
+| temperature | delivered | vs her pace |
+| --- | --- | --- |
+| 0.8 (shipped) | 3.91 syl/s | +68% |
+| 0.5 | 3.79 | +73% |
+| 0.3 | 3.29 | +99% |
+
+And on Nano, whose knobs are separate:
+
+| knob | delivered | vs her pace | RTF |
+| --- | --- | --- | --- |
+| stock | 5.66 syl/s | +16% | 0.64 |
+| `min_p=0.05` | 5.29 | +24% | 0.61 |
+| `temperature=0.5` | 5.26 | +25% | 0.62 |
+| `temperature=0.3` | 5.09 | +29% | 0.59 |
+
+Two things fall out. **Every stability knob is paid for in tempo**, and
+`min_p` — the knob upstream recommends for exactly this and which Nano
+ships *off* — costs about as much as dropping temperature to 0.5. And
+`chatterbox-full` is not a way out: at its own defaults it delivers
+**3.91 syl/s against Nano's 5.66 on identical text**, 68% off her pace at
+RTF 2.72. Reaching for the bigger model to fix an artifact trades one
+audible fault for a slower, non-real-time voice.
+
+Which puts the reference first in the ordering. It is the dominant term:
+rebuilding from sentence clips moves the baseline 16 points, where the
+knobs cost 8 to 13. Fix the reference, then spend the smallest knob you
+can get away with, and let the declared tempo target absorb what is left.
+
+None of this used to be able to reach the app, which sent no generation
+kwargs at all — every voice spoke on its engine's shipped defaults, so a
+value found in an audition was a finding with nowhere to go. A saved
+voice's `manifest.json` now carries a `generate` block, alongside the
+tempo and brightness targets that travel with it for the same reason, and
+`tts.providers.<name>.generate` overrides it for a bare wav with no
+manifest.
+
+**Keyed by engine, and merged rather than replaced**, because the values
+are absolute while the defaults they were chosen against are not:
+replaying Nano's `min_p=0.05` on the full model — which already ships
+that — is not conservative, it silently means something else. One
+reference gets auditioned on several engines in a sitting, which is the
+point of having them side by side, so a single block per voice would have
+let the second save quietly discard the first engine's afternoon. An
+engine with no entry gets its own defaults rather than somebody else's
+numbers.
+
+```json
+"generate": {
+  "chatterbox-nano": { "min_p": 0.05 },
+  "chatterbox-turbo": { "temperature": 0.6 }
+}
+```
+
+One trap found while building it, and it would have shipped silently.
+The app derives her tempo target from the reference manifest's `phrase`
+fields, so transcribing the picked clips looks like diligence. But these
+are **isolated words**, and isolated words measure slow: four of them
+yield a target of 5.05 syllables per second against her established
+6.55 — 23% out, which would stretch every sentence she ever speaks to
+the 15% correction limit, permanently, on evidence from clips that are
+single words. `app/audio/speech_rate.py` says as much in its own comments
+("short interjections are exactly where tempo is legitimately unusual")
+without anything enforcing it. The studio now computes the target with
+the app's own code and refuses to be quiet about it. **Leave the
+transcripts blank unless the clips are full sentences**; no target means
+no correction, which is the right default for found audio.
+
 Also useful: every filename carries its own transcript in romaji plus an
 English gloss, so a fine-tune needs no ASR pass. What it does need is
 longer material — median clip 1.04 s and only 18 clips at or above 1.5 s
@@ -432,7 +551,10 @@ Two consequences worth acting on:
 
 - The 27-second `aiko_reference.wav` is over half wasted, and because the
   cut is a truncation of a concatenation rather than a selection, *part
-  order decides which of her phrases condition the clone at all*.
+  order decides which of her phrases condition the clone at all*. The
+  studio draws both cutoffs on the selection and names the clips that
+  fall past them, because otherwise an audition can be a verdict on
+  audio the engine never received.
 - Cloning from the licensed clips needs the best ten seconds, which
   exists many times over. Try that before any training: it costs minutes
   and would raise the conditioning bandwidth from 7.4 kHz to the 12 kHz

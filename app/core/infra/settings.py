@@ -366,6 +366,23 @@ class TtsProviderSettings:
     #: default of one thread per core is both slower *and* takes the whole
     #: CPU. Ignored by engines that do not run on CPU.
     threads: int = 0
+    #: Sampling knobs passed to the engine's own ``generate()``, e.g.
+    #: ``{"temperature": 0.5}``. Empty means the engine's shipped
+    #: defaults, which is what every voice used before this existed.
+    #:
+    #: Per-engine and not portable, because the *defaults* these override
+    #: are not: Nano ships ``min_p=0.0`` where the full model ships
+    #: ``0.05``, and ``exaggeration``/``cfg_weight`` are ``0.0`` on Nano
+    #: against ``0.5`` on full. The same number means a different
+    #: intervention on each. Unknown keys are dropped by the sidecar
+    #: against the installed ``generate()`` signature, so a knob that
+    #: moved between releases is inert rather than fatal.
+    #:
+    #: An override here outranks the voice's own tuning (a ``generate``
+    #: block in its ``manifest.json``): this is the lever for a bare wav
+    #: with no manifest, and for trying a value without rebuilding a
+    #: reference to hold it.
+    generate: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -454,6 +471,7 @@ class TtsSettings:
             voice=(entry.voice if entry else "") or self._legacy_voice(key),
             device=(entry.device if entry else "") or "auto",
             threads=(entry.threads if entry else 0),
+            generate=dict(entry.generate) if entry else {},
         )
 
     def _legacy_voice(self, key: str) -> str:
@@ -1221,7 +1239,32 @@ def _parse_tts_providers(value: Any) -> dict[str, TtsProviderSettings]:
             voice=str(raw.get("voice", "") or "").strip(),
             device=device if device in {"auto", "cpu", "cuda"} else "auto",
             threads=threads,
+            generate=_parse_generate_kwargs(raw.get("generate")),
         )
+    return out
+
+
+def _parse_generate_kwargs(value: Any) -> dict[str, float]:
+    """Numeric sampling knobs for an engine's ``generate()``.
+
+    Deliberately not validated against a list of knob names. The set
+    differs by engine and moves between releases -- the sidecar filters
+    against the *installed* signature, which is the only check that can
+    be right -- so a whitelist here could only ever reject something that
+    works. Non-numeric values are dropped, since every knob these engines
+    expose is a number and a string would fail inside the model.
+    """
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, float] = {}
+    for name, raw in value.items():
+        key = str(name).strip()
+        if not key or isinstance(raw, bool):
+            continue
+        try:
+            out[key] = float(raw)
+        except (TypeError, ValueError):
+            log.warning("ignoring non-numeric tts generate knob %s=%r", key, raw)
     return out
 
 
