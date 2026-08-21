@@ -736,6 +736,28 @@ nine voice-pack exclamations plus a cat meow, so the register is cloned, not
 computed. New shape — *a measurement that establishes a problem exists, taken as
 establishing that fixing it is free* ([`health.md`](health.md)).
 
+**H49 is the one to read before trusting any tool you built to make a decision.**
+Reported in one line, one message after H48: *"chatterbox sounded good in the tts
+lab but its not that good in real usage."* The lab wrote `generate_audio`'s array
+straight to a wav, while the app ran four stages before a byte left the socket —
+brightness shelved toward the reference's spectral tilt, level matched to a target,
+tempo stretched toward its syllable rate, and the stretch carrying all of it. So
+the lab auditioned the *engine* and Aiko played the *engine plus four corrections*,
+and every reference chosen by A/B and every knob tuned by ear was decided against a
+signal production does not emit. On her committed reference the app applies a −26
+dBFS level match, a shelf toward +11.32 dB of tilt, and a ×0.936 tempo stretch;
+the lab applied none of them. Fixed by having one implementation rather than two
+faithful ones: the stages are a pure function in `app/tts/shaping.py` that both
+callers use, with a test asserting they reach sample-identical output. The
+audition now reports each stage and keeps a raw switch, which turned out to be the
+diagnostic that finished H48's chipmunk — `aiko2` measures 13.5 dB brighter than
+her pocket-tts reference, so selecting it *brightens* every sentence by up to 4 dB
+toward a shouty target on top of the register it already clones. Still not
+previewed: the lab speaks one phrase where she speaks a queue, and every
+inconsistency complaint has been about sentence two. New shape — *a tool built to
+make a decision, which does not exercise the path the decision governs*
+([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

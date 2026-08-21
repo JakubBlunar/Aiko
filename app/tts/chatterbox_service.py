@@ -40,22 +40,23 @@ import sys
 import tempfile
 import threading
 import time
-import wave
 from collections.abc import Callable
 from pathlib import Path
-from statistics import median
 from typing import Any
 
 import numpy as np
 
 from app.core.infra.settings import TtsSettings
-from app.audio.speech_rate import (
-    MAX_CORRECTION as MAX_RATE_CORRECTION,
-    measured_rate,
-)
-from app.audio.timbre import MAX_CORRECTION_DB, spectral_tilt_db
+from app.audio.speech_rate import MAX_CORRECTION as MAX_RATE_CORRECTION
+from app.audio.timbre import MAX_CORRECTION_DB
 from app.tts.clip_cache import ClipCache, SynthesisGate
-from app.tts.pcm_playback import PcmPlaybackMixin, resolve_loudness_target
+from app.tts.pcm_playback import PcmPlaybackMixin
+from app.tts.shaping import (
+    loudness_target_for,
+    measure_rate_target,
+    measure_tilt_target,
+    read_wav_mono as _read_wav,
+)
 from app.tts.reactions import (
     clamp_length_scale,
     reaction_to_speed as _reaction_to_speed,
@@ -148,10 +149,8 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         # her level on every call, and the between-sentence drift is large
         # relative to the expression it carries. pocket-tts defaults the
         # other way -- see the note in its ``__init__``.
-        self._loudness_target_dbfs = resolve_loudness_target(
-            settings,
-            self._engine_key,
-            default=getattr(settings, "loudness_target_dbfs", 0.0) or 0.0,
+        self._loudness_target_dbfs = loudness_target_for(
+            self._engine_key, settings,
         )
         # Brightness matching. The target is not known until a reference
         # clip has been cloned, so it starts unset and ``_clone`` fills
@@ -389,27 +388,14 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         """
         if not self._tilt_matching:
             return
-        try:
-            audio, rate = _read_wav(reference)
-            target = spectral_tilt_db(audio, rate)
-        except Exception as exc:
-            self._tilt_target_db = None
-            log.warning(
-                "%s could not measure the reference clip's timbre, "
-                "brightness matching is off: %r",
-                self._engine_key,
-                exc,
-            )
+        self._tilt_target_db = measure_tilt_target(reference)
+        if self._tilt_target_db is None:
             return
-        if not target:
-            self._tilt_target_db = None
-            return
-        self._tilt_target_db = float(target)
         log.info(
             "%s matching brightness to %s (tilt %.2f dB, limit %.1f dB)",
             self._engine_key,
             reference.name,
-            target,
+            self._tilt_target_db,
             self._tilt_limit_db,
         )
 
@@ -439,66 +425,25 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         """
         if not self._rate_matching:
             return
-        self._rate_target_syl_s = None
-        manifest = reference.parent / "manifest.json"
-        if not manifest.is_file():
+        target = measure_rate_target(reference)
+        self._rate_target_syl_s = target.syl_s if target else None
+        if target is None:
             log.info(
-                "%s: no manifest beside %s, tempo matching is off",
+                "%s: no usable tempo target beside %s, tempo matching is off",
                 self._engine_key,
                 reference.name,
             )
             return
-        try:
-            body = json.loads(manifest.read_text(encoding="utf-8"))
-            declared = float(body.get("target_syl_s") or 0.0)
-            if declared > 0.0:
-                self._rate_target_syl_s = declared
-                log.info(
-                    "%s matching tempo to %s (%.2f syl/s declared by its "
-                    "manifest, limit %.0f%%)",
-                    self._engine_key,
-                    reference.name,
-                    declared,
-                    self._rate_limit * 100.0,
-                )
-                return
-            rates: list[float] = []
-            for part in body.get("parts") or []:
-                phrase = str(part.get("phrase") or "")
-                name = str(part.get("file") or "")
-                if not phrase or not name:
-                    continue
-                clip = manifest.parent / "parts" / name
-                if not clip.is_file():
-                    continue
-                audio, rate = _read_wav(clip)
-                measured = measured_rate(audio, rate, phrase)
-                if measured > 0.0:
-                    rates.append(measured)
-        except Exception as exc:
-            log.warning(
-                "%s could not measure the reference tempo, matching is "
-                "off: %r",
-                self._engine_key,
-                exc,
-            )
-            return
-        if len(rates) < 3:
-            log.info(
-                "%s: only %d measurable reference parts, tempo matching "
-                "is off",
-                self._engine_key,
-                len(rates),
-            )
-            return
-        target = float(median(rates))
-        self._rate_target_syl_s = target
         log.info(
-            "%s matching tempo to %s (%.2f syl/s over %d parts, limit %.0f%%)",
+            "%s matching tempo to %s (%.2f syl/s %s, limit %.0f%%)",
             self._engine_key,
             reference.name,
-            target,
-            len(rates),
+            target.syl_s,
+            (
+                "declared by its manifest"
+                if target.source == "declared"
+                else f"over {target.parts} parts"
+            ),
             self._rate_limit * 100.0,
         )
 
@@ -911,19 +856,3 @@ def _gain_to_factor(gain_db: float) -> float:
     return float(10.0 ** (clamped / 20.0))
 
 
-def _read_wav(path: Path) -> tuple[np.ndarray, int]:
-    """Int16 WAV from the sidecar to float32 in [-1, 1].
-
-    A file round trip per utterance rather than a binary framing protocol
-    on stdout: a few hundred KB on an NVMe costs about a millisecond
-    against a synthesis measured in hundreds, and it reuses the sidecar's
-    existing contract exactly as the bench does.
-    """
-    with wave.open(str(path), "rb") as handle:
-        rate = handle.getframerate()
-        frames = handle.readframes(handle.getnframes())
-        channels = handle.getnchannels()
-    audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    if channels > 1:
-        audio = audio.reshape(-1, channels).mean(axis=1)
-    return audio, int(rate)

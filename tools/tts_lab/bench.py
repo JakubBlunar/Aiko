@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from tools.tts_lab import adapters
-from tools.tts_lab.adapters import REPO_ROOT, Caps, assess, write_wav
+from tools.tts_lab.adapters import REPO_ROOT, assess, write_wav
 
 OUT_DIR = REPO_ROOT / "voices" / "audition"
 DEFAULT_REF = REPO_ROOT / "voices" / "reference" / "aiko_reference.wav"

@@ -2,10 +2,16 @@
 
 Extracted from :class:`~app.tts.pocket_tts_service.PocketTtsService` when
 a second engine arrived. None of it is engine-specific: chunk sizing,
-pre-roll depth, real-time pacing, barge-in checks, gain, the
-pitch-preserving stretch, the lip-sync amplitude pacer and the block that
-keeps :class:`TtsQueue`'s sentence timing honest are all properties of
-*how Aiko's client plays audio*, not of which model produced it.
+pre-roll depth, real-time pacing, barge-in checks, gain, the lip-sync
+amplitude pacer and the block that keeps :class:`TtsQueue`'s sentence
+timing honest are all properties of *how Aiko's client plays audio*, not
+of which model produced it.
+
+The *signal* half -- brightness, level, tempo and the pitch-preserving
+stretch -- moved out again into :mod:`app.tts.shaping`, because it was
+interleaved with this emission loop and the audition lab therefore could
+not run it. What the lab played was the engine; what Aiko plays is the
+engine plus those four stages.
 
 Duplicating them into a second engine would have been the wrong kind of
 cheap. Every constant here was tuned against observed client behaviour --
@@ -26,19 +32,11 @@ A host class must provide:
     finished, so the client can drop what it is still holding. Optional:
     defaults to ``None``, and an engine that leaves it unset behaves
     exactly as before.
-``_pitch_preserving_speed``
-    Whether a rate change goes through the stretch or the old varispeed.
-``_loudness_target_dbfs``
-    Gated speech level every clip is matched to, or ``0.0`` to leave
-    levels as the engine produced them. Optional: it defaults off here,
-    so an engine written before this existed still works.
-``_tilt_target_db`` / ``_tilt_limit_db``
-    Spectral tilt every clip is shelved toward, or ``None`` to leave
-    brightness alone. Also optional, and unset for engines that have no
-    reference clip to derive a target from.
-``_rate_target_syl_s`` / ``_rate_limit``
-    Tempo every clip is stretched toward, in syllables per second, or
-    ``None`` to leave pacing alone. Optional on the same terms.
+Plus the shaping targets read by :meth:`app.tts.shaping.Shaping.of` --
+``_pitch_preserving_speed``, ``_loudness_target_dbfs``,
+``_tilt_target_db`` / ``_tilt_limit_db`` and ``_rate_target_syl_s`` /
+``_rate_limit``. Every one of those is optional and defaults to inert, so
+an engine written before a given stage existed still plays.
 """
 
 from __future__ import annotations
@@ -50,45 +48,24 @@ from collections.abc import Callable
 
 import numpy as np
 
-from app.audio.loudness import correction_factor
 from app.audio.speech_rate import MAX_CORRECTION as MAX_RATE_CORRECTION
-from app.audio.speech_rate import correction_factor as rate_correction_factor
-from app.audio.timbre import MAX_CORRECTION_DB, match_tilt
-from app.audio.timestretch import time_stretch
+from app.audio.timbre import MAX_CORRECTION_DB
+from app.tts.shaping import (
+    GUARD_SILENCE_SECONDS,
+    Shaping,
+    resolve_loudness_target,
+    shape_clip,
+)
 
 log = logging.getLogger(__name__)
 
-#: Appended to every clip. Gives the client's scheduler somewhere to land
-#: and stops the last phoneme being clipped by the stream ending exactly
-#: on it.
-GUARD_SILENCE_SECONDS = 0.15
-
-
-def resolve_loudness_target(
-    settings: object, provider: str, *, default: float
-) -> float:
-    """The level target for one engine, in dBFS. ``0.0`` means off.
-
-    Two tiers, because the right answer is not the same for every engine.
-    ``tts.providers.<name>.loudness_target_dbfs`` wins when present;
-    otherwise the engine's own ``default``, which for a cloning engine is
-    the global ``tts.loudness_target_dbfs`` and for pocket-tts is off.
-    See ``PocketTtsService.__init__`` for why they differ.
-
-    Tolerates a settings object with no ``for_provider`` -- several tests
-    build one from a namespace, and an engine that cannot read an optional
-    override should fall back rather than fail to construct.
-    """
-    for_provider = getattr(settings, "for_provider", None)
-    if callable(for_provider):
-        try:
-            override = for_provider(provider).loudness_target_dbfs
-        except Exception:
-            log.debug("per-provider loudness lookup failed", exc_info=True)
-            override = None
-        if override is not None:
-            return float(override)
-    return float(default or 0.0)
+#: Re-exported: both live in :mod:`app.tts.shaping` now, and the engines
+#: import them from here.
+__all__ = [
+    "GUARD_SILENCE_SECONDS",
+    "PcmPlaybackMixin",
+    "resolve_loudness_target",
+]
 
 
 class PcmPlaybackMixin:
@@ -146,87 +123,21 @@ class PcmPlaybackMixin:
         stop_amplitude = threading.Event()
         amplitude_thread: threading.Thread | None = None
 
-        # Brightness before level, because the shelf changes the level it
-        # would otherwise be measured against. Off unless the engine set
-        # a target: only Chatterbox has a reference clip to aim at, and
-        # pocket-tts is not audibly drifting.
-        tilt_target = getattr(self, "_tilt_target_db", None)
-        if tilt_target is not None:
-            try:
-                audio = match_tilt(
-                    audio,
-                    sample_rate,
-                    target_tilt_db=float(tilt_target),
-                    limit_db=float(
-                        getattr(self, "_tilt_limit_db", MAX_CORRECTION_DB)
-                    ),
-                )
-            except Exception as exc:
-                # A sentence in the wrong shade of warm beats no
-                # sentence, so this never propagates.
-                log.warning("timbre match failed, using the clip as-is: %r", exc)
-
-        # Match this clip to the standing level before anything else
-        # touches it. Measured on the raw speech, so the guard silence
-        # below cannot drag the gate's estimate down, and folded into
-        # ``gain_factor`` rather than multiplied into the array -- the
-        # emission path already has exactly one multiply for this and a
-        # second pass over a 3-second clip buys nothing.
-        target = float(getattr(self, "_loudness_target_dbfs", 0.0) or 0.0)
-        if target < 0.0:
-            gain_factor = float(gain_factor) * correction_factor(
-                audio, sample_rate, target_dbfs=target
-            )
-
-        # Tempo: fold the per-clip correction into the speed factor
-        # rather than stretching twice. Only when the stretch is
-        # pitch-preserving -- correcting rate through varispeed would
-        # trade a tempo wobble for a pitch wobble, which is worse.
-        rate_target = getattr(self, "_rate_target_syl_s", None)
-        if rate_target is not None and self._pitch_preserving_speed and text:
-            try:
-                speed = float(speed) * rate_correction_factor(
-                    audio,
-                    sample_rate,
-                    text,
-                    target_syl_s=float(rate_target),
-                    intended=float(speed),
-                    limit=float(
-                        getattr(self, "_rate_limit", MAX_RATE_CORRECTION)
-                    ),
-                )
-            except Exception as exc:
-                log.warning("tempo match failed, using the clip as-is: %r", exc)
-
-        # Rate change on the speech only, before the guard silence is
-        # appended -- stretching a fixed tail would make the guard itself
-        # depend on her mood.
-        stretched = False
-        if abs(speed - 1.0) > 1e-3 and self._pitch_preserving_speed:
-            try:
-                audio = time_stretch(audio, speed, sample_rate)
-                stretched = True
-            except Exception as exc:
-                # Falling back to varispeed beats dropping the sentence:
-                # wrong pitch is survivable, silence is not.
-                log.warning(
-                    "time-stretch failed, falling back to varispeed: %r", exc,
-                )
-
-        silence = np.zeros(
-            int(sample_rate * GUARD_SILENCE_SECONDS), dtype=np.float32
+        # Brightness, level, tempo and the stretch, in that order and with
+        # their reasoning, live in ``app.tts.shaping`` -- pure, so the
+        # audition lab can run the identical path instead of playing the
+        # engine raw and calling it a preview.
+        shaped = shape_clip(
+            audio,
+            sample_rate,
+            shaping=Shaping.of(self),
+            speed=speed,
+            gain_factor=gain_factor,
+            text=text,
         )
-        audio = np.concatenate([audio.reshape(-1), silence])
-
-        # After a stretch the duration already lives in the sample count,
-        # so the honest native rate goes to the client. Varispeed instead
-        # declares a scaled rate and lets the client play the same samples
-        # faster, which moves pitch with duration.
-        playback_rate = (
-            sample_rate
-            if stretched or abs(speed - 1.0) <= 1e-3
-            else int(sample_rate * speed)
-        )
+        audio = shaped.audio
+        gain_factor = shaped.gain_factor
+        playback_rate = shaped.playback_rate
         duration_s = float(audio.size) / float(playback_rate)
         play_t0 = time.monotonic()
 

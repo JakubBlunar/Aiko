@@ -2882,7 +2882,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 <a id="recurring-shapes"></a>
 
-## The twenty-five recurring shapes
+## The twenty-six recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3291,6 +3291,22 @@ protected against did not exist.
 Distinct from shape 23, which is a claim that was true when written and went
 stale. This one was never checked. And distinct from shape 21, where the
 *accused* gate went unmeasured — here it is the objection to the fix.
+
+**26. A tool built to make a decision, which does not exercise the path the
+decision governs.** Not a measurement error: everything the tool reports is
+correct, and its own tests pass. The flaw is an omission, which no assertion about
+its outputs can catch. H49 is the case — `tools/tts_lab` auditioned engine output
+while the app played that output through four shaping stages, so every reference
+and every generation knob was chosen against a signal production never emits. The
+tool was written before those stages existed and each one was added with a test
+proving it worked; none had a reason to ask whether the audition still previewed
+anything.
+
+The tell is a tool and a production path that share a model but not a code path,
+and the smell is strongest when the tool predates the pipeline. Distinct from shape
+12: there two correct components fault at their interface, here two correct
+components never meet, and the only instrument that can notice is a human saying
+"it sounded better in the other one".
 
 The tell is grammatical, which makes it cheap to grep for: the benefit is
 written as a number and the cost as an adverb. "Dramatically quieter",
@@ -5691,6 +5707,17 @@ a neutral register. `refset.rank` already prefers connected clips over brighter
 short ones and `refset.shape` already flags an isolated-word reference — this
 voice was built past both warnings, which is worth knowing about the UI.
 
+**Amended by [H49](#h49-the-lab-was-auditioning-a-different-voice-than-the-app-played):**
+the reference is not the only contributor, and the second one is ours. Brightness
+matching aims each generated clip at the *reference's* measured spectral tilt, and
+her two references ask for opposite things — `reference/aiko_reference.wav`
+measures +11.32 dB against `aiko2/reference.wav`'s −2.16 dB, so `aiko2` is 13.5 dB
+brighter. Nano generates dark, so selecting `aiko2` brightens every sentence by up
+to 4 dB toward a bright, shouty target, on top of the excited register cloned from
+those clips. Two effects, same direction. That the fix for one complaint here was
+adding energy where the other complaint said there was too much is not a
+coincidence — it is what a target derived from a bad reference does.
+
 ### Shape
 
 [Shape 12](#recurring-shapes) again, and a variant worth naming: **a measurement
@@ -5703,4 +5730,91 @@ loudness") on the axis that was measured, while the axis that mattered went
 unnamed. Sibling of [shape 25](#recurring-shapes), one entry up: there a cost was
 unmeasured and the change was declined, here a cost was unmeasured and the change
 was shipped.
+
+## H49. The lab was auditioning a different voice than the app played
+
+Reported one message after H48 shipped: *"that for the chatterbox sounded good in
+the stt lab but its not that good in in real usage."* Read as a preference, that
+is a shrug. Read as a claim about two instruments disagreeing, it is a bug report
+about the instrument — and the instrument is the one every voice decision has been
+made with.
+
+### What the lab was actually playing
+
+`tools/tts_lab/adapters.py` calls the engine's `generate_audio` and hands the array
+to `write_wav`. Nothing else. Meanwhile `PcmPlaybackMixin._play_clip` ran four
+stages before a byte reached the socket: brightness shelved toward the reference's
+spectral tilt, level matched to a target, tempo stretched toward the reference's
+syllable rate, and the pitch-preserving stretch carrying all of it.
+
+So the lab auditioned the **engine** and Aiko played the **engine plus four
+corrections**. Every knob tuned by ear in the studio, every reference chosen by
+A/B, every "this one is consistent and nice" was decided against a signal the app
+does not produce. The measured gap is not subtle: for `chatterbox-nano` on
+`reference/aiko_reference.wav` the app applies a −26 dBFS level match, a brightness
+shelf toward a +11.32 dB tilt target, and a ×0.936 tempo stretch toward 6.55 syl/s.
+The lab applied none of the three.
+
+### The fix is that there is now one implementation
+
+`app/tts/shaping.py` holds the four stages as a pure function — audio in, audio
+out, no threads, no socket, no clock — plus the two target derivations that used to
+live as methods on the Chatterbox service. `_play_clip` calls it and so does the
+lab, through `tools/tts_lab/asheard.py`. Not "the lab reimplements the app
+faithfully": there is one `shape_clip`, and
+`tests/test_tts_shaping.py::LabMatchesAppTests` asserts the two callers reach
+sample-identical output, because that is the assertion that rots silently.
+
+The audition also *reports* each stage now, and keeps a switch to play the clip
+raw. That pairing is the actual diagnostic: a voice that sounds good raw and bad
+shaped is a target problem, not a clips or knobs problem — which is exactly what
+`aiko2` turned out to be, [amended into H48](#h48-she-stopped-being-lively--the-fix-that-was-measured-on-the-wrong-engine).
+
+### What it showed on the first run
+
+One phrase through `chatterbox-nano` on each of her two references, which is the
+comparison that was not previously possible:
+
+| | `reference/aiko_reference.wav` | `aiko2/reference.wav` |
+| --- | --- | --- |
+| level applied | −3.27 dB | **+2.24 dB** |
+| brightness applied | 11.62 → 11.54 | 1.67 → **−1.70** |
+| tempo applied | ×1.15 (at the cap) | none — no target |
+
+`aiko2` is brightened 3.4 dB and boosted 2.24 dB on top of an excited cloned
+register; her committed reference is attenuated and tonally untouched because the
+generation already matches it. Three effects, one direction, which is the chipmunk
+in numbers.
+
+The other row is worth its own follow-up: the tempo correction on her real
+reference is **saturated** at the `tts.speech_rate_match_limit` ceiling of ±15%. It
+is not correcting her pace to 6.55 syl/s, it is giving back everything it is
+allowed to and still falling short — and a saturated corrector passes variance
+straight through, which is the mechanism behind *"the second one was much slower"*
+surviving H46. Nothing in the log says "saturated"; the stage reports success
+either way, which is [shape 1](#recurring-shapes) wearing a different hat.
+
+### What is still not previewed
+
+The lab speaks one phrase; Aiko speaks a queue. Level, brightness and tempo
+matching all exist to correct *between-sentence* drift, and every complaint in this
+area — "the second one was much slower", "she is changing the warmth and level a
+little between sentences" — has been about sentence two. A single-phrase audition
+cannot show that, so the gap narrowed rather than closed.
+
+### Shape
+
+A new one. **Shape 26: a tool built to make a decision, which does not exercise the
+path the decision governs.** Distinct from the measurement shapes because nothing
+here was measured wrongly — the lab's latency, RTF and bandwidth numbers are all
+correct, and its own tests passed. The flaw is in what it *omits*, which no
+assertion about its outputs can catch, and which stays invisible for exactly as
+long as nobody compares its verdict against production.
+
+The tell is a tool and a production path that share a model but not a code path,
+especially when the tool was written first and the production path grew stages
+afterwards. Each stage was added with a test proving it did its job; none had a
+reason to ask whether the audition still previewed anything. H46's four
+between-sentence fixes each widened this gap, and the person who reported it was
+the only instrument that could.
 
