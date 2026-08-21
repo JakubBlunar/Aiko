@@ -64,6 +64,33 @@ log = logging.getLogger(__name__)
 GUARD_SILENCE_SECONDS = 0.15
 
 
+def resolve_loudness_target(
+    settings: object, provider: str, *, default: float
+) -> float:
+    """The level target for one engine, in dBFS. ``0.0`` means off.
+
+    Two tiers, because the right answer is not the same for every engine.
+    ``tts.providers.<name>.loudness_target_dbfs`` wins when present;
+    otherwise the engine's own ``default``, which for a cloning engine is
+    the global ``tts.loudness_target_dbfs`` and for pocket-tts is off.
+    See ``PocketTtsService.__init__`` for why they differ.
+
+    Tolerates a settings object with no ``for_provider`` -- several tests
+    build one from a namespace, and an engine that cannot read an optional
+    override should fall back rather than fail to construct.
+    """
+    for_provider = getattr(settings, "for_provider", None)
+    if callable(for_provider):
+        try:
+            override = for_provider(provider).loudness_target_dbfs
+        except Exception:
+            log.debug("per-provider loudness lookup failed", exc_info=True)
+            override = None
+        if override is not None:
+            return float(override)
+    return float(default or 0.0)
+
+
 class PcmPlaybackMixin:
     """The emission half of a TTS engine."""
 

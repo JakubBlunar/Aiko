@@ -19,7 +19,7 @@ import threading
 
 from app.core.infra.settings import TtsSettings
 from app.tts.clip_cache import ClipCache, SynthesisGate
-from app.tts.pcm_playback import PcmPlaybackMixin
+from app.tts.pcm_playback import PcmPlaybackMixin, resolve_loudness_target
 from app.tts.reactions import (
     LENGTH_SCALE_MAX,
     LENGTH_SCALE_MIN,
@@ -184,13 +184,24 @@ class PocketTtsService(PcmPlaybackMixin):
         self._pitch_preserving_speed: bool = bool(
             getattr(settings, "pitch_preserving_speed", True)
         )
-        # Gated level every clip is matched to before affect gain, or 0.0
-        # for the engine's raw output. Applies here too, not only to the
-        # cloning engines: pocket-tts's own per-sentence spread measured
-        # 8.4 dB over a twelve-sentence turn, which was simply never
-        # looked at until a second engine made it worth measuring.
-        self._loudness_target_dbfs: float = float(
-            getattr(settings, "loudness_target_dbfs", 0.0) or 0.0
+        # Gated level every clip is matched to before affect gain. **Off
+        # here by default**, unlike the cloning engines.
+        #
+        # It was on briefly. pocket-tts does drift 8.4 dB between
+        # sentences, so matching it looked like the same fix -- and it was
+        # reported back as "she stopped being lively", which measurement
+        # supports: 1.6 dB of that spread tracks the intended energy of
+        # the line, because the model reads the text and a loud sentence
+        # is partly loud *because* it is excited. Matching removes some
+        # delivery with the drift. On Chatterbox the drift dominates and
+        # the consistency was the improvement; here the expression does,
+        # and this is the voice every other setting was tuned against by
+        # ear.
+        #
+        # ``tts.providers.pocket-tts.loudness_target_dbfs`` turns it back
+        # on for an A/B without touching the global default.
+        self._loudness_target_dbfs: float = resolve_loudness_target(
+            settings, "pocket-tts", default=0.0,
         )
 
         if TTSModel is not None and np is not None:

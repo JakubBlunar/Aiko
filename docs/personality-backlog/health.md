@@ -5602,3 +5602,105 @@ benefit that was measured exhaustively.** The tell is grammatical — the benefi
 written as a number, the cost as an adverb — which makes it cheap to look for.
 Also a second instance of [shape 23](#recurring-shapes) one level up: H43 said
 what evidence would settle it and nothing was going to go and get it.
+
+## H48. "She stopped being lively" — the fix that was measured on the wrong engine
+
+Reported after a few days of real use: *"I tried to go back to pocket-tts with
+aiko refined as it was before and she sounds different there too. She stopped
+being lively and I am not sure what we did."* Plus, separately, that Chatterbox
+*"sometimes sounds like chipmunk."* Two complaints, two unrelated causes.
+
+### Ruling out the rest of the window
+
+Five commits touched TTS in the window, four of them `pocket_tts_service.py`, so
+the first job was narrowing rather than guessing. Reading the diffs against what
+is *live*:
+
+- **The mixin extraction** (`a64e2b7`) moved 354 lines out of the engine and
+  rewired speed through WSOLA instead of varispeed. Inert here: the affect gate
+  is off and the pacing slider is 1.0, so the speed reaching `_play_clip` is
+  exactly 1.0 and the stretch never runs.
+- **Tempo and brightness matching** (`51f08fe`) need a target measured from a
+  reference clip. pocket-tts has no reference, so both stay `None` — off, not
+  merely small.
+- **The rest of `51f08fe`** on this engine is `ClipCache`, `SynthesisGate` and
+  `resolve_playback_speed`, which is the previous inline code with identical
+  clamps. Caching and threading, not audio. Dropping `speed` from the cache key
+  is safe *because* generation is speed-independent.
+- **The pacing band** looked like the chipmunk suspect — the engine's old
+  `[0.85, 1.15]` carried a comment saying it was deliberately narrower than
+  `[0.65, 1.35]` to avoid "chipmunk territory", and the commit replaced it with a
+  shared constant. The shared constant is `0.85`/`1.15`. Nothing widened.
+
+That leaves exactly one behavioural change: `cad9a23` turned **level matching**
+on for pocket-tts.
+
+### The measurement that should have been taken first
+
+Level matching was justified on drift: gated level varied 8.4 dB across a
+twelve-sentence turn, the same order as Chatterbox's 8.3 dB, so the fix looked
+engine-independent and shipped for both. What was never measured is whether that
+spread is *noise*. It is partly signal — the model reads the text, so a loud
+sentence is partly loud because it is excited.
+
+Nine sentences, three each at intended high / mid / low energy:
+
+| intended | mean gated level |
+| --- | --- |
+| high | −23.85 dBFS |
+| mid | −24.29 dBFS |
+| low | −25.47 dBFS |
+
+Spread 5.08 dB; **high minus low +1.62 dB**. So roughly a third of the drift is
+her delivery, and matching every clip to one target removes it along with the
+rest. The corrections it was applying ran −3.4 dB to +1.7 dB, and they sort by
+sentiment: her three most excited lines were the three pushed down hardest.
+Attenuating the excited lines and lifting the tired one is not a level fix, it is
+a compressor on her affect.
+
+1.6 dB is small. It is also audible on a voice heard daily, and the reporter
+picked it up as a personality change without knowing anything had been touched.
+
+### Why the two engines now disagree on purpose
+
+Reverted for pocket-tts, kept for Chatterbox, via
+`tts.providers.<name>.loudness_target_dbfs`. The trade is the same ratio on both
+engines and lands differently: Chatterbox re-samples her level on every call and
+the drift dominates the ~1.6 dB of expression, where pocket-tts is the voice
+every other setting was tuned against by ear. The consistency was the reported
+improvement on one and the regression on the other.
+
+`tests/test_tts_loudness_per_provider.py` pins the asymmetry, because "both
+engines drift, so match both" is the obvious inference and will be drawn again.
+
+### The chipmunk is the reference, not the pipeline
+
+Unrelated, and not a regression. `voices/aiko2/manifest.json` is nine clips from
+the original voice pack: `READY`, `BYE BYE`, `THANK YOU`, `SCRAMBLE`, `MERRY
+XMAS`, `HAPPY HALLOWEEN`, `GO`, `0zero-zero` — and `MEW (CAT)nyaa1`, a cat meow.
+Median clip 0.99 s. Chatterbox clones pitch register and prosody from the
+reference, so a reference made almost entirely of shouted one-word exclamations
+clones an excited register, and "sometimes" is generation variance around it.
+
+Every `phrase` field is empty, which independently confirms tempo matching is
+off for this voice (it needs three measurable phrases) — so that could not be
+contributing either.
+
+The fix is source material, not a setting: a reference wants connected speech at
+a neutral register. `refset.rank` already prefers connected clips over brighter
+short ones and `refset.shape` already flags an isolated-word reference — this
+voice was built past both warnings, which is worth knowing about the UI.
+
+### Shape
+
+[Shape 12](#recurring-shapes) again, and a variant worth naming: **a measurement
+that establishes a problem exists, taken as establishing that fixing it is free.**
+The 8.4 dB was real and correctly measured. The unmeasured quantity was how much
+of it was hers. The tell is a fix justified entirely by the size of the deviation
+it removes, with nothing said about what the deviation was made of — and here the
+commit message even wrote the reassurance out loud ("changes consistency and not
+loudness") on the axis that was measured, while the axis that mattered went
+unnamed. Sibling of [shape 25](#recurring-shapes), one entry up: there a cost was
+unmeasured and the change was declined, here a cost was unmeasured and the change
+was shipped.
+

@@ -716,6 +716,26 @@ declined on a cost that was never measured, beside a benefit that was measured
 exhaustively*, whose tell is grammatical: the benefit written as a number, the
 cost as an adverb ([`health.md`](health.md)).
 
+**H48 is the one to read before shipping a fix to two engines because both
+measure the same deviation.** Reported as *"she stopped being lively"* on
+pocket-tts after days of use, with no idea what had changed. Five commits had
+touched TTS, and four of them that engine — but most stages rule out on what is
+*live* rather than what changed: tempo and brightness matching need a target
+measured from a reference clip, and the WSOLA stretch never runs while the affect
+gate is off and the pacing slider is 1.0. One behavioural change survived, level
+matching, and it had been applied to both engines on the strength of the drift it
+removed: 8.4 dB on pocket-tts against Chatterbox's 8.3. What nobody measured was
+what that drift was *made of*. Nine sentences of known intended energy: **+1.62
+dB** between the high and low groups, so about a third of it is her delivery, and
+the corrections being applied sorted by sentiment — her three most excited lines
+pushed down hardest, the tired one lifted. Reverted for pocket-tts, kept for
+Chatterbox, and the asymmetry is now a test, because "both engines drift, so
+match both" is the obvious inference and will be drawn again. The chipmunk
+complaint on Chatterbox was unrelated and not a regression: that reference is
+nine voice-pack exclamations plus a cat meow, so the register is cloned, not
+computed. New shape — *a measurement that establishes a problem exists, taken as
+establishing that fixing it is free* ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays
