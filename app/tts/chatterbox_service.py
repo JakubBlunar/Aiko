@@ -55,7 +55,7 @@ from app.audio.speech_rate import (
 )
 from app.audio.timbre import MAX_CORRECTION_DB, spectral_tilt_db
 from app.tts.clip_cache import ClipCache, SynthesisGate
-from app.tts.pcm_playback import PcmPlaybackMixin
+from app.tts.pcm_playback import PcmPlaybackMixin, resolve_loudness_target
 from app.tts.reactions import (
     clamp_length_scale,
     reaction_to_speed as _reaction_to_speed,
@@ -144,8 +144,14 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         self._pitch_preserving_speed = bool(
             getattr(settings, "pitch_preserving_speed", True)
         )
-        self._loudness_target_dbfs = float(
-            getattr(settings, "loudness_target_dbfs", 0.0) or 0.0
+        # Level matching, on by default here: a cloning engine re-samples
+        # her level on every call, and the between-sentence drift is large
+        # relative to the expression it carries. pocket-tts defaults the
+        # other way -- see the note in its ``__init__``.
+        self._loudness_target_dbfs = resolve_loudness_target(
+            settings,
+            self._engine_key,
+            default=getattr(settings, "loudness_target_dbfs", 0.0) or 0.0,
         )
         # Brightness matching. The target is not known until a reference
         # clip has been cloned, so it starts unset and ``_clone`` fills

@@ -383,6 +383,25 @@ class TtsProviderSettings:
     #: with no manifest, and for trying a value without rebuilding a
     #: reference to hold it.
     generate: dict[str, float] = field(default_factory=dict)
+    #: Per-engine override for ``tts.loudness_target_dbfs``. ``None``
+    #: means "use this engine's own default", which is not the same for
+    #: every engine and deliberately so.
+    #:
+    #: Level matching was applied to both engines on the reasoning that
+    #: pocket-tts drifts by 8.4 dB too, which is true and was still the
+    #: wrong call: it is the voice every other setting was tuned against
+    #: by ear, and normalising it was reported as "she stopped being
+    #: lively". Measured afterwards, 1.6 dB of the spread tracks the
+    #: intended energy of the line -- the model reads the text, so a loud
+    #: sentence is partly loud *because* it is excited -- so matching
+    #: removes some delivery along with the drift. Small, and audible on
+    #: a voice you know well. Chatterbox keeps it: there the drift is
+    #: larger relative to the expression, and the consistency was the
+    #: reported improvement.
+    #:
+    #: Set a dBFS figure here to turn it on for an engine whose default
+    #: is off, or ``0.0`` to turn it off for one whose default is on.
+    loudness_target_dbfs: float | None = None
 
 
 @dataclass(slots=True)
@@ -472,6 +491,12 @@ class TtsSettings:
             device=(entry.device if entry else "") or "auto",
             threads=(entry.threads if entry else 0),
             generate=dict(entry.generate) if entry else {},
+            # ``None`` rather than the flat field: the engine decides its
+            # own default, and cannot tell "unset" from "set to the
+            # global value" if this resolves it here.
+            loudness_target_dbfs=(
+                entry.loudness_target_dbfs if entry else None
+            ),
         )
 
     def _legacy_voice(self, key: str) -> str:
@@ -1240,8 +1265,25 @@ def _parse_tts_providers(value: Any) -> dict[str, TtsProviderSettings]:
             device=device if device in {"auto", "cpu", "cuda"} else "auto",
             threads=threads,
             generate=_parse_generate_kwargs(raw.get("generate")),
+            loudness_target_dbfs=_parse_provider_loudness(
+                raw.get("loudness_target_dbfs"),
+            ),
         )
     return out
+
+
+def _parse_provider_loudness(value: Any) -> float | None:
+    """Per-engine level target, or ``None`` when the key is absent.
+
+    The absent case has to stay distinguishable from ``0.0``: absent
+    means "whatever this engine decided", ``0.0`` means "off, and I mean
+    it", and the engines do not share a default. Reusing
+    :func:`_parse_loudness_target` would collapse the two, because it
+    resolves a bad value to -26.0.
+    """
+    if value is None:
+        return None
+    return _parse_loudness_target(value)
 
 
 def _parse_generate_kwargs(value: Any) -> dict[str, float]:
