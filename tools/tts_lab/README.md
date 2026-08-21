@@ -8,24 +8,35 @@ production audio path.
 Candidate list and the reasoning behind it:
 [`docs/tts-engine-options.md`](../../docs/tts-engine-options.md).
 
-## Start here: her voice is not backed up
+## Her voice, and the two places it comes from
 
-Aiko's voice exists in exactly two places on this machine —
-`voices/aiko1.safetensors` and `voices/aiko1_refined.safetensors` — and
-both are **pocket-tts internal speaker states, not audio**. There is no
-source recording anywhere in the repo.
+**Both of these are now solved. The history is worth keeping because it
+explains why the tools are shaped the way they are.**
 
-Two consequences, and the second is the urgent one:
+Aiko's voice lived in exactly two files — `voices/aiko1.safetensors` and
+`voices/aiko1_refined.safetensors` — and both are **pocket-tts internal
+speaker states, not audio**: a frozen transformer KV cache over about
+eight seconds of conditioning, not invertible back to sound. So if
+pocket-tts ever stopped loading, the voice was gone, and the whole
+reason for this evaluation is that Torch is a crash surface. "Recoverable
+only by running the thing we want to replace" is a bad place to sit.
 
-1. Every candidate engine clones from a *clip*, so without one there is
-   nothing to audition against. The voice cannot move engines.
-2. If pocket-tts ever stops loading, her voice is gone. The whole reason
-   for this evaluation is that Torch is a crash surface, which makes
-   "her voice is recoverable only by running the thing we want to
-   replace" a bad place to be sitting.
+`voicebank.py` fixed the backup by rendering her out to a plain WAV. Then
+the **original recordings turned up** in a NAS backup of an old
+university folder — a licensed voice pack, now in
+`voices/sounds/aiko-original/`, 44.1 kHz and 15.7 kHz wide against the
+6.2 kHz that survives in the generated reference. Those clips are what
+the first clone was conditioned on years ago, which makes them the best
+material available by a wide margin and is what the studio's clip picker
+exists to use. They are gitignored: bought assets, not ours to ship.
 
-So the first command produces a plain WAV, which is a backup and a
-universal cloning source at the same time:
+So there are two routes to a reference now, and the newer one is better:
+
+- **From the clips** — studio steps 1 and 2. One generation of loss
+  shorter than anything below, since it skips pocket-tts entirely.
+- **From the embedding** — `voicebank.py`, below. Still the only route
+  if the source pack is unavailable, and still what
+  `voices/reference/aiko_reference.wav` was built with.
 
 ```bash
 python -m tools.tts_lab.voicebank --roundtrip
@@ -39,10 +50,10 @@ new reference, and from a single 3-second part — so the cost of the
 bootstrap is audible before anything gets built on top of it.
 
 **Listen to those three first.** Re-cloning from generated audio loses a
-generation of codec and sampling noise. If `from_reference` is clearly
-worse than `original`, the honest conclusion is that the voice wants
-re-recording rather than bootstrapping, and it is much cheaper to learn
-that now than after installing four engines.
+generation of codec and sampling noise, and that loss is the entire
+argument for the clip route: what reaches Chatterbox's 24 kHz decoder
+path goes from 6.2 kHz of content to 15.7 by deleting pocket-tts from
+the middle of the chain.
 
 ## Auditioning
 
@@ -79,44 +90,169 @@ The page also prints two tables that matter more than the audio:
 python -m tools.tts_lab.serve --open        # http://127.0.0.1:6280
 ```
 
-Record a reference in the browser (or drop in a **wav, mp3, flac or
-ogg** — verified through the endpoint, not just claimed by libsndfile),
-clone it into any installed engine, audition a phrase, and save it to
-`voices/`.
+Pick source clips, build a reference out of them, clone it into any
+installed engine, audition a phrase, save it to `voices/`.
 
-**You do not need a reference to audition.** The Voice picker in step 2
-also lists everything already saved under `voices/`, and it defaults to
-`reference/aiko_reference.wav` — so the page can speak in her voice the
-moment it loads. Requiring a fresh recording first was a real dead end:
-the whole point of committing that clip is that it *is* her voice, and
-the studio offered no way to hear it. Pick a `.safetensors` and you get
-the pocket-tts embedding route; pick a `.wav` and the engine clones from
-it per call. The picker says which is happening, and refuses the
-combination that cannot work (an embedding is meaningless to an engine
-that clones from audio).
+**You do not need to build anything to audition.** The Voice picker also
+lists everything already saved under `voices/` and defaults to
+`reference/aiko_reference.wav`, so the page can speak in her voice the
+moment it loads. Pick a `.safetensors` and you get the pocket-tts
+embedding route; pick a `.wav` and the engine clones from it per call.
+The picker says which is happening and refuses the combination that
+cannot work — an embedding is meaningless to an engine that clones from
+audio.
 
-Uploading matters as much as recording. If a voice was originally cloned
-from mp3s, **those mp3s are the best material available** — a generation
-closer to the source than anything the current engine can regenerate.
-Making someone convert to WAV first is how a good source clip quietly
-gets replaced by a convenient bad one.
-It reads out the clip's quality numbers as you record and shows the same
-phrase set `voicebank.py` uses as a script to read, so the reference
-covers her range rather than being thirty seconds of one flat sentence.
+### Why the reference is a *set*, not a file
 
-Saving means one of two things. For pocket-tts it exports a real speaker
-embedding via `export_voice()` — the same `.safetensors` the app loads
-today, and the call the deleted Qt dialog used to make. For everything
-else the engine clones per call from a clip, so the clip *is* the voice
-and it gets copied into `voices/`.
+Real source material arrives as dozens of one-second files. A cloning
+reference is one clip. So the interesting work is selection and ordering,
+and ordering matters because Chatterbox **truncates**:
 
-Capture is raw PCM through the Web Audio API rather than
-`MediaRecorder`, which would hand back WebM/Opus and need ffmpeg to
-decode for the one job of writing a WAV. The app already works this way
-for voice mode.
+```python
+ENC_COND_LEN = 15 * S3_SR      # 15 s -> the tokenizer prompt
+DEC_COND_LEN = 10 * S3GEN_SR   # 10 s -> the decoder conditioning
+```
 
-Loopback-only by default: it takes microphone audio and writes into
-`voices/`.
+Ten seconds reach the part that reconstructs waveforms, fifteen the part
+that primes articulation, and the rest is read off disk and thrown away.
+Her committed 27-second reference is therefore a ten-second reference
+plus twelve seconds of decoration plus five that never existed as far as
+the engine is concerned — and because the cut lands wherever the
+concatenation happens to be, **part order silently decides which clips
+condition the clone at all**. A file list and a Clone button lets you
+spend an afternoon deciding clip 14 sounds bad when clip 14 was never
+heard, so the selection renders as a proportional bar with both cutoffs
+drawn on it and reordering is a first-class action.
+
+Two other decisions, both places where the tidier-looking choice is
+wrong:
+
+- **Parts are stored unnormalised.** Level differences between real
+  takes are the speaker, not an error. Per-clip peak normalisation is
+  the reflex and would hand the clone a reference in which a whisper and
+  a shout are the same size. Gain is applied once, to the joined clip.
+- **Transcripts are never guessed.** See below; this one has teeth.
+
+### Length is not a quality axis, it is the pacing
+
+The first real reference built here was ten of the pack's brightest
+clips, scored green on every number the studio had, played back
+faultlessly — and cloned to a voice that drawled so plainly the audition
+needed 1.5× in the browser to be listenable.
+
+**Chatterbox clones speaking rate along with timbre.** The brightest
+clips in a game pack are single drawled words followed by a gap. Ten of
+those, median part 0.92 s, delivered 5.26 syllables per second against
+6.83 from her sentence-length reference: 24% slow, past the app's 15%
+correction cap, unfixable downstream. Two sentence-length clips from the
+same pack land at 6.07.
+
+So the suggestion takes connected speech first (1.4 s and up) and
+brightness only within it, the build report states the shape in words
+(`10 parts, median 0.92s, 18% gaps — isolated words`), and **Check pace**
+speaks one probe sentence through the candidate and measures what came
+out. Use it. It is the only signal here that a reference clip cannot
+give you by ear, and it also paces any *saved* voice, so a candidate can
+be compared against her incumbent on identical words.
+
+Order matters when you start tuning. The reference is the dominant term —
+rebuilding from sentence clips moved delivery 16 points, where every
+sampling knob costs 8 to 13 — so fix the clips first and spend the
+smallest knob you can afterwards. And don't reach for the bigger model:
+`chatterbox-full` delivers 3.91 syl/s against Nano's 5.66 on identical
+text, 68% off her pace, at RTF 2.72. It cannot be a live engine, so
+fixing an artifact there trades one audible fault for a slower voice.
+
+If the pace check says a reference is slow but within the app's cap, tick
+**hold her to her own pace** and rebuild. That writes `target_syl_s` into
+the manifest, which the app honours ahead of measuring transcripts — the
+escape hatch for source audio in a language you cannot honestly
+transcribe. It is off by default, because forcing her pace onto a
+genuinely different voice would be the wrong thing to do quietly.
+
+### Transcripts, and the way filling them in helpfully backfires
+
+The manifest's `phrase` fields are what the *app* measures her tempo
+target from. So a wrong transcript does not degrade gracefully — it aims
+her pacing at a number derived from words nobody said.
+
+Two ways that bites, both live on this machine:
+
+- A found voice pack names files by English *gloss* of Japanese audio
+  (`GOOD MORNING (PROPER)-ohayougozaimasu1.mp3`). Auto-filling from the
+  filename would have produced exactly the plausible-looking wrong
+  answer, which is why nothing is prefilled.
+- A pack is made of **one-word interjections**, and isolated words
+  measure slow. Transcribing four of them yields a target near 5.0
+  syllables per second against her established 6.55, which tells the app
+  to stretch *every sentence she ever speaks* to the 15% correction
+  limit — permanently, on evidence from clips that are single words. The
+  studio computes the target with the app's own code and says so in red
+  when it lands that far out.
+
+Leave the transcripts blank unless the clips are full English sentences.
+Blank parts do not count, three measurable ones are the minimum, and no
+target means no correction — which is the right default for found audio.
+
+### Saving
+
+For pocket-tts it exports a real speaker embedding via `export_voice()`
+— the same `.safetensors` the app loads today, and the call the deleted
+Qt dialog used to make.
+
+For everything else the engine clones per call, so the clip *is* the
+voice. A built reference saves as a **folder**: the wav, its `parts/`,
+and `manifest.json`. That shape is a contract, not tidiness —
+`ChatterboxTtsService._adopt_rate_target` looks for the manifest *beside*
+the reference and the parts *under* it, and disables tempo matching with
+one INFO line when either is missing. Copying just the wav would look
+like it worked. `tests/test_refset_manifest_contract.py` is the only
+place that contract is asserted, since neither side imports the other.
+
+Then pick `<name>/reference.wav` in Aiko's voice settings.
+
+There is no microphone. Her voice cannot be performed, so recording
+could only ever produce a different one, and offering the button implied
+a choice that was not there. The raw-PCM capture path went with it.
+
+Loopback-only: it writes into `voices/`.
+
+### Tuning an engine
+
+**Read this engine's knobs** loads the engine and reports the real
+`generate()` keywords with the installed defaults beside them, which is
+the only way to get this right: the docs for the Chatterbox family
+describe `exaggeration` and `cfg_weight` for the original 500M model and
+say nothing about whether Turbo and Nano kept them, and Turbo ships
+`0.0 / 0.0` where every published tip quotes `0.5 / 0.5`. A panel built
+from the model card would have offered dials that do nothing on the one
+variant fast enough to ship. A field left blank sends nothing at all,
+which is not the same as sending the default — "as shipped" is the only
+defensible baseline for an audition.
+
+Values you set are kept per engine across reloads, and **Save writes them
+into the voice's manifest**, which is what makes tuning worth doing: the
+app used to send no generation kwargs at all, so every voice spoke on its
+engine's shipped defaults and a value found here had nowhere to go. So
+the loop is: pick clips, build, audition on an engine, tune until it
+sounds right, save. Switch that engine in Aiko's settings and she sounds
+like the audition did.
+
+They are stored **per engine within the voice**, and saving on a second
+engine adds to the first rather than replacing it — one reference tuned
+for Nano and for Turbo keeps both, and each engine reads only its own.
+That is not tidiness: these are absolute numbers chosen against defaults
+that differ, so Nano's `min_p=0.05` is a real intervention where the full
+model already ships it. An engine with no entry uses its own defaults.
+For a bare wav with no manifest, or to try a value in the live app
+without rebuilding a reference to hold it, there is
+`tts.providers.<name>.generate` in `config/user.json`, which outranks the
+voice.
+
+Two measured things worth knowing before you turn anything. Every
+stability knob is paid for in tempo — on Nano, `min_p=0.05` costs about
+as much as dropping temperature to 0.5 — and the reference matters more
+than any of them, so fix the clips before the dials.
 
 ## Auditioning a voice in another language
 
@@ -125,11 +261,11 @@ and the target text need not share one. So a Japanese voice clip can
 speak English, which is the difference between "no suitable candidate
 voices exist" and "most of them are in the wrong language".
 
-To try one, upload the clip in studio step 1, pick
-`chatterbox-multilingual` in step 2, type English, and Speak. The
-sidecar defaults `language_id` to `en`; override it in the generation
-options box (`{"language_id": "ja"}`) to hear the same voice in its own
-language for comparison.
+To try one, select the clip in studio step 1 and build it in step 2, pick
+`chatterbox-multilingual` in step 3, type English, and Speak. The
+sidecar defaults `language_id` to `en`; override it in the extra-options
+box (`{"language_id": "ja"}`) to hear the same voice in its own language
+for comparison.
 
 Two things to expect. **Accent comes with the voice** — the speaker
 encoder carries phonetic habit as well as timbre, so a Japanese
@@ -145,7 +281,7 @@ Two routes, and they are not equivalent. **Generating** from her existing
 embedding always works and always inherits a ceiling. **Labelling real
 audio** has no ceiling but needs audio to exist.
 
-### From real files (`labeled.py`, or studio step 4)
+### From real files (`labeled.py`, or studio step 5)
 
 Prefer this whenever any real recording survives. Real audio carries no
 generational loss and none of pocket-tts's habits, so a fine-tune on it
@@ -163,7 +299,7 @@ python -m tools.tts_lab.labeled --dir clips/ --transcribe
 python -m tools.tts_lab.labeled --manifest labels.tsv     # path<TAB>text
 ```
 
-Or step 4 of the studio, which is the same code with players and editable
+Or step 5 of the studio, which is the same code with players and editable
 transcripts: drop the files in, hit **Draft missing transcripts**, fix
 what is wrong, build. Typed text is kept in `localStorage` keyed by
 filename and size, so a reload or a server restart does not cost you the
@@ -194,10 +330,12 @@ training run to discover otherwise:
 
 ### From her existing voice (`dataset.py`)
 
-The audio her voice was originally cloned from is lost. The only
-surviving copies are two pocket-tts speaker states, so generating from
-them is not a shortcut past recording — it is the only path that keeps
-*her* voice rather than substituting a different one.
+Written when the audio her voice was cloned from was believed lost, which
+made generating from the embedding the only path that kept *her* voice
+rather than substituting a different one. `voices/sounds/aiko-original/`
+has since turned up, so this is no longer the only option — but it is
+still the one that produces exact transcripts and unlimited material,
+and two minutes of found clips is not a fine-tuning set.
 
 ```bash
 python -m tools.tts_lab.dataset --dry-run          # corpus check, no audio
@@ -346,10 +484,10 @@ Rules worth honouring, all learned the hard way here:
   rather than cut into sentences, so long-form source material needs
   chopping elsewhere first. Whisper already returns segment boundaries,
   so this is mostly wiring.
-- **A pitch-preserving time-stretch stage**, which is the fix that lights
-  up the cadence layer's dark speed channel regardless of which engine
-  wins. See the options doc; it has to work on ~50 ms chunks, which rules
-  out the convenient offline helpers.
+- **Refinement past selection.** Zero-shot cloning has no training step,
+  so "refine" here means a better ten seconds and better knobs, and both
+  are now reachable in the studio. A genuine refinement pass means a
+  fine-tune, which needs the trainer above.
 - **Streaming through the sidecar.** The protocol is request/response, so
   a remote engine's first-audio figure is its whole clip latency. That is
   the harness's limit, not the engine's, and it is only worth fixing for
