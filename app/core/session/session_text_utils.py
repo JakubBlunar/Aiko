@@ -95,9 +95,13 @@ def extract_json_object(raw_text: str) -> dict | None:
 
 
 # Pictographs + dingbats. An engine with no phoneme control has nothing to say
-# for these, and the ASCII-only filters in both sanitisers drop them from
-# persisted text anyway; every path routes through this one pattern so they
-# cannot drift apart.
+# for these, and both sanitisers drop them from persisted text as well; every
+# path routes through this one pattern so they cannot drift apart.
+#
+# ``sanitize_assistant_text`` used to get that for free from a printable-ASCII
+# range and now applies this pattern by name, which is the honest spelling:
+# dropping emoji is a decision, where dropping every accented letter along
+# with them was an accident (H50).
 _EMOJI_RE = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]")
 
 # ASCII emoticons, which a grapheme-driven engine happily reads as letters --
@@ -187,6 +191,26 @@ def sanitize_assistant_text(
     preserve_newlines: bool = True,
     trim: bool = True,
 ) -> str:
+    """Clean one of her replies for the transcript it will be stored as.
+
+    **This is a display and storage filter, not a speech one.** The spoken
+    copy is prepared separately by :func:`prepare_tts_text`, from raw model
+    text, because audio has already played by the time anything reaches
+    here. Nothing about what an engine can pronounce belongs in this
+    function -- that confusion is what cost 448k characters their accents
+    (H50).
+
+    Two kinds of change happen. Curly quotes and dashes are *substituted*,
+    which is a readability choice and loses nothing; everything else is
+    either kept or dropped, and the only things dropped are emoji and
+    characters with no rendering at all.
+
+    NFKC rather than NFKD deliberately. Both would have hidden the old bug
+    -- decomposing left the base letter behind, so the ASCII range would
+    have persisted "Kamenna" instead of "Kamenn" -- but composed is what a
+    transcript wants, and it folds the non-breaking spaces and fullwidth
+    forms that arrive from tool output onto their ordinary equivalents.
+    """
     cleaned = unicodedata.normalize("NFKC", str(text or ""))
     if not cleaned:
         return ""
@@ -213,20 +237,39 @@ def sanitize_assistant_text(
     # them; ``prepare_tts_text`` removes them from the spoken copy, which is
     # the only place they actually hurt.
 
+    # Emoji, explicitly. The printable-ASCII range this replaces was doing it
+    # as a side effect, and losing that silently on the way to fixing H50
+    # would have been a behaviour change nobody asked for.
+    cleaned = _EMOJI_RE.sub(" ", cleaned)
+
+    # Keep what can be displayed; drop what cannot. The rule here used to be
+    # ``32 <= ord(ch) <= 126``, which deleted every character without an
+    # ASCII spelling rather than every character without a *rendering* --
+    # so "Kamenna Poruba" lost its accent, "25 C" lost its degree sign, and
+    # 448k characters of her stored replies held not one non-ASCII character
+    # between them (H50). Nothing downstream wanted that: the spoken copy is
+    # cleaned from raw model text by ``prepare_tts_text``, and her memories
+    # and concepts, which never passed through here, have been storing
+    # accents and em dashes all along.
+    #
+    # Categories rather than a codepoint range, because the thing actually
+    # worth excluding is a control or format character -- a stray surrogate,
+    # a zero-width joiner, a bidi override -- and those are exactly what the
+    # ``C`` classes name. Line and paragraph separators go too; newlines are
+    # handled above and below, and U+2028 in a chat bubble is a rendering
+    # surprise, not a paragraph.
     out_chars: list[str] = []
     for ch in cleaned:
-        code = ord(ch)
-        if ch == "\n" and preserve_newlines:
-            out_chars.append(ch)
-            continue
-        if ch == "\n" and not preserve_newlines:
-            out_chars.append(" ")
+        if ch == "\n":
+            out_chars.append(ch if preserve_newlines else " ")
             continue
         if ch == "\t":
             out_chars.append(" ")
             continue
-        if 32 <= code <= 126:
-            out_chars.append(ch)
+        category = unicodedata.category(ch)
+        if category.startswith("C") or category in ("Zl", "Zp"):
+            continue
+        out_chars.append(ch)
 
     cleaned = "".join(out_chars)
     if preserve_newlines:

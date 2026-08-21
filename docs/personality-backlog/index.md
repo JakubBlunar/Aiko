@@ -758,6 +758,28 @@ inconsistency complaint has been about sentence two. New shape — *a tool built
 make a decision, which does not exercise the path the decision governs*
 ([`health.md`](health.md)).
 
+**H50 is the one to read before writing a filter as a list of what to keep.**
+Reported from a reload — *"special characters like á, °"* missing from history,
+with the guess *"i think it is badly saved in db"*, which was correct.
+`sanitize_assistant_text` kept `32 <= ord(ch) <= 126` and dropped everything else
+whole, so `Kamenná Poruba` persisted as `Kamenn Poruba` and `25°C` as `25C`, across
+447,888 characters of her replies containing **zero** non-ASCII characters. The
+characters were absent rather than mangled, which is the tell that separates a
+filter from an encoding fault. Nothing was protected: `prepare_tts_text` cleans the
+spoken copy from raw model text and says so in its own comment, and on a normal turn
+the engine receives the accents regardless — so the strip only ever damaged the
+transcript, in violation of the standing rule that TTS processing never touches it.
+The sibling stores prove it was an outlier, since her memories and concepts kept
+`á`, `č`, `—` and a euro sign throughout. Not cosmetic either: she reads her
+transcript back as her own history, and this is the exact mechanism that once put
+230 turns of "I love you 3" in front of her until she copied it. Fixed with a
+category filter — drop the control classes, keep letters, marks, numbers,
+punctuation and symbols — with emoji now dropped by name rather than as a side
+effect. History is unrecoverable except for proper nouns still spelled correctly in
+config. New shape — *a lossy transform whose output is well-formed*, which survived
+because "Kamenn Poruba" reads like a place where `KamennÃ¡` would have been
+reported in a day ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

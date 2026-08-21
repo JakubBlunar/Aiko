@@ -163,7 +163,9 @@ class SanitizeKeepsEmoticonsTests(unittest.TestCase):
                 )
 
     def test_pictograph_still_cannot_be_persisted(self) -> None:
-        # Not an emoticon decision -- the ASCII-only filter below drops it.
+        # Not an emoticon decision. Used to fall out of the printable-ASCII
+        # range; since H50 replaced that with a category filter, the
+        # sanitiser applies ``_EMOJI_RE`` by name to keep this true.
         self.assertEqual(sanitize_assistant_text("night \U0001F31D"), "night")
 
     def test_spoken_copy_still_loses_the_face(self) -> None:
