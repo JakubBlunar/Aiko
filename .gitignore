@@ -55,6 +55,13 @@ data/browser-profile/
 # tools/tts_lab/voicebank.py from our own model, so nothing here is
 # anyone else's to license.
 !voices/reference/aiko_reference.wav
+!voices/reference/manifest.json
+# Reference sets built in the studio (tools/tts_lab/refset.py). Their wavs
+# are already covered above, but the manifest beside them is not -- and a
+# manifest whose audio is ignored is a list of somebody else's filenames
+# and nothing usable. The one committed set is carved out just above.
+voices/*/manifest.json
+voices/*/parts/
 # Audition output is regenerable in a minute and there is a lot of it.
 voices/audition/
 # Studio scratch: uploaded references and audition renders.

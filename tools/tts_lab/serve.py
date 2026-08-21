@@ -1,9 +1,17 @@
-"""A local voice studio: record a reference, clone it, audition, save.
+"""A local voice studio: pick clips, build a reference, clone, audition.
 
 Rebuilds the voice-cloning dialog that died with the Qt app. The service
 side of it never went away -- ``PocketTtsService.get_model()`` and
 ``export_voice()`` are still there, hanging off nothing since the dialog
 was deleted -- so this is mostly wiring plus a page.
+
+Microphone capture was removed rather than kept as an option. Her voice
+is not something anyone here can perform, so recording could only ever
+produce a *different* voice, and the real source material is a folder of
+found recordings. Offering a mic button alongside that implied a choice
+where there was none, and the raw-PCM capture path existed only to serve
+it. Clips arrive from ``voices/`` or by upload; both land in the same
+pool and the only route to a voice is to select from it.
 
 Deliberately a standalone tool rather than a panel in the app's settings
 drawer. Cloning wants to load candidate engines that live in their own
@@ -24,6 +32,7 @@ Bound to loopback: it takes microphone audio and writes files into
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 import threading
@@ -34,14 +43,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from tools.tts_lab import adapters, labeled, remote
+from tools.tts_lab import adapters, labeled, refset, remote
 from tools.tts_lab.adapters import REPO_ROOT, assess, read_audio, write_wav
 from tools.tts_lab.page import INDEX_HTML
-from tools.tts_lab.voicebank import PHRASES
 
 VOICES_DIR = REPO_ROOT / "voices"
 WORK_DIR = VOICES_DIR / "studio"
@@ -50,7 +57,31 @@ WORK_DIR = VOICES_DIR / "studio"
 #: Without this the picker lists every bench render and every intermediate
 #: from ``voicebank.py`` -- forty-odd rows to find the three real ones,
 #: which is the same as not having a picker.
-_SCRATCH = ("studio/", "datasets/", "audition/", "reference/parts/")
+#:
+#: ``sounds/`` is source material, not voices: it is where found packs go,
+#: and this machine's two hold 98 clips between them. A voice built from
+#: them is a *reference set*, and that is what belongs in the picker.
+_SCRATCH = ("studio/", "datasets/", "audition/", "speed_ab/", "sounds/")
+
+
+def _is_scratch(rel: str) -> bool:
+    """Is this path output or source material rather than a voice?
+
+    The ``parts/`` rule is a segment match rather than a prefix one. It
+    used to be the literal ``reference/parts/``, which was correct for
+    exactly one reference; every reference set built since has its own
+    ``<name>/parts/`` holding a dozen fragments, and prefix matching
+    would have put all of them in the dropdown as though each were a
+    voice. Same failure as the 279-entry list, one directory later.
+    """
+    if any(rel.startswith(p) for p in _SCRATCH) or "roundtrip" in rel:
+        return True
+    return "parts" in Path(rel).parent.parts
+
+#: What the pace check speaks. Fixed, because the number is only
+#: comparable between references if the words are identical, and long
+#: enough that one syllable of estimation error is not a verdict.
+PACE_PROBE = "I was just thinking about you, and I wondered how the build went."
 
 #: Engines are expensive to load (2 s for pocket-tts, up to 37 s for a
 #: cold Chatterbox), so they are kept alive across requests. Guarded
@@ -61,6 +92,11 @@ _engines: dict[str, adapters.Adapter] = {}
 _engine_lock = threading.Lock()
 #: reference id -> wav path
 _references: dict[str, Path] = {}
+#: reference id -> the directory holding the wav, its ``parts/`` and its
+#: ``manifest.json``. Tracked separately because saving a *set* has to
+#: copy all three: the app reads the manifest beside the reference to
+#: find her tempo target, and a bare wav silently loses it.
+_refsets: dict[str, Path] = {}
 #: dataset clip id -> (decoded wav, original filename). Separate from
 #: ``_references`` because these are training material, not conditioning
 #: clips: dozens to hundreds of them, each carrying a transcript, and
@@ -69,10 +105,31 @@ _clips: dict[str, tuple[Path, str]] = {}
 
 
 def _engine(name: str) -> adapters.Adapter:
+    """Get or build an engine, by name, from any endpoint.
+
+    Registers the sidecar-hosted engines first. They used to be
+    registered only by ``/api/engines``, which made every other endpoint
+    quietly depend on the page having rendered its dropdown: a client
+    that posted before fetching the engine list was told
+    ``unknown engine 'chatterbox-nano'``, naming the engine it had just
+    been offered. Ordering like that survives every manual test, because
+    a browser always loads the list first.
+    """
+    remote.register()
     with _engine_lock:
         existing = _engines.get(name)
         if existing is not None:
             return existing
+        if name not in adapters.REGISTRY:
+            # ``adapters.build`` raises SystemExit for an unknown name,
+            # which is right for the CLI it was written for and wrong
+            # here: SystemExit is not an Exception, so it walks past
+            # every handler in this file and becomes a 500 with no
+            # message. Checked rather than caught.
+            raise ValueError(
+                f"unknown engine {name!r}; have: "
+                f"{', '.join(adapters.available())}"
+            )
         engine = adapters.build(name)
         engine.load()
         _engines[name] = engine
@@ -99,7 +156,7 @@ def build_app() -> FastAPI:
 
     @app.get("/api/engines")
     def api_engines() -> dict:
-        remote.register()
+        remote.register()  # idempotent; also done in _engine
         out = []
         for name in adapters.available():
             caps = adapters.REGISTRY[name]().caps
@@ -111,10 +168,6 @@ def build_app() -> FastAPI:
         # something that will actually work.
         out.sort(key=lambda r: (not r["available"], r["name"]))
         return {"engines": out}
-
-    @app.get("/api/script")
-    def api_script() -> dict:
-        return {"phrases": list(PHRASES)}
 
     @app.get("/api/voices")
     def api_voices() -> dict:
@@ -132,7 +185,7 @@ def build_app() -> FastAPI:
             ):
                 continue
             rel = path.relative_to(VOICES_DIR).as_posix()
-            if any(rel.startswith(p) for p in _SCRATCH) or "roundtrip" in rel:
+            if _is_scratch(rel):
                 continue
             rows.append(
                 {
@@ -145,28 +198,39 @@ def build_app() -> FastAPI:
             )
         return {"voices": rows}
 
-    @app.post("/api/reference")
-    async def api_reference(request: Request) -> JSONResponse:
-        """Raw Int16 mono PCM from the browser's Web Audio capture."""
-        sample_rate = int(request.query_params.get("sample_rate") or 24000)
-        raw = await request.body()
-        if len(raw) < 2:
-            return JSONResponse({"error": "no audio received"})
-        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-        return JSONResponse(_store_reference(audio, sample_rate))
+    # ── reference sets ──
 
-    @app.post("/api/reference/wav")
-    async def api_reference_wav(request: Request) -> JSONResponse:
-        """Any format libsndfile reads -- mp3, flac, ogg, wav.
+    @app.get("/api/clips/folders")
+    def api_clip_folders() -> dict:
+        return {"folders": refset.folders(), "upload_rel": refset.UPLOAD_REL}
 
-        Worth taking the original source material in whatever shape it
-        already exists: for a voice that was cloned from mp3s, those mp3s
-        are a generation closer to the truth than anything the current
-        engine can regenerate.
+    @app.get("/api/clips")
+    def api_clips(dir: str = "") -> JSONResponse:
+        try:
+            clips = refset.scan(dir)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)})
+        return JSONResponse(
+            {
+                "dir": dir,
+                "clips": [c.to_dict() for c in clips],
+                "suggested": refset.rank(clips),
+                "decoder_window_s": refset.DEC_WINDOW_S,
+                "encoder_window_s": refset.ENC_WINDOW_S,
+            }
+        )
+
+    @app.post("/api/clips/upload")
+    async def api_clip_upload(request: Request) -> JSONResponse:
+        """Take source audio in whatever shape it already exists.
+
+        Decoded here rather than trusted, and written into the scratch
+        tree as a wav so it joins the same pool as everything else --
+        there is exactly one route to a reference, and it starts with
+        picking clips.
         """
         raw = await request.body()
-        # Suffix preserved where the browser sent one, since libsndfile
-        # sniffs content but is happier with a hint.
+        name = Path(request.query_params.get("name") or "clip").name
         suffix = _safe_suffix(request.query_params.get("ext") or "")
         tmp = WORK_DIR / f"upload_{uuid.uuid4().hex[:8]}{suffix}"
         tmp.write_bytes(raw)
@@ -176,23 +240,202 @@ def build_app() -> FastAPI:
             return JSONResponse(
                 {
                     "error": (
-                        f"could not decode: {exc}. Supported: wav, mp3, "
-                        "flac, ogg."
+                        f"could not decode {name}: {exc}. Supported: wav, "
+                        "mp3, flac, ogg."
                     )
                 }
             )
         finally:
             tmp.unlink(missing_ok=True)
-        return JSONResponse(_store_reference(audio, sample_rate))
+        stem = "".join(
+            c for c in Path(name).stem if c.isalnum() or c in ("-", "_", " ")
+        ).strip() or "clip"
+        dest = VOICES_DIR / refset.UPLOAD_REL / f"{stem}.wav"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        write_wav(dest, audio, sample_rate)
+        return JSONResponse(
+            {
+                "rel": dest.relative_to(VOICES_DIR).as_posix(),
+                "dir": refset.UPLOAD_REL,
+            }
+        )
 
-    @app.get("/api/audio/{name}")
+    @app.post("/api/reference/build")
+    async def api_reference_build(request: Request) -> JSONResponse:
+        """Concatenate an ordered selection into one conditioning clip."""
+        body = await request.json()
+        parts = [
+            refset.Part(
+                rel=str(row.get("rel") or ""),
+                phrase=str(row.get("phrase") or "").strip(),
+            )
+            for row in body.get("parts") or []
+            if str(row.get("rel") or "")
+        ]
+        if not parts:
+            return JSONResponse({"error": "select at least one clip"})
+        ref_id = uuid.uuid4().hex[:12]
+        out_dir = WORK_DIR / f"refset_{ref_id}"
+        try:
+            manifest = refset.build(
+                parts,
+                out_dir,
+                gap_ms=int(body.get("gap_ms") or 220),
+                target_syl_s=float(body.get("target_syl_s") or 0.0),
+            )
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"})
+        ref_path = out_dir / str(manifest["reference"])
+        _references[ref_id] = ref_path
+        _refsets[ref_id] = out_dir
+        try:
+            targets = refset.app_targets(out_dir, manifest)
+        except Exception as exc:
+            targets = {"error": str(exc)}
+        audio, rate = read_audio(ref_path)
+        return JSONResponse(
+            {
+                "id": ref_id,
+                # Served from the work dir by name, so the player needs
+                # the path relative to it rather than a bare filename.
+                "file": f"refset_{ref_id}/{ref_path.name}",
+                "sample_rate": manifest["sample_rate"],
+                "quality": asdict(assess(audio, rate)),
+                "bandwidth_hz": round(refset.bandwidth_hz(audio, rate), 1),
+                "manifest": manifest,
+                "windows": refset.windows(manifest),
+                "shape": refset.shape(manifest),
+                "targets": targets,
+                "min_rate_parts": refset.MIN_RATE_PARTS,
+            }
+        )
+
+    @app.post("/api/pace")
+    async def api_pace(request: Request) -> JSONResponse:
+        """Speak a probe sentence and measure how fast it came out.
+
+        The one check a listener cannot do by ear on a reference clip and
+        can do instantly on a generated one -- by which point the
+        reference is saved and in use. Chatterbox clones pacing along
+        with timbre, so a reference of drawled single words yields a
+        clone that drawls, and it is a property of the *selection* rather
+        than of anything downstream. Worth one synthesis to find out
+        before saving.
+        """
+        from app.audio.speech_rate import (
+            DEFAULT_TARGET_SYL_S,
+            MAX_CORRECTION,
+            measured_rate,
+        )
+        from tools.tts_lab.adapters import read_wav
+
+        body = await request.json()
+        name = str(body.get("engine") or "")
+        try:
+            engine = _engine(name)
+            source = _resolve_voice_path(body)
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"})
+        try:
+            with _engine_lock:
+                voice = _load_voice(engine, source)
+                result = engine.synth(PACE_PROBE, voice)
+        except Exception as exc:
+            return JSONResponse({"error": f"{type(exc).__name__}: {exc}"})
+        out = WORK_DIR / f"pace_{uuid.uuid4().hex[:8]}.wav"
+        write_wav(out, result.audio, result.sample_rate)
+        audio, rate = read_wav(out)
+        delivered = measured_rate(audio, rate, PACE_PROBE)
+        if delivered <= 0.0:
+            return JSONResponse(
+                {"error": "could not measure that clip", "file": out.name}
+            )
+        wanted = DEFAULT_TARGET_SYL_S / delivered
+        return JSONResponse(
+            {
+                "file": out.name,
+                "text": PACE_PROBE,
+                "delivered_syl_s": round(delivered, 2),
+                "her_pace_syl_s": DEFAULT_TARGET_SYL_S,
+                "needs": round(wanted, 3),
+                # The app corrects toward her pace but only within this,
+                # and only when the manifest gave it a target at all --
+                # so a reference needing more than the cap is slow for
+                # good, whatever the settings say.
+                "app_limit": MAX_CORRECTION,
+                "fixable_in_app": abs(wanted - 1.0) <= MAX_CORRECTION,
+            }
+        )
+
+    @app.get("/api/audio/{name:path}")
     def api_audio(name: str) -> Response:
-        # Name-only lookup inside the work dir: the browser never needs to
-        # name a path, so it should not be able to.
-        path = WORK_DIR / Path(name).name
-        if not path.exists():
+        # Resolved under the work dir and checked to still be inside it.
+        # A path rather than a bare name because a built reference set is
+        # a directory, so its player needs one level of nesting -- but
+        # the containment check is what makes that safe, not the shape.
+        path = (WORK_DIR / name).resolve()
+        if not path.is_relative_to(WORK_DIR.resolve()) or not path.is_file():
             return Response(status_code=404)
         return Response(path.read_bytes(), media_type="audio/wav")
+
+    @app.get("/api/clip/{rel:path}")
+    def api_clip(rel: str) -> Response:
+        """Audition one source clip, straight out of ``voices/``.
+
+        Decoded on the way out so the browser gets a wav whatever the
+        source format was: a picker you cannot listen to is a list of
+        filenames, and choosing ten seconds out of seventy clips by name
+        is not choosing.
+        """
+        try:
+            audio, rate = read_audio(refset.resolve_clip(rel))
+        except Exception:
+            return Response(status_code=404)
+        tmp = WORK_DIR / f"aud_{uuid.uuid4().hex[:8]}.wav"
+        try:
+            write_wav(tmp, audio, rate)
+            return Response(tmp.read_bytes(), media_type="audio/wav")
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    @app.post("/api/knobs")
+    async def api_knobs(request: Request) -> JSONResponse:
+        """The engine's real ``generate()`` keywords and its own defaults.
+
+        Loads the engine, which is the point: these are read off the
+        installed code by the sidecar rather than copied from a model
+        card. The docs for this family describe ``exaggeration`` and
+        ``cfg_weight`` for the original 500M model and say nothing about
+        whether Turbo and Nano kept them -- and Turbo ships 0.0/0.0 where
+        every published tip quotes 0.5/0.5. A knob panel built from the
+        README would therefore have offered dials that do nothing on the
+        one variant fast enough to ship.
+        """
+        body = await request.json()
+        name = str(body.get("engine") or "")
+        try:
+            engine = _engine(name)
+        except Exception as exc:
+            return JSONResponse({"error": f"{name} unavailable: {exc}"})
+        if not isinstance(engine, remote.Remote):
+            return JSONResponse(
+                {
+                    "accepts": [],
+                    "defaults": {},
+                    "note": (
+                        f"{name} runs in-process and takes its settings at "
+                        "load time, so there are no per-call knobs"
+                    ),
+                }
+            )
+        return JSONResponse(
+            {
+                "accepts": list(engine.accepts),
+                "defaults": dict(engine.defaults),
+                "languages": list(engine.languages),
+                "runtime": dict(engine.runtime),
+            }
+        )
 
     @app.post("/api/synth")
     async def api_synth(request: Request) -> JSONResponse:
@@ -270,11 +513,49 @@ def build_app() -> FastAPI:
                     }
                 )
         else:
+            source_dir = _refsets.get(ref_id)
+            if source_dir is not None and source_dir.is_dir():
+                # A built set is saved whole. Copying only the wav would
+                # look like it worked and quietly cost her tempo target:
+                # the app reads ``manifest.json`` *beside* the reference
+                # and the part wavs under it, and falls back to no
+                # correction when either is missing.
+                dest_dir = VOICES_DIR / stem
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                for stale in (dest_dir / "parts").glob("part*.wav"):
+                    stale.unlink()
+                manifest_path = dest_dir / "manifest.json"
+                # Tuning already saved against this voice, rescued across
+                # the copy below. The build's own manifest has no
+                # ``generate`` block, so copying it over the destination
+                # wipes whatever earlier engines contributed -- which is
+                # exactly the case per-engine keying exists to support,
+                # and it survived a unit test of the merge because the
+                # merge was never the part that was wrong.
+                carried = _tuned_knobs(manifest_path)
+                shutil.copytree(source_dir, dest_dir, dirs_exist_ok=True)
+                dest = dest_dir / ref.name
+                voice_id = dest.relative_to(VOICES_DIR).as_posix()
+                for engine_key, knobs in carried.items():
+                    _record_knobs(manifest_path, engine_key, knobs)
+                tuned = _record_knobs(manifest_path, name, body.get("kwargs"))
+                stored = _tuned_engines(manifest_path)
+                return JSONResponse(
+                    {
+                        "path": str(dest_dir.relative_to(REPO_ROOT)),
+                        "voice_id": voice_id,
+                        "kb": dest.stat().st_size / 1024.0,
+                        "parts": len(list((dest_dir / "parts").glob("*.wav"))),
+                        "tuned": tuned,
+                        "engines_tuned": stored,
+                    }
+                )
             dest = VOICES_DIR / f"{stem}.wav"
             shutil.copy2(ref, dest)
         return JSONResponse(
             {
                 "path": str(dest.relative_to(REPO_ROOT)),
+                "voice_id": dest.relative_to(VOICES_DIR).as_posix(),
                 "kb": dest.stat().st_size / 1024.0,
             }
         )
@@ -447,7 +728,7 @@ def _resolve_voice_path(body: dict) -> Path:
     if ref_id:
         ref = _references.get(ref_id)
         if ref is None or not ref.exists():
-            raise ValueError("that reference has expired -- upload it again")
+            raise ValueError("that reference has expired -- build it again")
         return ref
 
     saved = str(body.get("voice") or "").strip()
@@ -459,7 +740,76 @@ def _resolve_voice_path(body: dict) -> Path:
             raise ValueError(f"no saved voice named {saved!r}")
         return path
 
-    raise ValueError("pick a saved voice, or record or upload a reference")
+    raise ValueError("pick a saved voice, or build a reference from clips")
+
+
+def _record_knobs(
+    manifest: Path, engine: str, kwargs: Any
+) -> dict[str, float]:
+    """Write the audition's knob overrides into the saved manifest.
+
+    The point of tuning them. Until this existed the app sent no
+    generation kwargs at all, so every voice spoke on its engine's shipped
+    defaults and a value found here -- a colder temperature that clears a
+    reproducible artifact, say -- could not be carried anywhere. Stored
+    beside the tempo and brightness targets, which travel with the voice
+    for the same reason.
+
+    **Keyed by engine, and merged rather than replaced.** One reference
+    gets auditioned on several engines in a sitting, which is the whole
+    point of having them side by side, and each needs its own numbers:
+    these are absolute values chosen against defaults that are not
+    shared, so Nano's ``min_p=0.05`` is a real intervention where the
+    full model already ships it. A single block per voice would have let
+    the second save quietly discard the first engine's afternoon.
+    """
+    if not isinstance(kwargs, dict) or not manifest.is_file():
+        return {}
+    tuned = {
+        str(k): float(v)
+        for k, v in kwargs.items()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    }
+    try:
+        body = json.loads(manifest.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    block = body.get("generate")
+    if not isinstance(block, dict):
+        block = {}
+    if tuned:
+        block[engine] = tuned
+    else:
+        # An emptied panel means "back to this engine's defaults", and
+        # leaving the old entry behind would make that unsayable.
+        block.pop(engine, None)
+    if block:
+        body["generate"] = block
+    else:
+        body.pop("generate", None)
+    manifest.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+    return tuned
+
+
+def _tuned_knobs(manifest: Path) -> dict[str, dict[str, float]]:
+    """The whole per-engine ``generate`` block, or nothing."""
+    try:
+        body = json.loads(manifest.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    block = body.get("generate")
+    if not isinstance(block, dict):
+        return {}
+    return {
+        str(engine): dict(knobs)
+        for engine, knobs in block.items()
+        if isinstance(knobs, dict) and knobs
+    }
+
+
+def _tuned_engines(manifest: Path) -> list[str]:
+    """Every engine this voice carries knobs for, for the save message."""
+    return sorted(_tuned_knobs(manifest))
 
 
 def _load_voice(engine: adapters.Adapter, source: Path) -> Any:
@@ -501,25 +851,6 @@ def _availability(name: str) -> bool:
     return True
 
 
-def _store_reference(audio: np.ndarray, sample_rate: int) -> dict:
-    from tools.tts_lab.voicebank import _normalise, _trim_silence
-
-    trimmed = _trim_silence(audio, sample_rate)
-    if trimmed.size < sample_rate // 2:
-        return {"error": "clip is under half a second of audible audio"}
-    clip = _normalise(trimmed)
-    quality = assess(clip, sample_rate)
-    ref_id = uuid.uuid4().hex[:12]
-    path = write_wav(WORK_DIR / f"ref_{ref_id}.wav", clip, sample_rate)
-    _references[ref_id] = path
-    return {
-        "id": ref_id,
-        "file": path.name,
-        "sample_rate": sample_rate,
-        "quality": asdict(quality),
-    }
-
-
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default="127.0.0.1")
@@ -531,7 +862,7 @@ def main(argv: list[str] | None = None) -> int:
 
     url = f"http://{args.host}:{args.port}/"
     print(f"voice studio on {url}")
-    print("record 20-30s, clone into any installed engine, save to voices/")
+    print("pick clips, build a reference, clone it, save to voices/")
     if args.open:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     uvicorn.run(

@@ -4,12 +4,20 @@ Kept separate from :mod:`tools.tts_lab.serve` for size, and kept free of
 server-side templating on purpose: everything it needs arrives over the
 JSON API, so there are no Python format braces fighting the CSS and JS.
 
-Recording captures **raw PCM via the Web Audio API**, not
-``MediaRecorder``. MediaRecorder hands back WebM/Opus, and decoding that
-server-side would mean ffmpeg or a codec dependency for the one job of
-producing a WAV. Raw PCM needs neither, and the app already does exactly
-this for voice mode -- the browser owns capture and streams Int16 frames
-over the wire. See ``docs/voice-mode.md``.
+The clip picker is the whole design, and the bar above it is the reason.
+Chatterbox truncates a reference at ten seconds for the decoder and
+fifteen for the tokenizer, so a selection is not a set -- it is an
+ordered list with a cliff in it, and clips past the cliff are read and
+discarded. Every other studio for this shows a file list and a Clone
+button, which is fine right up until someone spends an afternoon
+concluding that clip 14 sounds bad when clip 14 was never heard. So the
+selection renders as a proportional bar with both cutoffs drawn on it,
+and reordering is a first-class action rather than a detail of upload
+sequence.
+
+Microphone capture is gone, along with the raw-PCM path that served it:
+her voice cannot be performed, so recording could only produce a
+different one.
 """
 
 from __future__ import annotations
@@ -85,61 +93,156 @@ code { background: #23272e; padding: 1px 5px; border-radius: 4px;
 .pill { font-size: 11px; padding: 1px 6px; border-radius: 10px;
         background: #23272e; color: #8b919c; }
 .pill.review { background: #3b2f14; color: #e0a458; }
+/* clip picker */
+.picker { max-height: 300px; overflow-y: auto; border: 1px solid #2a2e36;
+          border-radius: 6px; margin-top: 8px; }
+.picker .clip { display: flex; gap: 8px; align-items: center;
+                padding: 5px 9px; border-bottom: 1px solid #23272e;
+                font-size: 13px; }
+.picker .clip:last-child { border-bottom: 0; }
+.picker .clip:hover { background: #1f232a; }
+.picker .clip.on { background: #24303f; }
+.picker .clip .nm { flex: 1; min-width: 0; overflow: hidden;
+                    text-overflow: ellipsis; white-space: nowrap; }
+.picker .clip .num { font-variant-numeric: tabular-nums; color: #8b919c;
+                     font-size: 12px; }
+.picker .clip button { padding: 2px 7px; font-size: 12px; }
+/* the conditioning-window bar: what the engine will actually hear */
+.budget { display: flex; height: 26px; border-radius: 5px;
+          overflow: hidden; margin-top: 10px; background: #23272e;
+          position: relative; }
+.budget .seg { border-right: 1px solid #14161a; min-width: 2px;
+               font-size: 10px; color: #0d1014; overflow: hidden;
+               display: flex; align-items: center; justify-content: center; }
+.budget .seg.dec { background: #6f9c7d; }
+.budget .seg.enc { background: #8a7f4e; }
+.budget .seg.out { background: #4a4f58; }
+.budget .mark { position: absolute; top: 0; bottom: 0; width: 2px;
+                background: #e6e8ec; opacity: .85; }
+.budget .mark i { position: absolute; top: -1px; left: 4px;
+                  font-size: 10px; color: #e6e8ec; font-style: normal;
+                  white-space: nowrap; }
+.legend { font-size: 11px; color: #8b919c; margin-top: 6px; }
+.legend b { font-weight: 600; }
+.legend .k { display: inline-block; width: 9px; height: 9px;
+             border-radius: 2px; margin: 0 3px 0 10px; }
+.sel { margin-top: 10px; }
+.sel .row2 { display: flex; gap: 8px; align-items: center;
+             padding: 4px 0; font-size: 13px;
+             border-bottom: 1px solid #23272e; }
+.sel .row2 .nm { flex: 1; min-width: 0; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+.sel .row2 input[type=text] { width: 210px; font-size: 12px;
+                              padding: 4px 7px; }
+.sel .row2.past .nm { color: #6b7280; text-decoration: line-through; }
 </style>
 </head>
 <body>
 <h1>Aiko voice studio</h1>
-<p class="sub">Audition a saved voice, clone a new one from audio, or
-build a training set from labelled files. Prototype tool &mdash; it does
-not touch the running app.</p>
+<p class="sub">Pick source clips, build a reference, clone it, audition,
+save. Prototype tool &mdash; it does not touch the running app.</p>
 
 <div class="grid">
 
   <div class="card">
-    <h2>1 &middot; New reference clip <span class="pill">optional</span></h2>
-    <p class="sub" style="margin:0 0 12px">Only needed to clone a
-    <em>new</em> voice. To hear one that already exists, skip straight to
-    step 2 and pick it there.</p>
+    <h2>1 &middot; Source clips</h2>
     <div class="row">
-      <button id="pick" class="primary">Upload audio</button>
-      <input type="file" id="file"
-             accept=".wav,.mp3,.flac,.ogg,.opus,audio/*" hidden>
-      <button id="rec">Record</button>
-      <button id="stop" disabled>Stop</button>
+      <select id="folder" style="max-width:250px"></select>
+      <button id="upick">Add files&hellip;</button>
+      <input type="file" id="ufile" multiple
+             accept=".wav,.mp3,.flac,.ogg,.opus,.m4a,audio/*" hidden>
     </div>
-    <div class="meter"><i id="level"></i></div>
-    <div class="stat" id="recstat">Upload takes wav, mp3, flac or ogg.
-      10&ndash;30 seconds of clean speech is plenty.</div>
-    <audio id="refplay" controls preload="none"></audio>
-    <div class="stat" id="refqual"></div>
-    <div class="script" id="script"></div>
-    <div class="hint">If you are recording, that script is the set
-      <code>voicebank.py</code> uses &mdash; phonetically broad, varied
-      intonation, deliberately dull content. Click a line to mark it
-      read.</div>
+    <div class="stat" id="clipstat"></div>
+    <div class="picker" id="picker"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="suggest">Fill 10s with the brightest</button>
+      <button id="clearsel">Clear</button>
+    </div>
+    <div class="hint">Brightness is the one axis a real recording beats
+      her generated reference on &mdash; 15.7&nbsp;kHz against
+      6.2&nbsp;kHz &mdash; so it is the default sort. It is a starting
+      point, not a verdict: listen and reorder.</div>
   </div>
 
   <div class="card">
-    <h2>2 &middot; Audition</h2>
-    <label for="engine">Engine</label>
-    <select id="engine"></select>
-    <div class="stat" id="engstat"></div>
-    <label for="voice">Voice</label>
-    <select id="voice"></select>
-    <div class="stat" id="voicestat"></div>
-    <label for="text">Phrase</label>
-    <textarea id="text">Hey, I was just thinking about you. How did the build go?</textarea>
-    <label for="knobs">Generation options (JSON, blank = engine defaults)</label>
-    <input type="text" id="knobs" placeholder="{&quot;exaggeration&quot;: 0.6}">
-    <div class="row" style="margin-top:12px">
-      <button id="synth" class="primary" disabled>Speak</button>
-      <span class="stat" id="synthstat"></span>
+    <h2>2 &middot; Reference <span class="pill" id="selcount">0 clips</span></h2>
+    <p class="sub" style="margin:0 0 6px">Chatterbox <em>truncates</em>
+    the reference: the first 10s condition the decoder, the first 15s
+    prime articulation, and the rest is read and discarded. Order
+    decides what it hears.</p>
+    <div class="budget" id="budget"></div>
+    <div class="legend">
+      <span class="k" style="background:#6f9c7d"></span> decoder (10s)
+      <span class="k" style="background:#8a7f4e"></span> tokenizer only
+      <span class="k" style="background:#4a4f58"></span> discarded
     </div>
-    <audio id="out" controls preload="none"></audio>
+    <div class="sel" id="sel"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="build" class="primary" disabled>Build reference</button>
+      <button id="pace" disabled>Check pace</button>
+      <span class="stat" id="buildstat"></span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label for="declare" style="margin:0">
+        <input type="checkbox" id="declare" style="width:auto"> hold her to
+        her own pace (declare 6.55 syl/s in the manifest)
+      </label>
+    </div>
+    <audio id="refplay" controls preload="none"></audio>
+    <div class="stat" id="refqual"></div>
+    <div class="hint"><b>Pacing clones along with timbre.</b> Check pace
+      speaks one probe sentence and measures it &mdash; a reference of
+      drawled single words gives a clone that drawls, and that is
+      inaudible in the clip itself. Measured here: ten parts at a 0.92s
+      median delivered 5.50 syllables per second against 7.36 from her
+      sentence-length reference.</div>
+    <div class="hint">A transcript is only needed if the clip is in
+      <em>English</em>, and it must match the sounds. The app measures
+      her tempo target from these, so a guess aims her pacing at words
+      nobody said &mdash; three or more are needed before it takes a
+      target at all, and blank parts simply do not count.</div>
   </div>
 
   <div class="card wide">
-    <h2>3 &middot; Save</h2>
+    <h2>3 &middot; Audition</h2>
+    <div class="grid" style="max-width:none">
+      <div>
+        <label for="engine">Engine</label>
+        <select id="engine"></select>
+        <div class="stat" id="engstat"></div>
+        <label for="voice">Voice</label>
+        <select id="voice"></select>
+        <div class="stat" id="voicestat"></div>
+        <label for="text">Phrase</label>
+        <textarea id="text">Hey, I was just thinking about you. How did the build go?</textarea>
+        <div class="row" style="margin-top:12px">
+          <button id="synth" class="primary" disabled>Speak</button>
+          <span class="stat" id="synthstat"></span>
+        </div>
+        <audio id="out" controls preload="none"></audio>
+      </div>
+      <div>
+        <div class="row">
+          <button id="loadknobs">Read this engine's knobs</button>
+          <button id="resetknobs">Defaults</button>
+        </div>
+        <div class="stat" id="knobstat">Loads the engine and reports the
+          real <code>generate()</code> keywords.</div>
+        <table id="knobtable"></table>
+        <label for="knobs">Extra options (JSON)</label>
+        <input type="text" id="knobs" placeholder="{&quot;language_id&quot;: &quot;ja&quot;}">
+        <div class="hint">Read off the installed code, not a model card.
+          Turbo ships <code>exaggeration=0.0, cfg_weight=0.0</code> where
+          every published tip quotes 0.5&thinsp;/&thinsp;0.5 &mdash; those
+          tips are about a different model in the same family, so a panel
+          built from the docs would offer dials that do nothing here.
+          Blank means the engine's own default.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card wide">
+    <h2>4 &middot; Save</h2>
     <div class="row">
       <input type="text" id="vname" placeholder="aiko2" style="max-width:240px">
       <button id="save" disabled>Save voice</button>
@@ -150,7 +253,7 @@ not touch the running app.</p>
   </div>
 
   <div class="card wide">
-    <h2>4 &middot; Training dataset</h2>
+    <h2>5 &middot; Training dataset</h2>
     <p class="sub" style="margin:0 0 14px">Cloning above needs seconds of
     audio and copies the voice as it is. A <em>fine-tune</em> needs many
     labelled clips and can beat the original &mdash; but only if the audio
@@ -182,8 +285,11 @@ not touch the running app.</p>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let refId = null, engines = {}, ctx = null, stream = null, node = null;
-let chunks = [], recording = false, recSr = 24000;
+let refId = null, engines = {};
+// The clip pool for the open folder, and the ordered selection. Two
+// separate things on purpose: the selection outlives a folder change, so
+// a reference can draw on more than one pack.
+let pool = [], picked = [], DEC = 10, ENC = 15;
 
 // ── engines ──
 async function loadEngines() {
@@ -208,10 +314,14 @@ function showEngine() {
   if (e.inline_tags && e.inline_tags.length) bits.push('tags: ' + e.inline_tags.join(' '));
   bits.push(e.native_rate ? 'native rate' : 'no rate control');
   $('engstat').textContent = bits.join(' \u00b7 ');
-  $('savehint').textContent = e.saves_as === 'safetensors'
-    ? 'pocket-tts exports a speaker embedding (.safetensors) \u2014 the same format the app loads today.'
-    : 'This engine clones per call, so saving stores the reference clip as ' +
-      'the voice. Point the engine at the .wav.';
+  $('savehint').innerHTML = e.saves_as === 'safetensors'
+    ? 'pocket-tts exports a speaker embedding (.safetensors) \u2014 the '
+      + 'same format the app loads today.'
+    : 'This engine clones per call, so the clip <em>is</em> the voice. A '
+      + 'built reference saves as a folder \u2014 the wav plus its parts '
+      + 'and manifest \u2014 because the app reads the manifest beside '
+      + 'the reference to find her tempo target, and a bare wav loses it '
+      + 'without saying so.';
 }
 $('engine').onchange = () => { showEngine(); showVoice(); };
 
@@ -226,7 +336,8 @@ function fillVoices() {
   sel.innerHTML = '';
   const ref = document.createElement('option');
   ref.value = '@ref';
-  ref.textContent = refId ? 'the clip from step 1' : 'step 1 clip (none yet)';
+  ref.textContent = refId ? 'the reference just built'
+                          : 'built reference (none yet)';
   ref.disabled = !refId;
   sel.appendChild(ref);
   savedVoices.forEach(v => {
@@ -250,8 +361,8 @@ function showVoice() {
   const usable = v === '@ref' ? !!refId : true;
   let note = '';
   if (v === '@ref') {
-    note = refId ? 'using the clip from step 1'
-                 : 'record or upload above, or pick a saved voice';
+    note = refId ? 'using the reference from step 2'
+                 : 'build one in step 2, or pick a saved voice';
   } else if (v.endsWith('.safetensors')) {
     note = e && e.saves_as === 'safetensors'
       ? 'a pocket-tts speaker embedding'
@@ -261,125 +372,442 @@ function showVoice() {
   }
   $('voicestat').textContent = note;
   $('synth').disabled = !usable;
+  // Any saved voice can be paced, not just a freshly built one -- that
+  // is how a candidate gets compared against her incumbent reference on
+  // the same words.
+  $('pace').disabled = !usable;
 }
 $('voice').onchange = showVoice;
 
-// ── reading script ──
-async function loadScript() {
-  const r = await fetch('api/script').then(r => r.json());
-  $('script').innerHTML = '';
-  r.phrases.forEach(p => {
-    const d = document.createElement('div');
-    d.textContent = p;
-    d.onclick = () => d.classList.toggle('done');
-    $('script').appendChild(d);
+// ── clip pool ──
+async function loadFolders() {
+  const r = await fetch('api/clips/folders').then(r => r.json());
+  $('folder').innerHTML = '';
+  r.folders.forEach(f => {
+    const o = document.createElement('option');
+    o.value = f.rel;
+    o.textContent = f.rel + '  (' + f.clips + ')';
+    $('folder').appendChild(o);
+  });
+  if (r.folders.length) await loadClips();
+}
+$('folder').onchange = loadClips;
+
+async function loadClips() {
+  const dir = $('folder').value;
+  if (!dir) return;
+  $('clipstat').textContent = 'measuring ' + dir + '\u2026';
+  const r = await fetch('api/clips?dir=' + encodeURIComponent(dir))
+    .then(r => r.json());
+  if (r.error) {
+    $('clipstat').innerHTML = '<span class="bad">' + r.error + '</span>';
+    return;
+  }
+  pool = r.clips; DEC = r.decoder_window_s; ENC = r.encoder_window_s;
+  const usable = pool.filter(c => !c.warnings.length).length;
+  const total = pool.reduce((n, c) => n + c.duration_s, 0);
+  $('clipstat').textContent = pool.length + ' clips \u00b7 '
+    + (total / 60).toFixed(2) + ' min \u00b7 ' + usable + ' clean';
+  $('suggest').dataset.suggested = JSON.stringify(r.suggested || []);
+  renderPool();
+}
+
+const inSel = (rel) => picked.some(s => s.rel === rel);
+
+function renderPool() {
+  const box = $('picker');
+  box.innerHTML = '';
+  pool.forEach(c => {
+    const row = document.createElement('div');
+    row.className = 'clip' + (inSel(c.rel) ? ' on' : '');
+    const bad = c.warnings.length;
+    row.innerHTML =
+      '<span class="nm" title="' + escapeHtml(c.rel) + '">'
+        + escapeHtml(c.name) + '</span>'
+      + '<span class="num">' + c.duration_s.toFixed(2) + 's</span>'
+      + '<span class="num">' + (c.bandwidth_hz / 1000).toFixed(1) + 'k</span>'
+      + (bad ? '<span class="pill review">' + escapeHtml(c.warnings[0])
+               + '</span>' : '');
+    const play = document.createElement('button');
+    play.textContent = '\u25b6';
+    play.title = 'listen';
+    play.onclick = (ev) => {
+      ev.stopPropagation();
+      new Audio('api/clip/' + encodeURI(c.rel)).play().catch(() => {});
+    };
+    const add = document.createElement('button');
+    add.textContent = inSel(c.rel) ? '\u2212' : '+';
+    add.onclick = (ev) => { ev.stopPropagation(); toggle(c); };
+    row.appendChild(play); row.appendChild(add);
+    row.onclick = () => toggle(c);
+    box.appendChild(row);
   });
 }
 
-// ── recording: raw PCM, no MediaRecorder ──
-$('rec').onclick = async () => {
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: false,
-               noiseSuppression: false, autoGainControl: false }
-    });
-  } catch (err) { $('recstat').innerHTML = '<span class="bad">mic denied: ' + err.message + '</span>'; return; }
-  // Ask for the engine sample rate directly and let the browser resample;
-  // doing it here avoids a server-side resampler for the one job of
-  // producing a conditioning clip.
-  ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: recSr });
-  const src = ctx.createMediaStreamSource(stream);
-  // ScriptProcessor is deprecated in favour of AudioWorklet, which needs
-  // a separate module file. For a local prototype the simpler node wins.
-  node = ctx.createScriptProcessor(4096, 1, 1);
-  chunks = []; recording = true;
-  node.onaudioprocess = (ev) => {
-    if (!recording) return;
-    const d = ev.inputBuffer.getChannelData(0);
-    chunks.push(new Float32Array(d));
-    let peak = 0;
-    for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i]));
-    $('level').style.width = Math.min(100, peak * 140) + '%';
-    const secs = chunks.length * 4096 / ctx.sampleRate;
-    $('recstat').textContent = secs.toFixed(1) + 's captured'
-      + (secs < 20 ? ' \u2014 keep going, 20s+ is better' : ' \u2014 plenty');
-  };
-  src.connect(node); node.connect(ctx.destination);
-  $('rec').disabled = true; $('stop').disabled = false;
-  $('rec').classList.add('rec');
-};
-
-$('stop').onclick = async () => {
-  recording = false;
-  $('rec').disabled = false; $('stop').disabled = true;
-  $('rec').classList.remove('rec');
-  $('level').style.width = '0';
-  if (stream) stream.getTracks().forEach(t => t.stop());
-  if (node) node.disconnect();
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  if (!total) { $('recstat').textContent = 'nothing captured'; return; }
-  const flat = new Float32Array(total);
-  let at = 0; chunks.forEach(c => { flat.set(c, at); at += c.length; });
-  const pcm = new Int16Array(total);
-  for (let i = 0; i < total; i++) {
-    const v = Math.max(-1, Math.min(1, flat[i]));
-    pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
-  }
-  const rate = ctx.sampleRate;
-  if (ctx) await ctx.close();
-  await postReference(pcm.buffer, rate);
-};
-
-$('pick').onclick = () => $('file').click();
-$('file').onchange = async (ev) => {
-  const f = ev.target.files[0];
-  if (!f) return;
-  $('recstat').textContent = 'decoding ' + f.name + '\u2026';
-  const ext = (f.name.split('.').pop() || '').toLowerCase();
-  const body = await f.arrayBuffer();
-  const r = await fetch('api/reference/wav?ext=' + encodeURIComponent(ext), {
-    method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
-    body,
-  }).then(r => r.json());
-  applyReference(r);
-};
-
-async function postReference(buf, rate) {
-  $('recstat').textContent = 'saving\u2026';
-  const r = await fetch('api/reference?sample_rate=' + rate, {
-    method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
-    body: buf,
-  }).then(r => r.json());
-  applyReference(r);
+function toggle(clip) {
+  const at = picked.findIndex(s => s.rel === clip.rel);
+  if (at >= 0) picked.splice(at, 1);
+  else picked.push({ rel: clip.rel, name: clip.name,
+                     duration_s: clip.duration_s, phrase: '' });
+  renderPool(); renderSel();
 }
 
-function applyReference(r) {
-  if (r.error) { $('refqual').innerHTML = '<span class="bad">' + r.error + '</span>'; return; }
+$('suggest').onclick = () => {
+  let want = [];
+  try { want = JSON.parse($('suggest').dataset.suggested || '[]'); }
+  catch (e) { want = []; }
+  want.forEach(rel => {
+    if (inSel(rel)) return;
+    const c = pool.find(x => x.rel === rel);
+    if (c) picked.push({ rel: c.rel, name: c.name,
+                         duration_s: c.duration_s, phrase: '' });
+  });
+  renderPool(); renderSel();
+};
+$('clearsel').onclick = () => { picked = []; renderPool(); renderSel(); };
+
+$('upick').onclick = () => $('ufile').click();
+$('ufile').onchange = async (ev) => {
+  const files = [...ev.target.files];
+  ev.target.value = '';
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    $('clipstat').textContent = 'uploading ' + (i + 1) + '/' + files.length;
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    const url = 'api/clips/upload?ext=' + encodeURIComponent(ext)
+      + '&name=' + encodeURIComponent(f.name);
+    const r = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+      body: await f.arrayBuffer(),
+    }).then(r => r.json()).catch(e => ({ error: String(e) }));
+    if (r.error) {
+      $('clipstat').innerHTML = '<span class="bad">' + r.error + '</span>';
+      return;
+    }
+    $('folder').value = r.dir;
+  }
+  await loadFolders();
+  await loadClips();
+};
+
+// ── the selection, and what the engine will hear of it ──
+// A gap goes between parts, so the budget maths has to include it or the
+// bar disagrees with the reference that gets built.
+const GAP_S = 0.22;
+
+function renderSel() {
+  $('selcount').textContent = picked.length
+    + (picked.length === 1 ? ' clip' : ' clips');
+  $('build').disabled = picked.length === 0;
+  const bar = $('budget'), box = $('sel');
+  bar.innerHTML = ''; box.innerHTML = '';
+  if (!picked.length) {
+    bar.innerHTML = '<div class="seg out" style="flex:1">nothing selected</div>';
+    return;
+  }
+  let at = 0;
+  const spans = picked.map(s => {
+    const start = at;
+    at += s.duration_s + GAP_S;
+    return { start, end: start + s.duration_s };
+  });
+  const total = Math.max(at - GAP_S, 0.001);
+  const scale = Math.max(total, ENC);
+  picked.forEach((s, i) => {
+    const sp = spans[i];
+    const seg = document.createElement('div');
+    const kind = sp.start >= ENC ? 'out' : (sp.start >= DEC ? 'enc' : 'dec');
+    seg.className = 'seg ' + kind;
+    seg.style.flex = String(s.duration_s);
+    seg.title = s.name + ' \u2014 ' + sp.start.toFixed(1) + 's to '
+      + sp.end.toFixed(1) + 's';
+    seg.textContent = String(i + 1);
+    bar.appendChild(seg);
+  });
+  if (scale > total) {
+    const pad = document.createElement('div');
+    pad.className = 'seg'; pad.style.flex = String(scale - total);
+    pad.style.background = '#23272e';
+    bar.appendChild(pad);
+  }
+  [[DEC, ' 10s'], [ENC, ' 15s']].forEach(([at_s, label]) => {
+    if (at_s > scale) return;
+    const m = document.createElement('div');
+    m.className = 'mark';
+    m.style.left = (at_s / scale * 100) + '%';
+    m.innerHTML = '<i>' + label + '</i>';
+    bar.appendChild(m);
+  });
+
+  picked.forEach((s, i) => {
+    const sp = spans[i];
+    const row = document.createElement('div');
+    row.className = 'row2' + (sp.start >= ENC ? ' past' : '');
+    row.innerHTML = '<span class="num">' + (i + 1) + '</span>'
+      + '<span class="nm" title="' + escapeHtml(s.rel) + '">'
+      + escapeHtml(s.name) + '</span>'
+      + '<span class="num">' + sp.start.toFixed(1) + '\u2013'
+      + sp.end.toFixed(1) + 's</span>';
+    const phrase = document.createElement('input');
+    phrase.type = 'text';
+    phrase.placeholder = 'English transcript (optional)';
+    phrase.value = s.phrase;
+    phrase.oninput = () => { s.phrase = phrase.value; };
+    row.appendChild(phrase);
+    [['\u2191', -1], ['\u2193', 1]].forEach(([glyph, delta]) => {
+      const b = document.createElement('button');
+      b.textContent = glyph;
+      b.disabled = (delta < 0 && i === 0)
+        || (delta > 0 && i === picked.length - 1);
+      b.onclick = () => {
+        const j = i + delta;
+        [picked[i], picked[j]] = [picked[j], picked[i]];
+        renderSel();
+      };
+      row.appendChild(b);
+    });
+    const kill = document.createElement('button');
+    kill.textContent = '\u00d7';
+    kill.onclick = () => { picked.splice(i, 1); renderPool(); renderSel(); };
+    row.appendChild(kill);
+    box.appendChild(row);
+  });
+
+  const over = total - ENC;
+  if (over > 0.05) {
+    const note = document.createElement('div');
+    note.className = 'legend warn';
+    note.textContent = over.toFixed(1) + 's past the 15s cutoff will be '
+      + 'read and thrown away \u2014 trim it or move those clips earlier.';
+    box.appendChild(note);
+  }
+}
+
+$('build').onclick = async () => {
+  $('build').disabled = true;
+  $('buildstat').textContent = 'building\u2026';
+  const r = await fetch('api/reference/build', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      parts: picked.map(s => ({ rel: s.rel, phrase: s.phrase })),
+      gap_ms: Math.round(GAP_S * 1000),
+      // Only meaningful when the parts cannot supply a measured rate,
+      // which is every reference built from non-English source audio.
+      target_syl_s: $('declare').checked ? 6.55 : 0,
+    }),
+  }).then(r => r.json()).catch(e => ({ error: String(e) }));
+  $('build').disabled = false;
+  if (r.error) {
+    $('buildstat').innerHTML = '<span class="bad">' + r.error + '</span>';
+    return;
+  }
   refId = r.id;
   $('refplay').src = 'api/audio/' + r.file + '?t=' + Date.now();
-  const q = r.quality;
+  const q = r.quality, w = r.windows, t = r.targets || {}, sh = r.shape || {};
   const bits = [q.duration_s.toFixed(1) + 's',
                 (r.sample_rate / 1000).toFixed(1) + ' kHz',
-                'peak ' + q.peak.toFixed(2),
-                'rms ' + q.rms.toFixed(3),
-                (q.silence_share * 100).toFixed(0) + '% silence'];
+                (r.bandwidth_hz / 1000).toFixed(1) + ' kHz wide',
+                'peak ' + q.peak.toFixed(2)];
   let html = bits.join(' \u00b7 ');
   html += q.warnings.length
     ? ' <span class="warn">\u2014 ' + q.warnings.join(', ') + '</span>'
-    : ' <span class="good">\u2014 looks usable</span>';
+    : ' <span class="good">\u2014 usable</span>';
+  if (sh.parts) {
+    html += '<div>shape: ' + sh.parts + ' parts, median '
+      + sh.median_part_s.toFixed(2) + 's, '
+      + (sh.gap_share * 100).toFixed(0) + '% gaps '
+      + (sh.connected ? '<span class="good">\u2014 connected speech</span>'
+                      : '<span class="bad">\u2014 isolated words</span>')
+      + '</div>';
+  }
+  if (sh.warning) {
+    html += '<div class="bad">' + escapeHtml(sh.warning) + '</div>';
+  }
+  // What the running app will aim its per-clip corrections at. Reported
+  // here because both are silently optional in the app: a missing target
+  // disables that correction, and finding out from a log line hours
+  // later is how a reference gets blamed for a flat delivery.
+  html += '<div>app targets: brightness '
+    + (t.tilt_db == null ? '<span class="warn">off</span>'
+       : 'tilt ' + t.tilt_db.toFixed(2) + ' dB')
+    + ' \u00b7 tempo '
+    + (r.manifest.target_syl_s
+       ? '<span class="good">' + r.manifest.target_syl_s.toFixed(2)
+         + ' syl/s declared</span>'
+       : t.rate_syl_s == null
+       ? '<span class="warn">off</span> (' + (t.rate_parts || 0) + ' of '
+         + r.min_rate_parts + ' measurable transcripts)'
+       : t.rate_syl_s.toFixed(2) + ' syl/s from ' + t.rate_parts
+         + ' parts, hers is ' + (t.rate_incumbent || 0).toFixed(2))
+    + '</div>';
+  if (t.rate_warning) {
+    html += '<div class="bad">' + escapeHtml(t.rate_warning) + '</div>';
+  }
+  (t.rate_skipped || []).forEach(s => {
+    html += '<div class="warn" style="font-size:12px">no tempo from '
+      + escapeHtml(s.part.split('/').pop()) + ': ' + escapeHtml(s.why)
+      + '</div>';
+  });
+  if (w.straddling && w.straddling.length) {
+    html += '<div class="warn">cut mid-clip at 10s: '
+      + w.straddling.map(escapeHtml).join(', ') + '</div>';
+  }
+  if (w.discarded && w.discarded.length) {
+    html += '<div class="warn">never heard: '
+      + w.discarded.map(escapeHtml).join(', ') + '</div>';
+  }
   $('refqual').innerHTML = html;
-  $('recstat').textContent = 'reference ready';
+  $('buildstat').innerHTML = '<span class="good">' + w.decoder_s
+    + 's conditions the decoder</span>';
   $('save').disabled = false;
-  $('voice').value = '@ref';
+  $('pace').disabled = false;
   fillVoices();
+  $('voice').value = '@ref';
+  showVoice();
+};
+
+// ── pace ──
+// Deliberately measures whatever the Voice picker is on, not only the
+// freshly built reference, so a candidate can be compared against
+// reference/aiko_reference.wav with the same words and the same engine.
+$('pace').onclick = async () => {
+  $('pace').disabled = true;
+  $('buildstat').textContent = 'speaking a probe sentence\u2026';
+  const pick = $('voice').value;
+  const body = { engine: $('engine').value };
+  if (pick === '@ref') body.reference = refId; else body.voice = pick;
+  const r = await fetch('api/pace', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json()).catch(e => ({ error: String(e) }));
+  $('pace').disabled = false;
+  if (r.error) {
+    $('buildstat').innerHTML = '<span class="bad">' + r.error + '</span>';
+    return;
+  }
+  const off = (r.needs - 1) * 100;
+  let msg = '<b>' + r.delivered_syl_s.toFixed(2) + ' syl/s</b> against her '
+    + r.her_pace_syl_s.toFixed(2) + ' \u2014 ';
+  if (Math.abs(off) < 4) {
+    msg += '<span class="good">on pace</span>';
+  } else {
+    msg += (off > 0 ? 'slow' : 'fast') + ' by ' + Math.abs(off).toFixed(0)
+      + '%, ' + (r.fixable_in_app
+        ? '<span class="warn">within the app\u2019s '
+          + (r.app_limit * 100).toFixed(0) + '% correction</span>'
+        : '<span class="bad">past the app\u2019s '
+          + (r.app_limit * 100).toFixed(0) + '% cap \u2014 pick longer '
+          + 'clips</span>');
+  }
+  $('buildstat').innerHTML = msg;
+  $('out').src = 'api/audio/' + r.file + '?t=' + Date.now();
+};
+
+// ── generation knobs ──
+// Built from what the sidecar read off the installed generate(), so the
+// panel cannot offer a dial the engine ignores. A field left blank sends
+// nothing, which is not the same as sending the default: "as shipped" is
+// the only defensible baseline for an audition.
+let knobDefaults = {};
+
+$('loadknobs').onclick = async () => {
+  $('loadknobs').disabled = true;
+  $('knobstat').textContent = 'loading the engine\u2026';
+  const r = await fetch('api/knobs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ engine: $('engine').value }),
+  }).then(r => r.json()).catch(e => ({ error: String(e) }));
+  $('loadknobs').disabled = false;
+  if (r.error) {
+    $('knobstat').innerHTML = '<span class="bad">' + r.error + '</span>';
+    return;
+  }
+  knobDefaults = r.defaults || {};
+  const rt = r.runtime || {};
+  const bits = [];
+  if (rt.torch) bits.push('torch ' + rt.torch);
+  if (rt.threads) bits.push(rt.threads + ' threads');
+  if (r.languages && r.languages.length) {
+    bits.push(r.languages.length + ' languages');
+  }
+  $('knobstat').textContent = r.note
+    || (bits.length ? bits.join(' \u00b7 ') : 'ready');
+  renderKnobs(r.accepts || []);
+};
+$('resetknobs').onclick = () => {
+  [...$('knobtable').querySelectorAll('input')].forEach(i => { i.value = ''; });
+  keepKnobs();
+};
+
+function renderKnobs(accepts) {
+  const t = $('knobtable');
+  t.innerHTML = '';
+  // Only the numeric and string dials. Everything else on a generate()
+  // signature is plumbing -- the audio prompt, the target text -- and
+  // putting it in a tuning panel invites breaking the call.
+  const skip = ['text', 'audio_prompt_path', 'prompt', 'voice',
+                'conds', 'target_voice_path'];
+  const rows = accepts.filter(k => !skip.includes(k));
+  if (!rows.length) {
+    t.innerHTML = '<tr><td class="stat">no per-call knobs</td></tr>';
+    return;
+  }
+  t.innerHTML = '<tr><th>knob</th><th>shipped</th><th>override</th></tr>';
+  rows.forEach(k => {
+    const tr = document.createElement('tr');
+    const shipped = knobDefaults[k];
+    tr.innerHTML = '<td><code>' + escapeHtml(k) + '</code></td>'
+      + '<td class="stat">'
+      + (shipped === undefined || shipped === null
+         ? '\u2014' : escapeHtml(String(shipped))) + '</td>';
+    const cell = document.createElement('td');
+    const box = document.createElement('input');
+    box.type = 'text';
+    box.dataset.knob = k;
+    box.placeholder = shipped === undefined || shipped === null
+      ? 'engine default' : String(shipped);
+    // Restore a value tuned in an earlier session. Finding the setting
+    // that steadies a word and losing it to a page reload is a bad way
+    // to spend an afternoon; keyed per engine, since the same number
+    // means a different intervention on each.
+    const kept = savedKnobs()[k];
+    if (kept !== undefined) box.value = String(kept);
+    box.onchange = keepKnobs;
+    cell.appendChild(box);
+    tr.appendChild(cell);
+    t.appendChild(tr);
+  });
+}
+
+function knobKey() { return 'ttslab.knobs.' + $('engine').value; }
+
+function savedKnobs() {
+  try { return JSON.parse(localStorage.getItem(knobKey()) || '{}'); }
+  catch (e) { return {}; }
+}
+
+function keepKnobs() {
+  try { localStorage.setItem(knobKey(), JSON.stringify(knobValues())); }
+  catch (e) { /* private browsing; the panel still works for this session */ }
+}
+
+function knobValues() {
+  const out = {};
+  [...$('knobtable').querySelectorAll('input')].forEach(i => {
+    const raw = i.value.trim();
+    if (!raw) return;
+    const num = Number(raw);
+    out[i.dataset.knob] = Number.isFinite(num) && raw !== '' ? num : raw;
+  });
+  return out;
 }
 
 // ── synth ──
 $('synth').onclick = async () => {
-  let kwargs = {};
+  let kwargs = knobValues();
   const raw = $('knobs').value.trim();
   if (raw) {
-    try { kwargs = JSON.parse(raw); }
+    try { kwargs = Object.assign(kwargs, JSON.parse(raw)); }
     catch (e) { $('synthstat').innerHTML = '<span class="bad">bad JSON</span>'; return; }
   }
   $('synth').disabled = true;
@@ -407,10 +835,34 @@ $('save').onclick = async () => {
   $('savestat').textContent = 'saving\u2026';
   const r = await fetch('api/save', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ engine: $('engine').value, reference: refId, name }),
+    body: JSON.stringify({
+      engine: $('engine').value, reference: refId, name,
+      // Whatever the audition is currently tuned to travels with the
+      // voice. Without this the app falls back to the engine's shipped
+      // defaults and any value found here is lost on save.
+      kwargs: knobValues(),
+    }),
   }).then(r => r.json());
   if (r.error) { $('savestat').innerHTML = '<span class="bad">' + r.error + '</span>'; return; }
   let msg = '<span class="good">saved ' + r.path + '</span>';
+  if (r.parts) {
+    msg += ' <span class="stat">' + r.parts + ' parts + manifest \u2014 '
+      + 'pick <code>' + r.voice_id + '</code> in Aiko\u2019s voice '
+      + 'settings</span>';
+  }
+  if (r.tuned && Object.keys(r.tuned).length) {
+    msg += '<div class="good">tuned on ' + $('engine').value + ': '
+      + Object.entries(r.tuned).map(([k, v]) => k + '=' + v).join(', ')
+      + ' \u2014 the app will use these for this voice</div>';
+  }
+  // Every engine this voice now carries numbers for. Tuning one
+  // reference on several is the point of having them side by side, and
+  // the manifest keeps them apart -- worth showing, so a save on the
+  // second engine does not look like it replaced the first.
+  if (r.engines_tuned && r.engines_tuned.length > 1) {
+    msg += '<div class="stat">tuning stored for: '
+      + r.engines_tuned.join(', ') + '</div>';
+  }
   if (r.kb) msg += ' <span class="stat">' + (r.kb / 1024).toFixed(1) + ' MB</span>';
   // pocket-tts keeps the whole reference in the speaker state, so the
   // file size tracks clip length: her shipped aiko1_refined is 4.8 MB
@@ -624,7 +1076,7 @@ async function loadAsr() {
     + (r.cached.length > 1 ? ' (also: ' + r.cached.slice(1).join(', ') + ')' : '');
 }
 
-loadEngines(); loadScript(); loadVoices(); loadAsr();
+loadEngines(); loadFolders(); loadVoices(); loadAsr(); renderSel();
 </script>
 </body>
 </html>
