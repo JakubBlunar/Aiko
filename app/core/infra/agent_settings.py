@@ -1497,6 +1497,25 @@ class AgentSettings:
     # ``scripts/topic_gate_report.py`` before changing it. Negative
     # disables the arm while leaving ranking on.
     cue_topic_min_cosine: float = 0.55
+    # H47: drop function words from the lexical arm, so a cue can no
+    # longer be admitted on a shared ``and`` / ``the`` / ``aiko``. The
+    # names come from ``assistant.name`` and ``assistant.user_name``,
+    # because cue subjects are written *about* the two of them and he
+    # addresses her by name constantly.
+    #
+    # This is a 9x tightening -- admission goes from 32.3% of pairs to
+    # 3.6% -- and it is on because the reach H43 was protecting turned
+    # out not to be scarce: 92.6% of expiring cues had already been
+    # rendered in front of her and passed over. What it drops sits at a
+    # median cosine of 0.378 against a null of 0.384, i.e. very slightly
+    # *less* related than random.
+    #
+    # Off restores the pre-H47 three-character floor exactly, which is
+    # the A/B and the exit if she goes too quiet. Prefer relaxing
+    # ``cue_topic_min_cosine`` to 0.50 first: that widens the semantic
+    # arm (7.3% of unrelated pairs, against 1.8% at 0.55) rather than
+    # readmitting the function-word noise wholesale.
+    cue_topic_stoplist: bool = True
     # ── K90 prompt-block accounting ──────────────────────────────────
     # One row per block that RENDERED, per turn. Wider than the cue
     # ledger above, which only sees the ~15 registered cues and only

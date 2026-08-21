@@ -49,6 +49,7 @@ from app.core.proactive.cue_producer import CueProducer, StoreProvider
 from app.core.proactive.idle_worker import WorkSignal
 
 # Reuse the cheap lexical "is the live turn on this topic?" gate.
+from app.core.proactive import topic_match
 from app.core.proactive.knowledge_gap_notice_worker import topic_relevant
 from app.core.infra import timephrase
 
@@ -222,11 +223,18 @@ def append_gradient(
         log.debug("curiosity_gradient journal write failed", exc_info=True)
 
 
-def gradient_relevant(entry: dict[str, Any], user_text: str) -> bool:
+def gradient_relevant(
+    entry: dict[str, Any],
+    user_text: str,
+    *,
+    options: topic_match.GateOptions | None = None,
+) -> bool:
     """True when the live turn is on either side of a curiosity edge."""
     dense = str(entry.get("dense_topic") or "")
     thin = str(entry.get("thin_topic") or "")
-    return topic_relevant(dense, user_text) or topic_relevant(thin, user_text)
+    return topic_relevant(
+        dense, user_text, options=options,
+    ) or topic_relevant(thin, user_text, options=options)
 
 
 def render_gradient_cue(entry: dict[str, Any]) -> str:

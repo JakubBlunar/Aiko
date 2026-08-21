@@ -84,10 +84,20 @@ class LexicalArmTests(unittest.TestCase):
             )
         )
 
-    def test_the_shipped_admission_rule_still_accepts_it(self) -> None:
-        """Admission is deliberately unchanged -- reach must not fall."""
+    def test_admission_refuses_it_too_as_of_h47(self) -> None:
+        """This assertion was inverted on purpose; see H47.
+
+        H43 left admission on the three-character floor so that reach
+        could not fall, and this test pinned that. H47 measured the reach
+        being protected -- 92.6% of expiring cues had already been shown
+        to her and passed over -- and turned the stoplist on, so the same
+        pair is now correctly refused.
+        """
+        pair = ("bread baking and sourdough", "the driver and so on")
+        self.assertFalse(topic_relevant(*pair))
         self.assertTrue(
-            topic_relevant("bread baking and sourdough", "the driver and so on")
+            topic_relevant(*pair, options=topic_match.GateOptions.shipped()),
+            "the off switch has to reproduce the old gate exactly",
         )
 
     def test_an_empty_topic_never_matches(self) -> None:

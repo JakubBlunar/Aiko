@@ -338,27 +338,42 @@ def render_notice_cue(topic: str) -> str:
     )
 
 
-def topic_relevant(topic: str, user_text: str) -> bool:
+def topic_relevant(
+    topic: str,
+    user_text: str,
+    *,
+    options: topic_match.GateOptions | None = None,
+) -> bool:
     """True when the live turn looks like it's on ``topic``.
 
-    Cheap lexical gate: at least one significant (>= 3-char) content word
-    of the topic label appears in the user's message. Topic labels are
-    short (a 2-5 word phrase), so a single shared content word is a
-    reasonable "we're talking about this right now" signal — enough to
-    keep the gap notice in context without an embedding round-trip.
+    Cheap lexical gate: at least one significant content word of the topic
+    label appears in the user's message. Topic labels are short (a 2-5 word
+    phrase), so a single shared content word is a reasonable "we're talking
+    about this right now" signal without an embedding round-trip.
 
-    Measured, that reasoning is wrong in an interesting way: the test
-    accepts a third of all subject-message pairs, and the pairs it accepts
-    are no more semantically related than random ones, because 82% of the
-    tokens carrying its matches are function words. It is kept as the
-    *admission* rule anyway -- being nearly a no-op means tightening it
-    would cost five cue types most of their reach -- and the fix is that
-    :func:`~app.core.proactive.cue_producer.pick_pool_cue` now chooses
-    among everything this admits by relevance instead of by recency. See
-    :mod:`app.core.proactive.topic_match` for the numbers.
+    "Significant" used to mean only "three characters or longer", which
+    measured out at accepting a third of all subject-message pairs -- pairs
+    no more related than random ones, because 82% of the tokens carrying
+    its matches were function words. H43 left that alone and fixed
+    *selection* instead, on the grounds that tightening admission would
+    cost reach. H47 measured the reach it was protecting and found she was
+    already being shown 92.6% of her expiring cues and passing them over,
+    so the stoplist is now on by default here.
+
+    ``options`` carries the strictness and the names, which are only
+    knowable from settings -- see
+    :meth:`~app.core.session.cue_pool_mixin.CuePoolMixin._topic_gate_options`.
+    Passing nothing means stoplist on with no names, which costs precision
+    on subjects written *about* the two of them and never correctness.
     """
+    opts = options or topic_match.DEFAULT_OPTIONS
     return bool(
-        topic_match.lexical_overlap(topic, user_text, drop_stopwords=False)
+        topic_match.lexical_overlap(
+            topic,
+            user_text,
+            extra_stop=opts.extra_stop,
+            drop_stopwords=opts.drop_stopwords,
+        )
     )
 
 

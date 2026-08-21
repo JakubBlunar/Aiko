@@ -170,14 +170,21 @@ the predicate was the sole refuser (H43).
 
 ## Choosing among the matches
 
-The provider's topic predicate is an **admission** test, not a ranking,
-and it is far looser than it looks: `topic_relevant` accepts **33.2% of
-every real (subject, message) pair**, so on a normal shelf several cues
-"match" every turn. `pick_pool_cue` returned the first of them in
-`pending()` order — surfacings, then `pick_order` — which is a criterion
-with no relationship to what the user just said. Combined, that is how a
-cue got surfaced on a shared `and`: verdicts decided by word overlap sit
-at cosine **0.370** against a measured null of **0.369**.
+The provider's topic predicate is an **admission** test, not a ranking.
+As shipped it was far looser than it looked: `topic_relevant` accepted
+**33.2% of every real (subject, message) pair**, so on a normal shelf
+several cues "matched" every turn. `pick_pool_cue` returned the first of
+them in `pending()` order — surfacings, then `pick_order` — which is a
+criterion with no relationship to what the user just said. Combined, that
+is how a cue got surfaced on a shared `and`: verdicts decided by word
+overlap sit at cosine **0.370** against a measured null of **0.369**.
+
+H43 fixed the *choice* and left admission alone, to protect reach. H47
+measured the reach being protected and found it was not scarce — of 652
+expired cues only 48 had never been shown, while **604 had been rendered
+in front of her 1.4–2.0 times each and passed over** — so the stoplist is
+now on at admission too. Both mechanisms are live: the stoplist decides
+what may be considered, the cosine decides which of those she is handed.
 
 So the cue's stored `embedding` is compared against the live message and
 used to **order the admitted set**, with the highest cosine winning.
@@ -201,6 +208,36 @@ Run [`scripts/topic_gate_report.py`](../scripts/topic_gate_report.py)
 before changing it; it prints the null distribution first, because a
 similarity threshold means nothing until you know the score between pairs
 known to be unrelated.
+
+### The stoplist at admission (H47)
+
+`cue_topic_stoplist` (default `true`) drops function words from the
+lexical arm, so a cue can no longer be admitted on a shared `and`, `the`
+or `aiko`. Admission falls from **32.3% to 3.6% of pairs**, and what it
+drops sits at a median cosine of **0.378 against a null median of
+0.384** — very slightly *less* related than two texts drawn at random,
+with only 3.3% above the null's p95.
+
+The names carry more of this than their two entries suggest: cue subjects
+are written *about* the two of them ("jacob's technical projects"), and he
+addresses her by name constantly, which made `aiko` the fourth-largest
+false-match carrier at 580 hits. They are not hardcoded — `GateOptions`
+carries them from `assistant.name` and `assistant.user_name` via
+`CuePoolMixin._topic_gate_options`, because only a caller holding settings
+can know them. A provider that passes no options gets the stoplist with no
+names, which costs precision and never correctness.
+
+**If she goes too quiet, relax `cue_topic_min_cosine` to `0.50` before
+turning the stoplist off.** That widens the semantic arm (7.3% of
+unrelated pairs clear 0.50, against 1.8% at 0.55) instead of readmitting
+function-word noise wholesale; `0.45` admits 20.2% and is not worth
+having. `cue_topic_stoplist=false` reproduces the pre-H47 gate exactly and
+is the A/B.
+
+The number to watch is not the expiry rate but **expired rows split by
+`surfaced_count`**: this change is meant to move "shown and passed over"
+down, and it can do that while `topic_miss` rises, because refusing is now
+the honest answer more often.
 
 ## Production: demand instead of caps
 

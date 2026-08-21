@@ -629,6 +629,34 @@ class CuePoolMixin:
                 evidence="unanswered",
             )
 
+    def _topic_gate_options(self) -> topic_match.GateOptions:
+        """Strictness and names for the lexical arm of the topic gate (H47).
+
+        The names are the reason this lives on the session rather than in
+        :mod:`~app.core.proactive.topic_match`: they are user-configurable,
+        and they matter more than their two entries suggest. Cue subjects
+        are written *about* the two of them -- "jacob's technical projects"
+        -- and he addresses her by name constantly, which made ``aiko`` the
+        fourth-largest false-match carrier in the corpus at 580 hits.
+
+        Built per call rather than cached because it is a two-field read
+        and caching it would mean a settings change needed a restart to
+        take effect, which is exactly the kind of staleness that makes an
+        A/B unreadable.
+        """
+        agent = getattr(getattr(self, "_settings", None), "agent", None)
+        if not bool(getattr(agent, "cue_topic_stoplist", True)):
+            return topic_match.GateOptions.shipped()
+        assistant = getattr(getattr(self, "_settings", None), "assistant", None)
+        names = (
+            str(getattr(assistant, "name", "") or ""),
+            str(getattr(assistant, "user_name", "") or ""),
+        )
+        return topic_match.GateOptions(
+            drop_stopwords=True,
+            extra_stop=tuple(n.strip().lower() for n in names if n.strip()),
+        )
+
     def _topic_rank_inputs(
         self, user_text: str,
     ) -> tuple[Any, float | None]:

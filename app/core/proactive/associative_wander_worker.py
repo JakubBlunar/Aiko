@@ -51,6 +51,7 @@ from app.core.proactive.idle_worker import WorkSignal
 
 # Reuse the cheap lexical "is the live turn on this topic?" gate the F10f
 # notice worker already ships — same shape, no need for a second copy.
+from app.core.proactive import topic_match
 from app.core.proactive.knowledge_gap_notice_worker import topic_relevant
 from app.core.infra import timephrase
 
@@ -271,14 +272,26 @@ def append_wander(
         log.debug("associative_wander journal write failed", exc_info=True)
 
 
-def wander_relevant(entry: dict[str, Any], user_text: str) -> bool:
+def wander_relevant(
+    entry: dict[str, Any],
+    user_text: str,
+    *,
+    options: topic_match.GateOptions | None = None,
+) -> bool:
     """True when the live turn is on either topic of a drafted connection."""
     a = str(entry.get("topic_a") or "")
     b = str(entry.get("topic_b") or "")
-    return topic_relevant(a, user_text) or topic_relevant(b, user_text)
+    return topic_relevant(
+        a, user_text, options=options,
+    ) or topic_relevant(b, user_text, options=options)
 
 
-def distant_half(entry: dict[str, Any], user_text: str) -> str:
+def distant_half(
+    entry: dict[str, Any],
+    user_text: str,
+    *,
+    options: topic_match.GateOptions | None = None,
+) -> str:
     """The half of the pair the live turn is *not* on.
 
     Which topic is the distant one is a property of the moment, not of the
@@ -289,9 +302,9 @@ def distant_half(entry: dict[str, Any], user_text: str) -> str:
     """
     a = str(entry.get("topic_a") or "")
     b = str(entry.get("topic_b") or "")
-    if topic_relevant(a, user_text):
+    if topic_relevant(a, user_text, options=options):
         return b
-    if topic_relevant(b, user_text):
+    if topic_relevant(b, user_text, options=options):
         return a
     return b
 

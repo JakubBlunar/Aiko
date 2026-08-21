@@ -53,6 +53,7 @@ from app.core.proactive.idle_worker import WorkSignal
 
 # Reuse the stable per-topic key + the cheap "is the live turn on this
 # topic?" gate the F10f notice worker already ships.
+from app.core.proactive import topic_match
 from app.core.proactive.knowledge_gap_notice_worker import (
     topic_key,
     topic_relevant,
@@ -191,9 +192,16 @@ def append_drift(
         log.debug("interest_drift journal write failed", exc_info=True)
 
 
-def drift_relevant(entry: dict[str, Any], user_text: str) -> bool:
+def drift_relevant(
+    entry: dict[str, Any],
+    user_text: str,
+    *,
+    options: topic_match.GateOptions | None = None,
+) -> bool:
     """True when the live turn is on the drifting topic."""
-    return topic_relevant(str(entry.get("topic") or ""), user_text)
+    return topic_relevant(
+        str(entry.get("topic") or ""), user_text, options=options,
+    )
 
 
 def render_drift_cue(entry: dict[str, Any]) -> str:

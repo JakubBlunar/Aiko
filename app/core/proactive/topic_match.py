@@ -81,14 +81,29 @@ The cosine arm *is* additive at admission, since it can only let through
 pairs the word test missed (+1.2% of pairs). Its threshold is sited on the
 measured null rather than picked: ~2% of unrelated pairs clear 0.55.
 
-The stoplist is implemented, measured, and **off by default** at
-admission. Ranking removes most of its value -- a coincidental ``and``
-match now only wins when nothing better is on the shelf -- and turning it
-on costs 30.7% of pairs, which is a change to make on production evidence
-rather than on a pair-population estimate. What it drops is genuinely
-noise (median cosine 0.380 against a null median of 0.392; only 2.1% of
-dropped pairs clear the null's p95), so the case for it is sound; it is
-the *size* of the change that wants a separate, measured step.
+The stoplist shipped implemented, measured, and **off at admission**,
+waiting on "production evidence rather than a pair-population estimate"
+before spending 30.7% of pairs on it. H47 is that evidence, and it points
+the other way round from the fear that held it back.
+
+The fear was that tightening costs reach. Reach turned out not to be the
+binding constraint: of 652 expired cues, only **48 (7.4%) never reached
+her prompt at all** -- the other **604 (92.6%) were rendered in front of
+her, 1.4 to 2.0 times each, and passed over**. She was not short of
+material. She was declining what she was handed, which is what being
+handed a cue matched on ``and`` looks like from the inside.
+
+So the stoplist is now **on at admission**, and what it drops is measured
+noise: dropped pairs sit at a median cosine of **0.378 against a null
+median of 0.384** -- very slightly *less* related than two texts drawn at
+random -- with only 3.3% above the null's p95. Admission goes from 32.3%
+to 3.6% of pairs. That is deliberately a large cut, and the dial if she
+goes too quiet is ``agent.cue_topic_min_cosine``: 0.55 admits 1.8% of
+unrelated pairs, 0.50 admits 7.3%, and 0.45 admits 20.2% and is not worth
+having.
+
+``agent.cue_topic_stoplist`` turns it back off without a code change,
+because a 9x tightening deserves an exit.
 
 See ``scripts/topic_gate_report.py`` for all of the above, and re-run it
 rather than adjusting these constants by feel.
@@ -103,6 +118,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Collection
+from dataclasses import dataclass
 from typing import Any
 
 log = logging.getLogger("app.topic_match")
@@ -172,6 +188,36 @@ STOPWORDS: frozenset[str] = frozenset({
     "two", "three", "four", "five", "six", "seven", "eight", "nine",
     "ten",
 })
+
+
+@dataclass(frozen=True)
+class GateOptions:
+    """How strict the lexical arm is, and which names mean nothing here.
+
+    One object rather than two parameters because they always travel
+    together: the names are only stopwords when there *is* a stoplist, and
+    six providers plus their four shared helpers pass them straight
+    through. Threading two arguments through all of that was how the
+    original predicate ended up with the shape nobody could see into.
+
+    ``extra_stop`` is a tuple rather than a set so the whole thing stays
+    hashable and comparable, which is what lets a test assert on the
+    options a provider built instead of on its behaviour.
+    """
+
+    drop_stopwords: bool = True
+    extra_stop: tuple[str, ...] = ()
+
+    @classmethod
+    def shipped(cls) -> "GateOptions":
+        """The pre-H47 gate: three-character floor and nothing else."""
+        return cls(drop_stopwords=False, extra_stop=())
+
+
+#: What a caller who passes nothing gets. Stoplist on, no names -- the
+#: names are user-configurable, so only a caller with settings in hand can
+#: supply them, and a missing one costs precision rather than correctness.
+DEFAULT_OPTIONS = GateOptions()
 
 
 def content_words(
@@ -253,7 +299,7 @@ def topical(
     user_vec: Any = None,
     min_cosine: float | None = DEFAULT_MIN_COSINE,
     extra_stop: Collection[str] | None = None,
-    drop_stopwords: bool = False,
+    drop_stopwords: bool = True,
 ) -> tuple[bool, str, float | None]:
     """``(hit, arm, cosine)`` -- is his message about this subject?
 
@@ -264,9 +310,9 @@ def topical(
     what made the consumption gate's own calibration unreadable for its
     first few hundred verdicts, and it is not repeated here.
 
-    ``drop_stopwords`` defaults to ``False`` so that admission matches
-    what shipped: the arm is additive only. The score comes back on every
-    verdict regardless, which is what lets the caller *rank*.
+    ``drop_stopwords`` defaults to ``True`` as of H47, matching what
+    admission now does. The score comes back on every verdict regardless
+    of which arm decided, which is what lets the caller *rank*.
     """
     score = cosine(topic_vec, user_vec)
     if lexical_overlap(
@@ -284,7 +330,9 @@ __all__ = [
     "ARM_LEXICAL",
     "ARM_NONE",
     "DEFAULT_MIN_COSINE",
+    "DEFAULT_OPTIONS",
     "STOPWORDS",
+    "GateOptions",
     "content_words",
     "cosine",
     "lexical_overlap",

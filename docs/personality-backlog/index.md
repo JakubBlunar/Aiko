@@ -695,6 +695,27 @@ for a cut. Also worth taking from it: the *first* measurement of the tail used a
 energy gate, which hides its own subject, since anything loud enough to hear is
 classified as speech ([`health.md`](health.md)).
 
+**H47 is the one to read before quoting any "expired unused" figure, and it
+started from his question rather than mine.** Told `topic_miss` was the largest
+eligible cue decline, he asked whether it is a problem at all — maybe she just
+didn't think it fitted. The gate has no notion of mood, but the question
+inverted the investigation, and splitting expired rows by whether they ever
+reached her prompt answers it: of 652, only **48 (7.4%) were never shown**,
+while **604 (92.6%) were rendered in front of her 1.4–2.0 times each and passed
+over**. Supply was never the constraint — being handed a cue that matched on
+`and` was. So H43's stoplist, built and measured and left off pending
+"production evidence", is now **on**: admission goes 32.3% → 3.6% of pairs, and
+what it drops sits at median cosine 0.378 against a null of 0.384, i.e. slightly
+*less* related than random. Three of my own numbers died on the way and are
+recorded there — chiefly that the reach gain I first attributed to H43 was
+partly a second instrument change (the `provider` bucket closing on 12 Aug)
+being read across the split. Two cue types *are* genuinely starved and are not
+fixed by this: `concept_hypothesis` and `forward_curiosity`, both at 0.4
+showings per cue against everyone else's 1.4–2.0. New **shape 25** — *a change
+declined on a cost that was never measured, beside a benefit that was measured
+exhaustively*, whose tell is grammatical: the benefit written as a number, the
+cost as an adverb ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

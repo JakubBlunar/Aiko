@@ -1023,6 +1023,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             cue_topic_min_cosine=float(
                 agent_raw.get("cue_topic_min_cosine", 0.55),
             ),
+            cue_topic_stoplist=bool(
+                agent_raw.get("cue_topic_stoplist", True),
+            ),
             prompt_block_accounting_enabled=bool(
                 agent_raw.get("prompt_block_accounting_enabled", True),
             ),
