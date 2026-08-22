@@ -828,11 +828,13 @@ class BeliefInferenceWorker:
     def _reconsider_topics(
         self, *, user_id: str, labels: list[str]
     ) -> list[str]:
-        """Stalest active beliefs whose topic sits on a top interest.
+        """Stalest believed topics that sit on a top interest.
 
-        ``list_active`` is ``observed_at DESC`` so we walk it in reverse
+        ``list_believed`` is ``observed_at DESC`` so we walk it in reverse
         (oldest-observed first) and keep the first ``reconsider_max`` whose
         topic shares a content word with any high-mass interest label.
+        Corroborated beliefs are included: they are the ones Aiko actually
+        says out loud, so they are the ones worth re-checking.
         """
         max_n = int(
             getattr(self._belief_settings, "belief_worker_reconsider_max", 3)
@@ -840,9 +842,9 @@ class BeliefInferenceWorker:
         if max_n <= 0 or not labels:
             return []
         try:
-            active = self._belief_store.list_active(user_id=user_id, limit=200)
+            active = self._belief_store.list_believed(user_id=user_id, limit=200)
         except Exception:
-            log.debug("belief-worker: list_active raised", exc_info=True)
+            log.debug("belief-worker: list_believed raised", exc_info=True)
             return []
         if not active:
             return []

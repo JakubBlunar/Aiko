@@ -295,6 +295,127 @@ class ListAndCountTests(unittest.TestCase):
         self.assertEqual(counts[STATUS_STALE], 0)
 
 
+class ReobservationTests(unittest.TestCase):
+    """The status a re-observed belief lands in.
+
+    Re-observation used to force ``active`` unconditionally, so the
+    worker re-deriving a topic quietly undid the user's "mark correct"
+    and the same rows kept reappearing in the review tab.
+    """
+
+    def _reobserve(self, store, **kwargs):
+        return store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="rust",
+            predicted_state="overhyped", **kwargs,
+        )
+
+    def test_confirmed_survives_reobservation(self) -> None:
+        _, store, _ = _build_db()
+        b = self._reobserve(store)
+        assert b is not None
+        store.mark_confirmed(b.id)
+        self._reobserve(store)
+        self.assertEqual(store.get(b.id).status, STATUS_CONFIRMED)
+
+    def test_repeat_observation_auto_confirms(self) -> None:
+        _, store, _ = _build_db()
+        b = self._reobserve(store)
+        assert b is not None
+        self.assertEqual(store.get(b.id).status, STATUS_ACTIVE)
+        self.assertEqual(store.get(b.id).metadata.get("observations"), 1)
+        self._reobserve(store)
+        row = store.get(b.id)
+        self.assertEqual(row.status, STATUS_CONFIRMED)
+        self.assertEqual(row.metadata.get("observations"), 2)
+
+    def test_threshold_is_configurable(self) -> None:
+        _, store, _ = _build_db()
+        b = self._reobserve(store, auto_confirm_after=3)
+        assert b is not None
+        self._reobserve(store, auto_confirm_after=3)
+        self.assertEqual(store.get(b.id).status, STATUS_ACTIVE)
+        self._reobserve(store, auto_confirm_after=3)
+        self.assertEqual(store.get(b.id).status, STATUS_CONFIRMED)
+
+    def test_changed_state_restarts_the_count(self) -> None:
+        """A new claim about the same topic inherits no corroboration."""
+        _, store, _ = _build_db()
+        b = self._reobserve(store)
+        assert b is not None
+        self._reobserve(store)
+        self.assertEqual(store.get(b.id).status, STATUS_CONFIRMED)
+        store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="rust",
+            predicted_state="actually pretty good",
+        )
+        row = store.get(b.id)
+        self.assertEqual(row.status, STATUS_ACTIVE)
+        self.assertEqual(row.metadata.get("observations"), 1)
+
+    def test_contradicted_row_never_auto_confirms(self) -> None:
+        _, store, _ = _build_db()
+        b = self._reobserve(store)
+        assert b is not None
+        store.mark_contradicted(b.id)
+        for _ in range(4):
+            self._reobserve(store)
+        self.assertEqual(store.get(b.id).status, STATUS_ACTIVE)
+
+
+class BelievedAndTrustedTests(unittest.TestCase):
+    def test_confirming_does_not_exempt_from_gap_checks(self) -> None:
+        """The bug this split exists for.
+
+        ``confirmed`` used to drop a row out of the only pool anything
+        read, so marking a belief correct made it permanently
+        uncontradictable -- behaviourally the same as deleting it.
+        """
+        _, store, _ = _build_db()
+        b = store.upsert(
+            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
+            predicted_state="excited", valence=0.6,
+        )
+        assert b is not None
+        store.mark_confirmed(b.id)
+        rows = store.list_active_for_gap_check(user_id="u1")
+        self.assertEqual([r.id for r in rows], [b.id])
+
+    def test_list_believed_spans_active_and_confirmed_only(self) -> None:
+        _, store, _ = _build_db()
+        active = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="a", predicted_state="x",
+        )
+        confirmed = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="b", predicted_state="x",
+        )
+        gone = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="c", predicted_state="x",
+        )
+        stale = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="d", predicted_state="x",
+        )
+        assert active and confirmed and gone and stale
+        store.mark_confirmed(confirmed.id)
+        store.mark_contradicted(gone.id)
+        store.mark_stale(stale.id)
+        ids = {r.id for r in store.list_believed(user_id="u1")}
+        self.assertEqual(ids, {active.id, confirmed.id})
+
+    def test_list_trusted_is_confirmed_only(self) -> None:
+        """An uncorroborated guess must not be spoken as if it were known."""
+        _, store, _ = _build_db()
+        active = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="a", predicted_state="x",
+        )
+        confirmed = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="b", predicted_state="x",
+        )
+        assert active and confirmed
+        store.mark_confirmed(confirmed.id)
+        ids = [r.id for r in store.list_trusted(user_id="u1")]
+        self.assertEqual(ids, [confirmed.id])
+
+
 class MaintenanceTests(unittest.TestCase):
     def test_mark_stale_older_than(self) -> None:
         _, store, _ = _build_db()

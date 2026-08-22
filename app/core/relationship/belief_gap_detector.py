@@ -298,7 +298,7 @@ class BeliefGapDetector:
         # Opinions have no time window: an old belief can still be
         # contradicted by a fresh statement. We still bound the list
         # to a sensible cap to keep the heuristic loop bounded.
-        beliefs = self._belief_store.list_active(
+        beliefs = self._belief_store.list_believed(
             user_id=user_id, kind=KIND_OPINION, limit=200,
         )
         gaps: list[BeliefGap] = []
