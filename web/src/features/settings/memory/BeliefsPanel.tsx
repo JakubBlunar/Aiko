@@ -9,13 +9,41 @@ import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { EmptyState } from "@/components/EmptyState";
 
-const BELIEF_STATUS_FILTERS: { id: BeliefStatus | "all"; label: string }[] = [
-  { id: "active", label: "Active" },
-  { id: "contradicted", label: "Contradicted" },
-  { id: "confirmed", label: "Confirmed" },
-  { id: "stale", label: "Stale" },
-  { id: "all", label: "All" },
+// "Active" is the review queue, so it is labelled as one. A belief that
+// gets re-observed with the same state and has never been contradicted
+// now promotes itself to confirmed, so what is left in this bucket is
+// genuinely the set no rule can settle: seen once and never again, or
+// wrong at least once before.
+const BELIEF_STATUS_FILTERS: {
+  id: BeliefStatus | "all";
+  label: string;
+  hint: string;
+}[] = [
+  {
+    id: "active",
+    label: "Needs review",
+    hint: "Believed, but not corroborated. Anything seen twice with the same reading promotes itself, so these are the ones no rule can settle.",
+  },
+  {
+    id: "contradicted",
+    label: "Contradicted",
+    hint: "The live signal disagreed with this. Still on file — a contradicted row can come back if she re-observes it.",
+  },
+  {
+    id: "confirmed",
+    label: "Confirmed",
+    hint: "Corroborated. These are the only beliefs she will speak from, and they are still gap-checked.",
+  },
+  { id: "stale", label: "Stale", hint: "Untouched long enough to age out." },
+  { id: "all", label: "All", hint: "Every belief, any status." },
 ];
+
+/** How many times this exact reading has been observed. */
+function observationCount(belief: Belief): number {
+  const raw = belief.metadata?.observations;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+}
 
 export function BeliefsPanel() {
   // Items + filters live in the global store so the panel stays live as
@@ -114,12 +142,13 @@ export function BeliefsPanel() {
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span
           className="font-medium text-ink-100/70"
-          title="What Aiko currently thinks you feel about specific topics (mood) or what you think about them (opinion). Mood beliefs flip to contradicted when the live affect read disagrees; opinion beliefs flip when your message lexically contradicts the prediction."
+          title="What Aiko currently thinks you feel about specific topics (mood) or what you think about them (opinion). Mood beliefs are checked against the live affect read on turns actually about that topic; opinion beliefs flip when your message lexically contradicts the prediction. Confirmed beliefs are the ones she speaks from — and they stay gap-checked, so confirming one is not the same as archiving it."
         >
           Beliefs
           {counts ? (
             <span className="ml-2 text-ink-100/40">
-              ({counts.active} active · {counts.contradicted} contradicted)
+              ({counts.active} to review · {counts.confirmed} confirmed ·{" "}
+              {counts.contradicted} contradicted)
             </span>
           ) : null}
         </span>
@@ -147,6 +176,7 @@ export function BeliefsPanel() {
           <button
             key={opt.id}
             type="button"
+            title={opt.hint}
             onClick={() => setStatusFilter(opt.id)}
             className={
               "rounded border px-1.5 py-0.5 " +
@@ -234,6 +264,13 @@ function BeliefCard({
     belief.gap_seen_at && belief.status === "contradicted"
       ? "ring-1 ring-rose-400/40"
       : "";
+  const seen = observationCount(belief);
+  // gap_seen_at is permanent, so a row that was wrong once can never
+  // auto-confirm however often it is re-observed. Those are the rows
+  // that will sit in the queue indefinitely unless a person rules on
+  // them, and nothing else on the card says so.
+  const blockedFromAutoConfirm =
+    belief.status === "active" && belief.gap_seen_at !== null;
   return (
     <li
       className={`rounded border p-2 text-[11px] ${statusTone} ${gapPing}`}
@@ -246,6 +283,10 @@ function BeliefCard({
         <span>conf {belief.confidence.toFixed(2)}</span>
         <span>·</span>
         <span>source {belief.source}</span>
+        <span>·</span>
+        <span title="How many times this exact reading has been observed. Two is enough to confirm itself.">
+          seen {seen}×
+        </span>
         <span>·</span>
         <span>{formatRelative(belief.observed_at)}</span>
       </div>
@@ -265,6 +306,22 @@ function BeliefCard({
       {belief.gap_seen_at ? (
         <div className="mt-1 text-[10px] text-rose-200/80">
           gap seen {formatRelative(belief.gap_seen_at)}
+        </div>
+      ) : null}
+      {blockedFromAutoConfirm ? (
+        <div
+          className="mt-1 text-[10px] text-amber-200/80"
+          title="This belief was contradicted at some point, so it will never promote itself no matter how often she re-observes it. Only you can settle it."
+        >
+          was wrong before — won't self-confirm
+        </div>
+      ) : null}
+      {belief.kind === "mood" && belief.valence === null ? (
+        <div
+          className="mt-1 text-[10px] text-ink-100/40"
+          title="No numeric affect coordinates, so the gap detector cannot check this one against how you actually sound. Older mood beliefs were all written this way."
+        >
+          no affect reading — can't be auto-checked
         </div>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-1 text-[10px]">
