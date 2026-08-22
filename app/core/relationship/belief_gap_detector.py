@@ -11,17 +11,27 @@ update her model.
 
 Two detection passes, both pure functions over the store state:
 
-1. **Mood gap** -- for every ``active`` mood belief younger than
-   ``belief_recent_window_hours``, compare the stored
-   ``valence`` / ``arousal`` against the live affect read. A gap
-   fires when ``|val_pred - val_obs| > belief_gap_valence_threshold``
+1. **Mood gap** -- for every believed mood belief younger than
+   ``belief_recent_window_hours`` **whose topic the current turn is
+   actually about**, compare the stored ``valence`` / ``arousal``
+   against the live affect read. A gap fires when
+   ``|val_pred - val_obs| > belief_gap_valence_threshold``
    OR ``|aro_pred - aro_obs| > belief_gap_arousal_threshold``
    OR the recomputed mood label flips into the opposing
    valence-band. ``status`` is bumped to ``contradicted`` and
    ``gap_seen_at`` stamped; the gap tuple is returned for the
    inner-life provider.
 
-2. **Opinion gap** -- for every ``active`` opinion belief, run
+   The topic gate matters more than it looks. A mood belief is about
+   one subject, but ``AffectState`` is a single global read, so without
+   it "he's excited about the tokyo trip" is contradicted by any turn
+   where he sounds flat -- including turns about his commute. That was
+   harmless only while the field was empty: no worker-written mood
+   belief carried a valence, so the comparator never ran. Filling the
+   coordinates in without this gate would have converted a dead check
+   into a false-contradiction generator.
+
+2. **Opinion gap** -- for every believed opinion belief, run
    :func:`app.core.memory.conflict_heuristics.classify_pair` against the
    most recent user message. A ``definite`` heuristic flips the
    belief to ``contradicted``; a strong content overlap with no
@@ -146,14 +156,17 @@ class BeliefGapDetector:
         # predictions on this tick.
         self._sweep_stale(user_id=user_id)
 
+        text = (recent_user_message or "").strip()
+
         # 2. mood pass.
         if affect is not None:
             gaps.extend(
-                self._detect_mood_gaps(user_id=user_id, affect=affect)
+                self._detect_mood_gaps(
+                    user_id=user_id, affect=affect, user_message=text,
+                )
             )
 
         # 3. opinion pass.
-        text = (recent_user_message or "").strip()
         if text:
             gaps.extend(
                 self._detect_opinion_gaps(
@@ -181,6 +194,7 @@ class BeliefGapDetector:
         *,
         user_id: str,
         affect: "AffectState",
+        user_message: str = "",
     ) -> list[BeliefGap]:
         recent_hours = float(
             getattr(
@@ -215,6 +229,15 @@ class BeliefGapDetector:
                 # Worker / tag only stored a textual label without
                 # numeric coordinates; stamp_checked but skip the
                 # numeric comparator.
+                self._belief_store.stamp_checked(b.id, gap=False)
+                continue
+            if not self._topic_is_live(b.topic, user_message):
+                # A mood belief is about *one subject*, but AffectState is
+                # a single global read. Comparing "he's excited about the
+                # tokyo trip" against how he sounds while discussing his
+                # commute measures nothing, and would contradict the row
+                # for being about a different thing. Only check a mood
+                # read on a turn that is actually on its topic.
                 self._belief_store.stamp_checked(b.id, gap=False)
                 continue
             val_diff = abs(float(b.valence) - float(affect.valence))
@@ -262,6 +285,28 @@ class BeliefGapDetector:
             else:
                 self._belief_store.stamp_checked(b.id, gap=False)
         return gaps
+
+    @staticmethod
+    def _topic_is_live(topic: str, user_message: str) -> bool:
+        """Whether the current turn is actually about ``topic``.
+
+        Uses the same lexical gate five cue providers already share
+        (``knowledge_gap_notice_worker.topic_relevant``) rather than a
+        second copy. An empty message means the caller had no live turn
+        to check against — the opinion pass skips itself in that case, so
+        the mood pass does too rather than checking against nothing.
+        """
+        if not topic or not user_message:
+            return False
+        try:
+            from app.core.proactive.knowledge_gap_notice_worker import (
+                topic_relevant,
+            )
+
+            return bool(topic_relevant(topic, user_message))
+        except Exception:
+            log.debug("topic_relevant raised; skipping mood check", exc_info=True)
+            return False
 
     def _render_mood_reason(
         self,

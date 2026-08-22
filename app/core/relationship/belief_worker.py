@@ -161,6 +161,13 @@ def _build_system_prompt(user_name: str = "the user") -> str:
         "grammatical sentence, rewrite it. Keep it under about eight "
         "words.\n"
         "  - confidence: 0.0-1.0 decimal -- how sure you are.\n"
+        "  - valence and arousal: mood beliefs ONLY, omit both for "
+        "opinions. valence runs -1.0 (miserable) through 0.0 (neutral) "
+        "to 1.0 (delighted); arousal runs 0.0 (calm, drained, flat) to "
+        "1.0 (keyed up, agitated, energised). These are the only thing "
+        "that lets a mood read be checked later against how they "
+        "actually sound, so commit to your honest estimate -- a safe "
+        "0.0 / 0.5 for everything makes the read unfalsifiable.\n"
         "A belief is a standing read on a person, so skip anything that "
         "is really a scheduled plan or a single event ('meeting on "
         "friday', 'went to bed early'). Those are commitments and "
@@ -248,6 +255,26 @@ _TOPIC_WORD_RE = re.compile(r"[a-z0-9]{3,}")
 
 def _topic_words(text: str | None) -> set[str]:
     return set(_TOPIC_WORD_RE.findall((text or "").lower()))
+
+
+def _coerce_axis(raw: Any, *, lo: float, hi: float) -> float | None:
+    """Clamp one affect coordinate out of the LLM's JSON, or ``None``.
+
+    ``None`` for a missing or unparseable value rather than a default:
+    a mood belief with no coordinates is skipped by the gap detector,
+    which is the honest outcome, whereas defaulting to the midpoint
+    would invent a reading the model never made and then check her
+    against it.
+    """
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value != value:  # NaN
+        return None
+    return max(lo, min(hi, value))
 
 
 # A date or a weekday written into a topic or a state, which the row's
@@ -372,6 +399,15 @@ class _BeliefTuple:
     topic: str
     predicted_state: str
     confidence: float
+    # Mood only. Without these the gap detector cannot check a mood read
+    # at all -- it needs numeric coordinates to compare against the live
+    # AffectState, and rows with a NULL valence are skipped outright. The
+    # worker used never to supply them, so on the install where this was
+    # measured all 118 worker-written mood beliefs were unverifiable and
+    # sat in the review queue until a human or the 90-day sweep moved
+    # them.
+    valence: float | None = None
+    arousal: float | None = None
 
 
 class BeliefInferenceWorker:
@@ -737,6 +773,8 @@ class BeliefInferenceWorker:
                 topic=t.topic,
                 predicted_state=t.predicted_state,
                 confidence=float(t.confidence),
+                valence=t.valence,
+                arousal=t.arousal,
                 source=SOURCE_WORKER,
                 topic_embedding=embedding,
                 observed_at=now.isoformat(),
@@ -1145,12 +1183,25 @@ class BeliefInferenceWorker:
                 )
                 continue
             confidence = max(0.0, min(1.0, confidence))
+            valence = arousal = None
+            if kind == KIND_MOOD:
+                valence = _coerce_axis(item.get("valence"), lo=-1.0, hi=1.0)
+                arousal = _coerce_axis(item.get("arousal"), lo=0.0, hi=1.0)
+                if valence is None:
+                    # Not fatal: the row is still worth keeping as a
+                    # readable belief, it just cannot be auto-verified.
+                    log.debug(
+                        "belief-worker: mood row without valence topic=%r",
+                        topic,
+                    )
             out.append(
                 _BeliefTuple(
                     kind=kind,
                     topic=topic,
                     predicted_state=state,
                     confidence=confidence,
+                    valence=valence,
+                    arousal=arousal,
                 )
             )
         return out
