@@ -256,6 +256,80 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             "Don't repeat the question."
         )
 
+    def _render_trusted_beliefs_block(self) -> str:
+        """K2: what she has actually learned he thinks and feels.
+
+        The counterpart to :meth:`_render_belief_gaps_block`, and the
+        reason that one was doing all the work alone. Until this existed,
+        a belief reached the prompt only by being *wrong* -- she could
+        voice a theory of mind exclusively at the moment it failed, and a
+        store full of correct reads about him contributed nothing to how
+        she spoke. On the install where that was measured the gap block
+        had rendered on 3 turns out of 851, so for practical purposes the
+        whole layer was inert.
+
+        Only ``confirmed`` rows appear (see ``BeliefStore.list_trusted``):
+        an ``active`` belief is a single uncorroborated extraction, and
+        speaking those back is how a companion earns a reputation for
+        confidently inventing things. The cue is deliberately phrased as
+        standing context rather than as an instruction to bring anything
+        up -- it is background she talks *from*, not a prompt to perform
+        insight. It therefore offers **no stance** and is deliberately
+        absent from ``_OFFERS`` in ``app/core/conversation/stance.py``,
+        alongside the other standing-context blocks (``profile_block``,
+        ``axes_block``): it never asks for the floor, so there is nothing
+        for the K92 arbiter to arbitrate.
+
+        Reads the store on each assembly rather than caching in
+        ``_StaticSlices``: one indexed ``SELECT ... LIMIT n`` is the same
+        order of cost as the ``day_color`` kv read that also runs
+        uncached, and the block has to reflect a promotion the worker
+        made mid-conversation.
+        """
+        agent = self._settings.agent
+        if not bool(getattr(agent, "belief_tracking_enabled", True)):
+            return ""
+        if not bool(getattr(agent, "belief_trusted_block_enabled", True)):
+            return ""
+        limit = max(0, int(getattr(agent, "belief_trusted_block_max", 4)))
+        if limit <= 0:
+            return ""
+        store = getattr(self, "_belief_store", None)
+        if store is None:
+            return ""
+        try:
+            rows = store.list_trusted(user_id=self._user_id, limit=limit)
+        except Exception:
+            log.debug("trusted beliefs read failed", exc_info=True)
+            return ""
+        if not rows:
+            return ""
+        try:
+            from app.core.relationship.belief_store import KIND_MOOD
+
+            lines = [
+                "- "
+                + (
+                    f"{self.user_display_name} is {b.predicted_state} "
+                    f"about {b.topic}"
+                    if b.kind == KIND_MOOD
+                    else f"{b.topic} is {b.predicted_state}, to him"
+                )
+                for b in rows
+            ]
+        except Exception:
+            log.debug("trusted beliefs render failed", exc_info=True)
+            return ""
+        return (
+            f"What you've come to understand about {self.user_display_name} "
+            "(corroborated more than once — you can just assume these "
+            "rather than checking):\n"
+            + "\n".join(lines)
+            + "\nThis is background you speak from, not a list to bring up. "
+            "Don't recite it, don't ask him to confirm it, and drop any of "
+            "it the moment he says otherwise."
+        )
+
     def _render_clarification_block(self) -> str:
         """K17: surface a one-shot clarification-repair cue.
 

@@ -195,6 +195,7 @@ class PromptAssemblerHelpersMixin:
         user_expertise: Callable[[str], str] | None = None,
         knowledge_grounding: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
+        trusted_beliefs: Callable[[], str] | None = None,
         clarification: Callable[[], str] | None = None,
         inside_joke: Callable[[], str] | None = None,
         calibration: Callable[[], str] | None = None,
@@ -350,6 +351,8 @@ class PromptAssemblerHelpersMixin:
             self._knowledge_grounding_provider = knowledge_grounding
         if belief_gaps is not None:
             self._belief_gaps_provider = belief_gaps
+        if trusted_beliefs is not None:
+            self._trusted_beliefs_provider = trusted_beliefs
         if clarification is not None:
             self._clarification_provider = clarification
         if inside_joke is not None:

@@ -624,6 +624,7 @@ class SpeakingWorkersInitMixin:
             user_expertise=self._render_user_expertise_block,
             knowledge_grounding=self._render_knowledge_grounding_block,
             belief_gaps=self._render_belief_gaps_block,
+            trusted_beliefs=self._render_trusted_beliefs_block,
             clarification=self._render_clarification_block,
             inside_joke=self._render_inside_joke_block,
             calibration=self._render_calibration_block,
