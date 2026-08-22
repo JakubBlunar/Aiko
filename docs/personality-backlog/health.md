@@ -5940,3 +5940,131 @@ what it produced was clean readable text. Had it emitted `KamennÃ¡` or `Kamenn
 it would have been reported in a day. Detectability and severity ran in opposite
 directions.
 
+## H51. Marking a belief correct was indistinguishable from deleting it
+
+Reported as a chore rather than a bug: *"we have a lot of beliefs in the belief
+tab that are mostly always correct so i am usually just marking them as correct
+and bad ones i am deleting."* The tab was asking for daily review, so the
+question was what the review bought.
+
+Nothing. Across 851 turns the belief layer had put **three** prompt blocks in
+front of her, and 4 of 230 rows had ever recorded a gap — while the worker ran
+its extraction model every twenty minutes.
+
+### `confirmed` was an archive with a positive-sounding name
+
+`belief_gaps_block` was the *only* path from the `beliefs` table to the prompt,
+and it fires exclusively on a detected mismatch. So a belief could reach her
+only by being **wrong**, and a store full of correct reads about the user
+changed nothing about how she spoke.
+
+Marking one correct made that worse. `confirmed` dropped the row out of
+`list_active`, which the gap detector was the only consumer of, and nothing
+anywhere read a confirmed belief back. Confirming and deleting therefore had
+*identical* effects on her behaviour, and the diligent reviewer was retiring her
+theory of mind one row at a time. A confirmed belief also became permanently
+uncontradictable, which is the opposite of what the word means.
+
+The undo was quieter still. `upsert` forced `status='active'` on every
+re-observation, so the worker re-deriving a topic twenty minutes later silently
+reverted the user's "mark correct" — the same rows kept reappearing in the queue
+with nothing in the UI to say they had been ruled on already.
+
+### All 118 mood beliefs were structurally unverifiable
+
+The mood pass compares a stored `valence`/`arousal` against the live
+`AffectState` and skips any row where valence is `NULL`. The worker's extraction
+prompt never asked for those fields, and the four-field `[[predict:]]` tag
+grammar has nowhere to put them. So **every** worker-written mood belief — 118
+of 118 — could leave the queue only by hand or by the 90-day stale sweep. Half
+the review burden was rows that no automatic check could ever have touched.
+
+The trap is that filling the field in is *not* the fix on its own. A mood belief
+is about one subject, but `AffectState` is a single global read, so an ungated
+comparison contradicts "he's excited about the tokyo trip" on any turn where he
+sounds flat — including a turn about his commute. The dead check was hiding a
+false-contradiction generator; both had to be fixed in the same change.
+
+### What shipped
+
+* `active` and `confirmed` are both **believed** and both gap-checked
+  (`list_believed`); `confirmed` additionally means corroborated and quotable
+  (`list_trusted`).
+* `trusted_beliefs_block` (T1) gives the layer its missing positive path — the
+  "she knows me" lever. Corroborated rows only, phrased as standing context she
+  speaks *from*, so it offers no stance and stays out of `_OFFERS`.
+* Re-observation preserves `confirmed`. The same state seen twice with no gap
+  ever recorded auto-confirms; a changed state restarts the count; a row that
+  has ever been contradicted never auto-confirms, because `gap_seen_at` is
+  permanent.
+* The extractor asks for both affect axes on mood rows, and the self-tag path
+  takes this turn's per-axis user read (the L13 reader, not the K37 contagion
+  estimate — that one carries a mood band days old and fuses the axes, both
+  wrong for a stored claim). Unread stays `None`: an unchecked belief is honest,
+  a belief checked against a number nobody supplied is not.
+* The mood comparison is gated on topic relevance, reusing the predicate five
+  cue providers already share.
+* The tab labels the queue "Needs review" and marks the two row types that will
+  otherwise sit there forever: previously-contradicted rows that can never
+  self-confirm, and mood rows with no affect reading.
+
+### Shape
+
+[Shape 12](#recurring-shapes), **a control whose only effect is to disable
+itself**, in its purest form yet: the affordance was labelled "mark confirmed",
+it did write `status='confirmed'`, and the sole consequence was removing the row
+from the one query that read it. Every layer was individually correct. Worth
+pairing with the H21 reading — *an always-on block that is present every turn
+and that nothing responds to* — because the diagnostic is the same one: ask what
+**reads** the thing, not whether writing it works.
+
+## H52. The 2,700 tokens of grammar blocks are the cheapest text in the prompt
+
+Carried in as a budget item — gate the always-on tag grammars to turns where
+that channel is live. Measurement inverted it, and the gating would have been a
+regression.
+
+Per-turn means over 854 turns, weighted by reach, with tier and volatility from
+`turn_prompt_blocks`:
+
+| tier | chars/turn | volatile |
+| --- | --- | --- |
+| T0 stable | 46,322 | 87% |
+| T1 semi-stable | 1,372 | 100% |
+| T2 summary | 1,321 | 100% |
+| T3 rag | 17,480 | 100% |
+| T4 ambient | 608 | 92% |
+| T5 affect/style | 466 | 94% |
+| T6 detectors | 6,631 | 100% |
+| **total** | **74,200** | **92%** |
+
+The six grammar/addendum blocks come to **5,903 chars/turn — 8% of the prompt —
+and every one of them is a `CONSTANT`**: one distinct size across all 854 turns.
+They sit in T0, inside the cache prefix, and are the only large blocks in the
+whole assembly that are.
+
+Gating them per turn would save ~5,900 characters that are already nearly free,
+and would break the T0 prefix on every flip, invalidating the ~35,000 characters
+that follow them. Strictly negative unless the gate never flips — and a gate
+that never flips is a config flag, which is what `overlay` / `outfit` / `motion`
+already have: they are built from the avatar capability provider and are absent
+when the avatar cannot do the thing. The gating asked for is in place; this
+install simply has those channels on.
+
+**Where the budget actually goes.** `persona` is 38,358 chars — 52% of the
+prompt on its own, at four distinct sizes over 854 turns, so also effectively
+cached. The genuinely hot text is two blocks: `relevant_context` (17,480 chars,
+T3, 742 sizes) and `handling_notes_block` (5,517 mean, T6, 501 sizes, p90 8,017,
+max 18,446). Together ~23,000 chars/turn paid at full price, four times the
+grammar total. `handling_notes_block` is the persona hoist, which is supposed to
+be small and conditional; at a p90 of 8,000 characters it is neither, and it is
+in the least cacheable tier. That is the thread to pull, not the addenda.
+
+### Shape
+
+New: **a cost measured in isolation from its cacheability.** "2,700 tokens every
+turn" is true and irrelevant — the number that matters is tokens × probability
+the prefix moved, and for a T0 constant that second term is ~0. The same
+arithmetic says the opposite about a 5,517-character T6 block nobody had
+flagged. Any prompt-budget claim needs the tier beside the size.
+

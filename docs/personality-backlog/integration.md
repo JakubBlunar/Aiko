@@ -80,3 +80,68 @@ different effort profiles; layer 1 is a contained frontend pass, layer
 
 **Effort.** Medium (responsive layout) / Large (full PWA + hosted
 HTTPS + update flow).
+
+---
+
+## I11. Graduate a corroborated belief into a concept
+
+**Motivation.** Two subsystems hold "what Aiko knows about Jacob" and
+neither can see the other. The K2 belief store holds short, checkable
+claims — *"open-plan offices is a mistake, to him"* — with a lifecycle,
+a corroboration count and a contradiction path. The L-series concept
+graph holds ~4,000 durable subjects with salience, diets, clustering,
+drift detection and the whole surfacing apparatus. A belief that has
+been observed repeatedly over months is, by any reading, a durable fact
+about him; it just lives in the wrong table, ages out at
+`belief_stale_after_days`, and takes its evidence with it.
+
+H51 made this newly worth doing rather than merely tidy. Before it, no
+belief was ever corroborated in a way anything read, so there was
+nothing to promote. Now `confirmed` means something — two same-state
+observations with no contradiction on file — and `list_trusted` is a
+real, small, quality-gated set. That set is the natural input to a
+graduation rule.
+
+**What it would buy.** Beliefs currently reach the prompt through two
+narrow paths (`belief_gaps_block` on a mismatch, `trusted_beliefs_block`
+as four lines of standing context) and are invisible to everything else.
+A graduated concept inherits the entire concept surface for free:
+turn-relevance scoring into `relevant_context`, cluster co-activation,
+drift and contradiction workers, the timeline and learning-event
+records, the Concepts UI. It also gives the belief layer an exit other
+than decay.
+
+**Why it needs thinking through, not just wiring.** Four decisions that
+are not obvious:
+
+1. **The bar.** `confirmed` alone is too cheap — two observations inside
+   one evening would qualify. Something like *N distinct observations
+   spanning M days with no `gap_seen_at`* is closer, but the constants
+   want measuring against the real store rather than picking.
+2. **Direction and ownership.** Does the belief row survive graduation,
+   become a pointer, or get deleted? If both rows persist, which one
+   does the gap detector check, and what happens when the concept layer's
+   contradiction worker and the belief gap detector disagree about the
+   same claim? Two subsystems asserting the same fact with independent
+   lifecycles is the failure this must avoid.
+3. **Shape mismatch.** A belief is a `(topic, predicted_state)` pair
+   written to be read back inside a fixed frame; a concept is a subject
+   with a body and a diet. The translation is not mechanical, and doing
+   it with the maintenance model reintroduces an LLM call on a path that
+   is currently pure.
+4. **Kind asymmetry.** An `opinion` belief is plausibly durable. A
+   `mood` belief is about how he feels *right now* about something and
+   should almost certainly never graduate, however often it recurs —
+   unless a recurring mood is itself the durable fact, which is a
+   different claim than the row makes.
+
+**Key files.** [`belief_store.py`](../../app/core/relationship/belief_store.py)
+(`list_trusted`, the `observations` metadata counter),
+[`belief_worker.py`](../../app/core/relationship/belief_worker.py),
+[`concept_store.py`](../../app/core/concepts/concept_store.py) and the
+L17 drift / learning-event path, [`concepts.md`](concepts.md) for the
+concept-side design.
+
+**Effort.** Medium — small in code, most of the cost is in settling the
+four questions above and then measuring the bar against the live store
+before it starts writing.
