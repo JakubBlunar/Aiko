@@ -218,6 +218,42 @@ class AgePrefixTests(unittest.TestCase):
             self._fmt(timedelta(days=1, hours=1)).startswith("yesterday "),
         )
 
+    def test_hour_plus_keeps_a_relative_reading(self) -> None:
+        """The 60-minute cliff: the wall clock must not be the only reading.
+
+        Under the hour a line reads "23 min ago" and needs no arithmetic;
+        over it the bare "today 13:32" forced the model to subtract against
+        the ambient clock to recover the age, which is exactly the sum it
+        gets wrong in a long sitting.
+        """
+        self.assertIn("(2h ago)", self._fmt(timedelta(hours=2)))
+        self.assertIn("(1h 20m ago)", self._fmt(timedelta(hours=1, minutes=20)))
+        self.assertIn("(5h 3m ago)", self._fmt(timedelta(hours=5, minutes=3)))
+        # The absolute anchor survives alongside it.
+        self.assertTrue(self._fmt(timedelta(hours=3)).startswith("today "))
+
+    def test_elapsed_reading_spans_midnight(self) -> None:
+        """A late-night sitting crosses the date line mid-conversation.
+
+        Gating the hint on "same calendar day" would drop it exactly when a
+        night-owl conversation needs it most, so it is gated on elapsed
+        time instead.
+        """
+        # The band is chosen from *local* calendar days, so anchor the
+        # clock in the local zone rather than UTC or the date line lands
+        # somewhere else on machines offset from it.
+        local_tz = datetime.now().astimezone().tzinfo
+        near_midnight = datetime(2026, 6, 1, 1, 0, tzinfo=local_tz)
+        earlier = (near_midnight - timedelta(hours=3)).isoformat()
+        crossed = tp.age_prefix(earlier, near_midnight)
+        self.assertTrue(crossed.startswith("yesterday "), crossed)
+        self.assertIn("(3h ago)", crossed)
+
+    def test_elapsed_reading_dropped_once_stale(self) -> None:
+        """Past the window the absolute stamp is the useful register alone."""
+        out = self._fmt(timedelta(days=3))
+        self.assertNotIn("ago)", out)
+
     def test_unparseable_empty(self) -> None:
         for bad in ("", "not-iso", "   ", None):
             self.assertEqual(tp.age_prefix(bad, _NOW), "")

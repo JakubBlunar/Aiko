@@ -194,12 +194,61 @@ class AbsenceCuriosityTests(unittest.TestCase):
         # 4.5h > 4h resume-opener threshold → no absence cue.
         self.assertIsNone(result.absence_seconds)
 
-    def test_voice_mode_never_populates_absence(self) -> None:
+    def test_voice_mode_also_populates_absence(self) -> None:
+        """Stepping away mid-voice-conversation is still stepping away.
+
+        The band used to be typed-only, so in voice mode the entire
+        gap-return family (K14 absence_curiosity, K28 turning_over, K36
+        away_activities, H21 sleep_return) hung off a value that was
+        always ``None`` and Aiko greeted a returning user as if no time
+        had passed. The 30-minute floor already separates an absence from
+        a conversational pause, in either mode.
+        """
         tracker = _make_tracker(word_counts=[])
         result = tracker.record_turn(
             mode="live", latency_seconds=3600.0, user_word_count=5,
         )
+        self.assertEqual(result.absence_seconds, 3600.0)
+
+    def test_absence_is_not_also_scored_as_latency(self) -> None:
+        """An absence must be counted once, and not as disengagement.
+
+        Scored as a latency it would push closeness *down* for leaving the
+        room, while the cue warmly welcomed the user back -- and the
+        sample would enter the latency baseline, where one 40-minute
+        outlier inflates the stdev enough to flatten every ordinary pause
+        scored afterwards.
+        """
+        tracker = _make_tracker(word_counts=[])
+        # Warm the latency baseline past the warmup floor so the tracker
+        # would genuinely score this turn -- otherwise a zero delta proves
+        # only that it was still cold.
+        for latency in (2.0, 3.0, 4.0, 2.5, 3.5, 3.0, 2.0, 4.0):
+            tracker.record_turn(
+                mode="live", latency_seconds=latency, user_word_count=4,
+            )
+        before = tracker.latency_window_snapshot()
+
+        result = tracker.record_turn(
+            mode="live", latency_seconds=40 * 60.0, user_word_count=4,
+        )
+        self.assertEqual(result.absence_seconds, 40 * 60.0)
+        self.assertIsNone(result.latency_z)
+        self.assertEqual(tracker.latency_window_snapshot(), before)
+        self.assertEqual(result.closeness_delta, 0.0)
+
+    def test_short_voice_latency_still_scores_normally(self) -> None:
+        tracker = _make_tracker(word_counts=[])
+        for latency in (2.0, 3.0, 4.0, 2.5, 3.5, 3.0, 2.0, 4.0):
+            tracker.record_turn(
+                mode="live", latency_seconds=latency, user_word_count=4,
+            )
+        result = tracker.record_turn(
+            mode="live", latency_seconds=5.0, user_word_count=4,
+        )
         self.assertIsNone(result.absence_seconds)
+        self.assertIsNotNone(result.latency_z)
+        self.assertIn(5.0, tracker.latency_window_snapshot())
 
     def test_disabled_setting_returns_none(self) -> None:
         settings = _AgentStub(engagement_absence_curiosity_enabled=False)

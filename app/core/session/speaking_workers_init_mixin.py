@@ -569,6 +569,7 @@ class SpeakingWorkersInitMixin:
         # the mid-session pause cue last fired from.
         self._session_clock_burst_key: str | None = None
         self._session_clock_fired_band: str | None = None
+        self._session_clock_fired_hours: int | None = None
         self._session_clock_gap_anchor: str | None = None
         self._last_turn_promise_kept: bool = False
         self._last_turn_gift_received: bool = False

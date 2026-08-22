@@ -17,6 +17,9 @@ mode the turn ran in:
     gap lands in ``[absence_curiosity_min, resume_opener_min_hours)``
     so the next prompt can render a curiosity cue (Aiko notices Jacob
     was away).
+  - **either mode**: a gap past ``absence_curiosity_min`` is an absence,
+    not a latency. It routes to ``absence_seconds`` and is withheld from
+    both the engagement delta and the latency baseline.
 
 The tracker is purely in-process. Latency window lives in an in-memory
 ``collections.deque`` (voice-only); length is read on demand from the
@@ -157,9 +160,28 @@ class EngagementTracker:
         """
         mode_norm = (mode or "typed").strip().lower() or "typed"
 
+        # A silence long enough to be an *absence* is not a conversational
+        # latency, whichever mode it arrived in. Keeping the two apart
+        # matters twice over: scored as latency, a step-away reads as
+        # disengagement and quietly pushes closeness down for leaving the
+        # room; and appended to the baseline, a single 40-minute sample
+        # inflates the window's stdev enough to flatten every real pause
+        # scored after it.
+        absence_floor = self._absence_floor_seconds()
+        is_absence = bool(
+            absence_floor is not None
+            and latency_seconds is not None
+            and latency_seconds >= absence_floor
+        )
+
         # Voice-only latency window maintenance.
         latency_z: float | None = None
-        if mode_norm == "live" and latency_seconds is not None and latency_seconds >= 0.0:
+        if (
+            mode_norm == "live"
+            and latency_seconds is not None
+            and latency_seconds >= 0.0
+            and not is_absence
+        ):
             # Compute z BEFORE appending so the current sample doesn't
             # bias its own baseline. Order matters here.
             latency_z = self._z_or_none(
@@ -202,12 +224,9 @@ class EngagementTracker:
                 length_z=length_z,
             )
 
-        # Phase 2: typed-mode absence-curiosity band. Voice-mode never
-        # populates this -- voice latencies route through latency_z
-        # into the engagement delta.
-        absence_seconds = self._absence_band(
-            mode=mode_norm, latency_seconds=latency_seconds,
-        )
+        # Phase 2: the absence-curiosity band. Mode-independent — see
+        # :meth:`_absence_band`.
+        absence_seconds = self._absence_band(latency_seconds=latency_seconds)
 
         result = EngagementResult(
             closeness_delta=float(closeness_delta),
@@ -306,36 +325,55 @@ class EngagementTracker:
 
     # ── absence-curiosity (Phase 2) ───────────────────────────────────
 
-    def _absence_band(
-        self, *, mode: str, latency_seconds: float | None,
-    ) -> float | None:
-        """Return ``latency_seconds`` when it lands in the typed-mode
-        absence-curiosity band, else ``None``.
+    def _absence_floor_seconds(self) -> float | None:
+        """Seconds of silence above which a gap counts as an absence.
 
-        The band is bounded above by ``resume_opener_min_hours``
-        (default 4h) so a long-enough gap routes through the existing
-        resume-opener path instead of this cue -- no double-firing.
-        Voice mode always returns ``None``: voice latency feeds the
-        engagement delta directly.
+        ``None`` when the cue is disabled or misconfigured, which also
+        disables the latency-scoring exclusion in :meth:`record_turn` —
+        with the cue off there is no separate consumer for a long gap, so
+        the old "score it as latency" behaviour is the right fallback.
         """
-        if mode != "typed":
-            return None
-        if latency_seconds is None or latency_seconds <= 0.0:
-            return None
         if not bool(
-            self._setting(
-                "engagement_absence_curiosity_enabled", True,
-            )
+            self._setting("engagement_absence_curiosity_enabled", True)
         ):
             return None
         min_seconds = float(self._setting(
             "engagement_absence_curiosity_min_seconds",
             _DEFAULT_ABSENCE_CURIOSITY_MIN_SECONDS,
         ))
+        return min_seconds if min_seconds > 0.0 else None
+
+    def _absence_band(self, *, latency_seconds: float | None) -> float | None:
+        """Return ``latency_seconds`` when it lands in the absence-curiosity
+        band, else ``None``.
+
+        The band is bounded above by ``resume_opener_min_hours``
+        (default 4h) so a long-enough gap routes through the existing
+        resume-opener path instead of this cue -- no double-firing.
+
+        This used to return ``None`` for anything but typed mode, on the
+        reasoning that voice latency already feeds the engagement delta.
+        That held for conversational pauses and failed for the case the
+        cue exists to catch: stepping away mid-voice-conversation and
+        coming back. The whole gap-return family (K14 absence_curiosity,
+        K28 turning_over, K36 away_activities, H21 sleep_return) hangs
+        off this one value, so in voice mode none of them could fire and
+        Aiko greeted a half-hour absence as if nothing had happened. The
+        floor does the work the mode check was reaching for -- 30 minutes
+        of silence is not thinking time in any mode -- and
+        :meth:`record_turn` now keeps such a gap out of the latency
+        scoring so it is counted once, as an absence, and not also as
+        disengagement.
+        """
+        if latency_seconds is None or latency_seconds <= 0.0:
+            return None
+        min_seconds = self._absence_floor_seconds()
+        if min_seconds is None:
+            return None
         max_seconds = float(self._setting(
             "resume_opener_min_hours", _DEFAULT_RESUME_OPENER_MIN_HOURS,
         )) * 3600.0
-        if min_seconds <= 0.0 or max_seconds <= min_seconds:
+        if max_seconds <= min_seconds:
             return None
         if min_seconds <= latency_seconds < max_seconds:
             return float(latency_seconds)

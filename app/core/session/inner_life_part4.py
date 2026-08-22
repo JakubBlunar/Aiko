@@ -635,10 +635,14 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
 
         * **elapsed** — how long the *current continuous sitting* has run
           (a run of messages with no gap > ``session_clock_break_minutes``),
-          banded ``long`` / ``very_long``. One-shot **per band per sitting**
-          via an in-memory ``(burst_key, band)`` watermark so an engaged
-          conversation isn't reminded of the clock every turn; a new sitting
-          (the burst anchor changes) re-arms it.
+          gated on crossing the ``long`` band and then one-shot **per
+          elapsed hour per sitting** via an in-memory
+          ``(burst_key, elapsed_hours)`` watermark, so an engaged
+          conversation isn't reminded of the clock every turn but a very
+          long one keeps being noticed. Keying on the two named bands
+          instead meant a sitting past ~2.5 h had nothing left to cross
+          and went quiet for the rest of the night. A new sitting (the
+          burst anchor changes) re-arms it.
         * **pause** — a notable mid-session pause in
           ``[gap_min, gap_max)`` minutes (capped at the absence_curiosity
           floor so it never double-fires with the gap-return family).
@@ -684,18 +688,23 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
             self._debug_overrides.take("session_clock_force_next", False)
         )
 
-        # ── elapsed one-shot: per band, re-armed when the sitting changes ──
+        # ── elapsed one-shot: per elapsed hour, re-armed per sitting ──
+        # Keyed on the hour rather than on the two named bands, which a
+        # long sitting exhausted early and then never spoke again.
         elapsed_band = signal.elapsed_band
         if not force:
             last_burst = getattr(self, "_session_clock_burst_key", None)
             if last_burst != signal.burst_start_iso:
                 # New sitting -> forget what we'd already surfaced.
                 self._session_clock_fired_band = None
+                self._session_clock_fired_hours = None
                 self._session_clock_burst_key = signal.burst_start_iso
-            _rank = {None: 0, "long": 1, "very_long": 2}
-            fired = getattr(self, "_session_clock_fired_band", None)
-            if _rank.get(elapsed_band, 0) <= _rank.get(fired, 0):
-                # Already surfaced this band (or a stronger one) this sitting.
+            fired_hours = getattr(self, "_session_clock_fired_hours", None)
+            if elapsed_band is not None and (
+                fired_hours is not None
+                and signal.elapsed_hours <= int(fired_hours)
+            ):
+                # Already spoken for this hour of the sitting.
                 elapsed_band = None
 
         # ── pause one-shot: per latest-message anchor ──
@@ -716,6 +725,7 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
             burst_start_iso=signal.burst_start_iso,
             gap_seconds=signal.gap_seconds,
             gap_notable=gap_notable or (force and signal.gap_notable),
+            elapsed_hours=signal.elapsed_hours,
         )
         line = _sc.render_block(render_signal, self.user_display_name)
         if not line:
@@ -724,6 +734,7 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
         # Commit the watermarks (only for the cues that actually fired).
         if elapsed_band is not None:
             self._session_clock_fired_band = elapsed_band
+            self._session_clock_fired_hours = signal.elapsed_hours
             self._session_clock_burst_key = signal.burst_start_iso
         if gap_notable:
             self._session_clock_gap_anchor = latest_iso
