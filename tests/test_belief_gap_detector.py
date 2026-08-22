@@ -32,6 +32,14 @@ def _build() -> tuple[BeliefStore, BeliefGapDetector]:
 
 
 class MoodGapTests(unittest.TestCase):
+    """The mood pass, which only runs on a turn about the belief's topic.
+
+    A mood belief is about one subject; ``AffectState`` is a single
+    global read. Checking "he's excited about the tokyo trip" against how
+    he sounds while talking about his commute measures nothing, so every
+    case here has to say what the turn was about.
+    """
+
     def test_large_valence_drift_flags_gap(self) -> None:
         store, detector = _build()
         b = store.upsert(
@@ -43,7 +51,10 @@ class MoodGapTests(unittest.TestCase):
         affect = AffectState(
             user_id="u1", valence=-0.4, arousal=0.3, mood_label="melancholy",
         )
-        gaps = detector.detect(user_id="u1", affect=affect)
+        gaps = detector.detect(
+            user_id="u1", affect=affect,
+            recent_user_message="thinking about the tokyo trip again",
+        )
         self.assertEqual(len(gaps), 1)
         self.assertEqual(gaps[0].kind, KIND_MOOD)
         self.assertEqual(gaps[0].topic, "tokyo trip")
@@ -62,7 +73,10 @@ class MoodGapTests(unittest.TestCase):
             user_id="u1", valence=0.45, arousal=0.65,
             mood_label="playful",
         )
-        gaps = detector.detect(user_id="u1", affect=affect)
+        gaps = detector.detect(
+            user_id="u1", affect=affect,
+            recent_user_message="the tokyo trip is coming up soon",
+        )
         self.assertEqual(gaps, [])
         # The row was stamp_checked but still active.
         row = store.get(b.id)
@@ -84,9 +98,53 @@ class MoodGapTests(unittest.TestCase):
             user_id="u1", valence=-0.20, arousal=0.5,
             mood_label="melancholy",
         )
-        gaps = detector.detect(user_id="u1", affect=affect)
+        gaps = detector.detect(
+            user_id="u1", affect=affect,
+            recent_user_message="been writing some rust today",
+        )
         self.assertEqual(len(gaps), 1)
         self.assertEqual(store.get(b.id).status, STATUS_CONTRADICTED)
+
+    def test_off_topic_turn_does_not_contradict(self) -> None:
+        """The reason the gate exists.
+
+        Without it, a mood belief is contradicted by any turn where the
+        user's global affect happens to differ -- i.e. by being about
+        something else. That would have turned filling in valence from a
+        fix into a false-contradiction generator.
+        """
+        store, detector = _build()
+        b = store.upsert(
+            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
+            predicted_state="excited", confidence=0.85,
+            valence=0.5, arousal=0.7,
+        )
+        assert b is not None
+        affect = AffectState(
+            user_id="u1", valence=-0.4, arousal=0.3, mood_label="melancholy",
+        )
+        gaps = detector.detect(
+            user_id="u1", affect=affect,
+            recent_user_message="the tram was late and my back hurts",
+        )
+        self.assertEqual(gaps, [])
+        row = store.get(b.id)
+        self.assertEqual(row.status, STATUS_ACTIVE)
+        self.assertIsNotNone(row.last_checked_at)
+
+    def test_no_live_turn_checks_nothing(self) -> None:
+        store, detector = _build()
+        b = store.upsert(
+            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
+            predicted_state="excited", confidence=0.85,
+            valence=0.5, arousal=0.7,
+        )
+        assert b is not None
+        affect = AffectState(
+            user_id="u1", valence=-0.4, arousal=0.3, mood_label="melancholy",
+        )
+        self.assertEqual(detector.detect(user_id="u1", affect=affect), [])
+        self.assertEqual(store.get(b.id).status, STATUS_ACTIVE)
 
 
 class OpinionGapTests(unittest.TestCase):

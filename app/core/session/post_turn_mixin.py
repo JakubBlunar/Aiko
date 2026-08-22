@@ -1284,6 +1284,30 @@ class PostTurnMixin(PostTurnHelpersMixin):
                         len(tags),
                     )
                     embedder = getattr(self, "_embedder", None)
+                    # A mood belief with no numeric coordinates cannot be
+                    # checked by the gap detector at all -- it skips rows
+                    # whose valence is NULL -- and the four-field tag
+                    # grammar has nowhere to put them. Widening the tag
+                    # would mean asking her to emit two calibrated floats
+                    # inline mid-sentence, which buys a higher malformed
+                    # rate for a number she is not better placed to guess
+                    # than the estimator is.
+                    #
+                    # The tag fires about what they are discussing *now*,
+                    # so this turn's per-axis read of the user is a fair
+                    # anchor for it. Deliberately the L13 reader and not
+                    # the K37 contagion estimate, for the two reasons its
+                    # docstring gives: contagion reads a carried mood band
+                    # that can be days old, and it fuses the axes, so a
+                    # turn readable only for arousal still records a
+                    # valence. Both are wrong for a stored claim. Unread
+                    # axes stay None and the row stays honestly
+                    # unverifiable.
+                    tag_valence = tag_arousal = None
+                    if any(t.kind == "mood" for t in tags):
+                        tag_valence, tag_arousal = self._read_user_affect_axes(
+                            user_text or ""
+                        )
                     for t in tags:
                         embedding = None
                         if embedder is not None:
@@ -1301,6 +1325,12 @@ class PostTurnMixin(PostTurnHelpersMixin):
                                 topic=t.topic,
                                 predicted_state=t.predicted_state,
                                 confidence=t.confidence,
+                                valence=(
+                                    tag_valence if t.kind == "mood" else None
+                                ),
+                                arousal=(
+                                    tag_arousal if t.kind == "mood" else None
+                                ),
                                 source="self_tag",
                                 topic_embedding=embedding,
                             )

@@ -245,6 +245,79 @@ class ExtractionTests(unittest.TestCase):
         self.assertIn("tokyo trip", topics)
         self.assertIn("rust language", topics)
 
+    def test_mood_affect_coordinates_are_stored(self) -> None:
+        """Without valence a mood belief can never be checked.
+
+        The gap detector skips rows whose valence is NULL, and the worker
+        never asked for the field -- so on the live install all 118
+        worker-written mood beliefs were unverifiable and could only
+        leave the queue by hand or by the 90-day stale sweep.
+        """
+        payload = json.dumps([
+            {
+                "kind": "mood",
+                "topic": "tokyo trip",
+                "predicted_state": "quietly excited",
+                "confidence": 0.8,
+                "valence": 0.6,
+                "arousal": 0.55,
+            },
+        ])
+        worker, store, _, _ = _build_world(responses=[payload])
+        worker.run()
+        row = store.list_active(user_id="u1")[0]
+        self.assertAlmostEqual(row.valence, 0.6)
+        self.assertAlmostEqual(row.arousal, 0.55)
+
+    def test_affect_coordinates_are_clamped_to_their_axes(self) -> None:
+        payload = json.dumps([
+            {
+                "kind": "mood", "topic": "a", "predicted_state": "wired",
+                "confidence": 0.8, "valence": 4.2, "arousal": -3.0,
+            },
+        ])
+        worker, store, _, _ = _build_world(responses=[payload])
+        worker.run()
+        row = store.list_active(user_id="u1")[0]
+        self.assertAlmostEqual(row.valence, 1.0)
+        self.assertAlmostEqual(row.arousal, 0.0)
+
+    def test_junk_coordinates_leave_the_row_unverifiable_not_wrong(self) -> None:
+        """Better an unchecked belief than one checked against a number
+        the model never gave."""
+        payload = json.dumps([
+            {
+                "kind": "mood", "topic": "a", "predicted_state": "wired",
+                "confidence": 0.8, "valence": "very high",
+            },
+        ])
+        worker, store, _, _ = _build_world(responses=[payload])
+        worker.run()
+        row = store.list_active(user_id="u1")[0]
+        self.assertIsNone(row.valence)
+
+    def test_opinions_carry_no_coordinates(self) -> None:
+        payload = json.dumps([
+            {
+                "kind": "opinion", "topic": "rust",
+                "predicted_state": "overhyped", "confidence": 0.6,
+                "valence": 0.9, "arousal": 0.9,
+            },
+        ])
+        worker, store, _, _ = _build_world(responses=[payload])
+        worker.run()
+        row = store.list_active(user_id="u1")[0]
+        self.assertIsNone(row.valence)
+        self.assertIsNone(row.arousal)
+
+    def test_the_prompt_asks_for_the_coordinates(self) -> None:
+        from app.core.relationship.belief_worker import _build_system_prompt
+
+        prompt = _build_system_prompt("Jacob")
+        self.assertIn("valence", prompt)
+        self.assertIn("arousal", prompt)
+        self.assertIn("mood beliefs ONLY", prompt)
+
     def test_invalid_kind_dropped(self) -> None:
         payload = json.dumps([
             {
