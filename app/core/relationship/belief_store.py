@@ -16,8 +16,10 @@ Lifecycle::
 
     upserted -> status='active'
        |
-       +- gap detector confirms (mood matches affect, or opinion
-       |  re-affirmed)            -> status='confirmed'
+       +- re-observed ``_DEFAULT_AUTO_CONFIRM_OBSERVATIONS`` times with
+       |  the same state and no recorded gap, or the gap detector
+       |  corroborates it, or the user marks it correct
+       |                          -> status='confirmed'
        |
        +- gap detector contradicted (lexical negation/antonym vs.
        |  user message, or mood label flips to opposing band)
@@ -25,6 +27,17 @@ Lifecycle::
        |
        +- untouched for ``belief_stale_after_days``
                                   -> status='stale'
+
+``active`` and ``confirmed`` are both **believed** (see
+:data:`BELIEVED_STATUSES`): the detector checks both, and only
+``confirmed`` is trusted enough to be spoken. That split is newer than
+the rest of the module and replaces a semantics in which ``confirmed``
+was effectively an archive — it was excluded from the gap-check pool
+while never being read anywhere else, so marking a belief correct
+removed it from the only code that consumed it and was
+indistinguishable, in its effect on what Aiko said, from deleting it.
+On the install where that was found the whole layer had produced three
+prompt blocks in 851 turns while asking for daily review.
 
 This module mirrors :class:`app.core.memory.memory_conflict_store.MemoryConflictStore`
 in shape and threading model: it talks to SQLite directly (no
@@ -62,6 +75,13 @@ VALID_STATUSES: frozenset[str] = frozenset(
     (STATUS_ACTIVE, STATUS_CONFIRMED, STATUS_CONTRADICTED, STATUS_STALE)
 )
 
+# Statuses that still represent something Aiko believes. Both are
+# gap-checked; only ``confirmed`` is quotable (see ``list_trusted``).
+BELIEVED_STATUSES: frozenset[str] = frozenset(
+    (STATUS_ACTIVE, STATUS_CONFIRMED)
+)
+_BELIEVED_PLACEHOLDERS = ", ".join("?" * len(BELIEVED_STATUSES))
+
 # Origin of the belief write.
 SOURCE_SELF_TAG = "self_tag"
 SOURCE_WORKER = "worker"
@@ -83,6 +103,14 @@ _SOURCE_DEFAULT_CONFIDENCE = {
 # upsert. Tuned to match "tokyo trip" / "trip to japan" while keeping
 # distinct topics ("rust language" vs "rust framework") apart.
 _TOPIC_DEDUPE_COSINE = 0.88
+
+# How many independent observations of the *same* state promote a belief
+# to ``confirmed`` on their own. Two is deliberately low: the extractor
+# is conservative and re-deriving a state from a later stretch of
+# conversation is real corroboration, so the common case ("she was right
+# again") should not need a human. A row that has ever recorded a gap is
+# excluded no matter how often it recurs.
+_DEFAULT_AUTO_CONFIRM_OBSERVATIONS = 2
 
 
 def _now_iso() -> str:
@@ -244,6 +272,7 @@ class BeliefStore:
         topic_embedding: np.ndarray | None = None,
         metadata: dict[str, Any] | None = None,
         observed_at: str | None = None,
+        auto_confirm_after: int | None = None,
     ) -> Belief | None:
         """Insert or update a belief, deduping near-duplicate topics.
 
@@ -251,13 +280,20 @@ class BeliefStore:
 
         1. If ``(user_id, kind, normalised_topic)`` already exists, update
            the existing row in place (predicted_state / confidence /
-           source_message_id / observed_at refresh; status -> 'active'
-           again on re-tag).
+           source_message_id / observed_at refresh; status per
+           :meth:`_resolve_reobservation`).
         2. Otherwise, if any same-kind belief shares a topic embedding
            with cosine >= ``_TOPIC_DEDUPE_COSINE``, update that row
            (keeping its id and history but adopting the new topic
            string + state).
         3. Otherwise INSERT a fresh row.
+
+        Re-observing an existing row no longer forces it back to
+        ``active``. It used to, which meant the worker re-deriving a
+        topic silently undid a user's "mark correct" twenty minutes
+        later and put the row back in the review queue — the same
+        beliefs kept coming back and there was no way to tell from the
+        tab that anything had been overwritten.
 
         Returns the resulting :class:`Belief` or ``None`` on invalid
         input.
@@ -283,7 +319,15 @@ class BeliefStore:
             confidence_f = float(confidence)
         confidence_f = max(0.0, min(1.0, confidence_f))
         when = observed_at or _now_iso()
-        metadata_text = _encode_metadata(metadata)
+        # A fresh row is one observation. Seeding the counter here (rather
+        # than treating "absent" as zero) keeps the arithmetic in
+        # ``_resolve_reobservation`` honest for rows written before the
+        # counter existed, which read as one observation rather than as
+        # brand new.
+        first_metadata = dict(metadata or {})
+        first_metadata.setdefault("observations", 1)
+        first_metadata.setdefault("first_observed_at", when)
+        metadata_text = _encode_metadata(first_metadata)
         embedding_blob = _encode_embedding(topic_embedding)
 
         # Mood beliefs without numeric valence/arousal are still allowed
@@ -328,13 +372,20 @@ class BeliefStore:
 
         if existing is not None:
             row_id = int(existing[0])
+            next_status, merged_meta = self._resolve_reobservation(
+                existing,
+                new_state=state_norm,
+                new_metadata=metadata,
+                observed_at=when,
+                auto_confirm_after=auto_confirm_after,
+            )
             conn.execute(
                 "UPDATE beliefs SET "
                 "  topic = ?, topic_embedding = COALESCE(?, topic_embedding), "
                 "  predicted_state = ?, confidence = ?, "
                 "  valence = COALESCE(?, valence), arousal = COALESCE(?, arousal), "
                 "  source = ?, source_message_id = COALESCE(?, source_message_id), "
-                "  observed_at = ?, status = ?, metadata = COALESCE(?, metadata) "
+                "  observed_at = ?, status = ?, metadata = ? "
                 "WHERE id = ?",
                 (
                     topic_norm,
@@ -346,8 +397,8 @@ class BeliefStore:
                     source_norm,
                     int(source_message_id) if source_message_id is not None else None,
                     when,
-                    STATUS_ACTIVE,
-                    metadata_text,
+                    next_status,
+                    _encode_metadata(merged_meta),
                     row_id,
                 ),
             )
@@ -382,6 +433,80 @@ class BeliefStore:
         if row_id is None:
             return None
         return self.get(row_id)
+
+    def _resolve_reobservation(
+        self,
+        existing: tuple[Any, ...],
+        *,
+        new_state: str,
+        new_metadata: dict[str, Any] | None,
+        observed_at: str,
+        auto_confirm_after: int | None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Decide the status and metadata for a re-observed belief.
+
+        Returns ``(status, metadata)``. The rules:
+
+        * **The state changed** — this is a new claim about the topic, so
+          it starts over as ``active`` with a fresh observation count. A
+          prior confirmation applied to the old wording and must not
+          carry across.
+        * **Already confirmed, same state** — stays ``confirmed``. This
+          is the case that used to silently revert.
+        * **Ever contradicted** — returns to ``active`` for another look
+          but can never auto-confirm; ``gap_seen_at`` is permanent, so a
+          row that was wrong once always needs a human to promote it.
+        * **Re-observed enough times, same state, never contradicted** —
+          promotes to ``confirmed`` without asking. The user was marking
+          these correct by hand at a rate the extractor sets, which is
+          not a decision a person adds anything to.
+        """
+        threshold = int(
+            auto_confirm_after
+            if auto_confirm_after is not None
+            else _DEFAULT_AUTO_CONFIRM_OBSERVATIONS
+        )
+        prior_state = str(existing[4] or "")
+        prior_status = str(existing[12] or STATUS_ACTIVE)
+        ever_contradicted = existing[13] is not None
+        prior_meta = _decode_metadata(
+            existing[14] if isinstance(existing[14], str) else None
+        )
+
+        merged: dict[str, Any] = dict(prior_meta)
+        if new_metadata:
+            merged.update(new_metadata)
+
+        state_changed = _normalise_topic(new_state) != _normalise_topic(prior_state)
+        if state_changed:
+            merged["observations"] = 1
+            merged["first_observed_at"] = observed_at
+            return STATUS_ACTIVE, merged
+
+        try:
+            prior_count = int(prior_meta.get("observations") or 1)
+        except (TypeError, ValueError):
+            prior_count = 1
+        observations = max(1, prior_count) + 1
+        merged["observations"] = observations
+        merged.setdefault(
+            "first_observed_at", str(prior_meta.get("first_observed_at") or observed_at)
+        )
+
+        if prior_status == STATUS_CONFIRMED:
+            return STATUS_CONFIRMED, merged
+        if ever_contradicted:
+            return STATUS_ACTIVE, merged
+        if threshold > 0 and observations >= threshold:
+            merged["auto_confirmed_at"] = observed_at
+            log.info(
+                "beliefs.auto-confirm: id=%s observations=%d state=%r",
+                existing[0],
+                observations,
+                new_state,
+            )
+            return STATUS_CONFIRMED, merged
+        return STATUS_ACTIVE, merged
 
     def update(
         self,
@@ -580,6 +705,77 @@ class BeliefStore:
         ).fetchall()
         return [_row_to_belief(r) for r in rows]
 
+    def list_trusted(
+        self,
+        *,
+        user_id: str,
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> list[Belief]:
+        """Corroborated beliefs, newest first — the quotable ones.
+
+        ``confirmed`` only. An ``active`` belief is a guess the extractor
+        has seen once and nothing has corroborated; speaking it back as
+        though it were known is how a companion gets a reputation for
+        confidently making things up.
+        """
+        clauses = ["user_id = ?", "status = ?"]
+        args: list[Any] = [str(user_id), STATUS_CONFIRMED]
+        if kind is not None:
+            kind_norm = str(kind).strip().lower()
+            if kind_norm not in VALID_KINDS:
+                raise ValueError(
+                    f"invalid kind filter {kind!r} (valid: {sorted(VALID_KINDS)})"
+                )
+            clauses.append("kind = ?")
+            args.append(kind_norm)
+        args.append(int(limit))
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        rows = conn.execute(
+            f"SELECT {_SELECT_COLS} FROM beliefs "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY confidence DESC, observed_at DESC LIMIT ?",
+            tuple(args),
+        ).fetchall()
+        return [_row_to_belief(r) for r in rows]
+
+    def list_believed(
+        self,
+        *,
+        user_id: str,
+        kind: str | None = None,
+        limit: int = 200,
+    ) -> list[Belief]:
+        """Everything Aiko currently believes — ``active`` **and**
+        ``confirmed``.
+
+        The gap detector reads this rather than ``list_active`` so that
+        corroborating a belief does not exempt it from ever being
+        checked again. Under the old split, marking a belief correct
+        moved it out of the only pool anything read, so a confirmed
+        belief could not be contradicted no matter what the user later
+        said.
+        """
+        clauses = ["user_id = ?", f"status IN ({_BELIEVED_PLACEHOLDERS})"]
+        args: list[Any] = [str(user_id), *sorted(BELIEVED_STATUSES)]
+        if kind is not None:
+            kind_norm = str(kind).strip().lower()
+            if kind_norm not in VALID_KINDS:
+                raise ValueError(
+                    f"invalid kind filter {kind!r} (valid: {sorted(VALID_KINDS)})"
+                )
+            clauses.append("kind = ?")
+            args.append(kind_norm)
+        args.append(int(limit))
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        rows = conn.execute(
+            f"SELECT {_SELECT_COLS} FROM beliefs "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY observed_at DESC LIMIT ?",
+            tuple(args),
+        ).fetchall()
+        return [_row_to_belief(r) for r in rows]
+
     def list_active_for_gap_check(
         self,
         *,
@@ -588,18 +784,19 @@ class BeliefStore:
         since_iso: str | None = None,
         limit: int = 50,
     ) -> list[Belief]:
-        """Active beliefs newer than ``since_iso`` (for gap detection).
+        """Believed rows newer than ``since_iso`` (for gap detection).
 
         Returns mood beliefs by default; the detector only cares about
-        rows whose valence is set so we filter that here.
+        rows whose valence is set so we filter that here. Covers both
+        ``active`` and ``confirmed`` — see :meth:`list_believed`.
         """
         kind_norm = str(kind).strip().lower()
         if kind_norm not in VALID_KINDS:
             raise ValueError(
                 f"invalid kind {kind!r} (valid: {sorted(VALID_KINDS)})"
             )
-        clauses = ["user_id = ?", "kind = ?", "status = ?"]
-        args: list[Any] = [str(user_id), kind_norm, STATUS_ACTIVE]
+        clauses = ["user_id = ?", "kind = ?", f"status IN ({_BELIEVED_PLACEHOLDERS})"]
+        args: list[Any] = [str(user_id), kind_norm, *sorted(BELIEVED_STATUSES)]
         if kind_norm == KIND_MOOD:
             clauses.append("valence IS NOT NULL")
         if since_iso is not None:
