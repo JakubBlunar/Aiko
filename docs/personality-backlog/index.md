@@ -780,6 +780,43 @@ config. New shape — *a lossy transform whose output is well-formed*, which sur
 because "Kamenn Poruba" reads like a place where `KamennÃ¡` would have been
 reported in a day ([`health.md`](health.md)).
 
+**H51 is the one to read before adding a review queue to anything.** Reported as
+a chore — *"i am usually just marking them as correct and bad ones i am
+deleting"* — about a layer that had produced **three** prompt blocks in 851
+turns while running its extraction model every twenty minutes. `belief_gaps_block`
+was the only path from the table to the prompt and it fires only on a mismatch,
+so a belief could reach her exclusively by being **wrong**. Marking one correct
+then dropped it out of `list_active`, the gap detector's only query, and nothing
+read a confirmed belief anywhere — so confirming and deleting had identical
+effects on her behaviour, and the review was retiring her theory of mind one row
+at a time. Re-observation forced `status='active'`, silently undoing the
+judgement the next time the worker touched that topic. Separately, 118 of 118
+mood beliefs had no `valence`, which the detector requires, so half the queue was
+rows no automatic check could ever have cleared — and filling that field in was
+*not* the fix on its own, because a mood belief names one subject while
+`AffectState` is a single global read, so an ungated comparison contradicts "he's
+excited about the tokyo trip" on a turn about his commute. Fixed as one change:
+`active` and `confirmed` are both believed and both gap-checked, only `confirmed`
+is quotable, a new T1 `trusted_beliefs_block` gives the layer its missing positive
+path, two same-state observations auto-confirm, and the mood pass is gated on
+topic relevance. Shape 12 in its purest form — *a control whose only effect is to
+disable itself* ([`health.md`](health.md)).
+
+**H52 is the one to read before acting on a prompt-budget number.** Carried in as
+"gate the ~2,700 tokens/turn of grammar blocks"; the measurement inverted it. The
+six grammar addenda are 5,903 chars/turn — 8% of a 74,200-char prompt — and every
+one is a `CONSTANT` at one distinct size across 854 turns, sitting in T0 inside
+the cache prefix. Gating them per turn saves text that is already nearly free and
+breaks the prefix on every flip, invalidating the ~35,000 chars below; and the
+session-stable gating that *is* right already exists via the avatar capability
+provider. The genuinely hot text is elsewhere: `relevant_context` (17,480 chars,
+T3, 742 sizes) and `handling_notes_block` (5,517 mean, T6, 501 sizes, p90 8,017,
+max 18,446) are ~23,000 chars/turn paid at full price, four times the grammar
+total — and the second is the persona hoist, which is meant to be small and
+conditional. New shape — *a cost measured in isolation from its cacheability*:
+the number that matters is tokens × probability the prefix moved, and for a T0
+constant that second term is ~0 ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays
