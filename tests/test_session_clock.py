@@ -185,7 +185,6 @@ class ProviderTests(unittest.TestCase):
         host = _Host(_rows(70, 50, 30, 12, 2, 0))
         first = host._render_session_clock_block()
         self.assertIn("been talking for about an hour", first)
-        self.assertEqual(host._session_clock_fired_band, "long")
         self.assertEqual(host._session_clock_fired_hours, 1)
         # Same sitting + same elapsed hour -> suppressed.
         self.assertEqual(host._render_session_clock_block(), "")
@@ -197,7 +196,11 @@ class ProviderTests(unittest.TestCase):
         host._rows = _rows(160, 140, 120, 100, 80, 60, 40, 20, 2, 0)
         out = host._render_session_clock_block()
         self.assertIn("about 3 hours", out)
-        self.assertEqual(host._session_clock_fired_band, "very_long")
+        # The watermark floors completed hours (2h40m -> 2) while the
+        # spoken phrase rounds to the nearest (-> "about 3 hours"). Both
+        # are deliberate: the watermark has to be monotonic so each hour
+        # fires exactly once, and rounding it would skip one.
+        self.assertEqual(host._session_clock_fired_hours, 2)
 
     def test_each_further_hour_resurfaces(self) -> None:
         """A five-hour sitting had nothing left to cross past ~2.5 h.

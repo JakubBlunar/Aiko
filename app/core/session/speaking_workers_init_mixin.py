@@ -564,11 +564,11 @@ class SpeakingWorkersInitMixin:
         self._reconnection_anchored_at: str | None = None
         # K-time4: session-clock watermarks. ``_burst_key`` identifies the
         # current continuous sitting (re-arms the elapsed cue when it
-        # changes); ``_fired_band`` is the strongest elapsed band already
-        # surfaced this sitting; ``_gap_anchor`` is the latest-message ts
-        # the mid-session pause cue last fired from.
+        # changes); ``_fired_hours`` is the elapsed hour the cue last
+        # surfaced at, so each further hour can speak once; ``_gap_anchor``
+        # is the latest-message ts the mid-session pause cue last fired
+        # from.
         self._session_clock_burst_key: str | None = None
-        self._session_clock_fired_band: str | None = None
         self._session_clock_fired_hours: int | None = None
         self._session_clock_gap_anchor: str | None = None
         self._last_turn_promise_kept: bool = False
