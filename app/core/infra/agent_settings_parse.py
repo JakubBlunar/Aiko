@@ -200,6 +200,12 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             belief_worker_scrub_transcript=bool(
                 agent_raw.get("belief_worker_scrub_transcript", False),
             ),
+            belief_trusted_block_enabled=bool(
+                agent_raw.get("belief_trusted_block_enabled", True),
+            ),
+            belief_trusted_block_max=max(
+                0, int(agent_raw.get("belief_trusted_block_max", 4)),
+            ),
             promise_worker_enabled=bool(
                 agent_raw.get("promise_worker_enabled", True),
             ),

@@ -444,6 +444,15 @@ class AgentSettings:
     # signal the theory-of-mind extraction needs. Enable only if the
     # worker model is routed to an untrusted (cloud) endpoint.
     belief_worker_scrub_transcript: bool = False
+    # Whether corroborated beliefs are shown to her as standing context
+    # (the ``trusted_beliefs_block``). Off → beliefs reach the prompt only
+    # via ``belief_gaps_block``, i.e. only when one turns out to be wrong,
+    # which is how the layer behaved before this block existed and why a
+    # store of correct reads about the user changed nothing about how she
+    # spoke. ``_max`` caps the lines; small on purpose, since this is
+    # always-on prompt text and the point is background, not a dossier.
+    belief_trusted_block_enabled: bool = True
+    belief_trusted_block_max: int = 4
     # ── Phase 3c (reworked): context-aware promise extraction worker ──
     # Master switch for
     # :class:`app.core.memory.promise_worker.PromiseExtractionWorker`,

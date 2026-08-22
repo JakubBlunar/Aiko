@@ -128,6 +128,8 @@
     "belief_worker_per_hour_cap": 10,
     "belief_worker_per_day_cap": 40,
     "belief_worker_scrub_transcript": false,
+    "belief_trusted_block_enabled": true,
+    "belief_trusted_block_max": 4,
     "promise_worker_enabled": true,
     "promise_worker_per_hour_cap": 12,
     "promise_worker_per_day_cap": 80,
