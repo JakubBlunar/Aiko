@@ -2843,7 +2843,6 @@ def register(mcp, session: "SessionController") -> None:
                 session.debug_overrides.peek("session_clock_force_next", False)
             ),
             "burst_key": getattr(session, "_session_clock_burst_key", None),
-            "fired_band": getattr(session, "_session_clock_fired_band", None),
             "fired_hours": getattr(session, "_session_clock_fired_hours", None),
             "gap_anchor": getattr(session, "_session_clock_gap_anchor", None),
             "settings": {

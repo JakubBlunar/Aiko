@@ -696,7 +696,6 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
             last_burst = getattr(self, "_session_clock_burst_key", None)
             if last_burst != signal.burst_start_iso:
                 # New sitting -> forget what we'd already surfaced.
-                self._session_clock_fired_band = None
                 self._session_clock_fired_hours = None
                 self._session_clock_burst_key = signal.burst_start_iso
             fired_hours = getattr(self, "_session_clock_fired_hours", None)
@@ -733,7 +732,6 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
 
         # Commit the watermarks (only for the cues that actually fired).
         if elapsed_band is not None:
-            self._session_clock_fired_band = elapsed_band
             self._session_clock_fired_hours = signal.elapsed_hours
             self._session_clock_burst_key = signal.burst_start_iso
         if gap_notable:
