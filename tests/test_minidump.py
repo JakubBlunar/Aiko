@@ -50,7 +50,7 @@ class _Builder:
     def modules(self, entries: list[tuple[int, int, str]]) -> "_Builder":
         name_rvas = [self.string(path) for _b, _s, path in entries]
         payload = bytearray(struct.pack("<I", len(entries)))
-        for (base, size, _path), name_rva in zip(entries, name_rvas):
+        for (base, size, _path), name_rva in zip(entries, name_rvas, strict=True):
             record = bytearray(108)
             struct.pack_into("<QI", record, 0, base, size)
             struct.pack_into("<I", record, 20, name_rva)
@@ -61,7 +61,7 @@ class _Builder:
     def threads(self, entries: list[tuple[int, bytes]]) -> "_Builder":
         stack_rvas = [self._append(stack) if stack else 0 for _t, stack in entries]
         payload = bytearray(struct.pack("<I", len(entries)))
-        for (tid, stack), stack_rva in zip(entries, stack_rvas):
+        for (tid, stack), stack_rva in zip(entries, stack_rvas, strict=True):
             record = bytearray(48)
             struct.pack_into("<I", record, 0, tid)
             struct.pack_into("<QII", record, 24, 0x1000, len(stack), stack_rva)

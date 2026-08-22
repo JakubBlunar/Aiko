@@ -29,7 +29,6 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 import numpy as np
 
-from app.llm.embedder import cosine_similarity
 from app.core.infra import timephrase
 from app.core.infra.text_query import compile_query
 from app.core.memory.conflict_heuristics import HEURISTIC_NO, classify_pair

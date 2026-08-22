@@ -62,7 +62,9 @@ class VectorIndexBasicsTests(unittest.TestCase):
             idx.add(mid, v)
         q = _vec(500)
         ids, scores = idx.scores(q)
-        by_id = dict(zip((int(i) for i in ids), (float(s) for s in scores)))
+        by_id = dict(
+            zip((int(i) for i in ids), (float(s) for s in scores), strict=True)
+        )
         for mid, v in vecs.items():
             self.assertAlmostEqual(by_id[mid], cosine_similarity(q, v), places=5)
 
@@ -313,7 +315,7 @@ class SearchEquivalenceTests(unittest.TestCase):
                     [mid for mid, _ in want], [h.memory.id for h in got],
                     msg=f"seed={seed} min_score={min_score}",
                 )
-                for (_, ws), h in zip(want, got):
+                for (_, ws), h in zip(want, got, strict=True):
                     self.assertAlmostEqual(ws, h.score, places=5)
 
     def test_min_score_gates_on_the_raw_cosine_not_the_boosted_one(self) -> None:
