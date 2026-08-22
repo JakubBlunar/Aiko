@@ -2844,6 +2844,7 @@ def register(mcp, session: "SessionController") -> None:
             ),
             "burst_key": getattr(session, "_session_clock_burst_key", None),
             "fired_band": getattr(session, "_session_clock_fired_band", None),
+            "fired_hours": getattr(session, "_session_clock_fired_hours", None),
             "gap_anchor": getattr(session, "_session_clock_gap_anchor", None),
             "settings": {
                 "long_minutes": float(

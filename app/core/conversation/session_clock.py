@@ -41,6 +41,13 @@ class SessionClockSignal:
     burst_start_iso: str  # one-shot anchor: identifies the current sitting
     gap_seconds: float
     gap_notable: bool
+    # Whole hours of the current sitting. The one-shot watermark keys off
+    # this rather than off ``elapsed_band`` because there are only two
+    # bands: a sitting past the second one had nothing left to cross, so
+    # the clock went quiet after ~2.5 h and a five-hour conversation was
+    # told twice, both times early. Bucketing by the hour re-arms the cue
+    # each hour without letting it speak every turn.
+    elapsed_hours: int = 0
 
 
 def continuous_burst(
@@ -112,6 +119,7 @@ def classify(
         burst_start_iso=burst_start.isoformat(),
         gap_seconds=gap_seconds,
         gap_notable=gap_notable,
+        elapsed_hours=int(max(0.0, elapsed) // 3600.0),
     )
 
 
@@ -122,10 +130,10 @@ def humanize_elapsed(seconds: float) -> str:
         return "about an hour"
     if minutes < 150.0:
         return "an hour and a half or so"
-    if minutes < 210.0:
+    hours = int(round(minutes / 60.0))
+    if hours <= 2:
         return "a couple of hours"
-    hours = round(seconds / 3600.0)
-    return f"{hours} hours" if hours > 2 else "a couple of hours"
+    return f"about {hours} hours"
 
 
 def humanize_pause(seconds: float) -> str:

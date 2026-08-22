@@ -86,8 +86,14 @@ class HumanizeTests(unittest.TestCase):
     def test_elapsed_phrases(self) -> None:
         self.assertEqual(sc.humanize_elapsed(65 * 60), "about an hour")
         self.assertEqual(sc.humanize_elapsed(120 * 60), "an hour and a half or so")
-        self.assertEqual(sc.humanize_elapsed(160 * 60), "a couple of hours")
-        self.assertEqual(sc.humanize_elapsed(4 * 3600), "4 hours")
+        self.assertEqual(sc.humanize_elapsed(150 * 60), "a couple of hours")
+        self.assertEqual(sc.humanize_elapsed(160 * 60), "about 3 hours")
+        self.assertEqual(sc.humanize_elapsed(4 * 3600), "about 4 hours")
+
+    def test_elapsed_phrase_keeps_counting_on_a_long_night(self) -> None:
+        """The phrase has to stay truthful well past the old 210-min ceiling."""
+        self.assertEqual(sc.humanize_elapsed(6 * 3600), "about 6 hours")
+        self.assertEqual(sc.humanize_elapsed(9 * 3600), "about 9 hours")
 
     def test_pause_rounds_to_five(self) -> None:
         self.assertEqual(sc.humanize_pause(17 * 60), "about 15 minutes")
@@ -180,7 +186,8 @@ class ProviderTests(unittest.TestCase):
         first = host._render_session_clock_block()
         self.assertIn("been talking for about an hour", first)
         self.assertEqual(host._session_clock_fired_band, "long")
-        # Same sitting + same band -> suppressed.
+        self.assertEqual(host._session_clock_fired_hours, 1)
+        # Same sitting + same elapsed hour -> suppressed.
         self.assertEqual(host._render_session_clock_block(), "")
 
     def test_stronger_band_resurfaces(self) -> None:
@@ -189,8 +196,33 @@ class ProviderTests(unittest.TestCase):
         # The sitting grows past the very-long threshold (new burst start).
         host._rows = _rows(160, 140, 120, 100, 80, 60, 40, 20, 2, 0)
         out = host._render_session_clock_block()
-        self.assertIn("a couple of hours", out)
+        self.assertIn("about 3 hours", out)
         self.assertEqual(host._session_clock_fired_band, "very_long")
+
+    def test_each_further_hour_resurfaces(self) -> None:
+        """A five-hour sitting had nothing left to cross past ~2.5 h.
+
+        With only ``long`` / ``very_long`` to key on, the clock spoke twice
+        and then went quiet for the rest of the night, which is the half of
+        "losing track of time in a long conversation" the cue was meant to
+        cover.
+        """
+        host = _Host(_rows(70, 50, 30, 12, 2, 0))
+        self.assertTrue(host._render_session_clock_block())
+        self.assertEqual(host._session_clock_fired_hours, 1)
+
+        seen: list[int] = []
+        for hours in (3, 4, 5, 6):
+            start = hours * 60 + 10
+            steps = list(range(start, 0, -20)) + [0]
+            host._rows = _rows(*steps)
+            out = host._render_session_clock_block()
+            self.assertTrue(out, f"nothing surfaced at ~{hours}h")
+            self.assertIn("been talking for", out)
+            seen.append(host._session_clock_fired_hours)
+            # Still one-shot within that hour.
+            self.assertEqual(host._render_session_clock_block(), "")
+        self.assertEqual(seen, sorted(set(seen)), "each hour should fire once")
 
     def test_pause_surfaces_once_then_suppressed(self) -> None:
         host = _Host(_rows(40, 20, 0))  # 20-min pause, short sitting

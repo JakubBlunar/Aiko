@@ -704,6 +704,23 @@ def _match_time_of_day(lowered: str) -> tuple[int | None, int]:
 
 
 # ── K-time1 history-message age phrase ───────────────────────────────────
+
+# How recent a message has to be to earn an elapsed reading alongside its
+# wall-clock stamp. Wide enough to cover a long sitting and the small hours
+# either side of midnight; past it the absolute stamp is the useful register
+# anyway ("Thursday 14:00" needs no "43h ago").
+_ELAPSED_HINT_MAX_SECONDS: float = 12 * 3600.0
+
+
+def _elapsed_hint(delta_seconds: float) -> str:
+    """Compact elapsed reading for the hour+ bands (``4h ago``/``1h 20m ago``)."""
+    hours, remainder = divmod(int(delta_seconds), 3600)
+    minutes = remainder // 60
+    if minutes:
+        return f"{hours}h {minutes}m ago"
+    return f"{hours}h ago"
+
+
 def age_prefix(created_at_iso: str | None, now: datetime) -> str:
     """Clock-anchored relative age for a chat-history / transcript message.
 
@@ -712,10 +729,23 @@ def age_prefix(created_at_iso: str | None, now: datetime) -> str:
 
     - < 60s              -> ``just now``
     - 1-59 min           -> ``N min ago``
-    - same calendar day  -> ``today HH:MM``
-    - previous day       -> ``yesterday HH:MM``
+    - same calendar day  -> ``today HH:MM (Nh Nm ago)``
+    - previous day       -> ``yesterday HH:MM`` (+ elapsed if < 12 h)
     - 2-6 days old        -> ``DayName HH:MM``
     - older              -> ``Mon DD HH:MM``
+
+    The parenthesised elapsed reading exists because the wall clock alone
+    put a **cliff at exactly 60 minutes**: under the hour a message read
+    ``[23 min ago]`` and needed no arithmetic, over it the same message read
+    ``[today 13:32]`` and the model had to subtract that from the ambient
+    "Right now it's …" line to recover how long ago it was. In a long
+    sitting — the case where in-conversation time sense matters most —
+    nearly every history line sat on the far side of that cliff, and models
+    are unreliable at the subtraction. Both readings are cheap (~10 chars a
+    line) and cost nothing in prompt cache, since history is re-stamped
+    every turn regardless. Capped at
+    :data:`_ELAPSED_HINT_MAX_SECONDS` so it also spans midnight, which a
+    same-calendar-day test would miss for a late-night conversation.
 
     Returns ``""`` when ``created_at_iso`` is missing / unparseable so the
     caller can skip the prefix. ``now`` should be timezone-aware. This is the
@@ -740,12 +770,16 @@ def age_prefix(created_at_iso: str | None, now: datetime) -> str:
     clock = when_local.strftime("%H:%M")
     day_delta = (now_local.date() - when_local.date()).days
     if day_delta <= 0:
-        return f"today {clock}"
-    if day_delta == 1:
-        return f"yesterday {clock}"
-    if day_delta < 7:
-        return f"{when_local.strftime('%A')} {clock}"
-    return f"{when_local.strftime('%b %d')} {clock}"
+        stamp = f"today {clock}"
+    elif day_delta == 1:
+        stamp = f"yesterday {clock}"
+    elif day_delta < 7:
+        stamp = f"{when_local.strftime('%A')} {clock}"
+    else:
+        stamp = f"{when_local.strftime('%b %d')} {clock}"
+    if delta < _ELAPSED_HINT_MAX_SECONDS:
+        return f"{stamp} ({_elapsed_hint(delta)})"
+    return stamp
 
 
 # ── the "now" anchor sentence for worker prompts (K-time7) ────────────────
