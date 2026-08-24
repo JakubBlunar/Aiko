@@ -1380,6 +1380,25 @@ class AgentSettings:
     speech_texture_enabled: bool = True
     speech_texture_spoken: bool = True
 
+    # ── Persona hoist budget ──────────────────────────────────────────
+    # Ceiling on the combined size of the handling notes hoisted into T6
+    # on one turn (``handling_notes_block``). Over budget, the LARGEST
+    # notes are dropped first -- that keeps the most cues explained per
+    # character, and the big sections tend to be the general-purpose
+    # prose rather than the situation-specific warnings.
+    #
+    # The hoist has no natural ceiling of its own: it emits a note for
+    # every block that rendered, and with 57 registered sections at a
+    # ~960-char mean the theoretical worst case is over 50k. Measured on
+    # 942 turns the tail is real but thin -- p50 2,348, p90 5,081, max
+    # 15,388 (after ``emotion_episode_block`` moved to T0). 5,000 is
+    # therefore a guardrail rather than a policy: it clips the worst
+    # ~11% of turns and never touches a median one.
+    #
+    # Clamped ``[500, 40000]``; the floor keeps a misconfiguration from
+    # silently deleting all handling guidance.
+    handling_notes_budget_chars: int = 5000
+
     # ── K47: question/share balance (stop interviewing) ───────────────
     # Proactive complement to the reactive style-tracker question
     # saturation cue. A rolling per-session ratio of Aiko's replies that

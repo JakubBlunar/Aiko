@@ -523,6 +523,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         cue_register_rotation_enabled: bool = True,
         speech_texture_enabled: bool = True,
         continuity_max_messages: int = 6,
+        handling_notes_budget_chars: int = 5000,
     ) -> None:
         self._db = db
         self._persona_path = Path(persona_path)
@@ -562,6 +563,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # separate code-side block so the guidance stays in the one place
         # the user can edit it.
         self._speech_texture_enabled = bool(speech_texture_enabled)
+        # Ceiling on the T6 persona hoist. The hoist emits a note for every
+        # block that rendered and nothing bounds how many that is, so this
+        # is the guardrail on the tail -- see ``_fit_handling_notes``. 0
+        # disables it.
+        self._handling_notes_budget_chars = max(
+            0, int(handling_notes_budget_chars),
+        )
         # Carry-over hint: the most recent assistant reaction. Lets the LLM
         # keep an emotional through-line across turns without us writing it
         # explicitly into the persona.

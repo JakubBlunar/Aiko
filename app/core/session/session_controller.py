@@ -930,6 +930,11 @@ class SessionController(
             speech_texture_enabled=bool(
                 getattr(self._settings.agent, "speech_texture_enabled", True)
             ),
+            handling_notes_budget_chars=int(
+                getattr(
+                    self._settings.agent, "handling_notes_budget_chars", 5000,
+                )
+            ),
             continuity_max_messages=int(
                 getattr(self._settings.agent, "continuity_max_messages", 6)
             ),

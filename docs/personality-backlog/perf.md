@@ -1364,6 +1364,47 @@ is the transcript itself.
 
 ## P50. The persona hoist has no cap, and it is the second-largest block
 
+> **Status: shipped, and the cap turned out to be the smaller half.**
+> Measuring first changed the fix. The hoist is not a many-small-cues
+> problem — it is **one block**. Scoring every note-eligible block by
+> `fire rate x section chars` over 942 instrumented turns:
+>
+> | rate | chars | cost/turn | block |
+> | --- | --- | --- | --- |
+> | 88% | 3,113 | 2,730 | `emotion_episode_block` |
+> | 61% | 865 | 524 | `curiosity_seeds_block` |
+> | 30% | 593 | 179 | `style_signal_block` |
+> | … | | | 41 more, all under 155 |
+> | | | **5,444** | total |
+>
+> That total lands within 1.3% of H52's independently measured 5,517-char
+> mean, which is the reason to trust the ranking. And `emotion_episode_block`
+> alone is **half of it** — a block that reads as textbook-conditional and
+> fires on 88% of turns, which is precisely the case `_STAYS_IN_T0` exists
+> to catch. It has moved there, so its two sections now ride in the
+> **cached** prefix instead of being re-sent uncached every turn.
+>
+> The cap shipped too, as the guardrail it should have been rather than
+> the main event: `handling_notes_budget_chars` (default 5,000), dropping
+> **largest-note-first** so the most cues keep an explanation per
+> character spent, with render order restored to the tier ladder
+> afterwards.
+>
+> | | before | after |
+> | --- | --- | --- |
+> | mean | 5,444 | ~2,500 |
+> | p90 | 8,026 | 5,000 |
+> | max | 18,501 | 5,000 |
+>
+> **Left open deliberately.** `curiosity_seeds_block` at 61% is over the
+> same line and was *not* moved: it is a pooled cue, so its handling text
+> sits on `CuePolicy.handling_section` by the cue-pool contract, and
+> taking one cue out of that contract is a design decision rather than a
+> measurement. It is the obvious next 10%. The general lesson is written
+> into `_STAYS_IN_T0`: "is this conditional?" is answered by reading the
+> prose and was right here; "how often does it fire?" needs
+> `turn_prompt_blocks` and disagreed by a factor of nine.
+
 **Motivation.** `handling_notes_block` is the [persona
 hoist](../cue-pool.md#the-persona-hoist): conditional handling notes live
 outside the always-on persona and are pasted in only on the turns their cue

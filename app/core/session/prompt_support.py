@@ -90,13 +90,6 @@ HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
     "mood_drift_block": (
         "What I've been noticing over time:",
     ),
-    # K57 + K60: a feeling pointed at the user, optionally behind the
-    # tsundere mask. One renderer, two situations -- and the whole rule is
-    # "the shift IS the message", i.e. it must never become the topic.
-    "emotion_episode_block": (
-        "Feelings at {user_name}:",
-        "The mask:",
-    ),
     # ── who has the floor ─────────────────────────────────────────────
     # K53/K55/K54: turn-taking permissions -- take the floor, return to a
     # thread that was brushed past, admit a topic has run dry. What each
@@ -340,6 +333,24 @@ _STAYS_IN_T0: tuple[tuple[str, str], ...] = (
     # optimises the configuration nobody using the feature is in, and
     # penalises the one they are.
     ("grounding_block", "Where you are right now (the grounding paragraph):"),
+    # K57 + K60: a feeling pointed at the user, optionally behind the
+    # tsundere mask. Two headers, one renderer.
+    #
+    # This one is here on a measurement rather than on reasoning, and it
+    # is the entry that shows the rule above has teeth. It read as the
+    # ideal hoist -- an episodic feeling, obviously conditional -- and it
+    # fired on **826 of 940 instrumented turns (88%)**. At 3,113 chars
+    # across its two sections that was 2,730 uncached chars per turn, or
+    # **half of the entire hoist**, to avoid carrying the same bytes in a
+    # prefix that is now cached at ~0.1x.
+    #
+    # Which is the general lesson: "is this conditional?" is answered by
+    # reading the prose, and it agrees with the prose here. "How often
+    # does it actually fire?" needs turn_prompt_blocks, and it disagreed
+    # by a factor of nine. Check the second question before adding to
+    # HANDLING_SECTIONS.
+    ("emotion_episode_block", "Feelings at {user_name}:"),
+    ("emotion_episode_block", "The mask:"),
 )
 
 # Two sections are still mixed prose: always-on inline-tag grammar

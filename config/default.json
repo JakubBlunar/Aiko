@@ -225,6 +225,7 @@
     "style_tracker_cue_cooldown_turns": 5,
     "speech_texture_enabled": true,
     "speech_texture_spoken": true,
+    "handling_notes_budget_chars": 5000,
     "question_balance_enabled": true,
     "question_balance_ratio_threshold": 0.55,
     "question_balance_window": 10,
