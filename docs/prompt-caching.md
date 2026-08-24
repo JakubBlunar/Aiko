@@ -504,12 +504,11 @@ re-tiering, recorded so the next pass does not chase them:
   its *uncached* series is separately broken, reporting 23,384 for a day
   that really cost 1.39M, so don't diff against that half of the chart.
 
-  Deliberately not chased further: the model answers correctly and the
-  cost is the only casualty. If it hasn't righted itself on its own,
-  the cheapest next probe is still the targeted one — two identical
-  back-to-back `/v1/responses` calls sharing a `prompt_cache_key`. If
-  the second one reports no cached tokens either, nothing about our
-  prompt structure is the lever and this belongs to the model.
+  **Resolved, Aug 24 — it was a model behaviour change, and it needed an
+  explicit breakpoint.** See
+  [Aug 24: the zero was GPT-5.6 dropping prefix fallback](#aug-24-the-zero-was-gpt-56-dropping-prefix-fallback)
+  below. Nothing about our prompt structure was the lever, which is why
+  three rounds of re-tiering never moved it.
 
   Note for whoever picks this up: the `turn done:` line carries
   `cached=` and `cached_pct=` on **every** turn, so the history above is
@@ -519,6 +518,135 @@ re-tiering, recorded so the next pass does not chase them:
 - **The tool pass is the real latency cost on tool turns** — p50 7.1 s,
   p90 28 s, max 41 s — and it is invisible in `first_token_ms`, which
   only ever measures the streaming pass.
+
+### Aug 24: the zero was GPT-5.6 dropping prefix fallback
+
+The four-day zero above was not a prefix problem at all, which is why
+three passes of re-tiering never touched it. It is a **documented model
+behaviour change**, and it makes almost everything above this section
+history rather than guidance for `gpt-5.6-luna`.
+
+From OpenAI's [prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching):
+
+> GPT-5.6 and later model families cache exact prompt prefixes at cache
+> breakpoints. By default, the service places an implicit breakpoint at
+> the latest user or tool message. **Unlike earlier models, it does not
+> automatically fall back to the longest matching unmarked prefix before
+> that breakpoint.**
+
+Every earlier model — and Grok, which is why the `grok-4.3` turns in the
+tables above cached fine — did best-effort matching in 128-token blocks
+against the longest stable prefix. 5.6 does exactly one comparison, at
+the latest user message. Aiko's prompt is a ~41k-char byte-stable head
+followed by ~33k chars of per-turn blocks and then the new message, so
+that single comparison **can never match**: the tail differs every turn
+by construction. The stable head was invisible to the matcher.
+
+It was also not free. On 5.6+ cache writes bill at **1.25× the uncached
+input rate** (they were free before), so the failure mode is not "no
+discount" but "a 25% surcharge on nearly every input token, to build an
+entry nothing can read". Over Aug 05–24: 24.6M cache-write tokens,
+123.8K cache-read, 26.7K uncached — an effective **1.244× multiplier on
+24.8M tokens**.
+
+Three things ruled out first, so the diagnosis isn't circumstantial:
+`prompt_cache_key` was correctly threaded, the prompt is ~18.4k tokens
+against a 1,024 floor, and the parser demonstrably works (the six Aug 05
+hits arrived through it). The cliff also lands to the *minute* on
+`eadc80e` — last hit 18:25:30Z, first zero 18:32:18Z **in the same
+conversation**, commit timestamped 18:27Z — which is a deploy, not drift.
+
+#### The fix: mark the end of the stable head
+
+Two halves, and the seam between them is a private key on the system
+message (`CACHE_BREAKPOINT_KEY`, the same smuggling pattern as
+`_responses_output`):
+
+1. **`prompt_assembler`** tracks `stable_head_parts` — the leading
+   `system_parts` entries that are byte-stable turn over turn: persona
+   plus the constant grammar addenda, stopping deliberately *short of*
+   `profile_block`. `_stable_prefix_offset` renders that head with the
+   same join and the same empty-part filter as the real prompt, so the
+   offset always lands on a block boundary, and returns `0` (meaning
+   "don't mark") when the head is under `_CACHE_BREAKPOINT_MIN_TOKENS`.
+2. **`openai_compatible_client`** splits that message into two
+   `input_text` blocks at the offset and puts
+   `prompt_cache_breakpoint: {"mode": "explicit"}` on the first.
+
+Measured on the live persona: the head is **40,676 chars — 55% of the
+73,919-char system prompt, ~9,700 of 17,660 prompt tokens**. That moves
+the effective input multiplier from 1.244× to ~0.617×, i.e. **input
+costs roughly half** what it does now.
+
+Four things that are easy to get wrong, all pinned by
+`tests/test_prompt_cache_breakpoint.py`:
+
+- **Explicit-only mode is deliberate.** `prompt_cache_options.mode =
+  "explicit"` disables the implicit breakpoint. That is the *point*: the
+  implicit one sits behind ~33k chars of per-turn blocks, so leaving it
+  on keeps paying 1.25× to write an entry that can never be read. This is
+  the one case the guide names for explicit-only — "a stable prefix
+  followed by request-specific content that is unlikely to be reused".
+- **Never set explicit mode without a breakpoint.** Per the guide, "if
+  you set `mode` to `explicit` but provide no explicit breakpoints, the
+  request does not use prompt caching" — it does not fall back to
+  implicit, it turns caching *off*. So the flag is computed from both the
+  model gate **and** an offset actually being present.
+- **Gate on the model name, not `api_style`.** Grok is forced onto the
+  Responses surface but still does implicit prefix matching and caches
+  for us unaided; sending it an unknown field risks a 400 to fix a
+  problem it doesn't have. `_supports_explicit_cache_breakpoints` parses
+  the dotted version numerically (`>= (5, 6)`) so `gpt-6` isn't missed.
+- **The bare key is stripped on `/v1/chat/completions`.** Breakpoints are
+  expressed on content blocks there, and an unknown message field 400s on
+  strict providers. A 5.6 route pinned to `api_style="chat_completions"`
+  therefore keeps the old implicit-only behaviour — supporting that shape
+  too is the obvious follow-up if anyone needs it.
+
+**What this means for the re-tiering work above.** The breakpoint sits
+*ahead* of both `arc_block` (45% of breaks) and `profile_block` (30%), so
+their churn no longer costs anything on the cached head — the whole
+"fixing the top of the list promotes whatever was hiding behind it"
+treadmill stops being urgent on 5.6. It still matters for a *second*
+breakpoint after T2, which is where the next ~10% would come from, and it
+still matters on every other provider. `lost_pct` and the `diverged`
+histogram remain the right instrument for those.
+
+#### Confirmed live, Aug 24
+
+Both sides agree, and the shape of the numbers is the proof rather than
+just the size of them.
+
+Ours, from `cached=` on the `turn done:` lines in `data/app.log`:
+
+| Day | Turns | Hits | Cached tokens |
+| --- | --- | --- | --- |
+| Aug 21 | 53 | 0 | 0 |
+| Aug 22 | 42 | 0 | 0 |
+| Aug 23 | 23 | 0 | 0 |
+| **Aug 24** | **60** | **42 (70%)** | **599,334** |
+
+OpenAI's dashboard for the same day: hit rate **56.7%** (was 0.5%), cache
+reads per write **11.52×** (was <0.01×), 578.5K read / 50.2K write /
+391.5K uncached. That works out to an effective **0.502× input
+multiplier against the 1.244× before it — input costs 60% less**, against
+a predicted 50%.
+
+The `cached_tokens` distribution is what actually validates the
+mechanism, because it is trimodal with nothing in between:
+
+| Value | Turns | What it is |
+| --- | --- | --- |
+| **10,423** | 31 | The stable head, read once. Byte-identical every turn — exactly what a fixed explicit breakpoint should produce. |
+| **25,111** | 11 | Turns where the **tool pass also ran**, summing two requests. Tool schemas render into the prefix ahead of the messages, so that pass caches *more* than the head. |
+| **0** | 18 | Cold starts — first turn of a session, or past the 30-minute TTL. |
+
+Two things worth taking from that. The tool pass caches too, which was
+not designed for and is worth ~15k tokens on the turns it runs (note the
+9 turns reading 25,111 with `tools=0`: the gate ran the decision pass and
+it chose not to call anything). And 18 cold starts in 60 turns is the
+remaining headroom — each one is a full-price write, so anything that
+shortens sessions or idles past 30 minutes pays for a re-warm.
 
 ### The original open question
 
