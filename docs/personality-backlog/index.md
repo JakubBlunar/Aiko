@@ -1206,10 +1206,12 @@ compound across every K-series entry:
   ~600k/yr, `concept_events`, `turn_prompt_blocks`, `cue_decisions`)
   are the fastest-growing tables by far, and three of them have a
   `prune()` nobody calls. Queries stay flat to 5M rows; disk does not.
-- **P50.** The persona hoist has no cap on how many handling sections
-  one turn can pull. 56 sections at a 961-char mean; measured at 5.5k
-  mean and 18.4k max, against a design premise of "a minority of turns"
-  and a ceiling of 53.8k. Same problem as P43, one level down.
+- **P50.** *Shipped.* The persona hoist had no cap, but measuring first
+  changed the fix: it was not many small cues, it was **one block**.
+  `emotion_episode_block` fired on 88% of turns and was half the entire
+  hoist — textbook-conditional prose, nine times more frequent than it
+  reads. Moved to T0 (so it is cached now), plus a largest-first budget
+  as the guardrail. Mean 5,444 → ~2,500, max 18,501 → 5,000.
 - **P51.** `relevant_context` (17.5k chars, the most expensive block)
   never dedupes against the rolling summary, though it dedupes against
   almost everything else — including the current session's messages, on

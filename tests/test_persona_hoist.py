@@ -158,6 +158,70 @@ class RegistryTests(unittest.TestCase):
                 self.assertNotIn(header, claimed)
 
 
+class HoistBudgetTests(unittest.TestCase):
+    """The hoist had no ceiling of its own.
+
+    It emits one note per block that rendered, and how many render is not
+    something any single provider decides -- so the size of the section is
+    an emergent property of the turn. The premise that made that safe was
+    that each note is for a minority of turns; measured over 942 turns,
+    940 of them hoisted something.
+    """
+
+    def _fit(self, parts: list[str], budget: int) -> list[str]:
+        assembler = PromptAssemblerHelpersMixin()
+        assembler._handling_notes_budget_chars = budget
+        return PromptAssemblerHelpersMixin._fit_handling_notes(
+            assembler, parts,
+        )
+
+    def test_under_budget_is_left_alone(self) -> None:
+        parts = ["a" * 100, "b" * 100]
+        self.assertEqual(self._fit(parts, 5000), parts)
+
+    def test_the_largest_note_is_dropped_first(self) -> None:
+        """Keeps the most cues explained per character.
+
+        Dropping the small ones would shed several specific warnings to
+        protect one long passage of general prose, which inverts the
+        thing worth minimising: cues left in the prompt with no note.
+        """
+        small_a, small_b, huge = "a" * 100, "b" * 100, "H" * 900
+        kept = self._fit([small_a, huge, small_b], 500)
+        self.assertEqual(kept, [small_a, small_b])
+
+    def test_it_drops_only_as_far_as_the_budget_requires(self) -> None:
+        parts = ["a" * 100, "b" * 200, "c" * 300, "d" * 400]
+        kept = self._fit(parts, 700)
+        self.assertEqual(kept, ["a" * 100, "b" * 200, "c" * 300])
+
+    def test_render_order_survives_the_drop(self) -> None:
+        """Selection reorders; the notes still come out in tier order.
+
+        They are meant to be read paired with the blocks they explain, so
+        a budget pass that returned them largest-first would fix the size
+        and break the reason the order exists.
+        """
+        parts = ["a" * 100, "Z" * 900, "b" * 100, "Y" * 800, "c" * 100]
+        kept = self._fit(parts, 400)
+        self.assertEqual(kept, ["a" * 100, "b" * 100, "c" * 100])
+
+    def test_the_last_note_is_never_dropped(self) -> None:
+        """A lead-in with nothing under it is worse than going over."""
+        self.assertEqual(self._fit(["H" * 9000], 500), ["H" * 9000])
+
+    def test_zero_budget_disables_the_cap(self) -> None:
+        parts = ["a" * 5000, "b" * 5000]
+        self.assertEqual(self._fit(parts, 0), parts)
+
+    def test_the_separator_counts_toward_the_budget(self) -> None:
+        """Notes are joined with a blank line, so the join is the size."""
+        parts = ["a" * 50, "b" * 50]
+        # 50 + 50 + len("\n\n") == 102, so 101 does not fit and 102 does.
+        self.assertEqual(len(self._fit(parts, 101)), 1)
+        self.assertEqual(len(self._fit(parts, 102)), 2)
+
+
 class _AssemblerFixture(unittest.TestCase):
     def _assembler(
         self,

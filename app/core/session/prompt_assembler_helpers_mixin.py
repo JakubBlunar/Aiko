@@ -1128,6 +1128,7 @@ class PromptAssemblerHelpersMixin:
             if note and note not in seen:
                 seen.add(note)
                 parts.append(note)
+        parts = self._fit_handling_notes(parts)
         if not parts:
             return ""
         # The lead-in does real work: these sections keep their persona
@@ -1135,6 +1136,49 @@ class PromptAssemblerHelpersMixin:
         # of its own cue block a few sections up. Without it the pair
         # reads as the same list twice.
         return "How to handle the cues above:\n\n" + "\n\n".join(parts)
+
+    def _fit_handling_notes(self, parts: list[str]) -> list[str]:
+        """Drop the largest notes until the hoist fits its budget.
+
+        The hoist had no ceiling: it emits a note for every block that
+        rendered this turn, and the number that render is not something
+        any one provider controls. That was survivable while the premise
+        held -- each section is for a minority of turns -- and it stopped
+        holding quietly. Measured over 942 turns, 940 of them hoisted
+        something.
+
+        Largest-first is the drop order because it keeps the most cues
+        explained per character. Dropping smallest-first would shed
+        several specific warnings to keep one long passage of general
+        prose, which is backwards: a cue in the prompt with no handling
+        note is the exact failure the hoist exists to prevent, so the
+        thing to minimise is how many cues end up in that state.
+
+        Render order is unchanged. Selection reorders, then restores the
+        tier ladder, because notes are meant to be read paired with the
+        blocks they explain.
+        """
+        budget = int(getattr(self, "_handling_notes_budget_chars", 5000))
+        if budget <= 0:
+            return parts
+        # ``\n\n`` between notes, so the joined length is what to measure.
+        total = sum(len(p) for p in parts) + 2 * max(0, len(parts) - 1)
+        if total <= budget:
+            return parts
+        keep = list(parts)
+        # Never drop the last one: a hoist that renders its lead-in with
+        # nothing under it is worse than an over-budget one.
+        while len(keep) > 1:
+            widest = max(keep, key=len)
+            keep.remove(widest)
+            total = sum(len(p) for p in keep) + 2 * max(0, len(keep) - 1)
+            if total <= budget:
+                break
+        log.debug(
+            "handling notes over budget: %d notes -> %d (budget %d chars)",
+            len(parts), len(keep), budget,
+        )
+        return [p for p in parts if p in keep]
 
     def _render_persona_text(self, text: str) -> str:
         # Phase 4d: render the {user_name} placeholder per-call so a rename

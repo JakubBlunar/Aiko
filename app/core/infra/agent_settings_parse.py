@@ -942,6 +942,13 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             speech_texture_spoken=bool(
                 agent_raw.get("speech_texture_spoken", True),
             ),
+            handling_notes_budget_chars=max(
+                500,
+                min(
+                    40000,
+                    int(agent_raw.get("handling_notes_budget_chars", 5000)),
+                ),
+            ),
             question_balance_enabled=bool(
                 agent_raw.get("question_balance_enabled", True),
             ),
