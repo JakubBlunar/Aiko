@@ -235,11 +235,14 @@ def content_looks_complete(text: str) -> bool:
     return text.rstrip().endswith(_TERMINAL_PUNCTUATION)
 
 
-# Private key a message dict may carry to mark where its reusable prefix
-# ends, as a character offset into ``content``. Set by the prompt
-# assembler on the system message (the end of the byte-stable T0 head);
-# read by ``OpenAICompatibleClient`` to place an explicit
-# ``prompt_cache_breakpoint``, and stripped anywhere else.
+# Private key a message dict may carry to mark where its reusable
+# prefixes end, as character offsets into ``content`` (a single int or an
+# ascending sequence of them). Set by the prompt assembler on the system
+# message — the end of the byte-stable T0 head, and the end of T2 — and
+# read by ``OpenAICompatibleClient`` to place explicit
+# ``prompt_cache_breakpoint`` markers; stripped anywhere else. The
+# service reads from the longest marked prefix that matches, so a later
+# offset can only add to what the earlier one already covers.
 #
 # It exists because GPT-5.6 stopped doing what every earlier model did.
 # On 5.6+ the service places one implicit breakpoint at the latest user

@@ -18,11 +18,15 @@ import unittest
 from unittest.mock import patch
 
 from app.core.infra.settings import load_settings
-from app.core.session.prompt_assembler import _stable_prefix_offset
+from app.core.session.prompt_assembler import (
+    _cache_breakpoints,
+    _stable_prefix_offset,
+)
 from app.llm.chat_client import CACHE_BREAKPOINT_KEY
 from app.llm.openai_compatible_client import (
+    _MAX_CACHE_BREAKPOINTS,
     OpenAICompatibleClient,
-    _cache_breakpoint_offset,
+    _cache_breakpoint_offsets,
     _messages_to_responses_input,
     _supports_explicit_cache_breakpoints,
 )
@@ -69,6 +73,69 @@ class StablePrefixOffsetTests(unittest.TestCase):
         self.assertEqual(_stable_prefix_offset(["A" * 9000], 0), 0)
 
 
+class BreakpointSelectionTests(unittest.TestCase):
+    """Which boundaries get marked, given the tier layout."""
+
+    # The head has to clear the token floor on its own; the later tiers
+    # are small on purpose, which is what they measure as in practice.
+    #             head   T0 tail  T1       T2       T3       volatile
+    PARTS = ["A" * 9000, "b" * 9, "c" * 9, "d" * 9, "e" * 9, "volatile"]
+
+    def test_all_four_tier_boundaries_are_marked(self) -> None:
+        offsets = _cache_breakpoints(
+            self.PARTS, head=1, t0_end=2, t2_end=4, t3_end=5,
+        )
+        self.assertEqual(offsets, (
+            _stable_prefix_offset(self.PARTS, 1),
+            _stable_prefix_offset(self.PARTS, 2),
+            _stable_prefix_offset(self.PARTS, 4),
+            _stable_prefix_offset(self.PARTS, 5),
+        ))
+
+    def test_offsets_are_ascending(self) -> None:
+        offsets = _cache_breakpoints(
+            self.PARTS, head=1, t0_end=2, t2_end=4, t3_end=5,
+        )
+        self.assertEqual(sorted(offsets), list(offsets))
+
+    def test_never_more_than_the_service_limit(self) -> None:
+        # Over four markers the whole request 400s, so the assembler must
+        # not be able to ask for a fifth.
+        offsets = _cache_breakpoints(
+            self.PARTS, head=1, t0_end=2, t2_end=4, t3_end=5,
+        )
+        self.assertLessEqual(len(offsets), _MAX_CACHE_BREAKPOINTS)
+
+    def test_empty_tiers_collapse_instead_of_duplicating(self) -> None:
+        # T0 tail, T1, T2 and T3 all absent: every later boundary lands
+        # on the same character as the head, and duplicates would emit
+        # empty content blocks.
+        parts = ["A" * 9000, "", "", "", "", "volatile"]
+        self.assertEqual(
+            _cache_breakpoints(parts, head=1, t0_end=2, t2_end=4, t3_end=5),
+            (_stable_prefix_offset(parts, 1),),
+        )
+
+    def test_missing_t3_does_not_duplicate_t2(self) -> None:
+        # relevant_context absent -> the assembler passes t3_end == t2_end.
+        offsets = _cache_breakpoints(
+            self.PARTS, head=1, t0_end=2, t2_end=4, t3_end=4,
+        )
+        self.assertEqual(len(set(offsets)), len(offsets))
+        self.assertEqual(len(offsets), 3)
+
+    def test_no_stable_head_means_no_breakpoints_at_all(self) -> None:
+        # Without a cacheable head there is nothing to anchor on, and a
+        # lone later mark would suppress the implicit breakpoint while
+        # matching far less often.
+        self.assertEqual(
+            _cache_breakpoints(
+                ["A" * 9000], head=0, t0_end=1, t2_end=1, t3_end=1,
+            ),
+            (),
+        )
+
+
 class AssemblerMarksSystemMessageTests(unittest.TestCase):
     """The offset has to survive onto the real system message."""
 
@@ -90,9 +157,9 @@ class AssemblerMarksSystemMessageTests(unittest.TestCase):
             )
         system = messages[0]
         self.assertEqual(system["role"], "system")
-        offset = system[CACHE_BREAKPOINT_KEY]
+        offsets = system[CACHE_BREAKPOINT_KEY]
         content = system["content"]
-        head = content[:offset]
+        head = content[:offsets[0]]
         # The persona is inside the cached prefix -- that is the point.
         self.assertIn("PERSONA-TAIL", head)
         # And so are the constant grammar addenda that follow it.
@@ -100,10 +167,12 @@ class AssemblerMarksSystemMessageTests(unittest.TestCase):
         # The head is a strict prefix ending on a block boundary, never
         # mid-block, so it cannot slice a sentence in half.
         self.assertTrue(content.startswith(head))
-        self.assertTrue(
-            offset == len(content) or content[offset:].startswith("\n\n---\n\n"),
-            "breakpoint must land on a join boundary",
-        )
+        for offset in offsets:
+            self.assertTrue(
+                offset == len(content)
+                or content[offset:].startswith("\n\n---\n\n"),
+                "breakpoint must land on a join boundary",
+            )
 
 
 class ModelGateTests(unittest.TestCase):
@@ -134,25 +203,50 @@ class OffsetValidationTests(unittest.TestCase):
 
     def test_absent_key(self) -> None:
         self.assertEqual(
-            _cache_breakpoint_offset({"content": "abc"}), 0,
+            _cache_breakpoint_offsets({"content": "abc"}), (),
         )
 
     def test_past_end_of_content(self) -> None:
         msg = {"content": "abc", CACHE_BREAKPOINT_KEY: 99}
-        self.assertEqual(_cache_breakpoint_offset(msg), 0)
+        self.assertEqual(_cache_breakpoint_offsets(msg), ())
 
     def test_zero_and_negative(self) -> None:
         for bad in (0, -5):
             msg = {"content": "abcdef", CACHE_BREAKPOINT_KEY: bad}
-            self.assertEqual(_cache_breakpoint_offset(msg), 0)
+            self.assertEqual(_cache_breakpoint_offsets(msg), ())
 
     def test_garbage_value(self) -> None:
         msg = {"content": "abcdef", CACHE_BREAKPOINT_KEY: "nope"}
-        self.assertEqual(_cache_breakpoint_offset(msg), 0)
+        self.assertEqual(_cache_breakpoint_offsets(msg), ())
 
     def test_exactly_at_end_is_valid(self) -> None:
         msg = {"content": "abcdef", CACHE_BREAKPOINT_KEY: 6}
-        self.assertEqual(_cache_breakpoint_offset(msg), 6)
+        self.assertEqual(_cache_breakpoint_offsets(msg), (6,))
+
+    def test_bare_int_still_accepted(self) -> None:
+        msg = {"content": "abcdef", CACHE_BREAKPOINT_KEY: 3}
+        self.assertEqual(_cache_breakpoint_offsets(msg), (3,))
+
+    def test_sequence_is_sorted_and_deduplicated(self) -> None:
+        # An unsorted pair would mark a later prefix first, and a repeat
+        # would emit an empty content block.
+        msg = {"content": "abcdef", CACHE_BREAKPOINT_KEY: [4, 2, 4]}
+        self.assertEqual(_cache_breakpoint_offsets(msg), (2, 4))
+
+    def test_one_bad_member_does_not_sink_the_good_ones(self) -> None:
+        msg = {"content": "abcdef", CACHE_BREAKPOINT_KEY: (2, 999, "x", 5)}
+        self.assertEqual(_cache_breakpoint_offsets(msg), (2, 5))
+
+    def test_capped_at_the_service_limit(self) -> None:
+        msg = {
+            "content": "a" * 20,
+            CACHE_BREAKPOINT_KEY: [2, 4, 6, 8, 10, 12],
+        }
+        offsets = _cache_breakpoint_offsets(msg)
+        self.assertEqual(len(offsets), _MAX_CACHE_BREAKPOINTS)
+        # The earliest ones are kept: they are the prefixes most likely
+        # to still match.
+        self.assertEqual(offsets, (2, 4, 6, 8))
 
 
 class ResponsesInputShapeTests(unittest.TestCase):
@@ -184,14 +278,57 @@ class ResponsesInputShapeTests(unittest.TestCase):
         # The user turn stays a plain string.
         self.assertEqual(out[1], {"role": "user", "content": "hi"})
 
-    def test_no_content_is_lost_or_reordered(self) -> None:
-        content = "STABLE|volatile"
+    def test_two_offsets_give_three_blocks_two_marked(self) -> None:
         out = _messages_to_responses_input(
-            [{"role": "system", "content": content, CACHE_BREAKPOINT_KEY: 6}],
+            [{
+                "role": "system",
+                "content": "HEAD|MID|volatile",
+                CACHE_BREAKPOINT_KEY: (4, 8),
+            }],
             mark_cache_breakpoint=True,
         )
-        rejoined = "".join(b["text"] for b in out[0]["content"])
-        self.assertEqual(rejoined, content)
+        self.assertEqual(out[0]["content"], [
+            {
+                "type": "input_text",
+                "text": "HEAD",
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            },
+            {
+                "type": "input_text",
+                "text": "|MID",
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            },
+            {"type": "input_text", "text": "|volatile"},
+        ])
+
+    def test_no_content_is_lost_or_reordered(self) -> None:
+        content = "STABLE|volatile"
+        for offsets in (6, (4, 8), (3, 6, 9)):
+            with self.subTest(offsets=offsets):
+                out = _messages_to_responses_input(
+                    [{
+                        "role": "system",
+                        "content": content,
+                        CACHE_BREAKPOINT_KEY: offsets,
+                    }],
+                    mark_cache_breakpoint=True,
+                )
+                rejoined = "".join(b["text"] for b in out[0]["content"])
+                self.assertEqual(rejoined, content)
+
+    def test_no_block_is_ever_empty(self) -> None:
+        # An empty ``input_text`` is a wasted block at best and a 400 at
+        # worst, and it is what an unvalidated duplicate offset produces.
+        out = _messages_to_responses_input(
+            [{
+                "role": "system",
+                "content": "abcdef",
+                CACHE_BREAKPOINT_KEY: (3, 3, 6),
+            }],
+            mark_cache_breakpoint=True,
+        )
+        for block in out[0]["content"]:
+            self.assertTrue(block["text"])
 
     def test_tail_block_omitted_when_split_at_end(self) -> None:
         out = _messages_to_responses_input(

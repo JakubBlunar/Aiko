@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Callable
 
 from app.core.session.session_text_utils import resolve_user_name, speaker_label
 from app.core.infra import timephrase
+from app.core.infra.prompt_stability import coarse_elapsed_turns
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -202,7 +203,14 @@ class ArcStore:
         elapsed = max(0, int(current_turn) - int(state.since_turn))
         descriptor = arc_descriptor(state.arc, user_display_name)
         if elapsed > 0:
-            return f"Conversation arc: {descriptor} (last ~{elapsed} turns)."
+            # Banded, not counted. This block is T1 and renders on most
+            # turns, so an exact count moved the bytes of an early tier
+            # every single turn and cost the cache prefix for everything
+            # after it. See ``prompt_stability.coarse_elapsed_turns``.
+            return (
+                f"Conversation arc: {descriptor} "
+                f"({coarse_elapsed_turns(elapsed)})."
+            )
         return f"Conversation arc: {descriptor}."
 
 

@@ -485,11 +485,11 @@ _CACHE_BREAKPOINT_MIN_TOKENS = 1536
 
 
 def _stable_prefix_offset(parts: list[str], head_count: int) -> int:
-    """Character offset into the joined system prompt where T0's constant head ends.
+    """Character offset into the joined system prompt where a tier boundary sits.
 
-    ``0`` means "don't mark a breakpoint" — either there is no stable head
-    (no persona) or it is too short to be cacheable. Callers must treat 0
-    as absent rather than as a valid offset.
+    ``0`` means "don't mark a breakpoint" — either there is nothing before
+    ``head_count`` (no persona) or it is too short to be cacheable.
+    Callers must treat 0 as absent rather than as a valid offset.
 
     Mirrors the join in :meth:`assemble_with_budget` exactly, including
     the empty-part filter, so the returned offset always lands on a real
@@ -501,6 +501,71 @@ def _stable_prefix_offset(parts: list[str], head_count: int) -> int:
     if not head or estimate_tokens(head) < _CACHE_BREAKPOINT_MIN_TOKENS:
         return 0
     return len(head)
+
+
+def _cache_breakpoints(
+    parts: list[str],
+    *,
+    head: int,
+    t0_end: int,
+    t2_end: int,
+    t3_end: int,
+) -> tuple[int, ...]:
+    """The offsets to mark for the prompt cache, ascending.
+
+    Four of them, which is the service limit, because the service reads
+    from the *longest* marked prefix that matches. A later mark is
+    therefore never a gamble: on a turn where its span held still it
+    caches more, and on a turn where it moved an earlier mark matches
+    exactly as it would have anyway. There is no turn where adding one is
+    worse — the only cost is the request being a few content blocks
+    bigger.
+
+    Which four is a measurement, not a guess. Over 1,081 logged turns
+    (``data/prompt-cache.jsonl``), match rate x mean covered chars:
+
+    ==============  ==========  ============
+    boundary        matches     covers
+    ==============  ==========  ============
+    T0 head             99.7%   43,065
+    end of T0           71.6%   46,307
+    end of T1           57.0%   47,679
+    end of T2           42.9%   49,006
+    end of T3            5.6%   66,355
+    T4/T5/T6 ends        5.6%   67k-74k
+    ==============  ==========  ============
+
+    Expected cached chars per turn, best subsets of size four: head +
+    T0 + T2 + T3 wins at 47.3k of a 74.1k prompt (63.9%), against 42.9k
+    (58.0%) for the head alone. T1 loses its slot to T2 because T1's
+    extra span over T0 is only ~1.4k chars while T2's is ~2.7k, and T3
+    keeps its slot despite matching rarely because when it does match it
+    covers 17k more than anything before it. The tiers past T3 are not
+    worth a mark: they match no more often than T3 and add under 8k.
+
+    Two things quietly decide whether this keeps paying. The T1/T2 rates
+    above assume ``arc_block``'s turn count and ``relationship_block``'s
+    total stay coarsened (see ``app/core/infra/prompt_stability.py``) —
+    with live integers there they were 15.3% and 12.8%, and putting one
+    back costs the mark silently. And T3's 5.6% is ``relevant_context``
+    re-retrieving on 94% of turns; deduping it against the summary is
+    what would turn that boundary from a lottery ticket into the biggest
+    win on the list.
+
+    Returns ``()`` when there is no cacheable head — a later mark alone
+    would suppress the implicit breakpoint while matching far less often.
+    """
+    head_offset = _stable_prefix_offset(parts, head)
+    if not head_offset:
+        return ()
+    offsets = [head_offset]
+    for count in (t0_end, t2_end, t3_end):
+        offset = _stable_prefix_offset(parts, count)
+        # Equal to the previous means the tiers between them were all
+        # empty, and a duplicate would only emit an empty content block.
+        if offset > offsets[-1]:
+            offsets.append(offset)
+    return tuple(offsets)
 
 
 # P44: how many sessions keep a prefix snapshot alive. Divergence only
@@ -2955,6 +3020,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # or retires one, which is a matter of weeks.
         if voice_adoption_block:
             system_parts.append(voice_adoption_block)
+        # Second cache breakpoint. Measured: T0's tail (profile / petname /
+        # catchphrase / voice-adoption) holds still on 72% of turns, so
+        # marking here catches ~3.2k chars the head mark cannot -- and on
+        # the other 28% the head mark still matches exactly as before.
+        t0_end_parts = len(system_parts)
 
         # ── T1: SEMI-STABLE (per-arc / per-day) ──────────────────────
         # Relationship / axes / arc / agenda / goals / day_color /
@@ -3697,8 +3767,16 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts.insert(t3_insert_index, relevant_context_block)
 
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
-        cache_breakpoint_at = _stable_prefix_offset(
-            system_parts, stable_head_parts,
+        # The three tier indices were all captured before T3 was inserted,
+        # and an insert at ``t3_insert_index`` shifts only what follows it,
+        # so they still delimit what they were taken to delimit. T3's own
+        # end is one part later exactly when something was inserted.
+        cache_breakpoints = _cache_breakpoints(
+            system_parts,
+            head=stable_head_parts,
+            t0_end=t0_end_parts,
+            t2_end=t3_insert_index,
+            t3_end=t3_insert_index + (1 if relevant_context_block else 0),
         )
 
         # Pre-build per-block telemetry. Per-block estimates use the same
@@ -3759,8 +3837,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_msg: dict[str, Any] = {
                 "role": "system", "content": system_prompt,
             }
-            if cache_breakpoint_at:
-                system_msg[CACHE_BREAKPOINT_KEY] = cache_breakpoint_at
+            if cache_breakpoints:
+                system_msg[CACHE_BREAKPOINT_KEY] = cache_breakpoints
             messages.append(system_msg)
         messages.extend(history_dicts)
         if cleaned_user:
