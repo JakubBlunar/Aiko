@@ -30,6 +30,7 @@ from app.core.session.prompt_prefix_telemetry import (
     diagnose_divergence,
     message_digest,
 )
+from app.llm.chat_client import CACHE_BREAKPOINT_KEY
 from app.llm.token_utils import estimate_tokens
 
 if TYPE_CHECKING:
@@ -85,6 +86,14 @@ log = logging.getLogger("app.prompt_assembler")
 _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
     # T0 — stable across sessions. Persona file edit / config flip is
     # the only thing that should ever invalidate this.
+    #
+    # The run from ``persona`` through ``learned_style_addendum`` is also
+    # the explicit GPT-5.6 cache prefix (``stable_head_parts`` in
+    # ``assemble_with_budget``). Inserting anything that moves per turn
+    # into that run silently costs the whole ~9.7k-token discount, and
+    # nothing will fail — which is exactly what ``profile_block`` did
+    # before it was measured, so it is deliberately left OUTSIDE the head
+    # despite being filed here. See ``docs/prompt-caching.md``.
     "T0_stable": (
         "persona",
         "speech_grammar_addendum",
@@ -463,6 +472,35 @@ def block_char_table(local_vars: dict[str, Any]) -> dict[str, int]:
     candidate P31 is hunting.
     """
     return {name: len(text) for name, text in _resolve_blocks(local_vars)}
+
+
+# An explicit cache breakpoint only earns its keep if the prefix through
+# it clears OpenAI's 1,024-token floor, and ``estimate_tokens`` is a char
+# heuristic rather than a tokenizer. Requiring a 50% margin means a
+# mis-estimate costs us a cache write we'd have paid anyway, whereas
+# marking a prefix that turns out to be short is a silent no-op that also
+# suppresses the implicit breakpoint. Persona alone is ~9.7k tokens, so
+# this only ever bites on a stub persona.
+_CACHE_BREAKPOINT_MIN_TOKENS = 1536
+
+
+def _stable_prefix_offset(parts: list[str], head_count: int) -> int:
+    """Character offset into the joined system prompt where T0's constant head ends.
+
+    ``0`` means "don't mark a breakpoint" — either there is no stable head
+    (no persona) or it is too short to be cacheable. Callers must treat 0
+    as absent rather than as a valid offset.
+
+    Mirrors the join in :meth:`assemble_with_budget` exactly, including
+    the empty-part filter, so the returned offset always lands on a real
+    boundary in ``system_prompt``.
+    """
+    if head_count <= 0:
+        return 0
+    head = "\n\n---\n\n".join(p for p in parts[:head_count] if p)
+    if not head or estimate_tokens(head) < _CACHE_BREAKPOINT_MIN_TOKENS:
+        return 0
+    return len(head)
 
 
 # P44: how many sessions keep a prefix snapshot alive. Divergence only
@@ -2844,6 +2882,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # cluster comments still apply (e.g. K28 turning_over must
         # follow K14 absence_curiosity — both T6).
         system_parts: list[str] = []
+        # How many leading ``system_parts`` entries are byte-stable turn
+        # over turn: persona + the constant grammar addenda, and nothing
+        # after. This is where the explicit cache breakpoint goes, so it
+        # deliberately stops short of ``profile_block`` — which is filed
+        # under T0 but measured moving on 30% of turns.
+        stable_head_parts = 0
 
         # ── T0: STABLE ────────────────────────────────────────────────
         # Persona + grammar addenda + narrative + profile +
@@ -2883,6 +2927,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 self._resolve_user_display_name(),
             )
             system_parts.append(learned_style_addendum)
+            # End of the genuinely constant head. Everything appended
+            # from here on moves on some cadence, so the breakpoint must
+            # not include it.
+            stable_head_parts = len(system_parts)
         if profile_block:
             system_parts.append(profile_block)
         if petname_block:
@@ -3641,6 +3689,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts.insert(t3_insert_index, relevant_context_block)
 
         system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
+        cache_breakpoint_at = _stable_prefix_offset(
+            system_parts, stable_head_parts,
+        )
 
         # Pre-build per-block telemetry. Per-block estimates use the same
         # heuristic as ``estimate_tokens`` so the sum is internally consistent
@@ -3697,7 +3748,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
 
         messages: list[dict[str, Any]] = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+            system_msg: dict[str, Any] = {
+                "role": "system", "content": system_prompt,
+            }
+            if cache_breakpoint_at:
+                system_msg[CACHE_BREAKPOINT_KEY] = cache_breakpoint_at
+            messages.append(system_msg)
         messages.extend(history_dicts)
         if cleaned_user:
             messages.append({"role": "user", "content": cleaned_user})
