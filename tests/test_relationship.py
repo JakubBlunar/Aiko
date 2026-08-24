@@ -88,7 +88,31 @@ class RenderAmbientTests(unittest.TestCase):
         s = _state(turns=10, first_seen_days_ago=4)
         line = render_ambient(s, now=datetime.now(timezone.utc))
         self.assertIn("4 days", line)
-        self.assertIn("10 turns", line)
+        self.assertIn("~10 turns", line)
+
+    def test_the_turn_count_is_coarsened(self):
+        """T1 renders on most turns, so an exact count is the expensive
+        kind of byte: it moves the prefix every turn and forfeits the
+        cache for everything after it.
+
+        Rounded DOWN, so the line never claims more history than there
+        is.
+        """
+        s = _state(turns=1487, first_seen_days_ago=40)
+        line = render_ambient(s, now=datetime.now(timezone.utc))
+        self.assertIn("~1400 turns", line)
+        self.assertNotIn("1487", line)
+
+    def test_the_coarsened_count_holds_still_across_turns(self):
+        """The point of the exercise: the same bytes on adjacent turns."""
+        lines = {
+            render_ambient(
+                _state(turns=n, first_seen_days_ago=40),
+                now=datetime.now(timezone.utc),
+            )
+            for n in range(1400, 1500)
+        }
+        self.assertEqual(len(lines), 1)
 
     def test_milestone_overrides_age_suffix(self):
         s = _state(turns=120, first_seen_days_ago=15, milestone="first_hundred_turns")
@@ -111,7 +135,7 @@ class RenderAmbientTests(unittest.TestCase):
         )
         line = render_ambient(s, now=now)
         self.assertNotIn("Recent milestone", line)
-        self.assertIn("1490 turns", line)
+        self.assertIn("~1400 turns", line)
 
 
 class RelationshipTrackerTests(unittest.TestCase):

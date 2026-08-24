@@ -1525,6 +1525,18 @@ observed overlap rate — the honest first step is to score the current T3
 selection against the current summary for a few hundred turns and find out
 whether the overlap is 2% or 30%.
 
+**What the cache work added to the case.** The four-breakpoint measurement
+in [`docs/prompt-caching.md`](../prompt-caching.md) put a number on the
+churn: `relevant_context` is byte-different from the previous turn on
+**94.4%** of 1,081 logged turns, which is the highest of any block in the
+prompt. That matters more than it sounds, because the breakpoint at the
+end of T3 already *covers* 66,355 chars — 90% of the system prompt — and
+only gets to read them on the 5.6% of turns T3 held still. Moving that
+rate to even 40% would be worth more than every other cache boundary
+combined, which makes this the largest single item on this page. It also
+reframes the work: the goal is not only to stop paying for a duplicated
+memory, it is to make the region *repeat* when the topic has not moved.
+
 **Open questions.** Does the same argument apply to `thread_note_text` and
 to `continuity_block`, which are also narrative restatements of stored
 material? Should the penalty be symmetric — should compaction avoid

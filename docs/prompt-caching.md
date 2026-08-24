@@ -569,9 +569,12 @@ message (`CACHE_BREAKPOINT_KEY`, the same smuggling pattern as
    same join and the same empty-part filter as the real prompt, so the
    offset always lands on a block boundary, and returns `0` (meaning
    "don't mark") when the head is under `_CACHE_BREAKPOINT_MIN_TOKENS`.
-2. **`openai_compatible_client`** splits that message into two
-   `input_text` blocks at the offset and puts
-   `prompt_cache_breakpoint: {"mode": "explicit"}` on the first.
+2. **`openai_compatible_client`** splits that message into `input_text`
+   blocks at each offset and puts `prompt_cache_breakpoint: {"mode":
+   "explicit"}` on every block but the last.
+
+`_cache_breakpoints` picks the offsets; there are four of them and which
+four is a measurement, recorded under "Four breakpoints" below.
 
 Measured on the live persona: the head is **40,676 chars — 55% of the
 73,919-char system prompt, ~9,700 of 17,660 prompt tokens**. That moves
@@ -607,10 +610,9 @@ Four things that are easy to get wrong, all pinned by
 *ahead* of both `arc_block` (45% of breaks) and `profile_block` (30%), so
 their churn no longer costs anything on the cached head — the whole
 "fixing the top of the list promotes whatever was hiding behind it"
-treadmill stops being urgent on 5.6. It still matters for a *second*
-breakpoint after T2, which is where the next ~10% would come from, and it
-still matters on every other provider. `lost_pct` and the `diverged`
-histogram remain the right instrument for those.
+treadmill stops being urgent on 5.6. It still matters for the *later*
+breakpoints (below) and on every other provider. `lost_pct` and the
+`diverged` histogram remain the right instrument for those.
 
 #### Confirmed live, Aug 24
 
@@ -647,6 +649,54 @@ not designed for and is worth ~15k tokens on the turns it runs (note the
 it chose not to call anything). And 18 cold starts in 60 turns is the
 remaining headroom — each one is a full-price write, so anything that
 shortens sessions or idles past 30 minutes pays for a re-warm.
+
+#### Four breakpoints, chosen by measurement
+
+The service reads from the **longest marked prefix that matches**, and
+allows four marks per request. That makes a later mark strictly free in
+expectation: on a turn where its span happened to hold still it caches
+more, and on a turn where the span moved an earlier mark matches exactly
+as it would have anyway. There is no turn where adding one is worse — the
+only cost is a few more content blocks on the wire.
+
+So the question is only *which* four. Over the 1,081 turns in
+`data/prompt-cache.jsonl` with a divergence signal, taking each tier
+boundary in turn and asking "did any block before this one change since
+last turn, and how much would the mark have covered":
+
+| Boundary | Matches | Covers (mean chars) |
+| --- | --- | --- |
+| T0 head | 99.7% | 43,065 |
+| end of T0 | 71.6% | 46,307 |
+| end of T1 | 57.0% | 47,679 |
+| end of T2 | 42.9% | 49,006 |
+| end of T3 | 5.6% | 66,355 |
+| ends of T4 / T5 / T6 | 5.6% | 67k–74k |
+
+Best four-subset by expected cached chars: **head + end of T0 + end of
+T2 + end of T3**, worth **47.3k of a 74.1k prompt (63.9%)** against
+**42.9k (58.0%)** for the head alone — about 930 more tokens cached per
+turn. T1 loses its slot to T2 because T1's extra span over T0 is only
+~1.4k chars while T2's is ~2.7k. T3 keeps its slot despite matching on
+one turn in eighteen, because when it does match it covers 17k more than
+anything before it. Nothing past T3 is worth a mark: those boundaries
+match no more often than T3 and add under 8k.
+
+Two dependencies are worth stating plainly, because both are invisible
+if they break:
+
+- **The T1 and T2 rates above assume the coarsened counters.** With
+  `arc_block`'s live turn count and `relationship_block`'s live total in
+  place, those boundaries matched **15.3%** and **12.8%** instead of 57%
+  and 43%, and the whole four-mark scheme was worth +1.0 point rather
+  than +5.9. `arc_block` alone changed on 77% of turns. Putting a live
+  integer back into T0–T2 costs two of the four marks silently — see
+  [`app/core/infra/prompt_stability.py`](../app/core/infra/prompt_stability.py).
+- **T3's 5.6% is `relevant_context` re-retrieving on 94% of turns.** That
+  is the single biggest remaining item on this page: the T3 boundary
+  already covers 66k chars, so moving it from 5.6% to even 40% would be
+  worth more than everything above it combined. Deduping the retrieved
+  region against the rolling summary is the lever.
 
 ### The original open question
 

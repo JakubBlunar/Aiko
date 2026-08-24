@@ -553,6 +553,8 @@ _RESPONSES_DEFAULT_RESERVE = 1024
 # for every new model, and silently under-reports gpt-6.
 _GPT_VERSION_RE = re.compile(r"(?:^|/)gpt-(\d+)\.(\d+)", re.IGNORECASE)
 _EXPLICIT_CACHE_MIN_VERSION = (5, 6)
+# Hard service limit on ``prompt_cache_breakpoint`` markers per request.
+_MAX_CACHE_BREAKPOINTS = 4
 
 
 def _supports_explicit_cache_breakpoints(model: str) -> bool:
@@ -573,24 +575,38 @@ def _supports_explicit_cache_breakpoints(model: str) -> bool:
     return version >= _EXPLICIT_CACHE_MIN_VERSION
 
 
-def _cache_breakpoint_offset(msg: dict[str, Any]) -> int:
-    """Usable breakpoint offset carried by ``msg``, or ``0`` for none.
+def _cache_breakpoint_offsets(msg: dict[str, Any]) -> tuple[int, ...]:
+    """Usable breakpoint offsets carried by ``msg``, ascending.
 
-    Validates against the message's own content so a stale or malformed
-    offset degrades to "no breakpoint" rather than slicing text in the
-    wrong place or raising mid-request.
+    Accepts a bare int or any sequence of them. Everything is validated
+    against the message's own content, so a stale or malformed offset
+    degrades to "no breakpoint" rather than slicing text in the wrong
+    place or raising mid-request.
+
+    Duplicates are collapsed and the order is normalised because the two
+    matter downstream: a repeated offset would emit an empty content
+    block, and an unsorted pair would mark a *later* prefix first, which
+    is not the prefix it claims to be.
+
+    OpenAI allows at most four breakpoints per request; anything past
+    that is dropped rather than sent, since the whole request 400s.
     """
     raw = msg.get(CACHE_BREAKPOINT_KEY)
     if raw is None:
-        return 0
-    try:
-        offset = int(raw)
-    except (TypeError, ValueError):
-        return 0
+        return ()
+    values = raw if isinstance(raw, (list, tuple)) else (raw,)
     content = msg.get("content")
     if not isinstance(content, str) or not content:
-        return 0
-    return offset if 0 < offset <= len(content) else 0
+        return ()
+    seen: set[int] = set()
+    for value in values:
+        try:
+            offset = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 < offset <= len(content):
+            seen.add(offset)
+    return tuple(sorted(seen))[:_MAX_CACHE_BREAKPOINTS]
 
 
 def _use_responses_api(model: str) -> bool:
@@ -1155,7 +1171,7 @@ class OpenAICompatibleClient:
         mark_breakpoint = (
             _supports_explicit_cache_breakpoints(model)
             and any(
-                _cache_breakpoint_offset(m)
+                _cache_breakpoint_offsets(m)
                 for m in messages if isinstance(m, dict)
             )
         )
@@ -2085,10 +2101,10 @@ def _messages_to_responses_input(
     the Responses analogue of a ``role=tool`` message.
 
     With ``mark_cache_breakpoint``, a message carrying
-    :data:`CACHE_BREAKPOINT_KEY` is emitted as a *two-block* content array
-    split at that offset, with ``prompt_cache_breakpoint`` on the first
-    block. Off by default because the marker is a hard 400 on models that
-    predate it.
+    :data:`CACHE_BREAKPOINT_KEY` is emitted as a *multi-block* content
+    array split at each offset, with ``prompt_cache_breakpoint`` on every
+    block but the last. Off by default because the marker is a hard 400
+    on models that predate it.
 
     The caller's list is never mutated; a fresh list is returned.
     """
@@ -2167,32 +2183,51 @@ def _messages_to_responses_input(
                 if role in ("system", "developer", "user", "assistant")
                 else "user"
             )
-            offset = (
-                _cache_breakpoint_offset(msg) if mark_cache_breakpoint else 0
+            offsets = (
+                _cache_breakpoint_offsets(msg)
+                if mark_cache_breakpoint
+                else ()
             )
-            if offset:
+            if offsets:
                 out.append({
                     "role": resolved_role,
-                    "content": _split_at_breakpoint(content, offset),
+                    "content": _split_at_breakpoints(content, offsets),
                 })
             else:
                 out.append({"role": resolved_role, "content": content})
     return out
 
 
-def _split_at_breakpoint(content: str, offset: int) -> list[dict[str, Any]]:
-    """Content blocks for ``content`` with a breakpoint after ``offset`` chars.
+def _split_at_breakpoints(
+    content: str, offsets: tuple[int, ...],
+) -> list[dict[str, Any]]:
+    """Content blocks for ``content``, marked after each of ``offsets``.
 
-    The tail block is omitted when the split lands at the very end, since
-    an empty ``input_text`` is not worth sending. ``offset`` is assumed
-    valid — :func:`_cache_breakpoint_offset` is the guard.
+    Every block but the last carries a breakpoint; the last is the
+    remainder, which has nothing to mark because a breakpoint at the very
+    end of the message is what the implicit one already does.
+
+    More than one is worth having because the service reads from the
+    LONGEST matching prefix among the breakpoints it finds. So a second,
+    later mark is a free upgrade rather than a gamble: on turns where the
+    extra span happens to be byte-identical it caches more, and on turns
+    where it isn't the earlier mark still matches exactly as before.
+
+    The tail block is omitted when the last split lands at the very end,
+    since an empty ``input_text`` is not worth sending. ``offsets`` is
+    assumed sorted, deduplicated and in range —
+    :func:`_cache_breakpoint_offsets` is the guard.
     """
-    blocks: list[dict[str, Any]] = [{
-        "type": "input_text",
-        "text": content[:offset],
-        "prompt_cache_breakpoint": {"mode": "explicit"},
-    }]
-    tail = content[offset:]
+    blocks: list[dict[str, Any]] = []
+    start = 0
+    for offset in offsets:
+        blocks.append({
+            "type": "input_text",
+            "text": content[start:offset],
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        })
+        start = offset
+    tail = content[start:]
     if tail:
         blocks.append({"type": "input_text", "text": tail})
     return blocks

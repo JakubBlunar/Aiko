@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 from app.core.infra import timephrase
+from app.core.infra.prompt_stability import coarse_count
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -500,7 +501,15 @@ def render_ambient(
     if state.milestone_label and _milestone_is_recent(state, now=now):
         suffix = f" Recent milestone: {state.milestone_label.replace('_', ' ')}."
     elif age_days >= 1.0:
-        suffix = f" You've been talking for ~{int(age_days)} days, {state.total_turns} turns."
+        # Coarsened because this line is T1 and the exact turn count moved
+        # every turn, which forfeits the cache prefix for every block
+        # after it. The "~" was always there; now it is honest about both
+        # numbers. See ``prompt_stability.coarse_count``.
+        turns = coarse_count(state.total_turns)
+        suffix = (
+            f" You've been talking for ~{int(age_days)} days, "
+            f"~{turns} turns."
+        )
     else:
         suffix = ""
     return base + suffix
