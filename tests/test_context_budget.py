@@ -463,6 +463,9 @@ def _ms() -> SimpleNamespace:
         concept_importance_affect_lift=0.5,
         concept_importance_affect_min_samples=3,
         concept_surfacing_overfetch=5,
+        # P52: production value. Below 2.0, so part of the pinned lane
+        # survives to the next turn (see ``CoreOverfetchTests``).
+        concept_core_overfetch=1.5,
         # L30a: on, as in production. Fixtures whose concepts are all
         # ``active`` are unaffected -- the lane reads candidates only.
         hypothesis_surfacing_enabled=True,
@@ -984,6 +987,82 @@ class HabituationWiringTests(unittest.TestCase):
         self.assertIn(3, pinned)
         self.assertEqual(len(pinned), 2)
         self.assertTrue(pinned & {1, 2})
+
+    # ── P52: the draw depth IS the rotation policy ────────────────────
+    # The lane keeps the ``core_cap`` most-rested of whatever it drew, so a
+    # pick survives to the next turn only while the draw stays shallower
+    # than the set habituation marked stale -- which is everything rendered
+    # last turn, core lane AND flex lane. With both caps at C that puts the
+    # cliff at a multiplier of 3, and 3 was the hard-coded value: a draw of
+    # 45 against 45 stamped, sitting exactly on the edge. Which is why the
+    # production measurement came back at precisely zero carry-over over
+    # 1,160 turn pairs rather than merely low. These pin the dial.
+
+    def _core_over_turns(
+        self, *, overfetch: float, turns: int = 3,
+    ) -> list[set[int]]:
+        """Pinned core ids for consecutive turns at a given draw depth."""
+        concepts = [
+            SimpleNamespace(
+                concept_id=100 + i, label=f"core trait {i}",
+                confidence=0.95 - i * 0.01, plasticity=0.3,
+                kind="identity", subject="user", status="active",
+                last_reinforced_at=None,
+            )
+            for i in range(12)
+        ]
+        kv = _FakeKV()
+        tracker = _FakeTracker(10)
+        host = self._host(concepts, near_score=0.0, tracker=tracker, kv=kv)
+        host._memory_settings.context_budget_core_cap = 4
+        host._memory_settings.concept_core_overfetch = overfetch
+
+        out: list[set[int]] = []
+        for _ in range(turns):
+            region = self._run(host, text="what's the weather")
+            out.append({
+                cid for cid, e in self._trace_by_id(region).items()
+                if e.get("pinned")
+            })
+            tracker.total_turns += 1
+        return out
+
+    def test_shallow_draw_carries_core_picks_forward(self) -> None:
+        # The point of the setting: at 1.5x she keeps part of what was in
+        # view instead of replacing all of it, on every consecutive pair.
+        # The exact share oscillates (the flex lane's stamps move under the
+        # rest-ranking), so this asserts the invariant, not a fraction.
+        pinned = self._core_over_turns(overfetch=1.5, turns=4)
+        for turn, (before, after) in enumerate(
+            zip(pinned, pinned[1:], strict=False), start=1
+        ):
+            with self.subTest(pair=turn):
+                self.assertEqual(len(after), 4)
+                self.assertTrue(
+                    before & after,
+                    f"turn {turn} kept nothing: {before} -> {after}",
+                )
+
+    def test_the_shipped_depth_kept_nothing(self) -> None:
+        # The regression this setting exists to prevent, and the thing the
+        # production telemetry showed: at 3x the lane flips between two
+        # disjoint halves on a two-turn cycle, so adjacent turns share
+        # nothing while ids still get reused across the corpus -- which is
+        # exactly the "zero Jaccard but 15x reuse" signature that was
+        # measured.
+        pinned = self._core_over_turns(overfetch=3.0, turns=3)
+        self.assertFalse(pinned[0] & pinned[1])
+        self.assertFalse(pinned[1] & pinned[2])
+        self.assertEqual(pinned[0], pinned[2])
+
+    def test_draw_equal_to_the_cap_freezes_the_lane(self) -> None:
+        # The other end: with no spare candidates habituation has nothing
+        # to rotate, so the lane is fully stable. A legitimate setting, and
+        # the reason the floor is 1.0 rather than something above it.
+        pinned = self._core_over_turns(overfetch=1.0, turns=3)
+        self.assertEqual(pinned[0], pinned[1])
+        self.assertEqual(pinned[1], pinned[2])
+        self.assertEqual(len(pinned[0]), 4)
 
     def test_salience_lifts_freshly_changed_concept(self) -> None:
         # Two equally-relevant affective concepts; only #21 was just

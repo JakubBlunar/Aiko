@@ -303,6 +303,7 @@ All under `memory.` — full descriptions + defaults in
 | `context_budget_{memory,cluster,concept}_min_relevance` | `0.0` / `0.30` / `0.30` | turn-relevance floor |
 | `context_budget_core_cap` | `2` | max pinned always-on core concepts across kinds/subjects (`0` disables the lane) |
 | `context_budget_core_min_confidence` | `0.75` | global fallback confidence bar for the core lane (per-kind `core_min_confidence` overrides) |
+| `concept_core_overfetch` | `1.5` | how deep the core lane draws relative to its cap, which is what decides how much of the pinned lane carries to the next turn — under `3` (with equal caps) some does, at or above it none does. At the live caps `1.5` keeps 53% and `3.0` kept 0% (P52) |
 | `concept_core_openness_slots` | `2` | slots of that cap reserved for generative-role concepts otherwise ineligible for the lane (`0` disables the reserve) |
 | `concept_core_openness_min_confidence` | `0.5` | bar a reserved pick must clear |
 | `concept_flex_generative_floor` | `1` | swap the weakest selected guide for the strongest generative concept when the flex pick has none (`0` disables) |

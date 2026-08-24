@@ -1218,12 +1218,17 @@ compound across every K-series entry:
   three-word memory "thinking about it"). Memories are also only 16% of
   the block, so a perfect dedup would have been aimed at its smallest
   quarter.
-- **P52 — what P51 became.** The same measurement found the concept lanes
-  are **73% of T3** (29.6 lines, ~8.5k chars/turn) and **100% different
-  from the previous turn** on all 1,160 pairs — L23/L40 habituation
-  rotating on purpose, but with `core_cap` at 15 against a code default of
-  2, so the round-robin cycles 90 concepts across three turns instead of
-  6. Cost and quality point the same way for once.
+- **P52 — what P51 became; turnover half shipped.** The same measurement
+  found the concept lanes are **73% of T3** (29.6 lines, ~8.5k chars/turn)
+  and were **100% different from the previous turn** on all 1,160 pairs.
+  Cause: the core lane's draw depth *is* its rotation policy, with a cliff
+  at `multiplier × core_cap = 2 × core_cap + concept_cap`. The multiplier
+  was a hard-coded `3` and both caps are `15` — a draw of 45 against 45
+  stamped, landing **exactly on the edge**, which is why carry-over
+  measured at precisely zero. Put there when `core_cap` was 2 and never
+  revisited when the gate tuner raised it. Now `concept_core_overfetch`,
+  default 1.5: 8 of 15 pinned concepts persist, 7 rotate. The volume half
+  (30 lines a turn) is still open.
 - **P36.** Idle-worker LLM pile-up — **phase 1 shipped**: workers report
   pending work via a `demand()` probe, the scheduler ranks by urgency
   instead of age, and the budget splits into a compute lane and an LLM

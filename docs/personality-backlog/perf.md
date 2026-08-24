@@ -1623,11 +1623,12 @@ individually defensible and jointly expensive:
   code is **2** — the live value is 15, and the surrounding logic
   (`core_cap * 3` over-fetch, a 4-turn habituation window) was reasoned
   about at the smaller number.
-- **Turnover.** Those 30 lines are **100% different from the previous
-  turn's 30 lines**, on all 1,160 measured pairs. So each turn spends
-  ~1,900 uncached tokens telling her thirty things about Jacob, and next
-  turn spends ~1,900 more telling her thirty *different* things. Over
-  three turns she is told ninety.
+- **Turnover.** Those 30 lines were **100% different from the previous
+  turn's 30 lines**, on all 1,160 measured pairs. So each turn spent
+  ~1,900 uncached tokens telling her thirty things about Jacob, and the
+  next turn spent ~1,900 more telling her thirty *different* things. Over
+  three turns she was told ninety. **Fixed** — see the draw-depth section
+  below.
 
 Neither number is wrong on its own terms. The rotation is L23/L40 working
 as designed — "surfacing rotates like a mind moving on, not a loop
@@ -1652,30 +1653,67 @@ and rest-ranking at ~1825–1858),
 [`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
 (the caps).
 
-**Three directions, not mutually exclusive.**
+### The draw depth turned out to be the whole mechanism — shipped
+
+The rotation is not governed by the habituation window, or by a policy, or
+by anything that reads the topic. It is governed by **how deep the core
+lane draws**, and the relationship is a cliff rather than a gradient.
+
+The lane keeps the `core_cap` most-rested of what it drew. So a pick
+survives to the next turn only while the draw stays *shallower* than the
+set habituation already marked stale — and what got marked is everything
+rendered last turn, **both lanes**, `core_cap + context_budget_concept_cap`
+rows. Carry-over is positive iff
+
+```
+core_cap * multiplier  <  2 * core_cap + concept_cap
+```
+
+which with the two caps equal is just "multiplier under 3". The multiplier
+was a hard-coded `3` and both live caps are `15`: a draw of 45 against 45
+stamped. **Exactly on the edge.** That is why the measurement came back at
+*precisely* zero rather than merely low — it was not a tuning choice that
+happened to be aggressive, it was a constant landing on a boundary nobody
+knew was there, put there when `core_cap` was 2 and never revisited when
+the gate tuner raised it to 15.
+
+Simulated at the live caps over 8 turns:
+
+| Multiplier | Draw | Carry-over/turn | Distinct pinned over 8 turns |
+| --- | --- | --- | --- |
+| 3.0 (was) | 45 | 2% | 41 |
+| 2.0 | 30 | 12% | 30 |
+| **1.5 (now)** | **22** | **53%** | **22** |
+| 1.0 | 15 | 100% (frozen) | 15 |
+
+Shipped as `memory.concept_core_overfetch`, default **1.5**: about 8 of the
+15 pinned concepts persist across a turn and 7 rotate. The trade is
+explicit — breadth drops from 41 distinct concepts across 8 turns to 22 —
+and the default buys continuity, because thirty facts a turn with nothing
+held over is not how attention works. `3.0` remains reachable to restore
+the old behaviour; note that raising it *above* 3 does not rotate more
+thoroughly, it only lengthens the cycle.
+
+**Still open.** This addressed the turnover half. The volume half is
+untouched: the two lanes still render 29.6 lines and ~8.5k chars per turn.
+Two remaining directions, in ascending invasiveness:
 
 1. **Trim the caps.** Purely a size play, no mechanism change. Halving
    both concept caps recovers ~950 tokens/turn of full-price input. Needs
-   a listening check, not a test.
-2. **Let the core lane persist while the topic holds.** Carry the previous
-   turn's core picks forward when the topic has not moved (the arc /
-   topic-cluster signals already say whether it has), and rotate only on a
-   topic change. This is the version with a quality story on both sides:
-   continuity of attention when she is still on something, and rotation
-   when the subject actually turns.
-3. **Widen the habituation window instead of the pool.** The round-robin
-   period is `over_fetch / cap` ≈ 3 turns. Raising the over-fetch
-   multiplier lengthens it without touching the rotation policy — cheapest
-   of the three to try, and it is one constant.
-
-**Measure the second one first.** The rotation is currently *total*, so
-any carry-over is a behaviour change a listener would notice. Cheapest
-honest first step is direction 3 with the multiplier raised, since it
-moves the same dial by a smaller amount and is a one-line revert.
+   a listening check, not a test. Worth re-asking now that the pinned lane
+   is stable, since a stable 15 reads very differently from a rotating 15.
+2. **Make the carry-over topic-aware.** The current dial is unconditional:
+   it keeps the most-rested picks whether or not the subject moved. Reading
+   the arc / topic-cluster signals would let it hold concepts while she is
+   still on something and rotate deliberately when the subject turns. That
+   is the version with a quality story on both sides, and it is only worth
+   building if the flat 53% turns out to feel wrong in one direction or the
+   other.
 
 **Related.** P51 (where this came from), P42 (the T3 budget is a residual,
 so these are the expensive kind of tokens), P43 (105 blocks, no
 arbitration — the same "every lane fills its cap" pattern), L23 / L40 (the
 habituation and rest-ranking design this would be adjusting).
 
-**Effort.** Small for direction 1 or 3, Medium for direction 2.
+**Effort.** Turnover: shipped. Volume: Small to trim the caps, Medium to
+make the carry-over topic-aware.
