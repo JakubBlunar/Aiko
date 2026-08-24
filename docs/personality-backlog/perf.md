@@ -1359,3 +1359,137 @@ is the transcript itself.
 (the obvious host — it already runs a slow maintenance cadence).
 
 **Effort.** Small (a), Small (b), Small (c, mostly a decision).
+
+---
+
+## P50. The persona hoist has no cap, and it is the second-largest block
+
+**Motivation.** `handling_notes_block` is the [persona
+hoist](../cue-pool.md#the-persona-hoist): conditional handling notes live
+outside the always-on persona and are pasted in only on the turns their cue
+actually renders. The design premise is stated in
+`data/persona/conditional_handling.txt` itself — each section is for a
+*minority* of turns.
+
+It is not behaving like a minority. H52 measured it at **5,517 chars mean,
+p90 8,017, max 18,446**, which makes it the largest block in the prompt
+after the T3 region. And the mechanism has no brake at all:
+
+```python
+# _render_handling_notes: walk every block with a registered header,
+# hoist the note of each one that rendered a non-empty string.
+for block in self._handling_headers():
+    ...
+    if note and note not in seen:
+        parts.append(note)
+```
+
+**There is no cap on how many sections can hoist on one turn.** With 56
+registered headers at a 961-char mean, the theoretical ceiling is **53,807
+chars** — larger than the persona. Deduplication is by full note text, so
+families that share a section (three style detectors → one "Style patterns
+I'm in:") collapse correctly; what does not collapse is a busy turn where a
+lull, a repair, two topic reads and a gap cue each contribute a distinct
+600–2,900 char section.
+
+The largest sections are the ones most likely to co-fire: "Style patterns
+I'm in:" (2,893), "Feelings at {user_name}:" (1,923, and its block pulls
+"The mask:" too, for ~3,113 together), "When you have your own take:"
+(1,748).
+
+**Why it matters beyond tokens.** This is instruction text, and the failure
+mode of hoisting fifteen sections is not cost — it is that she is handed a
+manual on the turn she most needs to be responsive. P31 argues the same
+thing about the resting persona floor; this is the acute version.
+
+**Key files.**
+[`prompt_assembler_helpers_mixin.py`](../../app/core/session/prompt_assembler_helpers_mixin.py)
+(`_render_handling_notes`, `_handling_headers`),
+[`prompt_support.py`](../../app/core/session/prompt_support.py)
+(`HANDLING_SECTIONS`, `_STAYS_IN_T0`),
+[`cue_accounting.py`](../../app/core/proactive/cue_accounting.py)
+(`CuePolicy.handling_section`),
+`data/persona/conditional_handling.txt` (the 56 sections).
+
+**Sketched approach.** A cap on hoisted sections per turn, spent by
+priority rather than by tier order — which is what the walk uses today, so a
+T4 note wins over a T6 note for no reason other than where it was
+registered. The priority signal already exists in two places: K92's stance
+arbiter already decides which *cue* leads the turn
+([`stance.py`](../../app/core/conversation/stance.py) `_OFFERS`), and L37's
+outcome rates already say which cues land. Hoisting the notes for the cues
+that won arbitration — rather than for all of them — is the same decision
+made once instead of twice.
+
+Instrument first: record hoisted section count and total chars per turn, so
+the cap is chosen against the real distribution instead of guessed.
+
+**Open questions.** Should a section whose cue lost arbitration hoist a
+*shortened* form rather than nothing — the cue is still in the prompt, so
+dropping its handling note entirely leaves an unexplained cue, which is the
+failure the hoist exists to prevent. Does the cap interact with
+`aggressive`, which currently drops cues but not their notes?
+
+**Related.** P43 (block arbitration — this is the same problem one level
+down, *inside* a single block), P31 (the resting persona floor),
+[cue-pool.md](../cue-pool.md#the-persona-hoist).
+
+**Effort.** Small (cap + telemetry), Medium (arbitration-driven selection).
+
+---
+
+## P51. `relevant_context` and the summary do not know about each other
+
+**Motivation.** The T3 region is the most expensive block in the prompt at
+**17,480 chars/turn** (H52), and the rolling summary sits three tiers above
+it in T2. Nothing compares them.
+
+The dedup that *does* exist in the retrieval path is thorough, which is why
+the gap is easy to miss: exact-text dedup across merged hits, a
+cluster-aware diversity cap, a 6-hour recency penalty on
+recently-surfaced memories with a 7-day revival bonus, L23 habituation
+damping for concepts, `profile_block` overlap suppression, and an explicit
+exclusion of the *current session's messages* on the grounds that they are
+already in the recent window:
+
+```python
+if exclude_session_id and h.source == "message":
+    # Don't surface lines from the *current* session --
+    # they're already in the recent-window context.
+```
+
+That comment is the exact argument for the missing case. A memory whose
+content the summary already states is in the prompt twice, in two voices,
+and the second copy costs retrieval budget that P42 has already established
+is the scarcest in the assembly.
+
+**Key files.**
+[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)
+(`build_relevant_context`),
+[`rag_retriever.py`](../../app/core/rag/rag_retriever.py) (the existing
+dedup ladder and `exclude_session_id`),
+[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
+(where a penalty would apply).
+
+**Sketched approach.** The summary text is already available to the
+assembler when the T3 region is built, and the embedding machinery is
+already in hand — so a similarity penalty against the summary fits the
+selector's existing weight model without new infrastructure. Prefer a
+*penalty* over an exclusion: a memory the summary mentions in passing may
+still be worth surfacing in full, and hard-excluding it would make the
+summary suppress its own sources.
+
+Measure first. This is filed on the strength of the code shape, not of an
+observed overlap rate — the honest first step is to score the current T3
+selection against the current summary for a few hundred turns and find out
+whether the overlap is 2% or 30%.
+
+**Open questions.** Does the same argument apply to `thread_note_text` and
+to `continuity_block`, which are also narrative restatements of stored
+material? Should the penalty be symmetric — should compaction avoid
+summarising what T3 reliably surfaces anyway?
+
+**Related.** P42 (the T3 budget is a residual, so wasted T3 tokens are the
+expensive kind), P30.
+
+**Effort.** Small to measure, Small to apply once the rate is known.

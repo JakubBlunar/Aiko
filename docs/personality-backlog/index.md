@@ -191,6 +191,16 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
   ruff hook, then CI, then a narrow ESLint for `web/`'s 196 files
   (currently `tsc -b` only), then the deliberately-deferred `I` / `UP` /
   `SIM` rule sets.
+- **A6.** 107 `_render_*_block` methods hand-copy the same gate /
+  override / try-except frame (88 settings-gate `getattr`s, 52 identical
+  except blocks). The cost isn't the line count — it's that a swallowed
+  render is indistinguishable from a gated one, which is how three blocks
+  went 253 turns without firing and nothing said so.
+- **A7.** Six `AgentSettings` fields parse and then do nothing. Four want
+  wiring (the behaviour exists, hardcoded), one wants deleting, one is
+  genuinely reserved. `persona_task_banner_enabled` is a user-visible
+  defect: the toggle and the component's `enabled` prop both exist and
+  nothing connects them.
 
 ### B. Avatar + expressiveness — [`avatar.md`](avatar.md)
 
@@ -1195,6 +1205,14 @@ compound across every K-series entry:
   ~600k/yr, `concept_events`, `turn_prompt_blocks`, `cue_decisions`)
   are the fastest-growing tables by far, and three of them have a
   `prune()` nobody calls. Queries stay flat to 5M rows; disk does not.
+- **P50.** The persona hoist has no cap on how many handling sections
+  one turn can pull. 56 sections at a 961-char mean; measured at 5.5k
+  mean and 18.4k max, against a design premise of "a minority of turns"
+  and a ceiling of 53.8k. Same problem as P43, one level down.
+- **P51.** `relevant_context` (17.5k chars, the most expensive block)
+  never dedupes against the rolling summary, though it dedupes against
+  almost everything else — including the current session's messages, on
+  the exact argument that also applies here.
 - **P36.** Idle-worker LLM pile-up — **phase 1 shipped**: workers report
   pending work via a `demand()` probe, the scheduler ranks by urgency
   instead of age, and the budget splits into a compute lane and an LLM

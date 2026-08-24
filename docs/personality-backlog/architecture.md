@@ -39,9 +39,16 @@ count differs from what you remember, the one here is the measured one.
 > [`WebFacadeMixin`](../../app/core/session/web_facade_mixin.py). The
 > `_force_*` debug family is gone, replaced by
 > [`DebugOverrides`](../../app/core/session/debug_overrides.py).
-> `app/mcp/server_tools/` is down from 569 reaches to **483** and is
+> `app/mcp/server_tools/` is down from 569 reaches to **467** and is
 > ratcheted by [`tests/test_private_reach_guard.py`](../../tests/test_private_reach_guard.py).
 > What remains is bucket 2 below: typed handles for the subsystems.
+>
+> **The ratchet is now fully spent, and that is a live constraint rather than
+> a note for later.** The guard asserts *equality*, not a ceiling, so at
+> 467/467 the next debug tool that touches `session._anything` fails the
+> suite until a reach is removed or an accessor is added first. If you are
+> about to build MCP tooling for a new feature, bucket 2 stopped being
+> optional.
 >
 > Two corrections to the original numbers, both from the guard rather than a
 > grep. The count was **636**, not 294, once reflective reads
@@ -124,10 +131,14 @@ reached name *exists*, so a rename now fails a test instead of 404-ing a
 route at runtime, and it ratchets in both directions so a package can't
 silently re-earn headroom when an unrelated cleanup removes a reach.
 
-What's left is bucket 2. The 483 remaining reaches are mostly subsystem
-handles (`_memory`, `_rag_store`, `_affect_store`, …), which want a single
-typed accessor — `session.services.memory` — rather than 483 individual
-public methods.
+What's left is bucket 2. The 467 remaining reaches are mostly subsystem
+handles, which want a single typed accessor — `session.services.memory` —
+rather than 467 individual public methods. The distribution says where to
+start: `_settings` alone is **97** reaches, `_chat_db` **59**,
+`_memory_settings` **34**, `_user_id` **28**. Those four are 47% of the
+total, they are all read-only handles, and none of them needs a per-call
+decision — which makes them the cheapest possible first slice and the one
+that buys back the most headroom per hour spent.
 
 **Effort.** Large, but splittable per attribute — the only A-item where
 partial adoption is genuinely useful.
@@ -180,43 +191,84 @@ Worth deciding explicitly rather than by default.
 
 ---
 
-## A3. The 23 Python and 3 TypeScript files over the declared budget
+## A3. The files over the declared budget — and the fact that they grow
 
 **Motivation.** [`AGENTS.md`](../../AGENTS.md) declares ~1,500 lines for
-Python and ~1,000 for React/TS, with a hard "split before ~2,500". These
-are the files past it, measured after the lint pass:
+Python and ~1,000 for React/TS, with a hard "split before ~2,500".
 
-| Lines | File |
-| --- | --- |
-| 3,854 | `app/core/infra/memory_settings.py` |
-| 3,244 | `app/core/session/prompt_assembler.py` |
-| 3,095 | `app/core/session/inner_life_part2.py` |
-| 2,750 | `app/mcp/server_tools/memory_worker_tools.py` |
-| 2,713 | `app/core/session/speaking_workers_init_mixin.py` |
-| 2,656 | `app/mcp/server_tools/proactive_task_tools.py` |
-| 2,539 | `app/core/session/inner_life_part1.py` |
-| 2,296 | `app/core/infra/agent_settings.py` |
-| 2,241 | `app/core/rag/rag_retriever.py` |
-| 2,229 | `app/core/concepts/concept_synthesis_worker.py` |
-| 2,085 | `app/mcp/server_tools/self_state_tools.py` |
-| 1,983 | `app/core/session/task_orchestration_mixin.py` |
-| 1,912 | `app/core/session/post_turn_helpers_mixin.py` |
-| 1,902 | `app/core/session/post_turn_mixin.py` |
-| 1,892 | `app/core/infra/chat_database.py` |
-| 1,869 | `app/llm/openai_compatible_client.py` |
-| 1,855 | `app/core/infra/settings.py` |
-| 1,853 | `app/core/session/inner_life_part3.py` |
-| 1,783 | `app/core/infra/agent_settings_parse.py` |
-| 1,757 | `app/core/conversation/topic_graph.py` |
-| 1,608 | `app/core/memory/memory_store.py` |
-| 1,522 | `app/core/world/world_store.py` |
-| 1,506 | `app/core/session/turn_runner.py` |
-| 1,889 | `web/src/types.ts` |
-| 1,255 | `web/src/live2d/channels/ExpressionChannel.test.ts` |
-| 1,077 | `web/src/features/settings/WorldTab.tsx` |
+**Re-measured Aug 2026, and the number that matters is not the list — it is
+the trend.** Nothing in this entry was acted on, and in the interval the
+files it names did not hold still. They grew:
 
-Seven are already past the 2,500 "split now" line. The list is here
-mainly so the split order stops being a matter of feel.
+| File | At audit | Now | Change |
+| --- | --- | --- | --- |
+| `app/core/infra/memory_settings.py` | 3,854 | **5,473** | +42% |
+| `app/core/session/inner_life_part2.py` | 3,095 | **4,166** | +35% |
+| `app/core/session/prompt_assembler.py` | 3,244 | **3,915** | +21% |
+| `app/core/session/inner_life_part1.py` | 2,539 | **3,695** | +46% |
+| `app/core/concepts/concept_synthesis_worker.py` | 2,229 | **3,771** | +69% |
+
+Files past the 2,500 "split now" line went from **7 to 17**. Files past the
+soft limit went from 23 to **28**. The declared budget is not a budget: it
+is a description of files that were already over it, and there is no brake
+of any kind — no lint rule, no test, nothing that notices. Which is worth
+saying plainly because it changes what this entry is *for*. Splitting the
+current top five buys a one-time improvement that will be gone in six
+months; the thing with lasting value is a check that fails when a file
+crosses the line, so the split happens while it is still cheap.
+
+Current state, everything over 1,200 lines (Python `app/`, TS `web/src/`):
+
+| Lines | File | |
+| --- | --- | --- |
+| 5,473 | `app/core/infra/memory_settings.py` | split now |
+| 4,166 | `app/core/session/inner_life_part2.py` | split now |
+| 3,915 | `app/core/session/prompt_assembler.py` | split now |
+| 3,771 | `app/core/concepts/concept_synthesis_worker.py` | split now |
+| 3,695 | `app/core/session/inner_life_part1.py` | split now |
+| 3,367 | `app/mcp/server_tools/proactive_task_tools.py` | split now |
+| 3,227 | `app/core/session/speaking_workers_init_mixin.py` | split now |
+| 3,045 | `app/mcp/server_tools/memory_worker_tools.py` | split now |
+| 2,807 | `app/core/session/post_turn_helpers_mixin.py` | split now |
+| 2,792 | `app/core/session/inner_life_part3.py` | split now |
+| 2,714 | `app/core/infra/agent_settings.py` | split now |
+| 2,616 | `app/core/infra/chat_database.py` | split now |
+| 2,598 | `app/core/infra/settings.py` | split now |
+| 2,593 | `app/core/rag/rag_retriever.py` | split now |
+| 2,435 | `app/llm/openai_compatible_client.py` | split now |
+| 2,260 | `app/mcp/server_tools/self_state_tools.py` | over |
+| 2,194 | `app/core/session/post_turn_mixin.py` | over |
+| 2,179 | `app/core/memory/memory_store.py` | over |
+| 2,152 | `app/core/session/task_orchestration_mixin.py` | over |
+| 2,062 | `app/core/world/world_store.py` | over |
+| 1,965 | `app/core/session/memory_facade_mixin.py` | over |
+| 1,949 | `app/core/conversation/topic_graph.py` | over |
+| 1,911 | `app/core/infra/agent_settings_parse.py` | over |
+| 1,845 | `app/core/session/turn_runner.py` | over |
+| 1,799 | `app/core/session/idle_workers_init_mixin.py` | over |
+| 1,594 | `app/core/tasks/task_orchestrator.py` | over |
+| 1,548 | `app/web/server.py` | over |
+| 1,534 | `app/core/world/idle_activity_worker.py` | over |
+| 1,439 | `app/core/session/inner_life_part4.py` | |
+| 1,390 | `app/core/concepts/concept_lifecycle_worker.py` | |
+| 1,350 | `web/src/live2d/channels/ExpressionChannel.test.ts` | test |
+| 1,337 | `app/core/persona/avatar_profile.py` | |
+| 1,328 | `app/web/rest/sessions_settings_routes.py` | |
+| 1,316 | `app/core/rag/rag_store.py` | |
+| 1,308 | `app/core/session/world_mixin.py` | |
+| 1,278 | `app/core/session/session_controller.py` | |
+| 1,276 | `app/core/proactive/cue_accounting.py` | |
+| 1,264 | `app/mcp/server_tools/core_tools.py` | |
+| 1,230 | `app/core/session/prompt_assembler_helpers_mixin.py` | |
+| 1,217 | `app/web/rest/memory_world_routes.py` | |
+| 1,207 | `app/core/relationship/belief_worker.py` | |
+| 1,103 | `web/src/features/settings/WorldTab.tsx` | over (TS) |
+| 1,098 | `web/src/hooks/useAssistantSocket.ts` | over (TS) |
+
+`web/src/types.ts` has since dropped off the list. The frontend is now the
+healthy half: two production files marginally over, nothing near 2,500.
+`session_controller.py` at 1,278 is under the limit only because the logic
+moved into 26 mixins — see A6.
 
 **These are not all the same problem**, which is why one blanket pass
 would be the wrong shape:
@@ -375,3 +427,143 @@ report, given this is effectively a single-developer repo where a red
 
 **Effort.** Small each, and independent — (1) is worth doing on its own
 even if nothing else here happens.
+
+---
+
+## A6. 107 render methods, one hand-copied preamble
+
+**Motivation.** The four `inner_life_part*` files hold **107**
+`_render_*_block` methods, and essentially every one of them opens with the
+same five moves: read `self._settings.agent`, check a `*_enabled` flag,
+optionally `take()` a debug override, fetch a store or a watermark, and wrap
+the whole thing in `try: … except Exception: log.debug("… render failed",
+exc_info=True); return ""`.
+
+It is copied, not shared. The counts, within `app/core/session/` alone:
+
+| Occurrences | Pattern |
+| --- | --- |
+| 88 | `getattr(self._settings.agent, "*_enabled", …)` |
+| 52 | `except Exception: log.debug("… render failed")` |
+| 31 | the `kv_get` / `kv_set` / `enabled_provider` / `user_id_provider` / `ollama` / `model` worker-init tuple |
+
+Partial abstractions already exist and help — `take_pool_cue`,
+`_spend_gap_slot`, `DebugOverrides` — but they cover the *middle* of the
+method, never the frame around it. So the frame is where the drift lives.
+
+**The cost is not the line count, it is that a swallowed render is
+invisible.** `_safe_provider` turning an exception into `""` means a
+permanently broken block is byte-identical to a correctly-gated one, and
+three blocks (`pursuit_lean_block`, `topic_appetite_block`,
+`thread_ownership_block`) have rendered **zero times in 253 instrumented
+turns** without anything reporting it. H28 found that by hand. There is no
+reason it should have needed a hand.
+
+**Key files.**
+[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) …
+[`part4.py`](../../app/core/session/inner_life_part4.py) (the 107 methods),
+[`prompt_support.py`](../../app/core/session/prompt_support.py)
+(`_safe_provider`, `PromptTelemetry.block_chars`),
+[`idle_workers_init_mixin.py`](../../app/core/session/idle_workers_init_mixin.py)
+and
+[`speaking_workers_init_mixin.py`](../../app/core/session/speaking_workers_init_mixin.py)
+(the 31 init tuples).
+
+**Sketched approach.** A decorator carrying the gate declaratively —
+`@inner_life_block(enabled="away_activities_enabled",
+override="away_activities_force_next")` — which owns the settings read, the
+override take, the exception boundary, and (the actual prize) a uniform
+place to record *why* a block returned empty. Three outcomes instead of
+one: gated off, no content, or raised. That single distinction is what makes
+"which blocks never fire" a query instead of an audit, and it is what P43's
+learned value weights need before they can mean anything, since a broken
+block would otherwise train as a worthless one.
+
+Convert incrementally — the decorator can coexist with unconverted methods
+indefinitely, so this is per-block, with the suite as the net.
+
+A separate, smaller sibling: one `_worker_deps()` helper returning the
+common init tuple would collapse the 31 duplications, and would have caught
+that `_away_activity_worker` is *typed* in `detectors_init_mixin` and
+*constructed* in `idle_workers_init_mixin` — one of several attributes whose
+ownership is split across two files.
+
+**Open questions.** Does the decorator interact badly with the `local_vars`
+name lookup that `_resolve_blocks` and `_render_handling_notes` both depend
+on (they read `assemble_with_budget`'s locals by *name*, so the decorator
+must not change what the method is called or what it returns)? Should the
+three-way outcome be recorded per turn in `turn_prompt_blocks`, or only
+aggregated — P49 already flags that table as one of the fastest-growing.
+
+**Effort.** Medium, fully incremental, and it is the prerequisite that
+makes several P-series items measurable rather than speculative.
+
+---
+
+## A7. Six settings that parse and then do nothing
+
+**Motivation.** Six `AgentSettings` fields are declared, validated, clamped,
+round-tripped by tests, and never read by any code that does work. Every one
+of them looks live from the outside: it is in the dataclass, it has a
+comment describing behaviour, and for two of them it is in
+`config/default.json` where a user can set it.
+
+They are not all the same mistake, which is the useful part:
+
+| Setting | State | Verdict |
+| --- | --- | --- |
+| `engagement_warmup_min` | Behaviour hardcoded to the identical value | **wire** |
+| `persona_task_banner_enabled` | Component accepts `enabled`; nothing passes it | **wire** |
+| `task_reply_on_complete_enabled` | Behaviour is live and permanently on | **wire** |
+| `workflow_reply_budget_chars` | Two hardcoded caps (4,000 and unbounded) | **wire** |
+| `workflow_max_concurrent` | Behaviour never existed | **reserve** |
+| `task_inline_grace_seconds` | Behaviour was removed with the brain-lane file tools | **delete** |
+
+Two deserve calling out. `persona_task_banner_enabled` is a **user-visible
+defect**, not just debt: it is in `default.json`, `PersonaTaskBanner.tsx`
+declares an `enabled` prop and guards on it, and `PersonaWindow` mounts
+`<PersonaTaskBanner />` with no prop — so the sibling `persona_touch_banner_enabled`
+threads through correctly and this one silently cannot be turned off. The
+missing link is the companion snapshot: the field is absent from the REST
+GET/PUT, from the WS `companion` payload, and from the `CompanionSettings`
+type.
+
+And `engagement_warmup_min` is the one to learn from, because the code
+*documents* the bug as a feature:
+
+```python
+# engagement_tracker.py, _z_or_none
+"""Warmup floor is hard-coded to match :data:`_DEFAULT_WARMUP_MIN`;
+the per-tracker setting is read elsewhere."""
+```
+
+It is not read elsewhere. Its sibling `engagement_window` *is* wired, via
+`self._setting("engagement_window", …)` — so the comment describes what the
+author intended to do next and reads as a statement of fact. A stale comment
+that asserts the absent half is worse than no comment, because it answers
+the question a reader would otherwise go check.
+
+**Key files.**
+[`agent_settings.py`](../../app/core/infra/agent_settings.py),
+[`agent_settings_parse.py`](../../app/core/infra/agent_settings_parse.py),
+[`engagement_tracker.py`](../../app/core/affect/engagement_tracker.py)
+(`_DEFAULT_WARMUP_MIN`, `_z_or_none`),
+[`cue_render.py`](../../app/core/tasks/cue_render.py)
+(`_REPLY_CONTENT_CHARS = 4000`),
+`web/src/features/persona/PersonaWindow.tsx` (the missing prop).
+
+**Sketched approach.** Wire the four, delete the one, comment the reserved
+one as reserved. Then consider the general guard, since this will recur:
+a test that every `AgentSettings` field name appears somewhere in `app/`
+outside the declaration and parse modules. That is a crude check — a field
+read reflectively via `getattr(agent, name)` would need an allowlist — but
+it converts "declared and forgotten" from something an audit finds into
+something the suite finds.
+
+**Open questions.** Does `workflow_reply_budget_chars` apply at handler
+composition, at cue render, or both — the two current caps disagree (6,000
+default vs 4,000 enforced), so wiring it is a behaviour decision, not a
+substitution. Is the reflective-read allowlist small enough for the guard to
+be worth having?
+
+**Effort.** Small for all six. The guard is Small and independent.
