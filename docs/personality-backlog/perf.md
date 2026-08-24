@@ -1481,6 +1481,12 @@ down, *inside* a single block), P31 (the resting persona floor),
 
 ## P51. `relevant_context` and the summary do not know about each other
 
+> **Measured, and the premise did not survive. See "What the measurement
+> found" below before doing any of this.** The overlap this item is built
+> on is 18.7% and incidental; the dedup would recover almost nothing. What
+> the same measurement did find is a much larger and quite different
+> problem in the same block, filed as P52.
+
 **Motivation.** The T3 region is the most expensive block in the prompt at
 **17,480 chars/turn** (H52), and the rolling summary sits three tiers above
 it in T2. Nothing compares them.
@@ -1525,24 +1531,151 @@ observed overlap rate — the honest first step is to score the current T3
 selection against the current summary for a few hundred turns and find out
 whether the overlap is 2% or 30%.
 
-**What the cache work added to the case.** The four-breakpoint measurement
-in [`docs/prompt-caching.md`](../prompt-caching.md) put a number on the
-churn: `relevant_context` is byte-different from the previous turn on
-**94.4%** of 1,081 logged turns, which is the highest of any block in the
-prompt. That matters more than it sounds, because the breakpoint at the
-end of T3 already *covers* 66,355 chars — 90% of the system prompt — and
-only gets to read them on the 5.6% of turns T3 held still. Moving that
-rate to even 40% would be worth more than every other cache boundary
-combined, which makes this the largest single item on this page. It also
-reframes the work: the goal is not only to stop paying for a duplicated
-memory, it is to make the region *repeat* when the topic has not moved.
+### What the measurement found
+
+Done, over the 1,184 turns in `surfacing_outcomes` joined against
+`session_summaries`. Three results, and the first one closes this item.
+
+**1. The overlap is 18.7%, and it is incidental.** Containment of each
+surfaced memory's vocabulary in the summary that was live at the time:
+mean 18.7%, p50 16.7%, p90 36.4%. Only **84 of 16,335** surfaced memory
+rows (0.5%) were 60% or more contained, and inspecting those shows why
+even that is generous — the top of the list is the three-word memory
+"thinking about it", whose entire vocabulary appears in any long summary
+by chance. There is no redundancy here to reclaim. A similarity penalty
+would fire on nothing, or on noise.
+
+The code-shape argument was sound and the conclusion was still wrong,
+which is worth noting on its own: the `exclude_session_id` comment
+generalises to the summary in principle, but memories and summaries are
+written by different workers from different windows and simply do not
+converge on the same sentences in practice.
+
+**2. The cost is not where this item points.** Estimating T3's chars from
+the items it actually selected:
+
+| Section | Items/turn | Est. chars/turn | Share |
+| --- | --- | --- | --- |
+| concepts, core lane | 14.6 | 4,428 | 38% |
+| concepts, flex lane | 14.6 | 4,033 | 35% |
+| memories | 15.2 | 1,907 | 16% |
+| clusters | 20.0 | 1,154 | 10% |
+| concepts, activation | 0.4 | 95 | 1% |
+
+Concepts are **73%** of the region. Memories — the only thing a
+summary-dedup could touch — are 16%. So even a dedup that worked
+perfectly would be aimed at the smallest quarter of the block.
+
+**3. The region is re-rolled from scratch every turn.** Over 1,160
+consecutive turn pairs in the same session:
+
+| Slice | Identical set | Mean Jaccard | New items each turn |
+| --- | --- | --- | --- |
+| concepts | **0.0%** | **0.00** | **100%** |
+| memories | 0.0% | 0.20 | 67% |
+| clusters | 1.8% | 0.71 | 18% |
+
+Concepts share **zero** items with the previous turn, on every one of
+1,160 pairs — including the `core` lane, which the ladder calls pinned.
+That is not a bug: it is L23/L40 habituation working as written. The core
+lane over-fetches `core_cap * 3` = 45 candidates for 15 slots and orders
+them most-rested-first, which is a round-robin with a period of about
+three turns. Concept ids are reused 15x across the corpus, so they do come
+back — just never on the next turn.
+
+**What that means for the cache.** The end-of-T3 breakpoint covers 66,355
+chars, 90% of the system prompt, and reads them on 5.6% of turns. It is
+tempting to call that the biggest prize on this page, and the first draft
+of this section did. But the three numbers above say T3 is *structurally*
+uncacheable rather than accidentally so: stopping the concept rotation
+would still leave memories 67% new per turn, driven by a query embedding
+that legitimately changes with every user message. Both would have to go,
+and the second one is retrieval doing its job. So the honest reading is
+that the prompt has ~43k of cacheable head, which is already cached, and
+~31k of genuinely per-turn content, of which T3 is the largest slice. The
+cache work is close to done; what is left is a *size* problem, not a
+stability one.
+
+**Status.** Closed as a dedup. The size finding and the rotation finding
+are carried forward as P52, which is where the remaining work is.
 
 **Open questions.** Does the same argument apply to `thread_note_text` and
 to `continuity_block`, which are also narrative restatements of stored
-material? Should the penalty be symmetric — should compaction avoid
-summarising what T3 reliably surfaces anyway?
+material? Both are much smaller than the memory section, so the answer
+probably does not matter.
 
-**Related.** P42 (the T3 budget is a residual, so wasted T3 tokens are the
-expensive kind), P30.
+**Related.** P52 (what this became), P42 (the T3 budget is a residual, so
+wasted T3 tokens are the expensive kind), P30.
 
-**Effort.** Small to measure, Small to apply once the rate is known.
+**Effort.** Measured. Nothing to apply.
+
+---
+
+## P52. T3 spends 8.5k chars/turn on 30 concept lines it never repeats
+
+**Motivation.** Falls out of the P51 measurement. Two facts that are
+individually defensible and jointly expensive:
+
+- **Volume.** The two concept lanes render **29.6 lines per turn, ~8,461
+  chars**, which is 73% of the T3 region and roughly 1,900 tokens. The
+  caps are `context_budget_core_cap = 15` and
+  `context_budget_concept_cap = 15`. Note that `core_cap`'s default in
+  code is **2** — the live value is 15, and the surrounding logic
+  (`core_cap * 3` over-fetch, a 4-turn habituation window) was reasoned
+  about at the smaller number.
+- **Turnover.** Those 30 lines are **100% different from the previous
+  turn's 30 lines**, on all 1,160 measured pairs. So each turn spends
+  ~1,900 uncached tokens telling her thirty things about Jacob, and next
+  turn spends ~1,900 more telling her thirty *different* things. Over
+  three turns she is told ninety.
+
+Neither number is wrong on its own terms. The rotation is L23/L40 working
+as designed — "surfacing rotates like a mind moving on, not a loop
+repeating" — and the cap is a deliberate breadth choice. The question this
+item raises is whether the *product* was ever intended: full replacement
+at cap 2 rotates 6 concepts across three turns, and at cap 15 it rotates
+90.
+
+There is a quality argument here as well as a cost one, and it may be the
+more interesting of the two. Thirty facts per turn with no carry-over is
+not obviously how attention works; a person mid-topic keeps two or three
+things in mind and lets the rest go. Whether the current setting reads as
+breadth or as a scattered searchlight is a listening question, not a
+measurable one, which is why this is filed rather than fixed.
+
+**Key files.**
+[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)
+(`build_relevant_context`, core lane at ~1780–1870, the fresh/stale split
+and rest-ranking at ~1825–1858),
+[`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py)
+(`habituation_factor`, `turns_since_surfaced`),
+[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
+(the caps).
+
+**Three directions, not mutually exclusive.**
+
+1. **Trim the caps.** Purely a size play, no mechanism change. Halving
+   both concept caps recovers ~950 tokens/turn of full-price input. Needs
+   a listening check, not a test.
+2. **Let the core lane persist while the topic holds.** Carry the previous
+   turn's core picks forward when the topic has not moved (the arc /
+   topic-cluster signals already say whether it has), and rotate only on a
+   topic change. This is the version with a quality story on both sides:
+   continuity of attention when she is still on something, and rotation
+   when the subject actually turns.
+3. **Widen the habituation window instead of the pool.** The round-robin
+   period is `over_fetch / cap` ≈ 3 turns. Raising the over-fetch
+   multiplier lengthens it without touching the rotation policy — cheapest
+   of the three to try, and it is one constant.
+
+**Measure the second one first.** The rotation is currently *total*, so
+any carry-over is a behaviour change a listener would notice. Cheapest
+honest first step is direction 3 with the multiplier raised, since it
+moves the same dial by a smaller amount and is a one-line revert.
+
+**Related.** P51 (where this came from), P42 (the T3 budget is a residual,
+so these are the expensive kind of tokens), P43 (105 blocks, no
+arbitration — the same "every lane fills its cap" pattern), L23 / L40 (the
+habituation and rest-ranking design this would be adjusting).
+
+**Effort.** Small for direction 1 or 3, Medium for direction 2.

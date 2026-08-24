@@ -1212,10 +1212,18 @@ compound across every K-series entry:
   hoist — textbook-conditional prose, nine times more frequent than it
   reads. Moved to T0 (so it is cached now), plus a largest-first budget
   as the guardrail. Mean 5,444 → ~2,500, max 18,501 → 5,000.
-- **P51.** `relevant_context` (17.5k chars, the most expensive block)
-  never dedupes against the rolling summary, though it dedupes against
-  almost everything else — including the current session's messages, on
-  the exact argument that also applies here.
+- **P51 — measured, closed.** `relevant_context` never dedupes against the
+  rolling summary, and it turns out not to need to: overlap is 18.7% and
+  incidental (84 of 16,335 surfaced rows are 60%+ contained, led by the
+  three-word memory "thinking about it"). Memories are also only 16% of
+  the block, so a perfect dedup would have been aimed at its smallest
+  quarter.
+- **P52 — what P51 became.** The same measurement found the concept lanes
+  are **73% of T3** (29.6 lines, ~8.5k chars/turn) and **100% different
+  from the previous turn** on all 1,160 pairs — L23/L40 habituation
+  rotating on purpose, but with `core_cap` at 15 against a code default of
+  2, so the round-robin cycles 90 concepts across three turns instead of
+  6. Cost and quality point the same way for once.
 - **P36.** Idle-worker LLM pile-up — **phase 1 shipped**: workers report
   pending work via a `demand()` probe, the scheduler ranks by urgency
   instead of age, and the budget splits into a compute lane and an LLM
