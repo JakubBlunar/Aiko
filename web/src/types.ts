@@ -316,6 +316,7 @@ export interface CompanionSettings {
   user_reactions_enabled: boolean;
   persona_touch_banner_enabled: boolean;
   persona_touch_banner_duration_seconds: number;
+  persona_task_banner_enabled: boolean;
   expression_mask: ExpressionMaskMode;
   /** J12 — consent ceiling on forwardness, 0 (reserved) .. 1
    * (affectionate). Hard-caps how forward Aiko gets regardless of
@@ -2179,6 +2180,7 @@ export type WsServerEvent =
         | "user_reactions_enabled"
         | "persona_touch_banner_enabled"
         | "persona_touch_banner_duration_seconds"
+        | "persona_task_banner_enabled"
       >;
       /** K68: current body-energy snapshot so the avatar starts at the
        * right gesture/breath amplitude on connect. */

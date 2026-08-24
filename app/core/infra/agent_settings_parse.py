@@ -1452,13 +1452,6 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             task_reply_on_complete_enabled=bool(
                 agent_raw.get("task_reply_on_complete_enabled", True)
             ),
-            task_inline_grace_seconds=max(
-                0.0,
-                min(
-                    30.0,
-                    float(agent_raw.get("task_inline_grace_seconds", 3.0)),
-                ),
-            ),
             task_report_decision_enabled=bool(
                 agent_raw.get("task_report_decision_enabled", True)
             ),

@@ -212,7 +212,19 @@ describe("PersonaWindow — mount contract", () => {
   });
 
   it("renders the task banner element inside the avatar container", () => {
-    expect(personaWindowSource).toMatch(/<PersonaTaskBanner\s*\/>/);
+    expect(personaWindowSource).toMatch(/<PersonaTaskBanner[\s>]/);
+  });
+
+  it("threads the companion master switch into the task banner", () => {
+    // A7: the banner declared an ``enabled`` prop and guarded on it, the
+    // server had ``persona_task_banner_enabled``, and PersonaWindow
+    // mounted the component with no props at all -- so the switch could
+    // not turn anything off. The old assertion here matched the
+    // self-closing tag, which pinned that gap in place rather than
+    // catching it.
+    expect(personaWindowSource).toMatch(
+      /<PersonaTaskBanner\s+enabled=\{[\s\S]*?persona_task_banner_enabled/,
+    );
   });
 
   it("keeps the K31 touch banner mounted (chunk 15 does not displace it)", () => {

@@ -550,6 +550,15 @@ export function AvatarTab({
               className="w-16 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
             />
           </label>
+          <Toggle
+            checked={companion.persona_task_banner_enabled}
+            inputClassName="accent-ink-400"
+            onChange={(checked) =>
+              onPatchCompanion({ persona_task_banner_enabled: checked })
+            }
+          >
+            Show task banner in the persona window
+          </Toggle>
           {/* K60 tsundere expression-mask dial. A strong flavour
            * choice, so it ships off by default; the mask only
            * changes how warm feelings are *expressed* (denial with

@@ -1137,7 +1137,14 @@ class TaskOrchestrationMixin:
                 terse_cues.append(cue)
         parts: list[str] = []
         if reply_items:
-            parts.append(render_reply_block(reply_items))
+            parts.append(
+                render_reply_block(
+                    reply_items,
+                    max_content_chars=int(
+                        getattr(agent, "workflow_reply_budget_chars", 6000)
+                    ),
+                )
+            )
         if terse_cues:
             parts.append(
                 render_cue_block(

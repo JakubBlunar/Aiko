@@ -303,6 +303,9 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                         s.agent, "persona_touch_banner_duration_seconds", 20,
                     ),
                 ),
+                "persona_task_banner_enabled": bool(
+                    getattr(s.agent, "persona_task_banner_enabled", True),
+                ),
                 # K60 tsundere expression mask dial.
                 "expression_mask": str(
                     getattr(s.agent, "expression_mask", "off"),
@@ -668,6 +671,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "touch_enabled",
                 "user_reactions_enabled",
                 "persona_touch_banner_enabled",
+                "persona_task_banner_enabled",
                 # L30: both hypothesis workers read these off
                 # ``settings.agent`` on every tick, so setting them here
                 # takes effect without a restart.
@@ -752,6 +756,9 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                                 "persona_touch_banner_duration_seconds",
                                 20,
                             ),
+                        ),
+                        "persona_task_banner_enabled": bool(
+                            getattr(agent, "persona_task_banner_enabled", True),
                         ),
                         "expression_mask": str(
                             getattr(agent, "expression_mask", "off"),

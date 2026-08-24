@@ -4090,20 +4090,14 @@ class TaskOrchestrationSettingsTests(unittest.TestCase):
         self.assertEqual(a.brain_loop_deferred_grace_ms, 100)
         self.assertEqual(a.task_cue_max_age_seconds, 1800)
         self.assertEqual(a.task_cue_max_aggregated, 5)
-        # Duration-hybrid task reply defaults.
         self.assertTrue(a.task_reply_on_complete_enabled)
-        self.assertEqual(a.task_inline_grace_seconds, 3.0)
 
-    def test_reply_on_complete_overrides_and_clamps(self) -> None:
+    def test_reply_on_complete_override(self) -> None:
         path = self._write_config(
-            agent_extra={
-                "task_reply_on_complete_enabled": False,
-                "task_inline_grace_seconds": 999.0,  # clamp to 30
-            },
+            agent_extra={"task_reply_on_complete_enabled": False},
         )
         a = load_settings(config_path=path).agent
         self.assertFalse(a.task_reply_on_complete_enabled)
-        self.assertEqual(a.task_inline_grace_seconds, 30.0)
 
     def test_overrides_round_trip(self) -> None:
         path = self._write_config(

@@ -58,10 +58,17 @@ _REPLY_HEADER = (
     "You just finished what the user asked for — reply now using the "
     "result below. Do NOT start the task again; the answer is right here."
 )
-# Per-task content budget in the reply block. Generous (this is a real
-# answer, not a terse cue) but bounded so a huge file can't blow the
-# prompt. The handler already clamps the read to task_file_read_max_bytes.
-_REPLY_CONTENT_CHARS = 4000
+# Fallback per-task content budget in the reply block. Generous (this is
+# a real answer, not a terse cue) but bounded so a huge file can't blow
+# the prompt. The handler already clamps the read to
+# task_file_read_max_bytes.
+#
+# Callers SHOULD pass ``agent.workflow_reply_budget_chars``, which is
+# authoritative; this is only what applies with no settings in hand.
+# Matching its default deliberately -- the two disagreed (4000 here
+# against 6000 there) for as long as nothing passed the setting, so the
+# knob's documented "separate, larger budget" was silently a smaller one.
+_REPLY_CONTENT_CHARS = 6000
 
 
 def render_cue_block(

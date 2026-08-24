@@ -67,6 +67,43 @@ class WarmupTests(unittest.TestCase):
         self.assertEqual(result.closeness_delta, 0.0)
         self.assertFalse(result.warmed)
 
+    def test_warmup_min_setting_is_read(self) -> None:
+        """A7: the setting fed nothing for as long as it existed.
+
+        Five samples is below the default warmup of 6 and at or above a
+        configured 3, so the same input has to warm one tracker and not
+        the other -- which is only true if the setting is read at all.
+        """
+        five = [10, 10, 10, 10, 10]
+        default = _make_tracker(word_counts=five)
+        self.assertFalse(
+            default.record_turn(
+                mode="typed", latency_seconds=5.0, user_word_count=10,
+            ).warmed,
+        )
+
+        lowered = _make_tracker(
+            word_counts=five,
+            settings=_AgentStub(engagement_warmup_min=3),
+        )
+        self.assertTrue(
+            lowered.record_turn(
+                mode="typed", latency_seconds=5.0, user_word_count=10,
+            ).warmed,
+        )
+
+    def test_warmup_min_is_floored_at_two(self) -> None:
+        """One sample is not a baseline, whatever the config says."""
+        tracker = _make_tracker(
+            word_counts=[10],
+            settings=_AgentStub(engagement_warmup_min=0),
+        )
+        self.assertFalse(
+            tracker.record_turn(
+                mode="typed", latency_seconds=5.0, user_word_count=10,
+            ).warmed,
+        )
+
 
 class VoiceModeTests(unittest.TestCase):
     def test_short_latency_above_baseline_length_is_engaged(self) -> None:

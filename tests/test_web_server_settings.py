@@ -44,6 +44,7 @@ class _AgentBlock:
     user_reactions_enabled: bool = True
     persona_touch_banner_enabled: bool = True
     persona_touch_banner_duration_seconds: int = 20
+    persona_task_banner_enabled: bool = True
     # L30: the only two hypothesis knobs a live PATCH can change.
     hypothesis_invention_enabled: bool = True
     concept_hypothesis_ask_enabled: bool = True
@@ -220,6 +221,34 @@ class CompanionSettingsTests(unittest.TestCase):
         self.assertEqual(comp["touch_enabled"], True)
         self.assertEqual(comp["persona_touch_banner_duration_seconds"], 20)
         self.assertTrue(body["audio"]["earcons_enabled"])
+
+    def test_task_banner_switch_is_reachable_from_the_api(self) -> None:
+        """A7: the setting existed, the ``enabled`` prop existed, and
+        nothing connected them -- so the toggle could not turn off.
+
+        Both halves of the plumbing are asserted here because either one
+        alone leaves the switch dead: it has to be readable (or the UI
+        has no state to render) and patchable (or the UI cannot change
+        it).
+        """
+        client, _session, settings = _build_client()
+        comp = client.get("/api/settings").json()["companion"]
+        self.assertIn("persona_task_banner_enabled", comp)
+        self.assertTrue(comp["persona_task_banner_enabled"])
+
+        with patch(
+            "app.web.rest.sessions_settings_routes.persist_user_overrides"
+        ) as persist:
+            response = client.patch(
+                "/api/settings",
+                json={"companion": {"persona_task_banner_enabled": False}},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(settings.agent.persona_task_banner_enabled)
+        persist.assert_called_once()
+
+        comp = client.get("/api/settings").json()["companion"]
+        self.assertFalse(comp["persona_task_banner_enabled"])
 
     def test_patch_grounding_line_mode_runs_hook(self) -> None:
         client, session, settings = _build_client()
