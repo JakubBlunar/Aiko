@@ -502,6 +502,29 @@ makes several P-series items measurable rather than speculative.
 
 ## A7. Six settings that parse and then do nothing
 
+> **Status: shipped, except the guard.** All six are resolved —
+> `engagement_warmup_min`, `task_reply_on_complete_enabled`,
+> `workflow_reply_budget_chars` and `persona_task_banner_enabled` wired;
+> `task_inline_grace_seconds` deleted; `workflow_max_concurrent` labelled
+> RESERVED in place, with the missing implementation named. Each wiring has
+> a test that fails if it is unwired again, which is the part that matters:
+> every one of these was *shape*-correct and only failed on the connection,
+> so nothing was going to notice.
+>
+> Two things found while doing it that the audit could not see. The
+> frontend test for the task banner asserted
+> `toMatch(/<PersonaTaskBanner\s*\/>/)` — it pinned the self-closing tag,
+> so the missing prop was not merely untested, it was **enforced**. Its
+> neighbour two lines down had already hit the same thing for the touch
+> banner and been relaxed, with a comment explaining why. And
+> `_REPLY_CONTENT_CHARS` was raised 4,000 → 6,000 to agree with the
+> setting's default, so the "separate, larger" reply budget is now actually
+> larger; the two had disagreed for as long as nothing read the setting.
+>
+> **What's open is the general guard** — the test that every `AgentSettings`
+> field is referenced somewhere outside the declaration and parse modules.
+> That is the half that stops the next six.
+
 **Motivation.** Six `AgentSettings` fields are declared, validated, clamped,
 round-tripped by tests, and never read by any code that does work. Every one
 of them looks live from the outside: it is in the dataclass, it has a

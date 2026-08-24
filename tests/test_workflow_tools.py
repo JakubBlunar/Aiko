@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from typing import Any
 
 from app.core.tasks.handler_names import HANDLER_GOAL_WORKFLOW
@@ -94,11 +95,14 @@ class _FakeSession:
         user_id: str = "jacob",
         gaps: list[dict[str, Any]] | None = None,
         active_user_text: str = "",
+        settings: Any | None = None,
     ) -> None:
         self._user_id = user_id
         self._task_orchestrator = orchestrator
         self._gaps = gaps or []
         self._active_turn_user_text = active_user_text
+        if settings is not None:
+            self._settings = settings
 
     def workflow_capability_gaps(self) -> list[dict[str, Any]]:
         return list(self._gaps)
@@ -161,6 +165,25 @@ class StartWorkflowRunTests(unittest.TestCase):
         self.assertEqual(call["initiated_by"], "aiko")
         self.assertTrue(call["metadata"]["reply_when_done"])
         self.assertEqual(call["metadata"]["origin_prompt"], "go find new files")
+
+    def test_reply_on_complete_switch_gates_the_metadata(self) -> None:
+        """A7: the switch existed and the behaviour was permanently on."""
+        agent = SimpleNamespace(task_reply_on_complete_enabled=False)
+        tool = StartWorkflowTool(
+            _FakeSession(
+                orchestrator=self.orch,
+                settings=SimpleNamespace(agent=agent),
+            )
+        )
+        tool.run({"goal": "find new files"})
+        self.assertNotIn(
+            "reply_when_done", self.orch.start_calls[0]["metadata"] or {},
+        )
+
+    def test_reply_on_complete_defaults_on_without_settings(self) -> None:
+        """A session with no settings in hand keeps the live behaviour."""
+        self.tool.run({"goal": "find new files"})
+        self.assertTrue(self.orch.start_calls[0]["metadata"]["reply_when_done"])
 
     def test_empty_goal_rejected(self) -> None:
         with self.assertRaises(ToolError):

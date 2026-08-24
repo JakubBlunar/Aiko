@@ -1119,6 +1119,13 @@ def create_web_app(session: "SessionController") -> FastAPI:
                             20,
                         ),
                     ),
+                    "persona_task_banner_enabled": bool(
+                        getattr(
+                            session.settings.agent,
+                            "persona_task_banner_enabled",
+                            True,
+                        ),
+                    ),
                 },
             }, default=str))
         except Exception:

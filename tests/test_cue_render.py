@@ -299,6 +299,22 @@ class RenderReplyBlockTests(unittest.TestCase):
         out = render_reply_block([{"title": "t"}])
         self.assertIn("(no content)", out)
 
+    def test_default_cap_matches_the_setting_default(self) -> None:
+        """A7: the fallback disagreed with ``workflow_reply_budget_chars``.
+
+        The setting documents itself as the "separate, larger" budget at
+        6000, and nothing passed it, so the effective cap was the 4000
+        hardcoded here -- a knob whose only effect was to be smaller than
+        advertised. Pinned so the two can't drift apart again silently.
+        """
+        from app.core.infra.agent_settings import AgentSettings
+        from app.core.tasks.cue_render import _REPLY_CONTENT_CHARS
+
+        self.assertEqual(
+            _REPLY_CONTENT_CHARS,
+            AgentSettings().workflow_reply_budget_chars,
+        )
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

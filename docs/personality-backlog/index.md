@@ -196,11 +196,12 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
   except blocks). The cost isn't the line count — it's that a swallowed
   render is indistinguishable from a gated one, which is how three blocks
   went 253 turns without firing and nothing said so.
-- **A7.** Six `AgentSettings` fields parse and then do nothing. Four want
-  wiring (the behaviour exists, hardcoded), one wants deleting, one is
-  genuinely reserved. `persona_task_banner_enabled` is a user-visible
-  defect: the toggle and the component's `enabled` prop both exist and
-  nothing connects them.
+- **A7.** *Shipped except the guard.* Six `AgentSettings` fields parsed
+  and then did nothing — four now wired, one deleted, one labelled
+  reserved. `persona_task_banner_enabled` was a user-visible dead
+  toggle, and the frontend test was **enforcing** the gap by matching
+  the self-closing tag. Still open: a test that every settings field is
+  read somewhere, which is what stops the next six.
 
 ### B. Avatar + expressiveness — [`avatar.md`](avatar.md)
 

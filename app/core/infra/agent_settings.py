@@ -1967,19 +1967,17 @@ class AgentSettings:
     # but get dropped from the prompt to keep T6 cheap (the most
     # volatile tier, no cache hits). Clamped to ``[1, 20]``.
     task_cue_max_aggregated: int = 5
-    # ── Duration-hybrid task replies (fold-fast + reply-on-complete) ──
-    # Master switch for the reply-on-complete behaviour. When True the
-    # ``start_file_*`` tools fold a fast result into the same turn and
-    # flag slower tasks ``reply_when_done`` so their result is rendered
-    # in full (not a terse bullet) when it surfaces. Off = legacy
-    # behaviour (terse cue only, no inline fast fold).
+    # ── Reply-on-complete ──────────────────────────────────────────────
+    # Master switch. When True ``start_workflow`` flags the task
+    # ``reply_when_done`` so its result renders in FULL (not a terse
+    # bullet) when it surfaces. Off = legacy behaviour, terse cue only.
+    #
+    # This was half of a "duration hybrid" whose other half — a
+    # ``task_inline_grace_seconds`` wait that folded a fast result into
+    # the same turn — went away with the brain-lane ``start_file_*``
+    # tools. Everything now runs in the background workflow lane, so
+    # there is no fast half left to fold.
     task_reply_on_complete_enabled: bool = True
-    # How long a ``start_file_read`` / ``start_file_search`` call blocks
-    # waiting for the handler to finish so the result can be folded into
-    # the SAME reply (the "fast" half of the duration hybrid). Tasks
-    # that don't finish in this window fall back to the reply-on-complete
-    # path. Clamped to ``[0, 30]``; 0 disables the inline fast path.
-    task_inline_grace_seconds: float = 3.0
     # ── C6: worker-model task-report decision ──────────────────────────
     # Master switch for the worker-LLM decision that runs when a
     # reportable background task finishes. Decides surface_now / park /
@@ -2038,8 +2036,15 @@ class AgentSettings:
     # Hard cap on child tasks a single workflow may spawn. Clamped
     # ``[1, 50]``.
     workflow_max_children: int = 8
-    # Max number of workflows that may run concurrently per user.
-    # ``start_workflow`` refuses past this. Clamped ``[1, 8]``.
+    # RESERVED — parsed, but nothing reads it yet.
+    #
+    # The intent is a workflow-specific concurrency cap sitting under the
+    # generic ``tasks_per_user_cap`` (8), so a burst of workflows can't
+    # consume the whole task budget. Today only the generic cap applies:
+    # ``start_workflow`` rejects with ``reason=per_user_cap`` and nothing
+    # counts ``goal_workflow`` rows separately. Implementing it means that
+    # count, in ``StartWorkflowTool.run`` or ``start_task``.
+    # Clamped ``[1, 8]``.
     workflow_max_concurrent: int = 2
     # Char budget for the planner blackboard (short observations folded
     # back each iteration). Clamped ``[500, 20000]``.

@@ -153,7 +153,9 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
             switching back to the chat window. Layered BELOW the
             touch banner (``top-24`` vs ``top-12``) so the two
             never overlap when both happen to be visible. */}
-        <PersonaTaskBanner />
+        <PersonaTaskBanner
+          enabled={companionSettings?.persona_task_banner_enabled ?? true}
+        />
       </div>
 
       <div className="flex shrink-0 items-center gap-2 rounded-t-lg bg-black/40 px-2 py-2 backdrop-blur">

@@ -42,6 +42,10 @@ def _orchestrator(session: "SessionController") -> Any | None:
     return getattr(session, "_task_orchestrator", None)
 
 
+def _agent_settings(session: "SessionController") -> Any | None:
+    return getattr(getattr(session, "_settings", None), "agent", None)
+
+
 # ── start_workflow ────────────────────────────────────────────────────
 
 
@@ -105,7 +109,18 @@ class StartWorkflowTool:
                 "start_workflow: goal workflows are disabled "
                 "(agent.workflow_enabled=False)"
             )
-        metadata: dict[str, Any] = {"reply_when_done": True}
+        # ``reply_when_done`` is what makes the result render in full when
+        # it lands, instead of as a terse bullet. Off = the legacy cue-only
+        # behaviour.
+        metadata: dict[str, Any] = {}
+        if bool(
+            getattr(
+                _agent_settings(self._session),
+                "task_reply_on_complete_enabled",
+                True,
+            )
+        ):
+            metadata["reply_when_done"] = True
         origin = (getattr(self._session, "_active_turn_user_text", "") or "").strip()
         if origin:
             metadata["origin_prompt"] = origin[:500]

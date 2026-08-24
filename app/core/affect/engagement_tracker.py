@@ -131,6 +131,13 @@ class EngagementTracker:
         self._agent_settings = agent_settings
         self._word_count_window_provider = word_count_window_provider
         window = max(2, int(self._setting("engagement_window", _DEFAULT_WINDOW)))
+        # Clamped the same way ``agent_settings_parse`` clamps it, so a
+        # hand-edited config can't drop the warmup low enough for one
+        # sample to become a baseline.
+        self._warmup_min = max(
+            2,
+            int(self._setting("engagement_warmup_min", _DEFAULT_WARMUP_MIN)),
+        )
         # Voice latency in seconds. Only appended when ``mode == "live"``
         # AND ``latency_seconds is not None``; typed latencies don't
         # participate in the engagement signal at all.
@@ -403,19 +410,16 @@ class EngagementTracker:
             return length_z is not None
         return length_z is not None or latency_z is not None
 
-    @staticmethod
     def _z_or_none(
-        baseline: list[float], *, value: float, stdev_floor: float,
+        self, baseline: list[float], *, value: float, stdev_floor: float,
     ) -> float | None:
         """Return ``(value - mean) / max(stdev, floor)`` or ``None`` when
         the baseline is too small to score reliably.
 
         ``baseline`` must NOT include ``value`` -- callers slice it off
-        first when needed. Warmup floor is hard-coded to match
-        :data:`_DEFAULT_WARMUP_MIN`; the per-tracker setting is read
-        elsewhere.
+        first when needed.
         """
-        if len(baseline) < _DEFAULT_WARMUP_MIN:
+        if len(baseline) < self._warmup_min:
             return None
         n = float(len(baseline))
         mean = sum(baseline) / n
