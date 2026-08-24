@@ -1716,6 +1716,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         hab_core_floor = float(
             getattr(ms, "concept_surfacing_core_habituation_floor", 0.8)
         )
+        core_overfetch = float(getattr(ms, "concept_core_overfetch", 1.5))
         hab_state, hab_turn = (
             self._load_concept_habituation() if hab_enabled else ({}, 0)
         )
@@ -1787,7 +1788,25 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 # Over-fetch so habituation can rotate the picks; core_lane's
                 # round-robin is prefix-stable, so with all-fresh state the first
                 # ``core_cap`` are identical to a plain ``limit=core_cap`` call.
-                core_fetch = core_cap * 3 if hab_enabled else core_cap
+                #
+                # P52: the depth *is* the rotation policy, and it has a cliff.
+                # The lane keeps the ``core_cap`` most-rested of what it drew,
+                # so a pick survives to the next turn only while the draw stays
+                # shallower than the set habituation marked stale -- which is
+                # everything rendered last turn, both lanes. This was a
+                # hard-coded 3 against two caps of 15, i.e. a draw of 45
+                # against 45 stamped: exactly on the edge, which is why the
+                # pinned lane shared *precisely* zero concepts with the
+                # previous turn across 1,160 measured pairs. The arithmetic is
+                # in ``concept_core_overfetch``.
+                core_fetch = (
+                    max(
+                        core_cap,
+                        int(round(core_cap * float(core_overfetch))),
+                    )
+                    if hab_enabled
+                    else core_cap
+                )
                 # The openness reserve is sized against ``core_cap`` and NOT
                 # multiplied by the over-fetch. It sits at the head of the
                 # returned list, so scaling it with the fetch would put three

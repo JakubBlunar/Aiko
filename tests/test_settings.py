@@ -654,6 +654,24 @@ class CuriositySeedSettingsTests(unittest.TestCase):
             result.memory.context_budget_core_min_confidence, 1.0,
         )
 
+    def test_core_overfetch_round_trip_and_clamp(self) -> None:
+        # P52: the floor of 1.0 is load-bearing -- below it the lane would
+        # draw fewer candidates than it has slots and silently shrink. The
+        # ceiling keeps the old (fully-rotating) behaviour reachable
+        # without letting a typo draw the whole graph.
+        result = load_settings(config_path=self._write_config())
+        self.assertAlmostEqual(result.memory.concept_core_overfetch, 1.5)
+        for raw, expected in ((0.1, 1.0), (1.0, 1.0), (2.5, 2.5), (99.0, 4.0)):
+            with self.subTest(raw=raw):
+                path = self._write_config(
+                    memory_extra={"concept_core_overfetch": raw},
+                )
+                self.assertAlmostEqual(
+                    load_settings(config_path=path)
+                    .memory.concept_core_overfetch,
+                    expected,
+                )
+
     def test_context_budget_core_lane_legacy_identity_keys(self) -> None:
         # Pre-L27 configs used ``context_budget_identity_*``; they still parse
         # into the renamed ``core`` lane so existing user.json keeps working.

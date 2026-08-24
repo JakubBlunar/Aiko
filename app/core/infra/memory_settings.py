@@ -1097,6 +1097,35 @@ class MemorySettings:
     concept_surfacing_habituation_floor: float = 0.35
     concept_surfacing_core_habituation_floor: float = 0.8
     concept_surfacing_state_cap: int = 300
+    # P52: how deep the core lane draws relative to its cap. This is the
+    # only thing that decides how much of the pinned lane survives to the
+    # next turn, and it has a cliff rather than a gradient.
+    #
+    # The lane keeps the ``core_cap`` most-rested of what it drew. So it
+    # carries picks forward only while the draw is *shallower* than the set
+    # habituation already marked stale -- and what got marked is everything
+    # rendered last turn, BOTH lanes: ``core_cap + context_budget_concept_cap``
+    # rows. Carry-over is therefore positive iff
+    #
+    #     core_cap * multiplier  <  core_cap + core_cap + concept_cap
+    #
+    # which with the two caps equal is simply ``multiplier < 3``. Past that
+    # the draw always reaches enough never-stamped rows to fill the lane
+    # outright, and the pinned set flips between disjoint halves on a
+    # two-turn cycle.
+    #
+    # This was a hard-coded ``* 3``, and the live caps are both 15 -- so it
+    # sat exactly ON the edge, at a draw of 45 against 45 stamped. That is
+    # why the measurement came back at *precisely* zero: over 1,160
+    # consecutive turn pairs the pinned lane shared not one concept with
+    # the previous turn. Ninety concepts cycling across three turns rather
+    # than a mind keeping a few things in view.
+    #
+    # 1.5 keeps roughly half to all of the lane across a turn (it
+    # oscillates, because the flex lane's stamps move under it). Values at
+    # or above 3 remain reachable so the old behaviour can be restored, not
+    # because they are a gentler setting than 1.5.
+    concept_core_overfetch: float = 1.5
     # L38 earned standing -- relationship-local performance prior for
     # flex/activation concept surfacing. Recomputed off-turn from L37 and
     # cached in kv_meta; cold/missing evidence remains neutral.
@@ -3827,6 +3856,13 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                             "concept_surfacing_core_habituation_floor", 0.8
                         )
                     ),
+                ),
+            ),
+            concept_core_overfetch=min(
+                4.0,
+                max(
+                    1.0,
+                    float(memory_raw.get("concept_core_overfetch", 1.5)),
                 ),
             ),
             concept_surfacing_state_cap=max(
