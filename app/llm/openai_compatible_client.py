@@ -50,6 +50,7 @@ import requests
 
 from app.core.infra.settings import OllamaSettings
 from app.llm.chat_client import (
+    CACHE_BREAKPOINT_KEY,
     ChatResponse,
     ChatToolCall,
     ChatUsage,
@@ -391,6 +392,16 @@ def _normalize_tool_messages_for_openai(
             if not isinstance(content, str):
                 new_msg["content"] = "" if content is None else str(content)
             out.append(new_msg)
+        elif CACHE_BREAKPOINT_KEY in msg:
+            # The system message carries a breakpoint offset for the
+            # Responses surface. Chat-completions expresses breakpoints on
+            # content blocks instead, and the bare key is an unknown field
+            # a strict provider 400s on, so it comes off here. A GPT-5.6
+            # route pinned to ``api_style="chat_completions"`` therefore
+            # keeps the old implicit-only behaviour.
+            new_msg = dict(msg)
+            new_msg.pop(CACHE_BREAKPOINT_KEY, None)
+            out.append(new_msg)
         else:
             out.append(msg)
     return out
@@ -532,6 +543,54 @@ _RESPONSES_REASONING_RESERVE: dict[str, int] = {
     "xhigh": 16384,
 }
 _RESPONSES_DEFAULT_RESERVE = 1024
+
+
+# Explicit cache breakpoints arrived with the GPT-5.6 family, together
+# with the change that made them necessary: 5.6+ matches the cache only
+# at breakpoints and dropped the old best-effort "longest matching
+# unmarked prefix" fallback. Captures both version components so the
+# comparison is numeric — a ``startswith`` list would have to be edited
+# for every new model, and silently under-reports gpt-6.
+_GPT_VERSION_RE = re.compile(r"(?:^|/)gpt-(\d+)\.(\d+)", re.IGNORECASE)
+_EXPLICIT_CACHE_MIN_VERSION = (5, 6)
+
+
+def _supports_explicit_cache_breakpoints(model: str) -> bool:
+    """True when ``model`` understands ``prompt_cache_breakpoint``.
+
+    Deliberately keyed on the OpenAI model name rather than on
+    ``api_style``: xAI Grok is *forced* onto the Responses surface but
+    still does implicit prefix matching (and demonstrably caches for us
+    without help), so sending it an unknown field would risk a 400 to fix
+    a problem it does not have.
+    """
+    if not isinstance(model, str):
+        return False
+    match = _GPT_VERSION_RE.search(model.strip())
+    if not match:
+        return False
+    version = (int(match.group(1)), int(match.group(2)))
+    return version >= _EXPLICIT_CACHE_MIN_VERSION
+
+
+def _cache_breakpoint_offset(msg: dict[str, Any]) -> int:
+    """Usable breakpoint offset carried by ``msg``, or ``0`` for none.
+
+    Validates against the message's own content so a stale or malformed
+    offset degrades to "no breakpoint" rather than slicing text in the
+    wrong place or raising mid-request.
+    """
+    raw = msg.get(CACHE_BREAKPOINT_KEY)
+    if raw is None:
+        return 0
+    try:
+        offset = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    content = msg.get("content")
+    if not isinstance(content, str) or not content:
+        return 0
+    return offset if 0 < offset <= len(content) else 0
 
 
 def _use_responses_api(model: str) -> bool:
@@ -1088,11 +1147,33 @@ class OpenAICompatibleClient:
         omitted — the dotted GPT-5.x reasoning family locks it to the
         default and 400s on any other value.
         """
+        # Explicit prompt cache breakpoint (GPT-5.6+). ``mark`` requires
+        # BOTH a model that understands the field and a message that
+        # actually carries an offset, because "explicit" mode with no
+        # breakpoint disables caching outright instead of falling back to
+        # the implicit one — the documented footgun.
+        mark_breakpoint = (
+            _supports_explicit_cache_breakpoints(model)
+            and any(
+                _cache_breakpoint_offset(m)
+                for m in messages if isinstance(m, dict)
+            )
+        )
         payload: dict[str, Any] = {
             "model": model,
-            "input": _messages_to_responses_input(messages),
+            "input": _messages_to_responses_input(
+                messages, mark_cache_breakpoint=mark_breakpoint,
+            ),
             "stream": stream,
         }
+        if mark_breakpoint:
+            # Explicit-only. The implicit breakpoint sits at the latest
+            # user message, behind ~30k chars of per-turn system blocks
+            # that never repeat, so leaving it on would re-write the whole
+            # prompt at 1.25x every turn to build an entry nothing can
+            # ever read. That was the bug. ``ttl`` is left at its default
+            # (30m is the only supported value).
+            payload["prompt_cache_options"] = {"mode": "explicit"}
         effort = self._resolve_reasoning_effort(options)
         # Tool-decision pass optimisation. When ``tools`` are present this
         # is the forced tool-pick pass (the reply pass streams WITHOUT
@@ -1991,6 +2072,8 @@ def _parse_openai_tool_calls(raw: object) -> list[ChatToolCall]:
 
 def _messages_to_responses_input(
     messages: list[dict[str, Any]],
+    *,
+    mark_cache_breakpoint: bool = False,
 ) -> list[dict[str, Any]]:
     """Translate neutral chat messages into a Responses ``input`` array.
 
@@ -2000,6 +2083,12 @@ def _messages_to_responses_input(
     the assistant's text when present). Tool results become
     ``{"type": "function_call_output", "call_id", "output"}`` items —
     the Responses analogue of a ``role=tool`` message.
+
+    With ``mark_cache_breakpoint``, a message carrying
+    :data:`CACHE_BREAKPOINT_KEY` is emitted as a *two-block* content array
+    split at that offset, with ``prompt_cache_breakpoint`` on the first
+    block. Off by default because the marker is a hard 400 on models that
+    predate it.
 
     The caller's list is never mutated; a fresh list is returned.
     """
@@ -2078,8 +2167,35 @@ def _messages_to_responses_input(
                 if role in ("system", "developer", "user", "assistant")
                 else "user"
             )
-            out.append({"role": resolved_role, "content": content})
+            offset = (
+                _cache_breakpoint_offset(msg) if mark_cache_breakpoint else 0
+            )
+            if offset:
+                out.append({
+                    "role": resolved_role,
+                    "content": _split_at_breakpoint(content, offset),
+                })
+            else:
+                out.append({"role": resolved_role, "content": content})
     return out
+
+
+def _split_at_breakpoint(content: str, offset: int) -> list[dict[str, Any]]:
+    """Content blocks for ``content`` with a breakpoint after ``offset`` chars.
+
+    The tail block is omitted when the split lands at the very end, since
+    an empty ``input_text`` is not worth sending. ``offset`` is assumed
+    valid — :func:`_cache_breakpoint_offset` is the guard.
+    """
+    blocks: list[dict[str, Any]] = [{
+        "type": "input_text",
+        "text": content[:offset],
+        "prompt_cache_breakpoint": {"mode": "explicit"},
+    }]
+    tail = content[offset:]
+    if tail:
+        blocks.append({"type": "input_text", "text": tail})
+    return blocks
 
 
 def _tools_to_responses(

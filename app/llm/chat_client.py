@@ -235,6 +235,23 @@ def content_looks_complete(text: str) -> bool:
     return text.rstrip().endswith(_TERMINAL_PUNCTUATION)
 
 
+# Private key a message dict may carry to mark where its reusable prefix
+# ends, as a character offset into ``content``. Set by the prompt
+# assembler on the system message (the end of the byte-stable T0 head);
+# read by ``OpenAICompatibleClient`` to place an explicit
+# ``prompt_cache_breakpoint``, and stripped anywhere else.
+#
+# It exists because GPT-5.6 stopped doing what every earlier model did.
+# On 5.6+ the service places one implicit breakpoint at the latest user
+# message and no longer falls back to the longest matching unmarked
+# prefix, so "huge stable persona + a question that changes every turn"
+# never partial-matches: the whole prompt is re-written at the 1.25x
+# cache-write rate and read back never. Marking the end of the stable
+# head is the only way to make that prefix reusable. See
+# ``docs/prompt-caching.md``.
+CACHE_BREAKPOINT_KEY: str = "_cache_breakpoint_at"
+
+
 # ── Protocol ──────────────────────────────────────────────────────────
 
 
