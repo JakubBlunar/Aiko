@@ -692,11 +692,24 @@ if they break:
   than +5.9. `arc_block` alone changed on 77% of turns. Putting a live
   integer back into T0–T2 costs two of the four marks silently — see
   [`app/core/infra/prompt_stability.py`](../app/core/infra/prompt_stability.py).
-- **T3's 5.6% is `relevant_context` re-retrieving on 94% of turns.** That
-  is the single biggest remaining item on this page: the T3 boundary
-  already covers 66k chars, so moving it from 5.6% to even 40% would be
-  worth more than everything above it combined. Deduping the retrieved
-  region against the rolling summary is the lever.
+- **T3's 5.6% is `relevant_context` re-retrieving on 94% of turns**, and
+  chasing it is a dead end. The boundary covers 66k chars, so the
+  arithmetic is tempting, but the follow-up measurement under
+  [P51](personality-backlog/perf.md) found T3 is *structurally* volatile
+  rather than accidentally so: its concept lanes share **zero** items with
+  the previous turn on all 1,160 measured pairs (habituation rotating on
+  purpose), and its memories are 67% new per turn because the query
+  embedding legitimately changes with every user message. Stopping the
+  first would not fix the second, and the second is retrieval doing its
+  job. Treat 5.6% as the ceiling.
+
+So the resting position is: **~43k of cacheable head, which is now
+cached, and ~31k of genuinely per-turn content** — T3's retrieval region
+(17.5k), the ambient pair, and the T6 detectors. The remaining wins on
+this page are about making that 31k *smaller*, not about caching it. The
+two cold-start numbers are the exception: 18 of 60 turns paid a full-price
+re-warm, so session length and the 30-minute TTL are worth more attention
+than another breakpoint.
 
 ### The original open question
 
