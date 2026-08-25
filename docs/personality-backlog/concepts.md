@@ -2385,3 +2385,91 @@ candor gate in turn depends on.
 
 ---
 
+## L48. Refused evidence already mints a new concept, and what it mints is a twin
+
+**Motivation.** Asked as a design question — *when a concept refuses evidence to
+avoid bloat, could the synthesiser mint a new concept from it instead, so it gets
+rolled into a higher one later?* The first half is already the live behaviour: a
+proposal that fails to reinforce falls through to creation. So the measurement
+worth having is not "would this work" but "what has it already produced", and the
+answer is duplicate families rather than new abstractions.
+
+**The two refusals are not the same problem, which is the crux.**
+[`concept_evidence_admission.py`](../../app/core/concepts/concept_evidence_admission.py)
+refuses for two reasons, and only one of them is about bloat:
+
+- **Off-topic** (`cos < concept_evidence_admission_cosine`, 0.35) is *rare by
+  design*: 10 of the 500 cosines in the rolling inflow sample, **2.0%**, which is
+  exactly where L45's `GateSpec` aims it (target: keep 98% admissible). Each
+  refusal is one memory that was mis-cited against one label — the module's own
+  docstring calls it "evidence for something else that happened to be the nearest
+  label". Tempting as a supply of orphan evidence, but 2% of arrivals, one source
+  at a time, is not a theme; it is noise that correctly failed to land.
+- **Ceiling** (`MAX_SOURCES`, 24 distinct sources) is the bloat one, and it binds
+  on **75 concepts (1.62%)** — p50 is 3 sources, p90 10, p95 15, p99 24, max 141.
+
+**And the ceiling binds on the good rows, not the vague ones.** Mean confidence by
+band: **0.664 at or over the ceiling, 0.551 at 8-23 sources, 0.404 below 8.** The
+accretion case the gate was written for is real (#145 `ritual`, 141 sources,
+confidence 0.37) but it is the exception; mostly the cap stops well-supported
+beliefs from growing, and the evidence goes somewhere else.
+
+**Where it goes, measured.** The fall-through-to-creation path has produced
+families of near-synonyms that each independently climbed toward the same
+ceiling:
+
+| Family | Rows | Sources each |
+| --- | --- | --- |
+| beanbag / anime / chips `ritual` | **4** (#3422, #3246, #2919, #2991) | 27-32 |
+| pre-sleep hand-lacing `ritual` | **7** (#2992, #3247, #4135, #4311, #3227, #3423, #1059) | 13-24 |
+| "Jacob frames his evening wind-down as deliberate" `tension` | **~13** (#3924, #3986, #4009, #4098, #4172, #4466, #4510, #4732, …) | 2-10 |
+| any label mentioning "wind-down" | **44** | — |
+
+Four separate rituals for one beanbag and seven for holding hands is not a
+richer model of the evening; it is the same belief paying rent four and seven
+times, in the T3 concept lane, every turn.
+
+**So the answer to the original question is: the minting works, the roll-up is
+missing** — and the roll-up is exactly L46. A family of seven near-identical
+rituals is the ideal `generalization` base set, and today it cannot become one,
+because the pass that would abstract over them draws only from concepts and the
+duplicates *are* the concepts. Two directions, and they are complements rather
+than alternatives: collapse the family (consolidation) and abstract over what
+survives (L46).
+
+**Why consolidation is not already catching it.** For `tension` this was
+diagnosed and fixed — the labels are 204-278 chars and two-clause, so cosine
+cannot separate restatement from distinct friction at any threshold, and
+`_collect_pairs` now nominates per-block above a 0.78 floor with base-sharing as
+the tiebreak. Two things that fix does not cover: **`ritual` labels are short and
+concrete**, so label-length compression is not the explanation there and the
+cause is unknown; and the **drain rate** is 3 candidates per `(subject, kind)`
+block per pass under `concept_consolidation_per_day_cap = 30`, against a
+population that grew these families inside eight days (16-24 Aug). A queue that
+drains over several days is fine for a static backlog and not obviously fine for
+an inflow that fast.
+
+**Key files.**
+- [`concept_evidence_admission.py`](../../app/core/concepts/concept_evidence_admission.py) — `admit()`, `REFUSED_OFFTOPIC` vs `REFUSED_FULL`, and the `Admission.reinforced` note on why a ceiling refusal must still stamp `last_reinforced_at`
+- [`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py) — `_reinforce` (~L3323, the choke point), `_record_admission`, `_flush_admission`; the fall-through to creation is where a "refused, so mint" hook would already be
+- [`concept_consolidation_worker.py`](../../app/core/concepts/concept_consolidation_worker.py) — `_collect_pairs`, the per-block nomination and the daily cap
+- [`concept_dedupe.py`](../../app/core/concepts/concept_dedupe.py) — `DEDUPE_COS` 0.86, the bar these twins pass under at creation time
+
+**Open questions.** (1) Is the ceiling in the right place at all, given it binds
+mostly on high-confidence rows and `confidence_target` saturates by 8 sources
+anyway — is the harm it prevents (one vague row at 141) worth the duplication it
+causes? (2) Should a ceiling refusal *log a consolidation candidate* instead of
+being dropped, since "this evidence wanted a concept that is full" is a strong
+hint a twin exists? (3) Does `ritual` need its own pair-nomination rule, or is
+its cause something else entirely? (4) How much of P52's volume half is this —
+30 concept lines per turn drawn from a pool with 7-way families is a different
+problem from 30 genuinely distinct concepts.
+
+**Effort.** Small to instrument (count ceiling refusals per concept and look for a
+twin); Medium for the consolidation drain; L46 separately.
+
+**Depends on.** Nothing. **Feeds** L46 (this is its supply and its worked example)
+and **P52's volume half** (duplicate families are why the lane is expensive).
+
+---
+

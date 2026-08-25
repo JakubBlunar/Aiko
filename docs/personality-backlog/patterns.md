@@ -805,12 +805,28 @@ a real ceiling on the *companion* feel, because the moments that read as
 intelligence are usually second thoughts: catching the implication, noticing the
 question behind the question, changing her mind mid-sentence.
 
-**Why now rather than earlier: the cost argument changed.** `'low'` was chosen
-when the prompt cache was silently doing nothing — every turn paid full price for
-~74k characters. It now runs at a 56.7% hit rate with cache reads at 11.5x writes
-(four explicit breakpoints, P51/P52 work), so the marginal cost of asking for more
-thinking on *some* turns is a fraction of what it was when the current setting was
-picked. Nobody has re-measured the trade since.
+**Two different mechanisms, and the cache only makes one of them cheap.** Worth
+separating before anyone reaches for a knob, because they have opposite cost
+shapes:
+
+1. **Raising `reasoning_effort`** buys hidden thinking inside the *same* call.
+   Those are **output** tokens, and the prompt cache discounts **input** only —
+   `cached_tokens` arrives under `input_tokens_details`. So the cache does nothing
+   for this, and it is worse than neutral on the reply pass: on the Responses
+   surface `max_output_tokens` caps reasoning **and** visible output *combined*,
+   which is why the client defaults to `minimal` and carries a
+   `_RESPONSES_DEFAULT_RESERVE` so a reasoning trace cannot eat the reply. The
+   live `main_chat` route allows 1,024 output tokens total.
+2. **A separate think-pass** — one extra non-streaming call before the streaming
+   reply, sharing the same system prefix — is what the cache made cheap, because
+   the second call's ~74k-character input is a cache read rather than a fresh
+   send. **This is the shape that got affordable**, and it already exists in the
+   codebase: `_maybe_run_tool_pass` is exactly this, a non-streaming pre-call
+   whose output conditions the reply. A think-pass would be its sibling, gated the
+   way P14 gates the tool pass.
+
+So the honest framing is not "reasoning is cheap now" but "a second call is cheap
+now, and we already have one to copy."
 
 Key files: the route table in `config/user.json` and
 `_resolve_reasoning_effort()` in
