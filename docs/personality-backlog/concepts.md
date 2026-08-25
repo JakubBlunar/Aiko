@@ -1905,6 +1905,19 @@ changes — but note the direction. The sources are starting to produce, and the
 next re-count is the one worth doing properly rather than by hand; see
 [shape 23](health.md#recurring-shapes).
 
+**Re-counted again 25 Aug: the belief lane has broken its own blockage, and the
+blocker moved.** The first row of the table below is stale by two orders of
+magnitude — `beliefs` now holds **267 rows with 109 resolved outcomes**, against
+the `1 / 0` recorded here, because H51 made confirmations durable and
+auto-confirmed repeatedly-observed rows. That is within sight of this entry's own
+"order hundreds, not dozens" bar. What replaces the supply problem is an
+*attribution* problem: after H51 a `confirmed` row cannot be told apart from a
+rule firing on repetition, and there is no resolution timestamp, so a hit rate
+over those 109 would largely measure the auto-confirm threshold and report it as
+her accuracy. **L47 below carries the numbers and the fix**; this entry stays
+blocked, but on L47 rather than on emptiness. The other four sources in the table
+remain as counted.
+
 **The count.** Per source, lifetime:
 
 | Source | Rows | Usable outcomes |
@@ -2227,6 +2240,148 @@ for history. Phase 4-5: Medium. Phase 6: Medium-Large (new telemetry).
 the cold-start guard this reuses). Feeds every future threshold decision in this
 document — the intended end state is that a new gate ships as a `GateSpec`
 rather than as a number.
+
+---
+
+## L46. Abstraction never stacks -- the graph is two layers, by one filter clause
+
+**Motivation.** The concept layer *does* abstract: 905 meta-concepts exist (539
+`generalization`, 366 `tension`), each citing a mean of 5.1 base concepts, and
+346 of them are `active`. What it never does is abstract **twice**. Measured on
+the live graph (25 Aug, 4,613 concepts, 2,867 assistant turns):
+
+| Reading | Value |
+| --- | --- |
+| `concept -> concept` edges | 4,609 |
+| distinct sources / targets | 635 / 906 |
+| source kinds | all base: `communication_style` 133, `value` 101, `boundary` 97, `affective` 94, `identity` 89, `aspiration` 78, `narrative` 42, `taste` 1 |
+| target kinds | `generalization` 539, `tension` 366, `communication_style` 1 |
+| **nodes that are both a source and a target** | **1** |
+| longest chain | **2 edges** |
+| `sequence` concepts | **0** |
+
+One node out of 4,613 sits in the middle of a chain, and it looks like an
+accident rather than a second-order belief. The graph is a flat bipartite fan:
+bases at the bottom, one layer of abstractions above them, nothing above that.
+
+**The cause is a single filter, not a missing feature.** `_active_tension_bases()`
+in [`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py)
+(~L2635) offers the generalisation proposer *active non-meta* concepts. So the
+346 active meta-concepts are excluded from the base pool of every pass that
+runs, permanently and by construction. Nothing else caps depth — the edge table,
+`propose_generalization()` and the `evidence_concept_ids` contract are all
+depth-agnostic. Remove the exclusion and the layer above becomes reachable; that
+is the whole mechanism.
+
+**Why this is the reasoning item and not a graph-tidiness item.** One layer of
+abstraction gets "these five things he does share a theme." Two layers get "two
+of the themes I hold about him are the same kind of thing" — which is the
+difference between noticing patterns and having a *view*. It is also the level at
+which her self-concepts and her user-concepts could meet: today a
+`generalization` over his boundaries and a `generalization` over her own conduct
+can never be siblings under anything, because neither can be evidence.
+
+**It is also the missing prerequisite for two filed items.** L34 (relation
+taxonomy with propagation) proposes semantics for walking edges, and L29b
+(meta-narrative whose steps are concepts) proposes an ordered arc over concept
+nodes. Both presume depth that does not exist — and L29b's substrate is exactly
+the `sequence` kind, which has **zero rows**. Neither should be started before
+this one; a propagation rule over a graph of height one propagates nothing.
+
+**Key files.**
+- [`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py) — `_active_tension_bases()` (the filter), `_run_generalization_pass` (~L2608)
+- [`proposers/base.py`](../../app/core/concepts/proposers/base.py) — `propose_generalization()` (~L1007), the >= 2 distinct `evidence_concept_ids` rule
+- [`proposers/generalization_user.py`](../../app/core/concepts/proposers/generalization_user.py) — `_system()`, the prompt that would need to know it is looking at abstractions
+- [`concept_dedupe.py`](../../app/core/concepts/concept_dedupe.py) — the 0.86 bar a level-2 label would have to clear against its own bases
+
+**Sketched approach.** Admit meta-concepts to the base pool with (1) an explicit
+depth cap stored per concept rather than inferred by walking, (2) a requirement
+of >= 2 *meta* bases so a level-2 cannot be a rename of a single level-1, and
+(3) a promotion bar that rises with depth, since the evidence gets thinner as the
+claim gets broader.
+
+**Open questions.** (1) Vagueness is the whole risk: a generalisation of
+generalisations is exactly where slop lives, and the honest test is reading
+twenty of them, not a confidence number. (2) Does the dedupe bar even let one
+through, given a level-2 is near-synonymous with its bases by construction?
+(3) Does surfacing want them — L28m already found tight concept diets sort the
+generative kinds last, so a level-2 might mint and never be read. (4) Depth cap
+of 2, or 3? Three assumes a graph an order of magnitude denser than this one.
+
+**Effort.** Medium. The filter change is an afternoon; the guardrails and the
+quality read are the work.
+
+**Depends on.** Nothing. **Blocks** L34 and L29b, which is the point of filing it.
+
+---
+
+## L47. Belief outcomes are unattributable -- the ledger L44 has been waiting for
+
+**Motivation.** L44 (per-domain self-calibration) is marked *blocked on supply*,
+and the counted reason was that the incident streams were empty: `1` belief row,
+0 corrections, 0 fact-check verdicts, 2 hypothesis adjudications. **That is no
+longer true in the belief lane.** Re-counted 25 Aug:
+
+| Reading | Value |
+| --- | --- |
+| `beliefs` rows | **267** (133 `mood`, 134 `opinion`) |
+| `confirmed` | 95 |
+| `contradicted` | 14 |
+| `stale` | 7 |
+| **resolved outcomes** | **109** |
+| rows with `gap_seen_at` set | 11 |
+| rows carrying `valence` **and** `arousal` | 29 (22% of `mood`) |
+| rows with `source='predict'` | **0** |
+
+L44's own unblocking bar is "order hundreds, not dozens" of adjudicated
+outcomes. One lane is now within sight of it, and H51 is why — auto-confirming a
+repeatedly-observed belief and stopping re-upsert from silently undoing a
+confirmation is what turned a near-empty table into 109 resolutions.
+
+**And that is exactly what makes them unusable.** After H51 a `confirmed` row can
+mean two completely different things: *the worker observed this belief N times*
+(a rule firing on repetition) or *a live signal agreed with a prediction* (an
+outcome). Nothing on the row distinguishes them, and nothing records **when** it
+resolved. A hit rate computed over that mixture would mostly measure the
+auto-confirm threshold, report it as her accuracy, and be believed — the worst
+possible failure mode for a calibration feature, because it is confidently wrong
+rather than absent. `gap_seen_at` is set on 11 rows, so the genuinely-adjudicated
+subset is roughly a tenth of the total and cannot be separated from the rest by
+query.
+
+**Two smaller findings in the same table.** (1) `source` is `'worker'` on all 267
+rows, so the inline `[[predict:]]` path has produced **zero** beliefs across
+2,867 turns despite the persona asking for the tag and `extract_predict_tags`
+being wired to consume it. A clean zero usually means a break, not reticence, and
+finding out which is a short measurement that gates the whole "she predicts and
+learns" story. (2) Only 22% of `mood` beliefs carry `valence`/`arousal`, so
+`_detect_mood_gaps` still skips ~78% of them before comparing anything — the H51
+fix populates new rows, and the back catalogue stays dark.
+
+**Key files.**
+- [`belief_store.py`](../../app/core/relationship/belief_store.py) — `upsert`, `BELIEVED_STATUSES`, the auto-confirm path
+- [`belief_gap_detector.py`](../../app/core/relationship/belief_gap_detector.py) — `_detect_mood_gaps` (the valence gate), the opinion `classify_pair` path
+- [`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) — the `[[predict:]]` consumer, and where a resolution stamp would be written
+- `beliefs` table in [`chat_database.py`](../../app/core/infra/chat_database.py) (~L804)
+
+**Sketched approach.** Make a resolution *attributable* before aggregating
+anything: `resolved_at`, `resolved_by` (`auto_confirm` / `gap_check` /
+`user_statement` / `worker_reobservation`) and the evidence id, either as three
+columns or as an append-only `belief_outcomes` table if the history matters more
+than the current state. Then L44's aggregation reads only the rows whose
+`resolved_by` is an actual outcome, with shrinkage toward neutral, and the
+auto-confirmations stay what they are: evidence of stability, not of accuracy.
+
+**Open questions.** (1) Columns or ledger — a belief can resolve more than once
+if it revives, and only the ledger records that. (2) Should an auto-confirmation
+count at *reduced* weight rather than zero? It is weak evidence, not no
+evidence. (3) Does the mood lane need a backfill for the 78%, or is forward-only
+acceptable given rows age out?
+
+**Effort.** Small for the provenance stamp; Medium for L44's aggregation on top.
+
+**Depends on.** H51 (shipped) supplied the volume. **Unblocks** L44, which K77's
+candor gate in turn depends on.
 
 ---
 

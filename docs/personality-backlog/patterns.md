@@ -787,3 +787,53 @@ cues per type against open-ended conversation, 66-90% of cues expire unused, and
 the best thing available and the best thing available is still, on most turns, not
 about what he said. That is the case for `CuePolicy.substance` restated as a
 measurement rather than an intuition, and it is the next piece of work.
+
+## K96. One shot per thought — in-turn deliberation
+
+**Motivation.** Every reply Aiko gives is a single forward pass at
+`reasoning_effort: 'low'` (the live `main_chat` route, gpt-5.6-luna), and whatever
+deliberation the model does do is discarded: `strip_thinking_blocks_with_signal`
+in [`chat_client.py`](../../app/llm/chat_client.py) removes it from the visible
+stream and nothing persists it, so she cannot pick up a thought she was already
+half-way through on the previous turn. The only multi-step path inside a turn is
+the tool pass (`_maybe_run_tool_pass`, `max_rounds=2`), and it exists to fetch
+external facts, not to think — there is no scratchpad, no re-read of her own
+draft, no self-critique, no "wait, that doesn't follow". Everything that looks
+like reasoning in the transcript is either a single pass or a precomputed score
+that a background worker produced hours ago and a prompt block surfaced. That is
+a real ceiling on the *companion* feel, because the moments that read as
+intelligence are usually second thoughts: catching the implication, noticing the
+question behind the question, changing her mind mid-sentence.
+
+**Why now rather than earlier: the cost argument changed.** `'low'` was chosen
+when the prompt cache was silently doing nothing — every turn paid full price for
+~74k characters. It now runs at a 56.7% hit rate with cache reads at 11.5x writes
+(four explicit breakpoints, P51/P52 work), so the marginal cost of asking for more
+thinking on *some* turns is a fraction of what it was when the current setting was
+picked. Nobody has re-measured the trade since.
+
+Key files: the route table in `config/user.json` and
+`_resolve_reasoning_effort()` in
+[`openai_compatible_client.py`](../../app/llm/openai_compatible_client.py) (~L1079);
+`strip_thinking_blocks_with_signal` in
+[`chat_client.py`](../../app/llm/chat_client.py) (~L182); `_maybe_run_tool_pass`
+in [`turn_runner.py`](../../app/core/session/turn_runner.py) (~L1389); the
+`pre_thought` provider as the nearest existing precedent for a retained thought.
+
+**Three cheap experiments, in increasing order of ambition.** (1) Raise effort
+*selectively* — only on turns where a reasoning-shaped block actually rendered
+(H53's four, plus `belief_gaps_block`, `concept_hypothesis_block`,
+`knowledge_gap_notice_block`), which is a small minority of turns and is exactly
+where a second thought would pay. (2) Persist one or two sentences of "what I was
+chewing on" across turns, as a `pre_thought` sibling that survives the turn
+boundary rather than being regenerated from scratch — continuity of thought is
+cheaper than depth of thought and probably reads better. (3) A genuine self-check
+on high-stakes turns only, which is K41's mid-stream self-correction viewed from
+the other end.
+
+**The thing to be careful about.** Latency is the companion cost, and it is not
+symmetric with quality: a visible pause before a slightly better sentence reads
+worse than an instant adequate one, because presence is the product. Any version
+of this needs the effort decision made *before* the stream opens and needs a
+measured p95, not a vibe. Related: P11 (worker reasoning leakage — the same knob
+wasting tokens in the other direction), K41, K82.
