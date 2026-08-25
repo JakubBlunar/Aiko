@@ -68,6 +68,7 @@ KNOWN_OVERRIDES: Mapping[str, str] = MappingProxyType({
     "mood_drift_force_surface": "H3 - bypass the mood-drift cooldown and signature gates once.",
     "mood_inertia_force": "K45 - force a mood-inertia cue once.",
     "opinion_injection_force_next": "K29 - bypass the opinion-injection cooldown and cap once.",
+    "second_thought_force_next": "K96 - bypass the second-thought surfacing cadence once.",
     "self_callback_force_next": "Bypass the self-callback cue watermark once.",
     "session_clock_force_next": "K-time4 - bypass the session-clock provider gates once.",
     "shared_ritual_force_next": "Bypass the shared-ritual surfacing gates once.",

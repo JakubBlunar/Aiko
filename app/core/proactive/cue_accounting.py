@@ -375,6 +375,11 @@ CUE_SPECS: dict[str, CueSpec] = {
         # which is the only arming signal that can be read cheaply.
         CueSpec("long_arc_callback"),
         CueSpec("shared_ritual"),
+        # Pool-only, same shape as ``self_correction``: K96's post-reply
+        # think pass writes straight to ``cue_pool`` from a background job,
+        # so a queued row is the whole of the arming signal. Nothing about
+        # it can be inspected before the pass has run.
+        CueSpec("second_thought"),
         CueSpec(
             "aspiration_momentum",
             journal_key="aiko.aspiration_momentum",
@@ -685,6 +690,38 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             surface_cooldown_hours=72.0,
             handling_section="Our things (shared rituals):",
             block="shared_ritual_block",
+        ),
+        CuePolicy(
+            "second_thought",
+            # K96: what she was still chewing on after a reply had already
+            # gone out, drafted by the post-reply think pass. The subject is
+            # a short topic phrase the pass names explicitly (rather than
+            # the note's own sentence), so two shared words is the right
+            # bar -- the same reasoning as ``shared_ritual`` and unlike
+            # ``turning_over``, whose subject IS a sentence.
+            inventory_target=2,
+            # A day. Long enough to carry into tomorrow's conversation --
+            # which is the entire point, since a thought that survives the
+            # turn boundary is what the feature adds -- and short enough
+            # that she is not reopening Tuesday's loose end on Friday.
+            ttl_hours=24.0,
+            fulfilment=FULFILMENT_SPOKEN,
+            # Legitimately cosine-trusting, and worth stating why, because
+            # the on-topic-by-construction trap is close by. The subject is
+            # drawn from the turn that just ended, but it is claimed on a
+            # LATER turn, by which point the conversation has usually
+            # moved -- so a high cosine means she actually returned to it
+            # rather than that she stayed put.
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            min_overlap=2,
+            # The pacing gate, and the one number here most likely to want
+            # tuning from real use. A produced-every-turn shelf could
+            # otherwise empty itself over consecutive turns, and "still
+            # thinking about what you said" lands once; four times an hour
+            # it is a tic.
+            surface_cooldown_hours=4.0,
+            handling_section="Picking up a thought I didn't finish:",
+            block="second_thought_block",
         ),
         # ── event-armed: nothing stocks these, the pool is a retry buffer
         #

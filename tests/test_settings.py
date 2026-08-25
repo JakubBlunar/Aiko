@@ -798,6 +798,77 @@ class PreThoughtSettingsTests(unittest.TestCase):
         self.assertEqual(result.memory.pre_thought_interval_seconds, 60)
 
 
+class SecondThoughtSettingsTests(unittest.TestCase):
+    """K96: the post-reply think pass knobs default / round-trip / clamp."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.user_json = Path(self._tmp.name) / "user.json"
+        patcher = mock.patch.object(
+            settings_mod, "USER_CONFIG_PATH", self.user_json,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _write_config(self, agent_extra: dict | None = None) -> Path:
+        default_path = (
+            Path(__file__).resolve().parents[1] / "config" / "default.json"
+        )
+        cfg = copy.deepcopy(json.loads(default_path.read_text(encoding="utf-8")))
+        for k in (
+            "second_thought_enabled",
+            "second_thought_max_tokens",
+            "second_thought_min_gap_seconds",
+            "second_thought_min_user_chars",
+            "second_thought_min_reply_chars",
+        ):
+            cfg.get("agent", {}).pop(k, None)
+        if agent_extra is not None:
+            cfg["agent"] = {**cfg.get("agent", {}), **agent_extra}
+        path = Path(self._tmp.name) / "config.json"
+        path.write_text(json.dumps(cfg), encoding="utf-8")
+        return path
+
+    def test_it_ships_dark(self) -> None:
+        """The only worker that spends on the chat model stays opt-in."""
+        a = load_settings(config_path=self._write_config()).agent
+        self.assertFalse(a.second_thought_enabled)
+        self.assertEqual(a.second_thought_max_tokens, 160)
+        self.assertEqual(a.second_thought_min_gap_seconds, 180)
+        self.assertEqual(a.second_thought_min_user_chars, 80)
+        self.assertEqual(a.second_thought_min_reply_chars, 120)
+
+    def test_overrides_round_trip(self) -> None:
+        path = self._write_config(agent_extra={
+            "second_thought_enabled": True,
+            "second_thought_max_tokens": 220,
+            "second_thought_min_gap_seconds": 600,
+            "second_thought_min_user_chars": 40,
+            "second_thought_min_reply_chars": 60,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertTrue(a.second_thought_enabled)
+        self.assertEqual(a.second_thought_max_tokens, 220)
+        self.assertEqual(a.second_thought_min_gap_seconds, 600)
+        self.assertEqual(a.second_thought_min_user_chars, 40)
+        self.assertEqual(a.second_thought_min_reply_chars, 60)
+
+    def test_clamps(self) -> None:
+        # The token floor matters: the pass has to fit a subject line and a
+        # sentence, and a value below that would truncate every draft into
+        # something the parser then reports as unreadable.
+        path = self._write_config(agent_extra={
+            "second_thought_max_tokens": 1,
+            "second_thought_min_gap_seconds": -5,
+            "second_thought_min_user_chars": -1,
+        })
+        a = load_settings(config_path=path).agent
+        self.assertEqual(a.second_thought_max_tokens, 32)
+        self.assertEqual(a.second_thought_min_gap_seconds, 0)
+        self.assertEqual(a.second_thought_min_user_chars, 0)
+
+
 class ContagionSettingsTests(unittest.TestCase):
     """K37: emotional contagion agent knobs default / round-trip / clamp."""
 

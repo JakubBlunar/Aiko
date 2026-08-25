@@ -55,6 +55,44 @@ class SpeakingWorkersInitMixin:
             log.warning("ReflectionWorker init failed", exc_info=True)
             self._reflection_worker = None
 
+        # K96: the post-reply think pass. The only speaking-window worker
+        # on the CHAT client rather than the worker model, and deliberately
+        # so -- its whole affordability rests on re-sending the system
+        # prefix the turn just sent, which is cached on that client and on
+        # that model only. Pointing it at the local worker model would be
+        # cheaper per token and would lose the context it exists to read.
+        self._second_thought_worker = None
+        try:
+            from app.core.proactive.cue_accounting import policy_for
+            from app.core.proactive.second_thought_worker import (
+                SecondThoughtWorker,
+            )
+
+            _policy = policy_for("second_thought")
+            self._second_thought_worker = SecondThoughtWorker(
+                ollama=self._ollama,
+                model=self._effective_chat_model,
+                # Bound lazily: the cue store is not wired yet at this
+                # point in __init__, and a worker holding None forever is
+                # how a feature ships looking enabled and doing nothing.
+                queue_cue=lambda subject, text, payload: bool(
+                    self._queue_pool_cue(
+                        "second_thought", subject, text, payload=payload,
+                    ),
+                ),
+                pending_count=lambda: int(
+                    self._cue_store.count_pending("second_thought"),
+                ) if getattr(self, "_cue_store", None) is not None else 0,
+                settings_provider=lambda: self._settings,
+                user_display_name_provider=lambda: self.user_display_name,
+                inventory_target=(
+                    _policy.inventory_target if _policy is not None else 2
+                ),
+            )
+        except Exception:
+            log.warning("SecondThoughtWorker init failed", exc_info=True)
+            self._second_thought_worker = None
+
         # Phase 2b: DreamWorker — bootstrap-time reflection that runs
         # once per app start when the gap since the last assistant turn
         # exceeds a threshold. Writes a kind=reflection memory tagged
@@ -655,6 +693,7 @@ class SpeakingWorkersInitMixin:
             follow_up=self._render_follow_up_block,
             growth_witness=self._render_growth_witness_block,
             self_callback=self._render_self_callback_block,
+            second_thought=self._render_second_thought_block,
             aspiration_momentum=self._render_aspiration_momentum_block,
             tension=self._render_tension_block,
             wellbeing_concern=self._render_wellbeing_concern_block,

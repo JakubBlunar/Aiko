@@ -169,6 +169,9 @@ _OFFERS: dict[str, tuple[str, ...]] = {
     CALLBACK: (
         "thread_ownership_block",
         "self_callback_block",
+        # K96. Reaching back a few turns rather than a few weeks, but the
+        # move is the same one and it spends the floor the same way.
+        "second_thought_block",
         "long_arc_callback_block",
         "follow_up_block",
         "inside_joke_block",

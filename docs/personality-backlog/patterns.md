@@ -853,3 +853,45 @@ worse than an instant adequate one, because presence is the product. Any version
 of this needs the effort decision made *before* the stream opens and needs a
 measured p95, not a vibe. Related: P11 (worker reasoning leakage — the same knob
 wasting tokens in the other direction), K41, K82.
+
+### Shipped: experiment (2), as `second_thought`
+
+Measurement first, because it moved the design. Over 1,162 logged turns
+(`data/prompt-cache.jsonl`), `first_token_ms` is **p50 1,458 / p95 3,304 ms**
+with no pre-stream call, and **54% of turns reach first token inside 1.5s**. A
+bare think call generating 60–120 tokens at the measured p50 of 112 tok/s is
+~0.5–1.1s, so a *pre*-stream pass would add roughly 40–70% to the pause on every
+turn it fired. (The live `avg_pass_ms` of 3,473 ms for the tool pass is not the
+comparable number — it dispatches `web_search` and runs up to two rounds.)
+
+Two findings then argued for the post-reply shape over the pre-stream one:
+
+- **A pre-stream call partially pays for itself, but only partially.** Turns
+  where the tool pass ran reach first token *faster* — p50 1,358 vs 1,458 ms, p95
+  2,923 vs 3,304 — because the pre-call warms the prefix and the stream's prefill
+  becomes a cache read. Worth knowing, and not enough: the refund is 100–380 ms
+  against a ~1s spend.
+- **The reply pass is already at `reasoning_effort: "low"`**, which reserves 1,024
+  output tokens on top of `max_tokens: 1024`. She is not thinking zero times per
+  turn today, so a synchronous second pass *overlaps* deliberation the model
+  already performs on the same input. A pass that runs after the reply does not
+  overlap anything — it can only produce what no effort setting can: a thought
+  that outlives the turn.
+
+So the shipped version drafts *after* the stream, in the gap while he reads and
+types, and lands in the next turn. It costs zero time-to-first-token, and its
+~74k-character input is a cache read because it reuses
+`PromptTelemetry.system_prompt` and its breakpoints verbatim. Output is the blend:
+a subject to reopen plus one or two sentences of what she was still chewing on,
+including — deliberately, because this is where the surfacing gap shows up — what
+she had in front of her and talked past. It is a pooled cue
+(`surface_cooldown_hours=4`), so "she was handed this and dropped it" is measured
+rather than assumed. Off by default via `agent.second_thought_enabled`. See
+[`configuration.md`](../configuration.md#k96--second-thought-the-post-reply-think-pass).
+
+**Still open.** Experiments (1) and (3) are untouched, and (1) now has a cheap
+prerequisite: H53 has to say whether those reasoning-shaped blocks ever render at
+all before "raise effort on the turns they fire" can mean anything. The honest
+open question on what shipped is whether a thought drafted one turn late reads as
+continuity or as her being behind the conversation — which is a read on the
+output, not a measurement, and needs real use before it can be answered.

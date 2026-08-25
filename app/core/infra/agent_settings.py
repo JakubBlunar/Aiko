@@ -852,6 +852,35 @@ class AgentSettings:
     # the local box hot.
     pre_thought_per_hour_cap: int = 6
     pre_thought_per_day_cap: int = 40
+    # ── K96 second thought (the post-reply think pass) ────────────────
+    # Master switch. Default OFF: this is the only worker that spends a
+    # call on the *main chat* model rather than the local worker one, so
+    # it stays opt-in until its output has been read on real turns.
+    #
+    # Distinct from the three neighbours it is easy to mistake it for.
+    # ``pre_thought`` guesses what he will ask NEXT and pre-drafts an
+    # answer; ``turning_over`` surfaces a between-sessions reflection when
+    # he comes BACK from an absence; ``reflection`` writes a memory about
+    # the turn. This one is the only one that reads her own reply against
+    # the context she was actually handed, and asks what she did not do
+    # with it -- which is why it has to run on the chat model, where that
+    # context is already cached.
+    second_thought_enabled: bool = False
+    # Output ceiling for the think call, in tokens. This is the latency
+    # and cost dial: the input is a cache read of the prefix the turn
+    # just sent, so essentially all of the cost is here. Measured at
+    # ~112 tok/s, 120 tokens is ~1.1s -- which is free in this mode,
+    # since it runs after the reply has already been delivered.
+    second_thought_max_tokens: int = 160
+    # Floor on seconds between think calls. Most turns do not deserve a
+    # second thought ("ok", "thanks", "lol"), and the prompt can decline,
+    # but declining still costs a call -- so the cheap clock comes first.
+    second_thought_min_gap_seconds: int = 180
+    # Floors on how much was said before a turn is worth reflecting on,
+    # in characters. Below either one there is nothing to have a second
+    # thought about, and this is the gate that keeps the spend sane.
+    second_thought_min_user_chars: int = 80
+    second_thought_min_reply_chars: int = 120
     # ── K21 fresh-eyes thread re-summary ─────────────────────────────
     # Master switch for
     # :class:`app.core.proactive.thread_resummary_worker.ThreadResummaryWorker`.
