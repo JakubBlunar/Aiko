@@ -4960,6 +4960,16 @@ The forward half of L30 invents, the middle now asks and occasionally adjudicate
 **zero instances, lifetime**. `graduated_concept_id` and `graduated_memory_id` are
 `NULL` on all 23 rows.
 
+**Re-counted 25 Aug (27 rows, 2,867 assistant turns), and the arithmetic below
+holds — the shelf is now mostly expiring.** Status split: 14 `expired`, 11 `open`,
+1 `refuted`, 1 `supported`, still **0 graduated**. Lifetime 7 rows ever asked
+(25.9%), 2 ever answered (7.4%), so 28.6% of asks produce a verdict — the
+one-in-five in the table below has become closer to one-in-three, and it changes
+nothing, because **expiry now outruns resolution 7:1**. The single `supported` row
+has `support_count = 1` against a bar of 2 and has never been asked. Four months
+of operation have produced 27 guesses and 2 verdicts, which is the same
+conclusion the arithmetic reached prospectively: the bar is not waiting on data.
+
 **This is not a bug, which is what makes it worth an entry.** Every part works as
 built. `is_ready` requires `refute_count == 0`, `support_count >= 2`
 (`hypothesis_graduate_min_support`) and `credence >= 0.7`, and `supported` is
@@ -6067,4 +6077,71 @@ turn" is true and irrelevant — the number that matters is tokens × probabilit
 the prefix moved, and for a T0 constant that second term is ~0. The same
 arithmetic says the opposite about a 5,517-character T6 block nobody had
 flagged. Any prompt-budget claim needs the tier beside the size.
+
+---
+
+## H53. Four fully wired reasoning blocks, none of which has ever rendered
+
+**The reading.** Over the 961 turns `turn_prompt_blocks` has instrumented, four
+of the blocks that would let Aiko talk about her own knowledge changing have
+rendered **zero times**, while the tables upstream of them filled up:
+
+| Block | Turns rendered | Upstream supply |
+| --- | --- | --- |
+| `concept_learning_block` | **0 / 961** | 2,591 `concept_learning_events` (succession 2,002, revival 376, loss 115, emergence 98) |
+| `fact_reversal_block` | **0 / 961** | 722 `contradicted` rows in `concept_events` |
+| `self_correction_block` | **0 / 961** | — |
+| `calibration_block` | **0 / 961** | 1 `user_calibration_state` row |
+
+For contrast, the reasoning-adjacent blocks that *do* fire in the same window:
+`novelty_block` 26.1%, `knowledge_gap_notice_block` 15.1%, `topic_confidence_block`
+12.1%, `knowledge_grounding_block` 11.6%, `trusted_beliefs_block` 11.1% (new, from
+H51), `curiosity_gradient_block` 9.3%, `concept_hypothesis_block` 2.2%,
+`belief_gaps_block` 0.6%.
+
+**It is not missing plumbing, which is what makes it worth an entry.** All four
+are registered in `_PROMPT_BLOCK_TIERS` under `T6_detectors`, have a provider
+registered in
+[`speaking_workers_init_mixin.py`](../../app/core/session/speaking_workers_init_mixin.py)
+(L630, L635, L637, L682), have a render method
+([`inner_life_part2.py`](../../app/core/session/inner_life_part2.py) L365, L3822,
+L3869; [`inner_life_part3.py`](../../app/core/session/inner_life_part3.py) L2513),
+are appended to `system_parts` in
+[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) (L3232, L3247,
+L3261, L3577), and two of them own a `CuePolicy` in
+[`cue_accounting.py`](../../app/core/proactive/cue_accounting.py) (L801, L850). The
+whole path exists and the gate at the end of it has never opened.
+
+**Same shape as H51**, which is why it is filed rather than shrugged at: a loop
+whose write side works, whose read side is unreachable, and which therefore looks
+healthy from every angle except the one that asks whether she ever *says*
+anything. 2,591 recorded learning events that never reach a prompt are the
+belief-confirmation bug again with different nouns — the system is keeping a
+diary nobody reads.
+
+**One caveat that has to be resolved first, and it is the interesting part.** 32
+of the 118 registered block names have no `turn_prompt_blocks` row *ever* — and
+that list includes `relationship_block`, `affect_block` and `mood_hint`, which
+demonstrably do reach the prompt (H52 and the arc/relationship coarsening work
+both read their rendered text). So for some registered names, "zero rows" means
+"this name is not what the telemetry records" — the text is folded into another
+block's string. Which means the instrument cannot currently tell *gate never
+opened* from *name never recorded*, and
+[`lead_follow_corpus.py`](../../app/core/persona/lead_follow_corpus.py) (L150)
+already states the principle: "a diagnostic that can't tell them apart is worse
+than one that admits it doesn't know."
+
+So step 1 is per-block disambiguation, not a gate hunt. The four above are the
+ones where the distinction matters most, because each has a named provider whose
+return value is directly observable — call the provider off-turn and see whether
+it returns text. If it returns text, the recording is lying; if it returns empty,
+the gate is the bug and the upstream row counts say the bug is expensive.
+
+**Effort.** Small to diagnose (four provider calls), unknown to fix — a closed
+gate might be one threshold or might be a design that never had a live path.
+
+**Recurring shape.** New instance of the H51 shape: *a subsystem whose output has
+no reader*. Also a new instance of H47's lesson one layer up — there the question
+was "she was shown 604 of them and said nothing", here it is whether she was
+shown them at all, and the instrument that should answer it is ambiguous.
 

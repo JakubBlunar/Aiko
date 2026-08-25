@@ -828,6 +828,23 @@ conditional. New shape — *a cost measured in isolation from its cacheability*:
 the number that matters is tokens × probability the prefix moved, and for a T0
 constant that second term is ~0 ([`health.md`](health.md)).
 
+**H53 is the one to read before you conclude a block is gated too tight.** Four
+blocks that would let her talk about her own knowledge changing —
+`concept_learning_block`, `fact_reversal_block`, `self_correction_block`,
+`calibration_block` — have rendered **0 times in 961 instrumented turns**, while
+2,591 `concept_learning_events` and 722 `contradicted` concept events piled up
+behind them. All four are *fully* wired: registered in `_PROMPT_BLOCK_TIERS`,
+provider registered, render method present, appended to `system_parts`, two with
+their own `CuePolicy`. So it is H51's shape again — a loop whose write side works
+and whose read side never opens, a diary nobody reads. But the entry's real
+content is the caveat: 32 of 118 registered block names have *no* telemetry row
+ever, including `relationship_block` and `affect_block`, which demonstrably do
+reach the prompt because their text is folded into another block's string. So
+**the instrument cannot currently tell "gate never opened" from "name never
+recorded"**, and disambiguating per block comes before any gate hunt — which is
+`lead_follow_corpus.py`'s own stated principle applied to itself
+([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays
@@ -894,6 +911,14 @@ K60 tsundere mask (expression policy over K57: warmth expressed
 through denial, caught-caring beat, budgeted dere-slips,
 closeness-eroded mask — `agent.expression_mask` dial, off by
 default).
+
+- **K96.** One shot per thought — in-turn deliberation. Every reply is a single
+  forward pass at `reasoning_effort: 'low'`, and the model's own thinking is
+  stripped and discarded rather than carried forward, so she can never have a
+  *second* thought. The cost argument that picked `'low'` predates the prompt
+  cache working (56.7% hit rate now), so the trade is worth re-measuring —
+  selectively, on the minority of turns where a reasoning-shaped block rendered.
+  Latency is the real constraint, not tokens.
 
 (K1 long-term goals, K2 theory-of-mind, K3 routine awareness,
 K4 dialogue-act tagging, K5 mood-shell tilt, K6 novelty
@@ -1148,13 +1173,32 @@ that relationship-local signal back into concept ranking:
   which is the substrate for adjusting because of how she's landing and for
   "am I too much sometimes?". Needs floors on the negative side or it
   becomes a doom spiral.
-- **L44.** ⛔ **Blocked on supply.** Per-domain self-calibration — confidence is
-  always per *claim*, never per *class of her own judgements*. Still the right
-  idea and still a precondition for K77's candor gate, but every incident
-  source it would aggregate is empty on a 12-week graph (1 belief row, 0
-  corrections, 0 fact-check verdicts, 0 hypothesis adjudications), and the L37
-  engagement ledger cannot stand in because its label is self-normalizing.
-  Numbers in [`concepts.md`](concepts.md).
+- **L44.** ⛔ **Blocked — but on L47 now, not on emptiness.** Per-domain
+  self-calibration: confidence is always per *claim*, never per *class of her own
+  judgements*. Still the right idea and still a precondition for K77's candor
+  gate. The supply that blocked it has partly arrived — `beliefs` went from 1 row
+  to **267 with 109 resolved outcomes** after H51 — so the blocker moved from
+  "nothing to aggregate" to "the outcomes are unattributable". The other three
+  sources (corrections, fact-check verdicts, hypothesis adjudications) are still
+  near-empty, and the L37 engagement ledger cannot stand in because its label is
+  self-normalizing. Numbers in [`concepts.md`](concepts.md).
+- **L46.** Abstraction never stacks — the concept graph is two layers deep, and
+  by *one filter clause*. 905 meta-concepts exist over 635 bases (fan-in 5.1),
+  but exactly **1 node of 4,613** is both a source and a target, so the longest
+  chain is 2 edges and the `sequence` kind has zero rows. The cause is
+  `_active_tension_bases()` offering the proposer active *non-meta* concepts, so
+  the 346 active abstractions can never be evidence for a higher one. This is the
+  missing prerequisite for **L34** (propagation over edges) and **L29b**
+  (meta-narrative over concept nodes) — a propagation rule over a graph of height
+  one propagates nothing.
+- **L47.** Belief outcomes are unattributable — the ledger L44 has been waiting
+  for. 267 beliefs with 109 resolutions, but after H51 a `confirmed` row cannot be
+  told apart from a rule firing on repetition, and there is no resolution
+  timestamp; a hit rate over that mixture would measure the auto-confirm
+  threshold and report it as her accuracy. Wants `resolved_at` / `resolved_by` /
+  evidence id before anything aggregates. Two side findings: `[[predict:]]` has
+  produced **0 of 267** rows in 2,867 turns despite being wired, and only 22% of
+  mood beliefs carry the `valence`/`arousal` that auto-verification needs.
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 
