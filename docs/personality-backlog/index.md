@@ -915,10 +915,12 @@ default).
 - **K96.** One shot per thought — in-turn deliberation. Every reply is a single
   forward pass at `reasoning_effort: 'low'`, and the model's own thinking is
   stripped and discarded rather than carried forward, so she can never have a
-  *second* thought. The cost argument that picked `'low'` predates the prompt
-  cache working (56.7% hit rate now), so the trade is worth re-measuring —
-  selectively, on the minority of turns where a reasoning-shaped block rendered.
-  Latency is the real constraint, not tokens.
+  *second* thought. Note which cost actually changed: reasoning tokens are
+  **output** and the cache discounts **input**, so the affordable shape is a
+  *separate* think-pass reusing the cached prefix — which
+  `_maybe_run_tool_pass` already is — not a higher effort setting on the reply
+  pass, where reasoning and visible output share one budget. Latency is the real
+  constraint, not tokens.
 
 (K1 long-term goals, K2 theory-of-mind, K3 routine awareness,
 K4 dialogue-act tagging, K5 mood-shell tilt, K6 novelty
@@ -1199,6 +1201,15 @@ that relationship-local signal back into concept ranking:
   evidence id before anything aggregates. Two side findings: `[[predict:]]` has
   produced **0 of 267** rows in 2,867 turns despite being wired, and only 22% of
   mood beliefs carry the `valence`/`arousal` that auto-verification needs.
+- **L48.** Refused evidence already mints a new concept, and what it mints is a
+  twin. The evidence ceiling (24 sources) binds on **75 concepts**, and on the
+  *good* ones — mean confidence 0.664 there against 0.404 below 8 sources. The
+  fall-through-to-creation path has produced **4** beanbag-anime rituals at 27-32
+  sources each, **7** pre-sleep hand-lacing rituals, ~**13** near-identical
+  wind-down `tension` rows and **44** concepts whose label mentions "wind-down".
+  Off-topic refusal is a red herring at 2.0% of inflow, by design. So the minting
+  works and the **roll-up** is missing, which is L46 — and the duplicate families
+  are a candidate answer to **P52's volume half**.
 
 ### P. Performance + observability — [`perf.md`](perf.md)
 
