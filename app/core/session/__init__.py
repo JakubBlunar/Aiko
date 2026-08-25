@@ -58,6 +58,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "PostTurnMixin": "post_turn_mixin",
     "ProactivePresenceMixin": "proactive_presence_mixin",
     "SearchProviderMixin": "search_provider_mixin",
+    "SecondThoughtDebugMixin": "second_thought_debug_mixin",
     "WeatherMixin": "weather_mixin",
     "SpeakingWindowJobsMixin": "speaking_window_jobs_mixin",
     "SpeakingWorkersInitMixin": "speaking_workers_init_mixin",
@@ -111,6 +112,9 @@ if TYPE_CHECKING:  # import-time cost only for type checkers
     from app.core.session.post_turn_mixin import PostTurnMixin
     from app.core.session.proactive_presence_mixin import ProactivePresenceMixin
     from app.core.session.search_provider_mixin import SearchProviderMixin
+    from app.core.session.second_thought_debug_mixin import (
+        SecondThoughtDebugMixin,
+    )
     from app.core.session.speaking_window_jobs_mixin import SpeakingWindowJobsMixin
     from app.core.session.speaking_workers_init_mixin import SpeakingWorkersInitMixin
     from app.core.session.task_orchestration_mixin import TaskOrchestrationMixin
@@ -145,6 +149,7 @@ __all__ = [
     "PostTurnMixin",
     "ProactivePresenceMixin",
     "SearchProviderMixin",
+    "SecondThoughtDebugMixin",
     "WeatherMixin",
     "SpeakingWindowJobsMixin",
     "SpeakingWorkersInitMixin",

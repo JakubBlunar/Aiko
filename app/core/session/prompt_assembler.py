@@ -258,6 +258,14 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # K73: warm "this has become our thing" shared-ritual beat.
         # Sibling cue-producer; cooldown + acknowledged-flag gated.
         "shared_ritual_block",
+        # K96: a thought she was still chewing on after a reply had already
+        # gone out, drafted by the post-reply think pass. Nearest in spirit
+        # to self_callback — both are her own continuity rather than a read
+        # on him, that one reaching back weeks and this one a few turns —
+        # but appended at the END of the cue-producer family rather than
+        # beside it, because self_callback -> aspiration_momentum ->
+        # wellbeing_concern is an adjacency three tests pin deliberately.
+        "second_thought_block",
         # P44 measurement moved these two down from T0/T1. Both looked
         # stable and neither is: ``anniversary_block`` stamps
         # ``last_anniversaried_at`` as a side effect of rendering, so it
@@ -938,6 +946,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # intention" beat. Watermark-gated one-shot, independent of the
         # gap-return cue family (like growth_witness / follow_up).
         self._self_callback_provider: Callable[[], str] | None = None
+        # K96 second thought. Consumer of the ``second_thought`` pool cue
+        # the post-reply think pass drafts. Takes the live message because
+        # a loose end is only worth reopening if it still fits -- the same
+        # relevance problem ``long_arc_callback`` has.
+        self._second_thought_provider: Callable[[str], str] | None = None
         # L14 aspiration-momentum cue. Consumer of the
         # AspirationMomentumWorker ring; surfaces an occasional, private
         # "check in on where they're heading" nudge over an active
@@ -2234,6 +2247,21 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("self_callback provider raised", exc_info=True)
                     self_callback_block = ""
 
+        # K96 second thought: a loose end from earlier in this conversation
+        # that the post-reply think pass wrote down. Takes the live message
+        # because the pool holds the row while relevance decides whether
+        # this is the turn for it.
+        second_thought_block = ""
+        if getattr(self, "_second_thought_provider", None) is not None:
+            with _timed_phase(provider_ms, "second_thought"):
+                try:
+                    second_thought_block = (
+                        self._second_thought_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug("second_thought provider raised", exc_info=True)
+                    second_thought_block = ""
+
         # L14 aspiration momentum: occasional "check in on where they're
         # heading" cue. Built every turn (consumes a watermark) but almost
         # always empty. Watermark-gated, sibling of growth_witness.
@@ -3403,6 +3431,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # cue-producer family; cooldown + acknowledged-flag gated
             # one-shot. NOT in the K16 suppression set.
             system_parts.append(shared_ritual_block)
+        if second_thought_block:
+            # K96: a loose end from earlier in this same conversation, the
+            # same instinct as self_callback at a much shorter range. Last
+            # of the cue-producer family; see the note in the ladder for
+            # why it sits here rather than beside its sibling.
+            system_parts.append(second_thought_block)
         # Relocated from T0/T1 by the P44 prefix-break measurements. Both
         # are volatile in practice despite reading as background: see the
         # note beside them in ``_PROMPT_BLOCK_TIERS``. The constant and
@@ -3946,6 +3980,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # expose the last turn's prompt on demand (Diagnostics panel /
             # MCP debug). Not serialised into the broadcast metrics dict.
             system_prompt=system_prompt,
+            # K96: the offsets that went onto ``messages[0]``, carried so a
+            # post-turn pass can rebuild a byte-identical prefix and read
+            # the cache instead of paying to send ~74k characters again.
+            cache_breakpoints=tuple(cache_breakpoints or ()),
         )
 
         # Per plan: tweaking-only headline for the prompt build. Stays

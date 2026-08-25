@@ -442,6 +442,21 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             pre_thought_per_day_cap=max(
                 0, int(agent_raw.get("pre_thought_per_day_cap", 40)),
             ),
+            second_thought_enabled=bool(
+                agent_raw.get("second_thought_enabled", False),
+            ),
+            second_thought_max_tokens=max(
+                32, int(agent_raw.get("second_thought_max_tokens", 160)),
+            ),
+            second_thought_min_gap_seconds=max(
+                0, int(agent_raw.get("second_thought_min_gap_seconds", 180)),
+            ),
+            second_thought_min_user_chars=max(
+                0, int(agent_raw.get("second_thought_min_user_chars", 80)),
+            ),
+            second_thought_min_reply_chars=max(
+                0, int(agent_raw.get("second_thought_min_reply_chars", 120)),
+            ),
             thread_resummary_enabled=bool(
                 agent_raw.get("thread_resummary_enabled", True),
             ),

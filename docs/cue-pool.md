@@ -642,15 +642,53 @@ dealt with this yet", which is the drift the pool exists to end. It took
 `demand()` anyway — the pending slot and the arm cooldown are two kv
 reads, and that is a better admission signal than a fixed interval.
 
+## The second thought (K96)
+
+`second_thought` is the one type whose producer is neither an idle worker
+nor the turn path itself. It is a **background job fired after the reply
+has already been delivered**, which re-reads that reply against the very
+context Aiko was handed and asks what she was still chewing on, or what
+she had available and talked straight past. See
+[`second_thought_worker.py`](../app/core/proactive/second_thought_worker.py)
+for why it runs on the chat model (its input is the prefix the turn just
+cached) and why it runs *after* the stream rather than before it (the
+measured cost of a pre-stream call is time-to-first-token, which is the
+one latency a companion cannot hide).
+
+From the pool's side it is an ordinary stocked type, and two of its
+policy fields are doing unusual work:
+
+- **`inventory_target=2` with a turn-triggered producer.** Every other
+  stocked type is drafted by a worker the scheduler admits on a deficit,
+  so production is naturally slow. This one could draft on every single
+  turn, so the worker checks its own stock *before* drafting and declines
+  when the shelf is met — the `ForwardCuriosityWorker` precaution, for a
+  producer that would hit it far faster.
+- **`surface_cooldown_hours=4`.** Since the shelf refills quickly, the
+  shelf cannot also be what paces the saying: a full one empties itself
+  over consecutive turns, and "still thinking about what you said" lands
+  once but is a tic four times an hour.
+
+It is worth being explicit about how it differs from three neighbours,
+because a fourth near-duplicate is the obvious failure mode here.
+`turning_over` surfaces a between-sessions reflection when the user comes
+*back* from an absence; `pre_thought` guesses what he will ask *next* and
+pre-drafts an answer on the local worker model; `reflection` journals the
+exchange into a memory. Only this one reads *her own reply* against *the
+context she was given* — which is also the reason it is the one that can
+notice a surfacing miss.
+
 ## What is not in the pool yet
 
-Sixteen types are pooled: ten worker-produced, four on the surface-time
-ledger (`turning_over`, `sleep_return`, `away_activities`,
-`long_arc_callback`), and two banked on the turn path
-(`self_correction`, `tease_ledger`). The remaining cue types in
-`CUE_SPECS` (`self_noticing`, `absence_curiosity`, and friends) still
-ride their `kv_meta` rings and are still exempt from consumption
-matching.
+Twenty-one types are pooled. Nine of them set `inventory_target=0` and
+are stocked by nothing — the surface-time ledger (`turning_over`,
+`sleep_return`, `away_activities`, `caught_mid_activity`,
+`long_arc_callback`) plus the ones banked by an event on the turn path
+(`self_correction`, `user_correction`, `fact_reversal`, `tease_ledger`);
+for those the pool is only a retry buffer. The rest are drafted ahead
+against a target. The remaining cue types in `CUE_SPECS`
+(`self_noticing`, `absence_curiosity`, and friends) still ride their
+`kv_meta` rings and are still exempt from consumption matching.
 
 That exemption is correct for most of them, by the lexical-trace test:
 "echo is meaningless for a cue, because a cue is an instruction" holds

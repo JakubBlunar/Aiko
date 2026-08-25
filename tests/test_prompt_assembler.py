@@ -1733,6 +1733,156 @@ class SelfCallbackProviderSlotTests(unittest.TestCase):
         )
 
 
+class SecondThoughtProviderSlotTests(unittest.TestCase):
+    """K96 second-thought block reaches the prompt, takes the live message,
+    is silent when empty, survives aggressive mode, swallows provider
+    exceptions, and is registered at the end of the cue-producer family."""
+
+    _CUE = "Still on your mind from earlier"
+
+    def _cue_line(self) -> str:
+        return (
+            "Still on your mind from earlier: you answered the logistics "
+            "and skipped how resigned he sounded about it."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                second_thought=lambda _msg: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "st1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_the_provider_is_handed_the_live_message(self) -> None:
+        """Relevance ranks the shelf, so the provider needs the message.
+
+        Unlike its watermark-gated siblings this one is a two-argument
+        provider; wiring it as a no-arg callable would raise on every turn
+        and be swallowed into permanent silence.
+        """
+        seen: list[str] = []
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st2", role="user", content="hi", token_count=2,
+            )
+
+            def _provider(msg: str) -> str:
+                seen.append(msg)
+                return ""
+
+            assembler.set_inner_life_providers(second_thought=_provider)
+            assembler.assemble_with_budget(
+                "st2", "about my manager again",
+                context_window=4096, response_budget=256,
+            )
+            self.assertEqual(seen, ["about my manager again"])
+
+    def test_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st3", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(second_thought=lambda _m: "")
+            messages, _ = assembler.assemble_with_budget(
+                "st3", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_retained_under_aggressive(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                second_thought=lambda _m: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "st4", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="st5", role="user", content="hi", token_count=2,
+            )
+
+            def _boom(_msg: str) -> str:
+                raise RuntimeError("kaboom")
+
+            assembler.set_inner_life_providers(second_thought=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "st5", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_after_the_cue_producer_family(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("second_thought_block", t6)
+        # Appended after shared_ritual rather than beside self_callback,
+        # which is where it belongs by subject -- self_callback ->
+        # aspiration_momentum -> wellbeing_concern is an adjacency other
+        # tests pin, and inserting into the middle of it breaks them.
+        self.assertEqual(
+            t6.index("second_thought_block"),
+            t6.index("shared_ritual_block") + 1,
+        )
+
+
+class SecondThoughtBreakpointCarryTests(unittest.TestCase):
+    """The offsets reach telemetry, which is how the post-reply think pass
+    rebuilds a request whose prefix the service can read from cache.
+
+    Without this the pass would still work and would silently pay full
+    price for ~74k characters of input on every single call.
+    """
+
+    def test_telemetry_carries_the_breakpoints(self) -> None:
+        from app.llm.chat_client import CACHE_BREAKPOINT_KEY
+
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P" * 40_000)
+            db.add_message(
+                session_id="bp1", role="user", content="hi", token_count=2,
+            )
+            messages, telemetry = assembler.assemble_with_budget(
+                "bp1", "x", context_window=400_000, response_budget=1024,
+            )
+            self.assertEqual(
+                tuple(telemetry.cache_breakpoints),
+                tuple(messages[0].get(CACHE_BREAKPOINT_KEY, ())),
+            )
+
+    def test_the_carried_prompt_and_offsets_agree(self) -> None:
+        """A stale offset would slice the replayed prompt in the wrong place."""
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P" * 40_000)
+            db.add_message(
+                session_id="bp2", role="user", content="hi", token_count=2,
+            )
+            _messages, telemetry = assembler.assemble_with_budget(
+                "bp2", "x", context_window=400_000, response_budget=1024,
+            )
+            for offset in telemetry.cache_breakpoints:
+                self.assertLessEqual(offset, len(telemetry.system_prompt))
+                self.assertGreater(offset, 0)
+
+
 class WellbeingConcernProviderSlotTests(unittest.TestCase):
     """K72 wellbeing-concern block lands in the system prompt, is silent
     when empty, is RETAINED under aggressive mode (watermark-consuming

@@ -2292,6 +2292,43 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         )
         return row.text
 
+    def _render_second_thought_block(self, user_text: str = "") -> str:
+        """K96: surface one loose end the post-reply think pass wrote down.
+
+        Consumer side of :class:`SecondThoughtWorker`. The pass runs after
+        a reply has already gone out, notices what she under-answered or
+        walked past, and queues it; this hands it back to her on a later
+        turn so a thought can outlive the turn that produced it.
+
+        ``user_text`` is passed through to rank the shelf rather than to
+        gate it, and the distinction is the design. A hard relevance
+        predicate (``long_arc_callback``'s shape) is right for a
+        month-old memory, where reopening it against an unrelated message
+        is worse than dropping it. It is wrong here: "going back to what
+        you said earlier -- I brushed past that" is a move that *works*
+        when the conversation has drifted, and is in fact the only time it
+        is worth making. So relevance decides WHICH loose end she is
+        handed, and ``surface_cooldown_hours`` decides how often she is
+        handed one at all.
+        """
+        if not bool(
+            getattr(self._settings.agent, "second_thought_enabled", False)
+        ):
+            return ""
+        force_next = bool(
+            self._debug_overrides.take("second_thought_force_next", False)
+        )
+        row = self.take_pool_cue(
+            "second_thought", force=force_next, user_text=user_text or "",
+        )
+        if row is None:
+            return ""
+        log.info(
+            "second-thought fire: cue=%d subject=%r",
+            row.id, row.payload.get("subject", ""),
+        )
+        return row.text
+
     def _render_wellbeing_concern_block(self) -> str:
         """K72: surface one rare, gentle "you doing okay?" concern cue.
 

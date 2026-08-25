@@ -1519,6 +1519,86 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_self_callback_surface raised: {exc}"
 
     @mcp.tool()
+    def get_second_thought_state() -> str:
+        """K96 — dump the post-reply think pass ("second thought") state.
+
+        After a reply has already been delivered, a background job re-reads
+        it against the very context Aiko was handed and asks what she was
+        still chewing on, or what she had available and talked past. The
+        answer becomes a ``second_thought`` cue that a later turn can claim,
+        which is how a thought survives the turn boundary at all.
+
+        Read ``stats`` first, and read it as a funnel:
+        ``scheduled`` is how many calls were actually spent, ``declined`` is
+        the pass saying this turn needed no second thought (**the designed
+        majority** — a high ratio here is healthy, not broken), and
+        ``unparsed`` is the bug signal, meaning the model answered in a
+        shape the parser could not read. ``skipped_*`` never spent a call:
+        ``disabled`` (the master switch, off by default), ``recent``
+        (``second_thought_min_gap_seconds``), ``thin`` (the character
+        floors — nothing was said worth reflecting on), ``stocked`` (she is
+        already holding unused thoughts, so drafting more is what turns a
+        target of 2 into a shelf of 14).
+
+        ``queued`` vs the pool's ``used`` is the real verdict: a thought
+        drafted and never spoken is one she was handed and dropped.
+        """
+        try:
+            return json.dumps(session.second_thought_state(), indent=2)
+        except Exception as exc:
+            return f"get_second_thought_state raised: {exc}"
+
+    @mcp.tool()
+    def force_second_thought_draft() -> str:
+        """Run the think pass once, right now, against the last turn.
+
+        Bypasses the clock, the character floors and the stock check, but
+        NOT ``agent.second_thought_enabled`` — a master switch a debug tool
+        can talk past is not a master switch.
+
+        Replays the last turn's system prompt from
+        ``get_last_system_prompt()`` and the newest user/assistant pair from
+        the transcript, so it needs a real turn to have happened first. One
+        caveat worth knowing when reading latency from this path: the
+        replay carries no cache breakpoints (the accessor keeps the prompt
+        string, not the offsets), so a forced draft pays more for its input
+        than the live job does.
+
+        Repro: ``send_message`` something substantial ->
+        ``force_second_thought_draft()`` -> ``force_second_thought_surface()``
+        -> ``send_message(skip_tts=true)`` -> confirm the "Still on your mind
+        from earlier: ..." line in
+        ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            return json.dumps(session.force_second_thought_draft(), indent=2)
+        except Exception as exc:
+            return f"force_second_thought_draft raised: {exc}"
+
+    @mcp.tool()
+    def force_second_thought_surface() -> str:
+        """Arm a one-shot bypass on the second-thought surfacing cadence.
+
+        Sets ``second_thought_force_next`` so the next assembly ignores
+        ``surface_cooldown_hours``. A cue still has to be waiting — run
+        ``force_second_thought_draft`` first if the pool is empty.
+        """
+        try:
+            session.debug_overrides.arm("second_thought_force_next")
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the second-thought "
+                        "cadence; pool must be non-empty"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_second_thought_surface raised: {exc}"
+
+    @mcp.tool()
     def force_tension_surface() -> str:
         """Arm a one-shot bypass on the tension-cue watermark.
 

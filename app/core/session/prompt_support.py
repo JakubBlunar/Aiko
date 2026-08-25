@@ -1013,6 +1013,11 @@ class PromptTelemetry:
     # instead, exposed via ``GET /api/debug/last-prompt`` for the Diagnostics
     # panel + the MCP ``get_last_response_detail`` debug tool.
     system_prompt: str = ""
+    # K96: the cache breakpoint offsets attached to ``messages[0]`` this
+    # turn, so a post-turn pass reusing ``system_prompt`` can present the
+    # request in the same shape and hit the cache rather than re-sending
+    # the prefix. Kept out of ``as_dict()`` for the same reason as above.
+    cache_breakpoints: tuple[int, ...] = ()
     # P44: where this turn's prompt stopped matching the previous turn's.
     # Prompt caching is prefix caching, so the earliest changed block is
     # the only one that matters — everything after it pays full price.

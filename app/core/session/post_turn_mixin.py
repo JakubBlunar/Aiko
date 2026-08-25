@@ -863,6 +863,62 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("reflection job submit failed", exc_info=True)
 
+        # K96: the post-reply think pass. Submitted here rather than run
+        # inline because the whole design claim is that it costs the user
+        # nothing — it has to land in the gap while he reads and types, not
+        # in the turn. Needs this turn's telemetry for the system prompt:
+        # reusing that exact string is what makes its input a cache read
+        # instead of a second ~74k-character send.
+        thinker = getattr(self, "_second_thought_worker", None)
+        if thinker is not None and telemetry is not None:
+            system_prompt = getattr(telemetry, "system_prompt", "") or ""
+            breakpoints = tuple(
+                getattr(telemetry, "cache_breakpoints", ()) or (),
+            )
+            if system_prompt:
+                # Distinct names on purpose. The reflection closure above
+                # has been submitted but has NOT run, and Python closures
+                # capture the variable rather than its value -- reusing
+                # ``session_key`` / ``user_snapshot`` here would silently
+                # change what that job sees when the scheduler gets to it.
+                think_session_key = self.session_key
+                think_user_text = user_text or ""
+                think_reply_text = assistant_text or ""
+
+                def _think_job(_stop_flag: Any) -> None:
+                    try:
+                        thinker.maybe_run(
+                            system_prompt=system_prompt,
+                            user_text=think_user_text,
+                            assistant_text=think_reply_text,
+                            cache_breakpoints=breakpoints,
+                            session_key=think_session_key,
+                            stop_flag=_stop_flag,
+                        )
+                    except Exception:
+                        log.debug("second-thought job raised", exc_info=True)
+
+                try:
+                    from app.core.voice.speaking_window_scheduler import (
+                        ScheduledJob,
+                    )
+
+                    self._scheduler.submit(ScheduledJob(
+                        name="second_thought",
+                        # Below reflection: that one writes a memory the
+                        # rest of the inner life reads, this one writes a
+                        # cue that keeps for a day. If the window only
+                        # fits one, reflection is the one to run.
+                        priority=60,
+                        estimated_seconds=3.0,
+                        callable=_think_job,
+                        dedupe_key="second_thought",
+                    ))
+                except Exception:
+                    log.debug(
+                        "second-thought job submit failed", exc_info=True,
+                    )
+
         # Phase 3a: per-turn user-state heuristic (regex only, ~0.5ms).
         estimator = getattr(self, "_user_state_estimator", None)
         if estimator is not None:
