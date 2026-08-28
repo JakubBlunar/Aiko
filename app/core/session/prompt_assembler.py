@@ -298,7 +298,6 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "tease_rhythm_block",
         "self_noticing_block",
         "vulnerability_budget_block",
-        "touch_state_block",
         "user_reactions_block",
         # D2 Part B — in-chat attachment turn hint (per-turn; what the
         # user attached to THIS message). NOT dropped under aggressive.
@@ -420,6 +419,44 @@ _BLOCK_TIER_OF: dict[str, str] = {
     for tier, names in _PROMPT_BLOCK_TIERS.items()
     for name in names
 }
+
+# K16: the blocks the unified grounding line stands in for, by mode. The
+# suppression itself is a run of local assignments inside
+# ``assemble_with_budget`` (locals cannot be written through a loop), so
+# these are the *readable* copy — and they exist because the answer was
+# needed somewhere the assembler is not: the H53 audit spent a day
+# concluding that ten "dead" blocks were this feature working, and the
+# only statement of the set was a comment.
+#
+# ``tests/test_block_firing_audit.py`` parses the suppression region out
+# of the assembler source and fails if these drift from what it blanks.
+GROUNDING_SUPPRESSED_SPLIT: frozenset[str] = frozenset({
+    "circadian_block",
+    "ambient_noise_block",
+    "world_block",
+    "activity_block",
+    "weather_block",
+})
+GROUNDING_SUPPRESSED_REPLACE: frozenset[str] = GROUNDING_SUPPRESSED_SPLIT | {
+    "affect_block",
+    "mood_hint",
+    "relationship_block",
+    "user_state_block",
+    "mood_shell_block",
+}
+
+
+def grounding_suppressed(mode: str) -> frozenset[str]:
+    """Blocks the K16 grounding line replaces under ``mode``.
+
+    ``off`` suppresses nothing (the provider returns ``""`` and the
+    granular blocks carry the information themselves).
+    """
+    if mode == "replace":
+        return GROUNDING_SUPPRESSED_REPLACE
+    if mode == "split":
+        return GROUNDING_SUPPRESSED_SPLIT
+    return frozenset()
 
 
 def _resolve_blocks(local_vars: dict[str, Any]) -> Iterator[tuple[str, str]]:
@@ -1105,13 +1142,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # empty so the budget never wastes a turn on a no-op cue.
         # NOT suppressed under ``aggressive=True`` (one line, one-shot).
         self._user_reactions_provider: Callable[[], str] | None = None
-        # K31 personality backlog: "physical budget" cue. Renders only
-        # when Aiko has been physical with the user a lot today
-        # (intimate-gesture stack hit or any kind's daily cap was
-        # hit). Sibling of K15 vulnerability budget. Provider returns
-        # ``""`` on the common case; not suppressed under aggressive
-        # because it's a sub-line cue.
-        self._touch_state_provider: Callable[[], str] | None = None
         # D2 Part B — in-chat attachment turn hint. When the user
         # attached image / text files to the message being processed
         # this turn, the provider renders a one-line list of
@@ -2594,20 +2624,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     task_cues_block = ""
 
-        # K31: physical-budget cue. Renders only when Aiko has been
-        # physical with the user a lot today (intimate-gesture stack
-        # hit or any kind's daily cap was hit). Sibling of K15.
-        touch_state_block = ""
-        if self._touch_state_provider is not None:
-            with _timed_phase(provider_ms, "touch_state"):
-                try:
-                    touch_state_block = self._touch_state_provider() or ""
-                except Exception:
-                    log.debug(
-                        "touch_state provider raised", exc_info=True,
-                    )
-                    touch_state_block = ""
-
         # D2 Part B — in-chat attachment turn hint. One line listing the
         # files the user attached to this turn's message + a nudge to
         # act on them via ``start_workflow``. Silent when nothing's
@@ -3524,16 +3540,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # herself, just on different axes (rut vs. depth).
             # Silent on the common turn (budget under 50% spent).
             system_parts.append(vulnerability_budget_block)
-        if touch_state_block:
-            # K31: physical-budget cue, sibling of K15. Lands right
-            # after K15 so the two pacing cues cluster together --
-            # disclosure depth + physical contact frequency read as
-            # one "how much have I leaned in" family. Silent on the
-            # common turn (no intimate-gesture stack today).
-            system_parts.append(touch_state_block)
         if user_reactions_block:
             # K32: "Jacob just hearted that line" one-shot. Sits
-            # after the touch_state cue so the reciprocity beat
+            # after the K15 budget cue so the reciprocity beat
             # (Aiko reached out, Jacob reacted) reads in order in
             # the prompt context. Drained by the provider on
             # render so it never re-fires on the next turn.

@@ -181,9 +181,28 @@ class UserCorrectionWorker:
         now: datetime,
         last_run_at: datetime | None,
     ) -> bool:
-        return bool(
+        """Enabled, and something actually stashed to confirm.
+
+        The empty queue is a **hard veto** rather than zero pressure, for
+        the reason :meth:`IdleFactChecker.is_ready` spells out: the
+        scheduler's heartbeat is checked *before* ``signal.pressure``
+        (:func:`evaluate_admission`), so a worker that expresses "nothing
+        to do" only as pressure still runs every heartbeat forever. That
+        is not hypothetical -- F13 has never had a candidate in the app's
+        history, and the resulting `no_candidates` line was 675 of 18,168
+        lines in a log rotation (H53).
+        """
+        if not bool(
             getattr(self._agent_settings, "user_correction_enabled", True)
-        )
+        ):
+            return False
+        try:
+            return int(self._pending_count()) > 0
+        except Exception:
+            # A broken probe must not wedge the worker shut: fall through
+            # to a run, which is cheap when the queue really is empty.
+            log.debug("user-correction readiness probe failed", exc_info=True)
+            return True
 
     def demand(
         self,
