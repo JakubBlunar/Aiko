@@ -1118,6 +1118,81 @@ it shipped, so its own thresholds (`appetite_short_share_threshold`,
 `appetite_min_want_pressure`) have never been exercised against real data and
 should be treated as unverified in the H2 sense.
 
+### Re-measured, 28 Aug: the fix holds, and the constant beside it is the one to watch
+
+**K54 fires.** `topic_appetite_block` rendered on 3 of 1,062 turns — 14, 15 and
+21 Aug — against "never, 0 of 146" when this was filed. 3 turns is 5% of the 60
+conversations in the corpus, and the block is once-per-conversation by design,
+so that is a rare permission slip behaving like one rather than a gate still
+stuck shut.
+
+**The extraction held, which is the part most likely to have rotted.** Every
+consumer still reaches the predicate through `in_standing_lull`; the only places
+`last_mean` is read raw are two MCP read-outs that display it. `decide()` keeps
+a `lull_threshold` parameter with the old `0.18` default, but the caller passes
+`lull_band(detector, memory_settings)`, so the constant that could never fire is
+no longer reachable from the live path.
+
+**Its own thresholds are all inside their distributions**, which is what this
+entry asked for and is the boring answer:
+
+| threshold | value | observed |
+| --- | --- | --- |
+| `appetite_min_axes` | 0.15 | closeness/comfort far above it |
+| `appetite_min_want_pressure` | 0.35 | 5 of 8 live wants clear it, median 0.483 |
+| `appetite_short_share_threshold` | 0.6 | met on 46% of turns lifetime |
+
+**And that 46% is the finding.** `appetite_short_reply_chars` is an absolute
+160-character bar, and her reply length has moved underneath it by 80%:
+
+| | median reply | share under 160 | gate open (4+ of last 6 short) |
+| --- | --- | --- | --- |
+| W26–W28 (late Jun – mid Jul) | 101–109 | 83–87% | **90.9%** |
+| W32–W35 (Aug, current) | 182–190 | 23–31% | **10.5%** |
+
+Same constant, no config change, and the gate went from admitting nine turns in
+ten to admitting one. Lifetime numbers hide this completely: the 46% above is
+just the average of a 91 and a 10. This is *this entry's own shape* one seat
+over — H17 self-calibrated the lull bar precisely because "the constant encodes
+one embedding model's distance scale and sits below every reading ever taken",
+and the sibling constant in the same `decide()` call is still raw and has
+already drifted further than the lull one ever did.
+
+**No fix shipped, because the obvious one does not work and the measurement
+says so.** Replacing 160 with a bar relative to her own trailing replies —
+`0.8 x median(last 60)` — narrows the weekly swing from 92 points to 33, and a
+percentile bar does no better (32.7 points at p30, 34.9 at p35, 38.8 at p40).
+The residual is not the bar: it is autocorrelation. The gate asks for *four of
+six consecutive* replies to be short, and runs of short replies are era-specific
+even at a fixed marginal rate, so no per-reply threshold can flatten it. A
+"fix" that cuts the swing 3x and is presented as stabilising it would be worse
+than the current state, because the next reader would stop checking.
+
+What is actually open is a product question this file cannot answer: should
+"tapped out" mean *short in absolute terms* (in which case 91% in July was
+correct and the constant is fine) or *short for her* (in which case the gate
+needs a distribution and a tolerance for run-length, not a threshold). Filed as
+a calibration question, not a defect.
+
+**The generalisation this entry recommended does not reproduce, and the reason
+is worth more than the check.** It suggested grepping the other signals with
+many readers — `AffectState`, the relationship axes, the arc label. Measured:
+affect thresholds live in `affect_state.py`, their owning module, and the three
+comparisons outside it (voice cadence, activity selection) ask different
+questions; there is exactly one `min(closeness, comfort) < floor` axes gate in
+the codebase; and the arc label has one duplication, `_BLOCKED_ARCS =
+frozenset({"support", "reflection"})` in both `initiative_director.py` and
+`topic_appetite.py`, which currently **agree**. Two copies that agree are the
+precondition for this shape, not an instance of it.
+
+So reader count was not the predictor. What made `last_mean` uniquely dangerous
+is that its polarity is *counterintuitive* — it is a distance, so a lull is a
+low reading — and its scale is install-specific, so both the sign and the bar
+were guessable and neither was checkable against intuition. Valence and arousal
+are normalised and signed the way their names imply, and nobody gets them
+backwards. **Revised rule: copied-predicate risk scales with how surprising the
+predicate is, not with how many callers it has.**
+
 ---
 
 ## Confirmed healthy (stop re-checking these)
@@ -1238,6 +1313,93 @@ of shuffling it. A signal with reliability under ~0.2 is a constant with extra
 steps.** Worth running against every other learned rate in the system:
 habituation, cue `used_evidence`, importance's affect lift, the K-series
 gates.
+
+### Outcome 2, 28 Aug: the rule is now a command, and it fails its own test
+
+The rule above was left as a sentence, and a sentence does not get re-run — the
+cluster case sat as "not yet a finding" for two months. It is now
+`python scripts/signal_reliability_report.py`, over
+[`app/core/memory/signal_reliability.py`](../../app/core/memory/signal_reliability.py).
+Building it produced three things, in ascending order of how much they matter.
+
+**The controls reproduce, so the instrument is trustworthy.** Against the
+numbers published above, on a corpus that has roughly doubled: concept/engaged
+0.05 → 0.064, memory/engaged 0.09 → 0.080, concept/echoed 0.61 → 0.785,
+memory/echoed 0.57 → 0.749. Echo's reliability *rose* with the corpus and the
+label's did not, which is the H18 conclusion holding up under more data.
+
+**A re-run of this entry's own test would have promoted a signal that is
+empty.** `cluster/engaged` — the one left open at 38 items — scores **0.233 at
+an evidence floor of 8** on 86 items, over this entry's own 0.2 line. It is
+still noise, and what shows that is not a bigger correlation:
+
+| check | cluster/engaged | concept/echoed |
+| --- | --- | --- |
+| split-half peak | 0.333 | 0.785 |
+| same-shape null | 0.006 | −0.012 |
+| **excess spread** | **1.19** | **1.80** |
+| permuted null | p = 0.10 | — |
+
+*Excess spread* is the new instrument and the one that settles it: if every item
+shared one true rate, between-item spread would be exactly `sqrt(p(1-p)/n)`, so
+the ratio of observed spread to that prediction is the signal-to-nothing ratio
+directly. Bucketed by row count, it is the cleanest result in this file:
+
+| bucket | 4–7 | 8–11 | 12–19 | 20–29 | 30–59 | 60+ |
+| --- | --- | --- | --- | --- | --- | --- |
+| concept/**echoed** | 1.27 | 1.43 | 1.81 | 2.01 | 2.50 | **3.61** |
+| memory/**echoed** | 1.19 | 1.38 | 1.23 | 1.57 | 2.11 | **3.61** |
+| concept/**engaged** | 1.12 | 1.04 | 1.07 | 1.02 | 1.00 | **1.02** |
+| memory/**engaged** | 1.19 | 1.06 | 1.12 | 1.28 | 1.07 | 1.36 |
+
+A real signal pulls away from the single-rate prediction as its items
+accumulate evidence, because sampling noise shrinks and genuine differences do
+not. The engaged label is pinned at 1.0 across 132 concepts averaging 98
+observations each — and *pinned at 1.0 with that much evidence is a stronger
+statement than any p-value*, because there is no sample size at which it could
+improve. **`cluster/engaged` is hereby settled rather than underpowered: K81
+taste affinity and L42 neglect are ordering topics close to arbitrarily**, and
+H8's "1 of 39 clusters clears the bar" is a bar applied to noise. Clusters still
+have no echo test to switch to, so the choice this entry named is unchanged and
+now forced. `ClusterTaste` carries the measurement in its docstring so the next
+reader does not have to rediscover it.
+
+**And the one place the label is not diluted has nobody reading it.** The
+mechanism was always credit dilution, so it is worth measuring the dilution:
+
+| kind | items per labelled turn | engaged reliability |
+| --- | --- | --- |
+| **cue** | **1.7** | **0.445**, excess 1.48, p = 0.012 |
+| memory | 15.1 | 0.216, excess 1.12 |
+| cluster | 20.0 | 0.333, excess 1.19 |
+| concept | 29.6 | 0.064, excess 1.04 |
+
+Cues are the only surfaced kind whose turn label is nearly a per-item verdict,
+and on 14 recurring cue keys it measures as the *most* reliable engaged rate in
+the system — while `stats_for` filters `item_id > 0` and cues carry `item_id = 0`
+by design (G4), and `echo_kind` is NULL for all 929 cue rows. So the one
+undiluted label is unread, and it is the mirror image of this entry: L38 spent
+three months ranking on a diluted label while an undiluted one sat next to it.
+14 keys is thin and this is a lead rather than a result, but it is the first
+lead in this file that points at *adding* a signal rather than retiring one.
+
+**An instrument that was tried and rejected, recorded because the failure was
+the useful part.** The first version keyed its verdict on the *slope* of
+reliability across evidence floors — the live cluster sweep runs 0.319, 0.233,
+0.192, 0.124, **−0.113**, which looks exactly like borrowed turn-level agreement
+washing out as items accumulate evidence. The test written to prove it disproved
+it: a series generated to be *purely* turn-driven, with autocorrelated labels
+and bursty item appearance, sits at r = 0.9 at every floor. Splitting an item's
+own rows cannot break the turn structure those rows came from, because both
+halves keep sampling the same turns. The slope is real and the explanation was
+invented, and the two are easy to confuse when the number moves the way your
+theory predicts. The sweep is still printed; nothing depends on it.
+
+**Eighth recurring shape:** *a diagnostic that agrees with your hypothesis is
+not evidence for it until you have built the case where the hypothesis is false
+and checked that the diagnostic disagrees.* The floor sweep would have shipped
+as the centrepiece of this module on the strength of one real dataset pointing
+the right way.
 
 ---
 
