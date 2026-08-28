@@ -863,6 +863,37 @@ fires / suppressed / disabled / unobservable / silent, and **refuses to quote a
 rate for a block whose cadence exceeds the window** rather than returning the
 zero that started all this ([`health.md`](health.md)).
 
+**H12/H13/H16 re-measured — read this one before you measure a fix at the
+producer.** Both shipped fixes worked and neither goal did. H12's shared-value
+proposer took relationship from 30 active concepts and 0.52% of surfacings to
+103 and **2.49%**, with `value` — the kind that did not exist — now the largest
+relationship contributor to the prompt. H13's `pursuit` floor produced 14 rows
+that are the only concepts in the graph at **0% relational**, and her overall
+relational share still went **67% → 79%**, because the corpus doubled around
+them and the biggest new kind (`generalization`, 204 rows) is 88% about him.
+Chasing H12's redundancy into H16 found the defect: H16's per-block band was
+nominated and then thrown away, because `run` sorted every candidate by absolute
+cosine and cut at `batch_size` — and a banded pair is below `merge_cosine` while
+an over-bar pair is above it *by construction*, so the sort is the two groups
+concatenated and the cut lands in the gap. **65 banded nominations at global
+ranks 440–504 against a batch of 40, for the band's entire life**, in a fix whose
+own argument is that absolute cosine is not comparable across blocks. The same
+read found a second stall: answered pairs were skipped in the run loop but never
+dropped from nomination, so the batch was a fixed cosine prefix that stopped
+advancing and 400 of 440 candidates were unreachable. Both are one shape —
+**a filter applied where the work happens instead of where the work is chosen**
+— and two more come free: *an output measured at the producer when the defect is
+in the consumer* (H16 quoted `_collect_pairs`'s return value, one call before
+the consumer that discarded it), and a fixture warning, since all five band
+tests build graphs where the band is the only thing present and so pass against
+a `run` that deletes it. The fix's own first version then reproduced the bug one
+scale down — a round robin over 22 blocks with 12 reserved slots gives the
+alphabetical head a permanent turn and starves the tail, which included
+`relationship/value`, the block that motivated the whole investigation — so the
+turn now goes to the least-served block, read off the verdict cache. **"Round
+robin" only means fair if one pass reaches every participant**
+([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

@@ -2441,13 +2441,25 @@ survives (L46).
 diagnosed and fixed — the labels are 204-278 chars and two-clause, so cosine
 cannot separate restatement from distinct friction at any threshold, and
 `_collect_pairs` now nominates per-block above a 0.78 floor with base-sharing as
-the tiebreak. Two things that fix does not cover: **`ritual` labels are short and
-concrete**, so label-length compression is not the explanation there and the
-cause is unknown; and the **drain rate** is 3 candidates per `(subject, kind)`
-block per pass under `concept_consolidation_per_day_cap = 30`, against a
-population that grew these families inside eight days (16-24 Aug). A queue that
-drains over several days is fine for a static backlog and not obviously fine for
-an inflow that fast.
+the tiebreak.
+
+**The cause for `ritual` is no longer unknown, and it was not label shape.** The
+per-block nomination worked and its output was then discarded: `run` sorted all
+candidates by absolute cosine and cut at `batch_size`, and since a banded pair is
+below `merge_cosine` while an over-bar pair is above it by construction, the
+entire band sorted behind the entire over-bar set. On the live graph the 65
+banded nominations held global ranks 440-504 against a batch of 40, so no banded
+pair had ever reached the adjudicator — `relationship/ritual` and
+`relationship/narrative` appear in neither `concept_aliases` nor the rejection
+cache. The band now has a reserved, interleaved share of the batch. See
+[`health.md` H16 outcome 2](health.md#outcome-2-the-band-was-nominated-and-then-thrown-away).
+
+The **drain rate** concern above was real and understated: alongside the band,
+answered pairs were skipped in the run loop but never removed from nomination,
+so the batch was a fixed cosine-sorted prefix that stopped advancing once its
+top `batch_size` had been adjudicated — 400 of 440 over-bar candidates were
+unreachable. Nomination now drops answered pairs, which is what lets the queue
+actually drain against an inflow this fast.
 
 **Key files.**
 - [`concept_evidence_admission.py`](../../app/core/concepts/concept_evidence_admission.py) — `admit()`, `REFUSED_OFFTOPIC` vs `REFUSED_FULL`, and the `Admission.reinforced` note on why a ceiling refusal must still stamp `last_reinforced_at`
