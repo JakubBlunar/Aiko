@@ -885,6 +885,346 @@ class CandidateBandTests(unittest.TestCase):
         del near_a, near_b
 
 
+class BandReachesTheBatchTests(unittest.TestCase):
+    """H12: the band was nominated and then thrown away, for its whole life.
+
+    Every test in :class:`BandTests` above builds a graph in which the
+    banded pairs are the *only* pairs, so all of them pass against a
+    ``run`` that discards the band entirely -- they assert on what
+    ``_collect_pairs`` returns, and the defect was in its consumer. On the
+    live graph the 65 banded nominations held global ranks 440-504 against
+    a ``batch_size`` of 40 and not one had ever been adjudicated.
+
+    So every fixture here gives the band *competition*: enough over-bar
+    pairs to fill the batch on their own, which is the condition the old
+    code could not survive and the one the real graph always meets.
+    """
+
+    def _graph(self, store, *, over_pairs: int) -> None:
+        """``over_pairs`` twins above the bar, plus one banded pair.
+
+        The over-bar pairs are their own ``(subject, kind)`` block each, so
+        they compete with the band without also crowding out each other.
+        """
+        for i in range(over_pairs):
+            base = np.zeros(3 + over_pairs, dtype=np.float32)
+            base[0] = 1.0
+            twin = np.zeros(3 + over_pairs, dtype=np.float32)
+            twin[0], twin[1] = 0.99, 0.141
+            _add(store, label=f"over-{i}-a", kind=f"k{i}", embedding=base)
+            _add(store, label=f"over-{i}-b", kind=f"k{i}", embedding=twin)
+        # cos ~0.85: inside the 0.78-0.90 band, below every pair above.
+        band_a = np.zeros(3 + over_pairs, dtype=np.float32)
+        band_a[2] = 1.0
+        band_b = np.zeros(3 + over_pairs, dtype=np.float32)
+        band_b[2], band_b[1] = 0.85, 0.527
+        _add(store, label="band-a", kind="banded", embedding=band_a)
+        _add(store, label="band-b", kind="banded", embedding=band_b)
+
+    def _settings_for(self, **over):
+        base = dict(
+            concept_consolidation_merge_cosine=0.90,
+            concept_consolidation_candidate_floor=0.78,
+            concept_consolidation_block_top_n=1,
+            concept_consolidation_batch_size=4,
+            concept_consolidation_band_reserve=1,
+        )
+        base.update(over)
+        return _settings(**base)
+
+    def _run(self, **over):
+        _db, store, ev = _new_store()
+        self._graph(store, over_pairs=over.pop("over_pairs", 6))
+        seen: list[str] = []
+
+        def responder(messages):
+            seen.append(messages[1]["content"])
+            return {"same": False, "reason": "n"}
+
+        worker, _o = _worker(
+            store, ev, _db, responder=responder,
+            settings=self._settings_for(**over),
+            per_hour_cap=99, per_day_cap=99,
+        )
+        return worker.run(), seen
+
+    def test_a_banded_pair_survives_a_full_batch_of_stronger_pairs(
+        self,
+    ) -> None:
+        # The regression. Six over-bar pairs against a batch of four: the
+        # old global cosine sort filled every slot before reaching a pair
+        # that is, by construction, beneath all of them.
+        out, seen = self._run()
+        self.assertEqual(out["banded"], 1)
+        self.assertEqual(out["banded_in_batch"], 1)
+        self.assertTrue(
+            any("band-" in text for text in seen),
+            "the banded pair never reached the adjudicator",
+        )
+
+    def test_the_reserve_does_not_shrink_the_batch(self) -> None:
+        # A reserve wider than the band must hand the slack back rather
+        # than leave the batch short of over-bar work.
+        out, _seen = self._run(concept_consolidation_band_reserve=3)
+        self.assertEqual(out["banded_in_batch"], 1)
+        self.assertEqual(len(out and _seen), 4)
+
+    def test_zero_reserve_restores_the_old_behaviour(self) -> None:
+        # Kept switchable, and worth pinning: this is the exact shape of
+        # the bug, so it should only ever be reachable on purpose.
+        out, seen = self._run(concept_consolidation_band_reserve=0)
+        self.assertEqual(out["banded"], 1)
+        self.assertEqual(out["banded_in_batch"], 0)
+        self.assertFalse(any("band-" in text for text in seen))
+
+    def test_the_reserve_is_spread_through_the_batch(self) -> None:
+        """Appending it would be cut a second time by the rate limiter.
+
+        ``batch_size`` is not the real budget -- the per-day cap is -- so
+        a reserve parked at the end of the batch is only reached on runs
+        that were never going to exhaust the budget anyway.
+        """
+        _db, store, ev = _new_store()
+        self._graph(store, over_pairs=6)
+        seen: list[str] = []
+
+        def responder(messages):
+            seen.append(messages[1]["content"])
+            return {"same": False, "reason": "n"}
+
+        worker, _o = _worker(
+            store, ev, _db, responder=responder,
+            settings=self._settings_for(
+                concept_consolidation_batch_size=6,
+                concept_consolidation_band_reserve=2,
+            ),
+            # Runs out mid-batch. Interleaved, the band's one pair sits at
+            # slot 3 of 6 and is reached; appended it would sit at slot 5
+            # and be cut, which is how the batch used to lose it.
+            per_hour_cap=4, per_day_cap=4,
+        )
+        out = worker.run()
+        self.assertTrue(out["rate_limited"])
+        self.assertTrue(
+            any("band-" in text for text in seen),
+            "the band was appended, not interleaved: the rate limiter cut "
+            "it exactly as the batch used to",
+        )
+
+    def test_every_block_is_offered_before_any_block_repeats(self) -> None:
+        """The reserve is round-robin, not another cosine ranking.
+
+        Ordering the reserve by cosine would reintroduce the cross-block
+        comparison the band exists precisely because it is invalid, just
+        inside a shorter list.
+        """
+        _db, store, ev = _new_store()
+        # Two banded blocks. ``high`` beats ``low`` on cosine in both of
+        # its pairs, so a cosine-ordered reserve would take both of its
+        # before touching ``low`` at all.
+        for kind, (x, y) in (("high", (0.88, 0.475)), ("low", (0.80, 0.6))):
+            for idx in range(2):
+                anchor = np.zeros(6, dtype=np.float32)
+                anchor[0 if kind == "high" else 3] = 1.0
+                twin = np.zeros(6, dtype=np.float32)
+                twin[0 if kind == "high" else 3] = x
+                twin[(1 if kind == "high" else 4) + idx % 2] = y
+                _add(store, label=f"{kind}-{idx}-a", kind=kind,
+                     embedding=anchor)
+                _add(store, label=f"{kind}-{idx}-b", kind=kind,
+                     embedding=twin)
+        seen: list[str] = []
+
+        def responder(messages):
+            seen.append(messages[1]["content"])
+            return {"same": False, "reason": "n"}
+
+        worker, _o = _worker(
+            store, ev, _db, responder=responder,
+            settings=self._settings_for(
+                concept_consolidation_block_top_n=2,
+                concept_consolidation_batch_size=2,
+                concept_consolidation_band_reserve=2,
+            ),
+            per_hour_cap=99, per_day_cap=99,
+        )
+        worker.run()
+        self.assertTrue(
+            any("low-" in text for text in seen),
+            "the quieter block never got a turn",
+        )
+
+    def test_a_reserve_narrower_than_the_graph_rotates(self) -> None:
+        """The turn goes to the least-served block, not the first by name.
+
+        On the live numbers the reserve is *always* narrower than the
+        graph -- 12 slots against 22 blocks -- so depth 0 alone overruns
+        it and whatever order blocks are visited in is the whole
+        allocation. Visiting by name gave the alphabetical head a
+        permanent turn and the tail none, which starved
+        ``relationship/value``: the block H12 created, and the reason any
+        of this was measured.
+        """
+        _db, store, ev = _new_store()
+        # Four single-pair blocks, named so that plain alphabetical order
+        # would serve "aaa" and "bbb" forever and never reach the rest.
+        for name in ("aaa", "bbb", "ccc", "ddd"):
+            anchor = np.zeros(3, dtype=np.float32)
+            anchor[0] = 1.0
+            twin = np.zeros(3, dtype=np.float32)
+            twin[0], twin[1] = 0.85, 0.527
+            _add(store, label=f"{name}-a", kind=name, embedding=anchor)
+            _add(store, label=f"{name}-b", kind=name, embedding=twin)
+        seen: list[str] = []
+
+        def responder(messages):
+            seen.append(messages[1]["content"])
+            return {"same": False, "reason": "n"}
+
+        worker, _o = _worker(
+            store, ev, _db, responder=responder,
+            settings=self._settings_for(
+                concept_consolidation_batch_size=2,
+                concept_consolidation_band_reserve=2,
+            ),
+            per_hour_cap=99, per_day_cap=99,
+        )
+        worker.run()
+        worker.run()
+        served = {
+            name
+            for name in ("aaa", "bbb", "ccc", "ddd")
+            if any(f"{name}-" in text for text in seen)
+        }
+        self.assertEqual(
+            served, {"aaa", "bbb", "ccc", "ddd"},
+            "two runs of a two-wide reserve must cover four blocks; "
+            f"only {sorted(served)} got a turn",
+        )
+
+
+class AnsweredPairsFreeTheirSlotTests(unittest.TestCase):
+    """A rejection has to remove the pair from *selection*, not just skip it.
+
+    The batch is a fixed cosine-sorted prefix, so a pair the adjudicator
+    already answered kept its place in that prefix forever. Once the top
+    ``batch_size`` were answered, every later run re-selected the same
+    forty, skipped all forty for free, and never reached the forty-first
+    -- which on the live graph is 400 candidates the worker could not
+    reach by any amount of waiting.
+    """
+
+    def _chain(self, store, n: int) -> None:
+        # ``n`` pairs, each its own block, in descending cosine order.
+        for i in range(n):
+            a = np.zeros(n + 2, dtype=np.float32)
+            a[0] = 1.0
+            b = np.zeros(n + 2, dtype=np.float32)
+            b[0], b[i + 1] = 0.99 - 0.01 * i, 0.1 + 0.01 * i
+            _add(store, label=f"p{i}-a", kind=f"k{i}", embedding=a)
+            _add(store, label=f"p{i}-b", kind=f"k{i}", embedding=b)
+
+    def test_the_run_after_a_rejection_reaches_new_pairs(self) -> None:
+        _db, store, ev = _new_store()
+        self._chain(store, 4)
+        seen: list[str] = []
+
+        def responder(messages):
+            seen.append(messages[1]["content"])
+            return {"same": False, "reason": "n"}
+
+        worker, _o = _worker(
+            store, ev, _db, responder=responder,
+            settings=_settings(
+                concept_consolidation_merge_cosine=0.80,
+                concept_consolidation_block_top_n=0,
+                concept_consolidation_batch_size=2,
+            ),
+            per_hour_cap=99, per_day_cap=99,
+        )
+        first = worker.run()
+        self.assertEqual(first["adjudicated"], 2)
+        self.assertEqual(first["already_answered"], 0)
+        first_seen = list(seen)
+
+        second = worker.run()
+        self.assertEqual(
+            second["already_answered"], 2,
+            "the answered pairs were still being nominated",
+        )
+        self.assertEqual(
+            second["adjudicated"], 2,
+            "the second run spent its budget re-skipping the first run's "
+            "work instead of advancing into the backlog",
+        )
+        self.assertTrue(
+            set(seen[len(first_seen):]).isdisjoint(first_seen),
+            "the second run re-examined pairs it had already answered",
+        )
+
+    def test_an_answered_pair_does_not_eat_a_blocks_band_slot(self) -> None:
+        """A block's ``top_n`` is ``top_n`` *questions*, not ``top_n`` rows.
+
+        Filtering after the cut would let one stale verdict permanently
+        retire a block's only slot.
+        """
+        _db, store, ev = _new_store()
+        # One block, two banded pairs; the block may nominate one per run.
+        _add(store, label="b-anchor", kind="tension",
+             embedding=_vec(1.0, 0.0, 0.0))
+        _add(store, label="b-near", kind="tension",
+             embedding=_vec(0.86, 0.51, 0.0))
+        _add(store, label="b-far", kind="tension",
+             embedding=_vec(0.82, 0.0, 0.572))
+        seen: list[str] = []
+
+        def responder(messages):
+            seen.append(messages[1]["content"])
+            return {"same": False, "reason": "n"}
+
+        worker, _o = _worker(
+            store, ev, _db, responder=responder,
+            settings=_settings(
+                concept_consolidation_merge_cosine=0.90,
+                concept_consolidation_candidate_floor=0.78,
+                concept_consolidation_block_top_n=1,
+                concept_consolidation_batch_size=4,
+                concept_consolidation_band_reserve=4,
+            ),
+            per_hour_cap=99, per_day_cap=99,
+        )
+        worker.run()
+        self.assertEqual(len(seen), 1)
+        worker.run()
+        self.assertEqual(
+            len(seen), 2,
+            "the block's one slot stayed spent on a question already "
+            "answered",
+        )
+
+    def test_the_auto_merge_bar_is_exempt(self) -> None:
+        """A pair above the auto bar needs no adjudication, so a stale
+        verdict must not veto its merge."""
+        _db, store, ev = _new_store()
+        a = _add(store, label="A", confidence=0.9,
+                 embedding=_vec(1.0, 0.0, 0.0))
+        b = _add(store, label="B", confidence=0.7,
+                 embedding=_vec(0.995, 0.0999, 0.0))
+        worker, ollama = _worker(
+            store, ev, _db, responder={"same": False, "reason": "n"},
+            settings=_settings(
+                concept_consolidation_merge_cosine=0.90,
+                concept_consolidation_auto_merge_cosine=0.95,
+            ),
+            per_hour_cap=99, per_day_cap=99,
+        )
+        worker._remember_rejection(a, b, _NOW)
+        out = worker.run()
+        self.assertEqual(out["auto_merged"], 1)
+        self.assertEqual(out["already_answered"], 0)
+        self.assertEqual(ollama.calls, 0)
+
+
 class MetaMergeTests(unittest.TestCase):
     """A meta's base set has an arity that means something.
 

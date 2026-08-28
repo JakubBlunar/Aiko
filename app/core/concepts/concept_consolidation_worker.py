@@ -81,6 +81,35 @@ right for every distribution. Within the band, metas that **share a base
 concept** rank first: two tensions standing on the same underlying belief
 are the same friction whatever words they wear, which is the one judgement
 cosine reliably cannot make here.
+
+H12: nominating is not the same as being looked at
+--------------------------------------------------
+The band above shipped, was measured at the point of nomination, and then
+did nothing at all for its entire life. ``run`` sorted every candidate
+into one list by cosine and cut at ``batch_size``; a banded pair is below
+``merge_cosine`` and an over-bar pair is above it *by construction*, so
+that single sort is the two groups concatenated and the cut falls in the
+gap. Measured on the live graph: 505 nominations, of which the 65 banded
+ones held global ranks 440-504 against a batch of 40. Zero had ever
+reached the adjudicator, and ``relationship/ritual`` and
+``relationship/narrative`` appear in neither the merge log nor the
+rejection cache -- the two states a pair can be in after being *seen*.
+
+The band now has a reserved, interleaved share of the batch
+(:meth:`_order_batch`). Two details are load-bearing and neither is
+obvious: a bigger batch is not a fix, because the over-bar population is
+440 against a 30/day budget; and the reserve must be spread through the
+batch rather than appended, because the rate limiter breaks the loop
+partway and anything past slot ~30 is cut a second time.
+
+What let it ship is worth more than the bug. Every band test builds a
+fixture in which the banded pairs are the *only* pairs, so all of them
+pass against a ``run`` that discards the band -- they assert on
+``_collect_pairs``'s output while the defect is in its consumer. And the
+run line printed ``banded=65``, which is a count of nominations and reads
+exactly like a count of work done. Both are fixed here: ``banded_in_batch``
+is logged beside it, and the tests below put a band pair in a batch that
+also contains over-bar competition.
 """
 from __future__ import annotations
 
@@ -175,6 +204,11 @@ class ConceptConsolidationWorker:
         # distinct from "loaded and empty".
         self._verdicts: dict[str, dict[str, str]] | None = None
         self._verdicts_dirty = False
+        # ``(subject, kind)`` -> pairs of that block the adjudicator has
+        # already answered. Rebuilt each scan, and used to hand the band's
+        # reserved slots to the least-served blocks; see
+        # :meth:`_round_robin`.
+        self._block_answered: dict[tuple[str, str], int] = {}
 
     # ── idle worker protocol ──────────────────────────────────────────
 
@@ -225,7 +259,7 @@ class ConceptConsolidationWorker:
             return None
         auto = 0
         needs_llm = 0
-        for cos, a, b in pairs:
+        for cos, a, b, _banded in pairs:
             if cos >= auto_cos:
                 auto += 1
             elif not self._rejected(a, b):
@@ -288,18 +322,21 @@ class ConceptConsolidationWorker:
         stats: dict[str, Any] = {
             "scanned": 0,
             "pairs_considered": 0,
+            "already_answered": 0,
             "banded": 0,
+            # Nominated vs actually in the batch. These were one number,
+            # and it reported the band working while the batch cut all of
+            # it -- see :meth:`_order_batch`.
+            "banded_in_batch": 0,
             "auto_merged": 0,
             "adjudicated": 0,
             "merged": 0,
             "rate_limited": False,
         }
 
-        pairs = self._collect_pairs(merge_cos, stats)
-        # Highest-cosine (most-likely-dup) pairs first, so a tight LLM
-        # budget is spent on the strongest candidates.
-        pairs.sort(key=lambda p: p[0], reverse=True)
-        pairs = pairs[:batch_size]
+        pairs = self._order_batch(
+            self._collect_pairs(merge_cos, stats), batch_size, stats
+        )
 
         # A merge deletes the absorbed row, so any later pair naming it is
         # about a concept that no longer exists. Skipping those is not just
@@ -307,7 +344,7 @@ class ConceptConsolidationWorker:
         # would still have cost a rate-limiter token to discover that.
         gone: set[int] = set()
 
-        for cos, a, b in pairs:
+        for cos, a, b, _banded in pairs:
             if a.concept_id in gone or b.concept_id in gone:
                 continue
             # Off by default; see :meth:`_auto_merge_cosine`.
@@ -317,6 +354,9 @@ class ConceptConsolidationWorker:
                     stats["auto_merged"] += 1
                     gone.add(absorbed)
                 continue
+            # Backstop only: nomination already dropped answered pairs, and
+            # it has to, or they occupy batch slots. Kept because the cost
+            # is a dict lookup and the failure it guards is silent.
             if self._rejected(a, b):
                 continue
             # The LLM adjudication is the real work unit -> spend a token.
@@ -336,12 +376,15 @@ class ConceptConsolidationWorker:
         self._flush_verdicts()
         stats["duration_ms"] = int((time.monotonic() - started) * 1000)
         log.info(
-            "concept_consolidation run: scanned=%s pairs=%s (banded=%s) "
+            "concept_consolidation run: scanned=%s pairs=%s "
+            "(banded=%s in_batch=%s answered=%s) "
             "auto_merged=%s adjudicated=%s merged=%s rate_limited=%s "
             "duration_ms=%s",
             stats["scanned"],
             stats["pairs_considered"],
             stats["banded"],
+            stats["banded_in_batch"],
+            stats["already_answered"],
             stats["auto_merged"],
             stats["adjudicated"],
             stats["merged"],
@@ -369,7 +412,7 @@ class ConceptConsolidationWorker:
 
     def _collect_pairs(
         self, merge_cos: float, stats: dict[str, Any]
-    ) -> list[tuple[float, "Concept", "Concept"]]:
+    ) -> list[tuple[float, "Concept", "Concept", bool]]:
         """Candidate pairs: everything above the bar, plus each block's own
         worst offenders in the band beneath it.
 
@@ -418,8 +461,37 @@ class ConceptConsolidationWorker:
         )
         bases = self._base_map(actives) if top_n else {}
 
-        pairs: list[tuple[float, "Concept", "Concept"]] = []
+        pairs: list[tuple[float, "Concept", "Concept", bool]] = []
         banded = 0
+        auto_cos = self._auto_merge_cosine()
+        skipped = 0
+        self._block_answered = {}
+
+        def answered(cos: float, a: "Concept", b: "Concept") -> bool:
+            """Already adjudicated, so it cannot become work this run.
+
+            Filtered at *nomination* rather than in the run loop, and the
+            difference is the whole backlog. The batch is a fixed
+            cosine-sorted prefix, and a rejection does not remove its pair
+            from that prefix -- so once the top ``batch_size`` had been
+            answered, every later run re-selected the same forty, skipped
+            all forty for free, and never reached pair forty-one. The 400
+            candidates below the cut could only be reached by a *new* pair
+            displacing an answered one. Same shape as the band bug above:
+            a filter applied where the work happens instead of where the
+            work is chosen.
+
+            Pairs at or above the auto-merge bar are exempt: those need no
+            adjudication, so a stale verdict must not veto a merge.
+            """
+            nonlocal skipped
+            if cos >= auto_cos or not self._rejected(a, b):
+                return False
+            skipped += 1
+            key = (a.subject, a.kind)
+            self._block_answered[key] = self._block_answered.get(key, 0) + 1
+            return True
+
         for (subject, kind), members in by_block.items():
             if len(members) < 2:
                 continue
@@ -441,8 +513,10 @@ class ConceptConsolidationWorker:
             vals = sims[hi, lo]
             for h in np.nonzero(vals >= merge_cos)[0]:
                 i, j = int(hi[h]), int(lo[h])
+                if answered(float(sims[i, j]), members[i], members[j]):
+                    continue
                 pairs.append(
-                    (float(sims[i, j]), members[i], members[j])
+                    (float(sims[i, j]), members[i], members[j], False)
                 )
             if not top_n:
                 continue
@@ -461,15 +535,141 @@ class ConceptConsolidationWorker:
                 ),
                 reverse=True,
             )
-            for h in ranked[:top_n]:
+            # Answered pairs are filtered before the top-N cut, not after,
+            # so a block's three slots are three *questions* rather than
+            # three rows it happens to rank highest.
+            taken = 0
+            for h in ranked:
+                if taken >= top_n:
+                    break
                 i, j = int(hi[h]), int(lo[h])
+                if answered(float(sims[i, j]), members[i], members[j]):
+                    continue
                 pairs.append(
-                    (float(sims[i, j]), members[i], members[j])
+                    (float(sims[i, j]), members[i], members[j], True)
                 )
                 banded += 1
+                taken += 1
         stats["pairs_considered"] = len(pairs)
         stats["banded"] = banded
+        stats["already_answered"] = skipped
         return pairs
+
+    def _order_batch(
+        self,
+        pairs: list[tuple[float, "Concept", "Concept", bool]],
+        batch_size: int,
+        stats: dict[str, Any],
+    ) -> list[tuple[float, "Concept", "Concept", bool]]:
+        """The batch, with the band guaranteed a share of it (H12).
+
+        This used to be ``sort(key=cosine, reverse=True)[:batch_size]``,
+        on L46's reasoning that "the cut falls on the least-similar pairs,
+        which are the ones that can wait". That reasoning predates the
+        band and H16 disproved its premise: a banded pair is below
+        ``merge_cosine`` and an over-bar pair is above it *by definition*,
+        so one sorted list is the two groups concatenated, and a cut
+        anywhere inside the over-bar set takes the whole band with it.
+        On the live graph that was all 65 nominations from all 22 blocks,
+        every run, for the band's entire existence -- while the run line
+        printed ``banded=65`` and read like the feature working.
+
+        Two consequences shape the fix. Raising ``batch_size`` is not one:
+        the over-bar population is 440 against a 30/day adjudication
+        budget, so the band stays unreachable at any batch that isn't the
+        whole backlog. And the reserved pairs cannot simply be appended,
+        because the rate limiter breaks the loop partway through -- so the
+        two streams are interleaved and the band is spread across the
+        batch instead of parked at the end of it.
+
+        Within the reserve, blocks take turns least-served first
+        (:meth:`_round_robin`). Ordering the reserve by cosine would
+        reintroduce the cross-block comparison the band exists to avoid,
+        just inside a smaller list.
+        """
+        over = sorted(
+            (p for p in pairs if not p[3]), key=lambda p: p[0], reverse=True
+        )
+        band = self._round_robin([p for p in pairs if p[3]])
+        reserve = max(0, self._i("concept_consolidation_band_reserve", 12))
+        take_band = min(len(band), reserve, batch_size)
+        take_over = min(len(over), batch_size - take_band)
+        # Spare capacity goes back to whichever stream still has entries,
+        # so a reserve wider than the band does not shrink the batch.
+        if take_band + take_over < batch_size:
+            take_band = min(len(band), batch_size - take_over)
+        stats["banded_in_batch"] = take_band
+        return self._interleave(over[:take_over], band[:take_band])
+
+    def _round_robin(
+        self,
+        band: list[tuple[float, "Concept", "Concept", bool]],
+    ) -> list[tuple[float, "Concept", "Concept", bool]]:
+        """Band pairs with blocks taking turns, least-served block first.
+
+        A plain round robin is not enough when the reserve is narrower
+        than the graph, and on the live numbers it never isn't: 12 slots
+        against 22 blocks means depth 0 alone overruns the reserve, so
+        whatever order blocks are visited in *is* the allocation. Visiting
+        them by name gave the first twelve alphabetically a permanent
+        turn and the other ten none -- which starved ``relationship/value``,
+        the block H12 created and the reason any of this was measured.
+
+        So the turn goes to whoever has had the fewest questions answered
+        about them. The verdict cache is already an exact record of that,
+        so this needs no cursor to persist and no clock: a block that gets
+        served acquires answered pairs and sinks, a block that has been
+        skipped stays at zero and rises, and the whole graph rotates
+        through the reserve in ``ceil(blocks / reserve)`` runs. Entries
+        expiring at 30 days is what makes a long-settled block eventually
+        due again rather than permanently last.
+        """
+        by_block: dict[tuple[str, str], list] = {}
+        for pair in band:
+            by_block.setdefault(
+                (pair[1].subject, pair[1].kind), []
+            ).append(pair)
+        for members in by_block.values():
+            members.sort(key=lambda p: p[0], reverse=True)
+        order = sorted(
+            by_block.items(),
+            key=lambda kv: (self._block_answered.get(kv[0], 0), kv[0]),
+        )
+        out: list[tuple[float, "Concept", "Concept", bool]] = []
+        for depth in range(max((len(v) for _k, v in order), default=0)):
+            for _key, members in order:
+                if depth < len(members):
+                    out.append(members[depth])
+        return out
+
+    @staticmethod
+    def _interleave(
+        over: list[tuple[float, "Concept", "Concept", bool]],
+        band: list[tuple[float, "Concept", "Concept", bool]],
+    ) -> list[tuple[float, "Concept", "Concept", bool]]:
+        """Merge two ordered streams, keeping each one's share even.
+
+        Band entry ``i`` is placed at the centre of its share of the
+        output -- slot ``(i + 0.5) * total / len(band)`` -- so a run cut
+        short by the rate limiter has spent its tokens in the intended
+        proportion rather than on a prefix of one stream. Written as
+        integer arithmetic to keep the placement exact.
+        """
+        out: list[tuple[float, "Concept", "Concept", bool]] = []
+        oi = bi = 0
+        n_over, n_band = len(over), len(band)
+        total = n_over + n_band
+        while oi < n_over or bi < n_band:
+            due = bi < n_band and (
+                2 * n_band * (oi + bi) >= (2 * bi + 1) * total
+            )
+            if oi >= n_over or due:
+                out.append(band[bi])
+                bi += 1
+            else:
+                out.append(over[oi])
+                oi += 1
+        return out
 
     def _base_map(
         self, actives: list["Concept"]

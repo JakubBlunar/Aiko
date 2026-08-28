@@ -1592,6 +1592,25 @@ class MemorySettings:
     concept_consolidation_candidate_floor: float = 0.78
     # 0 disables the band entirely and restores the flat-bar behaviour.
     concept_consolidation_block_top_n: int = 3
+    # Slots in ``batch_size`` held for banded nominations, and the reason
+    # the band was dead code for its whole life (H12).
+    #
+    # ``run`` sorted every candidate together by cosine and cut at
+    # ``batch_size``. A banded pair is *by definition* below
+    # ``merge_cosine`` and an over-bar pair is *by definition* above it, so
+    # that sort puts the entire band behind the entire over-bar set and the
+    # cut lands in between: measured on the live graph, all 65 nominations
+    # from all 22 blocks sat at global ranks 440-504 against a batch of 40,
+    # and not one had ever been adjudicated. Comparing the two groups on
+    # absolute cosine is the exact comparison the band exists because it is
+    # invalid -- widening the batch cannot fix it either, since the over-bar
+    # population (440) is an order of magnitude past the daily budget.
+    #
+    # So the band gets a protected share, interleaved through the batch
+    # rather than appended, because the real limit is the 30/day rate cap
+    # and anything sitting past slot ~30 is cut a second time. 0 restores
+    # the old behaviour.
+    concept_consolidation_band_reserve: int = 12
     # ── L31: what a concept may accept as evidence ────────────────────
     # Creation is gated (a new concept must clear its kind's min_sources /
     # min_chain / directional bars) but *reinforcement* was not gated at
@@ -4519,6 +4538,12 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 0,
                 int(
                     memory_raw.get("concept_consolidation_block_top_n", 3)
+                ),
+            ),
+            concept_consolidation_band_reserve=max(
+                0,
+                int(
+                    memory_raw.get("concept_consolidation_band_reserve", 12)
                 ),
             ),
             concept_evidence_admission_cosine=min(

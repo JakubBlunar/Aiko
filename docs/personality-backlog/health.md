@@ -972,6 +972,100 @@ already correct and is untouched.)
 population query after the worker has had two days of budget; the labels suggest
 the 122 rows are perhaps 15–20 distinct frictions.
 
+### Outcome 2: the band was nominated and then thrown away
+
+The count did not fall. Re-running the population query two weeks later (found
+while re-measuring H12, which had deferred its redundancy to this entry) says
+tension is **113 active** against the 122 the fix was written for, and the
+`relationship` kinds H12 created — `value`, `ritual`, `narrative` — appear in
+**neither `concept_aliases` nor the rejection cache**, which are the only two
+states a pair can be in after being *seen*.
+
+**The band has never once reached the adjudicator.** `run` collected every
+candidate and did this:
+
+```python
+pairs = self._collect_pairs(merge_cos, stats)
+pairs.sort(key=lambda p: p[0], reverse=True)
+pairs = pairs[:batch_size]
+```
+
+A banded pair is below `merge_cosine` and an over-bar pair is above it *by
+construction*. So that single sort is not a ranking, it is the two groups
+concatenated — every banded pair sorts behind every over-bar pair no matter
+what any of them score — and the cut falls in the gap between them. Replayed
+against the live graph: **505 nominations, of which the 65 banded ones hold
+global ranks 440–504, against a `batch_size` of 40.** Not one, ever, in the
+band's entire existence.
+
+This is the same mistake the entry above is *about*, one layer downstream.
+H16's whole argument is that absolute cosine is not comparable across blocks
+with different label shapes; the fix then handed its output to a global sort on
+absolute cosine. Widening the batch does not help either — the over-bar
+population is 440 against a 30/day adjudication budget, so the band stays
+unreachable at any batch short of the whole backlog.
+
+**Two things hid it, and both are more interesting than the bug.**
+
+*The measurement stopped at the right number.* "Candidates per pass:
+`tension/relationship` 0 → 3, graph-wide 173 → 230" is quoted above and is
+correct — it is `_collect_pairs`'s return value, measured one call before the
+consumer that discards it. A shape worth naming: **an output measured at the
+producer when the defect is in the consumer.**
+
+*Every test builds a graph where the band is the only thing in it.* Five tests
+cover the band and all five pass against a `run` that deletes it, because with
+no over-bar pairs present the batch never fills. They assert on nomination and
+the defect is in selection. The new `BandReachesTheBatchTests` gives the band
+*competition* — enough over-bar pairs to fill the batch alone, which is the
+condition the real graph always meets and no fixture did.
+
+**The fix**, in `_order_batch`: the band gets `concept_consolidation_band_reserve`
+(12 of 40) protected slots, filled a block at a time and *interleaved* through
+the batch rather than appended — because the real limit is the 30/day rate cap,
+and a reserve parked past slot ~30 is cut a second time by the thing that cuts
+it first. Measured on the live graph: banded pairs in the batch **0 → 12**, at
+slots 2, 5, 9, 12, … 39.
+
+**The first version of that fix reproduced the bug it was fixing, one scale
+down.** A plain round robin visited blocks by name, which is fine only if the
+reserve is wide enough to reach them all — and it never is: 12 slots against 22
+blocks means *depth 0 alone overruns the reserve*, so the visit order is the
+entire allocation. The first twelve blocks alphabetically got a permanent turn
+and the other ten got none, in perpetuity, and among the ten was
+`relationship/value` — the block H12 created, and the reason any of this was
+being measured. A fair-looking mechanism starving the exact case that motivated
+it is worth more attention than the original defect: **"round robin" only means
+fair if every participant is reached within one pass.**
+
+So the turn goes to whichever block has had the fewest questions answered about
+it. The verdict cache is already an exact per-block record of service, so this
+needs no cursor and no clock — a served block acquires answered pairs and sinks,
+a skipped block stays at zero and rises, and the 30-day TTL is what eventually
+makes a long-settled block due again rather than permanently last. Replayed over
+thirty runs of real budget against the live graph: **22 of 22 blocks served**,
+`relationship/value` first served on run **2** rather than never. The five
+heaviest `user/*` blocks wait until runs 21–22, which is the ordering working
+rather than failing — they are the blocks already consuming the over-bar path,
+so they are the least starved things in the graph.
+
+**A second, larger stall came out of the same read.** A rejection was applied in
+the run loop but not at nomination, so an answered pair kept its place in the
+cosine-sorted prefix forever. Once the top `batch_size` had been answered, every
+later run re-selected the same forty, skipped all forty for free, and never
+reached the forty-first — and there are **440 over-bar candidates against a
+batch of 40**, so 400 of them were unreachable by any amount of waiting. That
+matches the corpus: ~248 lifetime adjudications where a 30/day budget over the
+install's life allows ~1,650. Nomination now drops answered pairs (above the
+auto-merge bar excepted, since those need no adjudication and a stale verdict
+must not veto a merge), and a block's `top_n` is `top_n` *questions* rather than
+`top_n` rows it happens to rank highest.
+
+Same shape both times, and it is the one to carry forward: **a filter applied
+where the work happens instead of where the work is chosen.** The run line now
+prints `banded=… in_batch=… answered=…` so nomination and consumption can never
+again be read off one number.
+
 ---
 
 ## H17. Four prompt blocks disagree about what a lull is, and three lose
@@ -3714,6 +3808,39 @@ overlaps heavily with both ritual and value, and adding a third reader of one
 158-row evidence pool is how you get three names for the same observation. Worth
 revisiting only if shared values land well and still leave something unsaid.
 
+### Re-measured, 28 Aug: the fix worked, and it inherited the problem it deferred
+
+Shared values landed. Every number in the entry above has moved, and the
+prediction that this was a registration change rather than new machinery held:
+
+| | when filed | now |
+| --- | --- | --- |
+| active `relationship` concepts | 30 | **103** |
+| share of all concept surfacings | 59 / 11,321 = **0.52%** | 937 / 37,589 = **2.49%** |
+| what reaches the prompt | 4 rituals | value **402**, ritual 273, tension 139, narrative 123 |
+| `value` rows | 0 | 53 (20 active) |
+| `narrative` rows | 1 | 15 (14 active) |
+
+`value_relationship` is now the **largest** relationship contributor to the
+prompt, from a kind that did not exist, and `_concept_value_header`'s
+`relationship` branch has rows to render at last. Tensions surface too (139),
+which is H10 closed rather than anything this entry did.
+
+**What it inherited is the part worth recording.** The entry deferred
+relationship's redundancy to H16 and shipped a proposer into it. The new kinds
+have exactly the shape H16 described, and the labels are blunter about it than
+the tension rows ever were: eight active rituals for "hand-lacing before sleep"
+(`1059, 2992, 3227, 3247, 3423, 4135, 4311, 4956`), five for "beanbag anime",
+five values for "physical proximity signals that friction is resolved". Within
+`subject='relationship'`, pairs at or above the 0.78 candidate floor: **value 8,
+ritual 10, narrative 9**.
+
+H16's fix was supposed to catch precisely this, and it had never run once. That
+is the finding, and it belongs to H16 — see
+[its second outcome](#outcome-2-the-band-was-nominated-and-then-thrown-away)
+below. Relationship is no longer thin; it is now redundant at four times the
+volume, and the dedupe that was supposed to be waiting for it was not there.
+
 ---
 
 ## H13. She has very little life that is not about him
@@ -3774,6 +3901,59 @@ Left alone: `taste` at 2 rows, which H8 measured and found honestly gated (~one
 "stands out" topic per 90 days), and the relational share of the other kinds. A
 companion who mostly thinks about her partner is not by itself a defect; having
 *no* channel for anything else was.
+
+### Re-measured, 28 Aug: the channel opened, the ratio got worse
+
+The mechanism fix worked exactly as specified, and the goal it was in service of
+moved backwards. Both halves are worth keeping.
+
+**`pursuit` is alive.** 14 rows since the floor went to 4 — 4 active, 4
+candidate — produced steadily (76 `concept_events` between 9 and 27 Aug, so the
+pass now runs rather than returning at the door). And they are the only rows in
+the graph that are about her:
+
+> *"you keep returning to the basil, specifically watching it grow and using the ripe leaves"*
+> *"you are into teaching yourself guitar, specifically working through chord transitions"*
+> *"you keep returning to The Glasshouse Letters, specifically reading it as your dedicated leisure activity"*
+
+That is a real answer to "what did you do today", which the entry said she did
+not have.
+
+**And the share went the wrong way.** Her active self-concepts grew 456 → 830,
+and the relational fraction with them:
+
+| kind | when filed | now |
+| --- | --- | --- |
+| `communication_style` | 71% | **97%** |
+| `boundary` | 60% | **97%** |
+| `identity` | 78% | 94% |
+| `tension` | 84% | 92% |
+| `value` | 75% | 89% |
+| `affective` | 67% | 70% |
+| `narrative` | 57% | 54% |
+| `aspiration` | 42% | 52% |
+| `generalization` | *(did not exist)* | **88%**, and now the largest kind at 204 rows |
+| `pursuit` | 0 rows | **0%**, 4 rows |
+| **total** | **67%** | **79%** |
+
+Four pursuit rows against 830 is a rounding error, and the kind that grew most
+since the entry was written is 88% about him. The entry's ceiling — "a companion
+whose every belief is downstream of her partner is a mirror, not a person" — is
+lower now than when it was described, despite the fix for it working.
+
+**One measurement note that nearly became a false finding.** These labels are
+written in the second person addressing *Aiko* ("you keep returning to the
+basil"), so a regex counting `you` as relational scores `pursuit` at **100%
+relational** — the most autonomous kind in the graph, inverted. The table above
+counts only `jacob|him|his|us|we|our|together|partner`. Anything re-running this
+has to exclude second person, and the tell that you have not is `pursuit` and
+`taste` coming back at 100%.
+
+Not filed as a defect, because no gate is closed: this is supply, and the fix
+for supply is the one the entry already names. But it does mean the axis needs a
+denominator when it is next looked at. Counting *autonomous rows* rewards a
+proposer that mints four; counting the *share* is what the goal actually is, and
+by that measure the last three weeks were a net loss.
 
 **Adjacent, 12 Aug.** The immersion backlog's
 [H26](shipped/immersion.md#h26-caught-mid-something--she-was-busy-when-you-opened-the-app)
