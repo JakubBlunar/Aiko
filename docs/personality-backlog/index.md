@@ -894,6 +894,45 @@ turn now goes to the least-served block, read off the verdict cache. **"Round
 robin" only means fair if one pass reaches every participant**
 ([`health.md`](health.md)).
 
+**H17/H18 re-measured — and H18's rule now fails H18's own test.** Both fixes
+held. K54 topic-appetite went from structurally unable to fire to 3 of 1,062
+turns, its predicate extraction is intact (no caller reads `last_mean` raw), and
+all three of its own thresholds sit inside their distributions. The finding is
+the constant *beside* the one H17 fixed: `appetite_short_reply_chars` is an
+absolute 160-character bar, her median reply moved 101 → 187, and the gate
+swung from **90.9% open in July to 10.5% now** with no config change — H17's own
+shape, one seat over, in the same `decide()` call. No fix shipped, because the
+obvious one does not work and the measurement says so: a baseline-relative bar
+narrows the weekly swing 92 points → 33 and a percentile bar does no better,
+since the residual is autocorrelation in run-length rather than the threshold.
+H17's generalisation also failed to reproduce — affect, the axes and the arc
+label have no divergent copies — giving a **revised rule: copied-predicate risk
+scales with how *surprising* the predicate is, not how many callers it has.**
+`last_mean` was dangerous because a lull is a *low* reading of a distance and
+the scale is install-specific, so neither sign nor bar was checkable against
+intuition.
+
+H18 left its rule as a sentence, so the cluster case sat open for two months; it
+is now `python scripts/signal_reliability_report.py`. **A re-run of H18's own
+test would have promoted an empty signal**: `cluster/engaged` scores 0.233 at an
+evidence floor of 8, over H18's own 0.2 line. Two new checks settle it — a
+shape-matched null (same split, structureless series, identical row counts) and
+*excess spread* (observed between-item spread over the `sqrt(p(1-p)/n)` a single
+shared rate predicts). Bucketed by row count the answer is unambiguous: the echo
+verdict climbs 1.27 → **3.61** as items accumulate evidence while the engaged
+label is **pinned at 1.0 across 132 concepts averaging 98 observations each** —
+and pinned at 1.0 with that much evidence beats any p-value, because no sample
+size could improve it. So K81 taste affinity and L42 neglect are ordering topics
+close to arbitrarily. The mirror-image lead: reliability tracks credit dilution
+(cue 1.7 items/turn → 0.445; concept 29.6 → 0.064), and **cues are the one
+undiluted label in the system and nothing reads them** — `stats_for` filters
+`item_id > 0` and cues carry `item_id = 0` by design. Also recorded is an
+instrument that was *rejected*: a floor-slope diagnostic that matched the live
+data perfectly and then failed against a generator built to be purely
+turn-driven, giving the **eighth shape — a diagnostic that agrees with your
+hypothesis is not evidence for it until you have built the case where the
+hypothesis is false and checked that it disagrees** ([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

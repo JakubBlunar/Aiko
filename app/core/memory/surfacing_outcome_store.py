@@ -171,6 +171,17 @@ class ClusterTaste:
     is frequency-independent, so a topic raised rarely but that reliably
     lands outscores one raised constantly to no effect. That asymmetry is
     the whole point: taste is not the same as what the user brings up most.
+
+    **Measured, and it carries no item-level information (H18).** This is
+    the same turn-level label :attr:`ItemStats.engaged_rate` warns about,
+    and H18 left the cluster case open as underpowered at 38 items. At 86
+    it is settled: between-item spread is 1.19x the spread a single shared
+    rate would produce -- flat across every row-count bucket -- against
+    1.8x and rising for the echo verdict that replaced it in L38, and the
+    permuted null does not clear (p = 0.10). Clusters have no echo test to
+    switch to, which is why this still stands; what reads it (K81 taste
+    affinity, L42 neglect) is ordering topics close to arbitrarily.
+    ``python scripts/signal_reliability_report.py --buckets`` re-measures.
     """
 
     cluster_id: int
