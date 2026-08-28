@@ -828,22 +828,40 @@ conditional. New shape — *a cost measured in isolation from its cacheability*:
 the number that matters is tokens × probability the prefix moved, and for a T0
 constant that second term is ~0 ([`health.md`](health.md)).
 
-**H53 is the one to read before you conclude a block is gated too tight.** Four
-blocks that would let her talk about her own knowledge changing —
-`concept_learning_block`, `fact_reversal_block`, `self_correction_block`,
-`calibration_block` — have rendered **0 times in 961 instrumented turns**, while
-2,591 `concept_learning_events` and 722 `contradicted` concept events piled up
-behind them. All four are *fully* wired: registered in `_PROMPT_BLOCK_TIERS`,
-provider registered, render method present, appended to `system_parts`, two with
-their own `CuePolicy`. So it is H51's shape again — a loop whose write side works
-and whose read side never opens, a diary nobody reads. But the entry's real
-content is the caveat: 32 of 118 registered block names have *no* telemetry row
-ever, including `relationship_block` and `affect_block`, which demonstrably do
-reach the prompt because their text is folded into another block's string. So
-**the instrument cannot currently tell "gate never opened" from "name never
-recorded"**, and disambiguating per block comes before any gate hunt — which is
-`lead_follow_corpus.py`'s own stated principle applied to itself
-([`health.md`](health.md)).
+**H53 is the one to read before you conclude a block is gated too tight.**
+Carried in as four fully wired reasoning blocks that had rendered **0 times in
+961 turns** while 2,591 `concept_learning_events` piled up behind them — H51's
+shape again, a diary nobody reads. Both halves turned out to be wrong, and the
+way they were wrong is the value. The instrument was never ambiguous: a second
+instrument (`prompt-cache.jsonl`, hashing the same blocks for P44) independently
+reports `changed=0` for every silent name, and `relationship_block` / `affect_block`
+/ `mood_hint` are not "folded into another block" but *suppressed by design* —
+`grounding_line_mode` is `replace`, which blanks ten named blocks once the unified
+grounding line renders. Of the four: `concept_learning_block` is a **30-day beat
+last fired two days before the table's first row**, with three changes on its
+shelf and eligibility returning ~5 Sept; `calibration_block` is correctly silent
+at 0.931 against a 0.55 bar (its firing is the bad news); only
+`self_correction` (one cue ever, expired) and `fact_reversal` (zero cues ever)
+are real, and both are producer problems, not gates. New shape — *a rate measured
+over a window shorter than the cadence it is measuring*, where sample density
+reads as authority: `0 / 1,062` looks more damning than `0 / 20` and is equally
+uninformative.
+
+Chased to the bottom across three phases, **thirty-one silent blocks produced one
+miscalibration**: `user_expertise_block` needs a topic cluster with ≥4 samples
+scoring past ±0.35, and its EMA (`learning_rate=0.25`) pulls every cluster that
+reaches four samples back into the quiet middle — the two clusters that clear the
+band have 1–2 samples, the six that clear the floor top out at +0.292. The two
+*defects* the audit produced were both found sideways and neither is visible in a
+firing table: `UserCorrectionWorker` expressed "nothing to do" as zero pressure
+when `evaluate_admission` checks the heartbeat first, so it ran every 45 s
+forever and spent **675 of 18,168 log lines** saying so (fixed: the empty queue is
+now a hard veto in `is_ready`); and `touch_state_block` was ladder scaffolding for
+a cue retired in B7 (removed). The rest is now a command —
+`python scripts/block_firing_report.py --findings-only` classifies every block as
+fires / suppressed / disabled / unobservable / silent, and **refuses to quote a
+rate for a block whose cadence exceeds the window** rather than returning the
+zero that started all this ([`health.md`](health.md)).
 
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write

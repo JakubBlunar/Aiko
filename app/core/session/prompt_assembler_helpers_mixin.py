@@ -258,7 +258,6 @@ class PromptAssemblerHelpersMixin:
         tease_ledger: Callable[[], str] | None = None,
         grounding_line: Callable[[], str] | None = None,
         user_reactions: Callable[[], str] | None = None,
-        touch_state: Callable[[], str] | None = None,
         attachments: Callable[[], str] | None = None,
         seen_image: Callable[[], str] | None = None,
         task_cues: Callable[[], str] | None = None,
@@ -476,8 +475,6 @@ class PromptAssemblerHelpersMixin:
             self._grounding_line_provider = grounding_line
         if user_reactions is not None:
             self._user_reactions_provider = user_reactions
-        if touch_state is not None:
-            self._touch_state_provider = touch_state
         if attachments is not None:
             self._attachments_provider = attachments
         if seen_image is not None:

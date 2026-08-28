@@ -2882,7 +2882,7 @@ only place this failure is visible before it becomes something else's crash.**
 
 <a id="recurring-shapes"></a>
 
-## The twenty-seven recurring shapes
+## The twenty-eight recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -3337,6 +3337,22 @@ half of this — it wrote down "a change to make on production evidence" — and
 is worth seeing why that was not enough: nothing was going to run that query,
 because nobody owned it (shape 23 again, one level up). Name the report and the
 number that would decide, or expect the deferral to be permanent.
+
+**28. A rate measured over a window shorter than the cadence it is measuring.**
+H53 is the case: `concept_learning_block` is a deliberately monthly beat, was
+read over an eighteen-day table, and reported `0 / 961`. Nothing was broken, and
+the instrument was correct at every step — it simply cannot see an event that
+falls outside its window, and it says nothing about the window when it reports
+the rate.
+
+What makes this worse than an ordinary small sample is that density reads as
+authority: `0 / 1,062` looks like a more thorough refutation than `0 / 20`, when
+in fact the two are equally uninformative if neither window contains the event.
+The tell is a rate quoted as `n / turns` against a gate expressed in days.
+**Rule: before calling a rate of zero a defect, compare the instrument's age to
+the feature's cadence; if the window is shorter, report the window instead of the
+rate.** Related to shape 23 (a note that outlives its truth) from the other end —
+there the claim aged out, here the claim was never old enough.
 
 ---
 
@@ -6144,4 +6160,297 @@ gate might be one threshold or might be a design that never had a live path.
 no reader*. Also a new instance of H47's lesson one layer up — there the question
 was "she was shown 604 of them and said nothing", here it is whether she was
 shown them at all, and the instrument that should answer it is ambiguous.
+
+### Outcome: the instrument was right, and it was read 12 days too early
+
+The caveat resolved in the reassuring direction, and it resolved without calling
+a single provider. **`turn_prompt_blocks` cannot record a name that is not what
+the telemetry records — because there is no such name.** Three facts settle it:
+
+1. `block_char_table` reports *every* registered block including the empty ones
+   (it returns `0`, not an absence), and
+   `BlockCharTableTests::test_every_registered_block_name_resolves` fails if any
+   `_PROMPT_BLOCK_TIERS` name stops resolving to a block local. That test passes,
+   so all 119 names are measured on every assembly.
+2. The recorder drops only the zero-length ones
+   ([`turn_prompt_block_store.py`](../../app/core/memory/turn_prompt_block_store.py)),
+   which is what makes "no row" mean "rendered empty".
+3. **A second, independent instrument agrees.** `data/prompt-cache.jsonl` hashes
+   the same blocks for P44's divergence attribution, and across 1,263 records
+   every one of the silent names has `changed=0`. An always-empty block hashes
+   the empty string every turn and therefore never changes; a block whose text
+   was folded elsewhere would still have to move when that text moved. The two
+   instruments are built from the same dict but read out through different code
+   into different files, and they tell the same story.
+
+So the three counterexamples were the misreading, not the instrument.
+`relationship_block`, `affect_block` and `mood_hint` are suppressed **by design**:
+`grounding_line_mode` is `replace` on this install, and K16's suppression matrix
+([`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) L2826–2858)
+blanks exactly `{circadian, ambient_noise, world, activity, weather, affect,
+mood_hint, relationship, user_state, mood_shell}` once the unified
+`grounding_block` renders — which it does on 1,062 of 1,062 turns. Their *content*
+reaches the prompt; their *blocks* correctly measure zero. That is **10 of the 31**
+silent names, and the reason H52 read T4 at 605 chars/turn while every named T4
+block sat at zero: T4 has ten blocks and the other five carry it.
+
+**The four, re-measured over 1,062 turns / 18 days:**
+
+| Block | Verdict | Evidence |
+| --- | --- | --- |
+| `concept_learning_block` | **healthy — unobservable** | 30-day cooldown. Last fired **6 Aug 21:38, two days before the table's first row**. Shelf (`concept.drift.pending`) holds 3 unreported changes; next eligible in ~8 days. |
+| `calibration_block` | **healthy — correctly silent** | Fires below 0.55 global / 0.50 topic. Live state is **0.931** global with eight topic slots at 0.814–0.840. This block firing is the bad news. |
+| `self_correction_block` | **real, thin** | Exactly **one** cue ever produced, and it expired unclaimed. The gate is fine; the producer fired once in three weeks. |
+| `fact_reversal_block` | **real** | **Zero** cues ever written to the pool. The producer is the suspect, not the gate. |
+
+The headline number was the wrong number. `concept_learning_block` is a monthly
+beat, and it was measured over eighteen days — the observation window is shorter
+than the feature's own cadence, so "0 / 961" was arithmetically incapable of
+being anything else. It is not even a sampling problem that more turns would fix:
+1,062 turns inside 18 days is a dense sample of a window that does not contain
+the event. `prune()` is never called on this table, so the window simply grows;
+the reading is due to correct itself around 5 September.
+
+`fact_reversal` and `user_correction` are the two worth pursuing, and they share
+a shape with each other rather than with the other two: both are **pool types
+with no rows at all**, so nothing is gated — nothing was ever produced. The
+`user_correction_worker` ran as recently as 01:04 today and has never queued a
+cue, which is H1's silent-empty pass (shape 1) in a third place.
+
+**What this does not resolve.** Fifteen of the thirty-one are still unclassified
+(`milestone`, `agenda`, `vocal_tone`, `clarification`, `opinion_injection`,
+`boundary_clash`, `stance_persistence`, `inside_joke`, `vulnerability_budget`,
+`touch_state`, `running_tasks`, `task_cues`, `conduct_notice`, `knowledge_gaps`,
+`user_expertise`). Several have obvious benign readings — `running_tasks` wants a
+running task, `touch_state` wants the avatar touched, `conduct_notice` is H1's
+known-dead detector — but "obvious" is what this entry just spent a day
+disproving, so they are listed rather than assumed. Note also that being
+*enabled* explains nothing here: 197 of the 207 boolean agent settings are true
+on this install, so a closed gate is almost never a switch. (Phase B below
+classifies all fifteen; the "obvious" readings held for eleven of them, and one
+of the four that did not is the only real defect in the entry.)
+
+### Shape 28
+
+New: **a firing rate whose observation window is shorter than the feature's own
+cadence.** A monthly beat read over eighteen days reports zero, and the zero is
+indistinguishable from a dead gate — it looks *more* damning the denser the
+sample, because 0/1,062 reads as more thorough than 0/20. Every rate in this
+document is turns-based, and turns are not the unit any cooldown is expressed in.
+
+The tell is cheap and grammatical: a rate quoted as `n / turns` for a feature
+whose gate is a wall-clock cooldown. **Rule: before calling a rate of zero a
+defect, compare the age of the instrument against the cadence of the thing it is
+measuring, and if the window is shorter, say so instead of quoting the rate.**
+The stronger version is to make the instrument carry it — a firing report that
+knows a block's cadence can refuse to report a rate it cannot support, which is
+the same principle
+[`lead_follow_corpus.py`](../../app/core/persona/lead_follow_corpus.py) states for
+a diagnostic that cannot separate two causes.
+
+### Phase A: the two "real" ones were not defects either
+
+The outcome above left `self_correction` and `fact_reversal` as the genuine
+findings, on the grounds that both are pool types with **no rows at all** — so
+nothing could be gated, and the producer had to be the suspect. Chasing both
+producers to the bottom says otherwise, and the result is worth recording
+precisely because the reasoning that reached it was sound and still wrong.
+
+**F13 (`user_correction`) is correctly quiet, and the corpus proves it.** The
+worker is alive — it runs every 45 s and reported `no_candidates` every time —
+so the turn-path detector has never stashed anything. Running
+`detect_user_correction` over the **entire history (2,914 user messages)** against
+the full durable-memory pool (737 rows, a superset of what RAG would have
+surfaced, so an upper bound):
+
+- **One** message in 2,914 matched any correction marker. Twelve of the thirteen
+  markers have never matched once.
+- That single match — *"Ohh I meant thigh :D sorry now i am really blushing"* —
+  reached overlap **1** against the whole pool, under the bar of 2.
+
+That looks like shape 3 (a threshold real data cannot reach) until you ask the
+recall question, which is the one that matters: **are there corrections in the
+transcript that the markers miss?** A deliberately loose scan — bare `no,` /
+`nope`, `actually`, `not X but`, `I said`, `wrong`, `I never` — returns 121
+messages and **not one is a correction of a stored fact**. The `no`s are
+affirmations (*"No it was perfect thanks!"*, *"No no you are expressing yourself
+properly now"*, *"No I really would not :D I need my cute cheerful aiko"*), and
+the 50 `not X but` hits are the ordinary conversational contrast the detector's
+own docstring predicted when two markers were removed for exactly that reason.
+Jacob does not correct Aiko's facts; when he says "no" he is disagreeing with her
+*self-criticism*. **The detector's precision-first narrowing cost no recall
+because there was no recall to cost.**
+
+**F14 (`fact_reversal`) is starved upstream, and the gate has never been
+reached.** `_maybe_arm_reversal` returns at its *first* condition
+(`verdict.kind != "contradict"`), because the F1 fact checker has produced, in
+the app's entire lifetime:
+
+| verdict | memories carrying the stamp |
+| --- | --- |
+| `support` (`last_verified_at`) | 18 |
+| `inconclusive` (`last_checked_at`) | 5 |
+| `contradict` (`flags.conflict`) | **0** |
+
+Twenty-three checks, ever; the queue (`fact_checker.queue`) is empty and the
+worker last ran four days ago. So F14's five gates — the delta floor, the rewrite
+requirement, the F13 suppression, the archive check, the `was_surfaced` ledger
+lookup (85,114 rows, perfectly answerable) — are all untested and all unblamed.
+The constraint is the fact checker's throughput, which is **H27**'s and **H20**'s
+entry, not F14's. Filing a fix against F14 would have been work against the wrong
+subsystem.
+
+**K38 (`self_correction`) fired once, and it was wrong.** The single lifetime cue
+paired the reply *"Enjoy your lunch and your nap, and see you later, Jacob"* with
+a stored note about *"Jacob drafts code comments in his head"* — no contradiction,
+just two texts. It expired `ttl` at `surfaced_count=0` after a **30-minute**
+window that contained no turn. So the one production event in the whole family
+was a false positive that nobody saw.
+
+**What did get fixed.** One real defect fell out of the investigation, and it is
+a scheduling bug rather than a detector one. `UserCorrectionWorker.demand()`
+correctly reported `pressure=0.0, reason="no candidates"` — and it ran anyway,
+every 45 seconds, forever, because
+[`evaluate_admission`](../../app/core/proactive/idle_worker.py) checks the
+**heartbeat before the pressure**:
+
+```python
+if heartbeat_s > 0.0 and elapsed_s >= float(heartbeat_s):
+    return Admission(admit=True, ..., reason="heartbeat", lane=lane)
+if signal.pressure <= 0.0:
+    return Admission(admit=False, ..., reason="idle", lane=lane)
+```
+
+That ordering is deliberate — it is the liveness backstop for a broken probe —
+and `IdleFactChecker.is_ready` already documents the consequence in as many
+words: *"an empty queue … makes a run a guaranteed no-op, and the heartbeat is
+checked before pressure, so expressing them as zero pressure would not hold the
+worker back."* F13 expressed it only as pressure. The cost was **675 of 18,168
+lines in a log rotation — 3.7% of the log — spent announcing that a worker with
+no work had no work**, and it was the only entry in the whole registry doing it at
+volume (the next three together are 25 lines). The empty queue is now a hard veto
+in `is_ready`, with the probe failure falling *through* to a run, since a wedged
+worker is a worse failure than a wasted no-op. `ReadinessTests` in
+[`test_user_correction.py`](../../tests/test_user_correction.py) pins all four
+cases and that `demand` still reports pressure once there is work.
+
+**The running score for H53 is now: seven blocks examined, zero closed gates.**
+Ten suppressed by design, one on a cadence longer than the instrument, one
+correctly silent above its threshold, two starved of input that never arrived,
+one that fired once and fired wrong. The defect the exercise actually found was
+in the *scheduler*, and nothing in the firing-rate table pointed at it.
+
+### Phase B: the remaining fifteen, and the first genuine closed gate
+
+Classifying the rest against live state rather than against the code's
+intentions. Two more turned out to be shape 28, one was scaffolding for a
+feature that had been deleted, and **one is a real miscalibration** — the first
+in the whole entry.
+
+| Block | Cause | Live evidence |
+| --- | --- | --- |
+| `milestone_block` | **shape 28 again** | Three milestones surfaced, the last on **10 July** — a month before the table existed. Tenure is 95 days; the next step (`hundred_days_together`) lands in **5 days**. |
+| `touch_state_block` | **dead registration** | The K31 cue was retired in B7: render method deleted, provider deliberately never wired. The ladder entry, the assembler local and the `set_inner_life_providers(touch_state=…)` slot all survived. **Removed.** |
+| `user_expertise_block` | **real: shape 3** | See below. |
+| `conduct_notice_block` | upstream-dead (**H1**) | `kind='conduct'` is 0 of 5,040 concepts; the final `view.core(kind="conduct")` gate cannot pass. Already H1's entry. |
+| `agenda_block` | no supply | 0 rows in `agenda`, ever. The only writer is an `[[agenda:…]]` tag the model has never emitted. |
+| `knowledge_gaps_block` | no supply | 1 `knowledge_gap` memory ever, and it is resolved. Distinct from `knowledge_gap_notice_block` (15.0%), which is the cue-pool sibling. |
+| `inside_joke_block` | never armed | Watermark `inside_joke_birth.last_recorded_at` is absent, so the 24 h cooldown has never been set — it needs the user to echo a ≥3-word phrase *with* a laugh reaction. |
+| `vulnerability_budget_block` | correctly silent | Fires at ≥50% spent; `aiko.vulnerability_budget` reads `spent: 0.0` against a capacity built from closeness 0.92 / trust 1.0. |
+| `vocal_tone_block` | correctly silent | Voice-mode only, and only when the WAV analysis is confident *and* a dimension is non-neutral. |
+| `running_tasks_block`, `task_cues_block` | correctly silent | Need a task in `running` / `awaiting_input`, or a parked cue under 1,800 s old. |
+| `clarification_block`, `opinion_injection_block`, `boundary_clash_block`, `stance_persistence_block` | correctly silent | Each needs a specific conversational event (a confusion signal, a cosine-strong stance contradiction, a boundary clash ≥0.58, a mild-pushback within 3 turns of a K29 fire). |
+
+**`user_expertise_block` is the one closed gate, and the two gates select for
+opposite things.** It needs a topic cluster with `samples >= 4` whose EMA score
+clears ±0.35. The live map has 31 clusters:
+
+- Two clear the score band — **−0.400** and **+0.500** — and both have **1–2
+  samples**, under the floor.
+- Six clear the sample floor, and they span **+0.108 to +0.292**. The best of
+  them reaches 83% of the bar and stops.
+
+That is not bad luck, it is the mechanism. The score is an EMA with
+`learning_rate=0.25`, so it converges on the *mean* signal, while the individual
+signals are single regex weights (`_ACRONYM` +0.2, `_LONG_WORD` +0.2,
+`_CODE_TOKEN` +0.3) — twenty-one of the thirty-one clusters sit at exactly
++0.2000, the value of one lone pattern hit. A cluster reaches ±0.35 only on a
+first, unaveraged signal; by the fourth sample the EMA has pulled it back into
+the quiet middle. **The sample floor and the score band cannot be satisfied at
+the same time** unless the user writes four consecutive messages each firing two
+strong patterns. This is shape 3 with a twist worth naming: the bar was not just
+set above the distribution, it was set above the distribution *the averaging
+produces*, and the raw signals it was presumably calibrated against do clear it.
+
+The fix is H23's and H43's, both already argued in this document: **rank within
+the corpus and keep the absolute as a ceiling.** Band the top and bottom of the
+user's own 31 clusters rather than testing each against a constant. Not shipped
+here — it is a behaviour change to a live steer and belongs with a decision
+about how often that steer *should* fire.
+
+### Phase C: the report that refuses to quote the number
+
+Every conclusion above came from ad-hoc SQL, which is how the entry got written
+wrong the first time. It is now a command:
+
+    python scripts/block_firing_report.py --findings-only
+
+[`block_firing_audit.py`](../../app/core/session/block_firing_audit.py) holds the
+classification as a pure function (so the interesting cases are testable without
+a database) and the script is a read-only shell over `turn_prompt_blocks`. Every
+registered block gets one of five verdicts — `fires`, `suppressed`, `disabled`,
+`unobservable`, `silent` — and only the last is a finding. On the data above:
+
+    1062 turns over 18.2 days, 118 registered blocks, grounding_line_mode=replace
+      disabled=1  fires=88  silent=18  suppressed=9  unobservable=2
+
+**The refusal is the feature.** A block in `CADENCES` whose cooldown exceeds the
+window comes back `unobservable` with `rate: None` — not `0.0` — and says how
+long the window has to get. That is the single behaviour that would have stopped
+H53 being written: `concept_learning_block` and `milestone_block` are the two
+`unobservable` rows, and they were the entry's headline. Callers must not
+substitute a zero, which is why the field is nullable rather than defaulted, and
+why `BENIGN` is exported instead of leaving each caller to re-derive "which
+verdicts are findings".
+
+Two things keep it honest. The cadence table carries the *knob* each number came
+from, and a test fails if any name in it is not a registered block — an invented
+cadence would silence a real defect, which is this guard pointed backwards. And
+the K16 suppression set, which existed only as a comment when H53 was written, is
+now the constant `GROUNDING_SUPPRESSED_REPLACE`; `SuppressionDriftTests` parses
+the suppression region out of the assembler's own source and fails if the two
+disagree. Asserting against a rendered prompt would not do: the suppression only
+bites when a grounding line is present *and* the mode is set, so a test that
+wired neither would pass while measuring nothing.
+
+**What the report deliberately cannot do** is close the eighteen. Everything it
+knows is structural — the ladder, the suppression matrix, the settings, the
+cadence table — and eleven of the eighteen were cleared by reading *live data*
+that lives in eleven different tables (`agenda`, `kv_meta` watermarks,
+`user_expertise` clusters, the task queue, …). A verdict that guessed at those
+would be the "obvious reading" this entry spent two days disproving, so `silent`
+means **"no structural explanation, go look"** rather than "defect". The report
+turns a day of SQL into the *shortlist*; the shortlist still has to be read.
+
+### Closing: twenty-two blocks, one defect
+
+| Cause | Count |
+| --- | --- |
+| Suppressed by K16's grounding line, by design | 10 |
+| Cadence longer than the observation window (shape 28) | 2 |
+| Correctly silent — the gate's condition has not occurred | 6 |
+| No upstream supply (H1's dead detectors, unused tag writers) | 3 |
+| Dead registration left by a retired feature | 1 (**removed**) |
+| **Genuinely miscalibrated** | **1** (`user_expertise_block`) |
+
+The entry was filed as "four fully wired reasoning blocks, none of which has ever
+rendered", and the framing — a diary nobody reads — was wrong about all four. The
+two defects it did produce were both found *sideways*: a scheduler that logged
+3.7% of a rotation announcing it had nothing to do, and a threshold pair that
+selects for opposite things. Neither is visible in a firing-rate table, and
+neither was what anybody set out to look for.
+
+The lesson worth keeping is the one shape 28 names, generalised: **a zero is a
+question, not a finding.** Thirty-one of them here, and exactly one was the thing
+they all looked like.
 

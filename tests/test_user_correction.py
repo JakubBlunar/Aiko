@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 
 from app.core.conversation import user_correction_detector as ucd
+from app.core.infra.timephrase import utcnow as _utcnow
 from app.core.memory.user_correction_worker import UserCorrectionWorker
 from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
 
@@ -429,6 +430,60 @@ class ConceptPropagationTests(_WorkerFixture):
         stats = worker.run()
         self.assertEqual(stats["concepts_touched"], 0)
         self.assertAlmostEqual(concept.confidence, 0.8)
+
+
+class ReadinessTests(_WorkerFixture):
+    """H53: an empty queue must veto in ``is_ready``, not in ``demand``.
+
+    ``evaluate_admission`` checks the heartbeat *before* ``signal.pressure``,
+    so a worker whose "nothing to do" is only expressed as zero pressure is
+    admitted on every heartbeat regardless. F13 has never had a candidate in
+    the app's history, and that combination made its ``no_candidates`` line
+    3.7% of a whole log rotation.
+    """
+
+    def _ready(self, pending: int, *, enabled: bool = True) -> bool:
+        worker, _ = self._worker(
+            store=_FakeStore([]), candidates=[], llm_response="",
+        )
+        worker._agent_settings = SimpleNamespace(
+            user_correction_enabled=enabled,
+        )
+        worker._pending_count = lambda: pending
+        return worker.is_ready(now=_utcnow(), last_run_at=None)
+
+    def test_an_empty_queue_is_not_ready(self) -> None:
+        self.assertFalse(self._ready(0))
+
+    def test_one_stashed_candidate_is_ready(self) -> None:
+        self.assertTrue(self._ready(1))
+
+    def test_the_master_switch_still_wins(self) -> None:
+        self.assertFalse(self._ready(3, enabled=False))
+
+    def test_a_broken_probe_falls_through_to_a_run(self) -> None:
+        # A wedged-shut worker is worse than a wasted no-op run: the run
+        # is cheap when the queue really is empty.
+        worker, _ = self._worker(
+            store=_FakeStore([]), candidates=[], llm_response="",
+        )
+
+        def _boom() -> int:
+            raise RuntimeError("probe exploded")
+
+        worker._pending_count = _boom
+        self.assertTrue(worker.is_ready(now=_utcnow(), last_run_at=None))
+
+    def test_demand_still_reports_the_pressure(self) -> None:
+        # The veto moving up must not silently delete the signal the
+        # scheduler ranks with once there *is* work.
+        worker, _ = self._worker(
+            store=_FakeStore([]), candidates=[], llm_response="",
+        )
+        worker._pending_count = lambda: 2
+        signal = worker.demand(now=_utcnow(), last_run_at=None)
+        self.assertIsNotNone(signal)
+        self.assertGreater(signal.pressure, 0.0)
 
 
 class _CaptureStore:
