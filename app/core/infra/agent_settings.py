@@ -2547,6 +2547,16 @@ class AgentSettings:
     # ``MemorySettings.self_correction_*``.
     self_correction_enabled: bool = True
 
+    # ── K82: dropped-sub-topic cue ────────────────────────────────────
+    # Master switch for the next-turn completeness cue. When ON, a
+    # post-turn lexical detector checks whether the user's message had
+    # two separable asks and Aiko's just-finished reply covered only
+    # one of them and, if so, arms a one-shot cue so she circles back
+    # on her next turn. The detector is the conservatism; this switch
+    # defaults on. Thresholds + cooldown live on
+    # ``MemorySettings.dropped_topic_*``.
+    dropped_topic_enabled: bool = True
+
     # ── F13: user-correction detector ─────────────────────────────────
     # Master switch for "the user just corrected a stored fact". When ON,
     # a cheap post-turn pattern gate stashes candidate pairs and the

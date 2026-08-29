@@ -2030,6 +2030,18 @@ class MemorySettings:
     self_correction_min_overlap: int = 2
     self_correction_max_candidates: int = 50
     self_correction_cooldown_turns: int = 3
+    # ── K82: dropped-sub-topic cue thresholds ─────────────────────────
+    # ``min_asks`` is how many separable asks the user message must
+    # contain before a miss can fire (floor 2 -- a single ask has
+    # nothing to drop). ``min_overlap`` is the content-word overlap a
+    # longer ask needs against the whole reply to count as covered.
+    # ``require_question`` is the "at least one ask is question-like"
+    # gate. ``cooldown_turns`` is the per-fire suppression window so a
+    # single miss doesn't nag every turn.
+    dropped_topic_min_asks: int = 2
+    dropped_topic_min_overlap: int = 2
+    dropped_topic_require_question: bool = True
+    dropped_topic_cooldown_turns: int = 3
     # F13 user-correction detector + worker. ``min_confidence`` is the
     # floor a memory must clear to be a correction target (lower than K38's
     # 0.6: a surfaced note the user bothered to correct is worth catching
@@ -5185,6 +5197,21 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             self_correction_cooldown_turns=max(
                 0,
                 int(memory_raw.get("self_correction_cooldown_turns", 3)),
+            ),
+            dropped_topic_min_asks=max(
+                2,
+                int(memory_raw.get("dropped_topic_min_asks", 2)),
+            ),
+            dropped_topic_min_overlap=max(
+                1,
+                int(memory_raw.get("dropped_topic_min_overlap", 2)),
+            ),
+            dropped_topic_require_question=bool(
+                memory_raw.get("dropped_topic_require_question", True),
+            ),
+            dropped_topic_cooldown_turns=max(
+                0,
+                int(memory_raw.get("dropped_topic_cooldown_turns", 3)),
             ),
             user_correction_min_confidence=min(
                 1.0,

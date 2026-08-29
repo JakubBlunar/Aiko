@@ -69,6 +69,10 @@ class DetectorsInitMixin:
         # turn, and unlike the cue it is about this session's pacing
         # rather than about anything Aiko owes.
         self._self_correction_cooldown_remaining: int = 0
+        # K82 — dropped-topic per-fire cooldown. The cue lives in
+        # cue_pool; only the cooldown lives here, so a single miss does
+        # not nag every turn.
+        self._dropped_topic_cooldown_remaining: int = 0
         # F13 — user-correction candidate queue. The post-turn hook does
         # only the cheap pattern gate and stashes any candidate pair here;
         # the off-turn ``UserCorrectionWorker`` drains it, runs the LLM

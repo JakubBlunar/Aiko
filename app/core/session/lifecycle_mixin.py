@@ -213,6 +213,11 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # correction is owed whichever session she is in, and its own
         # half-hour TTL retires it.
         self._self_correction_cooldown_remaining = 0
+        # K82 — reset the dropped-topic cooldown on switch. The cue
+        # itself lives in cue_pool and is not session-scoped: an owed
+        # circle-back is owed whichever session she is in, and its own
+        # half-hour TTL retires it.
+        self._dropped_topic_cooldown_remaining = 0
         # F13 — drop any un-drained user-correction candidates on switch.
         # The corrected note belongs to a memory the previous session
         # surfaced; carrying the candidate across would confirm it against
@@ -379,6 +384,8 @@ class LifecycleMixin(DebugOverridesHostMixin):
         self._user_expertise_last = None
         # K38 — clear the self-correction cooldown on a wipe.
         self._self_correction_cooldown_remaining = 0
+        # K82 — clear the dropped-topic cooldown on a wipe.
+        self._dropped_topic_cooldown_remaining = 0
         # F13 — drop any un-drained user-correction candidates on a wipe.
         if hasattr(self, "_pending_correction_candidates"):
             self._pending_correction_candidates.clear()

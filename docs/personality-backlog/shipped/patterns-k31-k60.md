@@ -3,7 +3,7 @@
 Part of the [shipped log index](../shipped.md). One paragraph per entry; full detail lives in the linked implementation files.
 
 Despite the filename this file is the home for everything above K30 that isn't
-filed elsewhere: K31–K60, then K63, K65–K76, K80–K81, and the K85–K91 leading
+filed elsewhere: K31–K60, then K63, K65–K76, K80–K82, and the K85–K91 leading
 and away-life families at the bottom. (K61, K64 and the K-time family live in
 [`awareness.md`](awareness.md), which is where their detail belongs.) The name
 is kept because ~90 links point at it.
@@ -1184,6 +1184,92 @@ is read against her pooled rate rather than against 1.0 — the v1 decision to
 skip a baseline is what made the bar unreachable. Below `taste_min_settled` a
 cluster produces no taste, so a cold ledger simply yields nothing rather than
 noise.
+
+## K82. The dropped sub-topic — he said three things, she answered one
+
+The user sends a message with two or three distinct things in it; Aiko engages
+the interesting one and the others silently evaporate. That miss was invisible
+to every existing detector: K54 / agenda track *her* threads, K95 only asks
+"was this a direct question?", and K96 `second_thought` can ruminate about
+talking past something but is LLM-drafted, rare, and off by default. K82 is a
+**conservative post-turn completeness cue**: detect two genuinely separable
+asks, notice the reply covered only one, and arm a one-shot next-turn
+circle-back. The whole difficulty is precision — a companion who itemises
+ordinary multi-clause messages like a support ticket is worse than one who
+occasionally misses a point — so v1 copies today's K38 cue-pool path and
+spends its care on not firing.
+
+**Detector** ([`dropped_topic_detector.py`](../../../app/core/conversation/dropped_topic_detector.py)).
+Pure, embedding-free. `extract_asks` splits on `.!?` plus light `also` /
+`and also` / `;` breaks (and a comma-before-question split for "I went to the
+store and got milk, how was your day?"), then **merges** adjacent fragments
+that share content words so "it was long and tiring and I need tea" stays one
+ask. `detect_dropped_topic(user_text, assistant_text)` fires only when there
+are at least two asks **and** at least one is question-like (`?` or a short
+request opener: `can you` / `could you` / `what about`). Coverage is against
+the **whole** reply via the F5 `_content_words` primitive (`min_overlap`
+default 2; short asks need one shared word so "how was your day?" is covered
+by "my day was quiet"). The cue names **one** skipped thing — the most
+question-like uncovered ask — never a numbered list. K95's
+[`turn_shape.is_direct_question`](../../../app/core/conversation/turn_shape.py)
+stays a one-bool ceiling; `extract_asks` lives here so that reader is not
+grown into a multi-ask parser.
+
+**Post-turn arming** ([`post_turn_helpers_mixin.py`](../../../app/core/session/post_turn_helpers_mixin.py)).
+`_maybe_arm_dropped_topic(user_text, assistant_text)` runs next to the K38
+self-correction hook: gated by `agent.dropped_topic_enabled` + a
+`_dropped_topic_cooldown_remaining` counter (decrements every post-turn, only
+runs the detector at 0). On a hit it queues via `_queue_pool_cue` and resets
+the cooldown to `memory.dropped_topic_cooldown_turns` (default 3). If a pending
+K96 `second_thought` cue already shares content words with the skipped ask,
+arming is skipped — rumination about the same miss would double-steer. Leave
+`dropped_topic_block` out of [`stance._OFFERS`](../../../app/core/conversation/stance.py):
+repair is not an initiative offer.
+
+**Pool** ([`cue_accounting.py`](../../../app/core/proactive/cue_accounting.py)).
+`CueSpec("dropped_topic")` + `CuePolicy` matching K38: `inventory_target=0`,
+`ttl_hours=0.5`, `max_surfacings=2`, `MATCH_LEXICAL`,
+`handling_section="When you skipped past something:"`,
+`block="dropped_topic_block"`.
+
+**Provider** ([`inner_life_part2.py`](../../../app/core/session/inner_life_part2.py)).
+`_render_dropped_topic_block` claims via `take_pool_cue("dropped_topic")`.
+One-shot, master-switch gated, independent of the gap-cue family. Survives
+`aggressive=True` — an owed circle-back must land.
+
+**Assembler wiring** ([`prompt_assembler.py`](../../../app/core/session/prompt_assembler.py)).
+`dropped_topic=` kwarg in `set_inner_life_providers`; `"dropped_topic_block"`
+in the T6 detector cluster immediately after `self_correction_block` (same
+"own what you missed" cluster). Built in a timed `provider_ms` phase and
+appended next to the self-correction cue.
+
+**Persona** ([`conditional_handling.txt`](../../../data/persona/conditional_handling.txt)).
+`When you skipped past something:` — circle back once, lightly ("also -- you
+asked about X"); never recap the whole message or list his points. Header
+matches the CuePolicy byte-for-byte.
+
+**Settings.** `agent.dropped_topic_enabled` (master, default **on** — the
+detector is the conservatism) + `memory.dropped_topic_min_asks` (2, floor 2),
+`_min_overlap` (2, floor 1), `_require_question` (true), `_cooldown_turns`
+(3, floor 0).
+
+**MCP debug** ([`app/mcp/server.py`](../../../app/mcp/server.py)):
+`get_dropped_topic_state` (enabled / pending / cooldown_remaining /
+thresholds) and `force_dropped_topic(user_text="", reply_text="")` (run the
+detector against the given texts or the last user/assistant messages, bypass
+the cooldown, arm the cue). Log grep: `tail_logs(module_contains="dropped")`
+shows `dropped-topic fire: skipped=… covered=… uncovered=…`.
+
+Tests: [`tests/test_dropped_topic_detector.py`](../../../tests/test_dropped_topic_detector.py)
+(two asks one miss, one-intent no hit, both covered including a later
+sentence, fragment merge, cue names one snippet),
+[`tests/test_post_turn_dropped_topic.py`](../../../tests/test_post_turn_dropped_topic.py)
+(master switch + cooldown + hit/no-hit + second_thought skip),
+`DroppedTopicProviderTests` in
+[`tests/test_prompt_assembler.py`](../../../tests/test_prompt_assembler.py)
+(lands / silent / one-shot / aggressive / T6 ordering after self_correction),
+`DroppedTopicSettingsTests` in
+[`tests/test_settings.py`](../../../tests/test_settings.py).
 
 ## The second pass at leading (K85–K90) — why the family exists
 

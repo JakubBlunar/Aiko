@@ -3884,6 +3884,29 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         row = self.take_pool_cue("self_correction")
         return row.text if row is not None else ""
 
+    def _render_dropped_topic_block(self) -> str:
+        """K82: surface an owed circle-back to a skipped ask.
+
+        The post-turn detector
+        (:meth:`PostTurnHelpersMixin._maybe_arm_dropped_topic`) queues a
+        cue when Aiko's last reply covered only one of two separable
+        asks; this claims it so she circles back once, lightly, on this
+        turn. Independent of the gap-return cue family -- does NOT read
+        or set ``_gap_cue_surfaced``. Survives ``aggressive=True`` (an
+        owed circle-back must still land).
+
+        The cue comes from the pool, so post-turn matching decides
+        whether she actually took it. The retry budget is deliberately
+        one extra turn -- the line opens with "last turn they also
+        asked", which is true next turn and a fiction by the turn after.
+        """
+        if not bool(
+            getattr(self._settings.agent, "dropped_topic_enabled", True)
+        ):
+            return ""
+        row = self.take_pool_cue("dropped_topic")
+        return row.text if row is not None else ""
+
     def _render_user_correction_block(self) -> str:
         """F13: surface an owed acknowledgment of a user correction.
 

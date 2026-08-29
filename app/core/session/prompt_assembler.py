@@ -201,6 +201,11 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "calibration_block",
         "rupture_block",
         "self_correction_block",
+        # K82: circling back to a skipped ask. Sits with K38
+        # self-correction -- both are one-shot "own what you missed"
+        # beats, K38 for a slip in her own reply, K82 for an unanswered
+        # point in his. Survives aggressive.
+        "dropped_topic_block",
         # F13: owning a user correction. Sits with K38 self-correction --
         # both are one-shot "own what you got wrong" beats, K38 for a slip
         # in her own reply, F13 for a fact the user set straight.
@@ -862,6 +867,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # high-confidence fact/preference memories; this provider renders
         # the cue once on the next turn and clears the slot.
         self._self_correction_provider: Callable[[], str] | None = None
+        # K82 — dropped-topic one-shot. Post-turn detector queues a cue
+        # when Aiko's reply covered only one of two separable asks; this
+        # provider claims it once on the next turn so she circles back.
+        self._dropped_topic_provider: Callable[[], str] | None = None
         # F13 — user-correction one-shot. The off-turn UserCorrectionWorker
         # queues a cue after it confirms the user corrected a stored fact
         # and superseded it; this provider renders the acknowledgment once
@@ -1930,6 +1939,19 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("self-correction provider raised", exc_info=True)
                     self_correction_block = ""
 
+        # K82 — dropped-topic one-shot. Sibling of the self-correction
+        # provider; same one-shot contract and same not-gated-on-
+        # aggressive policy (an owed circle-back must land even when the
+        # prompt is trimmed).
+        dropped_topic_block = ""
+        if self._dropped_topic_provider is not None:
+            with _timed_phase(provider_ms, "dropped_topic"):
+                try:
+                    dropped_topic_block = self._dropped_topic_provider() or ""
+                except Exception:
+                    log.debug("dropped-topic provider raised", exc_info=True)
+                    dropped_topic_block = ""
+
         # F13 — user-correction one-shot. Sibling of the self-correction
         # provider; same one-shot pool-backed contract and same
         # not-gated-on-aggressive policy (an owed acknowledgment of a
@@ -2912,6 +2934,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "calibration_block",
             "rupture_block",
             "self_correction_block",
+            "dropped_topic_block",
             "user_correction_block",
             "fact_reversal_block",
             "promise_followthrough_block",
@@ -2934,6 +2957,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "calibration_block": calibration_block,
             "rupture_block": rupture_block,
             "self_correction_block": self_correction_block,
+            "dropped_topic_block": dropped_topic_block,
             "user_correction_block": user_correction_block,
             "fact_reversal_block": fact_reversal_block,
             "promise_followthrough_block": promise_followthrough_block,
@@ -2969,6 +2993,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             calibration_block = cue_blocks["calibration_block"]
             rupture_block = cue_blocks["rupture_block"]
             self_correction_block = cue_blocks["self_correction_block"]
+            dropped_topic_block = cue_blocks["dropped_topic_block"]
             user_correction_block = cue_blocks["user_correction_block"]
             fact_reversal_block = cue_blocks["fact_reversal_block"]
             promise_followthrough_block = cue_blocks[
@@ -3295,6 +3320,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # self-correction = "own the slip you just made". Survives
             # aggressive mode -- an owed correction must land.
             system_parts.append(self_correction_block)
+        if dropped_topic_block:
+            # K82: dropped-topic sits right after the self-correction
+            # cue. Both are one-shot "own what you missed" beats --
+            # K38 for a slip in her own reply, K82 for an unanswered
+            # point in his. Survives aggressive mode -- an owed
+            # circle-back must land.
+            system_parts.append(dropped_topic_block)
         if user_correction_block:
             # F13: owning a user correction sits right after the K38
             # self-correction cue. Both are one-shot "own what you got

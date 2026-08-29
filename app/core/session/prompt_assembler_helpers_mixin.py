@@ -204,6 +204,7 @@ class PromptAssemblerHelpersMixin:
         mood_inertia: Callable[[], str] | None = None,
         mood_drift: Callable[[], str] | None = None,
         self_correction: Callable[[], str] | None = None,
+        dropped_topic: Callable[[], str] | None = None,
         user_correction: Callable[[], str] | None = None,
         fact_reversal: Callable[[], str] | None = None,
         promise_followthrough: Callable[[], str] | None = None,
@@ -369,6 +370,8 @@ class PromptAssemblerHelpersMixin:
             self._mood_drift_provider = mood_drift
         if self_correction is not None:
             self._self_correction_provider = self_correction
+        if dropped_topic is not None:
+            self._dropped_topic_provider = dropped_topic
         if user_correction is not None:
             self._user_correction_provider = user_correction
         if fact_reversal is not None:

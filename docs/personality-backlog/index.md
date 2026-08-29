@@ -382,7 +382,6 @@ K49 messiness permission (typed imperfection) ·
 K50 typed-mode delivery pacing · K62 co-experience companion ·
 K77 candor gate · K78 vocal-affect read (prosody-in) ·
 K79 hesitation tell (typing latency) ·
-K82 the dropped sub-topic (he said three things, she answered one) ·
 K83 the right to decline · K84 calibrated jealousy ·
 **K92 conversational stance** (phase 3) · **K93 the substance floor**
 (cue-pool half).
@@ -1117,6 +1116,7 @@ turning over", K29 opinion injection, K30 self-noticing cues,
 K31 + K32 soft physicality, K34 forward curiosity worker,
 K35 memory consolidation worker, K36 "things I did
 while you were away", K38 self-correction cue,
+K82 dropped-sub-topic cue,
 K43 promise follow-through, K44 felt-language affect
 block, K45 mood inertia, K46 stance persistence,
 K47 question/share balance, K48 tease rhythm,

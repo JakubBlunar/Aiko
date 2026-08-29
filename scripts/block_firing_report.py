@@ -124,6 +124,7 @@ def _disabled_blocks() -> set[str]:
         "clarification_block": "clarification_repair_enabled",
         "calibration_block": "calibration_detection_enabled",
         "self_correction_block": "self_correction_enabled",
+        "dropped_topic_block": "dropped_topic_enabled",
         "user_correction_block": "user_correction_enabled",
         "fact_reversal_block": "fact_reversal_enabled",
         "second_thought_block": "second_thought_enabled",
