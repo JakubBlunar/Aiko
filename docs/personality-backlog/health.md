@@ -1474,6 +1474,70 @@ entry asked, and the log stream will answer it the same cheap way. Worth one
 pass with `rg -o "<worker>-worker [a-z-]+" data/app.log | sort | uniq -c` per
 worker before assuming any of them is idle by choice.
 
+### Re-measured: both subsystems work, and the four stale kinds were four different answers
+
+The wiring fix is confirmed twice over, and by the same tables the fault was
+found in:
+
+| | before | now |
+| --- | --- | --- |
+| `beliefs` table | **1 row, ever** | **318 rows**, 12–28 Aug, 231 with `last_checked_at` set |
+| belief statuses | n/a (nothing to resolve) | active 200, confirmed 88, contradicted 24, stale 6 |
+| `promise` memories | 59 rows, then **0 in 54 days** | **256 rows**, 197 of them in August, last write today |
+
+The status spread is the part worth reading: `confirmed` / `contradicted` /
+`stale` are all populated, so the *check* loop runs and reaches verdicts rather
+than merely the insert. This is no longer a subsystem that produces nothing.
+
+**The four stale kinds, however, were four unrelated things, and none of them
+was the shape this entry was pattern-matching.** That is the finding, because
+the entry closed by prescribing its own method for them ("the log stream will
+answer it the same cheap way") and the method answers exactly one.
+
+- **`callback` — the two rows are not what the list assumed.** Both read
+  *"Aiko reached a milestone with Jacob: first hundred turns / first week
+  together"*: they are J8 relationship milestones from
+  `_record_milestone_memory`, written at `tier="long_term"`, and their cadence
+  is relationship age, so the next one is months out ([shape
+  28](#shape-28)). The *other* writer of the same kind —
+  `ReflectionWorker.callbacks` — has produced **zero rows in its entire life**,
+  while the two sibling arrays in the same JSON object of the same prompt
+  produced 66 `reflection` and 12 `open_question` rows. Parse and persist are
+  symmetric across all three (`_clean_list` per array, one `_write` loop each),
+  so this is a field the model does not fill, not a path that drops it. And the
+  *function* is not missing: `callback_detector` logged 186 hits and
+  `self_callback` reports `already_pooled`, so circling back to a thread is
+  being done against real memories by a live mechanism rather than from an
+  LLM-invented list. A dead third output field beside two working ones — worth
+  deleting from the prompt, not worth debugging.
+- **`knowledge_gap` — already diagnosed, in a different file.** L30d in
+  [`concepts.md`](concepts.md) says the journal *"is wired end-to-end … and
+  holds one row in its entire life … Its only inflow is a `[[gap:…]]` tag the
+  persona tells her to use sparingly."* This entry listed it as an open
+  question beside three others, months after a sibling document had answered
+  it and drawn the conclusion (the useful fix is an automatic inflow, not a
+  new store). Confirmed here: the tag instruction is live, always-on persona
+  text, and she has emitted it once in ~2,900 replies.
+- **`goal` — by design, and provably.** `goal_worker`'s bootstrap branch is
+  gated on `has_any_active()` returning `False`; ten goals are active, so it
+  takes the reflection branch every time, which is why `goal_progress` holds
+  120 rows with the most recent one today. New goals otherwise need a K1
+  self-tag or the `add_goal` tool. A quiet `goal` kind beside a busy
+  `goal_progress` kind is the goal system working.
+- **`user_notes` — not a memory kind at all.** It is its own table, still
+  holding its 44 rows; `kind='user_notes'` in `memories` is zero and no code
+  in `app/` writes it. The entry read one grouping and reported the other.
+
+**The lesson is about the instrument, and it sharpens [shape
+14](#recurring-shapes).** A "last write per kind" table groups by *label*, and
+a label can have several writers: `callback` has two, and they disagree about
+what the kind means. So one stale cell can be a cadence, a dead output field, a
+different table, or a deliberate design gate, and the cell cannot tell you
+which — it names a symptom and carries no evidence about the cause. **Rule:
+before chasing a stale group, find every writer of that group and ask which
+feature each one belongs to.** The four answers above cost one query each once
+the question was "who writes this?" instead of "why is this quiet?".
+
 ---
 
 ## H20. The fact-checker was being asked to verify the claim "2026"
@@ -1574,6 +1638,97 @@ because every component did its own job properly. **Rule: for any pipeline that
 extracts a unit and then reasons over it, write down the unit and check that
 the question you are about to ask of it is answerable.** "Verify `2026`" fails
 that test on sight.
+
+### Re-measured: the payload fix works, and the selector is now the binding constraint
+
+The fix landed and the pipeline runs end to end. **18 memories carry
+`last_verified_at`, across 11 distinct days between 11 and 24 August**, and the
+claims they were verified on are propositions:
+
+| verified claim (the enclosing sentence) |
+| --- |
+| DragonForce is a British power metal band founded in London in 1999 by guitarists Herman Li and Sam Totman. |
+| Path of Exile is an action RPG crafted by Grinding Gear Games that offers a cooperative multiplayer mode. |
+| Fullmetal Alchemist: Brotherhood is a 68-episode TV series from 2009–2010 created by Hiromu Arakawa … |
+| Washing hands with warm water and soap for at least 20 seconds is recommended before preparing food. |
+
+Against `2026`, `The Rent` and `Frozen Byte`, that is the entry's intent
+delivered. Two more things are confirmed, both of which the entry flagged as
+the reason it was rated high:
+
+- **Every verdict was `support`.** Verified rows sit at confidence `0.95`;
+  never-verified `knowledge` rows sit at `0.9` (237), `0.85` (28) and `0.8`
+  (17). So the confidence stamp is the only trace a verdict leaves, and it says
+  the verifier has agreed 18 times out of 18. **The `contradict` rewrite path
+  — the thing that made this high severity — has never fired.**
+- **The privacy gate held.** 351 memory-level blocks (`user_name` 226,
+  `first_person_pronoun` 83, `personal_kind:self` 36, `…:self_tagged` 6), and
+  not one personal row is among the 18. The entry's decision to leave the
+  coarse gate alone was right.
+
+**The finding is that the *selector* is still keyed to the unit this entry
+replaced.** Replaying the whole enqueue path over the 59
+`knowledge` / `curiosity_finding` rows written since 20 August:
+
+| outcome | rows |
+| --- | --- |
+| blocked as personal | 1 |
+| span refused by the scrubber | 2 |
+| **no claim extracted at all** | **50** |
+| would enqueue | 6 |
+
+The 6 that would enqueue are **exactly the 6 that were verified** — so the
+pipeline is lossless on what it selects, and it selects 6 of 59. Of the 20 rows
+written since the last verification, **0 are extractable**, which is why the
+queue is empty and `idle_fact_checker` has not run in four days. That is
+correct behaviour, not a stall, and it took a replay to tell the two apart
+because the "enqueue done" INFO line is guarded by `if enqueued or skipped`: a
+memory that yields nothing logs nothing.
+
+Why the 50 fail is the point. All 20 of the recent ones **pass
+`_has_predicate`** — every one asserts something — and hit **none** of the four
+patterns: no year, no measurement, no date, no proper noun. They are sentences
+like *"Cuddling releases oxytocin and reduces cortisol levels"*,
+*"Postprandial somnolence is a normal state of drowsiness following a meal"*,
+*"Consistent bedtime routines improve sleep onset"*. Those are the most
+checkable claims in the corpus and the least likely to carry a named entity.
+
+The four patterns exist to find a **searchable entity**, which was the correct
+criterion while the span *was* the claim. This entry made the sentence the
+claim and the span merely the query — and left the selector requiring that the
+sentence contain a proper noun or a number, which is now a proxy for nothing.
+**Extension to this entry's own rule: when you change the unit of work,
+re-derive whatever selects units. A selector keyed to the old unit goes on
+filtering for a property the new unit does not need, and it fails silently
+because rejecting a candidate is its job.**
+
+Deliberately **not** widened here: a false positive costs a search plus an LLM
+roundtrip and enlarges the outbound privacy surface, so the conservatism
+argument in [`claim_extractor.py`](../../app/core/memory/claim_extractor.py)
+still stands. What the measurement changes is that the trade is now visible —
+85% of checkable sentences are never considered, for a reason nobody chose.
+
+**One part of it was a plain bug, and that is fixed.** The `measurement`
+pattern could not match a percentage. `%` sat inside the alternation terminated
+by `\b`, and a word boundary after a non-word character requires the *next*
+character to be a word character — so `"94% of couples"` and a sentence-final
+`"94%"` both failed, and the only percentage the pattern ever matched was the
+malformed `"50%and"`. Percentages are the most common measurement in this
+corpus, so the one unit that could not match was the one that mattered: **all
+four rows carrying a percentage extracted nothing**, including *"Research
+indicates that 94% of couples who cuddle regularly report greater relationship
+happiness"* and *"Consistent bedtime routines improve sleep onset by
+approximately 37%"*. Both now extract, both are checkable, and the first is
+precisely the sort of statistic worth checking. The letter units keep their
+`\b` — it is what stops "5 missions" reading as five miles — and a test pins
+that direction too.
+
+The tell is worth more than the bug. `test_measurement_pattern` existed and
+passed, on `12 km`. **A pattern class exercised through one of its five
+alternatives has one tested alternative and four untested ones**, and the
+untested branch here was unreachable in natural text. Same shape as H16's band
+tests, which each built a graph where the band was the only candidate and so
+could not see the batch discarding it.
 
 ---
 

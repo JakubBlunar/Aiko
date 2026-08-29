@@ -41,11 +41,23 @@ _CLAIM_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Measurements: number + (optional decimal) + unit. Whitelist the
     # common units we expect to see in casual chat; anything weirder
     # falls through.
+    #
+    # ``%`` sits outside the group that ends in ``\b``, and it has to.
+    # ``\b`` is a word/non-word transition, so a trailing ``\b`` after a
+    # percent sign requires the *next* character to be a word character
+    # -- which means "94% of couples" and a sentence-final "94%" both
+    # failed to match, and the only percentage this ever caught was the
+    # malformed "50%and". Percentages are the most common measurement in
+    # the corpus, so the one unit that could not match was the one that
+    # mattered: of the four rows carrying a percentage, all four
+    # extracted nothing. The letter units keep their ``\b`` (it is what
+    # stops "5 mission" matching "5 mi").
     (
         re.compile(
             r"\b\d+(?:\.\d+)?\s*"
-            r"(?:%|km|miles|mi|kg|kgs|lbs|°C|°F|degrees|years|year|days|day|"
-            r"hours|hour|minutes|minute|seconds|second|gb|mb|tb|kb)\b",
+            r"(?:%|(?:km|miles|mi|kg|kgs|lbs|°C|°F|degrees|years|year|"
+            r"days|day|hours|hour|minutes|minute|seconds|second|"
+            r"gb|mb|tb|kb)\b)",
             flags=re.IGNORECASE,
         ),
         "measurement",
