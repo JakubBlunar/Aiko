@@ -933,6 +933,47 @@ turn-driven, giving the **eighth shape — a diagnostic that agrees with your
 hypothesis is not evidence for it until you have built the case where the
 hypothesis is false and checked that it disagrees** ([`health.md`](health.md)).
 
+**H19/H20 re-measured — read this one before chasing a table that has gone
+quiet.** Both fixes worked, decisively. H19's one-word wiring fix took `beliefs`
+from **1 row ever to 318** (231 with `last_checked_at`, and `confirmed` /
+`contradicted` / `stale` all populated, so the resolve loop reaches verdicts too)
+and `promise` memories from "0 in 54 days" to **256, 197 of them in August**. H20
+now verifies real propositions — *"DragonForce is a British power metal band
+founded in London in 1999"* against the old payload of `2026` — and both
+protections it worried about held: **all 18 verdicts were `support`**, so the
+`contradict` rewrite that made it high severity has never fired, and not one of
+351 personal-row blocks leaked.
+
+The two findings are both about the *instrument*, from opposite ends. H19 closed
+by listing four memory kinds with stale last-writes and prescribing its own
+method for them; **all four were different things and the method answers one.**
+`callback`'s two rows are J8 milestones from a second writer of that kind
+(cadence, not stall), while the reflection worker's `callbacks` array — the
+writer the list meant — has produced **zero rows in its life** beside 66
+`reflection` and 12 `open_question` rows from the same JSON object, with parse
+and persist symmetric across all three; `knowledge_gap` had already been
+diagnosed in `concepts.md` months earlier; `goal` is quiet because bootstrap is
+gated on `has_any_active()` and 10 are; and `user_notes` is not a memory kind at
+all but its own table, still holding its 44 rows. **A "last write per kind" view
+groups by label, and a label can have several writers — so ask who writes a
+group before asking why it is quiet.**
+
+H20's is its own rule one turn further. Replaying the enqueue path over 59
+recent knowledge rows: 50 yield **no claim at all**, and the 6 that do are
+*exactly* the 6 that got verified — so the pipeline is lossless on what it
+selects and selects 6 of 59, and the 0 extractable rows since 24 August are why
+the queue is empty (not a stall). The 50 all pass `_has_predicate` and hit none
+of the four patterns: H20 changed the unit from span to sentence and left the
+**selector keyed to the span**, still requiring a named entity that the new unit
+does not need. Not widened, because a false positive costs a search plus a
+roundtrip — but the trade is now visible instead of accidental. One part *was* a
+plain bug and is fixed: `%` sat inside the alternation terminated by `\b`, so
+**no naturally written percentage could ever match** — all four rows carrying
+one extracted nothing, and `test_measurement_pattern` passed throughout on
+`12 km`. **A pattern class exercised through one of five alternatives has four
+untested ones**, and here the untested branch was unreachable in real text
+([`health.md`](health.md)).
+
 **K91 shipped in four phases** — her away life is now *lived* rather than
 narrated. Beats compose their clause from the item state they touched and write
 the change back through the room's existing transitions, a long absence plays

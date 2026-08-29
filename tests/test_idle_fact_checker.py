@@ -276,6 +276,46 @@ class TestClaimExtractorPatterns(unittest.TestCase):
         # ``12 km`` matches the measurement whitelist.
         self.assertTrue(any(c.kind == "measurement" for c in claims))
 
+    def test_a_percentage_is_a_measurement(self) -> None:
+        """The unit that could not match was the most common one.
+
+        ``%`` used to sit inside the group terminated by ``\\b``, and a
+        word-boundary after a non-word character requires the *next*
+        character to be a word character -- so every naturally written
+        percentage failed and the only one that matched was a malformed
+        "50%and". The test above hid it by choosing a letter unit, which
+        is the shape to watch for: a pattern class with one case tested
+        and four untested alternatives.
+        """
+        for text in (
+            "94% of couples who cuddle report greater happiness.",
+            "Bedtime routines improve sleep onset by roughly 37%.",
+            "There is a 50% chance of rain tomorrow.",
+        ):
+            with self.subTest(text=text):
+                claims = find_claims(text)
+                self.assertTrue(
+                    any(c.kind == "measurement" for c in claims),
+                    msg=f"no measurement span extracted from {text!r}",
+                )
+
+    def test_percentage_spans_keep_the_percent_sign(self) -> None:
+        claims = find_claims("Sleep onset improved by roughly 37% overall.")
+        spans = [c.text for c in claims if c.kind == "measurement"]
+        self.assertTrue(any("37%" in s for s in spans), msg=str(spans))
+
+    def test_letter_units_still_need_their_boundary(self) -> None:
+        """Moving ``%`` out must not loosen the letter units.
+
+        ``\\b`` after ``mi`` is what stops "5 mission" reading as five
+        miles, so the regression to check is over-matching, not under.
+        """
+        claims = find_claims("He completed 5 missions before the update.")
+        self.assertFalse(
+            [c.text for c in claims if c.kind == "measurement"],
+            msg="'5 missions' must not parse as a measurement",
+        )
+
     def test_date_pattern(self) -> None:
         claims = find_claims("The meeting on 03/14/2024 was rescheduled.")
         self.assertTrue(any(c.kind == "date" for c in claims))
