@@ -1795,6 +1795,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             self_correction_enabled=bool(
                 agent_raw.get("self_correction_enabled", True),
             ),
+            dropped_topic_enabled=bool(
+                agent_raw.get("dropped_topic_enabled", True),
+            ),
             user_correction_enabled=bool(
                 agent_raw.get("user_correction_enabled", True),
             ),

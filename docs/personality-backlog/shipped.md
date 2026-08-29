@@ -165,6 +165,7 @@ than renamed, because every inbound link in the backlog points at it.)*
 - [K48. Tease rhythm — banter as a budget, not random snark](shipped/patterns-k31-k60.md#k48-tease-rhythm--banter-as-a-budget-not-random-snark)
 - [K80. Inside-joke birth — bless the moment a bit becomes "ours"](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours)
 - [K81. Taste formation — topics she *likes*, not just topics she's seen](shipped/patterns-k31-k60.md#k81-taste-formation--topics-she-likes-not-just-topics-shes-seen)
+- [K82. The dropped sub-topic — he said three things, she answered one](shipped/patterns-k31-k60.md#k82-the-dropped-sub-topic--he-said-three-things-she-answered-one)
 - [The second pass at leading (K85–K90) — why the family exists](shipped/patterns-k31-k60.md#the-second-pass-at-leading-k85k90--why-the-family-exists)
 - [K85. The third subject — interests that aren't him](shipped/patterns-k31-k60.md#k85-the-third-subject--interests-that-arent-him)
 - [K86. Immortal future plans — asking about things that already happened](shipped/patterns-k31-k60.md#k86-immortal-future-plans--asking-about-things-that-already-happened)

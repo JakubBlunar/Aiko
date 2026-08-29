@@ -99,7 +99,7 @@ on top of already-shipped infrastructure. Where an entry is half shipped
 | K79 | Hesitation tell — typing latency as a signal | ❌ open |
 | K80 | Inside-joke birth — bless the moment a bit becomes "ours" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours) |
 | K81 | Taste formation — topics she *likes*, not just topics she's seen | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k81-taste-formation--topics-she-likes-not-just-topics-shes-seen) |
-| K82 | The dropped sub-topic | ❌ open |
+| K82 | The dropped sub-topic | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k82-the-dropped-sub-topic--he-said-three-things-she-answered-one) |
 | K83 | The right to decline | ❌ open |
 | K84 | Calibrated jealousy | ❌ open (filed as a risky idea) |
 | K85 | The third subject — interests that aren't him | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k85-the-third-subject--interests-that-arent-him) |
@@ -454,39 +454,6 @@ frame). Distinct from K14 (engagement magnitude) and K23 (misattunement after
 [`session_controller.py`](../../app/core/session/session_controller.py) /
 [`engagement_tracker.py`](../../app/core/affect/engagement_tracker.py), a
 one-shot inner-life cue, persona addendum, `agent.hesitation_tell_enabled`.
-
----
-
-## K82. The dropped sub-topic — he said three things, she answered one
-
-**Motivation.** The user sends a message with two or three distinct things in it;
-Aiko engages the interesting one and the others silently evaporate. This is one
-of the most common real failure modes in chat with any LLM, it is *invisible to
-every existing detector* (a grep for any notion of an unanswered point returns
-nothing), and it is quietly corrosive — the user learns to send one idea per
-message, which is a behaviour change the tool imposed on him rather than a
-preference he had. Note the existing near-misses: K54 thread ownership is about
-*her* threads, the agenda block is about follow-ups *she* owes, and K23
-misattunement is about getting the emotional read wrong — none of them notice a
-plain unaddressed ask. The fix is a cue rather than a capability: compare the
-distinct asks in his message against what the finished reply actually covered,
-and on a clear miss either circle back next turn or acknowledge it directly
-("also — you asked about X and I skipped straight past it"). The whole difficulty
-is precision, because most multi-clause messages are a single intent and a
-companion who itemises your message like a support ticket is far worse than one
-who occasionally misses a point; the bar should be two *genuinely* separable
-asks, ideally one of them an explicit question, and a reply that touched neither
-lexically nor semantically. Cheapest useful version runs post-turn on the
-finished reply so it costs no mid-stream latency, arming a one-shot T6 cue.
-Key files: a detector in
-[`app/core/conversation/`](../../app/core/conversation/) reusing the
-sentence-splitting and content-word machinery in
-[`conflict_heuristics.py`](../../app/core/memory/conflict_heuristics.py), the
-post-turn hook in
-[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py) next to the
-K38 self-correction hook, a one-shot cue in the repair family in
-[`inner_life_part2.py`](../../app/core/session/inner_life_part2.py), plus
-`agent.dropped_topic_enabled`.
 
 ---
 

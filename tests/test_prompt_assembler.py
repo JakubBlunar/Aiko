@@ -1147,6 +1147,98 @@ class SelfCorrectionProviderTests(unittest.TestCase):
             self.assertIn(self._CUE, messages[0]["content"])
 
 
+class DroppedTopicProviderTests(unittest.TestCase):
+    """K82 dropped-topic provider lands in the system prompt, is silent
+    when nothing is pending, and survives aggressive context-mode (an owed
+    circle-back must still land)."""
+
+    _CUE = "Heads-up: last turn they also asked about"
+
+    def test_dropped_topic_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="dt1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                dropped_topic=lambda: (
+                    'Heads-up: last turn they also asked about "your day" '
+                    "and you skipped it."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "dt1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_dropped_topic_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="dt2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(dropped_topic=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "dt2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_dropped_topic_one_shot_clear(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="dt3", role="user", content="hi", token_count=2,
+            )
+            fired = {"n": 0}
+
+            def _provider() -> str:
+                if fired["n"] == 0:
+                    fired["n"] += 1
+                    return (
+                        'Heads-up: last turn they also asked about "your day" '
+                        "and you skipped it."
+                    )
+                return ""
+
+            assembler.set_inner_life_providers(dropped_topic=_provider)
+            messages_a, _ = assembler.assemble_with_budget(
+                "dt3", "x", context_window=4096, response_budget=256,
+            )
+            messages_b, _ = assembler.assemble_with_budget(
+                "dt3", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages_a[0]["content"])
+            self.assertNotIn(self._CUE, messages_b[0]["content"])
+
+    def test_dropped_topic_survives_aggressive_mode(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="dt4", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                dropped_topic=lambda: (
+                    'Heads-up: last turn they also asked about "your day" '
+                    "and you skipped it."
+                ),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "dt4", "x", context_window=4096, response_budget=256,
+                aggressive=True,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_registered_in_t6_tier_table(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("dropped_topic_block", t6)
+        self.assertEqual(
+            t6.index("dropped_topic_block"),
+            t6.index("self_correction_block") + 1,
+        )
+
+
 class PromiseFollowthroughProviderTests(unittest.TestCase):
     """K43 promise follow-through provider lands in the system prompt
     (right after the self-correction slot in the T6 cluster), is silent
@@ -1238,13 +1330,18 @@ class PromiseFollowthroughProviderTests(unittest.TestCase):
 
         t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
         self.assertIn("promise_followthrough_block", t6)
-        # Pinned ordering: the "own what you owe" cluster runs
-        # self_correction (own your slip) -> user_correction (own the fix
-        # the user made, F13) -> fact_reversal (own the fix your own
+        # Pinned ordering: the "own what you missed / owe" cluster runs
+        # self_correction (own your slip) -> dropped_topic (circle back
+        # to a skipped ask, K82) -> user_correction (own the fix the
+        # user made, F13) -> fact_reversal (own the fix your own
         # research made, F14) -> promise_followthrough (close the loop).
         self.assertEqual(
-            t6.index("user_correction_block"),
+            t6.index("dropped_topic_block"),
             t6.index("self_correction_block") + 1,
+        )
+        self.assertEqual(
+            t6.index("user_correction_block"),
+            t6.index("dropped_topic_block") + 1,
         )
         self.assertEqual(
             t6.index("fact_reversal_block"),

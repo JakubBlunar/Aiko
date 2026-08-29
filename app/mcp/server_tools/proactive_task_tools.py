@@ -2214,6 +2214,160 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_self_correction raised: {exc}"
 
     @mcp.tool()
+    def get_dropped_topic_state() -> str:
+        """K82 — dump the dropped-sub-topic cue state.
+
+        Returns a JSON dict with:
+
+        - ``enabled``: ``agent.dropped_topic_enabled`` master switch.
+        - ``pending``: the queued cues waiting to surface, read from
+          ``cue_pool``, or an empty list. ``surfaced_count`` says
+          whether Aiko has already been shown one and read past it.
+        - ``cooldown_remaining``: turns left before the detector runs
+          again (decrements each post-turn).
+        - ``thresholds``: the ``memory.dropped_topic_*`` knobs the
+          detector reads (min_asks / min_overlap / require_question /
+          cooldown_turns).
+        """
+        try:
+            mem = session._memory_settings
+            store = getattr(session, "_cue_store", None)
+            pending_json: list[dict] = []
+            if store is not None:
+                pending_json = [
+                    {
+                        "id": row.id,
+                        "skipped_ask": row.payload.get("skipped_ask"),
+                        "subject": row.subject,
+                        "surfaced_count": row.surfaced_count,
+                    }
+                    for row in store.pending("dropped_topic", limit=10)
+                ]
+            return json.dumps(
+                {
+                    "enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "dropped_topic_enabled",
+                            True,
+                        )
+                    ),
+                    "pending": pending_json,
+                    "cooldown_remaining": int(
+                        getattr(
+                            session,
+                            "_dropped_topic_cooldown_remaining",
+                            0,
+                        )
+                    ),
+                    "thresholds": {
+                        "min_asks": int(
+                            getattr(mem, "dropped_topic_min_asks", 2)
+                        ),
+                        "min_overlap": int(
+                            getattr(mem, "dropped_topic_min_overlap", 2)
+                        ),
+                        "require_question": bool(
+                            getattr(
+                                mem, "dropped_topic_require_question", True
+                            )
+                        ),
+                        "cooldown_turns": int(
+                            getattr(
+                                mem, "dropped_topic_cooldown_turns", 3
+                            )
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_dropped_topic_state raised: {exc}"
+
+    @mcp.tool()
+    def force_dropped_topic(
+        user_text: str = "", reply_text: str = "",
+    ) -> str:
+        """K82 — run the dropped-topic detector and arm the cue.
+
+        Runs ``detect_dropped_topic`` against ``user_text`` +
+        ``reply_text`` (or the last user / assistant messages if
+        blank) and queues the cue in ``cue_pool``, bypassing the
+        per-fire cooldown. On a hit the next turn's provider folds
+        the circle-back into Aiko's reply.
+
+        Repro: ``force_dropped_topic(user_text="I went to the store
+        and got milk, how was your day?", reply_text="Nice, milk
+        from the store is the good stuff.")`` ->
+        ``send_message(skip_tts=true)`` -> confirm the "Heads-up:
+        last turn they also asked about ..." line in
+        ``get_last_response_detail.system_prompt``.
+        """
+        try:
+            from app.core.conversation import dropped_topic_detector
+
+            user = (user_text or "").strip()
+            reply = (reply_text or "").strip()
+            if not user or not reply:
+                history = session._chat_db.get_messages(
+                    session.session_key, limit=20
+                )
+                if not user:
+                    for row in reversed(history):
+                        if getattr(row, "role", "") == "user":
+                            user = (getattr(row, "content", "") or "").strip()
+                            break
+                if not reply:
+                    for row in reversed(history):
+                        if getattr(row, "role", "") == "assistant":
+                            reply = (
+                                getattr(row, "content", "") or ""
+                            ).strip()
+                            break
+            if not user:
+                return json.dumps(
+                    {
+                        "error": "no user_text and no recent user message",
+                    },
+                    indent=2,
+                )
+            mem = session._memory_settings
+            hit = dropped_topic_detector.detect_dropped_topic(
+                user,
+                reply,
+                min_asks=int(getattr(mem, "dropped_topic_min_asks", 2)),
+                min_overlap=int(
+                    getattr(mem, "dropped_topic_min_overlap", 2)
+                ),
+                require_question=bool(
+                    getattr(mem, "dropped_topic_require_question", True)
+                ),
+            )
+            if hit is None:
+                return json.dumps(
+                    {"armed": False, "hit": None, "note": "no dropped ask"},
+                    indent=2,
+                )
+            if not session.queue_dropped_topic_cue(hit):
+                return json.dumps(
+                    {"armed": False, "hit": None, "note": "cue pool refused"},
+                    indent=2,
+                )
+            return json.dumps(
+                {
+                    "armed": True,
+                    "hit": {
+                        "skipped_ask": hit.skipped_ask,
+                        "covered_asks": list(hit.covered_asks),
+                        "uncovered_asks": list(hit.uncovered_asks),
+                    },
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_dropped_topic raised: {exc}"
+
+    @mcp.tool()
     def get_promise_followthrough_state() -> str:
         """K43 — dump the promise-lifecycle + follow-through state.
 

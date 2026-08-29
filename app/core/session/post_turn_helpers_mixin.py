@@ -1378,6 +1378,152 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             },
         )
 
+    def _maybe_arm_dropped_topic(
+        self, user_text: str, assistant_text: str,
+    ) -> None:
+        """K82: catch when the just-finished reply missed a separable ask
+        and queue a dropped-topic cue for the next turn.
+
+        Embedding-free: the detector
+        (:func:`app.core.conversation.dropped_topic_detector.detect_dropped_topic`)
+        splits the user message into asks, scores coverage against the
+        whole reply, and only fires on a clear miss of a question-like
+        ask. Gated by ``agent.dropped_topic_enabled`` and a per-fire
+        cooldown (``memory.dropped_topic_cooldown_turns``) so a single
+        miss doesn't nag every turn. The cooldown counter decrements on
+        every post-turn call; the detector only runs when it reaches 0.
+        Independent of the gap-return cue family -- does NOT touch
+        ``_gap_cue_surfaced``.
+
+        K96 is a cousin, not a substitute. If a pending ``second_thought``
+        cue already shares content words with the skipped ask, skip
+        arming -- rumination about the same miss would double-steer.
+
+        The cue goes to the pool rather than to an in-memory slot, same
+        reason as K38: a slot does not survive a restart, and a slot
+        cannot tell whether she circled back or read past it.
+        """
+        if not bool(
+            getattr(self._settings.agent, "dropped_topic_enabled", True)
+        ):
+            return
+        if getattr(self, "_dropped_topic_cooldown_remaining", 0) > 0:
+            self._dropped_topic_cooldown_remaining -= 1
+            return
+        user = (user_text or "").strip()
+        reply = (assistant_text or "").strip()
+        if not user:
+            return
+        try:
+            from app.core.conversation import dropped_topic_detector
+
+            hit = dropped_topic_detector.detect_dropped_topic(
+                user,
+                reply,
+                min_asks=int(
+                    getattr(
+                        self._memory_settings,
+                        "dropped_topic_min_asks",
+                        2,
+                    )
+                ),
+                min_overlap=int(
+                    getattr(
+                        self._memory_settings,
+                        "dropped_topic_min_overlap",
+                        2,
+                    )
+                ),
+                require_question=bool(
+                    getattr(
+                        self._memory_settings,
+                        "dropped_topic_require_question",
+                        True,
+                    )
+                ),
+            )
+            if hit is None:
+                return
+            if self._dropped_topic_overlaps_second_thought(hit.skipped_ask):
+                log.debug(
+                    "dropped-topic skip: second_thought already covers %r",
+                    hit.skipped_ask,
+                )
+                return
+            if not self.queue_dropped_topic_cue(hit):
+                return
+            self._dropped_topic_cooldown_remaining = int(
+                getattr(
+                    self._memory_settings,
+                    "dropped_topic_cooldown_turns",
+                    3,
+                )
+            )
+            log.info(
+                "dropped-topic fire: skipped=%r covered=%d uncovered=%d",
+                hit.skipped_ask,
+                len(hit.covered_asks),
+                len(hit.uncovered_asks),
+            )
+        except Exception:
+            log.debug("dropped-topic detector raised", exc_info=True)
+
+    def _dropped_topic_overlaps_second_thought(self, skipped_ask: str) -> bool:
+        """True when a pending K96 cue already shares content words."""
+        store = getattr(self, "_cue_store", None)
+        if store is None or not skipped_ask:
+            return False
+        try:
+            from app.core.memory.conflict_heuristics import (
+                _content_words,
+                _tokenize,
+            )
+
+            skipped_words = _content_words(_tokenize(skipped_ask))
+            if not skipped_words:
+                return False
+            for row in store.pending("second_thought", limit=10):
+                other = _content_words(
+                    _tokenize(
+                        f"{getattr(row, 'subject', '')} "
+                        f"{getattr(row, 'text', '')}"
+                    )
+                )
+                if skipped_words & other:
+                    return True
+        except Exception:
+            log.debug(
+                "dropped-topic second_thought overlap check failed",
+                exc_info=True,
+            )
+        return False
+
+    def queue_dropped_topic_cue(self, hit: Any) -> bool:
+        """Put one detected missed ask on the pool. Did it take?
+
+        Public because the MCP ``force_dropped_topic`` tool arms the
+        same cue and should arm it the same way -- a debug path that
+        writes the row itself is a debug path that drifts.
+
+        The subject is the skipped ask, so post-turn matching scores a
+        hit when she actually circles back to it.
+        """
+        from app.core.conversation import dropped_topic_detector
+
+        cue = dropped_topic_detector.render_cue(hit)
+        if not cue:
+            return False
+        skipped = str(getattr(hit, "skipped_ask", "") or "").strip()
+        return self._queue_pool_cue(
+            "dropped_topic",
+            skipped,
+            cue,
+            payload={
+                "skipped_ask": skipped,
+                "covered": list(getattr(hit, "covered_asks", ()) or ()),
+            },
+        )
+
     def _maybe_capture_user_correction(self, user_text: str) -> None:
         """F13: cheap post-turn gate for "the user just corrected me".
 

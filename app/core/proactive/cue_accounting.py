@@ -353,6 +353,11 @@ CUE_SPECS: dict[str, CueSpec] = {
         # straight to ``cue_pool``, so a queued row is the whole of the
         # arming signal -- see the pure-pool branch in ``armed_cues``.
         CueSpec("self_correction"),
+        # Pool-only, same shape as self_correction: K82's post-turn
+        # completeness detector writes straight to ``cue_pool`` when the
+        # reply missed a separable ask, so a queued row is the whole of
+        # the arming signal.
+        CueSpec("dropped_topic"),
         # Pool-only, same shape as self_correction: the F13 worker writes
         # straight to ``cue_pool`` once a correction is confirmed, so a
         # queued row is the whole of the arming signal.
@@ -836,6 +841,29 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             min_overlap=2,
             handling_section="Catching myself:",
             block="self_correction_block",
+        ),
+        CuePolicy(
+            "dropped_topic",
+            # K82: event-armed by a post-turn completeness detector, same
+            # shape as self_correction -- the skipped ask is settled the
+            # moment the miss is found, so the cue is queued a turn ahead
+            # and claimed normally. Repair, not an initiative offer, which
+            # is why it stays out of stance._OFFERS.
+            inventory_target=0,
+            # The line opens "last turn they also asked", which survives
+            # one turn and is a fiction by the next. Both bounds say the
+            # same thing; the surfacing budget is the one that will bite.
+            ttl_hours=0.5,
+            max_surfacings=2,
+            fulfilment=FULFILMENT_SPOKEN,
+            # Lexical only: the subject is the skipped ask, which is
+            # whatever they were talking about, so a cosine hit would
+            # mostly measure her staying on topic rather than circling
+            # back to the missed bit.
+            match_mode=MATCH_LEXICAL,
+            min_overlap=2,
+            handling_section="When you skipped past something:",
+            block="dropped_topic_block",
         ),
         CuePolicy(
             "user_correction",

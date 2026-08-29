@@ -1290,6 +1290,7 @@ class CuePolicyTests(unittest.TestCase):
                 "away_activities",
                 "caught_mid_activity",
                 "self_correction",
+                "dropped_topic",
                 "user_correction",
                 "fact_reversal",
                 "long_arc_callback",

@@ -226,6 +226,14 @@ class PostTurnMixin(PostTurnHelpersMixin):
         except Exception:
             log.debug("self-correction arming failed", exc_info=True)
 
+        # K82 — dropped sub-topic. Catch when this reply covered only
+        # one of two separable asks so she can circle back once next
+        # turn. One-shot pool cue + cooldown, same shape as K38.
+        try:
+            self._maybe_arm_dropped_topic(user_text, assistant_text)
+        except Exception:
+            log.debug("dropped-topic arming failed", exc_info=True)
+
         # K43 — promise fulfilment: when this reply lexically covers the
         # body of an open assistant-side promise, flip it to fulfilled so
         # the follow-through worker stops owing it (and the kept-promise

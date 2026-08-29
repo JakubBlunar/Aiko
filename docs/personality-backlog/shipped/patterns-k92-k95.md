@@ -447,7 +447,11 @@ immediately). Key files: new predicate in
 `decide`, the dialogue-act tags, and K69's read. Cross-refs: the mirror image of
 **K82** (the dropped sub-topic — he said three things and she answered one),
 which is the same "read what his turn was actually doing" capability pointed at
-completeness instead of at turn-taking; the two should probably share the reader.
+completeness instead of at turn-taking. K82 has now shipped its own
+`extract_asks` on
+[`dropped_topic_detector.py`](../../../app/core/conversation/dropped_topic_detector.py);
+K95 still does not share that reader — `is_direct_question` stays the one-bool
+ceiling.
 
 ### Shipped 19 Aug — filed as insurance, found already load-bearing
 
