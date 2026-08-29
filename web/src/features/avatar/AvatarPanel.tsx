@@ -22,8 +22,15 @@ function worldCaption(world: WorldSnapshot | null): string {
     state.location_id != null
       ? locations.find((l) => l.id === state.location_id)?.name
       : undefined;
+  const scene =
+    state.scene_id != null
+      ? world.scenes?.find((s) => s.id === state.scene_id)
+      : undefined;
+  const sceneName =
+    scene && scene.origin !== "builtin" ? scene.name : undefined;
   const activity = humanize(state.activity);
   const parts = [
+    humanize(sceneName),
     humanize(loc),
     humanize(state.posture),
     activity && activity !== "idle" ? activity : "",

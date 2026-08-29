@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/api";
 import { useWorldStore } from "@/stores/useWorldStore";
-import type { WorldItem, WorldKind, WorldLocation } from "@/types";
+import type { WorldItem, WorldKind, WorldLocation, WorldScene } from "@/types";
 
 /**
  * Owns all "World" tab state + REST handlers for the SettingsDrawer: the
@@ -61,6 +61,12 @@ export function useWorldController(open: boolean, activeTab: string) {
     name: string;
     description: string;
   }>({ name: "", description: "" });
+  const [viewingSceneId, setViewingSceneId] = useState<number | null>(null);
+  const [worldNewSceneOpen, setWorldNewSceneOpen] = useState(false);
+  const [worldNewSceneDraft, setWorldNewSceneDraft] = useState<{
+    name: string;
+    description: string;
+  }>({ name: "", description: "" });
 
   const refreshWorld = useCallback(async () => {
     setWorldBusy(true);
@@ -103,8 +109,11 @@ export function useWorldController(open: boolean, activeTab: string) {
       // explicit choice was made.
       let location_id = worldGiveDraft.location_id;
       if (location_id === null && world?.locations) {
-        const kitchen = world.locations.find((l) => l.slug === "kitchenette");
-        location_id = kitchen?.id ?? null;
+        const inScene = world.locations.filter(
+          (l) => viewingSceneId == null || l.scene_id === viewingSceneId,
+        );
+        const kitchen = inScene.find((l) => l.slug === "kitchenette");
+        location_id = kitchen?.id ?? inScene[0]?.id ?? null;
       }
       await api.giveItem({
         name: trimmed,
@@ -142,6 +151,7 @@ export function useWorldController(open: boolean, activeTab: string) {
       await api.createWorldLocation({
         name: trimmed,
         description: worldNewLocationDraft.description.trim(),
+        scene_id: viewingSceneId ?? undefined,
       });
       setWorldNewLocationDraft({ name: "", description: "" });
       setWorldNewLocationOpen(false);
@@ -216,10 +226,86 @@ export function useWorldController(open: boolean, activeTab: string) {
     }
   };
 
+  const onAddScene = async () => {
+    const trimmed = worldNewSceneDraft.name.trim();
+    if (!trimmed) {
+      setWorldError("Scene name can't be empty.");
+      return;
+    }
+    setWorldBusy(true);
+    setWorldError(null);
+    try {
+      const { scene } = await api.createWorldScene({
+        name: trimmed,
+        description: worldNewSceneDraft.description.trim(),
+      });
+      setWorldNewSceneDraft({ name: "", description: "" });
+      setWorldNewSceneOpen(false);
+      setViewingSceneId(scene.id);
+    } catch (err) {
+      setWorldError(String(err));
+    } finally {
+      setWorldBusy(false);
+    }
+  };
+
+  const onSaveSceneEdit = async (
+    scene: WorldScene,
+    name: string,
+    description: string,
+  ) => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setWorldError("Scene name can't be empty.");
+      return;
+    }
+    setWorldBusy(true);
+    setWorldError(null);
+    try {
+      await api.updateWorldScene(scene.id, {
+        name: trimmed,
+        description: description.trim(),
+      });
+    } catch (err) {
+      setWorldError(String(err));
+    } finally {
+      setWorldBusy(false);
+    }
+  };
+
+  const onDeleteScene = async (scene: WorldScene) => {
+    if (scene.origin === "builtin") return;
+    if (
+      !window.confirm(
+        `Delete ${scene.name}? Everything in that scene will be removed. Aiko's apartment is kept.`,
+      )
+    ) {
+      return;
+    }
+    setWorldError(null);
+    try {
+      await api.deleteWorldScene(scene.id);
+      if (viewingSceneId === scene.id) {
+        setViewingSceneId(world?.state.scene_id ?? null);
+      }
+    } catch (err) {
+      setWorldError(String(err));
+    }
+  };
+
+  const onTravelToScene = async (scene: WorldScene) => {
+    setWorldError(null);
+    try {
+      await api.travelWorldScene(scene.id);
+    } catch (err) {
+      setWorldError(String(err));
+    }
+  };
+
   const onReseedWorld = async () => {
     if (
       !window.confirm(
-        "Reset Aiko's room to the default layout? Everything currently in the room will be removed.",
+        "Reset Aiko's apartment to the default layout? Objects in her apartment will be removed. Scenes you created (your room, etc.) are kept.",
       )
     ) {
       return;
@@ -243,6 +329,15 @@ export function useWorldController(open: boolean, activeTab: string) {
     if (!open || activeTab !== "world") return;
     void refreshWorld();
   }, [open, activeTab, refreshWorld]);
+
+  useEffect(() => {
+    const scenes = world?.scenes ?? [];
+    if (scenes.length === 0) return;
+    const stillThere =
+      viewingSceneId != null && scenes.some((s) => s.id === viewingSceneId);
+    if (stillThere) return;
+    setViewingSceneId(world?.state.scene_id ?? scenes[0]?.id ?? null);
+  }, [world, viewingSceneId]);
 
   return {
     world,
@@ -278,5 +373,15 @@ export function useWorldController(open: boolean, activeTab: string) {
     onSaveLocationEdit,
     onDeleteLocation,
     onReseedWorld,
+    viewingSceneId,
+    setViewingSceneId,
+    worldNewSceneOpen,
+    setWorldNewSceneOpen,
+    worldNewSceneDraft,
+    setWorldNewSceneDraft,
+    onAddScene,
+    onSaveSceneEdit,
+    onDeleteScene,
+    onTravelToScene,
   };
 }

@@ -24,6 +24,8 @@ function makeLocation(over: Partial<WorldLocation> = {}): WorldLocation {
     name: "the desk",
     description: "",
     position: 0,
+    scene_id: 1,
+    locked: false,
     ...over,
   };
 }
@@ -49,6 +51,7 @@ function makeItem(over: Partial<WorldItem> = {}): WorldItem {
 function makeState(over: Partial<WorldState> = {}): WorldState {
   return {
     location_id: 1,
+    scene_id: 1,
     posture: "sitting",
     activity: "watching_screens",
     mood_note: "",
@@ -60,6 +63,18 @@ function makeState(over: Partial<WorldState> = {}): WorldState {
 function makeSnapshot(over: Partial<WorldSnapshot> = {}): WorldSnapshot {
   return {
     state: makeState(),
+    scenes: [
+      {
+        id: 1,
+        slug: "apartment",
+        name: "Aiko's apartment",
+        description: "",
+        origin: "builtin",
+        locked: true,
+        created_at: "2026-05-27T00:00:00Z",
+        updated_at: "2026-05-27T00:00:00Z",
+      },
+    ],
     locations: [makeLocation()],
     items: [makeItem()],
     enabled: true,
@@ -132,6 +147,71 @@ describe("applyWorldPatch — location", () => {
     const locs = useWorldStore.getState().world!.locations;
     expect(locs.length).toBe(1);
     expect(locs[0].name).toBe("the renamed desk");
+  });
+});
+
+describe("applyWorldPatch — scene", () => {
+  it("inserts a custom scene", () => {
+    useWorldStore.getState().setWorld(makeSnapshot());
+    useWorldStore.getState().applyWorldPatch({
+      scene: {
+        id: 2,
+        slug: "jacobs_room",
+        name: "Jacob's room",
+        description: "his place",
+        origin: "custom",
+        locked: false,
+        created_at: "2026-05-27T00:00:00Z",
+        updated_at: "2026-05-27T00:00:00Z",
+      },
+    });
+    const scenes = useWorldStore.getState().world!.scenes;
+    expect(scenes.length).toBe(2);
+    expect(scenes[1].slug).toBe("jacobs_room");
+  });
+
+  it("drops a deleted custom scene and its spots", () => {
+    useWorldStore.getState().setWorld(
+      makeSnapshot({
+        scenes: [
+          {
+            id: 1,
+            slug: "apartment",
+            name: "Aiko's apartment",
+            description: "",
+            origin: "builtin",
+            locked: true,
+            created_at: "2026-05-27T00:00:00Z",
+            updated_at: "2026-05-27T00:00:00Z",
+          },
+          {
+            id: 2,
+            slug: "jacobs_room",
+            name: "Jacob's room",
+            description: "",
+            origin: "custom",
+            locked: false,
+            created_at: "2026-05-27T00:00:00Z",
+            updated_at: "2026-05-27T00:00:00Z",
+          },
+        ],
+        locations: [
+          makeLocation({ id: 1, scene_id: 1 }),
+          makeLocation({
+            id: 2,
+            scene_id: 2,
+            slug: "here",
+            name: "in Jacob's room",
+          }),
+        ],
+        items: [makeItem({ id: 1, location_id: 2 })],
+      }),
+    );
+    useWorldStore.getState().applyWorldPatch({ deleted_scene_id: 2 });
+    const world = useWorldStore.getState().world!;
+    expect(world.scenes.map((s) => s.id)).toEqual([1]);
+    expect(world.locations.map((l) => l.id)).toEqual([1]);
+    expect(world.items.length).toBe(0);
   });
 });
 

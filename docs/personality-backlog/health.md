@@ -34,12 +34,12 @@ them.
 
 ## Status index
 
-All 53 entries, so "what is still open" is one table rather than a read of the
+All 54 entries, so "what is still open" is one table rather than a read of the
 whole file. Closed entries keep their full text in
 [`shipped/health.md`](shipped/health.md) — an audit entry is worth more after it
 is fixed than before, because the *shape* is the reusable part.
 
-### Open (10)
+### Open (11)
 
 | # | severity | entry |
 | --- | --- | --- |
@@ -53,6 +53,7 @@ is fixed than before, because the *shape* is the reusable part.
 | H34 | medium | [Echo is a reliable measure, and it is not a measure of him](#h34-echo-is-a-reliable-measure-and-it-is-not-a-measure-of-him) |
 | H35 | low | [A third of the surfacing ledger cannot be scored by either signal](#h35-a-third-of-the-surfacing-ledger-cannot-be-scored-by-either-signal) |
 | H44 | medium | [Nothing has ever graduated, and at this calibration nothing can](#h44-nothing-has-ever-graduated-and-at-this-calibration-nothing-can) |
+| H54 | medium | [`topic_miss` at 95% of eligible declines is not, by itself, a starvation](#h54-topic_miss-at-95-of-eligible-declines-is-not-by-itself-a-starvation) |
 
 ### Closed (43) — in [`shipped/health.md`](shipped/health.md)
 
@@ -113,12 +114,14 @@ separate passes reported a cue as dead on a denominator that meant "never had a
 chance", and the third happened after the warning was written down — but it is
 no longer a to-do list.
 
-**One finding is bigger than any open entry, and it has no entry of its own.**
-`topic_miss` accounts for **1,703 of 1,759 eligible cue declines — 96.8%** —
-spread across five cues that each look like a separate starvation problem. It is
-one gate. Read it against **H17** (which is about what counts as an opening in
-the first place) and **H4(a)**, and do not touch the individual cues' gates
-before it: four of the cues that looked dead turned out to be at 100% reach.
+**One finding was treated as bigger than any open entry, and it has an
+entry now.** [H54](#h54-topic_miss-at-95-of-eligible-declines-is-not-by-itself-a-starvation)
+is the 1,703 / 1,759 `topic_miss` headline: it is still ~96% of eligible
+declines a week later, and that is not by itself evidence the five topic-gated
+cues are starving. Read it before touching those cues' gates, [H4(a)](#h4-the-cue-shelf-produces-well-and-spends-badly),
+or [H17](#h17-four-prompt-blocks-disagree-about-what-a-lull-is-and-three-lose)
+on the theory that a shared opening is the missing piece. Four of the cues that
+looked dead on the raw table turned out to be at 100% reach.
 
 **Then, roughly by value per unit of risk:**
 
@@ -1069,6 +1072,112 @@ owns "did the lane spend what it produced" for the cue side.
 
 **Effort.** Small to measure and to add the report line; the resolver work behind
 it is medium and belongs to H7.
+
+---
+
+## H54. `topic_miss` at 95% of eligible declines is not, by itself, a starvation
+
+**Severity: medium — an open measurement, not a defect with a patch. The
+headline that sat at the top of this file as "the next problem" is the same
+number asked a different question.**
+
+The 19 Aug reading left `topic_miss` at **1,703 of 1,759 eligible declines
+(96.8%)**, spread across five cues (`concept_hypothesis`, `curiosity_gradient`,
+`interest_drift`, `associative_wander`, `knowledge_gap_notice`) that each look
+starved. Re-run on 29 Aug, the live 7-day window is **1,273 of 1,331 (95.6%)**,
+and the post-H47 era as a whole is 1,597 of 1,657 (96.4%). The rate did not
+move. The question is whether it was ever a problem.
+
+It was asked because maybe she simply chose a different reply, or maybe the
+topic gate labelled the turn wrong. Those are two different mechanisms, they
+live in two different columns, and mixing them is how this number keeps getting
+read as "she never gets to bring anything up".
+
+### "She decided to respond differently" is real, and it is not `topic_miss`
+
+`topic_miss` is recorded when the cue **never reached the prompt**. The
+provider walked the shelf, the predicate refused every row, and she was not
+shown it. She cannot have "decided" anything about a line she did not see.
+
+The thing that *is* her decision sits one stage later, and [H47](shipped/health.md#h47-she-was-shown-604-of-them-and-said-nothing-which-is-not-a-supply-problem)
+already measured it: of expired cues, **92.6% had been rendered in front of her
+and passed over**. Re-counted on the five topic-gated types, 29 Aug:
+
+| cue | expired never shown | expired after a showing | used |
+| --- | --- | --- | --- |
+| `knowledge_gap_notice` | 2 | 92 | 4 |
+| `curiosity_gradient` | 2 | 53 | 3 |
+| `interest_drift` | 3 | 46 | 19 |
+| `associative_wander` | 1 | 36 | 6 |
+| `concept_hypothesis` | 22 | 17 | 1 |
+
+Four of five take every live chance they are *handed* and then she mostly
+declines to speak them. That is a judgement about fit, mood, and whether the
+line would be an announcement — and it is exactly the instinct behind "maybe
+she responded differently". It does not explain the `topic_miss` bucket, because
+those turns never got that far.
+
+`concept_hypothesis` is the exception on that table (22 never shown) and belongs
+with [H7](#h7-the-hypothesis-loop-invents-and-never-adjudicates) / [H44](#h44-nothing-has-ever-graduated-and-at-this-calibration-nothing-can),
+not with this gate.
+
+### The rate going *up* is what H47 predicted, not a regression
+
+[H43](shipped/health.md#h43-the-gate-blamed-for-945-of-her-silences-accepts-a-third-of-everything)
+found the original 94.5% figure was mostly cadence holds wearing this label, and
+that the lexical gate as shipped **accepted 33.2% of every (subject, message)
+pair** — nearly a no-op. [H47](shipped/health.md#h47-she-was-shown-604-of-them-and-said-nothing-which-is-not-a-supply-problem)
+then turned the stoplist on at admission (21 Aug), dropping acceptance from
+32.3% of pairs to **3.6%**, and wrote in as many words that `topic_miss` should
+*rise* as a share of decisions, because refusing had become honest. Split by
+era:
+
+| window | eligible declines | `topic_miss` share |
+| --- | --- | --- |
+| before H43 (19 Aug) | 4,706 | **35.8%** (the rest was mostly the old `provider` catch-all) |
+| H43 → H47 | 446 | 90.4% |
+| since the stoplist | 1,657 | **96.4%** |
+
+A thin shelf of leftover specific subjects (2–20 pending rows per type right
+now, of which `pick_pool_cue` sees at most a handful) against open-ended chat
+will miss most turns **by construction**. "I need to go have dinner" against
+`path of exile gameplay` / `the bitterness in his morning coffee` / `teaching
+myself guitar` is a correct miss. Treating 96% as starvation inverts H47's
+whole point: we asked the gate to stop matching on `and`, and then counted the
+refusals as failure.
+
+### "The analyzer marked it wrong" is the remaining question
+
+False *positives* were H43/H47's subject — cues admitted on a shared `and`.
+False *negatives* are this one: a turn that really was about the pending
+subject, refused anyway.
+
+A proxy (current pending shelf scored against the user text of the last twelve
+post-stoplist `topic_miss` turns, lexical arm only — the live gate also has a
+0.55 cosine, and the shelf is last-value-only so this is not a reconstruction)
+admitted **1 of 45 pairs**. The one hit was `"rest of the house"` against
+`"jacob's village connected his house to a new sewage"` — a leftover lexical
+coincidence, not a rescue. Adjacent misses that a person might call related
+(`cleaning my room` against `kitchen cleanliness habits` / `household chores
+promises`; `kingdom come` against `path of exile gameplay`) are the shape a
+false-negative finding would have, and they are also the shape a 0.55 cosine
+on a thin leftover shelf is *supposed* to refuse: "games" is not the same
+subject, and "chores" is not the same as a specific sewage anecdote.
+
+**Do not loosen the gate to chase this.** H43 inverted that fix once already:
+tightening a 33% no-op in service of a problem it was not causing would have
+made her quieter. The work, if any, is a **hand-check of cosine-near-misses**
+on recorded (subject, message) pairs that the gate refused — not another
+threshold. `scripts/topic_gate_report.py` is the instrument; it still does not
+know per-turn shelf depth, which is why a "would have admitted" reconstruction
+cannot close the question from `cue_decisions` alone.
+
+**Rule, because this headline has now been the next problem three times.** A
+decline reason that is 95% of a denominator after you made the predicate
+stricter is usually the predicate doing its job. Before treating it as
+starvation, split "never shown" from "shown and passed over", and split
+"correct miss" from "same subject, different words". The first split is H47.
+The second is this entry, and it is still open.
 
 ---
 

@@ -300,7 +300,7 @@ class WeatherMixin:
         """Add or remove one decor item by slug. Returns True if changed."""
         existing = None
         try:
-            existing = store.find_item(slug)
+            existing = store.find_item(slug, all_scenes=True)
             # ``find_item`` is fuzzy; only treat an exact slug hit as ours.
             if existing is not None and existing.slug != slug:
                 existing = None
@@ -310,7 +310,11 @@ class WeatherMixin:
         if present and existing is None:
             loc = None
             try:
-                loc = store.get_location(location_slug)
+                home = store.home_scene() if hasattr(store, "home_scene") else None
+                loc = store.get_location(
+                    location_slug,
+                    scene_id=home.id if home is not None else None,
+                )
             except Exception:
                 loc = None
             result = store.add_item(

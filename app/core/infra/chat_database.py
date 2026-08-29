@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 38
+_SCHEMA_VERSION = 39
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -287,13 +287,30 @@ CREATE TABLE IF NOT EXISTS consolidator_state (
 -- ``world_state`` is a singleton row (id == 1) holding her current
 -- location/posture/activity. ``world_items`` rows with ``location_id IS
 -- NULL`` represent items Aiko is carrying.
-CREATE TABLE IF NOT EXISTS world_locations (
+-- Schema v39: ``world_scenes`` (H5). Locations belong to a scene so the
+-- user can author extra places (his room) without editing her apartment.
+-- ``UNIQUE(scene_id, slug)`` lets two scenes both have a "desk".
+CREATE TABLE IF NOT EXISTS world_scenes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     slug TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    position INTEGER NOT NULL DEFAULT 0
+    origin TEXT NOT NULL DEFAULT 'custom',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS world_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scene_id INTEGER NOT NULL DEFAULT 1,
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0,
+    locked INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(scene_id, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_world_locations_scene
+    ON world_locations(scene_id);
 
 CREATE TABLE IF NOT EXISTS world_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -314,6 +331,7 @@ CREATE INDEX IF NOT EXISTS idx_world_items_slug ON world_items(slug);
 
 CREATE TABLE IF NOT EXISTS world_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
+    scene_id INTEGER,
     location_id INTEGER REFERENCES world_locations(id) ON DELETE SET NULL,
     posture TEXT NOT NULL DEFAULT 'sitting',
     activity TEXT NOT NULL DEFAULT 'idle',
@@ -1799,6 +1817,9 @@ class ChatDatabase:
         # v37 -> v38: K94's sequencing axis, on the same terms. Existing
         # rows default to 0 for the same reason -- the axis did not exist
         # when they were written -- and the same replay fills them in.
+        # v38 -> v39: H5 world scenes. Existing locations land in the
+        # builtin apartment; see ``_migrate_world_scenes_v39``.
+        self._migrate_world_scenes_v39(conn)
         for stmt in (
             "ALTER TABLE turn_stance ADD COLUMN brevity INTEGER NOT NULL "
             "DEFAULT 0",
@@ -1821,6 +1842,132 @@ class ChatDatabase:
                 pass
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
+
+    def _migrate_world_scenes_v39(self, conn: sqlite3.Connection) -> None:
+        """v38 -> v39: scenes, plus ``scene_id`` / ``locked`` on locations.
+
+        Fresh databases already have the v39 ``CREATE TABLE`` shape.
+        Existing ones still have a globally-unique ``world_locations.slug``
+        and no scene table, so this rebuilds the location table (keeping
+        ids so item FKs survive) and attaches every current row to the
+        builtin apartment.
+        """
+        from app.core.world.scene import (
+            APARTMENT_DESCRIPTION,
+            APARTMENT_NAME,
+            APARTMENT_SLUG,
+            BUILTIN_LOCATION_SLUGS,
+            ORIGIN_BUILTIN,
+        )
+
+        now = timephrase.utcnow().isoformat()
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS world_scenes ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "slug TEXT NOT NULL UNIQUE, "
+            "name TEXT NOT NULL, "
+            "description TEXT NOT NULL DEFAULT '', "
+            "origin TEXT NOT NULL DEFAULT 'custom', "
+            "created_at TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL)"
+        )
+        row = conn.execute(
+            "SELECT id FROM world_scenes WHERE slug = ?", (APARTMENT_SLUG,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO world_scenes "
+                "(slug, name, description, origin, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    APARTMENT_SLUG, APARTMENT_NAME, APARTMENT_DESCRIPTION,
+                    ORIGIN_BUILTIN, now, now,
+                ),
+            )
+            apartment_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        else:
+            apartment_id = int(row[0])
+
+        loc_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(world_locations)")
+        }
+        if not loc_cols:
+            return
+        if "scene_id" not in loc_cols:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            conn.execute(
+                "CREATE TABLE world_locations_v39 ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "scene_id INTEGER NOT NULL DEFAULT 1, "
+                "slug TEXT NOT NULL, "
+                "name TEXT NOT NULL, "
+                "description TEXT NOT NULL DEFAULT '', "
+                "position INTEGER NOT NULL DEFAULT 0, "
+                "locked INTEGER NOT NULL DEFAULT 0, "
+                "UNIQUE(scene_id, slug))"
+            )
+            conn.execute(
+                "INSERT INTO world_locations_v39 "
+                "(id, scene_id, slug, name, description, position, locked) "
+                "SELECT id, ?, slug, name, description, position, "
+                "CASE WHEN slug IN ({placeholders}) THEN 1 ELSE 0 END "
+                "FROM world_locations".format(
+                    placeholders=",".join("?" * len(BUILTIN_LOCATION_SLUGS))
+                ),
+                (apartment_id, *sorted(BUILTIN_LOCATION_SLUGS)),
+            )
+            conn.execute("DROP TABLE world_locations")
+            conn.execute(
+                "ALTER TABLE world_locations_v39 RENAME TO world_locations"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_world_locations_scene "
+                "ON world_locations(scene_id)"
+            )
+            conn.execute("PRAGMA foreign_keys=ON")
+        else:
+            if "locked" not in loc_cols:
+                try:
+                    conn.execute(
+                        "ALTER TABLE world_locations ADD COLUMN "
+                        "locked INTEGER NOT NULL DEFAULT 0"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            conn.execute(
+                "UPDATE world_locations SET scene_id = ? "
+                "WHERE scene_id IS NULL OR scene_id = 0",
+                (apartment_id,),
+            )
+            conn.execute(
+                "UPDATE world_locations SET locked = 1 WHERE slug IN ({})".format(
+                    ",".join("?" * len(BUILTIN_LOCATION_SLUGS))
+                ),
+                tuple(sorted(BUILTIN_LOCATION_SLUGS)),
+            )
+            try:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_world_locations_scene "
+                    "ON world_locations(scene_id)"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+        state_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(world_state)")
+        }
+        if "scene_id" not in state_cols:
+            try:
+                conn.execute("ALTER TABLE world_state ADD COLUMN scene_id INTEGER")
+            except sqlite3.OperationalError:
+                pass
+        conn.execute(
+            "UPDATE world_state SET scene_id = COALESCE("
+            "(SELECT scene_id FROM world_locations "
+            " WHERE world_locations.id = world_state.location_id), ?"
+            ") WHERE scene_id IS NULL",
+            (apartment_id,),
+        )
 
     def _migrate_curiosity_seeds_to_cue_pool(
         self, conn: sqlite3.Connection,

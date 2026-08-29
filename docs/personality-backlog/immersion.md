@@ -1,7 +1,7 @@
 # Immersion polish
 
 Small additions that compound. The world / idle-life / co-presence
-items that have shipped (**H0, H1, H9, H11, H13–H22, H25, H26** + the
+items that have shipped (**H0, H1, H3–H5, H8, H9, H11, H13–H22, H25, H26** + the
 SSML prosody minor item) have been moved to
 [`shipped/immersion.md`](shipped/immersion.md) (and `H1` /
 SSML live in [`shipped/features.md`](shipped/features.md)). This file
@@ -16,7 +16,7 @@ now holds **only the open work**.
 | H2  | Calendar / time context (holiday + birthday)  | ⚠️ partial — circadian + K3 routines done; holiday/birthday open |
 | H3  | Mood drift narrator                           | ✅ shipped — [immersion.md](shipped/immersion.md#h3-mood-drift-narrator) |
 | H4  | Document-recall recency boost                 | ✅ shipped — [immersion.md](shipped/immersion.md#h4-document-recall-recency-boost) |
-| H5  | Second scene / travel semantics               | ❌ open (deferred; H22 shipped the lightweight precursor) |
+| H5  | User-owned scenes (travel + World-tab authoring) | ✅ shipped — [immersion.md](shipped/immersion.md#h5-user-owned-scenes--she-can-be-in-your-room) |
 | H6  | Audible backchannels ("mm-hm")                | ❌ open |
 | H7  | Listen while speaking (soften half-duplex)    | ❌ open |
 | H8  | Topic mood-origin memory                      | ✅ shipped — [immersion.md](shipped/immersion.md#h8-topic-mood-origin-memory) |
@@ -50,25 +50,6 @@ new helper in
 right after `world_block` and dropped in `aggressive` mode,
 [`app/core/infra/user_profile.py`](../../app/core/infra/user_profile.py)
 (new `birthday` field + LLM worker prompt update).
-
----
-
-## H5. Second scene / travel semantics
-
-Today the world is exactly one room (plus the garden, which is
-co-located with the room). A natural extension is a second scene
-(a balcony, a coffee shop, a library) with travel semantics: Aiko
-picks the scene appropriate to the conversation ("let's go grab
-tea") and the prompt block flips. Would need a `scene_id` column
-on `world_state`, a tool to switch scenes, and some thinking about
-whether items move with her or stay in their scene. Key files:
-[`app/core/world/world_store.py`](../../app/core/world/world_store.py),
-[`app/llm/tools/world.py`](../../app/llm/tools/world.py),
-[`web/src/features/settings/WorldTab.tsx`](../../web/src/features/settings/WorldTab.tsx).
-Out of scope for v1 because a single cozy room + garden already
-covers the cookie use case; **H22 (light outings)** shipped the
-lightweight precursor. Pick this up if the scene switch becomes
-narratively useful.
 
 ---
 

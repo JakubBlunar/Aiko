@@ -19,6 +19,7 @@ from app.web.server import create_web_app
 def _make_state(state_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     base = {
         "location_id": 1,
+        "scene_id": 1,
         "posture": "sitting",
         "activity": "watching_screens",
         "mood_note": "",
@@ -36,6 +37,8 @@ def _make_location(loc_id: int, name: str, slug: str | None = None) -> dict[str,
         "name": name,
         "description": "",
         "position": loc_id,
+        "scene_id": 1,
+        "locked": slug in ("desk", "kitchenette") if slug else False,
     }
 
 
@@ -72,14 +75,28 @@ class _WorldState:
             _make_location(2, "the kitchenette", slug="kitchenette"),
         ]
         self.items: list[dict[str, Any]] = []
+        self.scenes: list[dict[str, Any]] = [
+            {
+                "id": 1,
+                "slug": "apartment",
+                "name": "Aiko's apartment",
+                "description": "",
+                "origin": "builtin",
+                "locked": True,
+                "created_at": "2026-05-27T00:00:00Z",
+                "updated_at": "2026-05-27T00:00:00Z",
+            },
+        ]
         self.state: dict[str, Any] = _make_state()
         self._next_item_id = 1
         self._next_loc_id = 3
+        self._next_scene_id = 2
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def world_snapshot(self) -> dict[str, Any]:
         return {
             "state": dict(self.state),
+            "scenes": [dict(s) for s in self.scenes],
             "locations": [dict(loc) for loc in self.locations],
             "items": [dict(i) for i in self.items],
             "enabled": True,
@@ -96,14 +113,72 @@ class _WorldState:
 
     def add_world_location(self, *, name: str, slug: str | None = None,
                             description: str = "", position: int | None = None,
-                            ) -> dict[str, Any]:
+                            scene_id: int | None = None,
+                            ) -> dict[str, Any] | None:
+        sid = int(scene_id) if scene_id is not None else 1
+        scene = next((s for s in self.scenes if s["id"] == sid), None)
+        if scene is None or scene.get("origin") == "builtin":
+            return None
         loc = _make_location(self._next_loc_id, name, slug=slug)
         loc["description"] = description
+        loc["scene_id"] = sid
+        loc["locked"] = False
         if position is not None:
             loc["position"] = position
         self._next_loc_id += 1
         self.locations.append(loc)
         return dict(loc)
+
+    def add_world_scene(self, *, name: str, description: str = "",
+                        slug: str | None = None) -> dict[str, Any]:
+        scene = {
+            "id": self._next_scene_id,
+            "slug": slug or name.replace(" ", "_").lower(),
+            "name": name,
+            "description": description,
+            "origin": "custom",
+            "locked": False,
+            "created_at": "2026-05-27T00:00:00Z",
+            "updated_at": "2026-05-27T00:00:00Z",
+        }
+        self._next_scene_id += 1
+        self.scenes.append(scene)
+        return dict(scene)
+
+    def update_world_scene(self, scene_id: int, **kwargs: Any
+                           ) -> dict[str, Any] | None:
+        for scene in self.scenes:
+            if scene["id"] == scene_id:
+                if scene.get("origin") == "builtin" and "name" in kwargs:
+                    return dict(scene)
+                for k, v in kwargs.items():
+                    scene[k] = v
+                return dict(scene)
+        return None
+
+    def delete_world_scene(self, scene_id: int) -> bool:
+        scene = next((s for s in self.scenes if s["id"] == scene_id), None)
+        if scene is None or scene.get("origin") == "builtin":
+            return False
+        self.scenes = [s for s in self.scenes if s["id"] != scene_id]
+        self.locations = [
+            loc for loc in self.locations if loc.get("scene_id") != scene_id
+        ]
+        return True
+
+    def travel_world_scene(self, scene_id: int) -> dict[str, Any] | None:
+        scene = next((s for s in self.scenes if s["id"] == scene_id), None)
+        if scene is None:
+            return None
+        spots = [loc for loc in self.locations if loc.get("scene_id") == scene_id]
+        spot = spots[0] if spots else None
+        self.state["scene_id"] = scene_id
+        self.state["location_id"] = None if spot is None else spot["id"]
+        return {
+            "scene": dict(scene),
+            "state": dict(self.state),
+            "location": None if spot is None else dict(spot),
+        }
 
     def update_world_location(self, loc_id: int, **kwargs: Any
                               ) -> dict[str, Any] | None:
@@ -177,6 +252,10 @@ def _build_client() -> tuple[TestClient, _WorldState]:
     session.add_world_location.side_effect = state.add_world_location
     session.update_world_location.side_effect = state.update_world_location
     session.delete_world_location.side_effect = state.delete_world_location
+    session.add_world_scene.side_effect = state.add_world_scene
+    session.update_world_scene.side_effect = state.update_world_scene
+    session.delete_world_scene.side_effect = state.delete_world_scene
+    session.travel_world_scene.side_effect = state.travel_world_scene
     session.add_world_item.side_effect = state.add_world_item
     session.update_world_item.side_effect = state.update_world_item
     session.delete_world_item.side_effect = state.delete_world_item
@@ -199,6 +278,7 @@ class GetWorldEndpointTests(unittest.TestCase):
         self.assertIn("state", body)
         self.assertIn("locations", body)
         self.assertIn("items", body)
+        self.assertIn("scenes", body)
         self.assertTrue(body["enabled"])
         self.assertEqual(len(body["items"]), 1)
 
@@ -226,16 +306,32 @@ class PatchWorldStateTests(unittest.TestCase):
 
 
 class CreateWorldLocationTests(unittest.TestCase):
-    def test_creates_location(self) -> None:
+    def test_creates_location_on_custom_scene(self) -> None:
         client, state = _build_client()
+        scene = client.post(
+            "/api/world/scenes", json={"name": "Jacob's room"},
+        ).json()["scene"]
+        response = client.post(
+            "/api/world/locations",
+            json={
+                "name": "the desk",
+                "description": "his desk",
+                "scene_id": scene["id"],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["location"]["name"], "the desk")
+        self.assertEqual(body["location"]["scene_id"], scene["id"])
+        self.assertEqual(len(state.locations), 3)
+
+    def test_rejects_location_on_apartment(self) -> None:
+        client, _ = _build_client()
         response = client.post(
             "/api/world/locations",
             json={"name": "the balcony", "description": "outside"},
         )
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["location"]["name"], "the balcony")
-        self.assertEqual(len(state.locations), 3)
+        self.assertEqual(response.status_code, 400)
 
     def test_empty_name_rejected(self) -> None:
         client, _ = _build_client()
@@ -243,6 +339,34 @@ class CreateWorldLocationTests(unittest.TestCase):
             "/api/world/locations", json={"name": "  "},
         )
         self.assertEqual(response.status_code, 400)
+
+
+class CreateWorldSceneTests(unittest.TestCase):
+    def test_creates_scene(self) -> None:
+        client, state = _build_client()
+        response = client.post(
+            "/api/world/scenes",
+            json={"name": "Jacob's room", "description": "his place"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["scene"]["name"], "Jacob's room")
+        self.assertEqual(body["scene"]["origin"], "custom")
+        self.assertEqual(len(state.scenes), 2)
+
+    def test_cannot_delete_apartment(self) -> None:
+        client, _ = _build_client()
+        response = client.delete("/api/world/scenes/1")
+        self.assertEqual(response.status_code, 400)
+
+    def test_travel(self) -> None:
+        client, state = _build_client()
+        scene = client.post(
+            "/api/world/scenes", json={"name": "Jacob's room"},
+        ).json()["scene"]
+        response = client.post(f"/api/world/scenes/{scene['id']}/travel")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state.state["scene_id"], scene["id"])
 
 
 class CreateWorldItemTests(unittest.TestCase):

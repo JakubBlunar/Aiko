@@ -187,6 +187,7 @@ than renamed, because every inbound link in the backlog points at it.)*
 - [H0. Intentional-placement hold — workers defer to deliberate choices](shipped/immersion.md#h0-intentional-placement-hold--workers-defer-to-deliberate-choices)
 - [H3. Mood-drift narrator](shipped/immersion.md#h3-mood-drift-narrator)
 - [H4. Document-recall recency boost](shipped/immersion.md#h4-document-recall-recency-boost)
+- [H5. User-owned scenes — she can be in your room](shipped/immersion.md#h5-user-owned-scenes--she-can-be-in-your-room)
 - [H8. Topic mood-origin memory](shipped/immersion.md#h8-topic-mood-origin-memory)
 - [H9. Aiko's diary — a readable window into her inner life](shipped/immersion.md#h9-aikos-diary--a-readable-window-into-her-inner-life)
 - [H11. Real-world co-location — weather + season sync](shipped/immersion.md#h11-real-world-co-location--weather--season-sync)
@@ -209,12 +210,12 @@ than renamed, because every inbound link in the backlog points at it.)*
 purpose: unlike every other family on this page, a health entry's value is the
 *measurement* rather than the feature, so the list that matters is the
 [status index](health.md#status-index) — it carries severity and open/closed
-state for all 53 in one table, which a set of bullets here would only go stale
+state for all 54 in one table, which a set of bullets here would only go stale
 against. The [recurring-shapes catalogue](health.md#recurring-shapes) stays in
 the live file for the same reason: it is the part you read *before* shipping.
 
 **The H numbers collide with the immersion section above**, and always have:
-immersion H0-H26 are features, health H1-H53 are audit findings. They are
+immersion H0-H26 are features, health H1-H54 are audit findings. They are
 unrelated sequences that happen to share a letter, so "H22" is ambiguous
 without its file — say "immersion H22" or "health H22".
 

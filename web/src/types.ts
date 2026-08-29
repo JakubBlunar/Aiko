@@ -2020,12 +2020,25 @@ export const WORLD_ACTIVITIES: readonly WorldActivity[] = [
   "doodling",
 ];
 
+export interface WorldScene {
+  id: number;
+  slug: string;
+  name: string;
+  description: string;
+  origin: "builtin" | "custom" | string;
+  locked: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WorldLocation {
   id: number;
   slug: string;
   name: string;
   description: string;
   position: number;
+  scene_id: number;
+  locked: boolean;
 }
 
 export interface WorldItem {
@@ -2045,6 +2058,7 @@ export interface WorldItem {
 
 export interface WorldState {
   location_id: number | null;
+  scene_id: number | null;
   posture: WorldPosture | string;
   activity: WorldActivity | string;
   mood_note: string;
@@ -2053,6 +2067,7 @@ export interface WorldState {
 
 export interface WorldSnapshot {
   state: WorldState;
+  scenes: WorldScene[];
   locations: WorldLocation[];
   items: WorldItem[];
   enabled: boolean;
@@ -2063,25 +2078,36 @@ export interface WorldSnapshot {
 export type WorldPatch =
   | { state: WorldState }
   | { location: WorldLocation }
+  | { scene: WorldScene }
   | { item: WorldItem }
   | { deleted_location_id: number }
   | { deleted_item_id: number }
+  | { deleted_scene_id: number }
   | {
       snapshot: {
         state: WorldState;
         locations: WorldLocation[];
         items: WorldItem[];
+        scenes?: WorldScene[];
       };
     };
 
 export interface WorldStatePatch {
   location_id?: number | null;
+  scene_id?: number | null;
   posture?: WorldPosture | string;
   activity?: WorldActivity | string;
   mood_note?: string;
 }
 
 export interface WorldLocationPayload {
+  name: string;
+  description?: string;
+  slug?: string;
+  scene_id?: number;
+}
+
+export interface WorldScenePayload {
   name: string;
   description?: string;
   slug?: string;
