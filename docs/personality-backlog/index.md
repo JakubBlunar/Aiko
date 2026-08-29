@@ -19,7 +19,7 @@ it is shipped work measured against the live graph and found to be doing
 something other than what its shipped entry claims. Read it before picking
 up anything new in the same area — several L-series items that read as
 "shipped" are latched, starved, or decorative in production. It carries a
-[status index](health.md#status-index) covering all 53 entries; the 43
+[status index](health.md#status-index) covering all 54 entries; the 43
 closed ones keep their full text in
 [`shipped/health.md`](shipped/health.md), so `health.md` itself is the open
 work plus the
@@ -337,7 +337,6 @@ and I3, I6, I7, I8, I10 in
 
 - **H2.** Calendar / time context block. *Partly superseded* — circadian
   and K3 cover most of it; holiday proximity + user birthday remain.
-- **H5.** Second scene / travel semantics.
 - **H6.** Audible backchannels ("mm-hm" while the user speaks).
 - **H7.** Listen-while-speaking — soften the half-duplex voice lock.
 - **H10.** Autonomous idle-life on the avatar.
@@ -357,7 +356,7 @@ and I3, I6, I7, I8, I10 in
   speech is cut off — an interrupt is actually silent). SSML prosody
   shipped.
 
-H0, H1, H3, H4, H8, H9, H11 and H13-H22 have shipped — see
+H0, H1, H3–H5, H8, H9, H11 and H13-H22 have shipped — see
 [`shipped/immersion.md`](shipped/immersion.md).
 
 ### J. Shared-moments follow-ups — [`moments.md`](moments.md)
@@ -606,14 +605,20 @@ cue never had a chance rather than passed one up. On the right denominator
 `shared_ritual`, `dormant_interest` and `wellbeing_concern` sit at **100% reach**,
 and **one gate, `topic_miss`, accounts for 96.8% of all eligible declines** (1,703
 of 1,759) across five topic-gated cues — one finding, not five, and exactly what
-H30's entry already said. `caught_mid_activity`'s supply turned out to be a live kv
+H30's entry already said. **Re-read as [H54](health.md#h54-topic_miss-at-95-of-eligible-declines-is-not-by-itself-a-starvation):**
+the rate is still ~96% a week later, and that is what a stricter gate *does*, not
+evidence the five cues are starving. "She chose a different reply" is the shown-
+and-passed-over column ([H47](shipped/health.md#h47-she-was-shown-604-of-them-and-said-nothing-which-is-not-a-supply-problem)),
+which is not `topic_miss`; whether remaining refusals are false negatives is the
+open half. `caught_mid_activity`'s supply turned out to be a live kv
 blob rather than pool stock, running at 24% open beats against a designed 30%.
 
 `self_callback` looked like the one survivor — *never eligible*, 0 surfaced against
 401 structural declines, 399 `cadence_block` — and it was **the same mistake a third
 time**: the type carries a ten-day `surface_cooldown_hours`, 78.5h of it were still
 to run, and its two surfacings sit exactly 10.0 days apart. The lane is empty; the
-finding is `topic_miss` alone.
+rate that remains is `topic_miss`, which [H54](health.md#h54-topic_miss-at-95-of-eligible-declines-is-not-by-itself-a-starvation)
+asks not to read as starvation.
 
 The durable fix is `scripts/cue_reach_report.py`, and the lesson is that prose
 warnings did not work — all three passes were made by someone who had read the

@@ -35,7 +35,7 @@ from app.core.session.tool_pass_gate import (
 # since D3.
 _ALL_TOOLS = [
     "get_time", "recall", "recall_topic",
-    "look_around", "move_to", "change_posture", "inspect_item",
+    "look_around", "move_to", "go_to_scene", "change_posture", "inspect_item",
     "consume_item", "water_plant", "plant_seed", "harvest_plant",
     "add_goal", "update_goal_progress", "archive_goal", "list_goals",
     "start_workflow", "check_my_work", "cancel_work",

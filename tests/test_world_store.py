@@ -49,10 +49,11 @@ class SchemaTests(unittest.TestCase):
             self.assertIn("world_locations", tables)
             self.assertIn("world_items", tables)
             self.assertIn("world_state", tables)
+            self.assertIn("world_scenes", tables)
             version = conn.execute(
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
-            self.assertGreaterEqual(version[0], 6)
+            self.assertGreaterEqual(version[0], 39)
 
     def test_world_store_loads_empty(self) -> None:
         with _TempDb() as (path, _db):
@@ -149,6 +150,17 @@ class LocationTests(unittest.TestCase):
             self.assertIsNotNone(desk)
             self.assertEqual(store.get_state().location_id, desk.id)
             store.remove_location(desk.id)
+            self.assertIsNotNone(store.get_location("desk"))
+            self.assertEqual(store.get_state().location_id, desk.id)
+            extra = store.add_scene(name="the loft")
+            self.assertIsNotNone(extra)
+            spot = store.add_location(
+                name="the couch", scene_id=extra.id, locked=False,
+            )
+            self.assertIsNotNone(spot)
+            store.set_state(location_id=spot.id)
+            self.assertEqual(store.get_state().location_id, spot.id)
+            store.remove_location(spot.id)
             self.assertIsNone(store.get_state().location_id)
 
     def test_find_location_fuzzy_match(self) -> None:
@@ -483,14 +495,20 @@ class SnapshotTests(unittest.TestCase):
             store.seed_default()
             snap = store.snapshot()
             self.assertIn("state", snap)
+            self.assertIn("scenes", snap)
             self.assertIn("locations", snap)
             self.assertIn("items", snap)
             self.assertIsInstance(snap["locations"], list)
             self.assertIsInstance(snap["items"], list)
+            self.assertGreaterEqual(len(snap["scenes"]), 1)
+            self.assertEqual(snap["scenes"][0]["slug"], "apartment")
             # Each location dict has the expected keys.
             self.assertEqual(
                 set(snap["locations"][0].keys()),
-                {"id", "slug", "name", "description", "position"},
+                {
+                    "id", "slug", "name", "description", "position",
+                    "scene_id", "locked",
+                },
             )
             # Each item dict mirrors the WorldItem TypeScript interface.
             item = snap["items"][0]
@@ -813,6 +831,101 @@ class OutdoorRenderTests(unittest.TestCase):
             )
             block = store.render_block()
             self.assertIn("ready to harvest", block.lower())
+
+
+class SceneTests(unittest.TestCase):
+    def test_seed_creates_builtin_apartment(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            home = store.home_scene()
+            self.assertIsNotNone(home)
+            self.assertEqual(home.slug, "apartment")
+            self.assertEqual(home.origin, "builtin")
+            desk = store.get_location("desk")
+            self.assertIsNotNone(desk)
+            self.assertTrue(desk.locked)
+            self.assertEqual(desk.scene_id, home.id)
+            self.assertEqual(store.get_state().scene_id, home.id)
+
+    def test_cannot_remove_or_rename_seeded_spots(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            desk = store.get_location("desk")
+            self.assertFalse(store.remove_location(desk.id))
+            updated = store.update_location(desk.id, name="the floor")
+            self.assertEqual(updated.name, desk.name)
+
+    def test_custom_scene_travel_and_scoped_lookups(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            home = store.home_scene()
+            scene = store.add_scene(
+                name="Jacob's room", description="his actual room",
+            )
+            self.assertIsNotNone(scene)
+            self.assertEqual(scene.origin, "custom")
+            spots = store.list_locations(scene_id=scene.id)
+            self.assertGreaterEqual(len(spots), 1)
+            store.add_location(
+                name="the desk", scene_id=scene.id, description="his desk",
+            )
+            result = store.travel_to_scene(scene.id)
+            self.assertIsNotNone(result)
+            self.assertEqual(store.current_scene().id, scene.id)
+            self.assertIsNone(store.get_location("kitchenette"))
+            self.assertIsNotNone(
+                store.get_location("kitchenette", scene_id=home.id),
+            )
+            desk = store.find_location("desk")
+            self.assertIsNotNone(desk)
+            self.assertEqual(desk.scene_id, scene.id)
+            block = store.render_block()
+            self.assertIn("Jacob's room", block)
+            self.assertNotIn("You are in your room.", block)
+
+    def test_items_stay_put_carried_travel(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            kitchen = store.get_location("kitchenette")
+            cookies = store.add_item(
+                name="cookies", kind="food", location_id=kitchen.id,
+                consumable=True, quantity=2,
+            )[0]
+            lamp = store.add_item(
+                name="pocket lamp", kind="gadget", location_id=None,
+            )[0]
+            scene = store.add_scene(name="the loft")
+            store.travel_to_scene(scene.id)
+            visible = {i.id for i in store._visible_items()}
+            self.assertNotIn(cookies.id, visible)
+            self.assertIn(lamp.id, visible)
+            self.assertEqual(store.get_item(cookies.id).location_id, kitchen.id)
+
+    def test_force_reseed_keeps_custom_scene(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            scene = store.add_scene(name="Jacob's room")
+            mug = store.add_item(
+                name="mug",
+                kind="keepsake",
+                location_id=store.list_locations(scene_id=scene.id)[0].id,
+            )[0]
+            store.seed_default(force=True)
+            self.assertIsNotNone(store.get_scene(scene.id))
+            self.assertIsNotNone(store.get_item(mug.id))
+            self.assertIsNotNone(store.get_location("desk"))
+
+    def test_cannot_delete_apartment(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            home = store.home_scene()
+            self.assertFalse(store.remove_scene(home.id))
 
 
 if __name__ == "__main__":

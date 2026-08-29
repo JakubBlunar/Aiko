@@ -96,6 +96,7 @@ _TOOL_FAMILY: dict[str, str] = {
     # world / room / garden
     "look_around": "world",
     "move_to": "world",
+    "go_to_scene": "world",
     "change_posture": "world",
     "inspect_item": "world",
     "consume_item": "world",
@@ -203,6 +204,8 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"eat", r"drink", r"cookies?", r"tea", r"snacks?",
         r"look around", r"garden", r"plants?", r"water", r"seeds?",
         r"harvest", r"sprout",
+        r"come over", r"my place", r"your (?:room|apartment|place)",
+        r"visit", r"go home",
     ]),
     "goals": _compile([
         r"goals?", r"objectives?", r"milestones?", r"progress",

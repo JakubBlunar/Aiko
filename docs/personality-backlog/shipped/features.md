@@ -60,10 +60,9 @@ surfaces stage cues including the loud "(mature, ready to
 harvest)" hint. UI lights up automatically — `WORLD_KINDS` gained
 `plant`/`seed`, and the World tab item row shows a stage badge. No
 schema migration (rides on the existing `state_json` column).
-Deferred: no wilting / death yet, no scene system; the garden is a
-single location. See [`docs/aiko-room.md`](../../aiko-room.md) under
-"Garden". H5 (second scene / travel semantics) in
-[`immersion.md`](../immersion.md) is the natural follow-up.
+Deferred: no wilting / death yet. The garden stays a location inside
+the apartment scene. H5 (user-owned scenes) shipped in
+[`shipped/immersion.md`](../shipped/immersion.md#h5-user-owned-scenes--she-can-be-in-your-room).
 
 ---
 

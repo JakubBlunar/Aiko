@@ -14,15 +14,19 @@ and how to extend it.
 
 ## Data model
 
-Three SQLite tables, created at schema v6 by
+Four SQLite tables (schema v39 adds scenes). Created by
 [`app/core/infra/chat_database.py`](../app/core/infra/chat_database.py):
 
 ```
-world_locations  (id, slug, name, description, position)
+world_scenes     (id, slug, name, description, origin, created_at, updated_at)
+                 origin=builtin is her apartment (locked). Custom rows are
+                 places you author — typically *your* room.
+world_locations  (id, scene_id, slug, name, description, position, locked)
+                 UNIQUE(scene_id, slug). Seeded apartment spots are locked.
 world_items      (id, slug, name, description, kind, consumable,
                   quantity, location_id NULLABLE, state_json,
                   given_by, created_at, updated_at)
-world_state      (id=1 singleton, location_id, posture, activity,
+world_state      (id=1 singleton, scene_id, location_id, posture, activity,
                   mood_note, updated_at)
 ```
 
@@ -106,14 +110,15 @@ system prompt (see `assemble_with_budget` in
 
 ## Agent tools
 
-Eight tools in [`app/llm/tools/world.py`](../app/llm/tools/world.py),
+Nine tools in [`app/llm/tools/world.py`](../app/llm/tools/world.py),
 gated by `tools.world` in config (default `true`). The last three are the
 garden loop, documented under [Garden](#garden-living-plants-outside-the-apartment):
 
 | Tool | What it does |
 |---|---|
-| `look_around` | Returns Aiko's current location, posture, activity, items here, items carried, and other locations. Tool description tells the model: *"Call only when the user asks about your room/surroundings, when you genuinely want to ground a metaphor, or when something in your space is plot-relevant. Do NOT call it on every turn."* |
-| `move_to` | Move Aiko to a different location. Fuzzy slug/name match. |
+| `look_around` | Returns Aiko's current scene + spot, posture, activity, items here, items carried, other spots in this scene, and other scenes she can travel to. |
+| `move_to` | Walk to a different spot in the *current* scene. Fuzzy slug/name match. |
+| `go_to_scene` | Travel to another scene (her apartment, your room). Items stay put; carried items come along. |
 | `change_posture` | Change posture and/or activity (sitting → lying, watching_screens → reading). Both vocabularies are validated. |
 | `inspect_item` | Detailed read of one item (description, current state, quantity remaining). |
 | `consume_item` | Decrement a consumable's quantity. Refuses politely on non-consumables ("the lamp isn't something you can consume"). The row is deleted at quantity zero. |
@@ -299,24 +304,16 @@ Add the route in `app/web/server.py` next to the existing
 `session._notify_world(patch)` so the matching `world_updated` WS
 event fires and the UI stays live without a refetch.
 
-### Multi-room support (future)
+### Extra scenes (H5)
 
-Currently the world has the apartment plus a single outdoor garden
-plot (see "Garden" below). To grow into more scenes (a balcony, a
-coffee shop, a library) we'd need:
+The apartment and garden are a locked builtin scene. You can still put
+objects in them. Extra scenes — typically *your* room — are authored
+in the World tab: create the scene, add spots, drop objects, then
+"Bring Aiko here" (or she calls `go_to_scene`). Lookups stay in the
+scene she is in, so idle workers will not walk her to *her* bed while
+she is visiting. Force-reseed resets the apartment only.
 
-- A `scene_id` column on `world_state` and on each location.
-- A `change_scene` agent tool.
-- A bigger render block describing the current scene + maybe one
-  hint about which other scenes are reachable.
-
-The current `_OUTDOOR_SLUGS` switch in `render_block` is a tiny
-foreshadowing of that — extending it would let outdoor scenes share
-phrasing instead of being hardcoded.
-
-Marked as a follow-up in
-[`docs/personality-backlog/`](personality-backlog/index.md) — see
-[H5 in `immersion.md`](personality-backlog/immersion.md#h5-second-scene--travel-semantics).
+See [H5 in `shipped/immersion.md`](personality-backlog/shipped/immersion.md#h5-user-owned-scenes--she-can-be-in-your-room).
 
 ---
 

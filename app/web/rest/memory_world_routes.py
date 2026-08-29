@@ -1047,13 +1047,21 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         description = payload.get("description", "") or ""
         if not isinstance(description, str):
             raise HTTPException(400, "description must be a string")
+        scene_id = payload.get("scene_id")
+        if scene_id is not None and not isinstance(scene_id, int):
+            raise HTTPException(400, "scene_id must be an integer")
         result = session.add_world_location(
             slug=slug if isinstance(slug, str) and slug.strip() else None,
             name=name,
             description=description,
+            scene_id=scene_id,
         )
         if result is None:
-            raise HTTPException(503, "world store unavailable")
+            raise HTTPException(
+                400,
+                "couldn't add that location — her apartment spots are fixed; "
+                "add spots on a custom scene instead",
+            )
         return JSONResponse({"location": result})
 
     @app.patch("/api/world/locations/{location_id}")
@@ -1196,6 +1204,64 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         result = session.reseed_world(force=bool(force))
         if result is None:
             raise HTTPException(503, "world store unavailable")
+        return JSONResponse(result)
+
+    @app.post("/api/world/scenes")
+    async def create_world_scene(payload: dict[str, Any]) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise HTTPException(400, "name must be a non-empty string")
+        description = payload.get("description", "") or ""
+        if not isinstance(description, str):
+            raise HTTPException(400, "description must be a string")
+        slug = payload.get("slug")
+        if slug is not None and not isinstance(slug, str):
+            raise HTTPException(400, "slug must be a string")
+        result = session.add_world_scene(
+            name=name,
+            description=description,
+            slug=slug if isinstance(slug, str) and slug.strip() else None,
+        )
+        if result is None:
+            raise HTTPException(400, "couldn't create that scene")
+        return JSONResponse({"scene": result})
+
+    @app.patch("/api/world/scenes/{scene_id}")
+    async def patch_world_scene(
+        scene_id: int, payload: dict[str, Any],
+    ) -> JSONResponse:
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected JSON object body")
+        kwargs: dict[str, Any] = {}
+        for field_name in ("name", "description"):
+            if field_name in payload:
+                value = payload[field_name]
+                if not isinstance(value, str):
+                    raise HTTPException(400, f"{field_name} must be a string")
+                kwargs[field_name] = value
+        if not kwargs:
+            raise HTTPException(400, "patch must include at least one field")
+        result = session.update_world_scene(int(scene_id), **kwargs)
+        if result is None:
+            raise HTTPException(404, "scene not found")
+        return JSONResponse({"scene": result})
+
+    @app.delete("/api/world/scenes/{scene_id}")
+    def delete_world_scene(scene_id: int) -> JSONResponse:
+        ok = session.delete_world_scene(int(scene_id))
+        if not ok:
+            raise HTTPException(
+                400, "scene not found or her apartment can't be deleted",
+            )
+        return JSONResponse({"deleted_scene_id": int(scene_id)})
+
+    @app.post("/api/world/scenes/{scene_id}/travel")
+    def travel_world_scene(scene_id: int) -> JSONResponse:
+        result = session.travel_world_scene(int(scene_id))
+        if result is None:
+            raise HTTPException(404, "scene not found")
         return JSONResponse(result)
 
     # ── REST + WS bridge: Background tasks (chunk 13) ───────────────

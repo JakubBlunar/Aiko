@@ -14,11 +14,13 @@ import type {
   WorldKind,
   WorldLocation,
   WorldPosture,
+  WorldScene,
   WorldSnapshot,
 } from "../../types";
 import { CheckboxField } from "@/components/CheckboxField";
 import { Toggle } from "@/components/Toggle";
 import { Section } from "./SettingsSection";
+import { WorldSceneBar } from "./WorldSceneBar";
 
 export interface GiveDraft {
   name: string;
@@ -81,6 +83,20 @@ export interface WorldTabProps {
   onSaveLocationEdit: (loc: WorldLocation) => void;
   onDeleteLocation: (loc: WorldLocation) => void;
   onReseedWorld: () => void;
+  viewingSceneId: number | null;
+  setViewingSceneId: (id: number | null) => void;
+  newSceneOpen: boolean;
+  setNewSceneOpen: (open: boolean) => void;
+  newSceneDraft: { name: string; description: string };
+  setNewSceneDraft: (draft: { name: string; description: string }) => void;
+  onAddScene: () => void;
+  onSaveSceneEdit: (
+    scene: WorldScene,
+    name: string,
+    description: string,
+  ) => void;
+  onDeleteScene: (scene: WorldScene) => void;
+  onTravelToScene: (scene: WorldScene) => void;
   /** Companion-feel knobs (proactive room nudges + grounding-line mode).
    * ``null`` until the settings snapshot loads. */
   companion: CompanionSettings | null;
@@ -176,6 +192,16 @@ export function WorldTab({
   onSaveLocationEdit,
   onDeleteLocation,
   onReseedWorld,
+  viewingSceneId,
+  setViewingSceneId,
+  newSceneOpen,
+  setNewSceneOpen,
+  newSceneDraft,
+  setNewSceneDraft,
+  onAddScene,
+  onSaveSceneEdit,
+  onDeleteScene,
+  onTravelToScene,
   companion,
   onPatchCompanion,
   weather,
@@ -201,11 +227,22 @@ export function WorldTab({
     );
   }
 
-  const { state, locations, items } = world;
+  const { state, locations: allLocations, items: allItems } = world;
+  const scenes = world.scenes ?? [];
+  const currentScene =
+    scenes.find((s) => s.id === state.scene_id) ?? null;
+  const viewing =
+    scenes.find((s) => s.id === viewingSceneId) ?? scenes[0] ?? null;
+  const locations = allLocations.filter(
+    (l) => viewing == null || l.scene_id === viewing.id,
+  );
+  const herLocations = allLocations.filter(
+    (l) => state.scene_id == null || l.scene_id === state.scene_id,
+  );
   const currentLocation =
-    locations.find((l) => l.id === state.location_id) ?? null;
+    allLocations.find((l) => l.id === state.location_id) ?? null;
   const itemsByLocation = new Map<number | null, WorldItem[]>();
-  for (const item of items) {
+  for (const item of allItems) {
     const arr = itemsByLocation.get(item.location_id) ?? [];
     arr.push(item);
     itemsByLocation.set(item.location_id, arr);
@@ -213,17 +250,54 @@ export function WorldTab({
   for (const arr of itemsByLocation.values()) {
     arr.sort((a, b) => a.name.localeCompare(b.name));
   }
-  const carriedItems = itemsByLocation.get(null) ?? [];
+  const carriedItems =
+    viewing != null && viewing.id === state.scene_id
+      ? (itemsByLocation.get(null) ?? [])
+      : [];
+  const sceneItemCount = locations.reduce(
+    (n, loc) => n + (itemsByLocation.get(loc.id)?.length ?? 0),
+    carriedItems.length,
+  );
+  const canAddLocations = viewing != null && viewing.origin !== "builtin";
 
   return (
     <div className="space-y-4">
+      <Section title="Scenes">
+        <p className="text-[11px] text-ink-100/50">
+          Her apartment and garden stay as they are. Create another scene
+          (your room, a café) to place objects there and invite her over.
+        </p>
+        <WorldSceneBar
+          scenes={scenes}
+          viewingSceneId={viewing?.id ?? null}
+          currentSceneId={state.scene_id ?? null}
+          busy={busy}
+          newOpen={newSceneOpen}
+          setNewOpen={setNewSceneOpen}
+          newDraft={newSceneDraft}
+          setNewDraft={setNewSceneDraft}
+          onSelect={(id) => setViewingSceneId(id)}
+          onAdd={onAddScene}
+          onTravel={onTravelToScene}
+          onDelete={onDeleteScene}
+          onRename={onSaveSceneEdit}
+        />
+      </Section>
+
       <Section title="Right now">
         <p className="text-xs text-ink-100/70">
           Aiko is{" "}
           <span className="font-medium text-ink-100">
-            {currentLocation
-              ? `at ${currentLocation.name}`
-              : "somewhere in her room"}
+            {currentScene && currentScene.origin !== "builtin"
+              ? `in ${currentScene.name}`
+              : currentLocation
+                ? `at ${currentLocation.name}`
+                : "somewhere in her room"}
+            {currentScene &&
+            currentScene.origin !== "builtin" &&
+            currentLocation
+              ? `, at ${currentLocation.name}`
+              : ""}
           </span>
           ,{" "}
           <span className="font-medium text-ink-100">
@@ -248,7 +322,7 @@ export function WorldTab({
               className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
             >
               <option value="">(nowhere)</option>
-              {locations.map((l) => (
+              {herLocations.map((l) => (
                 <option key={l.id} value={l.id}>
                   {l.name}
                 </option>
@@ -301,8 +375,8 @@ export function WorldTab({
 
       <Section title="Give Aiko something">
         <p className="text-[11px] text-ink-100/50">
-          Drops an item into her room, attributed to you. Aiko notices on
-          her next reply — no proactive ping.
+          Drops an item into the scene you're viewing, attributed to you.
+          Aiko notices on her next reply — no proactive ping.
         </p>
         <div className="flex flex-wrap gap-2">
           {quickGivePresets.map((preset) => (
@@ -410,7 +484,13 @@ export function WorldTab({
                   }
                   className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
                 >
-                  <option value="">kitchenette (default)</option>
+                  <option value="">
+                    {locations.find((l) => l.slug === "kitchenette")
+                      ? "kitchenette (default)"
+                      : locations[0]
+                        ? `${locations[0].name} (default)`
+                        : "carried"}
+                  </option>
                   {locations.map((l) => (
                     <option key={l.id} value={l.id}>
                       {l.name}
@@ -533,7 +613,7 @@ export function WorldTab({
             {itemsOpen ? "▾ collapse" : "▸ expand"}
           </button>
           <span className="text-[11px] text-ink-100/40">
-            {items.length} item{items.length === 1 ? "" : "s"}
+            {sceneItemCount} item{sceneItemCount === 1 ? "" : "s"}
           </span>
         </div>
         {itemsOpen ? (
@@ -610,9 +690,9 @@ export function WorldTab({
                 </ul>
               </div>
             ) : null}
-            {items.length === 0 ? (
+            {sceneItemCount === 0 ? (
               <p className="text-xs text-ink-100/50">
-                Nothing in the room yet.
+                Nothing in this scene yet.
               </p>
             ) : null}
           </div>
@@ -628,15 +708,21 @@ export function WorldTab({
           >
             {locationsOpen ? "▾ collapse" : "▸ expand"}
           </button>
-          <button
-            type="button"
-            onClick={() => setNewLocationOpen(!newLocationOpen)}
-            className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/70 hover:border-emerald-400/60 hover:text-emerald-100"
-          >
-            {newLocationOpen ? "Cancel" : "+ Add"}
-          </button>
+          {canAddLocations ? (
+            <button
+              type="button"
+              onClick={() => setNewLocationOpen(!newLocationOpen)}
+              className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/70 hover:border-emerald-400/60 hover:text-emerald-100"
+            >
+              {newLocationOpen ? "Cancel" : "+ Add"}
+            </button>
+          ) : (
+            <span className="text-[11px] text-ink-100/40">
+              spots are fixed here
+            </span>
+          )}
         </div>
-        {newLocationOpen ? (
+        {canAddLocations && newLocationOpen ? (
           <div className="space-y-2 rounded-md border border-emerald-400/30 bg-emerald-500/5 p-3">
             <input
               value={newLocationDraft.name}
@@ -732,26 +818,34 @@ export function WorldTab({
                       ) : null}
                     </div>
                     <div className="flex shrink-0 gap-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingLocationId(loc.id);
-                          setLocationDraft({
-                            name: loc.name,
-                            description: loc.description,
-                          });
-                        }}
-                        className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100"
-                      >
-                        edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDeleteLocation(loc)}
-                        className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
-                      >
-                        delete
-                      </button>
+                      {loc.locked ? (
+                        <span className="text-[10px] uppercase tracking-wide text-ink-100/35">
+                          seeded
+                        </span>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingLocationId(loc.id);
+                              setLocationDraft({
+                                name: loc.name,
+                                description: loc.description,
+                              });
+                            }}
+                            className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100"
+                          >
+                            edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteLocation(loc)}
+                            className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
+                          >
+                            delete
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 )}
@@ -771,11 +865,12 @@ export function WorldTab({
           disabled={busy}
           className="rounded border border-rose-400/30 bg-rose-500/5 px-3 py-1 text-xs text-rose-200 hover:border-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Reset to default room
+          Reset to default apartment
         </button>
         <p className="text-[10px] text-ink-100/40">
-          Wipes the current room (all locations + items + state) and re-seeds
-          the cozy default. Aiko's memories are not affected.
+          Wipes objects and seeded spots in her apartment, then re-seeds the
+          cozy default. Scenes you created are kept. Memories are not
+          affected.
         </p>
       </Section>
     </div>

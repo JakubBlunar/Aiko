@@ -1,16 +1,15 @@
 """SQLite-backed virtual room: locations, items, and Aiko's posture/state.
 
 Aiko's "room" is a small, structured world model that gives her a sense of
-place. It has three tables (created in :mod:`app.core.infra.chat_database` at
-schema v6):
+place. It has four tables (created in :mod:`app.core.infra.chat_database`):
 
-- ``world_locations`` — places in the room (bed, desk, kitchenette, ...).
-- ``world_items`` — things in the room. ``location_id IS NULL`` means
-  Aiko is carrying the item. Consumable items (cookies, tea) decrement on
+- ``world_scenes`` — named places (builtin apartment + user-authored scenes).
+- ``world_locations`` — spots inside a scene (bed, desk, ...).
+- ``world_items`` — things. ``location_id IS NULL`` means Aiko is carrying
+  the item. Consumable items (cookies, tea) decrement on
   ``consume_item`` and the row is deleted when ``quantity`` hits zero.
 - ``world_state`` — singleton (``id=1``) row holding Aiko's current
-  location, posture, activity, and an optional mood note. It's lazily
-  created on first ``get_state()``.
+  scene, location, posture, activity, and an optional mood note.
 
 The store keeps a thread-safe in-memory mirror of every row so
 :meth:`render_block` (the inner-life prompt provider) costs a dict scan
@@ -40,6 +39,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
+from app.core.world.scene import BUILTIN_LOCATION_SLUGS, ORIGIN_BUILTIN
+from app.core.world.world_scenes_mixin import WorldScenesMixin
 
 
 log = logging.getLogger("app.world_store")
@@ -303,6 +304,8 @@ class Location:
     name: str
     description: str
     position: int
+    scene_id: int = 0
+    locked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -311,6 +314,8 @@ class Location:
             "name": self.name,
             "description": self.description,
             "position": int(self.position),
+            "scene_id": int(self.scene_id),
+            "locked": bool(self.locked),
         }
 
 
@@ -353,10 +358,12 @@ class RoomState:
     activity: str
     mood_note: str
     updated_at: str
+    scene_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "location_id": int(self.location_id) if self.location_id is not None else None,
+            "scene_id": int(self.scene_id) if self.scene_id is not None else None,
             "posture": self.posture,
             "activity": self.activity,
             # H14 — open-vocab activity, plus the canonical bucket the rig /
@@ -856,7 +863,7 @@ _DEFAULT_INITIAL_STATE = {
 # ── Store ───────────────────────────────────────────────────────────────
 
 
-class WorldStore:
+class WorldStore(WorldScenesMixin):
     """Thread-safe room model backed by ``world_*`` SQLite tables."""
 
     def __init__(self, db_path: Path) -> None:
@@ -865,6 +872,7 @@ class WorldStore:
         self._lock = threading.Lock()
         self._locations: dict[int, Location] = {}
         self._items: dict[int, Item] = {}
+        self._scenes: dict[int, Any] = {}
         self._state: RoomState | None = None
         self._reload_mirror()
 
@@ -883,7 +891,8 @@ class WorldStore:
         conn = self._get_conn()
         try:
             loc_rows = conn.execute(
-                "SELECT id, slug, name, description, position FROM world_locations",
+                "SELECT id, slug, name, description, position, "
+                "scene_id, locked FROM world_locations",
             ).fetchall()
             item_rows = conn.execute(
                 "SELECT id, slug, name, description, kind, consumable, quantity, "
@@ -891,16 +900,19 @@ class WorldStore:
                 "FROM world_items",
             ).fetchall()
             state_row = conn.execute(
-                "SELECT location_id, posture, activity, mood_note, updated_at "
-                "FROM world_state WHERE id = 1",
+                "SELECT location_id, posture, activity, mood_note, updated_at, "
+                "scene_id FROM world_state WHERE id = 1",
             ).fetchone()
+            scenes = self._load_scenes(conn)
         except sqlite3.OperationalError:
             # Tables don't exist yet (caller hasn't created the schema).
             self._locations = {}
             self._items = {}
+            self._scenes = {}
             self._state = None
             return
         with self._lock:
+            self._scenes = scenes
             self._locations = {
                 int(r[0]): Location(
                     id=int(r[0]),
@@ -908,6 +920,8 @@ class WorldStore:
                     name=r[2],
                     description=r[3] or "",
                     position=int(r[4] or 0),
+                    scene_id=int(r[5] or 0),
+                    locked=bool(r[6]),
                 )
                 for r in loc_rows
             }
@@ -935,6 +949,7 @@ class WorldStore:
                     activity=state_row[2] or "idle",
                     mood_note=state_row[3] or "",
                     updated_at=state_row[4],
+                    scene_id=int(state_row[5]) if state_row[5] is not None else None,
                 )
             else:
                 self._state = None
@@ -956,19 +971,33 @@ class WorldStore:
 
     # ── locations ────────────────────────────────────────────────────
 
-    def list_locations(self) -> list[Location]:
+    def list_locations(
+        self,
+        *,
+        scene_id: int | None = None,
+        all_scenes: bool = False,
+    ) -> list[Location]:
         with self._lock:
             locs = list(self._locations.values())
+        if not all_scenes:
+            sid = scene_id if scene_id is not None else self.current_scene_id()
+            if sid is not None:
+                locs = [loc for loc in locs if loc.scene_id == int(sid)]
         locs.sort(key=lambda loc: (loc.position, loc.id))
         return locs
 
-    def get_location(self, slug: str) -> Location | None:
+    def get_location(
+        self, slug: str, *, scene_id: int | None = None,
+    ) -> Location | None:
         target = (slug or "").strip().lower()
         if not target:
             return None
+        sid = scene_id if scene_id is not None else self.current_scene_id()
         with self._lock:
             for loc in self._locations.values():
-                if loc.slug == target:
+                if loc.slug != target:
+                    continue
+                if sid is None or loc.scene_id == int(sid):
                     return loc
         return None
 
@@ -976,13 +1005,14 @@ class WorldStore:
         with self._lock:
             return self._locations.get(int(location_id))
 
-    def find_location(self, query: str) -> Location | None:
+    def find_location(
+        self, query: str, *, scene_id: int | None = None,
+    ) -> Location | None:
         """Fuzzy-match by slug, name, or substring. Case-insensitive."""
         target = (query or "").strip().lower()
         if not target:
             return None
-        with self._lock:
-            locs = list(self._locations.values())
+        locs = self.list_locations(scene_id=scene_id)
         for loc in locs:
             if loc.slug == target:
                 return loc
@@ -1001,6 +1031,8 @@ class WorldStore:
         name: str,
         description: str = "",
         position: int | None = None,
+        scene_id: int | None = None,
+        locked: bool | None = None,
     ) -> Location | None:
         clean_name = (name or "").strip()
         if not clean_name:
@@ -1008,20 +1040,38 @@ class WorldStore:
         clean_slug = (slug or _slugify(clean_name)).strip().lower()
         if not clean_slug:
             return None
+        if scene_id is None:
+            home = self.ensure_home_scene()
+            scene_id = int(home.id)
+        else:
+            scene_id = int(scene_id)
+        scene = self.get_scene(scene_id)
+        is_locked = bool(locked) if locked is not None else (
+            clean_slug in BUILTIN_LOCATION_SLUGS
+            and scene is not None
+            and scene.origin == ORIGIN_BUILTIN
+        )
         with self._lock:
             for loc in self._locations.values():
-                if loc.slug == clean_slug:
+                if loc.scene_id == scene_id and loc.slug == clean_slug:
                     return loc
             existing_max = max(
-                (loc.position for loc in self._locations.values()),
+                (
+                    loc.position for loc in self._locations.values()
+                    if loc.scene_id == scene_id
+                ),
                 default=-1,
             )
         pos = int(position) if position is not None else existing_max + 1
         conn = self._get_conn()
         cursor = conn.execute(
-            "INSERT INTO world_locations (slug, name, description, position) "
-            "VALUES (?, ?, ?, ?)",
-            (clean_slug, clean_name, (description or "").strip(), pos),
+            "INSERT INTO world_locations "
+            "(slug, name, description, position, scene_id, locked) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                clean_slug, clean_name, (description or "").strip(), pos,
+                scene_id, 1 if is_locked else 0,
+            ),
         )
         conn.commit()
         new_id = int(cursor.lastrowid or 0)
@@ -1031,6 +1081,8 @@ class WorldStore:
             name=clean_name,
             description=(description or "").strip(),
             position=pos,
+            scene_id=scene_id,
+            locked=is_locked,
         )
         with self._lock:
             self._locations[new_id] = loc
@@ -1048,6 +1100,10 @@ class WorldStore:
             loc = self._locations.get(int(location_id))
         if loc is None:
             return None
+        if loc.locked:
+            # Seeded apartment spots stay as they are; items inside can still
+            # change. Callers that need a rename use a custom scene.
+            return loc
         new_name = loc.name if name is None else (str(name).strip() or loc.name)
         new_desc = loc.description if description is None else (str(description).strip())
         new_pos = loc.position if position is None else int(position)
@@ -1068,7 +1124,8 @@ class WorldStore:
         """Delete a location. Items there have ``location_id`` set to NULL."""
         lid = int(location_id)
         with self._lock:
-            if lid not in self._locations:
+            loc = self._locations.get(lid)
+            if loc is None or loc.locked:
                 return False
         conn = self._get_conn()
         conn.execute(
@@ -1118,12 +1175,29 @@ class WorldStore:
         with self._lock:
             return self._items.get(int(item_id))
 
+    def _visible_items(self) -> list[Item]:
+        """Items in the current scene, plus anything Aiko is carrying."""
+        sid = self.current_scene_id()
+        with self._lock:
+            items = list(self._items.values())
+            locations = dict(self._locations)
+        if sid is None:
+            return items
+        loc_ids = {
+            loc.id for loc in locations.values() if loc.scene_id == int(sid)
+        }
+        return [
+            item for item in items
+            if item.location_id is None or item.location_id in loc_ids
+        ]
+
     def rank_items(
         self,
         query: str,
         *,
         kinds: tuple[str, ...] | None = None,
         prefer_consumable: bool = False,
+        all_scenes: bool = False,
     ) -> list[Item]:
         """Every item matching ``query``, best candidate first.
 
@@ -1141,8 +1215,11 @@ class WorldStore:
         slug = _slugify(raw)
         squashed = _squash(raw)
         words = _match_tokens(raw)
-        with self._lock:
-            items = list(self._items.values())
+        if all_scenes:
+            with self._lock:
+                items = list(self._items.values())
+        else:
+            items = self._visible_items()
         if kinds:
             wanted = {k.strip().lower() for k in kinds}
             items = [i for i in items if i.kind in wanted]
@@ -1191,6 +1268,7 @@ class WorldStore:
         *,
         kinds: tuple[str, ...] | None = None,
         prefer_consumable: bool = False,
+        all_scenes: bool = False,
     ) -> Item | None:
         """Best fuzzy match for ``query``, or ``None``.
 
@@ -1201,7 +1279,8 @@ class WorldStore:
         sprigs in the kitchenette).
         """
         matches = self.rank_items(
-            query, kinds=kinds, prefer_consumable=prefer_consumable
+            query, kinds=kinds, prefer_consumable=prefer_consumable,
+            all_scenes=all_scenes,
         )
         return matches[0] if matches else None
 
@@ -1220,7 +1299,7 @@ class WorldStore:
         exist turns a dead end into a retry.
         """
         try:
-            items = self.list_items()
+            items = self._visible_items()
             here_id = self.get_state().location_id
             with self._lock:
                 locations = dict(self._locations)
@@ -1527,12 +1606,15 @@ class WorldStore:
             return current
         # Lazy-create the singleton row.
         now = _now_iso()
+        home = self.home_scene()
+        scene_id = int(home.id) if home is not None else None
         conn = self._get_conn()
         conn.execute(
             "INSERT OR IGNORE INTO world_state "
-            "(id, location_id, posture, activity, mood_note, updated_at) "
-            "VALUES (1, NULL, 'sitting', 'idle', '', ?)",
-            (now,),
+            "(id, location_id, posture, activity, mood_note, updated_at, "
+            "scene_id) "
+            "VALUES (1, NULL, 'sitting', 'idle', '', ?, ?)",
+            (now, scene_id),
         )
         conn.commit()
         state = RoomState(
@@ -1541,6 +1623,7 @@ class WorldStore:
             activity="idle",
             mood_note="",
             updated_at=now,
+            scene_id=scene_id,
         )
         with self._lock:
             self._state = state
@@ -1553,11 +1636,19 @@ class WorldStore:
         posture: str | None = None,
         activity: str | None = None,
         mood_note: str | None = None,
+        scene_id: int | None | object = ...,
     ) -> RoomState:
         current = self.get_state()
         new_loc = current.location_id
+        new_scene = current.scene_id
         if location_id is not ...:
             new_loc = int(location_id) if location_id is not None else None
+            if new_loc is not None:
+                loc = self.get_location_by_id(new_loc)
+                if loc is not None:
+                    new_scene = int(loc.scene_id)
+        if scene_id is not ...:
+            new_scene = int(scene_id) if scene_id is not None else None
         new_posture = current.posture
         if posture is not None:
             requested = (posture or "").strip().lower()
@@ -1574,8 +1665,8 @@ class WorldStore:
         conn = self._get_conn()
         conn.execute(
             "UPDATE world_state SET location_id = ?, posture = ?, activity = ?, "
-            "mood_note = ?, updated_at = ? WHERE id = 1",
-            (new_loc, new_posture, new_activity, new_note, now),
+            "mood_note = ?, updated_at = ?, scene_id = ? WHERE id = 1",
+            (new_loc, new_posture, new_activity, new_note, now, new_scene),
         )
         conn.commit()
         with self._lock:
@@ -1584,6 +1675,7 @@ class WorldStore:
             current.activity = new_activity
             current.mood_note = new_note
             current.updated_at = now
+            current.scene_id = new_scene
         return current
 
     # ── snapshot + render ────────────────────────────────────────────
@@ -1591,7 +1683,10 @@ class WorldStore:
     def snapshot(self) -> dict[str, Any]:
         return {
             "state": self.get_state().to_dict(),
-            "locations": [loc.to_dict() for loc in self.list_locations()],
+            "scenes": [scene.to_dict() for scene in self.list_scenes()],
+            "locations": [
+                loc.to_dict() for loc in self.list_locations(all_scenes=True)
+            ],
             "items": [i.to_dict() for i in self.list_items()],
         }
 
@@ -1628,18 +1723,29 @@ class WorldStore:
         lines: list[str] = []
         # Line 1: where + posture + activity. Outdoor locations flip the
         # framing so "you are in your room" doesn't contradict reality
-        # when she's standing in the garden.
-        where = loc.name if loc is not None else "your room"
+        # when she's standing in the garden. Away from home (H5) names
+        # the scene she's visiting instead of the apartment.
+        scene = self.current_scene()
+        at_home = scene is None or scene.origin == ORIGIN_BUILTIN
+        where = loc.name if loc is not None else (
+            "your room" if at_home else (scene.name if scene is not None else "somewhere")
+        )
         posture = (state.posture or "sitting").replace("_", " ")
         activity = (state.activity or "idle").replace("_", " ")
-        if loc is not None and loc.slug in _OUTDOOR_SLUGS:
+        if loc is not None and loc.slug in _OUTDOOR_SLUGS and at_home:
             lines.append(
                 f"You are at home, currently outside in {where}. "
                 f"{posture}, {activity}."
             )
-        else:
+        elif at_home:
             lines.append(
                 f"You are in your room. Right now: at {where}, {posture}, {activity}."
+            )
+        else:
+            scene_name = scene.name if scene is not None else where
+            lines.append(
+                f"You are in {scene_name}, not your apartment. "
+                f"Right now: at {where}, {posture}, {activity}."
             )
         # Line 2: items at the current location (if any). Plants get a
         # stage suffix so Aiko can see "(mature, ready to harvest)" and
@@ -1653,9 +1759,11 @@ class WorldStore:
                 )
                 lines.append(f"Nearby at {loc.name}: {rendered}.")
         # Line 3: the most recent gift / consumable highlight.
+        visible_ids = {i.id for i in self._visible_items()}
         gifts = [
             i for i in items
             if i.given_by and i.given_by.lower() == "user" and i.quantity > 0
+            and i.id in visible_ids
         ]
         if gifts:
             gifts.sort(key=lambda i: i.created_at, reverse=True)
@@ -1708,24 +1816,49 @@ class WorldStore:
     ) -> bool:
         """Populate a rich default room. No-op if the world is non-empty.
 
-        ``force=True`` wipes everything first, then re-seeds. Returns True
-        if a seed actually ran. ``user_display_name`` (Phase 4e) is woven
-        into the seed strings so the keepsake photo is named after the
-        configured user instead of the legacy ``"Jacob"`` literal.
+        ``force=True`` wipes the builtin apartment (and carried items)
+        then re-seeds it. Custom scenes the user authored are left
+        alone. Returns True if a seed actually ran. ``user_display_name``
+        (Phase 4e) is woven into the seed strings so the keepsake photo
+        is named after the configured user instead of the legacy
+        ``"Jacob"`` literal.
         """
         if not force and not self.is_empty():
             return False
         if force:
-            conn = self._get_conn()
-            conn.execute("DELETE FROM world_items")
-            conn.execute("DELETE FROM world_locations")
-            conn.execute("DELETE FROM world_state")
-            conn.commit()
+            home = self.ensure_home_scene()
+            hid = int(home.id)
             with self._lock:
-                self._items = {}
-                self._locations = {}
+                loc_ids = [
+                    loc.id for loc in self._locations.values()
+                    if loc.scene_id == hid
+                ]
+            conn = self._get_conn()
+            if loc_ids:
+                placeholders = ",".join("?" * len(loc_ids))
+                conn.execute(
+                    f"DELETE FROM world_items WHERE location_id IN ({placeholders})",
+                    loc_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM world_locations WHERE id IN ({placeholders})",
+                    loc_ids,
+                )
+            conn.execute("DELETE FROM world_items WHERE location_id IS NULL")
+            conn.commit()
+            gone = set(loc_ids)
+            with self._lock:
+                self._locations = {
+                    lid: loc for lid, loc in self._locations.items()
+                    if lid not in gone
+                }
+                self._items = {
+                    iid: item for iid, item in self._items.items()
+                    if item.location_id is not None
+                    and item.location_id not in gone
+                }
                 self._state = None
-        # Locations.
+        home = self.ensure_home_scene()
         slug_to_id: dict[str, int] = {}
         for idx, seed in enumerate(_DEFAULT_LOCATIONS):
             loc = self.add_location(
@@ -1733,6 +1866,8 @@ class WorldStore:
                 name=seed.name,
                 description=seed.description,
                 position=idx,
+                scene_id=home.id,
+                locked=True,
             )
             if loc is not None:
                 slug_to_id[seed.slug] = loc.id
@@ -1790,7 +1925,8 @@ class WorldStore:
         been populated yet. Existing tweaks elsewhere in the room are
         preserved. Returns True only when at least one item was inserted.
         """
-        loc = self.get_location("garden")
+        home = self.ensure_home_scene()
+        loc = self.get_location("garden", scene_id=home.id)
         if loc is None:
             garden_seed = next(
                 (s for s in _DEFAULT_LOCATIONS if s.slug == "garden"), None,
@@ -1801,6 +1937,8 @@ class WorldStore:
                 slug=garden_seed.slug,
                 name=garden_seed.name,
                 description=garden_seed.description,
+                scene_id=home.id if home else None,
+                locked=True,
             )
             if loc is None:
                 return False
@@ -1812,7 +1950,9 @@ class WorldStore:
         for seed in _GARDEN_SEED_ITEMS:
             loc_id: int | None = None
             if seed.location_slug is not None:
-                target = self.get_location(seed.location_slug)
+                target = self.get_location(
+                    seed.location_slug, scene_id=home.id,
+                )
                 loc_id = target.id if target is not None else None
             seed_state = dict(seed.state)
             if seed.kind == "plant":
@@ -1902,13 +2042,18 @@ class WorldStore:
         # Deterministic mid-point on the range so repeated harvests don't
         # spam wildly different yields; species facts already vary it.
         quantity = max(1, int(round((int(qty_low) + int(qty_high)) / 2)))
-        # Find the produce destination.
-        target_loc = self.get_location(produce_location_slug)
+        # Find the produce destination (always her apartment kitchen,
+        # even when she's visiting another scene).
+        home = self.home_scene()
+        home_id = home.id if home is not None else None
+        target_loc = self.get_location(
+            produce_location_slug, scene_id=home_id,
+        )
         target_loc_id: int | None = None
         if target_loc is not None:
             target_loc_id = target_loc.id
         elif not inventory_fallback:
-            locations = self.list_locations()
+            locations = self.list_locations(scene_id=home_id)
             if locations:
                 target_loc_id = locations[0].id
         produce = self.add_item(

@@ -11,6 +11,7 @@ from app.core.world.world_store import WorldStore
 from app.llm.tools.world import (
     ChangePostureTool,
     ConsumeItemTool,
+    GoToSceneTool,
     HarvestPlantTool,
     InspectItemTool,
     LookAroundTool,
@@ -81,16 +82,17 @@ class _Harness:
 
 
 class BuildToolsTests(unittest.TestCase):
-    def test_build_returns_eight_tools(self) -> None:
+    def test_build_returns_nine_tools(self) -> None:
         h = _Harness()
         tools = build_world_tools(h)
-        self.assertEqual(len(tools), 8)
+        self.assertEqual(len(tools), 9)
         names = {t.schema().name for t in tools}
         self.assertEqual(
             names,
             {
                 "look_around",
                 "move_to",
+                "go_to_scene",
                 "change_posture",
                 "inspect_item",
                 "consume_item",
@@ -111,6 +113,7 @@ class LookAroundTests(unittest.TestCase):
         self.assertIsNotNone(result["here"])
         self.assertEqual(result["here"]["name"], "the desk")
         self.assertGreater(len(result["other_locations"]), 0)
+        self.assertEqual(result["scene"]["slug"], "apartment")
         h.cleanup()
 
 
@@ -373,6 +376,28 @@ class HarvestPlantTests(unittest.TestCase):
             if (i.state or {}).get("species") == "tomato"
         ]
         self.assertTrue(new_seeds)
+        h.cleanup()
+
+
+class GoToSceneTests(unittest.TestCase):
+    def test_travel_to_custom_scene(self) -> None:
+        h = _Harness()
+        scene = h._world_store.add_scene(name="Jacob's room")
+        tool = GoToSceneTool(h)
+        result = json.loads(tool.run({"scene": "jacob"}))
+        self.assertEqual(result["slug"], scene.slug)
+        self.assertEqual(h._world_store.current_scene().id, scene.id)
+        h.cleanup()
+
+    def test_move_to_does_not_leave_the_scene(self) -> None:
+        from app.llm.tools.base import ToolError
+
+        h = _Harness()
+        scene = h._world_store.add_scene(name="Jacob's room")
+        h._world_store.travel_to_scene(scene.id)
+        tool = MoveToTool(h)
+        with self.assertRaises(ToolError):
+            tool.run({"location": "kitchenette"})
         h.cleanup()
 
 

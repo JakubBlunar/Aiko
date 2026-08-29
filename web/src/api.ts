@@ -61,6 +61,8 @@ import type {
   WorldItemPayload,
   WorldLocation,
   WorldLocationPayload,
+  WorldScene,
+  WorldScenePayload,
   WorldSnapshot,
   WorldStatePatch,
 } from "./types";
@@ -861,6 +863,31 @@ export const api = {
     jsonFetch<{ deleted_location_id: number }>(`/api/world/locations/${id}`, {
       method: "DELETE",
     }),
+  createWorldScene: (payload: WorldScenePayload) =>
+    jsonFetch<{ scene: WorldScene }>("/api/world/scenes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateWorldScene: (
+    id: number,
+    patch: { name?: string; description?: string },
+  ) =>
+    jsonFetch<{ scene: WorldScene }>(`/api/world/scenes/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  deleteWorldScene: (id: number) =>
+    jsonFetch<{ deleted_scene_id: number }>(`/api/world/scenes/${id}`, {
+      method: "DELETE",
+    }),
+  travelWorldScene: (id: number) =>
+    jsonFetch<{
+      scene: WorldScene;
+      state: WorldSnapshot["state"];
+      location: WorldLocation | null;
+    }>(`/api/world/scenes/${id}/travel`, { method: "POST" }),
   createWorldItem: (payload: WorldItemPayload) =>
     jsonFetch<{ item: WorldItem }>("/api/world/items", {
       method: "POST",

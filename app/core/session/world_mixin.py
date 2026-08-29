@@ -59,7 +59,13 @@ class WorldMixin:
         """Return the full room state for the World tab."""
         store = self._world_store
         if store is None:
-            return {"state": {}, "locations": [], "items": [], "enabled": False}
+            return {
+                "state": {},
+                "scenes": [],
+                "locations": [],
+                "items": [],
+                "enabled": False,
+            }
         snap = store.snapshot()
         snap["enabled"] = True
         return snap
@@ -1044,6 +1050,7 @@ class WorldMixin:
         posture: str | None = None,
         activity: str | None = None,
         mood_note: str | None = None,
+        scene_id: int | None | object = ...,
     ) -> dict[str, Any] | None:
         store = self._world_store
         if store is None:
@@ -1054,6 +1061,7 @@ class WorldMixin:
                 posture=posture,
                 activity=activity,
                 mood_note=mood_note,
+                scene_id=scene_id,
             )
         except Exception:
             log.debug("world set_state failed", exc_info=True)
@@ -1079,12 +1087,29 @@ class WorldMixin:
         name: str,
         description: str = "",
         position: int | None = None,
+        scene_id: int | None = None,
     ) -> dict[str, Any] | None:
         store = self._world_store
         if store is None:
             return None
+        target_id = int(scene_id) if scene_id is not None else None
+        if target_id is None:
+            home = store.home_scene()
+            target_id = int(home.id) if home is not None else None
+        if target_id is not None:
+            scene = store.get_scene(target_id)
+            if scene is None:
+                return None
+            if scene.origin == "builtin":
+                # Apartment spots are seeded and locked; extra locations
+                # belong on a custom scene.
+                return None
         loc = store.add_location(
-            slug=slug, name=name, description=description, position=position,
+            slug=slug,
+            name=name,
+            description=description,
+            position=position,
+            scene_id=target_id,
         )
         if loc is None:
             return None
@@ -1126,6 +1151,71 @@ class WorldMixin:
             # the UI reconciles in a single render pass.
             self._notify_world({"snapshot": store.snapshot()})
         return ok
+
+    def add_world_scene(
+        self,
+        *,
+        name: str,
+        description: str = "",
+        slug: str | None = None,
+    ) -> dict[str, Any] | None:
+        store = self._world_store
+        if store is None:
+            return None
+        scene = store.add_scene(name=name, description=description, slug=slug)
+        if scene is None:
+            return None
+        snap = store.snapshot()
+        self._notify_world({"snapshot": snap})
+        return scene.to_dict()
+
+    def update_world_scene(
+        self,
+        scene_id: int,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any] | None:
+        store = self._world_store
+        if store is None:
+            return None
+        scene = store.update_scene(
+            int(scene_id), name=name, description=description,
+        )
+        if scene is None:
+            return None
+        snap = scene.to_dict()
+        self._notify_world({"scene": snap})
+        return snap
+
+    def delete_world_scene(self, scene_id: int) -> bool:
+        store = self._world_store
+        if store is None:
+            return False
+        ok = store.remove_scene(int(scene_id))
+        if ok:
+            self._notify_world({"deleted_scene_id": int(scene_id)})
+            self._notify_world({"snapshot": store.snapshot()})
+        return ok
+
+    def travel_world_scene(self, scene_id: int) -> dict[str, Any] | None:
+        """Move Aiko into another scene; stamps the intentional-hold."""
+        store = self._world_store
+        if store is None:
+            return None
+        result = store.travel_to_scene(int(scene_id))
+        if result is None:
+            return None
+        try:
+            self._chat_db.kv_set(
+                WORLD_INTENTIONAL_STATE_KEY,
+                timephrase.utcnow().isoformat(timespec="seconds"),
+            )
+        except Exception:
+            log.debug("intentional-state stamp failed", exc_info=True)
+        state = result.get("state") or {}
+        self._notify_world({"state": state})
+        return result
 
     def add_world_item(
         self,

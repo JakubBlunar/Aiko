@@ -3,6 +3,7 @@ import type {
   WorldItem,
   WorldLocation,
   WorldPatch,
+  WorldScene,
   WorldSnapshot,
   WorldState,
 } from "@/types";
@@ -34,6 +35,7 @@ export const useWorldStore = create<WorldSlice>()((set) => ({
               state: patch.snapshot.state,
               locations: patch.snapshot.locations,
               items: patch.snapshot.items,
+              scenes: patch.snapshot.scenes ?? [],
               enabled: true,
             },
           };
@@ -46,6 +48,7 @@ export const useWorldStore = create<WorldSlice>()((set) => ({
             state: patch.snapshot.state,
             locations: patch.snapshot.locations,
             items: patch.snapshot.items,
+            scenes: patch.snapshot.scenes ?? current.scenes ?? [],
             enabled: true,
           },
         };
@@ -62,6 +65,16 @@ export const useWorldStore = create<WorldSlice>()((set) => ({
             : [...current.locations, next];
         locations.sort((a, b) => a.position - b.position || a.id - b.id);
         return { world: { ...current, locations } };
+      }
+      if ("scene" in patch) {
+        const next = (patch as { scene: WorldScene }).scene;
+        const scenes = current.scenes ?? [];
+        const idx = scenes.findIndex((s) => s.id === next.id);
+        const merged =
+          idx >= 0
+            ? scenes.map((s) => (s.id === next.id ? next : s))
+            : [...scenes, next];
+        return { world: { ...current, scenes: merged } };
       }
       if ("item" in patch) {
         const next = (patch as { item: WorldItem }).item;
@@ -98,6 +111,21 @@ export const useWorldStore = create<WorldSlice>()((set) => ({
           world: {
             ...current,
             items: current.items.filter((i) => i.id !== iid),
+          },
+        };
+      }
+      if ("deleted_scene_id" in patch) {
+        const sid = patch.deleted_scene_id;
+        return {
+          world: {
+            ...current,
+            scenes: (current.scenes ?? []).filter((s) => s.id !== sid),
+            locations: current.locations.filter((l) => l.scene_id !== sid),
+            items: current.items.filter((i) => {
+              if (i.location_id == null) return true;
+              const loc = current.locations.find((l) => l.id === i.location_id);
+              return loc != null && loc.scene_id !== sid;
+            }),
           },
         };
       }

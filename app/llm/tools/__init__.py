@@ -21,7 +21,8 @@ Two tool categories ship today, registered conditionally in
 :func:`app.llm.tools.world.build_world_tools` against the live
 :class:`WorldStore`:
   - ``look_around`` -- snapshot of current spot + nearby items (read-only).
-  - ``move_to``     -- relocate Aiko to a different room location.
+  - ``move_to``     -- relocate Aiko to a different spot in this scene.
+  - ``go_to_scene`` -- travel to another scene (apartment / user room).
   - ``change_posture`` -- update posture + activity.
   - ``inspect_item`` -- detailed read of one item.
   - ``consume_item`` -- decrement a consumable (cookies / tea / ...).

@@ -168,6 +168,7 @@ class RenderBlockTests(unittest.TestCase):
         self.assertFalse(snap["enabled"])
         self.assertEqual(snap["locations"], [])
         self.assertEqual(snap["items"], [])
+        self.assertEqual(snap["scenes"], [])
 
 
 class GiftSignalTests(unittest.TestCase):

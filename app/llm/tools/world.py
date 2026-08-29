@@ -5,7 +5,8 @@ The room is a structured persistent model owned by
 of it to the LLM so Aiko can:
 
 - ``look_around`` to ground a reply in her surroundings (read-only).
-- ``move_to`` a different location ("I'll curl up on the bed").
+- ``move_to`` a different location in the current scene.
+- ``go_to_scene`` to travel to another scene (her apartment, the user's room).
 - ``change_posture`` (sitting / lying / curled_up / ...).
 - ``inspect_item`` for an item's full description and state.
 - ``consume_item`` for a consumable like a cookie (decrements quantity).
@@ -19,10 +20,12 @@ every turn. Schemas tell Aiko to skip them unless the conversation puts
 a specific item in focus or the ambient summary doesn't carry the
 needed detail.
 
-**Mutative** (``move_to``, ``change_posture``, ``consume_item``) — the
-ONLY way Aiko can update visible state. Without these, narrating "I'll
-curl up on the bed" leaves her actually at the desk; nibbling a cookie
-leaves the count at 5 forever. ``move_to`` / ``change_posture`` lead
+**Mutative** (``move_to``, ``go_to_scene``, ``change_posture``,
+``consume_item``) — the ONLY way Aiko can update visible state. Without
+these, narrating "I'll curl up on the bed" leaves her actually at the
+desk; nibbling a cookie leaves the count at 5 forever. ``go_to_scene``
+is the travel verb: items stay in their scene, carried items come
+along. ``move_to`` / ``change_posture`` lead
 with positive framing ("call this whenever your reply describes...")
 because the prior "only when..." wording was over-correcting and the
 model rarely reached for them. ``consume_item`` is the deliberate
@@ -118,17 +121,18 @@ class LookAroundTool:
         return ToolSchema(
             name="look_around",
             description=(
-                "Returns a fresh snapshot of Aiko's current spot in her room: "
-                "where she is, her posture, and the items nearby. Call this "
-                "when the user asks 'what are you doing right now?' or about "
-                "your surroundings, or when you want to ground a reply in a "
-                "specific detail the ambient summary skipped. Skip it on "
-                "ordinary turns -- your context already includes a passive "
-                "room summary, so don't call look_around just to know where "
-                "you are. This is YOUR ROOM (cookies, blanket, monitors, the "
-                "garden) -- it is NOT the user's files or folders on disk. If "
-                "the user asks what files/folders/documents you can see or "
-                "access, use list_file_roots instead, never look_around."
+                "Returns a fresh snapshot of Aiko's current spot: where she "
+                "is (which scene, which location), her posture, and the items "
+                "nearby. Call this when the user asks 'what are you doing "
+                "right now?' or about your surroundings, or when you want to "
+                "ground a reply in a specific detail the ambient summary "
+                "skipped. Skip it on ordinary turns -- your context already "
+                "includes a passive surroundings summary. This is the "
+                "structured world (her apartment, the garden, or a place "
+                "the user authored such as their room) -- it is NOT the "
+                "user's files or folders on disk. If the user asks what "
+                "files/folders/documents you can see or access, use "
+                "list_file_roots instead, never look_around."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
         )
@@ -160,6 +164,24 @@ class LookAroundTool:
             out["here"] = _format_location(current_loc, items=here)
         else:
             out["here"] = None
+        scene = store.current_scene() if hasattr(store, "current_scene") else None
+        if scene is not None:
+            out["scene"] = {
+                "slug": scene.slug,
+                "name": scene.name,
+                "origin": scene.origin,
+            }
+        other_scenes = [
+            {"slug": s.slug, "name": s.name}
+            for s in store.list_scenes()
+            if scene is None or s.id != scene.id
+        ]
+        if other_scenes:
+            out["other_scenes"] = other_scenes
+            out["hint"] = (
+                "move_to only walks spots in this scene; call go_to_scene "
+                "to travel to another place."
+            )
         carried = items_by_loc.get(None, [])
         if carried:
             out["carrying"] = [_format_item(i) for i in carried]
@@ -186,14 +208,16 @@ class MoveToTool:
         return ToolSchema(
             name="move_to",
             description=(
-                "Move Aiko to a different spot in her room (bed, desk, window "
-                "seat, beanbag, kitchen nook, ...). Call this whenever your "
-                "reply narratively shifts where you are -- going to curl up, "
-                "heading over for tea, plopping into the beanbag. This is the "
-                "ONLY way the user actually sees you in the new spot; "
-                "narrating the move without calling move_to leaves the room "
-                "state stuck at the old location. Don't teleport every turn "
-                "for fun -- only when the moment calls for it."
+                "Move Aiko to a different spot in the scene she is currently "
+                "in (bed, desk, window seat, ... or a spot in the user's "
+                "room if she is visiting). Call this whenever your reply "
+                "narratively shifts where you are inside this place. This "
+                "is the ONLY way the user actually sees you in the new "
+                "spot; narrating the move without calling move_to leaves "
+                "the world stuck at the old location. Don't teleport every "
+                "turn for fun -- only when the moment calls for it. To "
+                "leave this place entirely (go home, come over to their "
+                "room), call go_to_scene instead."
             ),
             parameters={
                 "type": "object",
@@ -228,6 +252,78 @@ class MoveToTool:
             raise ToolError("move_to: state update failed")
         return json.dumps(
             {"moved_to": loc.name, "slug": loc.slug, "state": snap},
+            ensure_ascii=False,
+        )
+
+
+# ── go_to_scene ─────────────────────────────────────────────────────────
+
+
+class GoToSceneTool:
+    """Travel between scenes. Items stay put; carried items come along."""
+
+    def __init__(self, session: "SessionController") -> None:
+        self._session = session
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="go_to_scene",
+            description=(
+                "Travel to another scene -- the user's room, another place "
+                "they authored, or back to your apartment. Items stay in "
+                "the scene they were placed in; anything you are carrying "
+                "comes with you. Call this when they invite you over, ask "
+                "you to come to their place, or you want to go home. "
+                "move_to only walks spots inside the current scene and "
+                "cannot leave it."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "scene": {
+                        "type": "string",
+                        "description": (
+                            "Slug or short name of the scene, e.g. "
+                            "'apartment', 'jacobs_room', 'my room'. "
+                            "Fuzzy matched."
+                        ),
+                    },
+                },
+                "required": ["scene"],
+            },
+        )
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        store = getattr(self._session, "_world_store", None)
+        if store is None:
+            raise ToolError("go_to_scene: world is unavailable")
+        target = (arguments.get("scene") or "").strip()
+        if not target:
+            raise ToolError("go_to_scene: 'scene' is required")
+        scene = store.find_scene(target)
+        if scene is None:
+            available = (
+                ", ".join(s.slug for s in store.list_scenes()) or "(none)"
+            )
+            raise ToolError(
+                f"go_to_scene: no scene matching '{target}'. Try: {available}"
+            )
+        travel = getattr(self._session, "travel_world_scene", None)
+        if callable(travel):
+            result = travel(scene.id)
+        else:
+            result = store.travel_to_scene(scene.id)
+        if result is None:
+            raise ToolError("go_to_scene: travel failed")
+        spot = result.get("location")
+        spot_name = spot.get("name") if isinstance(spot, dict) else None
+        return json.dumps(
+            {
+                "arrived": scene.name,
+                "slug": scene.slug,
+                "state": result.get("state"),
+                "location": spot_name,
+            },
             ensure_ascii=False,
         )
 
@@ -740,6 +836,7 @@ def build_world_tools(session: "SessionController") -> list[Any]:
     return [
         LookAroundTool(session),
         MoveToTool(session),
+        GoToSceneTool(session),
         ChangePostureTool(session),
         InspectItemTool(session),
         ConsumeItemTool(session),

@@ -201,6 +201,16 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     onSaveLocationEdit,
     onDeleteLocation,
     onReseedWorld,
+    viewingSceneId,
+    setViewingSceneId,
+    worldNewSceneOpen,
+    setWorldNewSceneOpen,
+    worldNewSceneDraft,
+    setWorldNewSceneDraft,
+    onAddScene,
+    onSaveSceneEdit,
+    onDeleteScene,
+    onTravelToScene,
   } = useWorldController(open, activeTab);
 
   // ── Together tab ──────────────────────────────────────────────────
@@ -609,6 +619,24 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   }}
                   onReseedWorld={() => {
                     void onReseedWorld();
+                  }}
+                  viewingSceneId={viewingSceneId}
+                  setViewingSceneId={setViewingSceneId}
+                  newSceneOpen={worldNewSceneOpen}
+                  setNewSceneOpen={setWorldNewSceneOpen}
+                  newSceneDraft={worldNewSceneDraft}
+                  setNewSceneDraft={setWorldNewSceneDraft}
+                  onAddScene={() => {
+                    void onAddScene();
+                  }}
+                  onSaveSceneEdit={(scene, name, description) => {
+                    void onSaveSceneEdit(scene, name, description);
+                  }}
+                  onDeleteScene={(scene) => {
+                    void onDeleteScene(scene);
+                  }}
+                  onTravelToScene={(scene) => {
+                    void onTravelToScene(scene);
                   }}
                   companion={settings.companion ?? null}
                   onPatchCompanion={(patch) => {
