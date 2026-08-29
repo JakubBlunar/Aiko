@@ -2452,7 +2452,7 @@ banded nominations held global ranks 440-504 against a batch of 40, so no banded
 pair had ever reached the adjudicator — `relationship/ritual` and
 `relationship/narrative` appear in neither `concept_aliases` nor the rejection
 cache. The band now has a reserved, interleaved share of the batch. See
-[`health.md` H16 outcome 2](health.md#outcome-2-the-band-was-nominated-and-then-thrown-away).
+[`health.md` H16 outcome 2](shipped/health.md#outcome-2-the-band-was-nominated-and-then-thrown-away).
 
 The **drain rate** concern above was real and understated: alongside the band,
 answered pairs were skipped in the run loop but never removed from nomination,

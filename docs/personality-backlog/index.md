@@ -18,7 +18,14 @@ The H-series in [`health.md`](health.md) is **not a feature queue at all**:
 it is shipped work measured against the live graph and found to be doing
 something other than what its shipped entry claims. Read it before picking
 up anything new in the same area — several L-series items that read as
-"shipped" are latched, starved, or decorative in production.
+"shipped" are latched, starved, or decorative in production. It carries a
+[status index](health.md#status-index) covering all 53 entries; the 43
+closed ones keep their full text in
+[`shipped/health.md`](shipped/health.md), so `health.md` itself is the open
+work plus the
+[recurring-shapes catalogue](health.md#recurring-shapes). Below, a bare
+[`health.md`](health.md) citation may point at either file — the status
+index resolves it.
 
 The K-series in [`patterns.md`](patterns.md) is a separate beast —
 companion-AI design patterns we haven't tried yet, sketched at one
@@ -972,6 +979,45 @@ plain bug and is fixed: `%` sat inside the alternation terminated by `\b`, so
 one extracted nothing, and `test_measurement_pattern` passed throughout on
 `12 km`. **A pattern class exercised through one of five alternatives has four
 untested ones**, and here the untested branch was unreachable in real text
+([`health.md`](health.md)).
+
+**H21/H22 re-measured — read this one before trusting a "permanent" flag on a
+row that can be evicted.** H21's fix is confirmed on live traffic, not a replay:
+`style_signal_block` went from **100.0% of turns at one single length** to
+**13.1% across six**, against a predicted 12.4%, and the 40-character constant
+has not appeared once since. Its open question is answerable without new
+instrumentation by running its own technique backwards — the render is a fixed
+template over ten possible strings, so a length pins the label set — and the
+answer is sharper than the entry guessed: **six of ten directions have fired,
+and `question` is dead in *both*.* A ceiling explains a dead direction; nothing
+explains a dead axis, so one of the five contributes nothing and it is the same
+axis that never cleared its absolute bar under the old design either. Also a
+refinement to the query itself, from the one block it could not classify:
+`intimacy_pacing_block` is constant at 177 chars over 146 turns but **all 146
+fall inside two days**, and it is a conditional cue whose condition has since
+cleared. **A constant over a contiguous slice is a condition that held; a
+constant over the whole corpus is a signal that cannot move** — so the shortlist
+query needs a date span beside its `COUNT(DISTINCT chars)`.
+
+H22's fix worked and immediately showed the feature does not. Cues went from one
+ever to twelve and the block reaches the model — but the store went from 6
+rituals to **17, every one of shape `casual_check_in`**, which is the
+arc-detector's fallback for what its own docstring calls "the common case". So
+the ritual key is really a calendar cell, 17 of ~28 day×daypart cells cleared a
+three-of-eight-weeks bar, and the feature produced *"our Saturday-morning
+check-ins"* beside *"our late-night Tuesday check-ins"* — 17 names for one habit,
+H20's wrong-unit shape in a warmer costume. **She declined all eleven offers**
+(seven reached her prompt, four twice, none used), which is H47 again. Fixed
+here is the part that was about to cause harm: `acknowledged` is a field on a
+row, rows are evicted at 18, the store held **17**, and an evicted ritual that
+still qualifies re-enters as brand-new and gets announced a *second* time — the
+exact outcome the entry's "deliberately not done" section refused to risk. It
+survived the entry that fixed the other two caps in that function because its
+eviction test passes **no candidates**, so nothing it drops can come back (the
+same fixture blind spot as H16 and H20's percentage). "Has been offered" is now
+a ledger with a lifetime independent of the display cap, migrating itself from
+the rows. New **shape — a permanent record under a size cap is not permanent,
+and a "this already happened" flag does not belong on an evictable row**
 ([`health.md`](health.md)).
 
 **K91 shipped in four phases** — her away life is now *lived* rather than

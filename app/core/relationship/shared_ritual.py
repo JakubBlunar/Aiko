@@ -44,6 +44,27 @@ log = logging.getLogger("app.shared_ritual")
 # kv_meta key the worker, provider, and Together surface all share.
 SHARED_RITUALS_KEY = "aiko.shared_rituals"
 
+#: Keys of every ritual that has ever been offered, kept **outside** the
+#: ritual list so the display cap cannot resurrect an offer.
+#:
+#: ``acknowledged`` lives on a row, and rows are evicted by
+#: ``max_acknowledged``. An evicted ritual that is still an active
+#: candidate re-enters :func:`merge_rituals` through the brand-new branch
+#: -- ``acknowledged=False``, a fresh ``first_seen``, and a slot in
+#: ``new_keys`` -- so it gets announced a second time, and its refreshed
+#: ``first_seen`` then makes it one of the *newest* rows, evicting a
+#: genuinely older one and rotating the loop. H22 closed the cap that
+#: starved the pending budget and left this one: the live store sat at 17
+#: acknowledged against a cap of 18, one qualifying cell short of
+#: re-announcing "I kind of love that this has become our thing" about a
+#: ritual she had already named. H22's own note says saying that twice is
+#: worse than never saying it.
+NAMED_RITUALS_KEY = "aiko.shared_rituals.named"
+
+#: Cap on the ledger. Keys are ~34 bytes, so this is a few KB and still
+#: far more distinct rituals than a relationship produces.
+DEFAULT_MAX_NAMED_KEYS = 200
+
 
 # ── tuning defaults (overridable via settings) ──────────────────────────
 
@@ -217,6 +238,7 @@ def merge_rituals(
     now_date: str,
     max_active: int = DEFAULT_MAX_ACTIVE,
     max_acknowledged: int = DEFAULT_MAX_ACKNOWLEDGED,
+    named_keys: "set[str] | None" = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Fold ``candidates`` into the persisted ritual list.
 
@@ -238,7 +260,14 @@ def merge_rituals(
     be kept — and because ``new_keys`` was collected *before* the trim,
     the log then reported the same doomed key as "new" on every sweep
     forever. ``new_keys`` now names only rows that actually survived.
+
+    ``named_keys`` (see :data:`NAMED_RITUALS_KEY`) is the record of what
+    has ever been *offered*, and it outlives eviction from this list. A
+    candidate found there is restored as already-acknowledged and kept
+    out of ``new_keys``, because the alternative is announcing the same
+    ritual a second time — the one outcome the feature must not produce.
     """
+    named = {str(k) for k in (named_keys or ())}
     by_key = {str(r.get("key")): dict(r) for r in existing if r.get("key")}
     cand_keys = {c.key for c in candidates}
     merged: dict[str, dict[str, Any]] = {}
@@ -255,8 +284,11 @@ def merge_rituals(
             prior["shape_label"] = cand.shape_label
             prior.setdefault("acknowledged", False)
             prior.setdefault("first_seen", now_date)
+            if cand.key in named:
+                prior["acknowledged"] = True
             merged[cand.key] = prior
         else:
+            already_named = cand.key in named
             merged[cand.key] = {
                 "key": cand.key,
                 "label": cand.label,
@@ -266,9 +298,10 @@ def merge_rituals(
                 "weeks_seen": cand.weeks_seen,
                 "share": cand.share,
                 "first_seen": now_date,
-                "acknowledged": False,
+                "acknowledged": already_named,
             }
-            new_keys.append(cand.key)
+            if not already_named:
+                new_keys.append(cand.key)
 
     # Keep acknowledged rituals that fell out of the candidate set.
     for key, row in by_key.items():
@@ -388,6 +421,41 @@ def save_rituals(
         kv_set(SHARED_RITUALS_KEY, json.dumps(rituals))
     except Exception:
         log.debug("shared_ritual store write failed", exc_info=True)
+
+
+def load_named_keys(
+    kv_get: Callable[[str], "str | None"],
+) -> set[str]:
+    """Return the keys of every ritual ever offered (best-effort)."""
+    try:
+        raw = kv_get(NAMED_RITUALS_KEY)
+    except Exception:
+        return set()
+    if not raw:
+        return set()
+    try:
+        blob = json.loads(raw)
+    except Exception:
+        return set()
+    if not isinstance(blob, list):
+        return set()
+    return {str(k) for k in blob if isinstance(k, str) and k}
+
+
+def save_named_keys(
+    kv_set: Callable[[str, str], None],
+    keys: "set[str] | list[str]",
+    *,
+    max_keys: int = DEFAULT_MAX_NAMED_KEYS,
+) -> None:
+    """Persist the ever-offered ledger (best-effort, swallow-and-log)."""
+    ordered = sorted({str(k) for k in keys if k})
+    if max_keys > 0:
+        ordered = ordered[:max_keys]
+    try:
+        kv_set(NAMED_RITUALS_KEY, json.dumps(ordered))
+    except Exception:
+        log.debug("shared_ritual named-key write failed", exc_info=True)
 
 
 def mark_acknowledged(
