@@ -11,7 +11,7 @@ a cue for each newly-named ritual. The consumer
 :meth:`InnerLifeProvidersMixin._render_shared_ritual_block` claims one as
 a warm acknowledgment. This worker never speaks.
 
-Two stores, two jobs. ``aiko.shared_rituals`` is the durable model —
+Three stores, three jobs. ``aiko.shared_rituals`` is the durable model —
 which patterns exist, how many weeks each has run, which have been named
 out loud — and it long outlives any one cue. ``cue_pool`` holds the
 *saying* of it: one offer per ritual, retried if Aiko never took it, and
@@ -19,6 +19,15 @@ matched against her reply afterwards so "named" means she actually named
 it. The ``acknowledged`` flag is set when the cue is published, since
 from the store's point of view the question is only whether this ritual
 still needs an offer, and the pool answers everything after that.
+
+``aiko.shared_rituals.named`` is the third, and it exists because the
+first two disagree about lifetime. ``acknowledged`` is a field on a row,
+and rows are evicted by ``max_acknowledged``; an evicted ritual that
+still qualifies re-enters as a *brand-new candidate*, is offered again,
+and its refreshed ``first_seen`` makes it new enough to evict something
+older, rotating the loop. So "has been offered" is kept as a flat key
+ledger with a lifetime independent of any display cap, and the sweep
+folds the rows' own flags into it (which is also the migration).
 
 Idempotent by construction: it keeps the ritual store fresh and refuses
 to re-publish anything the pool already holds a cue for, so it needs no
@@ -173,9 +182,23 @@ class SharedRitualWorker:
         )
 
         now_date = now.astimezone().strftime("%Y-%m-%d")
+        named_keys = _sr.load_named_keys(self._chat_db.kv_get)
+        # The ledger post-dates the store, so fold in what the rows
+        # already assert was offered. Doubling as the migration means no
+        # install needs a one-off backfill, and an install whose ledger
+        # is dropped rebuilds it from whatever the rows still carry.
+        row_named = {
+            str(r.get("key"))
+            for r in existing
+            if r.get("acknowledged") and r.get("key")
+        }
+        if row_named - named_keys:
+            named_keys |= row_named
+            _sr.save_named_keys(self._chat_db.kv_set, named_keys)
         merged, new_keys = _sr.merge_rituals(
             existing, candidates, now_date=now_date,
             max_active=self._max_active,
+            named_keys=named_keys,
         )
         merged, drafted = self._publish(merged)
         _sr.save_rituals(self._chat_db.kv_set, merged)
@@ -237,6 +260,15 @@ class SharedRitualWorker:
         if not cue_id:
             return rituals, 0
         log.info("shared-ritual drafted: key=%s label=%r", key, label)
+        # The ledger, not the row, is what makes "already offered"
+        # durable: the row can be evicted by ``max_acknowledged`` and
+        # would then come back as a brand-new candidate owed an offer.
+        try:
+            named = _sr.load_named_keys(self._chat_db.kv_get)
+            named.add(key)
+            _sr.save_named_keys(self._chat_db.kv_set, named)
+        except Exception:
+            log.debug("shared_ritual ledger update failed", exc_info=True)
         return _sr.mark_acknowledged(rituals, key), 1
 
     # ── helpers ──────────────────────────────────────────────────────

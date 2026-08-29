@@ -200,6 +200,50 @@ class PoolProductionTests(unittest.TestCase):
             _worker(self.db).demand(now=_now(), last_run_at=None)
         )
 
+    def test_publishing_records_the_key_in_the_ledger(self) -> None:
+        """The row's flag is evictable; the ledger is what must persist."""
+        _worker(self.db, cues=self.cues).run()
+        self.assertEqual(
+            sr.load_named_keys(self.db.kv_get),
+            {"friday:evening:casual_check_in"},
+        )
+
+    def test_an_evicted_row_is_not_re_offered(self) -> None:
+        """The whole point, end to end.
+
+        Publish, then delete the ritual row entirely -- which is what
+        ``max_acknowledged`` does to it once the record fills -- and
+        confirm the next sweep re-detects it without offering it again.
+        """
+        _worker(self.db, cues=self.cues).run()
+        sr.save_rituals(self.db.kv_set, [])
+        for row in self.cues.pending("shared_ritual"):
+            self.cues.mark_used(row.id, evidence="said it")
+        result = _worker(self.db, cues=self.cues).run()
+        self.assertEqual(result["drafted"], 0)
+        self.assertEqual(result["new_keys"], [])
+        stored = sr.load_rituals(self.db.kv_get)
+        self.assertTrue(stored and stored[0]["acknowledged"])
+
+    def test_the_ledger_backfills_from_existing_rows(self) -> None:
+        """Installs predating the ledger carry the flag on the row only,
+        so the sweep has to adopt it rather than needing a migration."""
+        sr.save_rituals(
+            self.db.kv_set,
+            [{
+                "key": "friday:evening:casual_check_in",
+                "label": "our Friday-evening check-ins",
+                "weeks_seen": 4, "share": 0.5,
+                "acknowledged": True, "first_seen": "2026-07-01",
+            }],
+        )
+        result = _worker(self.db, cues=self.cues).run()
+        self.assertIn(
+            "friday:evening:casual_check_in",
+            sr.load_named_keys(self.db.kv_get),
+        )
+        self.assertEqual(result["drafted"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

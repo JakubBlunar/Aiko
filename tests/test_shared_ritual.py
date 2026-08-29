@@ -221,6 +221,116 @@ class BudgetStarvationTests(unittest.TestCase):
         self.assertEqual(len(merged), sr.DEFAULT_MAX_ACTIVE)
 
 
+class EvictedRitualIsNotReAnnouncedTests(unittest.TestCase):
+    """An evicted ritual that still qualifies must not be offered again.
+
+    The cap H22 fixed starved the *pending* budget. This is the second
+    cap in the same function, and it bites from the other side: a row
+    trimmed by ``max_acknowledged`` while still an active candidate
+    re-enters through the brand-new branch, so it arrives
+    ``acknowledged=False`` with a fresh ``first_seen`` and a slot in
+    ``new_keys`` -- an offer for a ritual already named. Its refreshed
+    ``first_seen`` then makes it one of the newest rows, so the next
+    trim evicts a genuinely older one and the loop rotates through the
+    record.
+
+    The reason it went unseen is the fixture: the test above evicts 40
+    rows while passing **no candidates**, so nothing it drops can come
+    back. Every assertion here passes candidates for the rows it evicts.
+    """
+
+    def _acknowledged(self, n, *, start=date(2026, 1, 1)):
+        return [
+            {
+                "key": "day%d:evening:casual_check_in" % i,
+                "label": "our thing %d" % i,
+                "weeks_seen": 4,
+                "share": 0.5,
+                "acknowledged": True,
+                "first_seen": (start + timedelta(days=i)).isoformat(),
+            }
+            for i in range(n)
+        ]
+
+    def _cand_for(self, row):
+        return sr.RitualCandidate(
+            key=row["key"], weekday="day", bucket="evening",
+            shape="casual_check_in", cadence="evenings",
+            shape_label="check-ins", label=row["label"],
+            weeks_seen=4, share=0.5,
+        )
+
+    def test_the_ledger_keeps_an_evicted_ritual_acknowledged(self) -> None:
+        record = self._acknowledged(4)
+        cands = [self._cand_for(r) for r in record]
+        merged, new = sr.merge_rituals(
+            record[2:], cands, now_date="2026-08-11",
+            max_acknowledged=2,
+            named_keys={r["key"] for r in record},
+        )
+        by_key = {r["key"]: r for r in merged}
+        for row in record[:2]:
+            with self.subTest(key=row["key"]):
+                self.assertTrue(
+                    by_key[row["key"]]["acknowledged"],
+                    msg="an evicted-then-redetected ritual came back "
+                        "pending, so it is owed a second announcement",
+                )
+        self.assertEqual(new, [], msg=f"reported as new: {new}")
+
+    def test_without_the_ledger_it_is_offered_again(self) -> None:
+        """Pins the defect itself, so the ledger cannot be dropped."""
+        record = self._acknowledged(4)
+        cands = [self._cand_for(r) for r in record]
+        merged, new = sr.merge_rituals(
+            record[2:], cands, now_date="2026-08-11", max_acknowledged=2,
+        )
+        pick = sr.pick_unacknowledged(merged)
+        self.assertIsNotNone(pick)
+        self.assertTrue(new)
+
+    def test_a_genuinely_new_ritual_is_still_offered(self) -> None:
+        """The ledger must not become a blanket veto."""
+        record = self._acknowledged(2)
+        fresh = sr.RitualCandidate(
+            key="sunday:late:support", weekday="sunday", bucket="late",
+            shape="support", cadence="Sunday late nights",
+            shape_label="heart-to-hearts",
+            label="our late-night Sunday heart-to-hearts",
+            weeks_seen=5, share=0.6,
+        )
+        merged, new = sr.merge_rituals(
+            record, [self._cand_for(record[0]), fresh],
+            now_date="2026-08-11",
+            named_keys={r["key"] for r in record},
+        )
+        self.assertEqual(new, ["sunday:late:support"])
+        pick = sr.pick_unacknowledged(merged)
+        assert pick is not None
+        self.assertEqual(pick["key"], "sunday:late:support")
+
+    def test_the_ledger_round_trips_and_stays_bounded(self) -> None:
+        store: dict[str, str] = {}
+        sr.save_named_keys(
+            store.__setitem__, {"b:late:support", "a:evening:playful"},
+        )
+        self.assertEqual(
+            sr.load_named_keys(store.get),
+            {"b:late:support", "a:evening:playful"},
+        )
+        sr.save_named_keys(
+            store.__setitem__,
+            {"k%03d" % i for i in range(50)},
+            max_keys=10,
+        )
+        self.assertEqual(len(sr.load_named_keys(store.get)), 10)
+
+    def test_a_missing_or_corrupt_ledger_reads_as_empty(self) -> None:
+        self.assertEqual(sr.load_named_keys(lambda _k: None), set())
+        self.assertEqual(sr.load_named_keys(lambda _k: "{oh no"), set())
+        self.assertEqual(sr.load_named_keys(lambda _k: '{"a": 1}'), set())
+
+
 class PickAndRenderTests(unittest.TestCase):
     def test_pick_unacknowledged_strongest(self) -> None:
         rituals = [

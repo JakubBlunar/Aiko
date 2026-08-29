@@ -203,6 +203,21 @@ than renamed, because every inbound link in the backlog points at it.)*
 - [H25. Show-and-tell — share an image, she reacts and remembers](shipped/immersion.md#h25-show-and-tell--share-an-image-she-reacts-and-remembers)
 - [H26. Caught mid-something — she was busy when you opened the app](shipped/immersion.md#h26-caught-mid-something--she-was-busy-when-you-opened-the-app)
 
+## [Closed — health-audit entries (H-series, the *other* one)](shipped/health.md)
+
+**43 closed entries** from [`health.md`](health.md), not enumerated here on
+purpose: unlike every other family on this page, a health entry's value is the
+*measurement* rather than the feature, so the list that matters is the
+[status index](health.md#status-index) — it carries severity and open/closed
+state for all 53 in one table, which a set of bullets here would only go stale
+against. The [recurring-shapes catalogue](health.md#recurring-shapes) stays in
+the live file for the same reason: it is the part you read *before* shipping.
+
+**The H numbers collide with the immersion section above**, and always have:
+immersion H0-H26 are features, health H1-H53 are audit findings. They are
+unrelated sequences that happen to share a letter, so "H22" is ambiguous
+without its file — say "immersion H22" or "health H22".
+
 ## [Shipped — Standalone features](shipped/features.md)
 
 - [User-facing memory editor](shipped/features.md#user-facing-memory-editor)
