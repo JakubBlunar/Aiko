@@ -309,8 +309,9 @@ CREATE TABLE IF NOT EXISTS world_locations (
     locked INTEGER NOT NULL DEFAULT 0,
     UNIQUE(scene_id, slug)
 );
-CREATE INDEX IF NOT EXISTS idx_world_locations_scene
-    ON world_locations(scene_id);
+-- ``idx_world_locations_scene`` lives in ``_DEPENDENT_LEDGER_INDICES``,
+-- not here: on upgrade the pre-v39 table has no ``scene_id`` yet, and
+-- this script runs *before* ``_migrate_world_scenes_v39`` adds it.
 
 CREATE TABLE IF NOT EXISTS world_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1176,14 +1177,17 @@ _DEPENDENT_MEMORY_INDICES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_memories_temporal_type ON memories(temporal_type)",
 )
 
-# Same problem, different table, and it needs its own list rather than a
+# Same problem, different tables, and it needs its own list rather than a
 # place in the tuple above: that one is applied partway through the
 # migration chain (at the v10 step), which is *before* the v28 ALTER that
-# adds ``surfacing_outcomes.item_key``. These run at the END of the chain,
-# and on the fresh / already-current paths alongside the memory indices.
+# adds ``surfacing_outcomes.item_key`` and the v39 world-scene columns.
+# These run at the END of the chain, and on the fresh / already-current
+# paths alongside the memory indices.
 _DEPENDENT_LEDGER_INDICES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_key "
     "ON surfacing_outcomes(item_kind, item_key, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_world_locations_scene "
+    "ON world_locations(scene_id)",
 )
 
 

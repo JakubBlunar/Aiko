@@ -415,6 +415,139 @@ class TestSchemaV7Migration(unittest.TestCase):
                     db._local.conn = None
 
 
+class TestSchemaV39WorldScenesMigration(unittest.TestCase):
+    """Schema v38 → v39: world scenes + ``scene_id`` on locations/state.
+
+    The index on ``world_locations.scene_id`` must not live in
+    ``_CREATE_TABLES`` — that script runs before the migration adds the
+    column, and a pre-v39 database would fail to open with
+    ``OperationalError: no such column: scene_id``.
+    """
+
+    def test_pre_v39_world_tables_upgrade(self) -> None:
+        import sqlite3 as _sqlite3
+        from app.core.infra.chat_database import _SCHEMA_VERSION
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.db"
+            conn = _sqlite3.connect(str(path))
+            conn.executescript(
+                """
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version (version) VALUES (38);
+                CREATE TABLE world_locations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE world_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL DEFAULT 'other',
+                    consumable INTEGER NOT NULL DEFAULT 0,
+                    quantity INTEGER NOT NULL DEFAULT 1,
+                    location_id INTEGER REFERENCES world_locations(id)
+                        ON DELETE SET NULL,
+                    state_json TEXT NOT NULL DEFAULT '{}',
+                    given_by TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE world_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    location_id INTEGER REFERENCES world_locations(id)
+                        ON DELETE SET NULL,
+                    posture TEXT NOT NULL DEFAULT 'sitting',
+                    activity TEXT NOT NULL DEFAULT 'idle',
+                    mood_note TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO world_locations (slug, name, description, position) "
+                "VALUES (?, ?, ?, ?)",
+                ("desk", "the desk", "her desk", 0),
+            )
+            loc_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            conn.execute(
+                "INSERT INTO world_state "
+                "(id, location_id, posture, activity, mood_note, updated_at) "
+                "VALUES (1, ?, 'sitting', 'idle', '', ?)",
+                (loc_id, "2025-01-01T00:00:00Z"),
+            )
+            conn.commit()
+            conn.close()
+
+            db = ChatDatabase(path)
+            try:
+                conn = db._get_conn()
+                version = conn.execute(
+                    "SELECT version FROM schema_version LIMIT 1"
+                ).fetchone()[0]
+                self.assertEqual(version, _SCHEMA_VERSION)
+
+                loc_cols = {
+                    r[1] for r in conn.execute(
+                        "PRAGMA table_info(world_locations)"
+                    ).fetchall()
+                }
+                self.assertIn("scene_id", loc_cols)
+                self.assertIn("locked", loc_cols)
+
+                state_cols = {
+                    r[1] for r in conn.execute(
+                        "PRAGMA table_info(world_state)"
+                    ).fetchall()
+                }
+                self.assertIn("scene_id", state_cols)
+
+                tables = {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                self.assertIn("world_scenes", tables)
+
+                apartment = conn.execute(
+                    "SELECT id, slug, origin FROM world_scenes "
+                    "WHERE slug = 'apartment'"
+                ).fetchone()
+                self.assertIsNotNone(apartment)
+                self.assertEqual(apartment[2], "builtin")
+
+                desk = conn.execute(
+                    "SELECT scene_id, locked FROM world_locations "
+                    "WHERE slug = 'desk'"
+                ).fetchone()
+                self.assertEqual(desk[0], apartment[0])
+                self.assertEqual(desk[1], 1)
+
+                state_scene = conn.execute(
+                    "SELECT scene_id FROM world_state WHERE id = 1"
+                ).fetchone()[0]
+                self.assertEqual(state_scene, apartment[0])
+
+                indexes = {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='index' AND tbl_name='world_locations'"
+                    ).fetchall()
+                }
+                self.assertIn("idx_world_locations_scene", indexes)
+            finally:
+                conn = getattr(db._local, "conn", None)
+                if conn is not None:
+                    conn.close()
+                    db._local.conn = None
+
+
 class TestThreadSafety(unittest.TestCase):
     def test_concurrent_inserts(self):
         with _TempDB() as db:
