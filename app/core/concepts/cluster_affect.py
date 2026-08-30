@@ -24,9 +24,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
+
 from app.core.infra import timephrase
 
 
@@ -183,6 +187,158 @@ def affect_phrase(valence: float, arousal: float) -> str:
     return _PHRASES.get(affect_bucket(valence, arousal), "neutral")
 
 
+def valence_band(bucket: str) -> str:
+    """The ``pos`` / ``neu`` / ``neg`` half of an ``affect_bucket`` key.
+
+    Accepts either the two-part ``"neg/mid"`` form stored on the affect
+    signature or a bare ``"neg"``. Unknown input is ``"neu"``.
+    """
+    raw = str(bucket or "").strip().lower()
+    if not raw:
+        return "neu"
+    head = raw.split("/", 1)[0]
+    if head in ("pos", "neu", "neg"):
+        return head
+    return "neu"
+
+
+# Label polarity is a *watch-line*, not a classifier: stems chosen so
+# "intense" does not match "tense", and mixed labels return None rather
+# than picking a side. Used by H14 succession (do not reinforce a warm
+# row onto a cluster that has flipped) and the polarity-coverage report.
+_POS_LABEL_STEMS: tuple[str, ...] = (
+    "energiz", "upbeat", "warm", "positive", "content", "joy", "happy",
+    "comfort", "excit", "pride", "calm", "safe", "delight", "fond",
+    "lifts", "cozy",
+)
+_NEG_LABEL_STEMS: tuple[str, ...] = (
+    "drain", "stress", "frustrat", "tense", "agitat", "downbeat", "heavy",
+    "anxious", "anxi", "overwhelm", "hollow", "confus", "lonely", "sad",
+    "fear", "anger", "hurt", "dread", "shame", "guilt",
+)
+
+
+def _label_has_stem(text: str, stems: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(
+        re.search(r"\b" + re.escape(stem), lowered) is not None
+        for stem in stems
+    )
+
+
+def label_valence_band(label: str) -> str | None:
+    """Guess ``pos`` / ``neg`` from an affective label, or ``None``.
+
+    ``None`` means mixed or unknown -- succession must not treat that as
+    a polarity flip. Word-boundary prefix match so ``intense`` does not
+    count as ``tense``.
+    """
+    text = str(label or "").strip()
+    if not text:
+        return None
+    pos = _label_has_stem(text, _POS_LABEL_STEMS)
+    neg = _label_has_stem(text, _NEG_LABEL_STEMS)
+    if pos and not neg:
+        return "pos"
+    if neg and not pos:
+        return "neg"
+    return None
+
+
+def polarity_conflicts(label: str, cluster_band: str) -> bool:
+    """True when a concept label and a cluster's current valence disagree.
+
+    Only ``pos`` vs ``neg`` counts. Neutral / unknown labels never
+    conflict, so a poorly-worded row is left for the proposer to handle
+    rather than being silently dropped from the reinforce list.
+    """
+    label_band = label_valence_band(label)
+    cluster = valence_band(cluster_band)
+    if label_band is None or cluster not in ("pos", "neg"):
+        return False
+    return label_band != cluster
+
+
+def select_polarity_balanced_focus(
+    dirty: Sequence[tuple[int, int, bool]],
+    *,
+    valence_band_of: Callable[[int], str],
+    cap: int,
+) -> list[tuple[int, int, bool]]:
+    """Pick up to ``cap`` dirty rows, reserving one slot for ``neg``.
+
+    Default order is the affect pass's existing one: new rows first, then
+    higher sample counts. Large warm clusters would otherwise fill the
+    cap and starve the rare negative ones (H14). If the natural take
+    already includes a ``neg`` band row, the order is left untouched.
+    """
+    cap_n = max(1, int(cap))
+    ordered = sorted(dirty, key=lambda d: (0 if d[2] else 1, -d[1]))
+    picked = list(ordered[:cap_n])
+    if any(valence_band_of(rep) == "neg" for rep, _samples, _new in picked):
+        return picked
+    picked_reps = {rep for rep, _samples, _new in picked}
+    reserved = next(
+        (
+            row for row in ordered
+            if row[0] not in picked_reps and valence_band_of(row[0]) == "neg"
+        ),
+        None,
+    )
+    if reserved is None or not picked:
+        return picked
+    return picked[:-1] + [reserved]
+
+
+def polarity_coverage(
+    cluster_bands: dict[int, str],
+    concept_clusters: Sequence[tuple[int, Sequence[int]]],
+) -> dict[str, Any]:
+    """H14 watch-line: annotatable clusters vs affective concepts per band.
+
+    ``cluster_bands`` maps cluster id -> ``pos`` / ``neu`` / ``neg`` for
+    clusters that have already cleared the annotation floor.
+    ``concept_clusters`` is ``(concept_id, evidence cluster ids)``. A
+    concept counts as ``neg`` when any of its evidence clusters is
+    currently in the neg band (the inventory we actually wanted), else
+    ``pos`` / ``neu`` / ``unmapped``.
+    """
+    by_band: Counter[str] = Counter(
+        valence_band(band) for band in cluster_bands.values()
+    )
+    concepts_by_band: Counter[str] = Counter()
+    for _cid, cids in concept_clusters:
+        bands = {
+            valence_band(cluster_bands[int(c)])
+            for c in cids
+            if int(c) in cluster_bands
+        }
+        if "neg" in bands:
+            concepts_by_band["neg"] += 1
+        elif "pos" in bands:
+            concepts_by_band["pos"] += 1
+        elif "neu" in bands:
+            concepts_by_band["neu"] += 1
+        else:
+            concepts_by_band["unmapped"] += 1
+    return {
+        "annotatable": {
+            "pos": int(by_band.get("pos", 0)),
+            "neu": int(by_band.get("neu", 0)),
+            "neg": int(by_band.get("neg", 0)),
+        },
+        "annotatable_total": len(cluster_bands),
+        "concepts": {
+            "pos": int(concepts_by_band.get("pos", 0)),
+            "neu": int(concepts_by_band.get("neu", 0)),
+            "neg": int(concepts_by_band.get("neg", 0)),
+            "unmapped": int(concepts_by_band.get("unmapped", 0)),
+        },
+        "neg_clusters": int(by_band.get("neg", 0)),
+        "neg_concepts": int(concepts_by_band.get("neg", 0)),
+    }
+
+
 # ── kv map helpers ──────────────────────────────────────────────────────
 
 
@@ -280,7 +436,12 @@ __all__ = [
     "affect_bucket",
     "affect_phrase",
     "kv_key_for",
+    "label_valence_band",
     "load_map",
+    "polarity_conflicts",
+    "polarity_coverage",
     "save_map",
+    "select_polarity_balanced_focus",
     "update_state",
+    "valence_band",
 ]

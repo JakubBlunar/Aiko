@@ -336,9 +336,48 @@ def value_evidence_gate(
 # needs a modest age (enough that a one-off mood doesn't stick) and a
 # moderate confidence, while still requiring at least two distinct sources so
 # a single beat never becomes a durable "this topic always feels X".
+#
+# H14 exception: a *single* cluster may promote when its current valence is
+# strongly negative (see :func:`affective_source_count_ok`). The pair-floor
+# stays the default; the exception is what lets a well-sampled hard topic
+# mint when it has no twin, without lowering the bar for mild-neg or warm
+# one-offs (cid-30-shaped "tender moment at -0.27" must still fail).
 _AFFECTIVE_MIN_SOURCES = 2
 _AFFECTIVE_MIN_AGE_DAYS = 0.5
 _AFFECTIVE_MIN_CONFIDENCE = 0.6
+# Default |valence| a 1-cluster affective must clear. Mirrored as
+# ``memory.concept_synthesis_affect_singleton_abs_valence``.
+DEFAULT_AFFECTIVE_SINGLETON_ABS_VALENCE = 0.35
+
+
+def affective_source_count_ok(
+    distinct_source_count: int,
+    min_sources: int,
+    *,
+    valence: float | None = None,
+    singleton_abs_valence: float = DEFAULT_AFFECTIVE_SINGLETON_ABS_VALENCE,
+) -> bool:
+    """Whether an affective concept has enough distinct sources to mint
+    or promote.
+
+    The default is the pair-floor (``max(min_sources, 2)``). A 1-source
+    row is accepted only when ``valence`` is at or below
+    ``-singleton_abs_valence`` -- the H14 strong-neg exception, shared by
+    the user proposer and :func:`affective_evidence_gate` so they cannot
+    disagree. Missing valence, mild-neg, and positive singletons fail.
+    """
+    n = int(distinct_source_count)
+    floor = max(int(min_sources), _AFFECTIVE_MIN_SOURCES)
+    if n >= floor:
+        return True
+    if n != 1 or valence is None:
+        return False
+    try:
+        v = float(valence)
+        bar = abs(float(singleton_abs_valence))
+    except (TypeError, ValueError):
+        return False
+    return v <= -bar
 
 
 def affective_evidence_gate(
@@ -349,6 +388,8 @@ def affective_evidence_gate(
     min_sources: int,
     min_age_days: float,
     min_confidence: float,
+    valence: float | None = None,
+    singleton_abs_valence: float = DEFAULT_AFFECTIVE_SINGLETON_ABS_VALENCE,
 ) -> bool:
     """Promotion predicate for ``affective`` concepts (L13).
 
@@ -356,14 +397,23 @@ def affective_evidence_gate(
     age + confidence bar than :func:`value_evidence_gate`, since a topic's
     affect is meant to move). The caller's thresholds still apply when they
     are *higher* (e.g. the L21 young-graph bar), via ``max``.
+
+    ``valence`` / ``singleton_abs_valence`` are the H14 1-cluster exception:
+    optional, so existing callers (and :func:`_age_is_the_only_blocker`)
+    keep the pair-floor when they omit them.
     """
-    return set_evidence_gate(
-        distinct_source_count=distinct_source_count,
-        age_days=age_days,
-        confidence=confidence,
-        min_sources=max(int(min_sources), _AFFECTIVE_MIN_SOURCES),
-        min_age_days=max(float(min_age_days), _AFFECTIVE_MIN_AGE_DAYS),
-        min_confidence=max(float(min_confidence), _AFFECTIVE_MIN_CONFIDENCE),
+    if not affective_source_count_ok(
+        distinct_source_count,
+        min_sources,
+        valence=valence,
+        singleton_abs_valence=singleton_abs_valence,
+    ):
+        return False
+    return (
+        float(age_days) >= max(float(min_age_days), _AFFECTIVE_MIN_AGE_DAYS)
+        and float(confidence) >= max(
+            float(min_confidence), _AFFECTIVE_MIN_CONFIDENCE
+        )
     )
 
 
@@ -866,6 +916,8 @@ __all__ = [
     "drift_plasticity",
     "set_evidence_gate",
     "value_evidence_gate",
+    "DEFAULT_AFFECTIVE_SINGLETON_ABS_VALENCE",
+    "affective_source_count_ok",
     "affective_evidence_gate",
     "taste_evidence_gate",
     "pursuit_evidence_gate",

@@ -135,8 +135,13 @@ looked dead on the raw table turned out to be at 100% reach.
    which exist for exactly this.
 3. **H11 — the ratio itself.** Now judgeable: H10 put a generative kind into the
    lane and it has been taking 28.6% of surfacings against `affective`'s 7.1%.
-4. **H14.** Re-measure; H9, H10 and H16 all changed its inputs, and only 9 of 38
-   clusters carried the valence samples the diary annotation needs.
+4. **H14.** Newly actionable. H9's feed recovered (5 real `neg` clusters);
+   minting still could not fire because only one was annotatable and L13
+   required two. The singleton strong-neg exception, polarity-balanced focus,
+   succession skip, and T3 evidence-cluster boost shipped 30 Aug 2026. Keep
+   this entry open until a later pass shows at least one true-negative *user*
+   affective that also appears in T3 on a matching-topic turn. Watch-line:
+   `python scripts/concept_openness_report.py` → Affect polarity.
 5. **H8.** Decisions to record rather than code to write.
 
 **H34 and H35 block nothing** — both are measurement-boundary entries, and H34's
@@ -777,6 +782,47 @@ carry enough valence reads to be annotated, with a mix of 6 warm / 6 neutral /
 2 downbeat / 2 energizing. Fewer topics described, but described from evidence.
 
 Re-measure the 0-of-41 figure after a few weeks of accumulation.
+
+### Re-measure 30 Aug 2026 — the map recovered; minting still could not fire
+
+H9's feed fix worked. User cluster affect map: **59** clusters, **5** with
+valence ≤ −0.20 (was 0; old floor −0.112). Active `kind=affective`: user
+**68 / 0 negative**, aiko **175 / 0 true self-negative**. Candidates did not
+fill the gap.
+
+| cid | valence | samples / valence_samples | bucket | annotatable (≥3 both + label)? | label |
+| --- | --- | --- | --- | --- | --- |
+| 47 | −0.46 | 2 / 2 | neg/mid | no | promised: talk about dreams / inner speech |
+| 53 | −0.40 | 1 / 1 | neg/mid | no | orphan (not in `topic_clusters`) |
+| 51 | −0.40 | 1 / 1 | neg/mid | no | multi-provider LLM integration |
+| 65 | −0.40 | 1 / 1 | neg/low | no | orphan |
+| **30** | **−0.272** | 21 / **3** | neg/mid | **yes** | Shared moment (tender): bedtime cuddles / comfort |
+
+Only cid 30 cleared the annotation floor, so L13's two-cluster rule still
+could not mint. **Do not mint cid 30 as-is** (−0.272 is just past the `neg`
+cut on a tender cluster; likely tiredness at bedtime, not "cuddles drain
+him").
+
+Shipped 30 Aug 2026, still this entry (do not move to shipped until a
+true-negative user affective also reaches T3 on a matching-topic turn):
+
+- 1-cluster exception at `|valence| >= 0.35` with `valence_samples >= 3`
+  (`memory.concept_synthesis_affect_singleton_abs_valence`). Pair-floor
+  stays the default. Mild-neg (cid 30) stays out; 47/51 can mint once they
+  earn samples.
+- Valence-band grouping in the user proposer (`neg/mid` + `neg/low` may
+  share "drains him").
+- Polarity-balanced focus: reserve one slot for a dirty `neg` cluster so
+  large warm ones cannot starve it.
+- Succession: an existing warm affective that cites a now-`neg` focus
+  cluster is listed as superseded and cannot be reinforced.
+- T3 evidence-cluster boost: when the live topic is in an affective
+  concept's cluster evidence, treat that as a context hit (not a global
+  preference for negative feelings).
+- Watch-line: `python scripts/concept_openness_report.py` → Affect polarity.
+
+Do not lower the global sample floor. Do not copy guilt out of `value`.
+Do not pin affective into the core lane.
 
 ---
 

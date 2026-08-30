@@ -520,7 +520,8 @@ register_kind(
         # does, but it does not tell her what she may or may not do.
         role=ROLE_ANCHOR,
         # L3: the fluid-end gate (a lower age + confidence bar than value,
-        # but still >= 2 distinct sources).
+        # still >= 2 distinct sources by default; H14 allows a single
+        # strongly-negative well-sampled cluster).
         promotion_gate=affective_evidence_gate,
         # L24 / L27: affective concepts are *tone guidance* -- they should
         # surface when the live turn's topic matches, not be pinned every

@@ -801,6 +801,10 @@ class MemorySettings:
     # is how many affect-bearing turns a cluster (or self-theme) must accrue
     # before it is offered to the affective proposers.
     concept_synthesis_affect_min_samples: int = 3
+    # H14: |valence| a 1-cluster affective must clear to mint / promote.
+    # Below this, the pair-floor still applies. 0.35 sits between a mild-neg
+    # tender cluster (~-0.27) and a clearly hard topic (~-0.40).
+    concept_synthesis_affect_singleton_abs_valence: float = 0.35
     affect_sampler_min_sim: float = 0.4
     affect_sampler_top_n: int = 1
     affect_sampler_learning_rate: float = 0.2
@@ -3339,6 +3343,18 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 1,
                 int(
                     memory_raw.get("concept_synthesis_affect_min_samples", 3)
+                ),
+            ),
+            concept_synthesis_affect_singleton_abs_valence=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "concept_synthesis_affect_singleton_abs_valence",
+                            0.35,
+                        )
+                    ),
                 ),
             ),
             affect_sampler_min_sim=max(
