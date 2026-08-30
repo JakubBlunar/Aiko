@@ -281,9 +281,11 @@ def split_reaction_stack(expression: str | None) -> list[str]:
     resolution side.
 
     Whitespace around component names is silently trimmed so a model
-    that emits ``A + B`` instead of ``A+B`` still parses cleanly —
-    the regex in :mod:`response_text_service` doesn't allow spaces,
-    so this is more of a defensive nicety than a real concern.
+    that emits ``A + B`` instead of ``A+B`` still parses cleanly. This
+    is load-bearing, not a nicety: the tag regexes in
+    :mod:`app.core.services.response_text_service` now *admit* the
+    spaces and lean on this trim, because when they refused them the
+    whole tag leaked into the reply instead of being stripped.
     """
     if not expression:
         return []

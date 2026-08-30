@@ -3,6 +3,10 @@ from __future__ import annotations
 import unittest
 
 from app.core.services.response_text_service import (
+    consume_leading_prosody_tag,
+    extract_stage_directions,
+    extract_touch_commands,
+    parse_arc_tags,
     parse_reaction_at_start,
     parse_reaction_stack_at_start,
     safe_visible_prefix,
@@ -370,6 +374,122 @@ class ParseReactionAtStartStackTests(unittest.TestCase):
         self.assertIsNone(primary)
         self.assertEqual(companions, [])
         self.assertEqual(rest, "hi there")
+
+
+class WhitespaceInTagBodyTests(unittest.TestCase):
+    """A stray space inside a tag must not turn the tag into speech.
+
+    The regexes that interpret these tags are the same ones that strip
+    them, so a body they refuse used to reach the chat bubble, TTS and
+    the stored transcript. That is how a live install spoke
+    ``[[reaction: wistful+blush]]`` aloud twice in one day: the stack
+    was legal, the space was not, and the refusal skipped the strip
+    rather than just the side-effect.
+    """
+
+    def test_the_live_regression_string(self) -> None:
+        source = (
+            "[[reaction: wistful+blush]]\n"
+            "A glass-roofed tower, old stone, and a quiet night with you?"
+        )
+
+        primary, companions, rest = parse_reaction_stack_at_start(source)
+
+        self.assertEqual(primary, "wistful")
+        self.assertEqual(companions, ["blush"])
+        self.assertTrue(rest.startswith("A glass-roofed tower"))
+        self.assertNotIn("[[", strip_all_meta_tags(source))
+
+    def test_spaces_around_the_stack_separator_still_parse(self) -> None:
+        primary, companions, _ = parse_reaction_stack_at_start(
+            "[[reaction: cheerful + blush ]] hi",
+        )
+        self.assertEqual(primary, "cheerful")
+        self.assertEqual(companions, ["blush"])
+
+    def test_spaced_prosody_tag_still_drives_delivery(self) -> None:
+        label, rest = consume_leading_prosody_tag(
+            "[[prosody: whisper]] I missed you.",
+        )
+        self.assertEqual(label, "whisper")
+        self.assertEqual(rest, "I missed you.")
+
+    def test_spaced_arc_tag_is_still_extracted(self) -> None:
+        self.assertEqual(parse_arc_tags("ok [[arc: support ]]"), ["support"])
+
+    def test_spaced_touch_tag_is_still_dispatched(self) -> None:
+        commands = extract_touch_commands("come here [[touch: hug ]]")
+        self.assertEqual([c.kind for c in commands], ["hug"])
+
+    def test_spaced_stage_direction_is_still_an_earcon(self) -> None:
+        self.assertEqual(
+            extract_stage_directions("well [[ sigh ]] fine"),
+            [("sigh", 5)],
+        )
+
+
+class MetaTagBackstopTests(unittest.TestCase):
+    """Stripping is permissive even where interpreting is strict.
+
+    An unrecognised tag body must cost a side-effect, never a leak, so
+    ``strip_all_meta_tags`` drops anything shaped like a closed meta tag
+    regardless of whether any interpreter accepted it.
+    """
+
+    #: One malformed body per tag name. None of these parse; all of them
+    #: must vanish.
+    _BODIES = (
+        "[[reaction: wistful+blush]]",
+        "[[reaction:wistful!]]",
+        "[[Reaction : wistful]]",
+        "[[prosody: whisper ]]",
+        "[[prosody:not_a_real_label]]",
+        "[[arc: support]]",
+        "[[overlay: sweat + question]]",
+        "[[outfit: pajamas]]",
+        "[[motion: wave-2]]",
+        "[[touch: hug]]",
+        "[[activity: making tea]]",
+        "[[remember: Jacob likes mochi]]",
+        "[[goal: get better at drawing]]",
+        "[[conflict: that contradicts last week]]",
+        "[[gap: tokyo: when is the trip]]",
+        "[[moment: warm: we talked about the tower]]",
+        "[[diary: today felt good]]",
+        "[[agenda: 0.7: ask about the castle]]",
+        "[[predict: mood: tokyo trip: excited: 0.8]]",
+    )
+
+    def test_no_malformed_tag_survives_the_strip(self) -> None:
+        for tag in self._BODIES:
+            with self.subTest(tag=tag):
+                out = strip_all_meta_tags(f"before {tag} after")
+                self.assertNotIn("[[", out)
+                self.assertNotIn("]]", out)
+                self.assertIn("before", out)
+                self.assertIn("after", out)
+
+    def test_no_malformed_tag_survives_streaming(self) -> None:
+        # The streamed bubble runs through a different entry point than
+        # the persisted copy; hold both to the same bar.
+        for tag in self._BODIES:
+            with self.subTest(tag=tag):
+                visible = safe_visible_prefix(f"hello {tag} world")
+                self.assertNotIn("[[", visible)
+
+    def test_private_bodies_are_not_merely_unwrapped(self) -> None:
+        # A malformed [[remember:...]] must lose its *content* too, not
+        # just its brackets — it is a private note, and the failure mode
+        # being fixed here is exactly "it ended up in the reply".
+        out = strip_all_meta_tags("hi [[remember: Jacob likes mochi]] bye")
+        self.assertNotIn("mochi", out)
+
+    def test_ordinary_double_brackets_are_left_alone(self) -> None:
+        # The backstop keys on the known tag vocabulary, so prose and
+        # code-ish text with doubled brackets survive.
+        for text in ("see arr[[0]] there", "a [[not_a_tag: body]] b"):
+            with self.subTest(text=text):
+                self.assertEqual(strip_all_meta_tags(text), text)
 
 
 class SafeVisiblePrefixTests(unittest.TestCase):
