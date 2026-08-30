@@ -8,9 +8,11 @@
  * side, rename the other.
  */
 import { isTauri } from "./runtime";
+import type { ActivityEnvelope } from "../types";
 
 export const PERSONA_VISIBILITY_EVENT = "persona-visibility";
 export const WINDOW_VISIBILITY_EVENT = "window-visibility";
+export const ACTIVITY_SAMPLE_EVENT = "activity://sample";
 
 type Unlisten = () => void;
 
@@ -101,5 +103,35 @@ export async function getCurrentWindowVisible(): Promise<boolean> {
   } catch (err) {
     console.warn("[desktop] failed to probe window visibility", err);
     return true;
+  }
+}
+
+/**
+ * Subscribe to collector envelopes. JS is a dumb pipe: listen and
+ * forward, never await an OS poll. No-op outside Tauri.
+ */
+export async function listenActivitySample(
+  handler: (envelope: ActivityEnvelope) => void,
+): Promise<Unlisten> {
+  if (!isTauri()) {
+    return () => {};
+  }
+  try {
+    const mod = await import("@tauri-apps/api/event");
+    const unlisten = await mod.listen<ActivityEnvelope>(
+      ACTIVITY_SAMPLE_EVENT,
+      (event) => {
+        if (event.payload && typeof event.payload === "object") {
+          handler(event.payload);
+        }
+      },
+    );
+    return unlisten;
+  } catch (err) {
+    console.warn(
+      `[desktop] failed to subscribe to ${ACTIVITY_SAMPLE_EVENT}`,
+      err,
+    );
+    return () => {};
   }
 }

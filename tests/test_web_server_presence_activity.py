@@ -207,6 +207,28 @@ class UserActivityWsCommandTests(unittest.TestCase):
             ws.receive_text()
         session.set_user_active_app.assert_called_with(None)
 
+    def test_user_activity_envelope_goes_to_ingest_not_legacy_setter(self) -> None:
+        client, session = _build_client()
+        envelope = {
+            "v": 1,
+            "at": "2026-08-30T19:00:00Z",
+            "source": "foreground",
+            "tier": "cheap",
+            "subject": {"app": "Code", "title": "foo.py"},
+            "signal": {"kind": "focus"},
+            "payload": {},
+        }
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()
+            ws.send_text(json.dumps({
+                "type": "user_activity", "envelope": envelope,
+            }))
+            ws.send_text(json.dumps({"type": "ping"}))
+            ws.receive_text()
+        session.ingest_activity_envelope.assert_called_with(envelope)
+        session.set_user_active_app.assert_not_called()
+        session._touch_user_activity.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

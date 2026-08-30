@@ -5,6 +5,26 @@ from typing import Any
 from app.core.infra.agent_settings import AgentSettings
 
 
+def _parse_title_allowlist(raw: Any) -> list[str]:
+    """Positive app-name allowlist. Empty / garbage → no titles stored."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        name = str(item).strip()
+        if len(name) >= 4 and name[-4:].lower() == ".exe":
+            name = name[:-4].strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
 def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
     from app.core.infra.settings import (
         _normalize_approval_mode,
@@ -43,6 +63,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ),
             activity_awareness_enabled=bool(
                 agent_raw.get("activity_awareness_enabled", False),
+            ),
+            activity_title_allowlist=_parse_title_allowlist(
+                agent_raw.get("activity_title_allowlist"),
             ),
             weather_sync_enabled=bool(
                 agent_raw.get("weather_sync_enabled", False),

@@ -13,32 +13,15 @@ it subsumes C2.
 
 ## C2. Window-title-aware activity
 
-**Now phase 1 of [C6](#c6-companion-mode--the-desktop-as-a-sensory-channel).**
-Read C6 first: titles are worth much more as the input to a perception
-pipeline than as one more string in the ambient block, and C6 supplies
-the privacy story this entry says it is waiting for.
-
-**Motivation.** App name only ships in v1 of activity awareness; window
-titles would let Aiko reference doc / file names she sees in Jacob's
-foreground app, but leaks bank URLs and private chat targets if naively
-forwarded. Worth picking up once we have a privacy story strong enough
-to support it.
-
-**Key files.** [`web/src-tauri/src/lib.rs`](../../web/src-tauri/src/lib.rs)
-`get_active_app`, [`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
-`set_user_active_app` + `_render_activity_block`,
-[`web/src/hooks/useActivityReporter.ts`](../../web/src/hooks/useActivityReporter.ts).
-
-**Sketched approach.** Per-app allowlist (`activity.title_allowlist:
-{"Cursor": true, "Code": true}`) gated on a settings toggle that's
-*also* OFF by default. Forwarded titles get the same privacy footer
-treatment as the live readout — visible to the user before they
-opt in. Persona update tells Aiko she may reference the title casually
-but never quote URLs or chat-target names verbatim.
-
-**Open questions.** Allowlist by app name, or also by app + title-
-regex pair so we can let "Cursor" through while still redacting an
-incognito tab in the same browser?
+**Subsumed by [C6](#c6-companion-mode--the-desktop-as-a-sensory-channel) phases 1–2.**
+Titles are now collected behind `activity.title_allowlist`, redacted
+before persist, and shown in the settings readout. They still do **not**
+enter the prompt `activity_block` (app name only). Remaining C6 work is
+interpretation, cues, UIA, the live pull in
+[C7](#c7-live-activity-pull--get_activity-tool), OS idle as a
+gap-cue qualifier in [C8](#c8-os-idle-as-a-gap-cue-qualifier), and
+duration as wellbeing evidence in
+[C9](#c9-activity-duration-as-wellbeing-evidence-k72).
 
 ---
 
@@ -95,6 +78,14 @@ forever — typed-proactive is *meant* to be text-only.
 
 ## C6. Companion mode — the desktop as a sensory channel
 
+**Phases 1–2 shipped** (collection pipeline). Write-up:
+[`shipped/proactive-tasks.md`](shipped/proactive-tasks.md#c6-companion-mode-collection-pipeline-phases-12).
+Still open: phases 3–6 below, plus [C7](#c7-live-activity-pull--get_activity-tool)
+(live pull / agent tool), [C8](#c8-os-idle-as-a-gap-cue-qualifier)
+(OS idle as a gap-cue qualifier), and
+[C9](#c9-activity-duration-as-wellbeing-evidence-k72)
+(duration as K72 evidence).
+
 **Motivation.** Every signal Aiko has about Jacob arrives through the
 chat box. She knows what he *says* and when he says it, and past that
 the world is dark. Companion mode gives her a second, much
@@ -121,21 +112,17 @@ OS events -> cheap collectors -> normalised activity events
 Four of those five stages already exist in some form, and the one
 architectural property the design needs most — *perception runs when he
 is working, not when he is talking* — is already how the scheduler
-behaves. The real work is not the pipeline. It is the storage layer
-underneath it, which does not exist at all, and the interruption bar on
-top of it, which this codebase has repeatedly got wrong.
+behaves. The storage layer (phases 1–2) now exists. The remaining work
+is aggregation / interpretation and the interruption bar on top, which
+this codebase has repeatedly got wrong.
 
 ### What already exists
 
-- **Level 0, partially.** C1 ships presence plus the foreground **app
-  name**, opt-in and off by default, 5 s poll, diff-only over the
-  existing WebSocket. Two consumers: the T4 `activity_block` and K16's
-  `GroundingContext.user_app`. `active_win_pos_rs` already returns
-  `.title` in the same struct — we deliberately never read it, which is
-  the load-bearing privacy decision in
+- **Level 0 collectors + event store.** Isolated Tauri
+  `CollectorRuntime`, title allowlist, OS idle, session lock, schema
+  v40 `activity_events` / `activity_sessions` with prune. Prompt
+  `activity_block` is still app-name only. Privacy contract:
   [`presence-and-activity.md`](../../docs/presence-and-activity.md).
-  So phase 1 is a one-field change plus a privacy story, not new
-  plumbing.
 - **The demand-driven scheduling the design asks for.** "Only process
   activity when there is enough accumulated context, and skip it while
   he is talking to her" is a description of the idle-worker scheduler:
@@ -156,13 +143,10 @@ live in [`immersion.md`](immersion.md); audit H-numbers live in
 [`health.md`](health.md). Both are cited below and each is named.)
 
 **One accident to protect.** `_touch_user_activity` has exactly one
-caller — `chat_turn_mixin.py:117`, on a chat turn. `user_activity`
-frames do *not* reset the idle gate, so a user who is coding and not
-chatting reads as **idle** to the scheduler, which is precisely when
-perception should run. Its docstring claims it is also called from "WS /
-REST traffic", which is stale. If anyone ever makes that docstring true,
-this entire pipeline silently stops running. It wants an invariant test,
-not a comment.
+caller — `chat_turn_mixin.py`, on a chat turn. Held by
+`tests/test_activity_touch_invariant.py`. If anyone ever makes
+`user_activity` frames reset the idle gate, this entire pipeline
+silently stops running.
 
 **And one ambiguity this fixes.** Idle depth conflates *away from the
 keyboard* with *here but not talking to me* — both are just "no messages
@@ -174,16 +158,10 @@ after `turning_over`.
 
 ### The three things the sketch does not account for
 
-**1. There is no history to interpret.** Today's signal is a single
-`str | None` on the session object: no timeline, no durations, no
-counts, not persisted, gone on restart. Every example the design turns
-on — "VS Code 7 min, debugger opened 4 times", "he has been at this for
-two hours" — needs a store that does not exist. That is the real
-foundation and it is phase 2, not a detail. It also arrives with a
-warning attached: per audit **H33**'s recurring shape 14, an append-only
-event table with no retention policy is the exact failure we just spent a
-day paying off in LanceDB. **Retention ships with the table, in the same
-commit, or it never ships.**
+**1. The store exists; the aggregator does not.** Phase 2 shipped
+`activity_events` / `activity_sessions` with retention. Phase 3 still
+needs a compute-lane worker whose `demand()` is "has anything
+meaningful changed" — rollups over those sessions, not a second table.
 
 **2. A new cue lands in an oversubscribed pool and will starve
 invisibly.** The delightful version of this feature — *"you're doing the
@@ -201,16 +179,11 @@ first measurement says it never fires, and plan to find out why.
 **3. Titles and UI Automation are content, not buckets — and what she
 writes down is durable.** "Chrome" is a coarse category. "Barclays —
 Payments" is a fact about his finances, and a UIA text node is the
-sentence on his screen. That is a different category of data, not more
-of the same one, and the current defence-in-depth doc is built around
-the narrow reading. The sharper problem is downstream: today's app name
-is transient, overwritten every 5 s and never stored, whereas anything
-the interpretation worker concludes becomes a **memory** — mirrored into
-LanceDB, retrievable by RAG, surfaceable months later. **Redaction has
-to happen before persistence, not before rendering**, and the allowlist
-has to be positive (named apps opt *in*), because the set of
-applications whose titles are safe is small and enumerable while the set
-that are unsafe is not.
+sentence on his screen. Collection now redacts before persist and
+stores titles only for allowlisted apps. The sharper remaining problem
+is downstream: anything the interpretation worker concludes becomes a
+**memory** — mirrored into LanceDB, retrievable by RAG, surfaceable
+months later. Phase 4/5 must keep that bar.
 
 ### The collector is its own thing, and must fail on its own
 
@@ -281,20 +254,15 @@ run and produced a list. **Defer, and expect that list to be short.**
 
 ### Phases
 
-1. **Level 0 collectors (Rust).** Window title behind a positive
-   allowlist, `GetLastInputInfo` for true OS idle, session lock/unlock.
-   Small; `active-win-pos-rs` already pulls the `windows` crate in.
-   Build it as the isolated background collector with its own queue from
-   the start — retrofitting isolation after something has already
-   blocked a turn is much worse than paying for it now, and at this tier
-   the queue is the only part that is not trivial.
-2. **Event store + sessionizer (Python, schema v36).** Normalised
-   events, focus-flicker collapse into sessions, durations and counts,
-   retention from day one. The foundation; everything else is cheap
-   afterwards.
+1. **Level 0 collectors (Rust).** ✅ Shipped. Isolated `CollectorRuntime`,
+   window title behind a positive allowlist, `GetLastInputInfo`, session
+   lock/unlock. EscalationBus fires with zero subscribers (the UIA lock).
+2. **Event store + sessionizer (Python, schema v40).** ✅ Shipped.
+   Redact-before-persist, unknown sources dropped, focus-flicker
+   collapse, `ActivityPruneWorker` from day one.
 3. **Level 1 aggregation worker.** Compute lane, no model — rollups and
    a "has anything meaningful changed" signal, which is also the
-   `demand()` probe for phase 4.
+   `demand()` probe for phase 4. The store now exists for this to read.
 4. **Level 2 interpretation worker.** LLM lane, local worker model,
    triggered only by phase 3's change signal. Must be able to return
    *nothing* and must carry a confidence, because a confident wrong
@@ -303,11 +271,12 @@ run and produced a list. **Defer, and expect that list to be short.**
 5. **Level 3 intake.** One memory path plus one gap cue, both
    instrumented. Stop here and measure for a fortnight.
 6. **UIA.** Only if phase 5's data names questions titles could not
-   answer. When built: escalation-triggered, per-app allowlist, cached
-   with a TTL, `IUIAutomation2` timeouts, on its own thread — and if a
-   real application still manages to wedge it, that is the signal to
-   move it out into a killable sidecar process rather than to add
-   another timeout.
+   answer. When built: new Rust `ActivitySource` (`Escalated` +
+   `Dedicated`) subscribed to the EscalationBus, Python `SourceHandler`
+   on the same allowlist, bounded digest in `payload`. Cache key:
+   `surface_id + title + focus-entry`, TTL, re-read on refocus — **not**
+   UIA event subscriptions. `IUIAutomation2` timeouts; hang = leak that
+   thread. Do not stub snapshot APIs until this phase.
 
 **Cost.** Levels 0-1 are free in any meaningful sense — a title read
 and an idle query are microseconds, and the poll already runs. Level 2
@@ -317,17 +286,8 @@ setup*: with chat on a remote provider, local worker inference grades as
 `none` on the contention scale, so interpretation competes with the
 other workers rather than with her ability to answer him.
 
-**Key files.**
-[`web/src-tauri/src/lib.rs`](../../web/src-tauri/src/lib.rs)
-`get_active_app` (level 0),
-[`web/src/hooks/useActivityReporter.ts`](../../web/src/hooks/useActivityReporter.ts),
-`user_activity` handler in [`app/web/server.py`](../../app/web/server.py),
-[`app/core/session/proactive_presence_mixin.py`](../../app/core/session/proactive_presence_mixin.py)
-`set_user_active_app`,
-[`app/core/session/inner_life_part4.py`](../../app/core/session/inner_life_part4.py)
-`_render_activity_block` + `_build_grounding_context`,
-[`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py)
-(v36 table + retention),
+**Key files (remaining).**
+[`app/core/activity/`](../../app/core/activity/) (store + handlers),
 [`app/core/proactive/idle_worker.py`](../../app/core/proactive/idle_worker.py)
 (worker protocol, lanes),
 [`app/core/proactive/cue_accounting.py`](../../app/core/proactive/cue_accounting.py)
@@ -343,13 +303,11 @@ other workers rather than with her ability to answer him.
   (ephemeral, expire unsaid)? Cheapest honest answer is cues first,
   memories only once a pattern repeats — which is also how concepts
   are supposed to form.
-- Where does the "he's been at it too long" judgement live? Wellbeing
-  concern is relationship-shaped and there is existing machinery for
-  it; this may be evidence *into* that rather than a cue of its own.
+- Where does the "he's been at it too long" judgement live? Extracted
+  to [C9](#c9-activity-duration-as-wellbeing-evidence-k72) — evidence
+  *into* K72, not a new companion cue.
 - Should OS idle replace message-gap timing in the existing gap cues,
-  or sit beside it? Replacing is more correct and touches five shipped
-  cues at once, so probably beside it, with the gap cues reading it as
-  a qualifier.
+  or sit beside it? Extracted to [C8](#c8-os-idle-as-a-gap-cue-qualifier).
 - Is the second-monitor posture (immersion H27) a prerequisite or a
   consumer? It reads as a consumer, but H27 is itself blocked on H10.
 - Thread or sidecar process for the deep-inspection worker? A thread is
@@ -372,3 +330,94 @@ level-1 summary would land in the prompt without adding a block. **D7**
 learned routines rather than from the OS, and the two should share an
 intake. Immersion **H25** is the local-perception precedent. Audit
 **H33** shape 14 is why phase 2 ships with retention.
+
+---
+
+## C7. Live activity pull / `get_activity` tool
+
+**Motivation.** Push samples are change-detected and can be seconds
+stale. A turn like "what are you looking at?" wants a forced sample on
+the same redact path, not a second pipeline.
+
+**Depends on.** C6 phases 1–2 (shipped). Do not start this until the
+push store has been used in anger — the collection envelope, handler
+registry, and `ActivityStore` are the reuse.
+
+**Sketched approach.** Add `ActivitySource.snapshot()`, optional
+`request_id` on the envelope, a WS `activity_request`, a bounded wait
+(~150–300 ms) on the **same** ingest + redact path, and a `_TOOL_FAMILY`
+tool. Timeout or no desktop → last stored session, not an error. UIA
+pull would be `snapshot()` on the dedicated thread, never COM on the
+turn thread. Do not stub those APIs ahead of this item.
+
+**Key files.** [`web/src-tauri/src/activity/`](../../web/src-tauri/src/activity/),
+[`app/core/activity/`](../../app/core/activity/),
+[`app/core/session/tool_pass_gate.py`](../../app/core/session/tool_pass_gate.py)
+`_TOOL_FAMILY`.
+
+**Open questions.** Does the tool return the last session summary, the
+raw last envelope, or both? Probably last session plus "as of Ns ago"
+so she can hedge when the collector is stale.
+
+---
+
+## C8. OS idle as a gap-cue qualifier
+
+**Motivation.** Idle depth currently conflates *away from the keyboard*
+with *here but not talking to me* — both are just "no messages for N
+minutes". `GetLastInputInfo` (now stored as `source: idle` events)
+separates them. `sleep_return` fires on a 5 h message gap and cannot
+tell a night's sleep from a long afternoon in another window; it is the
+highest-priority gap cue after `turning_over`.
+
+**Depends on.** C6 phases 1–2 (the idle source and store). Do not
+replace message-gap timing in five shipped cues at once.
+
+**Sketched approach.** Sit OS idle **beside** message-gap, as a
+qualifier the existing gap cues can read: "no messages AND no OS input
+for N hours" vs "no messages but the keyboard is busy". Start with
+`sleep_return` only.
+
+**Key files.** [`app/core/activity/store.py`](../../app/core/activity/store.py),
+gap-cue providers, `GAP_CUE_ORDER`.
+
+**Open questions.** Is a locked session (`source: lock`) a stronger
+sleep signal than idle, or the same one?
+
+---
+
+## C9. Activity duration as wellbeing evidence (K72)
+
+**Motivation.** K72's late-nights detector infers "he was up at 3am"
+from *chat message* timestamps. The activity store now has OS sessions
+with real start/end, so "he was in the editor from 01:00–04:00 without
+talking to me" is a first-class fact the detector cannot see. C6's
+open question was whether that judgement is a new companion cue or
+evidence into existing wellbeing machinery. It is the latter: a new
+cue in the oversubscribed pool would starve (C6 point 2). K72 already
+has the delivery posture — one soft check-in, never a lecture.
+
+**Depends on.** C6 phases 1–2 (the session table). Phase 3 rollups
+would make the signal cheaper but are not required — session rows
+already carry duration. Do not invent a parallel cue.
+
+**Sketched approach.** Add an OS-session late-night / long-focus
+detector beside `detect_late_nights` in
+[`wellbeing_concern.py`](../../app/core/relationship/wellbeing_concern.py).
+Feed [`ActivityStore.recent_sessions`](../../app/core/activity/store.py).
+Same signature and cooldown gates the worker already uses. Distinct
+from [C8](#c8-os-idle-as-a-gap-cue-qualifier) (C8 qualifies
+`sleep_return`; this feeds K72). Distinct from
+[D7](tools.md#d7-anticipatory-routine-assistance--act-on-what-shes-learned)
+(D7 offers help at a learned slot; this is concern, not a task).
+
+**Key files.** [`wellbeing_concern.py`](../../app/core/relationship/wellbeing_concern.py),
+[`wellbeing_concern_worker.py`](../../app/core/proactive/wellbeing_concern_worker.py),
+[`app/core/activity/store.py`](../../app/core/activity/store.py).
+
+**Open questions.** Is a four-hour coding session itself a concern, or
+only when it overlaps K72's small-hours window? Probably the latter
+first — "up late in the editor" is the finding K72 already names, just
+from a better sensor. Daytime long-focus stays a phase-5 companion cue
+if it ever earns one.
+

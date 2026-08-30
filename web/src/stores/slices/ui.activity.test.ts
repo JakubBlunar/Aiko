@@ -13,7 +13,9 @@ import { useAssistantStore } from "../../store";
 
 const RESET = {
   activityAwarenessEnabled: false,
+  activityTitleAllowlist: [] as string[],
   liveActiveApp: null,
+  liveActiveTitle: null,
 } as const;
 
 describe("activity slice — setActivityAwarenessEnabled", () => {
@@ -63,5 +65,28 @@ describe("activity slice — setLiveActiveApp", () => {
       .getState()
       .setLiveActiveApp(undefined as unknown as string | null);
     expect(useAssistantStore.getState().liveActiveApp).toBeNull();
+  });
+});
+
+describe("activity slice — live title + allowlist", () => {
+  beforeEach(() => {
+    useAssistantStore.setState(RESET);
+  });
+
+  it("stores a title for the settings readout", () => {
+    useAssistantStore.getState().setLiveActiveTitle("rag_store.py");
+    expect(useAssistantStore.getState().liveActiveTitle).toBe("rag_store.py");
+    useAssistantStore.getState().setLiveActiveTitle(null);
+    expect(useAssistantStore.getState().liveActiveTitle).toBeNull();
+  });
+
+  it("trims empty allowlist entries", () => {
+    useAssistantStore
+      .getState()
+      .setActivityTitleAllowlist(["Code", "  ", "Cursor"]);
+    expect(useAssistantStore.getState().activityTitleAllowlist).toEqual([
+      "Code",
+      "Cursor",
+    ]);
   });
 });

@@ -1390,21 +1390,34 @@ def create_web_app(session: "SessionController") -> FastAPI:
                         log.debug("audio owner recompute on mute failed", exc_info=True)
 
                 elif msg_type == "user_activity":
-                    # Foreground app the user is in (Tauri shell only;
-                    # browser shells never emit this). Server-side gate
-                    # in ``set_user_active_app`` drops the value when
-                    # the privacy toggle is off, so a buggy client
-                    # can't leak the data even if it kept emitting.
-                    raw_app = msg.get("app")
-                    app_name: str | None
-                    if raw_app is None:
-                        app_name = None
+                    # Desktop collector envelope, or the legacy
+                    # ``{app}`` frame. Never touches
+                    # ``_touch_user_activity``: coding-not-chatting
+                    # must look idle to the scheduler. Server-side
+                    # gate drops samples when the privacy toggle is
+                    # off.
+                    envelope = msg.get("envelope")
+                    if isinstance(envelope, dict):
+                        try:
+                            session.ingest_activity_envelope(envelope)
+                        except Exception:
+                            log.debug(
+                                "ingest_activity_envelope failed",
+                                exc_info=True,
+                            )
                     else:
-                        app_name = str(raw_app)
-                    try:
-                        session.set_user_active_app(app_name)
-                    except Exception:
-                        log.debug("set_user_active_app failed", exc_info=True)
+                        raw_app = msg.get("app")
+                        app_name: str | None
+                        if raw_app is None:
+                            app_name = None
+                        else:
+                            app_name = str(raw_app)
+                        try:
+                            session.set_user_active_app(app_name)
+                        except Exception:
+                            log.debug(
+                                "set_user_active_app failed", exc_info=True,
+                            )
 
         except WebSocketDisconnect as exc:
             close_code = getattr(exc, "code", None)

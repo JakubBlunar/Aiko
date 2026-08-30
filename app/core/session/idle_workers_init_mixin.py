@@ -1705,6 +1705,44 @@ class IdleWorkersInitMixin:
                 log.warning("RagMaintenanceWorker init failed", exc_info=True)
                 self._rag_maintenance_worker = None
 
+        # C6: activity event store + retention worker. The store is
+        # always built when the chat db exists so ingest works even if
+        # the idle scheduler is off; the prune worker only registers
+        # when the scheduler is live.
+        self._activity_store = None
+        self._activity_prune_worker = None
+        if self._chat_db is not None:
+            try:
+                from app.core.activity.store import ActivityStore
+
+                self._activity_store = ActivityStore(self._chat_db)
+            except Exception:
+                log.warning("ActivityStore init failed", exc_info=True)
+                self._activity_store = None
+        if (
+            self._idle_scheduler is not None
+            and self._activity_store is not None
+        ):
+            try:
+                from app.core.activity.prune_worker import ActivityPruneWorker
+
+                self._activity_prune_worker = ActivityPruneWorker(
+                    self._activity_store,
+                    keep_days_provider=lambda: int(
+                        getattr(
+                            self._memory_settings,
+                            "activity_keep_days",
+                            30,
+                        )
+                    ),
+                )
+                self._idle_scheduler.register(self._activity_prune_worker)
+            except Exception:
+                log.warning(
+                    "ActivityPruneWorker init failed", exc_info=True,
+                )
+                self._activity_prune_worker = None
+
         # K2 — theory-of-mind / belief tracking. Always builds the store
         # (the [[predict:...]] tag dispatch + REST endpoints need it
         # even when the worker is disabled), then conditionally builds

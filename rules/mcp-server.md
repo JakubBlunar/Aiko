@@ -106,6 +106,12 @@ Both answer "did any of this inner life *do* anything", which was unanswerable b
 | `get_surfacing_outcomes` | `window_days: int = 30`, `min_settled: int = 1`, `top: int = 20` | JSON: per-item leaderboard of surfaced concepts / memories / cues with engaged + echo counts *and* denominators, a per-lane rollup, echo-kind split, and the semantic-floor replay (`app/mcp/server_tools/surfacing_outcome_tools.py`). |
 | `get_cue_outcomes` | `window_days: int = 30`, `cue: str = ""` | JSON: per-cue armed-to-surfaced ratio, decline reasons, the registered cues never armed at all, and a `pool` section with per-type shelf depth / used-vs-expired / mean surfacings before use (`app/mcp/server_tools/cue_outcome_tools.py`). |
 
+### Activity collection (C6 phases 1–2)
+
+| Tool | Args | Returns |
+|------|------|---------|
+| `get_activity_timeline` | `limit: int = 20` | JSON: last redacted envelope, recent sessions, registered sources, allowlist, prune watermark (`app/mcp/server_tools/activity_tools.py`). **First stop for "is the desktop collector actually storing anything?"** |
+
 Reading them:
 
 - **Read the denominators, not the rates.** Every rate is over settled rows only, and a 1-for-1 item shows the same 100% as a 40-of-50 one. `rows_unsettled` is *expected* to hold about one turn per session — the engagement label comes from the user's next message, so the last turn of a session never settles. A number climbing in step with `rows_total` means the settle path has stopped.

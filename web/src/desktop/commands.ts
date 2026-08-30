@@ -67,6 +67,13 @@ export const desktop = {
    * reporter consult the result; the backend never sees an
    * unresolved value. */
   getActiveApp: () => tauriInvoke<string | null>("get_active_app"),
+  /** Push collector config (enabled + title allowlist). No-op outside
+   * Tauri. The collector thread skips OS reads while disabled. */
+  setActivityCollectorConfig: (enabled: boolean, titleAllowlist: string[]) =>
+    tauriInvoke<void>("set_activity_collector_config", {
+      enabled,
+      titleAllowlist,
+    }),
   /** Boot the Python FastAPI backend if it isn't already responding,
    * then wait until ``/api/health`` answers (timeout ~25s).
    *

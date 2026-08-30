@@ -23,6 +23,20 @@ log = logging.getLogger("app.web.server")
 _active_pulls: set[str] = set()
 
 
+def _activity_keep_days(memory: Any) -> int:
+    try:
+        return max(0, int(getattr(memory, "activity_keep_days", 30)))
+    except (TypeError, ValueError):
+        return 30
+
+
+def _activity_title_allowlist(agent: Any) -> list[str]:
+    raw = getattr(agent, "activity_title_allowlist", None)
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(item) for item in raw]
+
+
 def register(app, session, hub, _broadcast_context_window, live_session) -> None:
     """REST routes: sessions settings routes."""
     @app.get("/api/sessions")
@@ -220,11 +234,12 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             "activity": {
                 # Surfaced as a top-level block (not under ``proactive``)
                 # because it's a distinct privacy-critical opt-in. The
-                # frontend watches this flag to start/stop the activity
-                # reporter polling loop.
+                # frontend watches this flag to start/stop the collector.
                 "awareness_enabled": bool(
                     getattr(s.agent, "activity_awareness_enabled", False),
                 ),
+                "title_allowlist": _activity_title_allowlist(s.agent),
+                "keep_days": _activity_keep_days(getattr(s, "memory", None)),
             },
             "shared_moments": {
                 "enabled": bool(getattr(s.agent, "shared_moments_enabled", True)),
@@ -483,21 +498,43 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 proactive["typed_when_away"]
             )
         activity = payload.get("activity") or {}
-        if "awareness_enabled" in activity:
-            new_value = bool(activity["awareness_enabled"])
-            session.settings.agent.activity_awareness_enabled = new_value
-            # Privacy hygiene: when the user disables the toggle, drop
-            # any cached active-app string so a next-prompt build won't
-            # surface a stale "<user> is in <App>" line. ``set_user_active_app``
-            # already short-circuits on the disabled gate, but we also
-            # null the cached field directly for completeness.
-            if not new_value:
+        if activity:
+            persist_activity: dict[str, Any] = {"agent": {}, "memory": {}}
+            if "awareness_enabled" in activity:
+                new_value = bool(activity["awareness_enabled"])
+                session.settings.agent.activity_awareness_enabled = new_value
+                persist_activity["agent"]["activity_awareness_enabled"] = new_value
+                # Privacy hygiene: when the user disables the toggle, drop
+                # any cached active-app string so a next-prompt build won't
+                # surface a stale "<user> is in <App>" line.
+                if not new_value:
+                    try:
+                        session.set_user_active_app(None)
+                    except Exception:
+                        log.debug(
+                            "clearing user_active_app failed", exc_info=True,
+                        )
+            if "title_allowlist" in activity:
+                from app.core.infra.agent_settings_parse import (
+                    _parse_title_allowlist,
+                )
+
+                allowlist = _parse_title_allowlist(activity.get("title_allowlist"))
+                session.settings.agent.activity_title_allowlist = allowlist
+                persist_activity["agent"]["activity_title_allowlist"] = allowlist
+            if "keep_days" in activity:
                 try:
-                    session.set_user_active_app(None)
+                    keep = max(0, int(activity["keep_days"]))
+                except (TypeError, ValueError):
+                    keep = 30
+                session.settings.memory.activity_keep_days = keep
+                persist_activity["memory"]["activity_keep_days"] = keep
+            persist_activity = {k: v for k, v in persist_activity.items() if v}
+            if persist_activity:
+                try:
+                    persist_user_overrides(persist_activity)
                 except Exception:
-                    log.debug(
-                        "clearing user_active_app failed", exc_info=True,
-                    )
+                    log.debug("persist activity overrides failed", exc_info=True)
         shared_moments_cfg = payload.get("shared_moments") or {}
         if "enabled" in shared_moments_cfg:
             session.settings.agent.shared_moments_enabled = bool(

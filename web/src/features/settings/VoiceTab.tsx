@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import type { AssistantSettings } from "../../types";
 import { Toggle } from "@/components/Toggle";
 import { useAssistantStore } from "../../store";
@@ -34,6 +34,7 @@ export interface VoiceTabProps {
   setDspPrefs: Dispatch<SetStateAction<DspPrefs>>;
   tauri: boolean;
   liveActiveApp: string | null;
+  liveActiveTitle: string | null;
   apply: (patch: Record<string, unknown>) => Promise<void>;
 }
 
@@ -79,8 +80,14 @@ export function VoiceTab({
   setDspPrefs,
   tauri,
   liveActiveApp,
+  liveActiveTitle,
   apply,
 }: VoiceTabProps) {
+  const allowlistKey = (settings.activity?.title_allowlist ?? []).join("\n");
+  const [allowlistDraft, setAllowlistDraft] = useState(allowlistKey);
+  useEffect(() => {
+    setAllowlistDraft(allowlistKey);
+  }, [allowlistKey]);
   return (
     <>
       <MobileAudioSection />
@@ -429,9 +436,9 @@ export function VoiceTab({
       <Section title="Activity awareness (desktop)">
         <p className="text-[11px] text-ink-100/50">
           Desktop only. Aiko can see which app is in the foreground
-          (just the app name — no window titles, no URLs) and may
-          reference it when natural. Off by default. Browser tabs
-          see the toggle but it's a no-op there.
+          and, for apps you name below, the window title. Titles of
+          apps not on that list are never stored. Off by default.
+          Browser tabs see the toggle but it is a no-op there.
         </p>
         <Toggle
           className="mt-2"
@@ -440,24 +447,47 @@ export function VoiceTab({
             void apply({ activity: { awareness_enabled: checked } })
           }
         >
-          Share the foreground app name with Aiko
+          Share foreground activity with Aiko
         </Toggle>
         {settings.activity?.awareness_enabled ? (
-          <p className="mt-2 text-[11px] text-ink-100/60">
-            {tauri ? (
-              <>
-                Currently sees:{" "}
-                <span className="font-mono text-ink-100/80">
-                  {liveActiveApp ?? "—"}
-                </span>
-              </>
-            ) : (
-              <em>
-                Browser shell — desktop app required to share
-                foreground state.
-              </em>
-            )}
-          </p>
+          <>
+            <p className="mt-2 text-[11px] text-ink-100/60">
+              {tauri ? (
+                <>
+                  Currently sees:{" "}
+                  <span className="font-mono text-ink-100/80">
+                    {liveActiveApp ?? "—"}
+                    {liveActiveTitle ? ` — ${liveActiveTitle}` : ""}
+                  </span>
+                </>
+              ) : (
+                <em>
+                  Browser shell — desktop app required to share
+                  foreground state.
+                </em>
+              )}
+            </p>
+            <p className="mt-3 text-[11px] text-ink-100/50">
+              Title allowlist (one app name per line). Empty means no
+              titles are stored — only the app name. This is the
+              literal string that would be written to disk; look at
+              the readout above before adding an app.
+            </p>
+            <textarea
+              value={allowlistDraft}
+              onChange={(e) => setAllowlistDraft(e.target.value)}
+              onBlur={() => {
+                const next = allowlistDraft
+                  .split("\n")
+                  .map((line) => line.trim())
+                  .filter(Boolean);
+                void apply({ activity: { title_allowlist: next } });
+              }}
+              rows={4}
+              placeholder={"Code\nCursor"}
+              className="mt-1 w-full resize-y rounded border border-white/10 bg-black/30 px-2 py-1.5 text-xs text-ink-100 placeholder-ink-100/30 focus:border-ink-400 focus:outline-none"
+            />
+          </>
         ) : null}
       </Section>
 
