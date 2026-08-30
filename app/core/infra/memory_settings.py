@@ -876,6 +876,19 @@ class MemorySettings:
     # L20: cap on active BASE concepts offered to the generalization (meta)
     # proposer per run (per subject). Same shape/rationale as the tension cap.
     concept_synthesis_max_generalization_concepts: int = 24
+    # L46: cap on active depth-1 generalizations offered to the stacking
+    # pass per subject. Separate from the L1 base cap so a rich L1 pool
+    # cannot starve the view pass, and vice versa.
+    concept_synthesis_max_l2_concepts: int = 24
+    # L46: hard cap on meta-graph depth. 2 means a generalization may cite
+    # depth-1 generalizations (a view over through-lines) but not another
+    # view. Stored as intent, not a column -- depth is walked at use time.
+    concept_generalization_max_depth: int = 2
+    # L46: promotion floors for depth-2 generalizations. An L1 abstraction
+    # already sits above settled beliefs; a view over those should be
+    # slower and better-supported again.
+    concept_generalization_l2_min_confidence: float = 0.80
+    concept_generalization_l2_min_age_days: float = 7.0
     # K81 taste synthesis thresholds. The taste pass reads the L37 surfacing
     # ledger's per-cluster engaged rate over ``taste_affinity_window_days``
     # (a window, not lifetime, so taste tracks how the relationship works now),
@@ -3529,6 +3542,37 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 int(
                     memory_raw.get(
                         "concept_synthesis_max_generalization_concepts", 24
+                    )
+                ),
+            ),
+            concept_synthesis_max_l2_concepts=max(
+                2,
+                int(
+                    memory_raw.get("concept_synthesis_max_l2_concepts", 24)
+                ),
+            ),
+            concept_generalization_max_depth=max(
+                1,
+                int(
+                    memory_raw.get("concept_generalization_max_depth", 2)
+                ),
+            ),
+            concept_generalization_l2_min_confidence=max(
+                0.0,
+                min(
+                    1.0,
+                    float(
+                        memory_raw.get(
+                            "concept_generalization_l2_min_confidence", 0.80
+                        )
+                    ),
+                ),
+            ),
+            concept_generalization_l2_min_age_days=max(
+                0.0,
+                float(
+                    memory_raw.get(
+                        "concept_generalization_l2_min_age_days", 7.0
                     )
                 ),
             ),

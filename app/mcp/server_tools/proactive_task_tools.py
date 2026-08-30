@@ -2230,57 +2230,7 @@ def register(mcp, session: "SessionController") -> None:
           cooldown_turns).
         """
         try:
-            mem = session._memory_settings
-            store = getattr(session, "_cue_store", None)
-            pending_json: list[dict] = []
-            if store is not None:
-                pending_json = [
-                    {
-                        "id": row.id,
-                        "skipped_ask": row.payload.get("skipped_ask"),
-                        "subject": row.subject,
-                        "surfaced_count": row.surfaced_count,
-                    }
-                    for row in store.pending("dropped_topic", limit=10)
-                ]
-            return json.dumps(
-                {
-                    "enabled": bool(
-                        getattr(
-                            session._settings.agent,
-                            "dropped_topic_enabled",
-                            True,
-                        )
-                    ),
-                    "pending": pending_json,
-                    "cooldown_remaining": int(
-                        getattr(
-                            session,
-                            "_dropped_topic_cooldown_remaining",
-                            0,
-                        )
-                    ),
-                    "thresholds": {
-                        "min_asks": int(
-                            getattr(mem, "dropped_topic_min_asks", 2)
-                        ),
-                        "min_overlap": int(
-                            getattr(mem, "dropped_topic_min_overlap", 2)
-                        ),
-                        "require_question": bool(
-                            getattr(
-                                mem, "dropped_topic_require_question", True
-                            )
-                        ),
-                        "cooldown_turns": int(
-                            getattr(
-                                mem, "dropped_topic_cooldown_turns", 3
-                            )
-                        ),
-                    },
-                },
-                indent=2,
-            )
+            return json.dumps(session.dropped_topic_state(), indent=2)
         except Exception as exc:
             return f"get_dropped_topic_state raised: {exc}"
 
@@ -2304,64 +2254,10 @@ def register(mcp, session: "SessionController") -> None:
         ``get_last_response_detail.system_prompt``.
         """
         try:
-            from app.core.conversation import dropped_topic_detector
-
-            user = (user_text or "").strip()
-            reply = (reply_text or "").strip()
-            if not user or not reply:
-                history = session._chat_db.get_messages(
-                    session.session_key, limit=20
-                )
-                if not user:
-                    for row in reversed(history):
-                        if getattr(row, "role", "") == "user":
-                            user = (getattr(row, "content", "") or "").strip()
-                            break
-                if not reply:
-                    for row in reversed(history):
-                        if getattr(row, "role", "") == "assistant":
-                            reply = (
-                                getattr(row, "content", "") or ""
-                            ).strip()
-                            break
-            if not user:
-                return json.dumps(
-                    {
-                        "error": "no user_text and no recent user message",
-                    },
-                    indent=2,
-                )
-            mem = session._memory_settings
-            hit = dropped_topic_detector.detect_dropped_topic(
-                user,
-                reply,
-                min_asks=int(getattr(mem, "dropped_topic_min_asks", 2)),
-                min_overlap=int(
-                    getattr(mem, "dropped_topic_min_overlap", 2)
-                ),
-                require_question=bool(
-                    getattr(mem, "dropped_topic_require_question", True)
-                ),
-            )
-            if hit is None:
-                return json.dumps(
-                    {"armed": False, "hit": None, "note": "no dropped ask"},
-                    indent=2,
-                )
-            if not session.queue_dropped_topic_cue(hit):
-                return json.dumps(
-                    {"armed": False, "hit": None, "note": "cue pool refused"},
-                    indent=2,
-                )
             return json.dumps(
-                {
-                    "armed": True,
-                    "hit": {
-                        "skipped_ask": hit.skipped_ask,
-                        "covered_asks": list(hit.covered_asks),
-                        "uncovered_asks": list(hit.uncovered_asks),
-                    },
-                },
+                session.force_dropped_topic(
+                    user_text=user_text, reply_text=reply_text,
+                ),
                 indent=2,
             )
         except Exception as exc:

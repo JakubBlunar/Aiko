@@ -896,8 +896,9 @@ class ConceptView:
         -- lights up for both meta kinds: L12 **tensions** and L20
         **generalizations**, whose bases point at the meta via concept->concept
         ``evidence`` edges, so a base's activation pulls in the meta above it.
-        (The ``generalizes`` edge relation stays reserved for a future
-        multi-level hierarchy; L20 rides the ``evidence`` relation like L12.)
+        L46 walks one more hop up that chain (strength 0.5) so a hot hobby can
+        also lift the view sitting on its through-line. Stacking still rides
+        ``evidence``; the ``generalizes`` relation stays unused.
 
         Seeds are excluded from the result; the strongest strength per concept
         wins on overlap; the result is capped at ``limit``.
@@ -935,13 +936,29 @@ class ConceptView:
                     _bump(concept, 0.6)
             # Meta path: concept->concept edges. Live for both meta kinds --
             # L12 tensions and L20 generalizations (base -> meta via
-            # ``evidence``); the ``generalizes`` relation stays reserved for a
-            # future multi-level hierarchy.
+            # ``evidence``). L46 walks one more hop so a hot base can also
+            # lift the view above its L1 parent.
             try:
                 for dep_id in self._store.dependents_of(int(sid)):
                     dep = self._store.get(int(dep_id))
                     if dep is not None and getattr(dep, "status", None) == "active":
                         _bump(dep, 0.8)
+                        try:
+                            for grand_id in self._store.dependents_of(
+                                int(dep_id)
+                            ):
+                                grand = self._store.get(int(grand_id))
+                                if (
+                                    grand is not None
+                                    and getattr(grand, "status", None)
+                                    == "active"
+                                ):
+                                    _bump(grand, 0.5)
+                        except Exception:
+                            log.debug(
+                                "activated: l2 dependents_of failed",
+                                exc_info=True,
+                            )
             except Exception:
                 log.debug("activated: dependents_of failed", exc_info=True)
 

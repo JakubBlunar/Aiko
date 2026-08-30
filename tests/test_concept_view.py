@@ -732,6 +732,17 @@ class ActivatedTests(unittest.TestCase):
         out = ConceptView(store).activated([], seed_concept_ids=[1])
         self.assertEqual([(c.concept_id, s) for c, s in out], [(9, 0.8)])
 
+    def test_second_hop_lifts_stacked_parent(self) -> None:
+        # Base #1 -> L1 #9 (0.8) -> L2 #20 (0.5).
+        store = _FakeStore(
+            [_c(1), _c(9), _c(20)],
+            deps={1: [9], 9: [20]},
+        )
+        out = ConceptView(store).activated([], seed_concept_ids=[1])
+        got = {c.concept_id: s for c, s in out}
+        self.assertEqual(got[9], 0.8)
+        self.assertEqual(got[20], 0.5)
+
     def test_limit_and_missing_store(self) -> None:
         store = _FakeStore(
             [_c(1), _c(2), _c(3)],

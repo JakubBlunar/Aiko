@@ -263,6 +263,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             generalization_synthesis_enabled=bool(
                 agent_raw.get("generalization_synthesis_enabled", True),
             ),
+            generalization_stacking_enabled=bool(
+                agent_raw.get("generalization_stacking_enabled", True),
+            ),
             taste_synthesis_enabled=bool(
                 agent_raw.get("taste_synthesis_enabled", True),
             ),

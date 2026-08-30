@@ -591,6 +591,10 @@ class AgentSettings:
     # for the user / aiko lenses. Off just skips that one pass. Cap lives under
     # MemorySettings (``concept_synthesis_max_generalization_concepts``).
     generalization_synthesis_enabled: bool = True
+    # L46: second-order generalization pass. Off skips stacking only -- L1
+    # abstractions still mint. Same master-switch shape as the other
+    # synthesis flags, so a slop outbreak is one setting, not a revert.
+    generalization_stacking_enabled: bool = True
     # K81 taste synthesis (the *preference* kind -- topics she genuinely enjoys
     # getting into, read off the L37 surfacing ledger's per-cluster engaged
     # rate). When enabled, the synthesis worker's taste pass (aiko-only) offers

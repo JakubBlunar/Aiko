@@ -293,6 +293,8 @@ def _both_responder(system, user):
         return {"concepts": []}
     if "tension" in system.lower():
         return {"concepts": []}
+    if "already-named" in system.lower():
+        return {"concepts": []}
     if "HERSELF" in system:
         return {
             "concepts": [

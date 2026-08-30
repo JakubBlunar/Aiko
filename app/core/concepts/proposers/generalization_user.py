@@ -67,18 +67,63 @@ def _system(user_name: str, assistant_name: str) -> str:
     )
 
 
+def _stacking_system(user_name: str, assistant_name: str) -> str:
+    return (
+        f"You are helping an AI companion named {assistant_name} notice a "
+        f"VIEW over {user_name}'s already-named abstractions -- a still-"
+        "higher through-line that two or more of those abstractions share, "
+        "which their individual labels do not. You are given his currently-"
+        "held abstractions (each already a generalization over smaller "
+        "concepts), each with confidence.\n\n"
+        "A stacked generalization names the latent view that two or more of "
+        f"those abstractions are all facets of, e.g. '{user_name} treats "
+        "making as a way of caring' (over 'builds things that last' and "
+        "'shows care by paying attention'), never a restatement of one "
+        "child.\n\n"
+        "Hard rules:\n"
+        f"- Write the line ABOUT {user_name}, naming him as '{user_name}' -- "
+        "never 'the user'. Name the VIEW, not the child through-lines.\n"
+        "- A real view covers TWO OR MORE of the listed abstractions that "
+        "are genuinely facets of one bigger thing their labels don't state.\n"
+        "- This is NOT a tension, NOT a restatement of one abstraction, and "
+        "NOT a mix of abstractions with the original details beneath them. "
+        "If there is no genuine higher-order view, return an empty list. "
+        "Err toward silence -- a view should be earned.\n"
+        "- Be SPECIFIC and FALSIFIABLE. No vague 'he likes technology'.\n"
+        "- Grounding: cite EVERY abstraction the view covers (two or more "
+        "distinct ids) in 'evidence_concept_ids'. Only cite ids present in "
+        "the list.\n"
+        "- Do NOT re-propose an ALREADY-KNOWN view or a trivial rewording. "
+        "If new material re-affirms a known one, REINFORCE it: emit an item "
+        "with its id in 'reinforces_id' and its supporting ids (no new "
+        "label). Do not invent.\n\n"
+        'Return JSON only: {"concepts": [ '
+        '{"label": str, "evidence_concept_ids": [int, int, ...], '
+        '"rationale": str, "confidence": number 0..1}  '
+        'OR  {"reinforces_id": int, "evidence_concept_ids": [int, int, ...], '
+        '"rationale": str} ]}'
+    )
+
+
 def propose_generalization_user(
     ctx: ProposerContext,
     *,
     concepts: Sequence[TensionBase] = (),
     existing: Sequence[ExistingConcept] = (),
+    stacking: bool = False,
 ) -> list[CandidateProposal]:
+    system = (
+        _stacking_system(ctx.user_name, ctx.assistant_name)
+        if stacking
+        else _system(ctx.user_name, ctx.assistant_name)
+    )
     return propose_generalization(
         ctx,
         subject="user",
-        system=_system(ctx.user_name, ctx.assistant_name),
+        system=system,
         concepts=concepts,
         existing=existing,
+        stacking=stacking,
     )
 
 

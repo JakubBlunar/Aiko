@@ -88,6 +88,7 @@ from app.core.concepts.concept_lifecycle import (
     set_evidence_gate,
 )
 from app.core.concepts.concept_event_store import ConceptEvent
+from app.core.concepts.concept_meta_depth import meta_depth
 from app.core.concepts.concept_store import ConceptEdge
 from app.core.concepts.concept_surfacing import (
     earned_standing,
@@ -968,6 +969,29 @@ class ConceptLifecycleWorker:
                     0.35,
                 )
             )
+        if str(getattr(concept, "kind", "") or "") == "generalization":
+            depth = meta_depth(self._store, int(concept.concept_id))
+            if depth >= 2:
+                kwargs["min_confidence"] = max(
+                    float(kwargs["min_confidence"]),
+                    float(
+                        getattr(
+                            self._memory_settings,
+                            "concept_generalization_l2_min_confidence",
+                            0.80,
+                        )
+                    ),
+                )
+                kwargs["min_age_days"] = max(
+                    float(kwargs["min_age_days"]),
+                    float(
+                        getattr(
+                            self._memory_settings,
+                            "concept_generalization_l2_min_age_days",
+                            7.0,
+                        )
+                    ),
+                )
         return bool(gate(**kwargs))
 
     def _affective_evidence_valence(self, concept: "Concept") -> float | None:

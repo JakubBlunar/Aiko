@@ -115,8 +115,8 @@ class TensionBase:
     be told apart from an activity), a ``rationale`` snippet, its
     ``confidence``, and an optional ``hint`` about whether it has been live or
     has gone quiet lately (the "hot while a normally-paired concept is
-    dormant" signal). Only non-meta actives are ever passed, which is what
-    keeps the meta depth cap (no meta-of-meta) true by construction."""
+    dormant" signal). The tension pass still offers only non-meta actives;
+    L46's stacking pass reuses this row for depth-1 generalizations."""
 
     id: int
     subject: str
@@ -1025,6 +1025,7 @@ def propose_generalization(
     system: str,
     concepts: Sequence[TensionBase] = (),
     existing: Sequence[ExistingConcept] = (),
+    stacking: bool = False,
 ) -> list[CandidateProposal]:
     """Shared body for the L20 generalization proposers -- the abstraction meta
     kind.
@@ -1042,9 +1043,11 @@ def propose_generalization(
     **Composition rule.** A NEW proposal is accepted only when it cites at least
     two distinct ids from the offered set (the arity the L3
     :func:`generalization_evidence_gate` floors at 2), capped at
-    :data:`GENERALIZATION_MAX_CHILDREN`. Because only non-meta actives are ever
-    offered, a generalization can never abstract another meta (the depth cap)
-    and cannot form a cycle. ``subject`` shapes the prompt lens only.
+    :data:`GENERALIZATION_MAX_CHILDREN`. The L1 pass offers only non-meta
+    actives; L46's stacking pass offers depth-1 generalizations instead
+    (``stacking=True``) so a view can sit on two through-lines. Persist-time
+    depth/cycle guards, not this parser, are what keep the cap. ``subject``
+    shapes the prompt lens only.
     """
     valid_ids = {int(b.id) for b in concepts}
     if not valid_ids:
@@ -1052,19 +1055,35 @@ def propose_generalization(
     existing_ids = {int(e.id) for e in existing}
 
     base_lines = [_tension_base_line(b) for b in concepts]
-    sections = [
-        "ACTIVE CONCEPTS (each already an established, settled belief -- cite "
-        "their ids):\n" + "\n".join(base_lines),
-        "ALREADY-KNOWN ABSTRACTIONS:\n" + format_existing(existing),
-        "Name a NEW abstraction ONLY when several of the concepts above (two "
-        "or more, of any kind) are really facets of ONE higher-order thing "
-        "their individual labels don't name -- an is-a / part-of super-concept "
-        "('builds things that last' over specific hobbies; 'protects his own "
-        "time' over several habits). Cite every concept it covers in "
-        "'evidence_concept_ids', or reinforce a known one by id. This is NOT a "
-        "friction or a restatement of one concept -- return nothing rather "
-        "than forcing an abstraction that isn't really there.",
-    ]
+    if stacking:
+        sections = [
+            "ACTIVE ABSTRACTIONS (each already a named through-line over "
+            "smaller concepts -- cite their ids):\n" + "\n".join(base_lines),
+            "ALREADY-KNOWN VIEWS (abstractions-of-abstractions):\n"
+            + format_existing(existing),
+            "Name a NEW view ONLY when two or more of the abstractions above "
+            "are really facets of ONE still-higher thing their individual "
+            "through-lines don't name. Cite every abstraction it covers in "
+            "'evidence_concept_ids', or reinforce a known view by id. This is "
+            "NOT a restatement of one child, NOT a friction, and NOT a mix of "
+            "abstractions with the original details beneath them -- return "
+            "nothing rather than forcing a view that isn't really there.",
+        ]
+    else:
+        sections = [
+            "ACTIVE CONCEPTS (each already an established, settled belief -- "
+            "cite their ids):\n" + "\n".join(base_lines),
+            "ALREADY-KNOWN ABSTRACTIONS:\n" + format_existing(existing),
+            "Name a NEW abstraction ONLY when several of the concepts above "
+            "(two or more, of any kind) are really facets of ONE higher-order "
+            "thing their individual labels don't name -- an is-a / part-of "
+            "super-concept ('builds things that last' over specific hobbies; "
+            "'protects his own time' over several habits). Cite every concept "
+            "it covers in 'evidence_concept_ids', or reinforce a known one by "
+            "id. This is NOT a friction or a restatement of one concept -- "
+            "return nothing rather than forcing an abstraction that isn't "
+            "really there.",
+        ]
     user = "\n\n".join(sections)
 
     raw = ctx.call_llm(system, user)

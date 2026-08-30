@@ -757,6 +757,20 @@ The `tension` concept kind (`subject=user`, `relationship`, **and** `aiko`) is t
 - `agent.tension_synthesis_enabled` *(bool, `true`)* — master switch for the tension synthesis pass. Off → no tension concepts are mined (the rest of concept synthesis is unaffected).
 - `memory.concept_synthesis_max_tension_concepts` *(int, `24`, min `2`)* — cap on active base concepts offered to the tension proposer per run, per subject (the relationship lens splits it roughly half user / half aiko).
 
+### L20 / L46 — generalization concepts (and stacking)
+
+The `generalization` concept kind (`subject=user` **and** `aiko`) is the abstraction meta — its evidence is 2+ *other* active concepts held in is-a / part-of (`evidence_model="meta"`, `("concept", id)` edges). L1 abstracts over non-meta bases. L46 adds a **dedicated stacking pass** over active depth-1 generalizations (never tensions, never mixed with bases) so a view can sit on two through-lines. Depth is walked at use time, not stored. Tension still cannot cite a meta.
+
+- `agent.generalization_synthesis_enabled` *(bool, `true`)* — master switch for L1 generalization synthesis. Off → no abstractions are mined (stacking is also skipped).
+- `agent.generalization_stacking_enabled` *(bool, `true`)* — master switch for the L46 stacking pass only. Off → L1 still mints; no depth-2 views.
+- `memory.concept_synthesis_max_generalization_concepts` *(int, `24`, min `2`)* — cap on active non-meta bases offered to the L1 generalization proposer per run, per subject. The L1 pool is diversified by label cosine (0.86) so near-twin rituals cannot fill it; the tension pool is not.
+- `memory.concept_synthesis_max_l2_concepts` *(int, `24`, min `2`)* — cap on active depth-1 generalizations offered to the stacking pass per subject.
+- `memory.concept_generalization_max_depth` *(int, `2`, min `1`)* — hard cap on meta-graph depth. A generalization may cite a concept whose computed depth is strictly below this.
+- `memory.concept_generalization_l2_min_confidence` *(float, `0.80`)* — extra promotion confidence floor for depth-2 generalizations (on top of the L1 0.72 bar).
+- `memory.concept_generalization_l2_min_age_days` *(float, `7.0`)* — extra engaged-age floor for depth-2 generalizations (on top of the L1 3.0d bar).
+
+Watch `python scripts/concept_openness_report.py` → Abstraction stack (max depth, both-source-and-target count, sample of L2 labels).
+
 Tension cue — `TensionCueWorker` occasionally drafts a private "a friction worth sitting with" cue over an active tension, and `_render_tension_block` surfaces it as a watermark-gated T6 hint the chat model phrases in-context (cue producer, never verbatim, never a confrontation):
 
 - `agent.tension_cue_enabled` *(bool, `true`)* — master switch for the tension-cue worker + its prompt block. Off → tensions are still mined/tracked but never surface.

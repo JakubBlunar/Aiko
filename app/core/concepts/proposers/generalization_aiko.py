@@ -64,18 +64,63 @@ def _system(user_name: str, assistant_name: str) -> str:
     )
 
 
+def _stacking_system(user_name: str, assistant_name: str) -> str:
+    return (
+        f"You are helping an AI companion named {assistant_name} step back "
+        "from her already-named abstractions and notice a VIEW -- a still-"
+        "higher through-line that two or more of those abstractions share, "
+        "which their individual labels do not. You are given her currently-"
+        "held self-abstractions, each with confidence.\n\n"
+        "A stacked generalization names the latent view that two or more of "
+        "those are all facets of, phrased in first person, e.g. 'I treat "
+        "making as a way of caring' (over 'I reach for warmth' and 'I "
+        "steady myself by making things'), never a restatement of one "
+        "child.\n\n"
+        "Hard rules:\n"
+        "- Write each line in FIRST PERSON ('I ...'). Name the VIEW, not "
+        f"the child through-lines. When it involves him, name him as "
+        f"'{user_name}'.\n"
+        "- A real view covers TWO OR MORE of the listed abstractions that "
+        "are genuinely facets of one bigger thing their labels don't state.\n"
+        "- This is NOT a tension, NOT a restatement of one abstraction, and "
+        "NOT mixing abstractions with the original details beneath them. "
+        "Self-aware, never self-critical. If there is no genuine higher-"
+        "order view, return an empty list. Err toward silence.\n"
+        "- Be SPECIFIC and FALSIFIABLE.\n"
+        "- Grounding: cite EVERY abstraction the view covers (two or more "
+        "distinct ids) in 'evidence_concept_ids'. Only cite ids present in "
+        "the list.\n"
+        "- Do NOT re-propose an ALREADY-KNOWN view or a trivial rewording. "
+        "If new material re-affirms a known one, REINFORCE it: emit an item "
+        "with its id in 'reinforces_id' and its supporting ids (no new "
+        "label). Do not invent.\n\n"
+        'Return JSON only: {"concepts": [ '
+        '{"label": str, "evidence_concept_ids": [int, int, ...], '
+        '"rationale": str, "confidence": number 0..1}  '
+        'OR  {"reinforces_id": int, "evidence_concept_ids": [int, int, ...], '
+        '"rationale": str} ]}'
+    )
+
+
 def propose_generalization_aiko(
     ctx: ProposerContext,
     *,
     concepts: Sequence[TensionBase] = (),
     existing: Sequence[ExistingConcept] = (),
+    stacking: bool = False,
 ) -> list[CandidateProposal]:
+    system = (
+        _stacking_system(ctx.user_name, ctx.assistant_name)
+        if stacking
+        else _system(ctx.user_name, ctx.assistant_name)
+    )
     return propose_generalization(
         ctx,
         subject="aiko",
-        system=_system(ctx.user_name, ctx.assistant_name),
+        system=system,
         concepts=concepts,
         existing=existing,
+        stacking=stacking,
     )
 
 
