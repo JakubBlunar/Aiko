@@ -37,6 +37,7 @@ class _AgentBlock:
     proactive_cooldown_seconds_typed: float = 600.0
     proactive_typed_when_away: bool = False
     activity_awareness_enabled: bool = False
+    activity_title_allowlist: list[str] = field(default_factory=list)
     # Companion-feel knobs (I4).
     world_notice_enabled: bool = True
     grounding_line_mode: str = "off"
@@ -200,9 +201,9 @@ class GetSettingsTests(unittest.TestCase):
         self.assertEqual(proactive["silence_seconds_typed"], 240.0)
         self.assertEqual(proactive["cooldown_seconds_typed"], 600.0)
         self.assertIn("activity", body)
-        self.assertEqual(
-            body["activity"], {"awareness_enabled": False},
-        )
+        self.assertEqual(body["activity"]["awareness_enabled"], False)
+        self.assertEqual(body["activity"]["title_allowlist"], [])
+        self.assertEqual(body["activity"]["keep_days"], 30)
 
 
 class CompanionSettingsTests(unittest.TestCase):
@@ -444,12 +445,31 @@ class PatchSettingsTests(unittest.TestCase):
 
     def test_patch_activity_enable(self) -> None:
         client, _session, settings = _build_client()
-        response = client.patch(
-            "/api/settings",
-            json={"activity": {"awareness_enabled": True}},
-        )
+        with patch(
+            "app.web.rest.sessions_settings_routes.persist_user_overrides",
+        ) as persist:
+            response = client.patch(
+                "/api/settings",
+                json={"activity": {"awareness_enabled": True}},
+            )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(settings.agent.activity_awareness_enabled)
+        persist.assert_called()
+
+    def test_patch_activity_allowlist(self) -> None:
+        client, _session, settings = _build_client()
+        with patch(
+            "app.web.rest.sessions_settings_routes.persist_user_overrides",
+        ) as persist:
+            response = client.patch(
+                "/api/settings",
+                json={"activity": {"title_allowlist": ["Code.exe", "Cursor"]}},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            settings.agent.activity_title_allowlist, ["Code", "Cursor"],
+        )
+        persist.assert_called()
 
 
 class LoggingSettingsRoundTripTests(unittest.TestCase):

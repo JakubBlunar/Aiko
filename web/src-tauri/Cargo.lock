@@ -36,12 +36,14 @@ name = "aiko-desktop"
 version = "0.1.0"
 dependencies = [
  "active-win-pos-rs",
+ "chrono",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
  "tauri-plugin-window-state",
+ "windows 0.48.0",
 ]
 
 [[package]]

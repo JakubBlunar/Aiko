@@ -17,6 +17,7 @@ When an entry lands, move its write-up here and leave the open file only a one-l
 ## [Shipped — Proactive, tasks & tools (C/D-series)](shipped/proactive-tasks.md)
 
 - [C1. Typed-mode proactive ping + activity awareness](shipped/proactive-tasks.md#c1-typed-mode-proactive-ping--activity-awareness)
+- [C6. Companion-mode collection pipeline (phases 1–2)](shipped/proactive-tasks.md#c6-companion-mode-collection-pipeline-phases-12)
 - [Nested goal workflows + P13 route-driven worker model + worker-LLM priority gate](shipped/proactive-tasks.md#nested-goal-workflows--p13-route-driven-worker-model--worker-llm-priority-gate)
 - [Task capabilities + approvals + file_write + calculate](shipped/proactive-tasks.md#task-capabilities--approvals--file_write--calculate)
 - [D2 (Part A). Local-vision `describe_image` task — one model, no cloud image tokens](shipped/proactive-tasks.md#d2-part-a-local-vision-describe_image-task--one-model-no-cloud-image-tokens)

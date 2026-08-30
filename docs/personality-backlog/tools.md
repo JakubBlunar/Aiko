@@ -235,4 +235,10 @@ noticing the pattern. Key files:
 source) + a routine-trigger worker, the
 [`ProactiveDirector`](../../app/core/proactive/) surface for the offer, the task
 orchestrator for any pre-staged work, `agent.routine_assist_enabled` + cooldowns.
+**See also [C6](proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel)**
+— OS activity is the same idea sourced from the desktop rather than from
+K3 learned slots, and the two should share an intake rather than grow
+parallel offer machinery. Duration-as-concern is
+[C9](proactive.md#c9-activity-duration-as-wellbeing-evidence-k72)
+(K72, not a task).
 **Effort.** Medium.

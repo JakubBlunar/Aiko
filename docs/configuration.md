@@ -40,6 +40,8 @@ exists to keep them in lock-step.
 | Enable typed-mode proactive at all | `agent.proactive_typed_enabled` | `true` |
 | Speak typed-mode proactive lines (TTS) | `agent.proactive_typed_tts_enabled` | `false` |
 | Forward foreground app name (desktop) | `agent.activity_awareness_enabled` | `false` |
+| Store window titles for named apps | `agent.activity_title_allowlist` | `[]` (empty = no titles stored) |
+| Activity event retention (days) | `memory.activity_keep_days` | `30` (`0` = never prune) |
 | Share the real-world weather/season | `agent.weather_sync_enabled` | `false` |
 | Your weather location (city) | `weather.location_name` | `""` |
 | Live2D body-language intensity | `avatar.expressiveness` | `1.0` (0.0–1.5) |
@@ -182,7 +184,15 @@ Typed-mode runs an independent timer so the cadence can differ (typing sessions 
 
 ### Activity awareness (desktop opt-in)
 
-- `agent.activity_awareness_enabled` *(bool, `false`)* — forwards the foreground **app name** (never window titles or URLs) from the Tauri desktop shell so Aiko can naturally reference what you're doing. Off by default; browser shells render the toggle but can't produce a non-null active app. Privacy posture: see `docs/presence-and-activity.md`.
+C6 collection pipeline. The prompt still gets **app name only**; titles
+are stored (not spoken) for allowlisted apps. Privacy posture: see
+`docs/presence-and-activity.md`. Remaining work (interpretation, cues,
+UIA, a live tool-pass pull) is in
+[`docs/personality-backlog/proactive.md`](personality-backlog/proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel).
+
+- `agent.activity_awareness_enabled` *(bool, `false`)* — master switch for the desktop collector. Off → no OS reads, envelopes dropped, live cache cleared. Browser shells render the toggle but never produce samples.
+- `agent.activity_title_allowlist` *(string[], `[]`)* — positive list of app names whose window titles may be stored. Empty = app name only, everywhere. One list for "safe to read" and "worth reading". URL-shaped titles are stripped even when the app is listed.
+- `memory.activity_keep_days` *(int, `30`, min `0`)* — prune `activity_events` / `activity_sessions` older than this. `0` disables prune.
 
 ### Weather + season sync (H11, opt-in)
 

@@ -207,14 +207,20 @@ export default function App() {
   // churning the audio-owner election.
   usePresenceReporter({ send, enabled: route !== "persona" });
 
-  // Activity awareness (desktop opt-in, default off). Polls the Tauri
-  // shell for the foreground app name when the toggle is on; complete
-  // no-op on the browser AND when the toggle is off.
+  // Activity awareness (desktop opt-in, default off). Listens for
+  // collector envelopes when the toggle is on; complete no-op on the
+  // browser AND when the toggle is off.
   const activityEnabled = useAssistantStore(
     (s) => s.activityAwarenessEnabled,
   );
+  const activityTitleAllowlist = useAssistantStore(
+    (s) => s.activityTitleAllowlist,
+  );
   const setActivityAwarenessEnabled = useAssistantStore(
     (s) => s.setActivityAwarenessEnabled,
+  );
+  const setActivityTitleAllowlist = useAssistantStore(
+    (s) => s.setActivityTitleAllowlist,
   );
   const setLoggingSettings = useAssistantStore((s) => s.setLoggingSettings);
   const setWorld = useWorldStore((s) => s.setWorld);
@@ -234,6 +240,11 @@ export default function App() {
         if (cancelled) return;
         const flag = Boolean(settings.activity?.awareness_enabled);
         setActivityAwarenessEnabled(flag);
+        setActivityTitleAllowlist(
+          Array.isArray(settings.activity?.title_allowlist)
+            ? settings.activity.title_allowlist.map((name) => String(name))
+            : [],
+        );
         if (settings.logging) {
           setLoggingSettings({
             ui_log_enabled: Boolean(settings.logging.ui_log_enabled),
@@ -253,7 +264,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [setActivityAwarenessEnabled, setLoggingSettings]);
+  }, [setActivityAwarenessEnabled, setActivityTitleAllowlist, setLoggingSettings]);
 
   // Seed Aiko's room snapshot on mount so the avatar-panel caption can
   // show what she's doing ("at the garden, standing, stretching")
@@ -275,7 +286,11 @@ export default function App() {
       cancelled = true;
     };
   }, [setWorld]);
-  useActivityReporter({ send, enabled: activityEnabled });
+  useActivityReporter({
+    send,
+    enabled: activityEnabled,
+    titleAllowlist: activityTitleAllowlist,
+  });
 
   if (route === "persona") {
     return (

@@ -2356,6 +2356,10 @@ class MemorySettings:
     # GPU box, which would otherwise read as split backends and remove
     # the protection.
     idle_worker_contention_override: str = "auto"
+    # C6: activity event retention. 0 = keep forever (the prune worker
+    # no-ops). Default 30 days so an append-only table cannot grow
+    # unbounded (H33 shape 14).
+    activity_keep_days: int = 30
 
 
 
@@ -5593,5 +5597,8 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 memory_raw.get("idle_worker_contention_override", "auto")
                 or "auto"
             ).strip().lower(),
+            activity_keep_days=max(
+                0, int(memory_raw.get("activity_keep_days", 30)),
+            ),
     )
 

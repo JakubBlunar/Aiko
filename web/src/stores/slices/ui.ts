@@ -13,11 +13,15 @@ export interface UiSlice {
    * polling loop without a reload. */
   activityAwarenessEnabled: boolean;
   setActivityAwarenessEnabled: (enabled: boolean) => void;
-  /** Last foreground app reported by the activity reporter loop, used
-   * solely for the live "Currently sees: <App>" readout. ``null`` covers
-   * "couldn't determine" / "in our own window" / "feature disabled". */
+  activityTitleAllowlist: string[];
+  setActivityTitleAllowlist: (apps: string[]) => void;
+  /** Last foreground app reported by the collector, used solely for
+   * the live "Currently sees" readout. ``null`` covers "couldn't
+   * determine" / "in our own window" / "feature disabled". */
   liveActiveApp: string | null;
   setLiveActiveApp: (app: string | null) => void;
+  liveActiveTitle: string | null;
+  setLiveActiveTitle: (title: string | null) => void;
 
   /** Debug-logging bridge knobs (mirrors ``LoggingSettings`` on the
    * backend). Synced on ``hello`` + ``logging_settings_changed``. */
@@ -50,8 +54,17 @@ export const createUiSlice: SliceCreator<UiSlice> = (set) => ({
   activityAwarenessEnabled: false,
   setActivityAwarenessEnabled: (enabled) =>
     set({ activityAwarenessEnabled: Boolean(enabled) }),
+  activityTitleAllowlist: [],
+  setActivityTitleAllowlist: (apps) =>
+    set({
+      activityTitleAllowlist: Array.isArray(apps)
+        ? apps.map((name) => String(name).trim()).filter(Boolean)
+        : [],
+    }),
   liveActiveApp: null,
   setLiveActiveApp: (app) => set({ liveActiveApp: app ?? null }),
+  liveActiveTitle: null,
+  setLiveActiveTitle: (title) => set({ liveActiveTitle: title ?? null }),
 
   loggingSettings: { ...DEFAULT_LOGGING_SETTINGS },
   setLoggingSettings: (settings) =>

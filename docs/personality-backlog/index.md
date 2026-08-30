@@ -218,15 +218,16 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
 
 ### C. Proactive + presence — [`proactive.md`](proactive.md)
 
-- **C2.** Window-title-aware activity (privacy-gated) — now phase 1 of C6.
+- **C2.** Window-title-aware activity — subsumed; titles now collected
+  behind an allowlist in C6 phases 1–2.
 - **C3.** Persisting last-fired typed-proactive cooldown to disk.
 - **C4.** TTS-on-typed-proactive toggle.
-- **C6.** Companion mode — the desktop as a sensory channel. The big one
-  in this series: OS signals → sessionizer → local interpretation → her
-  existing cue/memory/concept machinery, with no model in the perception
-  loop. Feasible and unusually well-matched to the scheduler; the work is
-  the event store underneath (which does not exist) and the interruption
-  bar on top (which this codebase has repeatedly got wrong).
+- **C6.** Companion mode — *phases 1–2 shipped* (collectors + event
+  store). Still open: aggregation, interpretation, cue/memory intake,
+  UIA. See [`proactive.md`](proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel).
+- **C7.** Live activity pull / `get_activity` tool (after C6 collection).
+- **C8.** OS idle as a gap-cue qualifier (`sleep_return` first).
+- **C9.** Activity duration as wellbeing evidence (into K72, not a new cue).
 
 ### D. New tools / capabilities — [`tools.md`](tools.md)
 

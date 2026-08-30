@@ -690,11 +690,14 @@ class LifecycleMixin(DebugOverridesHostMixin):
     def _touch_user_activity(self) -> None:
         """Mark "the user just did something". Resets the idle gate.
 
-        Called from the turn lifecycle and from incoming WS / REST
-        traffic. The :class:`IdleWorkerScheduler` consults
-        :meth:`_is_user_idle` before running a worker; a recent touch
-        defers background work so it doesn't compete with the active
-        conversation.
+        Called from the chat-turn lifecycle only. Incoming WS / REST
+        traffic — including ``user_activity`` envelopes — must not
+        touch this stamp: coding-not-chatting has to look idle to the
+        scheduler, which is when C6 perception is supposed to run.
+
+        The :class:`IdleWorkerScheduler` consults :meth:`_is_user_idle`
+        before running a worker; a recent touch defers background work
+        so it doesn't compete with the active conversation.
 
         The monotonic stamp drives the quiet gate. The wall-clock mirror
         in ``kv_meta`` drives idle *depth* (P36): monotonic resets to

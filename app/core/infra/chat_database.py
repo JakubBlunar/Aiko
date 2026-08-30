@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 39
+_SCHEMA_VERSION = 40
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -1159,6 +1159,46 @@ CREATE INDEX IF NOT EXISTS idx_turn_stance_stance
     ON turn_stance(stance, created_at);
 CREATE INDEX IF NOT EXISTS idx_turn_stance_created
     ON turn_stance(created_at);
+
+-- Schema v40: C6 activity collection. Append-only events plus a
+-- sessionizer table (focus-flicker collapse). Retention is
+-- ActivityStore.prune / ActivityPruneWorker — an unbounded event
+-- table is H33 shape 14.
+CREATE TABLE IF NOT EXISTS activity_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    tier TEXT NOT NULL DEFAULT 'cheap',
+    signal_kind TEXT NOT NULL,
+    app TEXT,
+    title TEXT,
+    surface_id TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    envelope_v INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_activity_events_at
+    ON activity_events(at);
+CREATE INDEX IF NOT EXISTS idx_activity_events_source_at
+    ON activity_events(source, at);
+CREATE INDEX IF NOT EXISTS idx_activity_events_app_at
+    ON activity_events(app, at);
+
+CREATE TABLE IF NOT EXISTS activity_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    app TEXT,
+    title TEXT,
+    surface_id TEXT,
+    signal_kind TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    duration_seconds REAL NOT NULL DEFAULT 0,
+    event_count INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_activity_sessions_ended
+    ON activity_sessions(ended_at);
+CREATE INDEX IF NOT EXISTS idx_activity_sessions_source_ended
+    ON activity_sessions(source, ended_at);
 """
 
 # Tables that existed in earlier schemas but are no longer used.
@@ -1824,6 +1864,9 @@ class ChatDatabase:
         # v38 -> v39: H5 world scenes. Existing locations land in the
         # builtin apartment; see ``_migrate_world_scenes_v39``.
         self._migrate_world_scenes_v39(conn)
+        # v39 -> v40: activity_events / activity_sessions. CREATE TABLE
+        # IF NOT EXISTS above is enough; no ALTER. Retention ships with
+        # the tables (ActivityPruneWorker).
         for stmt in (
             "ALTER TABLE turn_stance ADD COLUMN brevity INTEGER NOT NULL "
             "DEFAULT 0",

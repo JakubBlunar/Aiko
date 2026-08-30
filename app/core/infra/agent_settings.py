@@ -61,6 +61,11 @@ class AgentSettings:
     # for the privacy posture). Off by default; browser shells render
     # the toggle but can never produce a non-null active app.
     activity_awareness_enabled: bool = False
+    # Positive allowlist of app names whose window titles may be stored.
+    # Empty (the default) means titles are never emitted or persisted.
+    # Same list later gates UIA: never inspect an app we would not
+    # store a title for.
+    activity_title_allowlist: list[str] = field(default_factory=list)
     # ── Weather + season sync (H11, opt-in) ───────────────────────────
     # Master switch for the passive ambient weather feed: when on (and a
     # home location is resolved under ``weather.*``), a low-frequency

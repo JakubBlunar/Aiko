@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Any
 
 
 log = logging.getLogger("app.session")
@@ -292,3 +293,62 @@ class ProactivePresenceMixin:
             return
         cleaned = str(app).strip()
         self._user_active_app = cleaned or None
+
+    def ingest_activity_envelope(self, envelope: dict[str, Any] | None) -> None:
+        """Store a collector envelope. Sibling of ``set_user_active_app``.
+
+        Does **not** call ``_touch_user_activity`` — coding-not-chatting
+        must look idle to the scheduler. Toggle off drops the envelope
+        and clears the live app-name cache. Titles never land in
+        ``_user_active_app`` (prompt stays app-name only).
+        """
+        if not bool(getattr(self._settings.agent, "activity_awareness_enabled", False)):
+            self._user_active_app = None
+            return
+        from app.core.activity.ingest import ingest_envelope
+
+        store = getattr(self, "_activity_store", None)
+        try:
+            redacted = ingest_envelope(
+                envelope, settings=self._settings, store=store,
+            )
+        except Exception:
+            log.debug("ingest_activity_envelope failed", exc_info=True)
+            return
+        if redacted is None:
+            return
+        if redacted.source != "foreground":
+            return
+        self.set_user_active_app(redacted.subject.app)
+
+    def activity_timeline_snapshot(self, *, limit: int = 20) -> dict[str, Any]:
+        """Debug dump of the C6 collection store (MCP + tests)."""
+        from app.core.activity.handlers import KNOWN_SOURCES
+
+        agent = getattr(self._settings, "agent", None)
+        memory = getattr(self._settings, "memory", None)
+        store = getattr(self, "_activity_store", None)
+        last = store.last_event() if store is not None else None
+        sessions = (
+            store.recent_sessions(limit=limit) if store is not None else []
+        )
+        counts = store.counts() if store is not None else {}
+        try:
+            keep_days = max(0, int(getattr(memory, "activity_keep_days", 30)))
+        except (TypeError, ValueError):
+            keep_days = 30
+        return {
+            "enabled": bool(
+                getattr(agent, "activity_awareness_enabled", False),
+            ),
+            "title_allowlist": list(
+                getattr(agent, "activity_title_allowlist", None) or [],
+            ),
+            "keep_days": keep_days,
+            "registered_sources": list(KNOWN_SOURCES),
+            "last_event": last,
+            "recent_sessions": sessions,
+            "event_count": counts.get("events", 0),
+            "session_count": counts.get("sessions", 0),
+            "oldest_event_at": counts.get("oldest_event_at"),
+        }

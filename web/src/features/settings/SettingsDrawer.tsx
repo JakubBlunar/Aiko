@@ -154,7 +154,11 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const setActivityAwarenessEnabled = useAssistantStore(
     (s) => s.setActivityAwarenessEnabled,
   );
+  const setActivityTitleAllowlist = useAssistantStore(
+    (s) => s.setActivityTitleAllowlist,
+  );
   const liveActiveApp = useAssistantStore((s) => s.liveActiveApp);
+  const liveActiveTitle = useAssistantStore((s) => s.liveActiveTitle);
 
   // ── Knowledge tab (RAG documents) ─────────────────────────────────
   const {
@@ -253,6 +257,11 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       setActivityAwarenessEnabled(
         Boolean(s.activity?.awareness_enabled),
       );
+      setActivityTitleAllowlist(
+        Array.isArray(s.activity?.title_allowlist)
+          ? s.activity.title_allowlist.map((name) => String(name))
+          : [],
+      );
       // H11: seed the weather store from the GET snapshot so the persona
       // overlay + Weather section have the cached conditions on first open
       // (before any ``weather_updated`` WS frame arrives).
@@ -265,7 +274,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     } finally {
       setBusy(false);
     }
-  }, [setActivityAwarenessEnabled]);
+  }, [setActivityAwarenessEnabled, setActivityTitleAllowlist]);
 
   useEffect(() => {
     if (open) {
@@ -385,6 +394,11 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
       setActivityAwarenessEnabled(
         Boolean(next.activity?.awareness_enabled),
       );
+      setActivityTitleAllowlist(
+        Array.isArray(next.activity?.title_allowlist)
+          ? next.activity.title_allowlist.map((name) => String(name))
+          : [],
+      );
       // Switching TTS engine replaces the engine, and what counts as a
       // "voice" changes with it: pocket-tts offers .safetensors speaker
       // embeddings, Chatterbox offers reference clips it clones from.
@@ -483,6 +497,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   setDspPrefs={setDspPrefs}
                   tauri={tauri}
                   liveActiveApp={liveActiveApp}
+                  liveActiveTitle={liveActiveTitle}
                   apply={apply}
                 />
               ) : null}

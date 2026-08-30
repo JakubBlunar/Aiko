@@ -20,6 +20,11 @@ from app.core.session.session_controller import SessionController
 @dataclass
 class _AgentStub:
     activity_awareness_enabled: bool = False
+    activity_title_allowlist: list | None = None
+
+    def __post_init__(self) -> None:
+        if self.activity_title_allowlist is None:
+            self.activity_title_allowlist = []
 
 
 @dataclass
@@ -101,6 +106,57 @@ class RenderActivityBlockTests(unittest.TestCase):
         controller._settings.agent.activity_awareness_enabled = False
         controller.set_user_active_app(None)
         self.assertEqual(controller._render_activity_block(), "")
+
+
+class IngestEnvelopeTests(unittest.TestCase):
+    def test_toggle_off_drops_envelope_and_clears_cache(self) -> None:
+        controller = _make_controller(enabled=False)
+        controller._user_active_app = "stale"
+        controller._activity_store = None
+        controller.ingest_activity_envelope({
+            "v": 1,
+            "at": "2026-08-30T19:00:00Z",
+            "source": "foreground",
+            "tier": "cheap",
+            "subject": {"app": "Code", "title": "secret"},
+            "signal": {"kind": "focus"},
+            "payload": {},
+        })
+        self.assertIsNone(controller._user_active_app)
+
+    def test_foreground_updates_live_app_not_title(self) -> None:
+        controller = _make_controller(enabled=True)
+        controller._activity_store = None
+        controller._settings.agent.activity_title_allowlist = ["Code"]
+        controller.ingest_activity_envelope({
+            "v": 1,
+            "at": "2026-08-30T19:00:00Z",
+            "source": "foreground",
+            "tier": "cheap",
+            "subject": {"app": "Code", "title": "rag_store.py"},
+            "signal": {"kind": "focus"},
+            "payload": {},
+        })
+        self.assertEqual(controller._user_active_app, "Code")
+        block = controller._render_activity_block()
+        self.assertIn("Code", block)
+        self.assertNotIn("rag_store.py", block)
+
+    def test_does_not_touch_idle_gate(self) -> None:
+        controller = _make_controller(enabled=True)
+        controller._activity_store = None
+        controller._last_user_activity_at = 0.0
+        controller._chat_db = None
+        controller.ingest_activity_envelope({
+            "v": 1,
+            "at": "2026-08-30T19:00:00Z",
+            "source": "foreground",
+            "tier": "cheap",
+            "subject": {"app": "Code"},
+            "signal": {"kind": "focus"},
+            "payload": {},
+        })
+        self.assertEqual(controller._last_user_activity_at, 0.0)
 
 
 if __name__ == "__main__":

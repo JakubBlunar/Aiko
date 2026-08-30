@@ -395,12 +395,13 @@ export interface AssistantSettings {
     typed_when_away: boolean;
   };
   /** Activity awareness (desktop opt-in). When enabled and running in
-   * the Tauri shell, the foreground app name is forwarded to the
-   * backend so Aiko can naturally reference it. App name only —
-   * never window titles or URLs. Off by default; browser users see
-   * the toggle but it's a no-op there (no signal source). */
+   * the Tauri shell, collector envelopes are forwarded to the backend.
+   * App name always; window titles only for apps on ``title_allowlist``.
+   * Off by default; browser users see the toggle but it's a no-op. */
   activity?: {
     awareness_enabled: boolean;
+    title_allowlist?: string[];
+    keep_days?: number;
   };
   /** Schema v7: shared moments + relationship depth. Master switch for
    * the subsystem; ``llm_enabled`` toggles only the speaking-window
@@ -2446,6 +2447,20 @@ export type WsServerEvent =
     }
   | { type: "pong" };
 
+export interface ActivityEnvelope {
+  v: number;
+  at: string;
+  source: string;
+  tier: string;
+  subject?: {
+    app?: string | null;
+    title?: string | null;
+    surface_id?: string | null;
+  };
+  signal?: { kind?: string };
+  payload?: Record<string, unknown>;
+}
+
 export type WsClientCommand =
   | { type: "chat"; text: string; attachments?: AttachmentRef[] }
   | { type: "stop" }
@@ -2466,8 +2481,7 @@ export type WsClientCommand =
    * the device active so it takes over playback. Persisted per-device
    * in ``localStorage`` and re-sent on every (re)connect. */
   | { type: "audio_mute"; muted: boolean }
-  /** Foreground app the user is in. Desktop-only; browser shells
-   * never emit this. ``null`` covers "couldn't determine" / "user
-   * is in our own window". Backend silently drops these events when
-   * ``activity.awareness_enabled`` is false. */
-  | { type: "user_activity"; app: string | null };
+  /** Collector envelope (preferred) or the legacy app-name frame.
+   * Desktop-only. Backend drops both when awareness is off. Never
+   * resets the idle gate — coding-not-chatting must look idle. */
+  | { type: "user_activity"; app?: string | null; envelope?: ActivityEnvelope };

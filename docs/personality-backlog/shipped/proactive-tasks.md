@@ -14,8 +14,36 @@ Desktop-only opt-in activity awareness forwards the foreground app
 *name* (never titles or URLs) so Aiko can reference what Jacob is
 doing. Off by default. See
 [`docs/presence-and-activity.md`](../../presence-and-activity.md).
-Open follow-ups (window-title-aware activity, cooldown persistence,
-TTS-on-typed-proactive) live in [`proactive.md`](../proactive.md).
+Open follow-ups (typed cooldown persistence, TTS-on-typed-proactive)
+live in [`proactive.md`](../proactive.md). Window titles moved into
+C6 phases 1–2.
+
+---
+
+## C6. Companion-mode collection pipeline (phases 1–2)
+
+Push-only desktop perception: a Tauri `CollectorRuntime` polls cheap
+sources (foreground app, OS idle, session lock) on an isolated thread
+and emits versioned envelopes. JS is a dumb pipe. Python redacts
+(unknown `source` / `v` dropped, title allowlist + URL strip) then
+writes `activity_events` / `activity_sessions` (schema v40) with
+focus-flicker collapse and a compute-lane prune worker from day one.
+The prompt `activity_block` stays app-name only. Settings: master
+toggle (off by default) plus a positive `title_allowlist`. MCP
+`get_activity_timeline` dumps what was stored.
+
+This is not companion mode yet — it is the sensory channel. Phases
+3–6 (aggregation, interpretation, cue/memory intake, UIA), a live
+tool-pass pull ([C7](../proactive.md#c7-live-activity-pull--get_activity-tool)),
+OS-idle as a gap-cue qualifier
+([C8](../proactive.md#c8-os-idle-as-a-gap-cue-qualifier)), and
+duration as K72 evidence
+([C9](../proactive.md#c9-activity-duration-as-wellbeing-evidence-k72))
+stay open.
+
+Privacy contract: [`docs/presence-and-activity.md`](../../presence-and-activity.md).
+Rust: [`web/src-tauri/src/activity/`](../../../web/src-tauri/src/activity/).
+Python: [`app/core/activity/`](../../../app/core/activity/).
 
 ---
 

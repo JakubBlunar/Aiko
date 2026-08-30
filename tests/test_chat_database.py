@@ -85,6 +85,8 @@ class TestSchemaCreation(unittest.TestCase):
                 "conversation_arc",
                 "prepared_nudge",
                 "consolidator_state",
+                "activity_events",
+                "activity_sessions",
             ):
                 self.assertIn(expected, tables)
 

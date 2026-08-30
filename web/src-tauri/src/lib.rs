@@ -11,6 +11,8 @@
 //! webviews connect to over WebSocket. See `docs/tauri-shell.md` for the
 //! full architecture rationale.
 
+mod activity;
+
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -196,22 +198,22 @@ fn set_persona_always_on_top(app: AppHandle, on_top: bool) -> Result<(), String>
 
 // ── Activity awareness ──────────────────────────────────────────────────
 
-/// Return the foreground application's *name only* (never the window
-/// title or URL). Polled from the React side every few seconds when the
-/// user has opted in to activity awareness.
-///
-/// Privacy posture is enforced at every layer; this command sits at the
-/// outermost boundary:
-///   - We deliberately read ``w.app_name`` and never ``w.title``. Adding
-///     titles would leak bank URLs / file names / chat partner names; the
-///     trade-off is documented in ``docs/presence-and-activity.md``.
-///   - On Wayland sessions and unsupported platforms ``active-win-pos-rs``
-///     returns ``Err``; we map that to ``Ok(None)`` so the React side can
-///     simply send ``null`` and the backend silently skips the inner-life
-///     block instead of producing "Jacob is in (unknown)".
-///   - Self-app filtering (so Aiko isn't told "Jacob is in Aiko") happens
-///     on the React side because the bundle name is what the frontend
-///     already knows.
+/// Push collector config from the webview. The collector does not read
+/// ``user.json``; JS forwards the settings GET/PATCH result. Disabled
+/// (the default) means the background thread skips OS reads.
+#[tauri::command]
+fn set_activity_collector_config(
+    handle: tauri::State<activity::CollectorHandle>,
+    enabled: bool,
+    title_allowlist: Vec<String>,
+) {
+    handle.set_config(enabled, title_allowlist);
+}
+
+/// Fallback for the settings-drawer readout when no envelope has
+/// arrived yet. Live reporting uses the collector push path, not this.
+/// Still app-name only — titles ride the envelope + allowlist. See
+/// ``docs/presence-and-activity.md``.
 #[tauri::command]
 fn get_active_app() -> Result<Option<String>, String> {
     match active_win_pos_rs::get_active_window() {
@@ -350,6 +352,7 @@ pub fn run() {
             reset_persona_window_position,
             set_persona_always_on_top,
             get_active_app,
+            set_activity_collector_config,
             ensure_backend_running,
         ])
         .setup(|app| {
@@ -373,6 +376,8 @@ pub fn run() {
             install_tray(app.handle())?;
             wire_main_close_to_hide(app.handle());
             wire_persona_close_to_hide(app.handle());
+            let collector = activity::start(app.handle().clone());
+            app.manage(collector);
             Ok(())
         })
         .run(tauri::generate_context!())
