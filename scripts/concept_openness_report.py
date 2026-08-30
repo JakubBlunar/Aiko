@@ -8,7 +8,7 @@ only reach what the store holds. This script answers the question the
 per-turn telemetry cannot answer offline: **is there anything generative to
 reach for, and does the selection actually reach it?**
 
-Six sections:
+Seven sections:
 
 - **Role mix** -- how much of the live graph is ``anchor`` / ``guide`` /
   ``generative``, and how much of the generative side can actually render
@@ -30,6 +30,10 @@ Six sections:
   versus active user-affective concepts whose evidence sits in each band.
   The headline is *neg-annotated clusters vs neg-evidence affective
   concepts*, so "0-of-N negative user affective" cannot go stale.
+- **Abstraction stack (L46)** -- concept->concept chain length, nodes
+  that are both source and target, counts by meta depth, and a sample of
+  the newest depth-2 generalization labels. The honest test of stacking
+  is reading those, not a confidence number.
 
 Nothing here writes. The database is opened read-only via a URI, so it is
 safe to run while Aiko is up, and the concept rows are loaded into a
@@ -71,6 +75,7 @@ from app.core.concepts.concept_kinds import (  # noqa: E402
     core_lane_kinds,
     kinds_by_role,
 )
+from app.core.concepts.concept_meta_depth import meta_depth  # noqa: E402
 from app.core.concepts.concept_store import Concept  # noqa: E402
 from app.core.concepts.concept_surfacing import (  # noqa: E402
     engagement_baseline,
@@ -635,6 +640,108 @@ def _affect_polarity_section(
     return cov
 
 
+def _abstraction_stack_section(conn: sqlite3.Connection) -> dict[str, Any]:
+    """L46 watch-line: does the meta graph actually stack?"""
+    models: dict[int, str] = {}
+    labels: dict[int, str] = {}
+    kinds: dict[int, str] = {}
+    statuses: dict[int, str] = {}
+    created: dict[int, str] = {}
+    try:
+        rows = conn.execute(
+            "SELECT id, label, kind, evidence_model, status, created_at "
+            "FROM concepts"
+        )
+    except sqlite3.Error:
+        return {
+            "concept_to_concept_edges": 0,
+            "distinct_sources": 0,
+            "distinct_targets": 0,
+            "both_source_and_target": 0,
+            "max_depth": 0,
+            "by_depth": {},
+            "l2_count": 0,
+            "l2_sample": [],
+        }
+    for r in rows:
+        cid = int(r["id"])
+        models[cid] = str(r["evidence_model"] or "set")
+        labels[cid] = str(r["label"] or "")
+        kinds[cid] = str(r["kind"] or "")
+        statuses[cid] = str(r["status"] or "")
+        created[cid] = str(r["created_at"] or "")
+
+    children: dict[int, list[int]] = {}
+    sources: set[int] = set()
+    targets: set[int] = set()
+    edge_count = 0
+    try:
+        edge_rows = conn.execute(
+            "SELECT src_id, dst_id FROM concept_edges "
+            "WHERE relation = 'evidence' AND src_type = 'concept' "
+            "AND dst_type = 'concept'"
+        )
+    except sqlite3.Error:
+        edge_rows = []
+    for r in edge_rows:
+        try:
+            src = int(r["src_id"])
+            dst = int(r["dst_id"])
+        except (TypeError, ValueError):
+            continue
+        children.setdefault(dst, []).append(src)
+        sources.add(src)
+        targets.add(dst)
+        edge_count += 1
+
+    class _Mini:
+        def get(self, cid: int) -> SimpleNamespace | None:
+            model = models.get(int(cid))
+            if model is None:
+                return None
+            return SimpleNamespace(evidence_model=model)
+
+        def evidence_of(self, cid: int) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(src_type="concept", src_id=str(i))
+                for i in children.get(int(cid), [])
+            ]
+
+    store = _Mini()
+    memo: dict[int, int] = {}
+    by_depth: Counter[int] = Counter()
+    l2_rows: list[tuple[str, int, str, str]] = []
+    for cid, model in models.items():
+        if model != "meta":
+            continue
+        depth = meta_depth(store, cid, memo=memo)
+        by_depth[depth] += 1
+        if depth >= 2 and kinds.get(cid) == "generalization":
+            l2_rows.append(
+                (created.get(cid, ""), cid, labels[cid], statuses.get(cid, ""))
+            )
+    l2_rows.sort(reverse=True)
+    sample = [
+        {
+            "id": cid,
+            "status": status,
+            "label": " ".join(label.split())[:_LABEL_WIDTH],
+        }
+        for _created, cid, label, status in l2_rows[:20]
+    ]
+    max_depth = max(by_depth) if by_depth else 0
+    return {
+        "concept_to_concept_edges": edge_count,
+        "distinct_sources": len(sources),
+        "distinct_targets": len(targets),
+        "both_source_and_target": len(sources & targets),
+        "max_depth": max_depth,
+        "by_depth": {str(k): int(v) for k, v in sorted(by_depth.items())},
+        "l2_count": len(l2_rows),
+        "l2_sample": sample,
+    }
+
+
 def collect(
     conn: sqlite3.Connection, *, now: datetime, settings: Any,
 ) -> dict[str, Any]:
@@ -669,6 +776,7 @@ def collect(
         "intake": _intake_section(conn, ms=ms, concepts=concepts),
         "prompt_load": _prompt_load_section(view, ms=ms, core=core),
         "affect_polarity": _affect_polarity_section(conn, ms=ms),
+        "abstraction_stack": _abstraction_stack_section(conn),
     }
 
 
@@ -847,6 +955,29 @@ def _render(data: dict[str, Any]) -> str:
         f"{polarity.get('neg_clusters', 0)} neg-annotated clusters have "
         f"an affective concept citing them"
     )
+
+    stack = data.get("abstraction_stack") or {}
+    by_depth = stack.get("by_depth") or {}
+    depth_bits = "  ".join(
+        f"d{k} {v}" for k, v in by_depth.items()
+    ) or "none"
+    out.append("")
+    out.append("Abstraction stack (L46)")
+    out.append(
+        f"  concept->concept edges  {stack.get('concept_to_concept_edges', 0)}"
+        f"  sources {stack.get('distinct_sources', 0)}"
+        f"  targets {stack.get('distinct_targets', 0)}"
+        f"  both {stack.get('both_source_and_target', 0)}"
+    )
+    out.append(
+        f"  max depth  {stack.get('max_depth', 0)}  "
+        f"meta by depth  {depth_bits}  "
+        f"l2 generalizations  {stack.get('l2_count', 0)}"
+    )
+    for row in stack.get("l2_sample") or []:
+        out.append(
+            f"    #{row.get('id')} [{row.get('status')}] {row.get('label')}"
+        )
     return "\n".join(out)
 
 

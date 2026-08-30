@@ -1524,6 +1524,99 @@ class PostTurnHelpersMixin(DebugOverridesHostMixin):
             },
         )
 
+    def dropped_topic_state(self) -> dict[str, Any]:
+        """K82 debug dump: pending cues, cooldown, detector knobs.
+
+        Public so the MCP ``get_dropped_topic_state`` tool does not
+        reach through ``session._*`` for a read the controller already
+        owns.
+        """
+        mem = self._memory_settings
+        store = getattr(self, "_cue_store", None)
+        pending_json: list[dict[str, Any]] = []
+        if store is not None:
+            pending_json = [
+                {
+                    "id": row.id,
+                    "skipped_ask": row.payload.get("skipped_ask"),
+                    "subject": row.subject,
+                    "surfaced_count": row.surfaced_count,
+                }
+                for row in store.pending("dropped_topic", limit=10)
+            ]
+        return {
+            "enabled": bool(
+                getattr(self._settings.agent, "dropped_topic_enabled", True)
+            ),
+            "pending": pending_json,
+            "cooldown_remaining": int(
+                getattr(self, "_dropped_topic_cooldown_remaining", 0)
+            ),
+            "thresholds": {
+                "min_asks": int(getattr(mem, "dropped_topic_min_asks", 2)),
+                "min_overlap": int(getattr(mem, "dropped_topic_min_overlap", 2)),
+                "require_question": bool(
+                    getattr(mem, "dropped_topic_require_question", True)
+                ),
+                "cooldown_turns": int(
+                    getattr(mem, "dropped_topic_cooldown_turns", 3)
+                ),
+            },
+        }
+
+    def force_dropped_topic(
+        self, user_text: str = "", reply_text: str = "",
+    ) -> dict[str, Any]:
+        """K82 debug: run the detector and arm the cue.
+
+        Public because the MCP ``force_dropped_topic`` tool used to
+        duplicate the live path (history fallback, knobs, queue) by
+        reaching into ``_chat_db`` / ``_memory_settings``. Same arming
+        as :meth:`queue_dropped_topic_cue`.
+        """
+        from app.core.conversation import dropped_topic_detector
+
+        user = (user_text or "").strip()
+        reply = (reply_text or "").strip()
+        if not user or not reply:
+            history = self._chat_db.get_messages(self.session_key, limit=20)
+            if not user:
+                for row in reversed(history):
+                    if getattr(row, "role", "") == "user":
+                        user = (getattr(row, "content", "") or "").strip()
+                        break
+            if not reply:
+                for row in reversed(history):
+                    if getattr(row, "role", "") == "assistant":
+                        reply = (getattr(row, "content", "") or "").strip()
+                        break
+        if not user:
+            return {
+                "error": "no user_text and no recent user message",
+            }
+        mem = self._memory_settings
+        hit = dropped_topic_detector.detect_dropped_topic(
+            user,
+            reply,
+            min_asks=int(getattr(mem, "dropped_topic_min_asks", 2)),
+            min_overlap=int(getattr(mem, "dropped_topic_min_overlap", 2)),
+            require_question=bool(
+                getattr(mem, "dropped_topic_require_question", True)
+            ),
+        )
+        if hit is None:
+            return {"armed": False, "hit": None, "note": "no dropped ask"}
+        if not self.queue_dropped_topic_cue(hit):
+            return {"armed": False, "hit": None, "note": "cue pool refused"}
+        return {
+            "armed": True,
+            "hit": {
+                "skipped_ask": hit.skipped_ask,
+                "covered_asks": list(hit.covered_asks),
+                "uncovered_asks": list(hit.uncovered_asks),
+            },
+        }
+
     def _maybe_capture_user_correction(self, user_text: str) -> None:
         """F13: cheap post-turn gate for "the user just corrected me".
 

@@ -30,6 +30,7 @@ second row that starts from nothing.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
@@ -47,6 +48,32 @@ DEDUPE_COS = 0.86
 _K = 5
 
 
+def vector_cosine(a: Any, b: Any) -> float | None:
+    """Cosine of two label embeddings, or ``None`` if either is missing.
+
+    ``None`` means "cannot judge" -- a caller must not treat a missing
+    vector as a duplicate or as distinct. Same contract as the admission
+    gate: absence is not a score of 0.
+    """
+    if a is None or b is None:
+        return None
+    try:
+        import numpy as np
+
+        va = np.asarray(a, dtype=np.float32).ravel()
+        vb = np.asarray(b, dtype=np.float32).ravel()
+        if va.size == 0 or va.size != vb.size:
+            return None
+        na = float(np.linalg.norm(va))
+        nb = float(np.linalg.norm(vb))
+        if na <= 0.0 or nb <= 0.0:
+            return None
+        return float(np.dot(va, vb) / (na * nb))
+    except Exception:
+        log.debug("vector cosine failed", exc_info=True)
+        return None
+
+
 def find_duplicate(
     store: "ConceptStore",
     vec: Any,
@@ -55,6 +82,7 @@ def find_duplicate(
     kind: str | None,
     threshold: float = DEDUPE_COS,
     k: int = _K,
+    exclude_ids: Collection[int] = (),
 ) -> tuple["Concept | None", float]:
     """``(duplicate_or_none, top_cosine)`` for a proposed belief.
 
@@ -72,10 +100,20 @@ def find_duplicate(
 
     Never raises: a failed lookup reports "no duplicate", which risks one
     extra row rather than losing the write entirely.
+
+    ``exclude_ids`` skips those rows when deciding a *match* (L46: a
+    stacked generalization is near-synonymous with the children it cites,
+    and must not silently merge into one of them). ``top_sim`` is still
+    the nearest neighbour *including* excluded rows, so novelty is not
+    inflated by pretending the children were not there.
     """
+    skip = {int(i) for i in exclude_ids}
     try:
+        # Pull extra neighbours when skipping, so a child sitting at rank 1
+        # does not hide a real duplicate at rank 2.
+        pull = int(k) + len(skip)
         hits = store.nearest(
-            vec, subject=subject, kind=kind, status=None, k=int(k),
+            vec, subject=subject, kind=kind, status=None, k=max(int(k), pull),
         )
     except Exception:
         log.debug("concept nearest failed", exc_info=True)
@@ -83,9 +121,15 @@ def find_duplicate(
     if not hits:
         return None, 0.0
     top_sim = float(hits[0][1])
-    if top_sim >= float(threshold):
-        return hits[0][0], top_sim
+    bar = float(threshold)
+    for concept, sim in hits:
+        cid = int(getattr(concept, "concept_id", 0) or 0)
+        if cid in skip:
+            continue
+        if float(sim) >= bar:
+            return concept, top_sim
+        break
     return None, top_sim
 
 
-__all__ = ["DEDUPE_COS", "find_duplicate"]
+__all__ = ["DEDUPE_COS", "find_duplicate", "vector_cosine"]

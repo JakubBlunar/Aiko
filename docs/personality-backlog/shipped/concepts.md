@@ -3166,10 +3166,10 @@ relationship is recovered from the neighbour's `kind == "generalization"`, not
 the edge relation. The `generalizes` relation in the edge enum is now
 effectively reserved for a future *multi-level* hierarchy.
 
-**Remaining follow-up.** Multi-level hierarchies (parent-of-parent) — the meta
-depth cap stays for v1, so a generalization can't yet abstract another
-generalization; relationship-subject abstractions (user + aiko only for now).
-Feeds L19 naturally — the abstraction level is what a self-narrative reaches for.
+**Remaining follow-up.** Relationship-subject abstractions (user + aiko
+L1 gens under one parent) — deferred; that is where mushy "we both care
+about closeness" lives. Depth 3 is not on the table until this graph is
+an order of magnitude denser. Same-subject stacking (depth 2) is L46.
 
 ---
 

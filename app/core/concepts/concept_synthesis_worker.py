@@ -50,7 +50,7 @@ from app.core.concepts.proposers import (
     ProposerSpec,
     TensionBase,
 )
-from app.core.concepts.concept_dedupe import DEDUPE_COS, find_duplicate
+from app.core.concepts.concept_dedupe import DEDUPE_COS, find_duplicate, vector_cosine
 from app.core.concepts.concept_drift import is_material_relabel
 from app.core.concepts.concept_evidence_admission import (
     ADMISSION_COS,
@@ -62,6 +62,11 @@ from app.core.concepts.concept_evidence_admission import (
 )
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_kinds import core_lane_kinds
+from app.core.concepts.concept_meta_depth import (
+    descendant_ids,
+    meta_depth,
+    would_cycle,
+)
 from app.core.concepts.concept_surfacing import engagement_baseline
 from app.core.concepts.concept_store import Concept, ConceptEdge
 from app.core.concepts.surfacing_conduct import (
@@ -902,6 +907,33 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _max_l2_concepts(self) -> int:
+        """L46: cap on depth-1 generalizations offered to the stacking pass."""
+        return max(
+            2,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_max_l2_concepts",
+                    24,
+                )
+            ),
+        )
+
+    def _generalization_max_depth(self) -> int:
+        """L46: hard cap on meta-graph depth (default 2)."""
+        return max(
+            1,
+            int(
+                getattr(
+                    self._memory_settings,
+                    "concept_generalization_max_depth",
+                    2,
+                )
+            ),
+        )
+
+    @property
     def _dirty_size_delta(self) -> int:
         return max(
             1,
@@ -981,6 +1013,7 @@ class ConceptSynthesisWorker:
             "comm_style_dirty": False,
             "tension_dirty": False,
             "generalization_dirty": False,
+            "generalization_l2_dirty": False,
             "self_correction_dirty": False,
             "self_correction_clusters": 0,
         }
@@ -1018,6 +1051,11 @@ class ConceptSynthesisWorker:
                 elif spec.population == "generalization":
                     proposals = self._run_generalization_pass(
                         ctx, spec, stats, force
+                    )
+                    proposals.extend(
+                        self._run_generalization_stacking_pass(
+                            ctx, spec, stats, force
+                        )
                     )
                 elif spec.population == "self_correction":
                     proposals = self._run_self_correction_pass(
@@ -2651,12 +2689,12 @@ class ConceptSynthesisWorker:
         higher-order super-concept 2+ of them are facets of, cited as
         ``("concept", id)`` evidence.
 
-        Offering only non-meta actives keeps the meta depth cap (no
-        abstraction-of-abstraction) true by construction; reading
-        ``status="active"`` is the dependency-ordering guarantee. Dirty-tracked
-        on the same base-pool fingerprint as tension (ids + rounded confidence +
-        live/quiet hint) so a settled graph is a fast no-op. Gated by
-        ``agent.generalization_synthesis_enabled``."""
+        Offering only non-meta actives keeps L1 from stacking; L46's
+        stacking pass is a separate pool of depth-1 generalizations.
+        Reading ``status="active"`` is the dependency-ordering guarantee.
+        Dirty-tracked on the same base-pool fingerprint as tension (ids +
+        rounded confidence + live/quiet hint) so a settled graph is a fast
+        no-op. Gated by ``agent.generalization_synthesis_enabled``."""
         if not bool(
             getattr(
                 self._agent_settings, "generalization_synthesis_enabled", True
@@ -2664,7 +2702,7 @@ class ConceptSynthesisWorker:
         ):
             return []
         subject = spec.subject
-        pool = self._active_tension_bases(
+        pool = self._active_generalization_bases(
             subject, self._max_generalization_concepts
         )
         # An abstraction needs at least two concepts to generalise over.
@@ -2687,7 +2725,62 @@ class ConceptSynthesisWorker:
         proposals = spec.propose(
             ctx,
             concepts=pool,
-            existing=self._existing_for(spec),
+            existing=self._existing_generalizations(spec, depth=1),
+        )
+        self._save_sigs(
+            sig_key, {"fingerprint": fingerprint, "count": len(pool)}
+        )
+        return proposals
+
+    def _run_generalization_stacking_pass(
+        self,
+        ctx: ProposerContext,
+        spec: ProposerSpec,
+        stats: dict[str, Any],
+        force: bool = False,
+    ) -> list[CandidateProposal]:
+        """L46: second-order generalization pass.
+
+        Offers only active depth-1 ``generalization`` rows for
+        ``spec.subject`` -- never tensions, never L2s, never mixed with
+        bases -- and asks the same proposer (``stacking=True``) to name a
+        view two or more of them share. Own dirty fingerprint so a base
+        wiggle does not re-spend this LLM call. Gated by both the L20
+        synthesis switch and ``agent.generalization_stacking_enabled``.
+        """
+        if not bool(
+            getattr(
+                self._agent_settings, "generalization_synthesis_enabled", True
+            )
+        ):
+            return []
+        if not bool(
+            getattr(
+                self._agent_settings, "generalization_stacking_enabled", True
+            )
+        ):
+            return []
+        subject = spec.subject
+        pool = self._active_stacking_bases(subject, self._max_l2_concepts)
+        if len(pool) < 2:
+            return []
+
+        sig_key = "concept_synth.generalization_l2_sig." + subject
+        prev = self._load_sigs(sig_key)
+        fingerprint = self._tension_fingerprint(pool)
+        prev_fp = str(prev.get("fingerprint", "")) if prev else ""
+        is_dirty = force or fingerprint != prev_fp
+        stats["generalization_l2_dirty"] = bool(
+            stats.get("generalization_l2_dirty")
+        ) or bool(is_dirty)
+        if not is_dirty:
+            return []
+
+        proposals = spec.propose(
+            ctx,
+            concepts=pool,
+            existing=self._existing_generalizations(spec, depth=2),
+            stacking=True,
         )
         self._save_sigs(
             sig_key, {"fingerprint": fingerprint, "count": len(pool)}
@@ -2931,6 +3024,117 @@ class ConceptSynthesisWorker:
             )
             for c in rows
         ]
+
+    def _active_generalization_bases(
+        self, subject: str, limit: int
+    ) -> list[TensionBase]:
+        """L1 generalization pool: active non-meta concepts, highest
+        confidence first, then diversified by label cosine so a family of
+        near-twin rituals cannot fill the cap (L48 assist). Tension still
+        uses :meth:`_active_tension_bases` unfiltered -- similar pairs are
+        the point of a friction."""
+        try:
+            rows = [
+                c
+                for c in self._concept_store.list_by(
+                    status="active", subject=subject
+                )
+                if c.evidence_model != "meta"
+            ]
+        except Exception:
+            log.debug(
+                "generalization base list failed (%s)", subject, exc_info=True
+            )
+            return []
+        rows.sort(key=lambda c: float(c.confidence), reverse=True)
+        rows = self._pick_diverse_concepts(rows, limit)
+        now = _parse_iso(_now_iso())
+        return [self._as_tension_base(c, now) for c in rows]
+
+    def _active_stacking_bases(
+        self, subject: str, limit: int
+    ) -> list[TensionBase]:
+        """L46 stacking pool: active depth-1 generalizations only."""
+        cap = max(2, int(limit))
+        try:
+            rows = [
+                c
+                for c in self._concept_store.list_by(
+                    status="active", subject=subject, kind="generalization"
+                )
+            ]
+        except Exception:
+            log.debug(
+                "stacking base list failed (%s)", subject, exc_info=True
+            )
+            return []
+        memo: dict[int, int] = {}
+        depth_one = [
+            c for c in rows
+            if meta_depth(self._concept_store, int(c.concept_id), memo=memo) == 1
+        ]
+        depth_one.sort(key=lambda c: float(c.confidence), reverse=True)
+        depth_one = depth_one[:cap]
+        now = _parse_iso(_now_iso())
+        return [self._as_tension_base(c, now) for c in depth_one]
+
+    def _as_tension_base(
+        self, concept: Concept, now: "datetime | None"
+    ) -> TensionBase:
+        return TensionBase(
+            id=int(concept.concept_id),
+            subject=str(concept.subject),
+            kind=str(concept.kind),
+            label=str(concept.label),
+            rationale=str(concept.rationale or ""),
+            confidence=float(concept.confidence),
+            hint=self._activity_hint(concept, now),
+        )
+
+    def _pick_diverse_concepts(
+        self, rows: list[Concept], limit: int
+    ) -> list[Concept]:
+        """Greedy take of ``limit`` rows, skipping a candidate whose label
+        embedding is at or above :data:`DEDUPE_COS` against an already-
+        picked one. Missing embeddings cannot be judged and always pass.
+        Highest-confidence (the incoming sort) is kept as the family
+        representative."""
+        cap = max(2, int(limit))
+        picked: list[Concept] = []
+        for row in rows:
+            if len(picked) >= cap:
+                break
+            if self._too_similar_to_picked(row, picked):
+                continue
+            picked.append(row)
+        return picked
+
+    @staticmethod
+    def _too_similar_to_picked(
+        row: Concept, picked: list[Concept]
+    ) -> bool:
+        if not picked:
+            return False
+        for other in picked:
+            score = vector_cosine(row.embedding, other.embedding)
+            if score is not None and score >= DEDUPE_COS:
+                return True
+        return False
+
+    def _existing_generalizations(
+        self, spec: ProposerSpec, *, depth: int
+    ) -> list[ExistingConcept]:
+        """Existing generalizations at exactly ``depth``, so L1 cannot
+        reinforce an L2 with bases and L2 cannot reinforce an L1."""
+        existing = self._existing_for(spec)
+        memo: dict[int, int] = {}
+        out: list[ExistingConcept] = []
+        for item in existing:
+            if meta_depth(
+                self._concept_store, int(item.id), memo=memo
+            ) == int(depth):
+                out.append(item)
+        return out
 
     @staticmethod
     def _activity_hint(concept: Concept, now: "datetime | None") -> str:
@@ -3233,13 +3437,19 @@ class ConceptSynthesisWorker:
         if not proposal.evidence:
             return
 
-        # Meta depth cap + cycle guard (L12, rule 4), enforced at persist time:
-        # a meta concept may reference only EXISTING, non-meta concepts. Drops
-        # any ``("concept", id)`` edge whose target vanished (retired between
-        # propose and persist) or is itself meta; a tension that loses either
-        # side of its pair is no longer a tension, so we reject it.
+        # Meta depth cap + cycle guard (L12 / L46), enforced at persist time.
+        # Tension (and other non-generalization metas) may reference only
+        # EXISTING, non-meta concepts. A generalization may cite a live
+        # concept whose computed depth is strictly below the cap, and a
+        # reinforce must not close a cycle. Drops any ``("concept", id)``
+        # edge whose target vanished or fails those rules; fewer than two
+        # surviving concept edges means the proposal is not a meta.
         if proposal.evidence_model == "meta":
-            proposal.evidence = self._filter_meta_evidence(proposal.evidence)
+            proposal.evidence = self._filter_meta_evidence(
+                proposal.evidence,
+                kind=proposal.kind,
+                parent_id=proposal.reinforces_id,
+            )
             if len({(t, i) for t, i in proposal.evidence}) < 2:
                 return
 
@@ -3259,6 +3469,14 @@ class ConceptSynthesisWorker:
                 "concept label embed failed: %s", proposal.label,
                 exc_info=True,
             )
+            return
+
+        # L46: a stacked label that restates a cited child is a rename,
+        # not a parent. Drop rather than reinforcing the child.
+        if (
+            proposal.kind == "generalization"
+            and self._is_child_rename(vec, proposal.evidence)
+        ):
             return
 
         # Embedding safety net: catches paraphrase dupes the LLM missed
@@ -3317,12 +3535,43 @@ class ConceptSynthesisWorker:
         the evidence itself; the L30 graduation path deliberately does
         not (see that module).
         """
+        exclude: set[int] = set()
+        if proposal.kind == "generalization":
+            for node_type, node_id in proposal.evidence:
+                if node_type != "concept":
+                    continue
+                try:
+                    cid = int(node_id)
+                except (TypeError, ValueError):
+                    continue
+                exclude.add(cid)
+                exclude |= descendant_ids(self._concept_store, cid)
         return find_duplicate(
             self._concept_store,
             vec,
             subject=proposal.subject,
             kind=proposal.kind,
+            exclude_ids=exclude,
         )
+
+    def _is_child_rename(
+        self, vec: Any, evidence: list[tuple[str, str]]
+    ) -> bool:
+        """True when ``vec`` is at or above the dedupe bar against a cited
+        concept child -- the proposed parent is a restatement of a child."""
+        for node_type, node_id in evidence:
+            if node_type != "concept":
+                continue
+            try:
+                target = self._concept_store.get(int(node_id))
+            except (TypeError, ValueError):
+                continue
+            if target is None:
+                continue
+            score = vector_cosine(vec, target.embedding)
+            if score is not None and score >= DEDUPE_COS:
+                return True
+        return False
 
     def _record_discovery(
         self,
@@ -3655,24 +3904,48 @@ class ConceptSynthesisWorker:
         )
 
     def _filter_meta_evidence(
-        self, evidence: list[tuple[str, str]]
+        self,
+        evidence: list[tuple[str, str]],
+        *,
+        kind: str = "",
+        parent_id: int | None = None,
     ) -> list[tuple[str, str]]:
-        """Keep only ``("concept", id)`` edges whose target is a live, non-meta
-        concept (plus any non-concept edges untouched). Enforces the L12 meta
-        depth cap / cycle guard at persist time: a base that turned out to be
-        meta or has vanished is dropped, so a tension can never reference
-        another tension or a ghost."""
+        """Keep ``("concept", id)`` edges that satisfy the kind's depth rule.
+
+        Tension (and any other non-generalization meta) may only cite a
+        live non-meta concept -- the original L12 cap. A generalization
+        may cite a live concept whose computed depth is strictly below
+        ``concept_generalization_max_depth``, and a reinforce must not
+        close a cycle. Non-concept edges pass through untouched.
+        """
+        stacking = str(kind or "") == "generalization"
+        cap = self._generalization_max_depth() if stacking else 1
+        memo: dict[int, int] = {}
         kept: list[tuple[str, str]] = []
         for node_type, node_id in evidence:
             if node_type != "concept":
                 kept.append((node_type, node_id))
                 continue
             try:
-                target = self._concept_store.get(int(node_id))
+                cid = int(node_id)
             except (TypeError, ValueError):
-                target = None
-            if target is None or target.evidence_model == "meta":
                 continue
+            try:
+                target = self._concept_store.get(cid)
+            except Exception:
+                target = None
+            if target is None:
+                continue
+            if not stacking:
+                if target.evidence_model == "meta":
+                    continue
+            else:
+                if meta_depth(
+                    self._concept_store, cid, memo=memo
+                ) >= cap:
+                    continue
+                if would_cycle(self._concept_store, parent_id, cid):
+                    continue
             kept.append((node_type, node_id))
         return kept
 

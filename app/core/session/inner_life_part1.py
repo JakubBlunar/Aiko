@@ -2748,13 +2748,14 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         """L20 "prefer the abstraction" filter over the concept candidate pool.
 
         Any candidate that is a ``generalization`` parent clearing
-        ``generalization_parent_min_confidence`` has its child concepts (its
-        ``("concept", id)`` evidence bases) removed from the pool, so the
-        rendered context carries the through-line and not the specifics beneath
-        it. The parent itself is never a child of anything (metas are excluded
-        from the base pool), so it always survives. No-op when disabled, when the
-        store is missing, or when no parent qualifies -- and best-effort (any
-        failure returns the pool untouched)."""
+        ``generalization_parent_min_confidence`` has its descendant concepts
+        (direct children *and* their bases -- L46's cone) removed from the
+        pool, so the rendered context carries the through-line and not the
+        specifics beneath it. After stacking a depth-1 parent can itself be a
+        child of a depth-2 view; that L1 is suppressed when the L2 qualifies,
+        while the L2 survives (it is not in its own descendant set). No-op
+        when disabled, when the store is missing, or when no parent qualifies
+        -- and best-effort (any failure returns the pool untouched)."""
         ms = getattr(self, "_memory_settings", None)
         if not bool(
             getattr(ms, "generalization_suppress_children_enabled", True)
@@ -2765,6 +2766,10 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             return cands
         bar = float(getattr(ms, "generalization_parent_min_confidence", 0.7))
         covered: set[int] = set()
+        try:
+            from app.core.concepts.concept_meta_depth import descendant_ids
+        except Exception:
+            return cands
         for cand in cands:
             concept = getattr(cand, "payload", None)
             if (getattr(concept, "kind", "") or "") != "generalization":
@@ -2772,17 +2777,12 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             if float(getattr(concept, "confidence", 0.0)) < bar:
                 continue
             try:
-                for e in store.evidence_of(
-                    int(getattr(concept, "concept_id", 0))
-                ):
-                    if e.src_type == "concept":
-                        try:
-                            covered.add(int(e.src_id))
-                        except (TypeError, ValueError):
-                            continue
+                covered |= descendant_ids(
+                    store, int(getattr(concept, "concept_id", 0))
+                )
             except Exception:
                 log.debug(
-                    "generalization child lookup failed", exc_info=True
+                    "generalization descendant lookup failed", exc_info=True
                 )
         if not covered:
             return cands

@@ -2245,6 +2245,10 @@ rather than as a number.
 
 ## L46. Abstraction never stacks -- the graph is two layers, by one filter clause
 
+**Status: PHASE 1 SHIPPED (same-subject depth-2 pass + guards).** Leave
+open until a live L2 appears in T3 and the 20-label sample is not slop.
+See "What landed" below.
+
 **Motivation.** The concept layer *does* abstract: 905 meta-concepts exist (539
 `generalization`, 366 `tension`), each citing a mean of 5.1 base concepts, and
 346 of them are `active`. What it never does is abstract **twice**. Measured on
@@ -2289,10 +2293,35 @@ the `sequence` kind, which has **zero rows**. Neither should be started before
 this one; a propagation rule over a graph of height one propagates nothing.
 
 **Key files.**
-- [`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py) — `_active_tension_bases()` (the filter), `_run_generalization_pass` (~L2608)
-- [`proposers/base.py`](../../app/core/concepts/proposers/base.py) — `propose_generalization()` (~L1007), the >= 2 distinct `evidence_concept_ids` rule
-- [`proposers/generalization_user.py`](../../app/core/concepts/proposers/generalization_user.py) — `_system()`, the prompt that would need to know it is looking at abstractions
-- [`concept_dedupe.py`](../../app/core/concepts/concept_dedupe.py) — the 0.86 bar a level-2 label would have to clear against its own bases
+- [`concept_meta_depth.py`](../../app/core/concepts/concept_meta_depth.py) — walked depth, cycle, descendant cone
+- [`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py) — L1 pass stays non-meta; `_run_generalization_stacking_pass`; kind-aware `_filter_meta_evidence`
+- [`proposers/base.py`](../../app/core/concepts/proposers/base.py) — `propose_generalization(..., stacking=True)`
+- [`proposers/generalization_user.py`](../../app/core/concepts/proposers/generalization_user.py) / [`generalization_aiko.py`](../../app/core/concepts/proposers/generalization_aiko.py) — stacking prompts
+- [`concept_dedupe.py`](../../app/core/concepts/concept_dedupe.py) — rename bar vs children; `exclude_ids` on `find_duplicate`
+
+**What landed (30 Aug 2026).** Flipping `_active_tension_bases` would not
+have been enough: persist-time `_filter_meta_evidence` independently
+dropped every meta target. Stacking is a **dedicated L2 pass**, not a
+wider tension filter.
+
+- Pool: active depth-1 `generalization` rows only (never tensions, never
+  L2s, never mixed with bases). Own dirty fingerprint
+  (`concept_synth.generalization_l2_sig.{subject}`).
+- Depth is walked, not stored (`concept_meta_depth.py`). Cap
+  `memory.concept_generalization_max_depth` default **2**.
+- Persist: generalization may cite a live concept with `depth < cap`;
+  tension still drops all meta. Rename-vs-children at `DEDUPE_COS`
+  (0.86) drops a restatement instead of merging into the child. Reinforce
+  refuses a cycle.
+- Promotion for depth 2: confidence **0.80**, engaged age **7d**.
+- Surfacing walks the descendant cone; activation walks one extra hop up
+  the meta chain (0.5).
+- L1 generalization pool is diversified by label cosine so ritual twins
+  cannot fill the cap. Tension pool is unchanged.
+- Master switch `agent.generalization_stacking_enabled`.
+
+**Out of this pass.** Tension stacking, relationship-subject L2, L29b /
+`sequence` / L34, stored depth column, L48 consolidation rewrite.
 
 **Sketched approach.** Admit meta-concepts to the base pool with (1) an explicit
 depth cap stored per concept rather than inferred by walking, (2) a requirement
@@ -2300,18 +2329,17 @@ of >= 2 *meta* bases so a level-2 cannot be a rename of a single level-1, and
 (3) a promotion bar that rises with depth, since the evidence gets thinner as the
 claim gets broader.
 
-**Open questions.** (1) Vagueness is the whole risk: a generalisation of
-generalisations is exactly where slop lives, and the honest test is reading
-twenty of them, not a confidence number. (2) Does the dedupe bar even let one
-through, given a level-2 is near-synonymous with its bases by construction?
-(3) Does surfacing want them — L28m already found tight concept diets sort the
-generative kinds last, so a level-2 might mint and never be read. (4) Depth cap
-of 2, or 3? Three assumes a graph an order of magnitude denser than this one.
+**Open questions (watch, do not retune from one day).** (1) Vagueness is the
+whole risk: a generalisation of generalisations is exactly where slop lives,
+and the honest test is reading twenty of them, not a confidence number.
+(2) The rename bar is the answer to "does dedupe even let one through" —
+a parent at ≥ 0.86 against a child is dropped, not merged. (3) Descendant
+suppression + the extra activation hop are why a minted L2 can actually
+be read. (4) Depth cap is 2.
 
-**Effort.** Medium. The filter change is an afternoon; the guardrails and the
-quality read are the work.
-
-**Depends on.** Nothing. **Blocks** L34 and L29b, which is the point of filing it.
+**Re-measure.** `python scripts/concept_openness_report.py` → Abstraction
+stack. Want `max depth` 2, `both` ≫ 1, and a sample of L2 labels that
+name a *view*, not a restatement of one child.
 
 ---
 
