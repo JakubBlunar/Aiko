@@ -58,11 +58,17 @@ class _FakeMemoryStore:
     def __init__(self) -> None:
         self.added: list[str] = []
         self._next_id = 500
+        self._by_id: dict[int, Any] = {}
 
     def add(self, *, content: str, **_kw: Any):
         self.added.append(content)
         self._next_id += 1
-        return SimpleNamespace(id=self._next_id, content=content)
+        row = SimpleNamespace(id=self._next_id, content=content)
+        self._by_id[row.id] = row
+        return row
+
+    def get(self, memory_id: int):
+        return self._by_id.get(int(memory_id))
 
 
 class _Host(CuePoolMixin, PostTurnHelpersMixin):
@@ -97,7 +103,15 @@ class _Host(CuePoolMixin, PostTurnHelpersMixin):
         )
         self._memory_settings = SimpleNamespace(
             concept_hypothesis_deny_penalty=0.25,
+            concept_hypothesis_answer_threshold=0.45,
+            hypothesis_credence_step=0.2,
+            hypothesis_graduate_min_support=2,
+            hypothesis_graduate_min_credence=0.7,
         )
+        self._hypothesis_store = None
+        self._recent_assistant_turns: list = []
+        self._prior_assistant_vec = None
+        self._hypothesis_scored_ids: set = set()
         self.session_key = "s1"
 
     def _notify_memory_added(self, memory: Any) -> None:
@@ -276,7 +290,7 @@ class UnclearTests(_Fixture):
         self.assertEqual(host._maintenance_client.calls, 1)
 
     def test_an_off_subject_reply_costs_no_llm_call(self) -> None:
-        self._awaiting_cue()
+        cue_id = self._awaiting_cue()
         host = self._host("CONFIRM")
         host._resolve_concept_hypotheses(
             user_text=(
@@ -286,6 +300,77 @@ class UnclearTests(_Fixture):
         )
         self.assertEqual(host._maintenance_client.calls, 0)
         self.assertAlmostEqual(self._reload().confidence, 0.6)
+        self.assertEqual(self._state(cue_id), STATE_AWAITING)
+
+    def test_an_off_subject_reply_is_not_a_second_ask(self) -> None:
+        """Listening longer is not re-asking. Stage B must not expire it."""
+        cue_id = self._awaiting_cue()
+        host = self._host("CONFIRM")
+        off = (
+            "So the deployment finally went through last night after we "
+            "rebuilt the image and re-ran the whole migration by hand."
+        )
+        host._resolve_concept_hypotheses(user_text=off)
+        host._settle_awaiting_cues(user_text=off)
+        self.assertEqual(self._state(cue_id), STATE_AWAITING)
+
+    def test_a_later_on_subject_answer_still_lands(self) -> None:
+        cue_id = self._awaiting_cue()
+        host = self._host("CONFIRM")
+        host._resolve_concept_hypotheses(
+            user_text=(
+                "So the deployment finally went through last night after we "
+                "rebuilt the image and re-ran the whole migration by hand."
+            )
+        )
+        host._resolve_concept_hypotheses(user_text="yeah, pretty much always")
+        self.assertEqual(self._state(cue_id), STATE_USED)
+        self.assertEqual(self._reload().distinct_source_count, 2)
+
+    def test_three_off_subject_turns_retire_the_hunch(self) -> None:
+        cue_id = self._awaiting_cue()
+        host = self._host("CONFIRM")
+        off = (
+            "So the deployment finally went through last night after we "
+            "rebuilt the image and re-ran the whole migration by hand."
+        )
+        host._resolve_concept_hypotheses(user_text=off)
+        host._resolve_concept_hypotheses(user_text=off)
+        self.assertEqual(self._state(cue_id), STATE_AWAITING)
+        host._resolve_concept_hypotheses(user_text=off)
+        self.assertEqual(self._state(cue_id), STATE_EXPIRED)
+        row = next(r for r in self.cues.list_for_user() if r.id == cue_id)
+        self.assertEqual(row.used_evidence, "max_asks/awaiting_timeout")
+
+    def test_a_day_old_hold_also_times_out(self) -> None:
+        from datetime import timedelta
+
+        from app.core.infra import timephrase
+
+        cue_id = self._awaiting_cue()
+        old = (timephrase.utcnow() - timedelta(hours=25)).isoformat()
+        self.cues._update(cue_id, "last_asked_at = ?", (old,))
+        host = self._host("CONFIRM")
+        host._resolve_concept_hypotheses(
+            user_text=(
+                "So the deployment finally went through last night after we "
+                "rebuilt the image and re-ran the whole migration by hand."
+            )
+        )
+        self.assertEqual(self._state(cue_id), STATE_EXPIRED)
+
+    def test_a_missing_classifier_keeps_listening(self) -> None:
+        cue_id = self._awaiting_cue()
+        host = _Host(
+            cue_store=self.cues,
+            concept_store=self.concepts,
+            event_store=self.events,
+            ollama=None,
+            memory_store=self.memories,
+        )
+        host._effective_worker_model = "worker"
+        host._resolve_concept_hypotheses(user_text="yeah, kind of")
+        self.assertEqual(self._state(cue_id), STATE_AWAITING)
 
 
 class OwnershipTests(_Fixture):
@@ -293,7 +378,8 @@ class OwnershipTests(_Fixture):
         # The ordering contract: every awaiting row of this type reaches
         # a terminal state or a release here, so stage B -- which reads
         # topical overlap and would score a denial as a satisfied
-        # question -- never sees one.
+        # question -- never sees one. Off-subject holds stay awaiting on
+        # purpose; stage B skips this type rather than finishing them.
         self._awaiting_cue()
         self._awaiting_cue()
         host = self._host("CONFIRM", "UNCLEAR")
@@ -345,6 +431,81 @@ class OwnershipTests(_Fixture):
         host = self._host("CONFIRM")
         host._resolve_concept_hypotheses(user_text="yes, always")
         self.assertEqual(host._maintenance_client.calls, 0)
+
+
+class AmbientListenTests(_Fixture):
+    """H44: a second confirmation that is not a second ask."""
+
+    STATEMENT = "Jacob treats walking as thinking time"
+
+    def _invented(self, *, asked: int, support: int, credence: float = 0.7):
+        from app.core.concepts.hypothesis_store import Hypothesis, HypothesisStore
+
+        store = HypothesisStore(self.db)
+        row = Hypothesis(
+            statement=self.STATEMENT,
+            kind="pattern",
+            subject="user",
+            status="supported" if support else "open",
+            credence=credence,
+            support_count=support,
+            asked_count=asked,
+            embedding=_BELIEF_VEC,
+        )
+        store.add(row)
+        return store, row
+
+    def test_an_asked_support_graduates_on_a_later_echo(self) -> None:
+        from app.core.concepts.hypothesis_store import (
+            STATUS_GRADUATED,
+            STATUS_MERGED,
+        )
+
+        store, row = self._invented(asked=1, support=1, credence=0.7)
+        host = self._host("CONFIRM")
+        host._hypothesis_store = store
+        host._listen_supported_hypotheses(user_text="yeah, that's still true")
+
+        after = store.get(row.hypothesis_id)
+        self.assertEqual(after.support_count, 2)
+        self.assertIn(after.status, (STATUS_GRADUATED, STATUS_MERGED))
+        self.assertFalse(after.is_live)
+
+    def test_a_never_asked_row_is_not_ambient_scored(self) -> None:
+        store, row = self._invented(asked=0, support=1, credence=0.7)
+        host = self._host("CONFIRM")
+        host._hypothesis_store = store
+        host._listen_supported_hypotheses(user_text="yeah, that's still true")
+
+        after = store.get(row.hypothesis_id)
+        self.assertEqual(after.support_count, 1)
+        self.assertEqual(host._maintenance_client.calls, 0)
+
+    def test_the_same_reply_is_not_counted_twice(self) -> None:
+        """The ask-resolver's CONFIRM must not also be the ambient one."""
+        store, row = self._invented(asked=1, support=0, credence=0.5)
+        cue_id = self.cues.add(
+            "concept_hypothesis",
+            self.STATEMENT,
+            "hunch",
+            payload={
+                "target_type": "hypothesis",
+                "target_id": row.hypothesis_id,
+                "label": self.STATEMENT,
+            },
+            embedding=_BELIEF_VEC,
+        )
+        self.cues.mark_surfaced(cue_id)
+        self.cues.mark_asked(cue_id)
+        host = self._host("CONFIRM")
+        host._hypothesis_store = store
+        host._hypothesis_scored_ids = set()
+        host._resolve_concept_hypotheses(user_text="yeah, pretty much always")
+        host._listen_supported_hypotheses(user_text="yeah, pretty much always")
+
+        after = store.get(row.hypothesis_id)
+        self.assertEqual(after.support_count, 1)
+        self.assertNotEqual(after.status, "graduated")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -512,6 +512,7 @@ def collect_hypotheses(conn: sqlite3.Connection) -> dict[str, Any]:
         elif n_asked > 0 and not has_verdict:
             unclassified.append(item)
 
+    cues = _collect_hypothesis_cues(conn)
     return {
         "bars": bars,
         "total": len(rows),
@@ -526,6 +527,48 @@ def collect_hypotheses(conn: sqlite3.Connection) -> dict[str, Any]:
         "asked_unclassified": sorted(
             unclassified, key=lambda i: -(i["age_hours"] or 0.0)
         ),
+        "cues": cues,
+    }
+
+
+def _collect_hypothesis_cues(conn: sqlite3.Connection) -> dict[str, Any]:
+    """How the ask cues ended -- the H7 hold vs expire split.
+
+    ``used_evidence`` on expired ``concept_hypothesis`` rows is
+    ``max_asks/<reason>``. Tallying those is what tells an unclassified
+    hypothesis row *why* nothing scored it, without a schema bump.
+    """
+    empty: dict[str, Any] = {
+        "by_state": {},
+        "expire_reasons": {},
+        "awaiting": 0,
+    }
+    try:
+        rows = conn.execute(
+            "SELECT state, used_evidence FROM cue_pool "
+            "WHERE cue_type = 'concept_hypothesis'"
+        ).fetchall()
+    except sqlite3.Error:
+        return empty
+    by_state: Counter[str] = Counter()
+    expire_reasons: Counter[str] = Counter()
+    awaiting = 0
+    for row in rows:
+        state = str(row["state"] or "")
+        by_state[state] += 1
+        if state == "awaiting":
+            awaiting += 1
+        evidence = str(row["used_evidence"] or "")
+        if state == "expired" and evidence.startswith("max_asks/"):
+            expire_reasons[evidence.split("/", 1)[-1] or "unclear"] += 1
+        elif state == "expired" and evidence:
+            expire_reasons[evidence] += 1
+    return {
+        "by_state": dict(sorted(by_state.items(), key=lambda kv: -kv[1])),
+        "expire_reasons": dict(
+            sorted(expire_reasons.items(), key=lambda kv: -kv[1])
+        ),
+        "awaiting": awaiting,
     }
 
 
@@ -552,6 +595,26 @@ def _render_hypotheses(data: dict[str, Any]) -> str:
         f"  funnel: {asked} ever asked -> {data['verdicts']} carry a verdict "
         f"-> {data['graduated']} graduated   (ask->verdict: {conv})"
     )
+
+    cues = data.get("cues") or {}
+    by_state = cues.get("by_state") or {}
+    if by_state:
+        out.append(
+            "  cues: "
+            + ", ".join(f"{k}={v}" for k, v in by_state.items())
+        )
+    reasons = cues.get("expire_reasons") or {}
+    if reasons:
+        out.append(
+            "  expire reasons: "
+            + ", ".join(f"{k}={v}" for k, v in reasons.items())
+        )
+    held = int(cues.get("awaiting") or 0)
+    if held:
+        out.append(
+            f"  still listening: {held} awaiting "
+            "(off-subject hold, not a second ask)"
+        )
 
     # The whole reason this section exists: a lane can look busy at every
     # stage and still never take its last exit.

@@ -231,6 +231,23 @@ class EchoGateTests(unittest.TestCase):
         )
         self.assertFalse(looks_like_an_answer(_BELIEF, essay))
 
+    def test_a_paraphrase_of_the_question_also_counts(self) -> None:
+        # H7: she asked in her own words; he answered *that*, not the
+        # stored label. Gating on the label alone dropped real answers.
+        essay = (
+            "The mood I am in when I sit down at the keyboard decides "
+            "the commits far more than any milestone on the board, and "
+            "I have stopped pretending otherwise after the last sprint."
+        )
+        question = (
+            "when you commit, is it more about the mood you are in "
+            "than the milestone"
+        )
+        self.assertFalse(looks_like_an_answer(_BELIEF, essay))
+        self.assertTrue(
+            looks_like_an_answer(_BELIEF, essay, question=question)
+        )
+
     def test_a_long_on_subject_reply_passes(self) -> None:
         reply = (
             "Honestly the walking thing is real -- I do most of my actual "

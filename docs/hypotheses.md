@@ -246,10 +246,11 @@ row the belief lives in — and runs in two stages:
 
 1. **Echo gate** (no LLM). Does the reply plausibly answer *this*
    question at all, by shared vocabulary or by cosine against the cue's
-   embedding at `concept_hypothesis_answer_threshold`? The bar is low on
-   purpose: this separates "answering me" from "talking about something
-   else", and "yeah, kind of" is the archetypal answer to a hunch and
-   shares no words with it.
+   embedding *or* against the previous assistant turn (the words she
+   actually asked) at `concept_hypothesis_answer_threshold`? The bar is
+   low on purpose: this separates "answering me" from "talking about
+   something else", and "yeah, kind of" is the archetypal answer to a
+   hunch and shares no words with it.
 2. **One small LLM call** returning `CONFIRM` / `CORRECT` / `DENY` /
    `UNCLEAR`. `classify_pair` is then used in one direction only — to
    **downgrade** a confirm when the reply is definitely opposed. It never
@@ -260,8 +261,17 @@ never endorsed, while a false `UNCLEAR` merely loses one answer.
 
 `max_asks = 1`. Every other question type may circle back after a day;
 this one may not, because re-asking whether a hunch about *them* is true
-reads as doubting the first answer rather than as curiosity. So an
-unanswered hunch retires instead of being released.
+reads as doubting the first answer rather than as curiosity. An LLM
+dodge therefore retires the cue. An echo miss or a missing classifier
+does **not**: the cue stays `awaiting` (stage B skips this type) for up
+to three later user turns or 24 hours. Listening longer is not asking
+again.
+
+A guess that already has one *asked* confirmation can pick up a second
+from a later turn that echoes the statement, without a second question
+(`_listen_supported_hypotheses`). That is how `min_support = 2` is
+reachable under `max_asks = 1`. A row that was never asked is never
+scored this way.
 
 ## Invariants
 
@@ -459,9 +469,13 @@ Then, depending on the symptom:
   time.
 - **She asked and nothing was learned** → the answer went through the
   adjudicator; `get_last_response_detail` plus the
-  `app.hypothesis_resolution` log lines show the verdict and the credence
-  move. An `UNCLEAR` on a real answer usually means the echo gate, not
-  the classifier.
+  `app.session` / `app.answer_adjudicator` log lines show the verdict.
+  An `UNCLEAR` on a real answer usually means the echo gate. Since H7
+  that gate holds the cue instead of expiring it; `python
+  scripts/cue_reach_report.py` prints expire reasons (`off_subject`,
+  `awaiting_timeout`, LLM dodge) next to the funnel. A later on-subject
+  turn should still land. A `supported` row stuck at `support=1` after
+  an asked confirm is waiting on H44's ambient listen, not a second ask.
 
 ### REST
 

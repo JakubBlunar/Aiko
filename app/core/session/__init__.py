@@ -47,6 +47,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "CuePoolMixin": "cue_pool_mixin",
     "DetectorsInitMixin": "detectors_init_mixin",
     "HypothesisDebugMixin": "hypothesis_debug_mixin",
+    "HypothesisResolveMixin": "hypothesis_resolve_mixin",
     "IdleWorkersInitMixin": "idle_workers_init_mixin",
     "InnerLifeProvidersMixin": "inner_life_providers_mixin",
     "LifecycleMixin": "lifecycle_mixin",
@@ -101,6 +102,7 @@ if TYPE_CHECKING:  # import-time cost only for type checkers
     )
     from app.core.session.detectors_init_mixin import DetectorsInitMixin
     from app.core.session.hypothesis_debug_mixin import HypothesisDebugMixin
+    from app.core.session.hypothesis_resolve_mixin import HypothesisResolveMixin
     from app.core.session.idle_workers_init_mixin import IdleWorkersInitMixin
     from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
     from app.core.session.lifecycle_mixin import LifecycleMixin
@@ -138,6 +140,7 @@ __all__ = [
     "DebugOverrides",
     "DetectorsInitMixin",
     "HypothesisDebugMixin",
+    "HypothesisResolveMixin",
     "IdleWorkersInitMixin",
     "InnerLifeProvidersMixin",
     "LifecycleMixin",

@@ -334,9 +334,14 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # successful answer -- so the hunch would be marked settled while
         # the belief it was about learned nothing.
         try:
+            self._hypothesis_scored_ids = set()
             self._resolve_concept_hypotheses(user_text=user_text)
         except Exception:
             log.debug("concept hypothesis resolve failed", exc_info=True)
+        try:
+            self._listen_supported_hypotheses(user_text=user_text)
+        except Exception:
+            log.debug("hypothesis ambient listen failed", exc_info=True)
         try:
             self._settle_awaiting_cues(user_text=user_text)
         except Exception:

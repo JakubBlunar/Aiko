@@ -144,6 +144,8 @@ def looks_like_an_answer(
     belief_vec: Any = None,
     reply_vec: Any = None,
     min_cosine: float | None = None,
+    question: str = "",
+    question_vec: Any = None,
 ) -> bool:
     """Cheap gate: is this reply plausibly about the belief at all?
 
@@ -151,6 +153,10 @@ def looks_like_an_answer(
     simply carried on with their own thread. Passes anything short (see
     :data:`_SHORT_REPLY_CHARS`) on the reasoning there, and otherwise
     requires the reply to echo the belief lexically or semantically.
+
+    ``question`` / ``question_vec`` are the words she actually asked
+    (H7). A paraphrase of *her* wording can miss the stored label and
+    still be an answer; either item matching is enough.
 
     The semantic half only runs when the caller supplies both vectors,
     and it is what rescues a well-paraphrased answer: *"the pavement is
@@ -162,21 +168,49 @@ def looks_like_an_answer(
         return False
     if len(body) <= _SHORT_REPLY_CHARS:
         return True
+    floor = _MIN_COSINE if min_cosine is None else float(min_cosine)
+    if _echoes(
+        str(belief or ""),
+        body,
+        item_vec=belief_vec,
+        reply_vec=reply_vec,
+        min_cosine=floor,
+    ):
+        return True
+    asked = (question or "").strip()
+    if asked and _echoes(
+        asked,
+        body,
+        item_vec=question_vec,
+        reply_vec=reply_vec,
+        min_cosine=floor,
+    ):
+        return True
+    return False
+
+
+def _echoes(
+    item_text: str,
+    reply: str,
+    *,
+    item_vec: Any,
+    reply_vec: Any,
+    min_cosine: float,
+) -> bool:
+    """Lexical or cosine hit of ``reply`` against one item."""
     try:
         from app.core.memory.echo_detector import detect, tokens
 
-        floor = _MIN_COSINE if min_cosine is None else float(min_cosine)
         verdict = detect(
-            reply_tokens=tokens(body),
-            item_text=str(belief or ""),
+            reply_tokens=tokens(reply),
+            item_text=item_text,
             min_overlap=_MIN_OVERLAP,
             reply_vec=reply_vec,
-            item_vec=belief_vec,
-            min_cosine=floor if reply_vec is not None else None,
+            item_vec=item_vec,
+            min_cosine=min_cosine if reply_vec is not None else None,
         )
     except Exception:
         log.debug("answer echo gate failed", exc_info=True)
-        # Cannot tell -- ask the model rather than dropping the answer.
         return True
     return bool(verdict.echoed)
 
@@ -190,13 +224,16 @@ def adjudicate(
     belief_vec: Any = None,
     reply_vec: Any = None,
     min_cosine: float | None = None,
+    question: str = "",
+    question_vec: Any = None,
     cancel_event: "threading.Event | None" = None,
 ) -> AnswerVerdict:
     """Classify what ``reply`` says about ``belief``.
 
     Pure: returns a verdict and touches nothing. Never raises -- every
-    failure path resolves to :data:`UNCLEAR`, which releases the cue for
-    its one retry rather than writing a guess to the belief.
+    failure path resolves to :data:`UNCLEAR`. The session resolver then
+    decides whether to hold the cue (echo miss / no client) or expire it
+    (an LLM dodge).
     """
     statement = (belief or "").strip()
     body = (reply or "").strip()
@@ -208,6 +245,8 @@ def adjudicate(
         belief_vec=belief_vec,
         reply_vec=reply_vec,
         min_cosine=min_cosine,
+        question=question,
+        question_vec=question_vec,
     ):
         log.debug("answer adjudicator: off-subject reply, no call")
         return AnswerVerdict(reason="off_subject")
