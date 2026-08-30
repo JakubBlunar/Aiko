@@ -8,18 +8,31 @@ from typing import NamedTuple
 # Reaction grammar: ``[[reaction:NAME]]`` for a single reaction, or
 # ``[[reaction:A+B]]`` for a *stack* — the renderer takes the first
 # token as the primary persistent reaction and treats subsequent
-# tokens as sustained companion overlays (blush + grin, etc.). The
-# character class allows the standard word chars plus ``+`` so the
-# parser still rejects ``[[reaction:hello world]]`` and other
-# garbage tokens. Stacks longer than two entries are accepted by the
-# regex but the persona discourages them — see
-# ``data/persona/aiko_companion.txt`` for the idiom.
+# tokens as sustained companion overlays (blush + grin, etc.).
+# Stacks longer than two entries are accepted by the regex but the
+# persona discourages them — see ``data/persona/aiko_companion.txt``
+# for the idiom.
+#
+# Horizontal whitespace is tolerated around the body and around the
+# ``+`` separators, because the alternative is far worse than a
+# garbage token: this pattern is both the *interpreter* and (via
+# :func:`strip_all_meta_tags`) the *stripper*, so a body the regex
+# refuses is not "ignored", it is **spoken aloud and written into the
+# transcript**. A live install emitted ``[[reaction: wistful+blush]]``
+# — one stray space, an otherwise perfectly legal stack — and the tag
+# reached the chat bubble, TTS and the stored history, where it then
+# taught her the malformed form (the H37 lesson: the transcript is
+# training data). Component names are trimmed by
+# :func:`app.core.affect.reactions.split_reaction_stack`, and an
+# unknown component resolves to nothing, so being permissive here
+# costs a dropped expression at worst. Anything still tag-shaped is
+# caught by ``_META_TAG_BACKSTOP_PATTERN`` below.
 _REACTION_TAG_PATTERN = re.compile(
-    r"\[\[reaction:([\w+]+)\]\]",
+    r"\[\[reaction:([\w+ \t]+)\]\]",
     flags=re.IGNORECASE,
 )
 _REACTION_AT_START_PATTERN = re.compile(
-    r"^\s*\[\[reaction:([\w+]+)\]\]\s*\n*",
+    r"^\s*\[\[reaction:([\w+ \t]+)\]\]\s*\n*",
     flags=re.IGNORECASE | re.MULTILINE,
 )
 _ACTION_META_LINE_PATTERN = re.compile(
@@ -269,7 +282,7 @@ STAGE_DIRECTION_KINDS: tuple[str, ...] = (
     "chuckle", "soft_sigh", "sharp_gasp", "breath", "mm",
 )
 _STAGE_DIRECTION_PATTERN = re.compile(
-    r"\[\[(" + "|".join(STAGE_DIRECTION_KINDS) + r")\]\]",
+    r"\[\[[ \t]*(" + "|".join(STAGE_DIRECTION_KINDS) + r")[ \t]*\]\]",
     flags=re.IGNORECASE,
 )
 # Phase 4a: [[agenda:goal]] / [[agenda:0.7:goal]] — extracted by
@@ -348,12 +361,16 @@ def extract_diary_entries(text: str) -> list[str]:
 PROSODY_TAG_VALUES: tuple[str, ...] = (
     "whisper", "soft", "slow", "fast", "firm",
 )
+# Every value-bearing pattern below tolerates horizontal whitespace
+# around its body for the reason spelled out at ``_REACTION_TAG_PATTERN``:
+# these regexes double as the strippers, so a body they refuse gets
+# spoken rather than ignored. Consumers already ``.strip()`` the group.
 _PROSODY_TAG_PATTERN = re.compile(
-    r"\[\[prosody:(?P<label>[a-z_]+)\]\]",
+    r"\[\[prosody:[ \t]*(?P<label>[a-z_]+)[ \t]*\]\]",
     flags=re.IGNORECASE,
 )
 _PROSODY_LEADING_PATTERN = re.compile(
-    r"^\s*\[\[prosody:(?P<label>[a-z_]+)\]\]\s*",
+    r"^\s*\[\[prosody:[ \t]*(?P<label>[a-z_]+)[ \t]*\]\]\s*",
     flags=re.IGNORECASE,
 )
 _PROSODY_OPEN_TAIL_PATTERN = re.compile(
@@ -367,7 +384,7 @@ _PROSODY_OPEN_TAIL_PATTERN = re.compile(
 # where the tag used to be. (The persisted copy is whitespace-collapsed by
 # ``sanitize_assistant_text`` regardless; this fixes the streamed bubble.)
 _PROSODY_TAG_SURROUNDED_PATTERN = re.compile(
-    r"[ \t]*\[\[prosody:[a-z_]+\]\][ \t]*",
+    r"[ \t]*\[\[prosody:[ \t]*[a-z_]+[ \t]*\]\][ \t]*",
     flags=re.IGNORECASE,
 )
 
@@ -420,7 +437,7 @@ def consume_leading_prosody_tag(text: str) -> tuple[str | None, str]:
 # can't immediately overwrite it. Tag is single-valued per turn -- if
 # Aiko emits more than one, callers take the last and ignore the rest.
 _ARC_TAG_PATTERN = re.compile(
-    r"\[\[arc:(?P<arc>[a-z_]+)\]\]",
+    r"\[\[arc:[ \t]*(?P<arc>[a-z_]+)[ \t]*\]\]",
     flags=re.IGNORECASE,
 )
 _ARC_OPEN_TAIL_PATTERN = re.compile(
@@ -500,11 +517,11 @@ _GOAL_OPEN_TAIL_PATTERN = re.compile(
 # K2 worker so any belief Aiko already inferred gets a fresh
 # gap-detector evaluation in the same tick.
 _PREDICT_TAG_PATTERN = re.compile(
-    r"\[\[predict:"
-    r"([a-zA-Z]{3,12}):"           # kind
+    r"\[\[predict:[ \t]*"
+    r"([a-zA-Z]{3,12})[ \t]*:"     # kind
     r"([^:\[\]\n]{2,80}?):"        # topic
     r"([^:\[\]\n]{2,120}?):"       # predicted state
-    r"(\d{1}(?:\.\d{1,3})?)"        # confidence (0, 1, 0.7, 0.85, ...)
+    r"[ \t]*(\d{1}(?:\.\d{1,3})?)[ \t]*"  # confidence (0, 1, 0.7, 0.85, ...)
     r"\]\]",
     flags=re.IGNORECASE,
 )
@@ -529,7 +546,7 @@ _PREDICT_OPEN_TAIL_PATTERN = re.compile(
 # ``expr:lzx`` pulse and locks the expression slot for its
 # lifetime, the others paint their own params alongside it).
 _OVERLAY_TAG_PATTERN = re.compile(
-    r"\[\[overlay:([A-Za-z_][A-Za-z0-9_+]*)\]\]",
+    r"\[\[overlay:[ \t]*([A-Za-z_][A-Za-z0-9_+ \t]*?)[ \t]*\]\]",
     flags=re.IGNORECASE,
 )
 _OVERLAY_OPEN_TAIL_PATTERN = re.compile(
@@ -541,7 +558,7 @@ _OVERLAY_OPEN_TAIL_PATTERN = re.compile(
 # sticky state (until the next circadian boundary) rather than a
 # transient pulse.
 _OUTFIT_TAG_PATTERN = re.compile(
-    r"\[\[outfit:([A-Za-z_][A-Za-z0-9_]*)\]\]",
+    r"\[\[outfit:[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*\]\]",
     flags=re.IGNORECASE,
 )
 _OUTFIT_OPEN_TAIL_PATTERN = re.compile(
@@ -550,7 +567,7 @@ _OUTFIT_OPEN_TAIL_PATTERN = re.compile(
 )
 # Alexia bundle: [[motion:NAME]] plays a Live2D motion file.
 _MOTION_TAG_PATTERN = re.compile(
-    r"\[\[motion:([A-Za-z_][A-Za-z0-9_]*)\]\]",
+    r"\[\[motion:[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*\]\]",
     flags=re.IGNORECASE,
 )
 _MOTION_OPEN_TAIL_PATTERN = re.compile(
@@ -570,7 +587,8 @@ _MOTION_OPEN_TAIL_PATTERN = re.compile(
 # badge + persona action banner; the avatar lean-in is an approximation
 # because the Alexia rig has no real reach params.
 _TOUCH_TAG_PATTERN = re.compile(
-    r"\[\[touch:([A-Za-z_][A-Za-z0-9_]*)(?::([^:\]\[]*))?(?::([^\]\[]*))?\]\]",
+    r"\[\[touch:[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*"
+    r"(?::([^:\]\[]*))?(?::([^\]\[]*))?\]\]",
     flags=re.IGNORECASE,
 )
 _TOUCH_OPEN_TAIL_PATTERN = re.compile(
@@ -659,6 +677,33 @@ def extract_touch_commands(text: str) -> list[TouchCommand]:
 # never leaks into the chat transcript / TTS.
 _ACTIVITY_TAG_PATTERN = re.compile(r"\[\[activity:([^\]\[]+)\]\]", re.IGNORECASE)
 _ACTIVITY_OPEN_TAIL_PATTERN = re.compile(r"\[\[activity:[^\]]*\Z", re.IGNORECASE)
+
+# Every colon-style tag name Aiko can emit. The specific patterns above
+# each *interpret* one of these; this list is what makes stripping a
+# separate, deliberately permissive job — see
+# ``_META_TAG_BACKSTOP_PATTERN``.
+_META_TAG_NAMES: tuple[str, ...] = (
+    "reaction", "remember", "agenda", "moment", "diary", "arc", "gap",
+    "conflict", "goal", "predict", "overlay", "outfit", "motion",
+    "touch", "activity", "prosody",
+)
+#: Backstop for the whole family: a closed ``[[name:anything]]`` whose body
+#: the interpreting pattern above refused.
+#:
+#: Stripping and interpreting are different jobs with opposite risk
+#: profiles — an unrecognised body should cost a side-effect, never a
+#: leak — and sharing one regex for both silently coupled them. The
+#: value of being strict about a body is that garbage does not drive
+#: behaviour; the *cost* was that garbage got spoken aloud and stored,
+#: because the same refusal that skipped the side-channel also skipped
+#: the strip. Whitespace was merely the variant that showed up in the
+#: wild (``[[reaction: wistful+blush]]``); this catches the next one
+#: too — a stray character, a wrong-cased name, a body no taxonomy
+#: knows — without weakening any interpreter.
+_META_TAG_BACKSTOP_PATTERN = re.compile(
+    r"\[\[[ \t]*(?:" + "|".join(_META_TAG_NAMES) + r")[ \t]*:[^\]\n]*\]\]",
+    flags=re.IGNORECASE,
+)
 
 
 def extract_activity_tag(text: str) -> str | None:
@@ -804,9 +849,13 @@ def strip_all_meta_tags(text: str) -> str:
       - ``[[remember:...]]`` block: marker AND content removed (private).
       - ``[[remember:...`` opener with no closing ``]]`` yet: suppressed
         through end of text.
+      - any other *closed* ``[[name:body]]`` from :data:`_META_TAG_NAMES`
+        whose body no interpreter accepted: removed by
+        ``_META_TAG_BACKSTOP_PATTERN``. A tag we cannot parse must still
+        never be visible.
 
     Does NOT call ``.strip()`` on the result, so streaming callers can keep
-    monotonic ``len(visible)`` offsets across deltas. Partial / unrecognized
+    monotonic ``len(visible)`` offsets across deltas. Partial (unclosed)
     tags pass through unchanged -- callers are expected to use
     :func:`safe_visible_prefix` for streaming display.
     """
@@ -900,6 +949,10 @@ def strip_all_meta_tags(text: str) -> str:
     for tag in (_SPOKEN_OPEN, _SPOKEN_CLOSE):
         s = re.sub(re.escape(tag), "", s, flags=re.IGNORECASE)
     s = _REACTION_TAG_PATTERN.sub("", s)
+    # Last line of defence: anything still shaped like a closed meta tag
+    # had a body no interpreter above accepted. Drop it rather than let
+    # it reach the bubble, the transcript or TTS.
+    s = _META_TAG_BACKSTOP_PATTERN.sub("", s)
     return s
 
 

@@ -1266,7 +1266,7 @@ The second is this entry, and it is still open.
 
 <a id="recurring-shapes"></a>
 
-## The twenty-nine recurring shapes
+## The thirty recurring shapes
 
 More useful than any single entry — these are the bug families to check for
 *before* shipping the next thing, and each has now bitten more than once.
@@ -1755,3 +1755,43 @@ the fact.** The near-miss detail is worth keeping too: the test that evicted
 forty rows passed **no candidates**, so nothing it dropped could come back. A
 cap test that never re-supplies the evicted item cannot see this shape at all,
 which is the same fixture blind spot as shape 12.
+
+**30. One pattern used as both the validator and the sanitiser, so strictness
+leaks.** Two jobs with opposite risk profiles share a regex: *interpreting* a
+tag body wants to be strict, because garbage must not drive behaviour, while
+*stripping* it wants to be permissive, because anything tag-shaped must never
+reach the user. Sharing one pattern silently couples them, and the coupling runs
+the wrong way — the same refusal that skips the side-effect also skips the
+strip, so the stricter the parser, the more of her private grammar gets spoken
+aloud.
+
+The observed case was one space. `[[reaction: wistful+blush]]` is a legal stack
+by every rule the persona teaches; `([\w+]+)` does not admit the space, so the
+tag was not "ignored" — it was rendered into the chat bubble, spoken by TTS, and
+written to `messages`, twice in one day. The mood was lost as well: no
+expression change, no affect impulse. Note the comment above the pattern had
+already reasoned about this and concluded the opposite way ("the parser still
+rejects `[[reaction:hello world]]` and other garbage tokens"), which is the tell
+— **a strictness argument that never names what happens to the text it
+refuses.** `split_reaction_stack` even trimmed whitespace defensively, with a
+docstring calling it "more of a defensive nicety than a real concern"; the
+nicety was load-bearing and the concern was real.
+
+Two things make this worse than a normal parse bug. It **compounds through the
+transcript**, exactly as in
+[H37](shipped/health.md#h37-she-learned-to-write-a-heart-as-the-number-three-from-us)
+— the stored reply is what she reads back as her own voice, so a leaked tag
+teaches her the malformed form and the second occurrence is plausibly caused by
+the first. And it was
+**latent in eight tags at once** (reaction, prosody, arc, overlay, outfit,
+motion, touch, predict), because they were written to one house style; only the
+tag she happened to fumble showed it.
+
+**Rule: strip broadly, interpret narrowly, and never with the same expression.**
+A permissive backstop over the tag *vocabulary* removes anything shaped like a
+closed tag regardless of body
+([`_META_TAG_BACKSTOP_PATTERN`](../../app/core/services/response_text_service.py)),
+and the strict patterns keep deciding what actually fires. The generalisation
+beyond tags: wherever a predicate gates both "act on this" and "hide this",
+split it, because the failure mode of the second is always louder than the
+failure mode of the first.
