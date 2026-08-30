@@ -13,6 +13,7 @@ import tempfile
 import threading
 import unittest
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,15 @@ import numpy as np
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.conversation.topic_cluster_store import TopicClusterStore
-from app.core.conversation.topic_graph import TopicGraph, _normalise
+from app.core.conversation.topic_graph import (
+    TopicGraph,
+    _normalise,
+    temporal_prime_reps,
+    format_coactivation_hint_lines,
+    CoactivationMode,
+)
+from app.core.affect.circadian import coarse_coactivation_period
+from app.core.infra import timephrase
 
 
 @dataclass
@@ -244,6 +253,230 @@ class CoactivationDetectionTests(unittest.TestCase):
         self.assertEqual(
             [m.reps for m in first], [m.reps for m in second]
         )
+
+
+class ExtraBucketTests(unittest.TestCase):
+    """day / circadian / weekday axes + partitioner + temporal priming."""
+
+    def setUp(self) -> None:
+        timephrase.set_now_provider(
+            lambda: datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+        )
+
+    def tearDown(self) -> None:
+        timephrase.set_now_provider(None)
+
+    def _mem(self, rows: list[tuple]) -> _StubMemoryStore:
+        """rows: (id, family, created_at [, session])."""
+        mem = _StubMemoryStore()
+        for i, row in enumerate(rows):
+            mid, fam, created = row[0], row[1], row[2]
+            sess = row[3] if len(row) > 3 else f"s{mid}"
+            mem.add(
+                _StubMemory(
+                    mid,
+                    f"{fam}:memory {mid}",
+                    _vec(fam, 0.05 * (i + 1)),
+                    source_session=sess,
+                    created_at=created,
+                )
+            )
+        return mem
+
+    def test_day_detects_same_calendar_day_pairings(self) -> None:
+        mem = self._mem([
+            (1, "A", "2026-03-01T12:00:00+00:00"),
+            (2, "A", "2026-03-02T12:00:00+00:00"),
+            (3, "B", "2026-03-01T18:00:00+00:00"),
+            (4, "B", "2026-03-02T18:00:00+00:00"),
+            (5, "C", "2026-03-10T12:00:00+00:00"),
+            (6, "C", "2026-03-11T12:00:00+00:00"),
+            (7, "D", "2026-03-10T18:00:00+00:00"),
+            (8, "D", "2026-03-11T18:00:00+00:00"),
+        ])
+        _, cs = _cluster_store()
+        g = _graph(mem, cs)
+        modes = g.cluster_coactivation(
+            bucket_by="day", min_pair_support=2, min_strength=0.5,
+        )
+        self.assertEqual(len(modes), 2)
+        rep_family = _rep_to_family(g, mem)
+        mode_families = {
+            frozenset(rep_family[r] for r in mode.reps) for mode in modes
+        }
+        self.assertEqual(
+            mode_families, {frozenset({"A", "B"}), frozenset({"C", "D"})}
+        )
+        for mode in modes:
+            self.assertEqual(mode.bucket_by, "day")
+            self.assertEqual(mode.partition, "")
+
+    def test_circadian_night_and_morning_do_not_merge(self) -> None:
+        # A+B co-fire two nights; B+C co-fire two mornings. Without a
+        # partitioner, B would bridge them into one {A,B,C} mode.
+        mem = self._mem([
+            (1, "A", "2026-03-01T23:00:00+00:00"),
+            (2, "A", "2026-03-02T23:00:00+00:00"),
+            (3, "B", "2026-03-01T23:30:00+00:00"),
+            (4, "B", "2026-03-02T23:30:00+00:00"),
+            (5, "B", "2026-03-03T09:00:00+00:00"),
+            (6, "B", "2026-03-04T09:00:00+00:00"),
+            (7, "C", "2026-03-03T09:30:00+00:00"),
+            (8, "C", "2026-03-04T09:30:00+00:00"),
+        ])
+        _, cs = _cluster_store()
+        g = _graph(mem, cs)
+        modes = g.cluster_coactivation(
+            bucket_by="circadian", min_pair_support=2, min_strength=0.4,
+            max_modes=4, max_reps_per_mode=4,
+        )
+        self.assertEqual(len(modes), 2)
+        parts = {mode.partition for mode in modes}
+        self.assertEqual(parts, {"night", "morning"})
+        rep_family = _rep_to_family(g, mem)
+        by_part = {
+            mode.partition: frozenset(rep_family[r] for r in mode.reps)
+            for mode in modes
+        }
+        self.assertEqual(by_part["night"], frozenset({"A", "B"}))
+        self.assertEqual(by_part["morning"], frozenset({"B", "C"}))
+
+    def test_weekday_monday_and_friday_do_not_merge(self) -> None:
+        mem = self._mem([
+            (1, "A", "2026-03-02T12:00:00+00:00"),  # Monday
+            (2, "A", "2026-03-09T12:00:00+00:00"),  # Monday
+            (3, "B", "2026-03-02T15:00:00+00:00"),
+            (4, "B", "2026-03-09T15:00:00+00:00"),
+            (5, "B", "2026-03-06T12:00:00+00:00"),  # Friday
+            (6, "B", "2026-03-13T12:00:00+00:00"),  # Friday
+            (7, "C", "2026-03-06T15:00:00+00:00"),
+            (8, "C", "2026-03-13T15:00:00+00:00"),
+        ])
+        _, cs = _cluster_store()
+        g = _graph(mem, cs)
+        modes = g.cluster_coactivation(
+            bucket_by="weekday", min_pair_support=2, min_strength=0.4,
+            max_modes=4, max_reps_per_mode=4,
+        )
+        self.assertEqual(len(modes), 2)
+        parts = {mode.partition for mode in modes}
+        self.assertEqual(parts, {"monday", "friday"})
+        rep_family = _rep_to_family(g, mem)
+        by_part = {
+            mode.partition: frozenset(rep_family[r] for r in mode.reps)
+            for mode in modes
+        }
+        self.assertEqual(by_part["monday"], frozenset({"A", "B"}))
+        self.assertEqual(by_part["friday"], frozenset({"B", "C"}))
+
+    def test_missing_created_at_is_unbucketable(self) -> None:
+        mem = self._mem([
+            (1, "A", ""),
+            (2, "A", ""),
+            (3, "B", ""),
+            (4, "B", ""),
+        ])
+        _, cs = _cluster_store()
+        g = _graph(mem, cs)
+        self.assertEqual(len(g.topic_clusters()), 2)
+        self.assertEqual(
+            g.cluster_coactivation(
+                bucket_by="day", min_pair_support=1, min_strength=0.0,
+            ),
+            [],
+        )
+        self.assertEqual(
+            g.cluster_coactivation(
+                bucket_by="circadian", min_pair_support=1, min_strength=0.0,
+            ),
+            [],
+        )
+
+    def test_cluster_coactivations_matches_single_axis_calls(self) -> None:
+        mem = self._two_mode_store_days()
+        _, cs = _cluster_store()
+        g = _graph(mem, cs)
+        multi = g.cluster_coactivations(
+            axes=("session", "day"),
+            min_pair_support=2, min_strength=0.5,
+        )
+        for axis in ("session", "day"):
+            single = g.cluster_coactivation(
+                bucket_by=axis, min_pair_support=2, min_strength=0.5,
+            )
+            self.assertEqual(
+                [m.reps for m in multi[axis]],
+                [m.reps for m in single],
+                axis,
+            )
+
+    def _two_mode_store_days(self) -> _StubMemoryStore:
+        return self._mem([
+            (1, "A", "2026-03-01T12:00:00+00:00", "s1"),
+            (2, "A", "2026-03-02T12:00:00+00:00", "s2"),
+            (3, "B", "2026-03-01T12:00:00+00:00", "s1"),
+            (4, "B", "2026-03-02T12:00:00+00:00", "s2"),
+            (5, "C", "2026-03-10T12:00:00+00:00", "s3"),
+            (6, "C", "2026-03-11T12:00:00+00:00", "s4"),
+            (7, "D", "2026-03-10T12:00:00+00:00", "s3"),
+            (8, "D", "2026-03-11T12:00:00+00:00", "s4"),
+        ])
+
+    def test_session_modes_have_empty_partition(self) -> None:
+        mem = CoactivationDetectionTests()._two_mode_store()
+        _, cs = _cluster_store()
+        g = _graph(mem, cs)
+        for mode in g.cluster_coactivation(min_pair_support=2, min_strength=0.5):
+            self.assertEqual(mode.partition, "")
+
+
+class CoarsePeriodAndPrimingTests(unittest.TestCase):
+    def test_coarse_period_collapses_seven_bins(self) -> None:
+        self.assertEqual(coarse_coactivation_period(2), "night")
+        self.assertEqual(coarse_coactivation_period(23), "night")
+        self.assertEqual(coarse_coactivation_period(7), "morning")
+        self.assertEqual(coarse_coactivation_period(13), "morning")
+        self.assertEqual(coarse_coactivation_period(16), "afternoon")
+        self.assertEqual(coarse_coactivation_period(20), "evening")
+
+    def test_temporal_prime_reps_follows_clock(self) -> None:
+        night = CoactivationMode(
+            reps=(10, 11), labels=("a", "b"), strength=0.9,
+            bucket_by="circadian", partition="night",
+        )
+        morning = CoactivationMode(
+            reps=(20, 21), labels=("c", "d"), strength=0.8,
+            bucket_by="circadian", partition="morning",
+        )
+        monday = CoactivationMode(
+            reps=(30, 31), labels=("e", "f"), strength=0.7,
+            bucket_by="weekday", partition="monday",
+        )
+        session = CoactivationMode(
+            reps=(1, 2), labels=("x", "y"), strength=1.0,
+            bucket_by="session",
+        )
+        modes = [night, morning, monday, session]
+        self.assertEqual(
+            temporal_prime_reps(modes, period="night", weekday="tuesday"),
+            [10, 11],
+        )
+        self.assertEqual(
+            temporal_prime_reps(modes, period="morning", weekday="monday"),
+            [20, 21, 30, 31],
+        )
+        self.assertEqual(
+            temporal_prime_reps(modes, period="afternoon", weekday="friday"),
+            [],
+        )
+
+    def test_hint_lines_tag_the_axis(self) -> None:
+        mode = CoactivationMode(
+            reps=(10, 11), labels=("a", "b"), strength=0.9,
+            bucket_by="circadian", partition="night",
+        )
+        lines = format_coactivation_hint_lines([mode], {10, 11})
+        self.assertEqual(lines, ["- [10, 11] (at night)"])
 
 
 if __name__ == "__main__":

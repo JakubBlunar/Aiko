@@ -42,6 +42,7 @@ from app.core.concepts.proposers.base import (
     resolve_reinforces,
     snippet,
 )
+from app.core.conversation.topic_graph import format_coactivation_hint_lines
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import CoactivationMode
@@ -108,18 +109,8 @@ def _coactivation_lines(
     coactivation: "Sequence[CoactivationMode]",
     valid_reps: set[int],
 ) -> list[str]:
-    """Render the L4 "TOPIC MODES" hint: clusters that keep lighting up in
-    the same conversations, as ``[rep, rep, ...]`` groups. Only reps present
-    in the current map survive (a mode built off a since-refit cluster is
-    dropped). Returns ``[]`` when nothing usable, so the caller can omit the
-    whole section."""
-    lines: list[str] = []
-    for mode in coactivation:
-        reps = [int(r) for r in getattr(mode, "reps", ()) if int(r) in valid_reps]
-        if len(reps) < 2:
-            continue
-        lines.append("- [" + ", ".join(str(r) for r in reps) + "]")
-    return lines
+    """Render the L4 "TOPIC MODES" hint with an axis tag."""
+    return format_coactivation_hint_lines(coactivation, valid_reps)
 
 
 def propose_identity_user(
@@ -153,8 +144,9 @@ def propose_identity_user(
     modes_section = ""
     if mode_lines:
         modes_section = (
-            "\n\nTOPIC MODES (clusters that tend to light up together in the "
-            "same conversations -- a soft hint, not a rule):\n"
+            "\n\nTOPIC MODES (clusters that tend to light up together -- "
+            "same conversations, same time of day, or same weekday -- a "
+            "soft hint, not a rule):\n"
             + "\n".join(mode_lines)
             + "\n(Prefer connecting clusters that co-fire here when a genuine "
             "shared trait explains why -- but only if it is real; never force "

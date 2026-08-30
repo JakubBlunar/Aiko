@@ -57,6 +57,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -514,18 +515,21 @@ class CoactivationMode:
     same bucket (a conversation session, by default) more than chance:
     each surviving cluster-pair shared enough buckets to clear the
     support + Jaccard floors, and the transitive union of those pairs is
-    one mode. ``reps`` are the clusters' ``representative_id``s (stable
+    one mode. ``reps`` are the clusters' ``representative_id``s (stable)
     handles the consumers already speak), ``labels`` their display names
     in the same order, ``strength`` the mean surviving pair-Jaccard
     (0..1), and ``bucket_by`` records which axis produced it so a
     consumer can phrase the line correctly ("in the same conversations"
-    vs "at the same time of day") without guessing.
+    vs "at the same time of day") without guessing. ``partition`` is
+    the subgraph key for partitioned axes (``night``, ``monday``, …)
+    and stays empty when the axis is a single graph.
     """
 
     reps: tuple[int, ...]
     labels: tuple[str, ...]
     strength: float
     bucket_by: str
+    partition: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -559,17 +563,309 @@ def _bucket_by_session(member: _CoactMember) -> str | None:
     return sid or None
 
 
-# L4 bucket-strategy registry. ``cluster_coactivation`` looks up the
-# requested ``bucket_by`` here; adding an axis = register one pure
-# ``_CoactMember -> str | None`` function (+ a snapshot field only if it
-# needs new data). The accumulator downstream is strategy-agnostic -- it
-# consumes ``(rep, bucket_key)`` pairs -- so every present and future
-# strategy reuses it unchanged. See the section-1b roadmap in the L4 plan
-# / concepts.md for the queued axes (day / window / circadian / weekday /
-# gap_session, then the join-gated mood / arc / world_context).
-_BUCKET_STRATEGIES: dict = {
-    "session": _bucket_by_session,
+def _member_local_dt(member: _CoactMember) -> datetime | None:
+    """``created_at`` in the user's local zone, or ``None`` if missing /
+    unparseable. Day / circadian / weekday keys must follow local midnights
+    and local hours, not UTC, or a late-night session splits across the
+    UTC date line."""
+    dt = timephrase.parse_iso(member.created_at)
+    if dt is None:
+        return None
+    try:
+        tz = timephrase.now().tzinfo
+    except Exception:
+        tz = None
+    if tz is not None:
+        try:
+            dt = dt.astimezone(tz)
+        except Exception:
+            return dt
+    return dt
+
+
+_WEEKDAYS = (
+    "monday", "tuesday", "wednesday", "thursday",
+    "friday", "saturday", "sunday",
+)
+
+
+def _bucket_by_day(member: _CoactMember) -> str | None:
+    """Calendar-day truncation in local time. Same-day pairings across
+    sessions (coding in the morning, a walk that evening)."""
+    dt = _member_local_dt(member)
+    if dt is None:
+        return None
+    return dt.date().isoformat()
+
+
+def _bucket_by_circadian(member: _CoactMember) -> str | None:
+    """``{period}|{YYYY-MM-DD}``. Partitioned by period so morning and
+    night pairings never merge through a shared cluster."""
+    dt = _member_local_dt(member)
+    if dt is None:
+        return None
+    from app.core.affect.circadian import coarse_coactivation_period
+
+    period = coarse_coactivation_period(int(dt.hour))
+    return f"{period}|{dt.date().isoformat()}"
+
+
+def _bucket_by_weekday(member: _CoactMember) -> str | None:
+    """``{weekday}|{ISO week}``. Partitioned by weekday so Monday and
+    Friday pairings stay distinct graphs. English weekday names, not
+    locale ``%A``, so a German Windows host does not emit ``montag``."""
+    dt = _member_local_dt(member)
+    if dt is None:
+        return None
+    weekday = _WEEKDAYS[int(dt.weekday())]
+    iso_week = dt.strftime("%G-W%V")
+    return f"{weekday}|{iso_week}"
+
+
+def _partition_prefix(key: str) -> str:
+    """Left of the first ``|``; empty key -> empty partition."""
+    head, _sep, _rest = str(key).partition("|")
+    return head
+
+
+# L4 bucket-strategy registry. Each axis is ``(key_fn, partition_fn)``.
+# ``key_fn`` is a pure ``_CoactMember -> str | None``; ``partition_fn``
+# (optional) splits the bucket map into independent pair-graphs so
+# circadian/weekday do not collapse into the day graph. The accumulator
+# is strategy-agnostic -- it consumes ``(rep, bucket_key)`` pairs.
+# Remaining axes (window / gap_session, then join-gated mood / arc /
+# world_context) live on the L4 remaining list in concepts.md.
+_KeyFn = Callable[[_CoactMember], str | None]
+_PartFn = Callable[[str], str]
+_BUCKET_STRATEGIES: dict[str, tuple[_KeyFn, _PartFn | None]] = {
+    "session": (_bucket_by_session, None),
+    "day": (_bucket_by_day, None),
+    "circadian": (_bucket_by_circadian, _partition_prefix),
+    "weekday": (_bucket_by_weekday, _partition_prefix),
 }
+
+COACTIVATION_AXES: tuple[str, ...] = ("session", "day", "circadian", "weekday")
+_COACT_CACHE_MAX = 16
+_TEMPORAL_PRIME_CAP = 4
+
+_AXIS_PHRASES = {
+    "session": "same conversations",
+    "day": "same days",
+}
+_CIRCADIAN_PHRASES = {
+    "morning": "in the mornings",
+    "afternoon": "in the afternoons",
+    "evening": "in the evenings",
+    "night": "at night",
+}
+
+
+def coactivation_axis_phrase(mode: CoactivationMode) -> str:
+    """Short grouping tag for L2 TOPIC MODES lines (not the T1 block)."""
+    bucket = str(getattr(mode, "bucket_by", "") or "session")
+    part = str(getattr(mode, "partition", "") or "").strip().lower()
+    if bucket == "circadian":
+        return _CIRCADIAN_PHRASES.get(part, "at the same time of day")
+    if bucket == "weekday":
+        if part in _WEEKDAYS:
+            return f"on {part.capitalize()}s"
+        return "on the same weekday"
+    return _AXIS_PHRASES.get(bucket, bucket)
+
+
+def format_coactivation_hint_lines(
+    coactivation: Sequence[Any],
+    valid_reps: set[int],
+) -> list[str]:
+    """L2 TOPIC MODES lines: ``- [rep, rep] (at night)``. Drops modes
+    whose reps are no longer on the live map."""
+    lines: list[str] = []
+    for mode in coactivation:
+        reps = [
+            int(r) for r in getattr(mode, "reps", ()) if int(r) in valid_reps
+        ]
+        if len(reps) < 2:
+            continue
+        tag = coactivation_axis_phrase(mode)
+        lines.append("- [" + ", ".join(str(r) for r in reps) + f"] ({tag})")
+    return lines
+
+
+def temporal_prime_reps(
+    modes: Sequence[Any],
+    *,
+    period: str,
+    weekday: str,
+    cap: int = _TEMPORAL_PRIME_CAP,
+) -> list[int]:
+    """T3 clock-matching circadian/weekday reps, strongest first.
+
+    The T1 coactivation block must not call this -- a period change
+    would bust the prompt-cache prefix. ``activated()`` is allowed to
+    move per turn.
+    """
+    if int(cap) <= 0:
+        return []
+    period_key = (period or "").strip().lower()
+    weekday_key = (weekday or "").strip().lower()
+    ranked: list[tuple[float, tuple[int, ...]]] = []
+    for mode in modes:
+        bucket = str(getattr(mode, "bucket_by", "") or "")
+        part = str(getattr(mode, "partition", "") or "").strip().lower()
+        reps = tuple(int(r) for r in getattr(mode, "reps", ()) if int(r))
+        if len(reps) < 2:
+            continue
+        if bucket == "circadian" and period_key and part == period_key:
+            ranked.append((float(getattr(mode, "strength", 0.0)), reps))
+        elif bucket == "weekday" and weekday_key and part == weekday_key:
+            ranked.append((float(getattr(mode, "strength", 0.0)), reps))
+    ranked.sort(key=lambda t: t[0], reverse=True)
+    out: list[int] = []
+    seen: set[int] = set()
+    for _strength, reps in ranked:
+        for rep in reps:
+            if rep in seen:
+                continue
+            out.append(rep)
+            seen.add(rep)
+            if len(out) >= int(cap):
+                return out
+    return out
+
+
+def _modes_from_bucket_map(
+    bucket_to_reps: dict[str, set[int]],
+    *,
+    bucket_by: str,
+    partition: str,
+    min_pair_support: int,
+    min_strength: float,
+    max_reps_per_mode: int,
+    rep_label: dict[int, str],
+    rep_size: dict[int, int],
+) -> list[CoactivationMode]:
+    """Pair-count + Jaccard + union-find over one bucket map.
+
+    No ``max_modes`` cap here -- the caller sorts and slices after
+    merging partitioned subgraphs so a strong night mode is not
+    crowded out by four weaker morning ones that happened to be
+    computed first.
+    """
+    rep_bucket_count: dict[int, int] = {}
+    pair_count: dict[tuple[int, int], int] = {}
+    for reps_in_bucket in bucket_to_reps.values():
+        ordered_reps = sorted(reps_in_bucket)
+        for r in ordered_reps:
+            rep_bucket_count[r] = rep_bucket_count.get(r, 0) + 1
+        for i in range(len(ordered_reps)):
+            for j in range(i + 1, len(ordered_reps)):
+                pair = (ordered_reps[i], ordered_reps[j])
+                pair_count[pair] = pair_count.get(pair, 0) + 1
+
+    support = max(1, int(min_pair_support))
+    floor = float(min_strength)
+    edges: list[tuple[int, int, float]] = []
+    for (a, b), inter in pair_count.items():
+        if inter < support:
+            continue
+        union = rep_bucket_count[a] + rep_bucket_count[b] - inter
+        if union <= 0:
+            continue
+        strength = inter / union
+        if strength >= floor:
+            edges.append((a, b, strength))
+    if not edges:
+        return []
+
+    parent: dict[int, int] = {}
+
+    def _find(x: int) -> int:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b, _s in edges:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+    comp_reps: dict[int, set[int]] = {}
+    comp_strengths: dict[int, list[float]] = {}
+    for a, b, s in edges:
+        root = _find(a)
+        comp_reps.setdefault(root, set()).update((a, b))
+        comp_strengths.setdefault(root, []).append(s)
+
+    cap_reps = max(2, int(max_reps_per_mode))
+    modes: list[CoactivationMode] = []
+    for root, reps in comp_reps.items():
+        strengths = comp_strengths.get(root, [])
+        mean_strength = sum(strengths) / len(strengths) if strengths else 0.0
+        ordered = sorted(
+            reps, key=lambda r: rep_size.get(r, 0), reverse=True
+        )[:cap_reps]
+        if len(ordered) < 2:
+            continue
+        labels = tuple(rep_label.get(r, "") for r in ordered)
+        modes.append(
+            CoactivationMode(
+                reps=tuple(ordered),
+                labels=labels,
+                strength=round(float(mean_strength), 3),
+                bucket_by=str(bucket_by),
+                partition=str(partition),
+            )
+        )
+    return modes
+
+
+def _modes_for_strategy(
+    members: list[_CoactMember],
+    *,
+    key_fn: _KeyFn,
+    partition_fn: _PartFn | None,
+    bucket_by: str,
+    min_pair_support: int,
+    min_strength: float,
+    max_modes: int,
+    max_reps_per_mode: int,
+    rep_label: dict[int, str],
+    rep_size: dict[int, int],
+) -> list[CoactivationMode]:
+    """Bucket members, optionally split by partition, then accumulate."""
+    bucket_to_reps: dict[str, set[int]] = {}
+    for mem in members:
+        key = key_fn(mem)
+        if key is None:
+            continue
+        bucket_to_reps.setdefault(key, set()).add(mem.rep)
+    if not bucket_to_reps:
+        return []
+    acc_kw = dict(
+        bucket_by=bucket_by,
+        min_pair_support=min_pair_support,
+        min_strength=min_strength,
+        max_reps_per_mode=max_reps_per_mode,
+        rep_label=rep_label,
+        rep_size=rep_size,
+    )
+    if partition_fn is None:
+        modes = _modes_from_bucket_map(
+            bucket_to_reps, partition="", **acc_kw,
+        )
+    else:
+        by_part: dict[str, dict[str, set[int]]] = {}
+        for key, reps in bucket_to_reps.items():
+            part = partition_fn(key) or ""
+            by_part.setdefault(part, {})[key] = reps
+        modes = []
+        for part, buckets in by_part.items():
+            modes.extend(
+                _modes_from_bucket_map(buckets, partition=part, **acc_kw)
+            )
+    modes.sort(key=lambda mo: (mo.strength, len(mo.reps)), reverse=True)
+    return modes[: max(1, int(max_modes))]
 
 
 @dataclass(slots=True, frozen=True)
@@ -704,9 +1000,8 @@ class TopicGraph:
         self._warm = False
         self._pending_unclustered = 0
         # L4 co-activation cache: keyed on (bucket_by, mirror-size, coarse
-        # TTL bucket) so both consumers (the L2 proposer hint + the L5
-        # block) reuse one computation. Not a hot-path call, but cheap to
-        # memoise across a batch of reads.
+        # TTL bucket, thresholds). Multi-entry (capped) so T1's session
+        # read and L2/T3's other axes do not evict each other.
         self._coact_cache: dict[tuple, tuple[CoactivationMode, ...]] = {}
 
     @property
@@ -923,37 +1218,132 @@ class TopicGraph:
         """L4: topic clusters that keep "lighting up together".
 
         Detects **co-activation modes** -- groups of clusters that co-occur
-        in the same bucket (a conversation session by default) more than
-        chance. The pipeline is deliberately strategy-agnostic downstream of
-        the bucket key:
+        in the same bucket more than chance. Downstream of the bucket key
+        the accumulator is strategy-agnostic; an optional partitioner
+        (circadian / weekday) runs pair-count + union-find per subgraph
+        so morning does not merge with night through a shared cluster.
 
-        1. Build a ``member_id -> representative_id`` map (+ labels + sizes)
-           from :meth:`topic_clusters`, skipping unlabelled clusters.
-        2. One bulk mirror snapshot builds a :class:`_CoactMember` per
-           clustered memory (the only surface a bucket strategy reads).
-        3. The selected :data:`_BUCKET_STRATEGIES` function derives each
-           member's bucket key; per bucket, the distinct reps that appear =
-           a co-firing set.
-        4. Accumulate unordered rep-pair co-occurrence counts + per-rep
-           bucket counts, keep pairs with ``count >= min_pair_support`` and
-           Jaccard ``>= min_strength``, then union surviving pairs into
-           connected components = modes (strength = mean surviving-pair
-           Jaccard). Capped to ``max_modes`` (strongest first) and
-           ``max_reps_per_mode`` (largest clusters first).
-
-        Empty in the non-persistent mode (no stable cluster identity) or for
-        an unregistered ``bucket_by``. Result is memoised on the graph keyed
-        on ``(bucket_by, mirror-size, coarse TTL bucket)`` so both consumers
-        (the L2 proposer hint + the L5 block) reuse one computation; not a
-        hot-path call.
+        Empty in the non-persistent mode or for an unregistered
+        ``bucket_by``. Memoised per axis so T1 (session) and L2/T3
+        (the other axes) share one snapshot via
+        :meth:`cluster_coactivations`.
         """
         if not self.persistent:
             return []
-        strategy = _BUCKET_STRATEGIES.get(bucket_by)
-        if strategy is None:
+        spec = _BUCKET_STRATEGIES.get(bucket_by)
+        if spec is None:
             log.debug("cluster_coactivation: unknown bucket_by %r", bucket_by)
             return []
+        cache_key = self._coact_cache_key(
+            bucket_by,
+            min_pair_support=min_pair_support,
+            min_strength=min_strength,
+            max_modes=max_modes,
+            max_reps_per_mode=max_reps_per_mode,
+            ttl_seconds=ttl_seconds,
+        )
+        with self._lock:
+            cached = self._coact_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+        snap = self._coact_snapshot()
+        if snap is None:
+            return self._cache_coactivation(cache_key, [])
+        members, rep_label, rep_size = snap
+        key_fn, part_fn = spec
+        modes = _modes_for_strategy(
+            members,
+            key_fn=key_fn,
+            partition_fn=part_fn,
+            bucket_by=str(bucket_by),
+            min_pair_support=min_pair_support,
+            min_strength=min_strength,
+            max_modes=max_modes,
+            max_reps_per_mode=max_reps_per_mode,
+            rep_label=rep_label,
+            rep_size=rep_size,
+        )
+        return self._cache_coactivation(cache_key, modes)
 
+    def cluster_coactivations(
+        self,
+        axes: Sequence[str] | None = None,
+        *,
+        min_pair_support: int = 2,
+        min_strength: float = 0.25,
+        max_modes: int = 4,
+        max_reps_per_mode: int = 4,
+        ttl_seconds: float = 300.0,
+    ) -> dict[str, list[CoactivationMode]]:
+        """One mirror snapshot, then every requested axis.
+
+        L2 synthesis and T3 temporal priming would otherwise walk
+        ``_mirror`` once per axis on a cold cache. T1 keeps calling
+        :meth:`cluster_coactivation` with ``bucket_by="session"`` so its
+        bytes never depend on the other axes.
+        """
+        names = tuple(axes) if axes is not None else COACTIVATION_AXES
+        empty = {str(name): [] for name in names}
+        if not self.persistent:
+            return empty
+        kw = dict(
+            min_pair_support=min_pair_support,
+            min_strength=min_strength,
+            max_modes=max_modes,
+            max_reps_per_mode=max_reps_per_mode,
+            ttl_seconds=ttl_seconds,
+        )
+        out: dict[str, list[CoactivationMode]] = {}
+        missing: list[str] = []
+        keys: dict[str, tuple] = {}
+        for name in names:
+            name = str(name)
+            if name not in _BUCKET_STRATEGIES:
+                out[name] = []
+                continue
+            cache_key = self._coact_cache_key(name, **kw)
+            keys[name] = cache_key
+            with self._lock:
+                cached = self._coact_cache.get(cache_key)
+            if cached is not None:
+                out[name] = list(cached)
+            else:
+                missing.append(name)
+        if not missing:
+            return out
+        snap = self._coact_snapshot()
+        if snap is None:
+            for name in missing:
+                out[name] = self._cache_coactivation(keys[name], [])
+            return out
+        members, rep_label, rep_size = snap
+        for name in missing:
+            key_fn, part_fn = _BUCKET_STRATEGIES[name]
+            modes = _modes_for_strategy(
+                members,
+                key_fn=key_fn,
+                partition_fn=part_fn,
+                bucket_by=name,
+                min_pair_support=min_pair_support,
+                min_strength=min_strength,
+                max_modes=max_modes,
+                max_reps_per_mode=max_reps_per_mode,
+                rep_label=rep_label,
+                rep_size=rep_size,
+            )
+            out[name] = self._cache_coactivation(keys[name], modes)
+        return out
+
+    def _coact_cache_key(
+        self,
+        bucket_by: str,
+        *,
+        min_pair_support: int,
+        min_strength: float,
+        max_modes: int,
+        max_reps_per_mode: int,
+        ttl_seconds: float,
+    ) -> tuple:
         ms = self._memory_store
         try:
             with ms._lock:  # type: ignore[attr-defined]
@@ -962,10 +1352,7 @@ class TopicGraph:
             mirror_size = 0
         ttl = max(1.0, float(ttl_seconds))
         now_ts = timephrase.utcnow().timestamp()
-        # Key on the thresholds too (not just bucket_by / size / TTL): two
-        # callers with different bars must not share a result. In practice
-        # both consumers read the same settings so the cache still hits.
-        cache_key = (
+        return (
             str(bucket_by),
             int(mirror_size),
             int(now_ts // ttl),
@@ -974,14 +1361,14 @@ class TopicGraph:
             int(max(1, int(max_modes))),
             int(max(2, int(max_reps_per_mode))),
         )
-        with self._lock:
-            cached = self._coact_cache.get(cache_key)
-        if cached is not None:
-            return list(cached)
 
+    def _coact_snapshot(
+        self,
+    ) -> tuple[list[_CoactMember], dict[int, str], dict[int, int]] | None:
+        """Cluster maps + one bulk ``_CoactMember`` list, or ``None``
+        when there are fewer than two labelled clusters / the mirror
+        walk fails."""
         self._ensure_warm()
-        # member -> rep + rep -> (label, size), skipping unlabelled clusters
-        # (co-activation surfaces labels, so a blank-label cluster is noise).
         member_rep: dict[int, int] = {}
         rep_label: dict[int, str] = {}
         rep_size: dict[int, int] = {}
@@ -995,10 +1382,9 @@ class TopicGraph:
             for mid in cluster.member_ids:
                 member_rep[int(mid)] = rep
         if len(rep_label) < 2:
-            return self._cache_coactivation(cache_key, [])
-
-        # One bulk mirror snapshot -> _CoactMember list (rep-tagged).
+            return None
         members: list[_CoactMember] = []
+        ms = self._memory_store
         try:
             with ms._lock:  # type: ignore[attr-defined]
                 for m in ms._mirror.values():  # type: ignore[attr-defined]
@@ -1016,99 +1402,24 @@ class TopicGraph:
                     )
         except Exception:
             log.debug("cluster_coactivation snapshot failed", exc_info=True)
-            return self._cache_coactivation(cache_key, [])
-
-        # bucket -> distinct reps that fired in it
-        bucket_to_reps: dict[str, set[int]] = {}
-        for mem in members:
-            key = strategy(mem)
-            if key is None:
-                continue
-            bucket_to_reps.setdefault(key, set()).add(mem.rep)
-
-        # pair co-occurrence + per-rep bucket counts (for Jaccard union)
-        rep_bucket_count: dict[int, int] = {}
-        pair_count: dict[tuple[int, int], int] = {}
-        for reps_in_bucket in bucket_to_reps.values():
-            ordered_reps = sorted(reps_in_bucket)
-            for r in ordered_reps:
-                rep_bucket_count[r] = rep_bucket_count.get(r, 0) + 1
-            for i in range(len(ordered_reps)):
-                for j in range(i + 1, len(ordered_reps)):
-                    pair = (ordered_reps[i], ordered_reps[j])
-                    pair_count[pair] = pair_count.get(pair, 0) + 1
-
-        support = max(1, int(min_pair_support))
-        floor = float(min_strength)
-        edges: list[tuple[int, int, float]] = []
-        for (a, b), inter in pair_count.items():
-            if inter < support:
-                continue
-            union = rep_bucket_count[a] + rep_bucket_count[b] - inter
-            if union <= 0:
-                continue
-            strength = inter / union
-            if strength >= floor:
-                edges.append((a, b, strength))
-        if not edges:
-            return self._cache_coactivation(cache_key, [])
-
-        # union-find surviving pairs into connected-component modes
-        parent: dict[int, int] = {}
-
-        def _find(x: int) -> int:
-            parent.setdefault(x, x)
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        for a, b, _s in edges:
-            ra, rb = _find(a), _find(b)
-            if ra != rb:
-                parent[ra] = rb
-        comp_reps: dict[int, set[int]] = {}
-        comp_strengths: dict[int, list[float]] = {}
-        for a, b, s in edges:
-            root = _find(a)
-            comp_reps.setdefault(root, set()).update((a, b))
-            comp_strengths.setdefault(root, []).append(s)
-
-        cap_reps = max(2, int(max_reps_per_mode))
-        modes: list[CoactivationMode] = []
-        for root, reps in comp_reps.items():
-            strengths = comp_strengths.get(root, [])
-            mean_strength = sum(strengths) / len(strengths) if strengths else 0.0
-            ordered = sorted(
-                reps, key=lambda r: rep_size.get(r, 0), reverse=True
-            )[:cap_reps]
-            if len(ordered) < 2:
-                continue
-            labels = tuple(rep_label.get(r, "") for r in ordered)
-            modes.append(
-                CoactivationMode(
-                    reps=tuple(ordered),
-                    labels=labels,
-                    strength=round(float(mean_strength), 3),
-                    bucket_by=str(bucket_by),
-                )
-            )
-        modes.sort(
-            key=lambda mo: (mo.strength, len(mo.reps)), reverse=True
-        )
-        modes = modes[: max(1, int(max_modes))]
-        return self._cache_coactivation(cache_key, modes)
+            return None
+        return members, rep_label, rep_size
 
     def _cache_coactivation(
         self,
         cache_key: tuple,
         modes: list[CoactivationMode],
     ) -> list[CoactivationMode]:
-        """Memoise the co-activation result (single-entry cache, replaced on
-        each new key so it stays bounded) and return it."""
+        """Memoise one axis result. Bounded so four axes + threshold
+        variants cannot grow without limit."""
+        stored = tuple(modes)
         with self._lock:
-            self._coact_cache = {cache_key: tuple(modes)}
-        return list(modes)
+            cache = dict(self._coact_cache)
+            cache[cache_key] = stored
+            while len(cache) > _COACT_CACHE_MAX:
+                cache.pop(next(iter(cache)))
+            self._coact_cache = cache
+        return list(stored)
 
     def knowledge_gap_clusters(
         self,

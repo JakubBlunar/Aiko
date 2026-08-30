@@ -2048,6 +2048,54 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 getattr(ms, "concept_surfacing_activation_seed_cap", 4)
             ))
             seeds = list(pinned_ids)[:seed_cap]
+            # T3 temporal priming: circadian/weekday modes matching the
+            # live clock join hot_reps so night-shaped pairings come to
+            # mind at night. Must not touch the T1 coactivation_block.
+            if graph is not None:
+                try:
+                    from app.core.affect.circadian import (
+                        coarse_coactivation_period,
+                    )
+                    from app.core.conversation.topic_graph import (
+                        temporal_prime_reps,
+                    )
+
+                    multi = getattr(graph, "cluster_coactivations", None)
+                    if callable(multi):
+                        by_axis = multi(
+                            axes=("circadian", "weekday"),
+                            min_pair_support=int(
+                                getattr(ms, "coactivation_min_pair_support", 2)
+                            ),
+                            min_strength=float(
+                                getattr(ms, "coactivation_min_strength", 0.25)
+                            ),
+                            max_modes=int(
+                                getattr(ms, "coactivation_max_modes", 4)
+                            ),
+                            max_reps_per_mode=int(
+                                getattr(
+                                    ms, "coactivation_max_reps_per_mode", 4
+                                )
+                            ),
+                        )
+                        clock = timephrase.now()
+                        primed = temporal_prime_reps(
+                            list(by_axis.get("circadian") or ())
+                            + list(by_axis.get("weekday") or ()),
+                            period=coarse_coactivation_period(int(clock.hour)),
+                            weekday=(
+                                "monday", "tuesday", "wednesday",
+                                "thursday", "friday", "saturday", "sunday",
+                            )[int(clock.weekday())],
+                        )
+                        seen_hot = set(hot_reps)
+                        for rep in primed:
+                            if rep not in seen_hot:
+                                hot_reps.append(rep)
+                                seen_hot.add(rep)
+                except Exception:
+                    log.debug("temporal priming skipped", exc_info=True)
             if hot_reps or seeds:
                 try:
                     activated = view.activated(
@@ -3546,8 +3594,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
 
         Takes the strongest co-activation mode (clusters that co-fire in the
         same conversations, from
-        :meth:`~app.core.conversation.topic_graph.TopicGraph.cluster_coactivation`)
-        as the "circling together" set, and the quietest labelled cluster
+        :meth:`~app.core.conversation.topic_graph.TopicGraph.cluster_coactivation`
+        with ``bucket_by="session"``) as the "circling together" set, and the
+        quietest labelled cluster
         (largest ``days_since`` from ``cluster_activity`` that clears
         ``coactivation_quiet_min_days``) as an optional contrast. Renders one
         hedged line personalised with ``{user_name}`` so Aiko can carry a
@@ -3555,6 +3604,13 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         the feature is disabled, the graph is missing / non-persistent / still
         immature (L21), or no clear mode exists -- so it adds zero tokens
         until there is a real pattern to name.
+
+        T1 cache contract: this renderer is a pure function of the session
+        graph (+ quiet cluster). It must not read ``timephrase.now()``, the
+        current circadian period, or today's weekday -- a byte change here
+        invalidates the T1 tail + T2 summary + everything after, and on a
+        ``_StaticSlices`` hit the renderer does not re-run at all. Day /
+        circadian / weekday axes feed L2 synthesis and T3 priming instead.
 
         L26: records the chosen mode (reps / labels / strength / bucket)
         and the quiet cluster (or a ``reason`` when silent) on

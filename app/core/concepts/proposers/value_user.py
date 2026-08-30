@@ -30,6 +30,7 @@ from app.core.concepts.proposers.base import (
     resolve_reinforces,
     snippet,
 )
+from app.core.conversation.topic_graph import format_coactivation_hint_lines
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import CoactivationMode
@@ -86,16 +87,8 @@ def _coactivation_lines(
     coactivation: "Sequence[CoactivationMode]",
     valid_reps: set[int],
 ) -> list[str]:
-    """Render the L4 "TOPIC MODES" hint: clusters that keep lighting up in
-    the same conversations, as ``[rep, rep, ...]`` groups. Only reps present
-    in the current map survive. Returns ``[]`` when nothing usable."""
-    lines: list[str] = []
-    for mode in coactivation:
-        reps = [int(r) for r in getattr(mode, "reps", ()) if int(r) in valid_reps]
-        if len(reps) < 2:
-            continue
-        lines.append("- [" + ", ".join(str(r) for r in reps) + "]")
-    return lines
+    """Render the L4 "TOPIC MODES" hint with an axis tag."""
+    return format_coactivation_hint_lines(coactivation, valid_reps)
 
 
 def propose_value_user(
@@ -129,8 +122,9 @@ def propose_value_user(
     modes_section = ""
     if mode_lines:
         modes_section = (
-            "\n\nTOPIC MODES (clusters that tend to light up together in the "
-            "same conversations -- a soft hint, not a rule):\n"
+            "\n\nTOPIC MODES (clusters that tend to light up together -- "
+            "same conversations, same time of day, or same weekday -- a "
+            "soft hint, not a rule):\n"
             + "\n".join(mode_lines)
             + "\n(A shared principle often explains why clusters co-fire -- "
             "prefer these when a genuine value connects them, but never force "

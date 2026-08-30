@@ -1155,32 +1155,46 @@ class ConceptSynthesisWorker:
         return proposals
 
     def _coactivation_modes(self) -> list[Any]:
-        """L4 grouping hint for the user-identity proposer: the co-activation
-        modes (clusters that co-fire in the same sessions), computed once per
-        run off the topic graph. Empty (and cheap) when the graph doesn't
-        expose the signal or raises -- the proposer treats an empty hint as
-        "no bias", so this never blocks synthesis."""
+        """L4 grouping hint for the user-identity / value proposers: the
+        co-activation modes across session / day / circadian / weekday,
+        computed once per run off the topic graph. Empty (and cheap) when
+        the graph doesn't expose the signal or raises -- the proposer
+        treats an empty hint as "no bias", so this never blocks synthesis.
+        Prefers ``cluster_coactivations`` (one snapshot); falls back to a
+        single session ``cluster_coactivation`` for test stubs."""
         graph = self._topic_graph
+        ms = self._memory_settings
+        kw = dict(
+            min_pair_support=int(
+                getattr(ms, "coactivation_min_pair_support", 2)
+            ),
+            min_strength=float(
+                getattr(ms, "coactivation_min_strength", 0.25)
+            ),
+            max_modes=int(getattr(ms, "coactivation_max_modes", 4)),
+            max_reps_per_mode=int(
+                getattr(ms, "coactivation_max_reps_per_mode", 4)
+            ),
+        )
+        multi = getattr(graph, "cluster_coactivations", None)
+        if callable(multi):
+            try:
+                by_axis = multi(
+                    axes=("session", "day", "circadian", "weekday"),
+                    **kw,
+                )
+                out: list[Any] = []
+                for axis in ("session", "day", "circadian", "weekday"):
+                    out.extend(by_axis.get(axis) or [])
+                return out
+            except Exception:
+                log.debug("coactivation modes unavailable", exc_info=True)
+                return []
         fn = getattr(graph, "cluster_coactivation", None)
         if not callable(fn):
             return []
-        ms = self._memory_settings
         try:
-            return list(
-                fn(
-                    bucket_by="session",
-                    min_pair_support=int(
-                        getattr(ms, "coactivation_min_pair_support", 2)
-                    ),
-                    min_strength=float(
-                        getattr(ms, "coactivation_min_strength", 0.25)
-                    ),
-                    max_modes=int(getattr(ms, "coactivation_max_modes", 4)),
-                    max_reps_per_mode=int(
-                        getattr(ms, "coactivation_max_reps_per_mode", 4)
-                    ),
-                )
-            )
+            return list(fn(bucket_by="session", **kw))
         except Exception:
             log.debug("coactivation modes unavailable", exc_info=True)
             return []
