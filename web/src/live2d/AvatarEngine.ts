@@ -123,6 +123,16 @@ export class AvatarEngine {
   private _detachPreUpdate: (() => void) | null = null;
   private _detachMouse: (() => void) | null = null;
 
+  // P38: one store snapshot per tick invocation, shared by every
+  // channel that polls ``getStoreSnapshot`` during that tick.
+  // Depth-counted so a nested ``beforeModelUpdate`` that fires
+  // inside a RAF tick reuses the outer snapshot instead of
+  // overwriting it and clearing the cache while the outer tick
+  // is still running. ``null`` / depth 0 outside a tick so attach
+  // and dispatch fall through to a live pull.
+  private _tickSnap: ChannelStoreSnapshot | null = null;
+  private _tickSnapDepth = 0;
+
   private readonly _now: () => number;
   private readonly _scheduleFrame: (cb: FrameRequestCallback) => number;
   private readonly _cancelFrame: (handle: number) => void;
@@ -164,6 +174,35 @@ export class AvatarEngine {
     return this._minFrameMs > 0 && elapsedMs < this._minFrameMs;
   }
 
+  /** Channel-facing snapshot accessor. During a wrapped tick this
+   * returns the same object for every pull; outside a tick it is a
+   * live read of the store (attach, dispatch, tests that call
+   * channel hooks directly). */
+  private _getChannelSnapshot = (): ChannelStoreSnapshot => {
+    if (this._tickSnapDepth > 0) {
+      if (this._tickSnap === null) {
+        this._tickSnap = this._deps.getStoreSnapshot();
+      }
+      return this._tickSnap;
+    }
+    return this._deps.getStoreSnapshot();
+  };
+
+  /** Run ``fn`` as one tick: every ``getStoreSnapshot`` inside it
+   * shares one object. Nested calls (Pixi ``beforeModelUpdate``
+   * firing during a RAF tick) reuse the outer snapshot. */
+  private _withTickSnapshot(fn: () => void): void {
+    this._tickSnapDepth += 1;
+    try {
+      fn();
+    } finally {
+      this._tickSnapDepth -= 1;
+      if (this._tickSnapDepth === 0) {
+        this._tickSnap = null;
+      }
+    }
+  }
+
   /** Register one or more channels. Must be called before ``start``.
    * Channels are attached in registration order and detached in
    * reverse — the order rarely matters but we make it deterministic
@@ -199,7 +238,7 @@ export class AvatarEngine {
       now: this._now,
       manifest: this._deps.manifest,
       engineState: this._deps.engineState,
-      getStoreSnapshot: this._deps.getStoreSnapshot,
+      getStoreSnapshot: this._getChannelSnapshot,
       debug: this._deps.debug,
     };
     for (const channel of this._channels) {
@@ -408,28 +447,30 @@ export class AvatarEngine {
     }
     const dt = Math.max(0, elapsed / 1000);
     this._lastTier3Time = now;
-    // Check for expiry of the expression-slot lock first so the
-    // ``onExpressionSlotReleased`` callback fires before per-channel
-    // tier-3 work — that lets ExpressionChannel re-apply the
-    // persistent reaction in the same frame, avoiding a one-frame
-    // gap where the rig has no expression at all.
-    const state = this._deps.engineState;
-    if (state.exprSlotLockUntil > 0 && now >= state.exprSlotLockUntil) {
-      state.exprSlotLockUntil = 0;
-      this._fanOut("onExpressionSlotReleased", (channel) =>
-        channel.onExpressionSlotReleased?.(),
-      );
-    }
-    for (const channel of this._channels) {
-      if (!channel.tickTier3) {
-        continue;
+    this._withTickSnapshot(() => {
+      // Check for expiry of the expression-slot lock first so the
+      // ``onExpressionSlotReleased`` callback fires before per-channel
+      // tier-3 work — that lets ExpressionChannel re-apply the
+      // persistent reaction in the same frame, avoiding a one-frame
+      // gap where the rig has no expression at all.
+      const state = this._deps.engineState;
+      if (state.exprSlotLockUntil > 0 && now >= state.exprSlotLockUntil) {
+        state.exprSlotLockUntil = 0;
+        this._fanOut("onExpressionSlotReleased", (channel) =>
+          channel.onExpressionSlotReleased?.(),
+        );
       }
-      try {
-        channel.tickTier3(now, dt);
-      } catch (err) {
-        console.error(`[AvatarEngine] channel "${channel.name}" tickTier3 failed`, err);
+      for (const channel of this._channels) {
+        if (!channel.tickTier3) {
+          continue;
+        }
+        try {
+          channel.tickTier3(now, dt);
+        } catch (err) {
+          console.error(`[AvatarEngine] channel "${channel.name}" tickTier3 failed`, err);
+        }
       }
-    }
+    });
     this._tier3Handle = this._scheduleFrame(this._runTier3);
   };
 
@@ -445,17 +486,19 @@ export class AvatarEngine {
     }
     const dt = Math.max(0, elapsed / 1000);
     this._lastGazeTime = now;
-    const mouse = this._mouseSource.snapshot();
-    for (const channel of this._channels) {
-      if (!channel.tickGaze) {
-        continue;
+    this._withTickSnapshot(() => {
+      const mouse = this._mouseSource.snapshot();
+      for (const channel of this._channels) {
+        if (!channel.tickGaze) {
+          continue;
+        }
+        try {
+          channel.tickGaze(now, dt, mouse);
+        } catch (err) {
+          console.error(`[AvatarEngine] channel "${channel.name}" tickGaze failed`, err);
+        }
       }
-      try {
-        channel.tickGaze(now, dt, mouse);
-      } catch (err) {
-        console.error(`[AvatarEngine] channel "${channel.name}" tickGaze failed`, err);
-      }
-    }
+    });
     this._gazeHandle = this._scheduleFrame(this._runGaze);
   };
 
@@ -463,16 +506,18 @@ export class AvatarEngine {
     if (this._disposed) {
       return;
     }
-    for (const channel of this._channels) {
-      if (!channel.tickPreModel) {
-        continue;
+    this._withTickSnapshot(() => {
+      for (const channel of this._channels) {
+        if (!channel.tickPreModel) {
+          continue;
+        }
+        try {
+          channel.tickPreModel();
+        } catch (err) {
+          console.error(`[AvatarEngine] channel "${channel.name}" tickPreModel failed`, err);
+        }
       }
-      try {
-        channel.tickPreModel();
-      } catch (err) {
-        console.error(`[AvatarEngine] channel "${channel.name}" tickPreModel failed`, err);
-      }
-    }
+    });
   }
 
   private _fanOut(label: string, invoke: (channel: AvatarChannel) => void): void {

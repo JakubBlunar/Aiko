@@ -84,6 +84,12 @@ fire immediately when the bridge sees a slice change — channels
 don't need to poll snapshots for events. The
 `getStoreSnapshot()` getter on `ChannelDeps` is for *per-tick*
 state the channels do want to poll (mood, voiceMode, audioAmplitude).
+The engine caches **one snapshot per tick invocation** so five
+channels polling independently still allocate once; attach and
+dispatch are live pulls. The three loops (tier-3, gaze, pre-model)
+do **not** share a snapshot with each other — they are separate
+RAF / ticker paths and the store can change between them
+(e.g. `audioAmplitude`).
 
 ### The frame ceiling
 

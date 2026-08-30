@@ -538,7 +538,8 @@ reply length rather than history length: `stripMetaMarkers` still runs
 over the accumulated draft per chunk (idempotent, and needed so a marker
 split across two chunks still resolves), and `ChatView` still re-renders
 per token to re-pin the scroll. The latter turned out to be the larger of
-the two and is tracked separately as **P37**.
+the two and shipped as
+[P37](#p37-residual-per-token-and-per-mic-frame-react-re-renders).
 
 ---
 
@@ -942,6 +943,77 @@ untouched), `AvatarEngine.test.ts` (`frame ceiling` — skip ratios at 60
 and 120 Hz, that a skipped frame still requests the next one and does
 not eat its elapsed time, and runtime lift/reapply),
 `AudioOutputManager.test.ts` (`idle cost` + `lipsync loop lifecycle`).
+
+---
+
+## P37. Residual per-token and per-mic-frame React re-renders
+
+P9 moved streaming text off the `messages` array, so finalised bubbles no
+longer re-render mid-stream. Two subscriptions in `ChatView` still
+re-rendered the whole chat chrome at high frequency, and the Virtuoso
+callbacks those renders recreated dropped referential stability on the
+list even when the memoised bubbles below them did not change.
+
+**(a) Per token.** The streaming re-pin signature moved to
+[`streamRepin.ts`](../../../web/src/features/chat/streamRepin.ts) and is
+quantised to 48-char buckets, so a ~1200-char reply re-renders `ChatView`
+~26 times instead of ~1200. The draft **id** stays un-bucketed: without
+it, a new turn starting at length 0 would collide with the previous
+turn's first bucket and every reply's first re-pin would be silently
+skipped — which `streamRepin.test.ts` pins explicitly. Stream end is
+still covered from two directions (the signature goes empty, and the
+commit into `messages` triggers Virtuoso's own `followOutput`).
+
+**(b) Per mic frame.** `ChatView` and `PersonaWindow` no longer subscribe
+to `audioLevel` at all. The three elements that actually react to it
+subscribe at the leaf: `MicPulseRing` inside
+[`MicButton`](../../../web/src/features/voice/MicButton.tsx), and
+`LevelDot` / `AudioMeter` inside
+[`VoiceStrip`](../../../web/src/features/chat/VoiceStrip.tsx). The meter
+additionally quantises its selector to the *number of lit bars*, so most
+level updates return an unchanged value and don't re-render even the
+leaf. This mattered most in the persona window, which renders the Live2D
+canvas — a 20 Hz re-render there was the expensive version of the
+problem.
+
+**(c) Virtuoso identity.** `itemContent`, `followOutput`, and
+`computeItemKey` are module-scope; the Footer is a leaf component that
+subscribes to `toolActivity` itself; Header is `useCallback`'d and the
+`components` object is `useMemo`'d. Recreating those closures used to
+make Virtuoso lose referential stability on every remaining `ChatView`
+render (status, draft, the now-bucketed stream re-pin).
+
+---
+
+## P38. Live2D channels allocate a store snapshot several times per frame
+
+`Live2DAvatar.getStoreSnapshot()` builds a **new object** on every call,
+and the animation channels used to call it independently: lipsync
+(pre-model), gaze, ambient body (tier-3 *and* pre-model), and expression
+— which alone polled three times inside one tier-3 tick. Roughly 5–8
+short-lived objects per frame, ~300–480/s at 60 Hz, on the same main
+thread as Pixi and audio scheduling.
+
+[`AvatarEngine`](../../../web/src/live2d/AvatarEngine.ts) now wraps each
+tick invocation (`_runTier3`, `_runGaze`, `_tickPreModel`) so
+`ChannelDeps.getStoreSnapshot` returns one cached object for the whole
+call. Channel signatures are unchanged. Attach and dispatch stay live
+pulls — they are not per-frame. The three loops do **not** share a
+snapshot with each other: they are separate RAF / ticker paths, and the
+store can change between them (lipsync's `audioAmplitude` is the obvious
+case). Nested `beforeModelUpdate` during a RAF tick reuses the outer
+snapshot (depth-counted) so the cache cannot be cleared while the outer
+tick is still running.
+
+Open question, answered: channels mutate the **rig**, not Zustand. There
+is no implicit mid-frame store write from one channel that another needs
+to observe. A WS update that lands mid-tick is visible on the next tick,
+which is the consistent-within-a-frame read you want.
+
+Tests in `AvatarEngine.test.ts` (`store snapshot cache`): one factory
+pull per tick even with several channels polling repeatedly; tier-3 and
+gaze each take their own snapshot; nested pre-model reuses the outer
+one; attach is live; a skipped frame under the cap does not pull.
 
 ---
 
