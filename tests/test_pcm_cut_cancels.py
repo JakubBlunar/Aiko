@@ -8,7 +8,7 @@ it survived so long. Each half is individually correct:
 * the client refuses to flush on ``audio_end``, so consecutive sentences
   chain instead of clipping each other short.
 
-Together they mean a cut clip leaves the client holding ~250 ms of speech
+Together they mean a cut clip leaves the client holding the pre-roll
 that the server has stopped sending and nothing will ever retract. It
 plays -- a fragment after the sentence, on any engine, because the
 pre-roll lives in the shared mixin.

@@ -139,6 +139,7 @@ class PocketTtsService(PcmPlaybackMixin):
         self._frames_after_eos_unsupported = False
         self._pcm_listener: PcmListener | None = pcm_listener
         self._clip_end_listener: PcmEndListener | None = clip_end_listener
+        self._configure_pre_roll(settings)
         # Layer 1a: global pacing knob fed by ``assistant.tts_length_scale``.
         # ``set_length_scale`` clamps this to ``[_LENGTH_SCALE_MIN,
         # _LENGTH_SCALE_MAX]`` and ``speak_async`` divides the requested

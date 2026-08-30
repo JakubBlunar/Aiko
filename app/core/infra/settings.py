@@ -469,6 +469,14 @@ class TtsSettings:
     # and 0.20 buys only two more points. Set 0.0 to disable. See
     # ``app/audio/speech_rate.py``.
     speech_rate_match_limit: float = 0.15
+    # How far ahead of the speaker the emit loop ships PCM, in
+    # milliseconds. 600 ms (twelve 50 ms slices) covers a phone-over-
+    # Tailscale hop; 250 ms is the old localhost-only cushion and is
+    # the floor. The client starts on the first slice either way --
+    # this only keeps more audio queued so a jitter spike does not
+    # punch a hole in the sentence (heard as slow, hesitant speech,
+    # plus leftover tails landing on the next clip).
+    pcm_pre_roll_ms: int = 600
     # Per-engine voice and device, keyed by provider name. Absent keys
     # are fine and resolve to defaults, so a config written before this
     # existed keeps working -- see :meth:`for_provider`.
@@ -1327,6 +1335,20 @@ def _parse_frames_after_eos(value: Any) -> int | None:
         return max(0, min(int(value), 8))
     except (TypeError, ValueError):
         return 1
+
+
+def _parse_pcm_pre_roll_ms(value: Any) -> int:
+    """Clamp ``tts.pcm_pre_roll_ms`` to a useful send-ahead.
+
+    Floor 250 ms is the old localhost cushion; ceiling 1500 ms is three
+    times a typical Tailscale+Wi-Fi spike and past that the barge-in
+    pre-roll is just a longer leftover if cancel is lost.
+    """
+    try:
+        ms = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 600
+    return max(250, min(1500, ms))
 
 
 _GROUNDING_LINE_MODES: frozenset[str] = frozenset({"off", "replace", "split"})
@@ -2390,6 +2412,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             ),
             speech_rate_match_limit=_parse_speech_rate_limit(
                 tts.get("speech_rate_match_limit", 0.15),
+            ),
+            pcm_pre_roll_ms=_parse_pcm_pre_roll_ms(
+                tts.get("pcm_pre_roll_ms", 600),
             ),
             providers=_parse_tts_providers(tts.get("providers")),
         ),

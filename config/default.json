@@ -329,7 +329,8 @@
     "voice": "aiko1_refined.safetensors",
     "enabled": true,
     "pocket_tts_voice": "aiko1_refined.safetensors",
-    "pocket_tts_temp": 0.6
+    "pocket_tts_temp": 0.6,
+    "pcm_pre_roll_ms": 600
   },
   "logging": {
     "level": "INFO",

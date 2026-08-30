@@ -145,8 +145,8 @@ class PocketTtsListenerTests(unittest.TestCase):
         # across the whole clip.
         svc = _make_tts()
         # Build a clip that is long enough that pacing dominates the
-        # pre-roll. 20 chunks at 50 ms = 1 s of audio at 8 kHz.
-        long_audio = np.zeros(8000 * 1, dtype=np.float32)
+        # pre-roll. 40 chunks at 50 ms = 2 s of audio at 8 kHz.
+        long_audio = np.zeros(8000 * 2, dtype=np.float32)
         timestamps: list[float] = []
 
         def _on_pcm(_r: int, _c: int, _pcm: bytes) -> None:

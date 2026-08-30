@@ -75,11 +75,13 @@ class PcmPlaybackMixin:
     # sizes and so the WS message rate caps at ~20 frames/sec/clip.
     _EMIT_CHUNK_SECONDS: float = 0.05
     # Number of chunks shipped immediately before we start pacing the
-    # rest at real-time. ~250 ms is enough to ride out typical network
-    # / GC jitter on the client without underrunning the audio
-    # scheduler, while keeping the per-frame burst size small enough
-    # that the avatar render thread doesn't stutter.
-    _PRE_ROLL_CHUNKS: int = 5
+    # rest at real-time. 12 x 50 ms = 600 ms, which is enough to ride
+    # out a phone-on-Tailscale hop (RTT + Wi-Fi jitter) without the
+    # client scheduler running dry. Localhost still starts on the first
+    # slice; this only keeps more audio *queued* ahead of the speaker.
+    # Tests that need the emit loop to finish instantly assign a huge
+    # value on the instance. ``tts.pcm_pre_roll_ms`` retunes it.
+    _PRE_ROLL_CHUNKS: int = 12
 
     # Declared for the type checker; the host owns them.
     _pcm_listener: Callable[[int, int, bytes], None] | None
@@ -93,6 +95,31 @@ class PcmPlaybackMixin:
     _tilt_limit_db: float = MAX_CORRECTION_DB
     _rate_target_syl_s: float | None = None
     _rate_limit: float = MAX_RATE_CORRECTION
+
+    def _configure_pre_roll(self, settings: object | None = None) -> None:
+        """Set ``_PRE_ROLL_CHUNKS`` from ``tts.pcm_pre_roll_ms``.
+
+        Default 600 ms. Tests that need the emit loop to finish
+        instantly still assign ``_PRE_ROLL_CHUNKS`` on the instance
+        afterwards; a ``MagicMock`` settings object falls through to
+        that default rather than crashing on ``float(Mock)``.
+        """
+        raw: object = 600
+        if settings is not None:
+            raw = getattr(settings, "pcm_pre_roll_ms", 600)
+        ms = 600.0
+        if isinstance(raw, bool):
+            pass
+        elif isinstance(raw, (int, float)):
+            ms = float(raw)
+        elif isinstance(raw, str):
+            try:
+                ms = float(raw)
+            except ValueError:
+                ms = 600.0
+        ms = max(250.0, min(1500.0, ms))
+        chunk_ms = float(self._EMIT_CHUNK_SECONDS) * 1000.0
+        self._PRE_ROLL_CHUNKS = max(5, int(round(ms / chunk_ms)))
 
     # ── the whole playback of one clip ───────────────────────────────
 
