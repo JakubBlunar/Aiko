@@ -149,6 +149,7 @@ class ConceptLifecycleWorker:
         ) = None,
         kv_get: Callable[[str], str | None] | None = None,
         kv_set: Callable[[str, str], None] | None = None,
+        topic_graph_provider: Callable[[], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = concept_store
@@ -169,6 +170,7 @@ class ConceptLifecycleWorker:
         )
         self._kv_get = kv_get
         self._kv_set = kv_set
+        self._topic_graph_provider = topic_graph_provider
         self._standing_last_refresh: datetime | None = None
         self._memory_settings = memory_settings
         self._agent_settings = agent_settings
@@ -949,16 +951,78 @@ class ConceptLifecycleWorker:
                 min_confidence,
                 self._f("concept_promote_young_min_confidence", 0.72),
             )
-        return bool(
-            gate(
-                distinct_source_count=concept.distinct_source_count,
-                age_days=self._age_days(concept, now),
-                confidence=conf,
-                min_sources=min_sources,
-                min_age_days=self._f("concept_promote_min_age_days", 2.0),
-                min_confidence=min_confidence,
+        kwargs: dict[str, Any] = {
+            "distinct_source_count": concept.distinct_source_count,
+            "age_days": self._age_days(concept, now),
+            "confidence": conf,
+            "min_sources": min_sources,
+            "min_age_days": self._f("concept_promote_min_age_days", 2.0),
+            "min_confidence": min_confidence,
+        }
+        if str(getattr(concept, "kind", "") or "") == "affective":
+            kwargs["valence"] = self._affective_evidence_valence(concept)
+            kwargs["singleton_abs_valence"] = float(
+                getattr(
+                    self._memory_settings,
+                    "concept_synthesis_affect_singleton_abs_valence",
+                    0.35,
+                )
             )
-        )
+        return bool(gate(**kwargs))
+
+    def _affective_evidence_valence(self, concept: "Concept") -> float | None:
+        """Current valence of a 1-cluster affective's evidence cluster.
+
+        Needed so :func:`affective_evidence_gate` can honour the H14
+        singleton exception at promotion time. Missing graph / map / a
+        multi-source row all return ``None``, which keeps the pair-floor.
+        """
+        if int(getattr(concept, "distinct_source_count", 0) or 0) != 1:
+            return None
+        if self._kv_get is None:
+            return None
+        try:
+            edges = self._store.evidence_of(int(concept.concept_id))
+        except Exception:
+            log.debug("affective valence: evidence_of failed", exc_info=True)
+            return None
+        reps = [
+            int(e.src_id)
+            for e in edges
+            if str(getattr(e, "src_type", "")) == "cluster"
+        ]
+        if len(reps) != 1:
+            return None
+        graph = None
+        if self._topic_graph_provider is not None:
+            try:
+                graph = self._topic_graph_provider()
+            except Exception:
+                log.debug("affective valence: graph provider failed", exc_info=True)
+                graph = None
+        cluster_id = None
+        if graph is not None:
+            try:
+                for cluster in graph.topic_clusters():
+                    if int(cluster.representative_id) == reps[0]:
+                        cluster_id = int(cluster.cluster_id)
+                        break
+            except Exception:
+                log.debug("affective valence: topic_clusters failed", exc_info=True)
+        if cluster_id is None:
+            cluster_id = reps[0]
+        from app.core.concepts import cluster_affect as _ca
+
+        subject = str(getattr(concept, "subject", "") or "user")
+        try:
+            affect_map = _ca.load_map(self._kv_get, _ca.kv_key_for(subject))
+        except Exception:
+            log.debug("affective valence: load_map failed", exc_info=True)
+            return None
+        state = affect_map.get(str(cluster_id))
+        if state is None:
+            return None
+        return float(state.valence)
 
     @staticmethod
     def _has_any_evidence(concept: "Concept") -> bool:

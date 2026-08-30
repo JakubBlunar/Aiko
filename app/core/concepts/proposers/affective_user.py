@@ -9,16 +9,21 @@ related topics share ("hands-on building energizes him"; "admin / logistics
 topics drain him"; "release-week pressure stresses him out").
 
 Distinct from K2 mood beliefs (which model his *current* mood): these are
-the settled pattern. Evidence is cluster-only (``cluster`` edges); a NEW
+the settled pattern. Evidence is cluster-only (``cluster`` edges). A NEW
 affective concept must span at least ``min_sources`` distinct clusters that
-share the affect, so a one-off mood on a single topic never becomes a
-durable claim. The affect *direction* is carried in the label / rationale,
-not on the edges (no schema change).
+share the affect, *or* a single strongly-negative well-sampled cluster
+(H14), so a one-off mood on a single topic never becomes a durable claim.
+The affect *direction* is carried in the label / rationale, not on the
+edges (no schema change).
 """
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+from app.core.concepts.concept_lifecycle import (
+    DEFAULT_AFFECTIVE_SINGLETON_ABS_VALENCE,
+    affective_source_count_ok,
+)
 from app.core.concepts.proposers.base import (
     CandidateProposal,
     ExistingConcept,
@@ -41,7 +46,8 @@ def _system(user_name: str, assistant_name: str) -> str:
         "+ sizes), each annotated with the emotion it typically carries, a "
         "few focus clusters in detail, and the affective patterns already "
         "known. Propose a durable topic->emotion pattern that a FOCUS "
-        "cluster shares with at least one other cluster.\n\n"
+        "cluster shares with at least one other cluster, or that a single "
+        "strongly-negative focus cluster carries on its own.\n\n"
         "Examples: 'hands-on building energizes him', 'admin and logistics "
         "drain him', 'release-week pressure stresses him out', 'debugging "
         "frustrates him before it satisfies him'.\n\n"
@@ -52,10 +58,15 @@ def _system(user_name: str, assistant_name: str) -> str:
         "- Name a durable EMOTIONAL pattern, not the topic or the activity "
         "(that is an identity concept). The label must state the FEELING "
         "('X energizes him', 'Y drains him', 'Z makes him anxious').\n"
+        f"- Name {user_name}'s own feeling, not {assistant_name}'s stance "
+        "toward it (that is a value or a tension, not an affective "
+        "pattern).\n"
         "- Each NEW pattern MUST span at least two distinct clusters (by rep "
-        "id) that genuinely share the same emotional signature. Trust the "
-        "per-cluster affect annotations, but only group clusters whose "
-        "affect actually agrees.\n"
+        "id) that genuinely share the same emotional signature, OR a single "
+        "cluster whose annotation is a strongly negative feeling. Trust the "
+        "per-cluster affect annotations. Clusters annotated as any negative "
+        "feeling (tense / downbeat / drained) share the same signature for "
+        "grouping -- you may pair them even if the arousal phrasing differs.\n"
         "- This is tone guidance, NEVER a stated fact. Do not propose "
         "patterns you would announce out loud ('you always get stressed').\n"
         "- Do NOT re-propose an ALREADY-KNOWN pattern or a trivial rewording. "
@@ -80,14 +91,17 @@ def propose_affective_user(
     focus_clusters: Sequence[FocusCluster],
     cluster_index: Sequence[tuple[int, str, int]],
     affect_by_rep: "dict[int, str] | None" = None,
+    valence_by_rep: "dict[int, float] | None" = None,
+    singleton_abs_valence: float = DEFAULT_AFFECTIVE_SINGLETON_ABS_VALENCE,
     existing: Sequence[ExistingConcept] = (),
 ) -> list[CandidateProposal]:
     if not focus_clusters or not cluster_index:
         return []
     aff = affect_by_rep or {}
+    valences = valence_by_rep or {}
     valid_reps = {int(rep) for rep, _label, _size in cluster_index}
     focus_reps = {int(fc.rep) for fc in focus_clusters}
-    existing_ids = {int(e.id) for e in existing}
+    existing_ids = {int(e.id) for e in existing if e.reinforce}
 
     def _rep_line(rep: int, label: str, size: int) -> str:
         line = f"- [{rep}] {label} (size {size})"
@@ -153,7 +167,15 @@ def propose_affective_user(
             continue
 
         label = str(item.get("label") or "").strip()
-        if not label or len(reps) < ctx.min_sources:
+        if not label:
+            continue
+        valence = valences.get(reps[0]) if len(reps) == 1 else None
+        if not affective_source_count_ok(
+            len(reps),
+            ctx.min_sources,
+            valence=valence,
+            singleton_abs_valence=singleton_abs_valence,
+        ):
             continue
         proposals.append(
             CandidateProposal(

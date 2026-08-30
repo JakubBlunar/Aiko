@@ -2342,6 +2342,9 @@ class SpeakingWorkersInitMixin:
                             ),
                             kv_get=self._chat_db.kv_get,
                             kv_set=self._chat_db.kv_set,
+                            topic_graph_provider=lambda: getattr(
+                                self, "_topic_graph", None
+                            ),
                             memory_settings=self._memory_settings,
                             agent_settings=settings.agent,
                         )

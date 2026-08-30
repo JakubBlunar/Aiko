@@ -22,6 +22,7 @@ from app.core.concepts.concept_kinds import (
 from app.core.session.inner_life_part1 import InnerLifePart1Mixin
 from app.core.concepts.concept_surfacing import (
     SURFACE_REASON_LABELS,
+    apply_evidence_cluster_boost,
     composite_score,
     earned_standing,
     engagement_baseline,
@@ -801,6 +802,44 @@ class CoreRationaleClauseTests(unittest.TestCase):
         self.assertTrue(tail.endswith(_ELLIPSIS))
         self.assertLessEqual(len(tail.rstrip(_ELLIPSIS).strip()), 20)
         self.assertTrue(trace["surfaced"][0]["rationale_surfaced"])
+
+
+class EvidenceClusterBoostTests(unittest.TestCase):
+    def test_evidence_hit_lifts_a_low_cosine_label(self) -> None:
+        warm = SimpleNamespace(concept_id=1, label="admin energizes him")
+        drain = SimpleNamespace(concept_id=2, label="admin drains him")
+        out = apply_evidence_cluster_boost(
+            [(warm, 0.70), (drain, 0.20)],
+            [(drain, 0.85)],
+        )
+        by_id = {c.concept_id: cos for c, cos in out}
+        self.assertAlmostEqual(by_id[1], 0.70)
+        self.assertAlmostEqual(by_id[2], 0.85)
+
+    def test_evidence_hit_injects_a_concept_cosine_missed(self) -> None:
+        warm = SimpleNamespace(concept_id=1, label="admin energizes him")
+        drain = SimpleNamespace(concept_id=2, label="admin drains him")
+        out = apply_evidence_cluster_boost(
+            [(warm, 0.70)],
+            [(drain, 0.85)],
+        )
+        ids = [c.concept_id for c, _cos in out]
+        self.assertEqual(ids, [1, 2])
+        self.assertAlmostEqual(out[1][1], 0.85)
+
+    def test_affective_evidence_hits_uses_cluster_similarity(self) -> None:
+        drain = SimpleNamespace(concept_id=2, kind="affective")
+        view = SimpleNamespace(
+            for_cluster=lambda rep, kinds=None: [drain] if rep == 1573 else [],
+        )
+        cluster = SimpleNamespace(cluster_id=30, representative_id=1573)
+        cand = SimpleNamespace(payload=(30, "hard topic", 0.82), relevance=0.82)
+        extras = InnerLifePart1Mixin._affective_evidence_hits(
+            view, [cand], [cluster],
+        )
+        self.assertEqual(len(extras), 1)
+        self.assertIs(extras[0][0], drain)
+        self.assertAlmostEqual(extras[0][1], 0.82)
 
 
 if __name__ == "__main__":

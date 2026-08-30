@@ -37,10 +37,18 @@ _MAX_SNIPPET_CHARS = 240
 class ExistingConcept:
     """A concept already in the store, handed to a proposer so the LLM can
     avoid re-proposing it (and instead reinforce it by id). Kept minimal
-    -- id + label is all the prompt needs."""
+    -- id + label is all the prompt needs.
+
+    ``note`` is an optional prompt annotation (H14: a polarity-flipped
+    row is listed as superseded rather than silently dropped, so the
+    model does not re-mint the old wording). ``reinforce`` is False on
+    those rows so ``resolve_reinforces`` will not accept their id.
+    """
 
     id: int
     label: str
+    note: str = ""
+    reinforce: bool = True
 
 
 @dataclass(slots=True)
@@ -226,7 +234,13 @@ def format_existing(existing: Sequence[ExistingConcept]) -> str:
     ``"(none yet)"`` when empty so the instruction still reads cleanly."""
     if not existing:
         return "(none yet)"
-    return "\n".join(f"[{e.id}] {e.label}" for e in existing)
+    lines: list[str] = []
+    for e in existing:
+        line = f"[{e.id}] {e.label}"
+        if e.note:
+            line += f"  ({e.note})"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def propose_aiko_hybrid(

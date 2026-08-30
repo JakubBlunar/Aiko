@@ -8,7 +8,7 @@ only reach what the store holds. This script answers the question the
 per-turn telemetry cannot answer offline: **is there anything generative to
 reach for, and does the selection actually reach it?**
 
-Five sections:
+Six sections:
 
 - **Role mix** -- how much of the live graph is ``anchor`` / ``guide`` /
   ``generative``, and how much of the generative side can actually render
@@ -26,6 +26,10 @@ Five sections:
   can reach.
 - **Prompt load** -- how many concept assertions one turn carries across
   the T0 profile block and the two T3 lanes.
+- **Affect polarity (H14)** -- annotatable user clusters by valence band
+  versus active user-affective concepts whose evidence sits in each band.
+  The headline is *neg-annotated clusters vs neg-evidence affective
+  concepts*, so "0-of-N negative user affective" cannot go stale.
 
 Nothing here writes. The database is opened read-only via a URI, so it is
 safe to run while Aiko is up, and the concept rows are loaded into a
@@ -559,7 +563,76 @@ def _prompt_load_section(
     }
 
 
-# ── assembly ──────────────────────────────────────────────────────────
+def _affect_polarity_section(
+    conn: sqlite3.Connection, *, ms: Any,
+) -> dict[str, Any]:
+    """H14 watch-line: does the affect map's hard half reach the shelf?"""
+    from app.core.concepts.cluster_affect import (
+        KV_CLUSTER_AFFECT_USER,
+        affect_bucket,
+        load_map,
+        polarity_coverage,
+    )
+
+    min_samples = max(
+        1, int(getattr(ms, "concept_synthesis_affect_min_samples", 3))
+    )
+
+    def _kv_get(key: str) -> str | None:
+        if not _table_exists(conn, "kv_meta"):
+            return None
+        row = conn.execute(
+            "SELECT value FROM kv_meta WHERE key = ?", (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0]
+
+    amap = load_map(_kv_get, KV_CLUSTER_AFFECT_USER)
+    cluster_bands: dict[int, str] = {}
+    for cid_s, st in amap.items():
+        if int(st.samples) < min_samples:
+            continue
+        if int(st.valence_samples) < min_samples:
+            continue
+        try:
+            cluster_bands[int(cid_s)] = affect_bucket(
+                st.valence, st.arousal,
+            )[0]
+        except (TypeError, ValueError):
+            continue
+
+    rep_to_cid: dict[int, int] = {}
+    if _table_exists(conn, "memory_topic_assignments"):
+        for r in conn.execute(
+            "SELECT memory_id, cluster_id FROM memory_topic_assignments"
+        ):
+            try:
+                rep_to_cid[int(r["memory_id"])] = int(r["cluster_id"])
+            except (TypeError, ValueError, KeyError):
+                continue
+
+    by_concept: dict[int, list[int]] = {}
+    if _table_exists(conn, "concepts") and _table_exists(conn, "concept_edges"):
+        for r in conn.execute(
+            "SELECT c.id AS id, e.src_id AS src_id "
+            "FROM concepts c "
+            "JOIN concept_edges e ON e.dst_type = 'concept' "
+            "AND e.dst_id = c.id AND e.src_type = 'cluster' "
+            "AND e.relation = 'evidence' "
+            "WHERE c.kind = 'affective' AND c.subject = 'user' "
+            "AND c.status = 'active'"
+        ):
+            try:
+                cid = int(r["id"])
+                src = int(r["src_id"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            by_concept.setdefault(cid, []).append(rep_to_cid.get(src, src))
+
+    cov = polarity_coverage(cluster_bands, list(by_concept.items()))
+    cov["min_samples"] = min_samples
+    return cov
 
 
 def collect(
@@ -595,6 +668,7 @@ def collect(
         "diets": _diets_section(view, tuning=tuning),
         "intake": _intake_section(conn, ms=ms, concepts=concepts),
         "prompt_load": _prompt_load_section(view, ms=ms, core=core),
+        "affect_polarity": _affect_polarity_section(conn, ms=ms),
     }
 
 
@@ -751,6 +825,27 @@ def _render(data: dict[str, Any]) -> str:
     out.append(
         f"  worst case        {load['assertions_per_turn']} concept "
         f"assertions in one prompt"
+    )
+
+    polarity = data.get("affect_polarity") or {}
+    ann = polarity.get("annotatable") or {}
+    concepts = polarity.get("concepts") or {}
+    out.append("")
+    out.append("Affect polarity (H14)")
+    out.append(
+        f"  annotatable clusters  pos {ann.get('pos', 0)}  "
+        f"neu {ann.get('neu', 0)}  neg {ann.get('neg', 0)}  "
+        f"(floor {polarity.get('min_samples', 3)} samples)"
+    )
+    out.append(
+        f"  active user affective  pos {concepts.get('pos', 0)}  "
+        f"neu {concepts.get('neu', 0)}  neg {concepts.get('neg', 0)}  "
+        f"unmapped {concepts.get('unmapped', 0)}"
+    )
+    out.append(
+        f"  hard half             {polarity.get('neg_concepts', 0)} of "
+        f"{polarity.get('neg_clusters', 0)} neg-annotated clusters have "
+        f"an affective concept citing them"
     )
     return "\n".join(out)
 

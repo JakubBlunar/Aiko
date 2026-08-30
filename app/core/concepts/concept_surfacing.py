@@ -36,7 +36,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections.abc import Sequence
 from datetime import datetime, timezone
+from typing import Any
 
 from app.core.concepts.concept_importance import (
     IMPORTANCE_NEUTRAL,
@@ -329,6 +331,43 @@ def earned_standing(
     if protect_downward:
         score = max(neutral, score)
     return float(score)
+
+
+def apply_evidence_cluster_boost(
+    pairs: Sequence[tuple[Any, float]],
+    extras: Sequence[tuple[Any, float]],
+) -> list[tuple[Any, float]]:
+    """Merge label-cosine neighbours with evidence-grounded hits.
+
+    H14: when the live turn's topic cluster is in an affective concept's
+    cluster evidence, treat that as a context hit even if the *label*
+    cosine is low. A polarity-flipped "X drains him" would otherwise lose
+    to a warmer wording of the same neighborhood. For each concept id,
+    keep the max cosine. Concepts only in ``extras`` are appended.
+    """
+    best: dict[int, tuple[Any, float]] = {}
+    order: list[int] = []
+
+    def _take(concept: Any, cosine: float) -> None:
+        try:
+            cid = int(getattr(concept, "concept_id", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if cid <= 0:
+            return
+        prev = best.get(cid)
+        if prev is None:
+            best[cid] = (concept, float(cosine))
+            order.append(cid)
+            return
+        if float(cosine) > prev[1]:
+            best[cid] = (concept, float(cosine))
+
+    for concept, cosine in pairs:
+        _take(concept, cosine)
+    for concept, cosine in extras:
+        _take(concept, cosine)
+    return [best[cid] for cid in order if cid in best]
 
 
 def surface_score(
@@ -757,6 +796,7 @@ __all__ = [
     "STANDING_KV_KEY",
     "STANDING_NEUTRAL",
     "SURFACE_REASON_LABELS",
+    "apply_evidence_cluster_boost",
     "composite_score",
     "earned_standing",
     "engagement_baseline",

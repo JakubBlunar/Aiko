@@ -471,6 +471,23 @@ class ConceptSynthesisWorker:
         )
 
     @property
+    def _affect_singleton_abs_valence(self) -> float:
+        """H14: |valence| a 1-cluster affective must clear to mint."""
+        return max(
+            0.0,
+            min(
+                1.0,
+                float(
+                    getattr(
+                        self._memory_settings,
+                        "concept_synthesis_affect_singleton_abs_valence",
+                        0.35,
+                    )
+                ),
+            ),
+        )
+
+    @property
     def _taste_affinity_window_days(self) -> int:
         """K81: how far back the per-cluster engaged rate is measured. A
         window (not lifetime) keeps taste adapting to how the relationship
@@ -1269,8 +1286,8 @@ class ConceptSynthesisWorker:
         by_cid = {int(c.cluster_id): c for c in clusters}
         min_samples = self._affect_min_samples
 
-        # rep -> (label, size, phrase, bucket, samples)
-        annotated: dict[int, tuple[str, int, str, str, int]] = {}
+        # rep -> (label, size, phrase, bucket, samples, valence)
+        annotated: dict[int, tuple[str, int, str, str, int, float]] = {}
 
         # (a) conversation-topic affect from the subject's per-cluster map.
         # Both counts have to clear the floor. The whole annotation is a
@@ -1300,6 +1317,7 @@ class ConceptSynthesisWorker:
                 _ca.affect_phrase(st.valence, st.arousal),
                 "%s/%s" % _ca.affect_bucket(st.valence, st.arousal),
                 int(st.samples),
+                float(st.valence),
             )
 
         # (b) aiko-only: self-themes (aggregated self-memory affect) +
@@ -1347,6 +1365,7 @@ class ConceptSynthesisWorker:
                         _ca.affect_phrase(v, a),
                         "%s/%s" % _ca.affect_bucket(v, a),
                         len(vals),
+                        float(v),
                     ),
                 )
             # Self-memory specifics (with affect), salience desc, minus reps.
@@ -1374,7 +1393,7 @@ class ConceptSynthesisWorker:
         prev_ann = prev.get("annotated", {}) if prev else {}
         delta = self._dirty_size_delta
         dirty: list[tuple[int, int, bool]] = []  # rep, samples, is_new
-        for rep, (_label, _size, _phrase, bucket, samples) in annotated.items():
+        for rep, (_label, _size, _phrase, bucket, samples, _v) in annotated.items():
             p = prev_ann.get(str(rep))
             if p is None:
                 dirty.append((rep, samples, True))
@@ -1402,8 +1421,12 @@ class ConceptSynthesisWorker:
             (rep, ann[0], ann[1]) for rep, ann in annotated.items()
         ]
         affect_by_rep = {rep: ann[2] for rep, ann in annotated.items()}
-        dirty.sort(key=lambda d: (0 if d[2] else 1, -d[1]))
-        focus_rows = dirty[: self._max_clusters_per_run]
+        valence_by_rep = {rep: ann[5] for rep, ann in annotated.items()}
+        focus_rows = _ca.select_polarity_balanced_focus(
+            dirty,
+            valence_band_of=lambda r: _ca.valence_band(annotated[r][3]),
+            cap=self._max_clusters_per_run,
+        )
         focus_reps = {rep for rep, _s, _n in focus_rows}
         focus_clusters = [
             FocusCluster(
@@ -1415,6 +1438,15 @@ class ConceptSynthesisWorker:
             )
             for rep, _s, _n in focus_rows
         ]
+        existing = self._mark_affect_succession(
+            self._existing_for(
+                spec,
+                focus=focus_clusters,
+                memories=memories_batch if subject == "aiko" else (),
+            ),
+            focus_reps=focus_reps,
+            annotated=annotated,
+        )
 
         if subject == "aiko":
             proposals = spec.propose(
@@ -1424,9 +1456,7 @@ class ConceptSynthesisWorker:
                 affect_by_rep=affect_by_rep,
                 memories=memories_batch,
                 memory_affect=memory_affect,
-                existing=self._existing_for(
-                    spec, focus=focus_clusters, memories=memories_batch
-                ),
+                existing=existing,
             )
         else:
             proposals = spec.propose(
@@ -1434,13 +1464,15 @@ class ConceptSynthesisWorker:
                 focus_clusters=focus_clusters,
                 cluster_index=cluster_index,
                 affect_by_rep=affect_by_rep,
-                existing=self._existing_for(spec, focus=focus_clusters),
+                valence_by_rep=valence_by_rep,
+                singleton_abs_valence=self._affect_singleton_abs_valence,
+                existing=existing,
             )
 
         # Persist sig: processed focus reps fresh; unprocessed dirty reps keep
         # their old signature so they stay dirty and drain next run.
         new_ann: dict[str, dict[str, Any]] = {}
-        for rep, (_label, _size, _phrase, bucket, samples) in annotated.items():
+        for rep, (_label, _size, _phrase, bucket, samples, _v) in annotated.items():
             if rep in focus_reps:
                 new_ann[str(rep)] = {"bucket": bucket, "samples": samples}
             elif str(rep) in prev_ann:
@@ -3092,6 +3124,59 @@ class ConceptSynthesisWorker:
 
         ranked = sorted(best.items(), key=lambda kv: -kv[1][0])[:_MAX_EXISTING]
         return [ExistingConcept(id=cid, label=label) for cid, (_c, label) in ranked]
+
+    def _mark_affect_succession(
+        self,
+        existing: list[ExistingConcept],
+        *,
+        focus_reps: set[int],
+        annotated: dict[int, tuple[str, int, str, str, int, float]],
+    ) -> list[ExistingConcept]:
+        """Flag existing affective rows whose polarity no longer matches.
+
+        A warm "X energizes him" that cites a focus cluster now sitting in
+        the ``neg`` band must not be offered as a reinforce target -- the
+        proposer would otherwise keep the stale wording (H14). Listed in
+        the prompt as superseded so the model can mint the opposite
+        instead of imitating the old label.
+        """
+        from app.core.concepts.cluster_affect import polarity_conflicts
+
+        if not existing or not focus_reps:
+            return existing
+        out: list[ExistingConcept] = []
+        for row in existing:
+            try:
+                edges = self._concept_store.evidence_of(int(row.id))
+            except Exception:
+                log.debug("affect succession: evidence_of failed", exc_info=True)
+                out.append(row)
+                continue
+            cited = {
+                int(e.src_id)
+                for e in edges
+                if str(getattr(e, "src_type", "")) == "cluster"
+                and str(getattr(e, "relation", "evidence")) == "evidence"
+            } & focus_reps
+            flipped: list[int] = []
+            for rep in cited:
+                ann = annotated.get(rep)
+                if ann is None:
+                    continue
+                if polarity_conflicts(row.label, ann[3]):
+                    flipped.append(rep)
+            if not flipped:
+                out.append(row)
+                continue
+            out.append(
+                ExistingConcept(
+                    id=row.id,
+                    label=row.label,
+                    note="superseded by a polarity flip -- do not reinforce",
+                    reinforce=False,
+                )
+            )
+        return out
 
     def _focus_vectors(
         self,

@@ -80,6 +80,40 @@ class ClusterAffectStoreTests(unittest.TestCase):
         self.assertEqual(ca.affect_phrase(0.5, 0.7), "energizing and upbeat")
         self.assertEqual(ca.affect_phrase(0.0, 0.5), "neutral")
 
+    def test_label_valence_band_does_not_match_intense_as_tense(self) -> None:
+        self.assertEqual(ca.label_valence_band("admin drains him"), "neg")
+        self.assertEqual(
+            ca.label_valence_band("technical work energizes him"), "pos",
+        )
+        self.assertIsNone(ca.label_valence_band("intense focus on the work"))
+        self.assertTrue(ca.polarity_conflicts("python energizes him", "neg/mid"))
+        self.assertFalse(ca.polarity_conflicts("python energizes him", "pos/high"))
+        self.assertFalse(ca.polarity_conflicts("a mixed read", "neg/mid"))
+
+    def test_polarity_balanced_focus_reserves_a_neg_slot(self) -> None:
+        dirty = [
+            (1, 20, True),
+            (2, 19, True),
+            (3, 18, True),
+            (4, 4, True),  # neg, fewest samples
+        ]
+        bands = {1: "pos", 2: "pos", 3: "pos", 4: "neg"}
+        picked = ca.select_polarity_balanced_focus(
+            dirty, valence_band_of=bands.__getitem__, cap=3,
+        )
+        reps = [r for r, _s, _n in picked]
+        self.assertEqual(len(picked), 3)
+        self.assertIn(4, reps)
+
+    def test_polarity_coverage_headline(self) -> None:
+        cov = ca.polarity_coverage(
+            {10: "neg", 11: "neg", 12: "pos"},
+            [(1, [10]), (2, [12]), (3, [99])],
+        )
+        self.assertEqual(cov["neg_clusters"], 2)
+        self.assertEqual(cov["neg_concepts"], 1)
+        self.assertEqual(cov["concepts"]["unmapped"], 1)
+
     def test_kv_key_for(self) -> None:
         self.assertEqual(ca.kv_key_for("aiko"), ca.KV_CLUSTER_AFFECT_AIKO)
         self.assertEqual(ca.kv_key_for("user"), ca.KV_CLUSTER_AFFECT_USER)
@@ -179,6 +213,27 @@ class AffectiveGateAndRegistryTests(unittest.TestCase):
             affective_evidence_gate(
                 distinct_source_count=2, age_days=1.0, confidence=0.65,
                 min_sources=1, min_age_days=0.0, min_confidence=0.0,
+            )
+        )
+        # H14: a strongly-negative singleton may promote; a mild-neg one may not.
+        self.assertTrue(
+            affective_evidence_gate(
+                distinct_source_count=1, age_days=1.0, confidence=0.65,
+                min_sources=2, min_age_days=0.0, min_confidence=0.0,
+                valence=-0.40,
+            )
+        )
+        self.assertFalse(
+            affective_evidence_gate(
+                distinct_source_count=1, age_days=1.0, confidence=0.65,
+                min_sources=2, min_age_days=0.0, min_confidence=0.0,
+                valence=-0.27,
+            )
+        )
+        self.assertFalse(
+            affective_evidence_gate(
+                distinct_source_count=1, age_days=1.0, confidence=0.65,
+                min_sources=2, min_age_days=0.0, min_confidence=0.0,
             )
         )
 
@@ -566,6 +621,130 @@ class AffectPassTests(unittest.TestCase):
         # rerun, which is also zero here).
         self.assertEqual(h.ollama.calls, calls)
 
+    def test_strong_neg_singleton_creates_candidate(self) -> None:
+        def responder(system, user):
+            if "AFFECTIVE concepts about" in system:
+                return {"concepts": [{
+                    "label": "release-week pressure stresses him",
+                    "evidence_cluster_reps": [100],
+                    "rationale": "clearly negative weather",
+                    "confidence": 0.8,
+                }]}
+            return {"concepts": []}
+
+        clusters = [
+            ClusterStub(rep=100, summary="release week", size=8,
+                        kinds=("fact",), cluster_id=100),
+        ]
+        h = WorkerHarness(responder, clusters=clusters)
+        _seed_affect_map(
+            h.db, ca.KV_CLUSTER_AFFECT_USER,
+            {100: (-0.40, 0.5, 5)},
+        )
+        h.worker.run()
+        rows = h.store.list_by(subject="user", kind="affective")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].label, "release-week pressure stresses him")
+        ev = h.store.evidence_of(rows[0].concept_id)
+        self.assertEqual({e.src_id for e in ev}, {"100"})
+
+    def test_mild_neg_singleton_does_not_mint(self) -> None:
+        def responder(system, user):
+            if "AFFECTIVE concepts about" in system:
+                return {"concepts": [{
+                    "label": "bedtime comfort drains him",
+                    "evidence_cluster_reps": [100],
+                    "confidence": 0.8,
+                }]}
+            return {"concepts": []}
+
+        clusters = [
+            ClusterStub(rep=100, summary="bedtime cuddles", size=10,
+                        kinds=("fact",), cluster_id=100),
+        ]
+        h = WorkerHarness(responder, clusters=clusters)
+        _seed_affect_map(
+            h.db, ca.KV_CLUSTER_AFFECT_USER,
+            {100: (-0.27, 0.53, 5)},
+        )
+        h.worker.run()
+        self.assertEqual(h.store.list_by(subject="user", kind="affective"), [])
+
+    def test_focus_reserves_a_neg_cluster(self) -> None:
+        captured: dict[str, str] = {}
+
+        def responder(system, user):
+            if "AFFECTIVE concepts about" in system:
+                captured["user"] = user
+            return {"concepts": []}
+
+        clusters = [
+            ClusterStub(
+                rep=100 + i, summary=f"warm {i}", size=20 - i,
+                kinds=("fact",), cluster_id=100 + i,
+            )
+            for i in range(5)
+        ]
+        clusters.append(
+            ClusterStub(rep=200, summary="hard topic", size=4,
+                        kinds=("fact",), cluster_id=200)
+        )
+        h = WorkerHarness(
+            responder, clusters=clusters,
+            mem_settings=_mem_settings(cap_clusters=5),
+        )
+        entries = {100 + i: (0.6, 0.7, 20 - i) for i in range(5)}
+        entries[200] = (-0.40, 0.5, 4)
+        _seed_affect_map(h.db, ca.KV_CLUSTER_AFFECT_USER, entries)
+        h.worker.run()
+        focus = captured.get("user", "")
+        self.assertIn("[200]", focus)
+        # The FOCUS block is the one that was reserved; the full map always
+        # lists every annotated cluster.
+        self.assertIn("FOCUS CLUSTERS", focus)
+        focus_block = focus.split("FOCUS CLUSTERS", 1)[-1]
+        self.assertIn("[200]", focus_block)
+
+    def test_succession_marks_opposite_polarity_existing(self) -> None:
+        from app.core.concepts.concept_store import Concept, ConceptEdge
+        from app.core.concepts.proposers.base import ExistingConcept
+
+        clusters = [
+            ClusterStub(rep=100, summary="admin", size=8,
+                        kinds=("fact",), cluster_id=100),
+        ]
+        h = WorkerHarness(_affective_responder, clusters=clusters)
+        _seed_affect_map(
+            h.db, ca.KV_CLUSTER_AFFECT_USER,
+            {100: (-0.40, 0.5, 5)},
+        )
+        concept = Concept(
+            label="admin energizes him",
+            kind="affective",
+            subject="user",
+        )
+        concept.concept_id = h.store.add(concept)
+        h.store.add_edge(
+            ConceptEdge(
+                src_type="cluster",
+                src_id="100",
+                dst_type="concept",
+                dst_id=str(concept.concept_id),
+                relation="evidence",
+            )
+        )
+        annotated = {
+            100: ("admin", 8, "downbeat and heavy", "neg/mid", 5, -0.40),
+        }
+        marked = h.worker._mark_affect_succession(
+            [ExistingConcept(id=concept.concept_id, label=concept.label)],
+            focus_reps={100},
+            annotated=annotated,
+        )
+        self.assertEqual(len(marked), 1)
+        self.assertFalse(marked[0].reinforce)
+        self.assertIn("polarity flip", marked[0].note)
+
 
 # ── proposers (direct) ──────────────────────────────────────────────────
 
@@ -614,7 +793,100 @@ class ProposerTests(unittest.TestCase):
             cluster_index=[(100, "admin", 5)],
             affect_by_rep={100: "downbeat and heavy"},
         )
-        self.assertEqual(out, [])  # < min_sources (2)
+        self.assertEqual(out, [])  # < min_sources (2), no strong-neg valence
+
+    def test_user_strong_neg_singleton_accepted(self) -> None:
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "release-week pressure stresses him",
+                "evidence_cluster_reps": [100],
+                "confidence": 0.9,
+            }]}
+
+        ctx, calls = _ctx(responder)
+        out = propose_affective_user(
+            ctx,
+            focus_clusters=[FocusCluster(rep=100, label="release week", size=5)],
+            cluster_index=[(100, "release week", 5)],
+            affect_by_rep={100: "downbeat and heavy"},
+            valence_by_rep={100: -0.40},
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].label, "release-week pressure stresses him")
+        self.assertEqual(out[0].evidence, [("cluster", "100")])
+        self.assertIn("strongly negative", calls["system"])
+
+    def test_user_mild_neg_singleton_rejected(self) -> None:
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "bedtime comfort drains him",
+                "evidence_cluster_reps": [100],
+                "confidence": 0.9,
+            }]}
+
+        ctx, _ = _ctx(responder)
+        out = propose_affective_user(
+            ctx,
+            focus_clusters=[FocusCluster(rep=100, label="cuddles", size=8)],
+            cluster_index=[(100, "cuddles", 8)],
+            affect_by_rep={100: "downbeat and heavy"},
+            valence_by_rep={100: -0.27},
+        )
+        self.assertEqual(out, [])
+
+    def test_user_two_neg_clusters_still_mint(self) -> None:
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "admin and logistics drain him",
+                "evidence_cluster_reps": [100, 101],
+                "confidence": 0.8,
+            }]}
+
+        ctx, _ = _ctx(responder)
+        out = propose_affective_user(
+            ctx,
+            focus_clusters=[FocusCluster(rep=100, label="admin", size=5)],
+            cluster_index=[
+                (100, "admin", 5),
+                (101, "logistics", 4),
+            ],
+            affect_by_rep={
+                100: "downbeat and heavy",
+                101: "low and drained",
+            },
+            valence_by_rep={100: -0.30, 101: -0.22},
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual({e[1] for e in out[0].evidence}, {"100", "101"})
+
+    def test_superseded_existing_cannot_be_reinforced(self) -> None:
+        from app.core.concepts.proposers.base import ExistingConcept
+
+        def responder(system, user):
+            return {"concepts": [{
+                "reinforces_id": 7,
+                "evidence_cluster_reps": [100],
+                "rationale": "same topic",
+            }]}
+
+        ctx, calls = _ctx(responder)
+        out = propose_affective_user(
+            ctx,
+            focus_clusters=[FocusCluster(rep=100, label="admin", size=5)],
+            cluster_index=[(100, "admin", 5)],
+            affect_by_rep={100: "downbeat and heavy"},
+            valence_by_rep={100: -0.40},
+            existing=[
+                ExistingConcept(
+                    id=7,
+                    label="admin energizes him",
+                    note="superseded by a polarity flip -- do not reinforce",
+                    reinforce=False,
+                ),
+            ],
+        )
+        self.assertEqual(out, [])
+        self.assertIn("superseded by a polarity flip", calls["user"])
 
     def test_aiko_prompt_shows_memory_affect(self) -> None:
         ctx, calls = _ctx(_affective_responder)

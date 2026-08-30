@@ -1685,6 +1685,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             ImportanceContext,
         )
         from app.core.concepts.concept_surfacing import (
+            apply_evidence_cluster_boost,
             event_charge_detail,
             habituation_factor,
             load_standing,
@@ -2076,6 +2077,11 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 cap * int(getattr(ms, "concept_surfacing_overfetch", 5)), 12
             )
             pairs = list(view.relevant(embedding, k=over_fetch))
+            extras = self._affective_evidence_hits(
+                view, cluster_cands, topic_clusters,
+            )
+            if extras:
+                pairs = apply_evidence_cluster_boost(pairs, extras)
 
         # L30a: the tentative register. Fetched here, beside the confident
         # lanes, so its concepts join the single bulk importance read below
@@ -2638,6 +2644,53 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             "dropped": dropped_id,
             "dropped_kind": str(getattr(victim.payload, "kind", "")),
         }
+
+    @staticmethod
+    def _affective_evidence_hits(view, cluster_cands, topic_clusters):
+        """Affective concepts grounded in this turn's live topic clusters.
+
+        H14: label cosine buries a polarity-flipped weather report behind a
+        warmer wording of the same neighborhood. Matching on *evidence*
+        cluster id (the cluster's representative) and using the cluster's
+        own turn-similarity as the context hit is the anti-burial, and it
+        does not prefer negative feelings globally.
+        """
+        if view is None or not cluster_cands or not topic_clusters:
+            return []
+        try:
+            rep_by_cid = {
+                int(c.cluster_id): int(c.representative_id)
+                for c in topic_clusters
+            }
+        except Exception:
+            log.debug("affective evidence hits: cluster map failed", exc_info=True)
+            return []
+        extras: list = []
+        seen: set[int] = set()
+        for cand in cluster_cands:
+            try:
+                cid = int(cand.payload[0])
+                sim = float(cand.relevance)
+            except (TypeError, ValueError, IndexError, AttributeError):
+                continue
+            rep = rep_by_cid.get(cid)
+            if rep is None:
+                continue
+            try:
+                grounded = view.for_cluster(rep, kinds=("affective",))
+            except Exception:
+                log.debug("affective evidence hits: for_cluster failed", exc_info=True)
+                continue
+            for concept in grounded:
+                try:
+                    concept_id = int(getattr(concept, "concept_id", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if concept_id <= 0 or concept_id in seen:
+                    continue
+                seen.add(concept_id)
+                extras.append((concept, sim))
+        return extras
 
     def _build_importance_context(
         self, concepts: list, *, topic_clusters: list,
