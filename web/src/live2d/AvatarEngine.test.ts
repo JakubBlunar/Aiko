@@ -533,3 +533,186 @@ describe("AvatarEngine — frame ceiling", () => {
     expect(run(4, 8.33).tier3).toBe(1);
   });
 });
+
+/**
+ * P38: ``Live2DAvatar.getStoreSnapshot()`` allocates a new object on
+ * every call. Channels used to pull independently (ExpressionChannel
+ * three times in one tickTier3), so the engine now caches one snapshot
+ * per tick invocation. Attach / dispatch stay live so a channel that
+ * reads on an event still sees current store state.
+ */
+class SnapshotPuller implements AvatarChannel {
+  readonly name: string;
+  pulls = 0;
+  lastSnap: ReturnType<ChannelDeps["getStoreSnapshot"]> | null = null;
+  private _deps: ChannelDeps | null = null;
+  private readonly _perTick: number;
+  private readonly _hooks: {
+    attach?: boolean;
+    tickTier3?: boolean;
+    tickGaze?: boolean;
+    tickPreModel?: boolean;
+  };
+
+  constructor(
+    name: string,
+    perTick: number,
+    hooks: SnapshotPuller["_hooks"] = { tickTier3: true },
+  ) {
+    this.name = name;
+    this._perTick = perTick;
+    this._hooks = hooks;
+  }
+
+  attach(_adapter: Live2DModelAdapter, deps: ChannelDeps): void {
+    this._deps = deps;
+    if (this._hooks.attach) {
+      this._pull(false);
+    }
+  }
+
+  detach(): void {
+    this._deps = null;
+  }
+
+  tickTier3(): void {
+    if (this._hooks.tickTier3) {
+      this._pull(true);
+    }
+  }
+
+  tickGaze(): void {
+    if (this._hooks.tickGaze) {
+      this._pull(true);
+    }
+  }
+
+  tickPreModel(): void {
+    if (this._hooks.tickPreModel) {
+      this._pull(true);
+    }
+  }
+
+  private _pull(expectSame: boolean): void {
+    const deps = this._deps;
+    if (!deps) {
+      return;
+    }
+    let first: ReturnType<ChannelDeps["getStoreSnapshot"]> | null = null;
+    for (let i = 0; i < this._perTick; i += 1) {
+      const snap = deps.getStoreSnapshot();
+      this.pulls += 1;
+      if (first === null) {
+        first = snap;
+      } else if (expectSame) {
+        expect(snap).toBe(first);
+      }
+    }
+    this.lastSnap = first;
+  }
+}
+
+describe("AvatarEngine — store snapshot cache", () => {
+  let adapter: FakeAdapter;
+  let clock: FakeClock;
+  let raf: ManualRaf;
+  let snapshotCalls = 0;
+  let engine: AvatarEngine;
+
+  function startEngine(
+    channels: AvatarChannel[],
+    opts: { maxFPS?: number } = {},
+  ): void {
+    adapter = new FakeAdapter();
+    clock = new FakeClock(1_000);
+    raf = new ManualRaf();
+    snapshotCalls = 0;
+    engine = new AvatarEngine({
+      manifest: buildManifest(),
+      engineState: createEngineState(),
+      getStoreSnapshot: () => {
+        snapshotCalls += 1;
+        return buildStoreSnapshot();
+      },
+      now: clock.now,
+      mouseSource: new FakeMouseSource(),
+      scheduleFrame: raf.schedule,
+      cancelFrame: raf.cancel,
+      maxFPS: opts.maxFPS ?? 0,
+    });
+    engine.register(...channels);
+    engine.start(adapter);
+  }
+
+  afterEach(() => {
+    engine.stop();
+  });
+
+  it("one factory pull per tick even when several channels poll repeatedly", () => {
+    const a = new SnapshotPuller("a", 3);
+    const b = new SnapshotPuller("b", 3);
+    startEngine([a, b]);
+    snapshotCalls = 0;
+    clock.advance(16);
+    raf.flush(1); // tier-3 only
+    expect(snapshotCalls).toBe(1);
+    expect(a.pulls).toBe(3);
+    expect(b.pulls).toBe(3);
+    expect(a.lastSnap).toBe(b.lastSnap);
+  });
+
+  it("tier-3 and gaze each take their own snapshot", () => {
+    const channel = new SnapshotPuller("both", 1, {
+      tickTier3: true,
+      tickGaze: true,
+    });
+    startEngine([channel]);
+    snapshotCalls = 0;
+    clock.advance(16);
+    raf.flush(1); // tier-3
+    expect(snapshotCalls).toBe(1);
+    raf.flush(1); // gaze
+    expect(snapshotCalls).toBe(2);
+  });
+
+  it("a nested pre-model tick reuses the outer snapshot", () => {
+    const pre = new SnapshotPuller("pre", 2, { tickPreModel: true });
+    const nested: AvatarChannel = {
+      name: "nested",
+      attach: () => undefined,
+      detach: () => undefined,
+      tickTier3: () => {
+        adapter.triggerBeforeModelUpdate();
+      },
+    };
+    startEngine([nested, pre]);
+    snapshotCalls = 0;
+    clock.advance(16);
+    raf.flush(1);
+    expect(snapshotCalls).toBe(1);
+    expect(pre.pulls).toBe(2);
+    // Cache is cleared after the RAF tick; a standalone pre-model is live.
+    snapshotCalls = 0;
+    adapter.triggerBeforeModelUpdate();
+    expect(snapshotCalls).toBe(1);
+    expect(pre.pulls).toBe(4);
+  });
+
+  it("attach pulls live (no tick cache)", () => {
+    const channel = new SnapshotPuller("attach", 2, { attach: true });
+    startEngine([channel]);
+    // Two pulls during attach, both live, so two factory calls.
+    expect(snapshotCalls).toBe(2);
+    expect(channel.pulls).toBe(2);
+  });
+
+  it("a skipped frame under the cap does not pull a snapshot", () => {
+    const channel = new SnapshotPuller("c", 1);
+    startEngine([channel], { maxFPS: 30 });
+    snapshotCalls = 0;
+    clock.advance(8.33);
+    raf.flush(2);
+    expect(channel.pulls).toBe(0);
+    expect(snapshotCalls).toBe(0);
+  });
+});

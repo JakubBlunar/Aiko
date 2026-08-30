@@ -31,8 +31,9 @@ audio flush on abort, P27 lazy STT load + `stt.enabled`, P28 TTS
 gated on `tts.enabled` + `release_model`, P29
 `get_memory_breakdown`, P31a `get_prompt_block_costs`, P40 engine-swap
 release, P41 the two missing `messages` indexes, P47 paging
-`GET /api/concepts`, and P48 the mobile render + audio-idle budget have
-shipped — see [`shipped.md`](shipped.md).
+`GET /api/concepts`, P48 the mobile render + audio-idle budget,
+P37 residual React re-renders, and P38 the per-tick Live2D
+snapshot cache have shipped — see [`shipped.md`](shipped.md).
 P15 was validated as **invalid** — the embedder LRU already
 collapses repeated `user_text` embeds, so the hot path is already
 at the 2-embed steady state it targeted; see its shipped.md note.)
@@ -909,108 +910,17 @@ and [P46](#p46-parallel-compute-lane-drain).
 
 ## P37. Residual per-token and per-mic-frame React re-renders
 
-**Status: (a) and (b) shipped; (c) still open.**
-
-- **(a) Per token — fixed.** The signature moved to
-  [`streamRepin.ts`](../../web/src/features/chat/streamRepin.ts) and is
-  quantised to 48-char buckets, so a ~1200-char reply re-renders
-  `ChatView` ~26 times instead of ~1200. The draft **id** stays
-  un-bucketed: without it, a new turn starting at length 0 would collide
-  with the previous turn's first bucket and every reply's first re-pin
-  would be silently skipped — which `streamRepin.test.ts` pins
-  explicitly. Stream end is still covered from two directions (the
-  signature goes empty, and the commit into `messages` triggers
-  Virtuoso's own `followOutput`).
-- **(b) Per mic frame — fixed.** `ChatView` and `PersonaWindow` no
-  longer subscribe to `audioLevel` at all. The three elements that
-  actually react to it subscribe at the leaf: `MicPulseRing` inside
-  [`MicButton`](../../web/src/features/voice/MicButton.tsx), and
-  `LevelDot` / `AudioMeter` inside
-  [`VoiceStrip`](../../web/src/features/chat/VoiceStrip.tsx). The meter
-  additionally quantises its selector to the *number of lit bars*, so
-  most level updates return an unchanged value and don't re-render even
-  the leaf. This mattered most in the persona window, which renders the
-  Live2D canvas — a 20 Hz re-render there was the expensive version of
-  the problem.
-- **(c) Still open.** The Virtuoso `itemContent` / `Footer` closures are
-  still recreated per `ChatView` render, so Virtuoso loses referential
-  stability on each one. Much less frequent now that (a) cut the render
-  count by ~45x, but the fix (hoist into `useCallback` / module scope) is
-  unchanged and independent.
-
-**Motivation.** P9 moved streaming text off the `messages` array, so
-finalised bubbles no longer re-render mid-stream. Two subscriptions in
-`ChatView` still re-rendered the whole chat chrome at high frequency:
-
-1. **Per token.** `streamingSignature` selected
-   `` `${draft.id}:${draft.content.length}` ``, which changed on every
-   chunk. That was deliberate (it re-pins the scroll), but it re-rendered
-   a large component with ~18 store selectors and recreated the
-   Virtuoso `itemContent` / `Footer` closures each time — so Virtuoso
-   lost referential stability on every token even though the memoised
-   bubbles below it didn't re-render.
-2. **Per mic frame.** `ChatView` also subscribed to `audioLevel`,
-   which the mic worklet updates every ~50 ms (~20 Hz) during capture,
-   and the server's `audio_level` frames update again. The transcript
-   is static during capture; the whole chrome re-rendered anyway.
-
-Neither was fatal, but they land on the same main thread that schedules
-TTS audio buffers, which is precisely the contention the audio layer's
-own comments warn about.
-
-**Key files.**
-[`web/src/features/chat/ChatView.tsx`](../../web/src/features/chat/ChatView.tsx)
-(selectors ~L70-92, `streamingSignature` ~L148-151, inline Virtuoso
-callbacks ~L515-535),
-[`web/src/hooks/useMicCapture.ts`](../../web/src/hooks/useMicCapture.ts)
-(~L76-82),
-[`web/public/mic-pcm-worklet.js`](../../web/public/mic-pcm-worklet.js)
-(the ~50 ms RMS emit).
-
-**Sketched approach.** (a) Coarsen the streaming signature — sample
-draft length in buckets so scroll re-pinning fires every ~N chars
-instead of every token. (b) Move the `audioLevel` subscription down
-into whichever leaf actually renders the meter. (c) Hoist the
-Virtuoso `itemContent` / `Footer` closures into `useCallback` /
-module scope so identity is stable across renders.
-
-**Effort.** Small each.
+**Status: SHIPPED** (bucketed stream re-pin, `audioLevel` at the
+leaves, Virtuoso `itemContent` / Header / Footer identity). See
+[shipped/perf.md](shipped/perf.md#p37-residual-per-token-and-per-mic-frame-react-re-renders).
 
 ---
 
 ## P38. Live2D channels allocate a store snapshot several times per frame
 
-**Motivation.** `Live2DAvatar.getStoreSnapshot()` builds a **new
-object** on every call, and the animation channels call it
-independently from their own ticker / RAF paths: lipsync (pre-model),
-gaze, ambient body (tier-3 *and* pre-model), and expression — which
-alone calls it three times inside one tier-3 tick. That's roughly 5-8
-short-lived objects per frame, ~300-480/s at 60 Hz, purely to read
-state that hasn't changed within the frame.
-
-GC pressure of this shape is usually harmless, but it's on the same
-main thread as Pixi rendering and the audio scheduling, and the
-avatar is the one surface where a dropped frame is *visible*.
-
-**Key files.**
-[`web/src/features/avatar/Live2DAvatar.tsx`](../../web/src/features/avatar/Live2DAvatar.tsx)
-(`getStoreSnapshot` ~L203-228),
-[`web/src/live2d/channels/ExpressionChannel.ts`](../../web/src/live2d/channels/ExpressionChannel.ts)
-(three calls per tick, ~L520 / ~L603 / ~L744),
-[`web/src/live2d/channels/LipsyncChannel.ts`](../../web/src/live2d/channels/LipsyncChannel.ts),
-[`web/src/live2d/channels/GazeChannel.ts`](../../web/src/live2d/channels/GazeChannel.ts),
-[`web/src/live2d/channels/AmbientBodyChannel.ts`](../../web/src/live2d/channels/AmbientBodyChannel.ts).
-
-**Sketched approach.** Cache one snapshot per frame in the engine
-tick and pass it to the channels, instead of each channel pulling its
-own. The channels already receive a `deps` object, so this is a
-signature change plus deleting the internal calls.
-
-**Open questions.** Do any channels *rely* on reading state mid-frame
-after another channel mutated it? If so, that ordering dependency
-should be explicit rather than implicit in snapshot timing.
-
-**Effort.** Small.
+**Status: SHIPPED.** One cached snapshot per engine tick; attach and
+dispatch stay live. See
+[shipped/perf.md](shipped/perf.md#p38-live2d-channels-allocate-a-store-snapshot-several-times-per-frame).
 
 ---
 

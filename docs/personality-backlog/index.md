@@ -1469,12 +1469,12 @@ compound across every K-series entry:
   instead of age, and the budget splits into a compute lane and an LLM
   lane sized by idle depth and chat-vs-worker GPU contention. Nine of
   ~50 workers migrated. See [`idle-workers.md`](../idle-workers.md).
-- **P37.** Residual React re-renders — the per-token and per-mic-frame
-  subscriptions **shipped** (bucketed streaming signature; `audioLevel`
-  moved to the leaves). Left: hoisting the Virtuoso `itemContent` /
-  `Footer` closures so their identity is stable.
-- **P38.** Live2D channels allocate a fresh store snapshot 5-8x per
-  frame; cache one per tick.
+- **P37.** Residual React re-renders — **shipped** (bucketed streaming
+  signature, `audioLevel` at the leaves, stable Virtuoso `itemContent` /
+  Header / Footer). See
+  [`shipped/perf.md`](shipped/perf.md#p37-residual-per-token-and-per-mic-frame-react-re-renders).
+- **P38.** Live2D per-tick store snapshot cache — **shipped**. See
+  [`shipped/perf.md`](shipped/perf.md#p38-live2d-channels-allocate-a-store-snapshot-several-times-per-frame).
 - **P39.** Concept snapshot + quality report N+1 the evidence edges
   (and the quality report is O(n²) pairwise on embeddings).
 - **P42.** The T3 retrieval budget is the *residual* after all 105 other
@@ -1498,7 +1498,7 @@ compound across every K-series entry:
   mutable state (the `WorldStore` mirror, `ConceptStore` caches,
   `threading.local()` SQLite connections).
 
-(P1-P6, P8-P10, P12-P15, P17-P23, P25, P27-P29, P31a, P40 and P41 have
+(P1-P6, P8-P10, P12-P15, P17-P23, P25, P27-P29, P31a, P37, P38, P40 and P41 have
 shipped — the embed budget and prompt-build telemetry, the slice-cache
 and RAG batch-lookup work, the Lance scan push-downs, the streaming
 accumulator and the streaming-draft rework, the RAG reader-writer lock,

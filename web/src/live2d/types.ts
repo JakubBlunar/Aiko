@@ -118,8 +118,11 @@ export interface ChannelDeps {
    * expression-slot lock and the last applied reaction; see
    * ``state.ts`` for the rationale. */
   engineState: EngineState;
-  /** Read-only store accessor. Returning ``undefined`` for unwired
-   * tests is OK — channels guard before using. */
+  /** Read-only store accessor. During a scheduled tick the engine
+   * caches one snapshot for the whole invocation so channels that
+   * poll independently share an object; outside a tick (attach,
+   * dispatch) this is a live pull. Returning ``undefined`` for
+   * unwired tests is OK — channels guard before using. */
   getStoreSnapshot: () => ChannelStoreSnapshot;
   /** Optional debug hook the engine wires to the UI-debug-log bridge.
    * Channels call this at decision points (reaction applied, overlay

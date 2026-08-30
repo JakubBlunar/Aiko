@@ -5,7 +5,7 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useMicCapture } from "@/hooks/useMicCapture";
 import { useAssistantStore } from "@/store";
 import { useTasksStore } from "@/stores/useTasksStore";
-import type { AttachmentRef, WsClientCommand } from "@/types";
+import type { AttachmentRef, ChatMessage, WsClientCommand } from "@/types";
 import { ContextBadge } from "./ContextBadge";
 import { MicButton } from "@/features/voice/MicButton";
 import { TaskStrip } from "@/features/tasks/TaskStrip";
@@ -66,6 +66,45 @@ const OLDER_PAGE_SIZE = 100;
 // list keeps the viewport anchored on the same message instead of
 // jumping when older history lands at the top.
 const VIRTUOSO_START_INDEX = 1_000_000;
+const VIRTUOSO_VIEWPORT_PAD = { top: 400, bottom: 600 };
+const VIRTUOSO_STYLE = { height: "100%" };
+
+// P37(c): module-scope so Virtuoso sees a stable ``itemContent`` /
+// ``followOutput`` / ``computeItemKey`` across ChatView re-renders
+// (streaming re-pins, status, draft). Recreating those closures used
+// to drop referential stability on every token even though the
+// memoised bubbles below them did not re-render.
+function renderChatItem(_index: number, msg: ChatMessage) {
+  return (
+    <div className="mx-auto max-w-3xl px-6 pb-4">
+      <MessageBubble {...msg} />
+    </div>
+  );
+}
+
+function followOutput(isAtBottom: boolean) {
+  return isAtBottom ? "auto" : false;
+}
+
+function computeItemKey(_index: number, msg: ChatMessage) {
+  return msg.id;
+}
+
+/** Virtuoso Footer that subscribes to ``toolActivity`` itself so its
+ * component identity never changes with ChatView. Empty-state (no
+ * messages) still renders the strip in ChatView — this Footer is only
+ * mounted on the virtualised list. */
+function ChatListFooter() {
+  const toolActivity = useAssistantStore((s) => s.toolActivity);
+  if (toolActivity.length > 0) {
+    return (
+      <div className="px-6 pb-8">
+        <ToolActivityStrip activity={toolActivity} />
+      </div>
+    );
+  }
+  return <div className="pb-8" />;
+}
 
 export function ChatView({ send, sendBytes }: ChatViewProps) {
   const messages = useAssistantStore((s) => s.messages);
@@ -450,6 +489,30 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
     }
   };
 
+  const handleAtBottomStateChange = useCallback((bottom: boolean) => {
+    atBottomRef.current = bottom;
+  }, []);
+
+  const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
+    scrollerElRef.current = el instanceof HTMLElement ? el : null;
+  }, []);
+
+  const renderHeader = useCallback(
+    () => (
+      <LoadOlderHeader
+        hasMore={historyHasMore}
+        loading={loadingOlder}
+        onLoad={loadOlder}
+      />
+    ),
+    [historyHasMore, loadingOlder, loadOlder],
+  );
+
+  const virtuosoComponents = useMemo(
+    () => ({ Header: renderHeader, Footer: ChatListFooter }),
+    [renderHeader],
+  );
+
   const headerStatus =
     voiceMode !== "off"
       ? `Voice: ${voiceMode}`
@@ -500,7 +563,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
             // history. ``"auto"`` is the same instant jump the old
             // ``scrollTop = scrollHeight`` did — switch to ``"smooth"``
             // here only if we ever want to animate it.
-            followOutput={(isAtBottom) => (isAtBottom ? "auto" : false)}
+            followOutput={followOutput}
             // Virtuoso's default "at bottom" tolerance is 4px, which mobile
             // momentum/rubber-band scrolling and fractional device-pixel
             // ratios routinely exceed — leaving the list a few px off the
@@ -508,40 +571,16 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
             // sticking on new messages. A roomier threshold on phones (and a
             // small bump on desktop) keeps the chat pinned to the tail.
             atBottomThreshold={isMobile ? 120 : 24}
-            atBottomStateChange={(bottom) => {
-              atBottomRef.current = bottom;
-            }}
-            scrollerRef={(el) => {
-              scrollerElRef.current = (el as HTMLElement) ?? null;
-            }}
+            atBottomStateChange={handleAtBottomStateChange}
+            scrollerRef={handleScrollerRef}
             initialTopMostItemIndex={Math.max(0, messages.length - 1)}
             firstItemIndex={firstItemIndex}
-            computeItemKey={(_index, msg) => msg.id}
-            increaseViewportBy={{ top: 400, bottom: 600 }}
+            computeItemKey={computeItemKey}
+            increaseViewportBy={VIRTUOSO_VIEWPORT_PAD}
             className="flex-1"
-            style={{ height: "100%" }}
-            itemContent={(_index, msg) => (
-              <div className="mx-auto max-w-3xl px-6 pb-4">
-                <MessageBubble {...msg} />
-              </div>
-            )}
-            components={{
-              Header: () => (
-                <LoadOlderHeader
-                  hasMore={historyHasMore}
-                  loading={loadingOlder}
-                  onLoad={loadOlder}
-                />
-              ),
-              Footer: () =>
-                toolActivity.length > 0 ? (
-                  <div className="px-6 pb-8">
-                    <ToolActivityStrip activity={toolActivity} />
-                  </div>
-                ) : (
-                  <div className="pb-8" />
-                ),
-            }}
+            style={VIRTUOSO_STYLE}
+            itemContent={renderChatItem}
+            components={virtuosoComponents}
           />
         )}
       </div>
