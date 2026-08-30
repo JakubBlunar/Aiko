@@ -23,6 +23,7 @@ import json
 import logging
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -226,6 +227,17 @@ class _Hub:
         # what stamps it active.
         self._active_seq: int = 0
         self._last_active_by_client: dict[str, int] = {}
+        # Ordered outbound audio. Each ``send_audio_bytes`` used to
+        # ``create_task`` a concurrent ``ws.send_bytes``, and Starlette
+        # does not serialise those -- on a slow hop (phone over
+        # Tailscale) the last PCM of clip N can land after clip N+1's
+        # ``audio_start``, which the client then schedules on the new
+        # clip's timeline (leftover syllable at the start of the next
+        # sentence). One deque + one pump keeps start/pcm/end/cancel
+        # in the order the TTS thread submitted them. TCP then keeps
+        # that order to the browser.
+        self._audio_pending: deque[bytes] = deque()
+        self._audio_pump_scheduled: bool = False
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -400,16 +412,41 @@ class _Hub:
         return None
 
     def send_audio_bytes(self, frame: bytes) -> None:
-        """Schedule a binary audio frame to the elected owner only.
+        """Queue a binary audio frame for the elected owner only.
 
         Replaces :meth:`broadcast_bytes` for TTS / earcon PCM so only
-        one window plays the stream (see ``_audio_owner_id``).
+        one window plays the stream (see ``_audio_owner_id``). Frames
+        are drained by a single pump so ``send_bytes`` never overlaps.
         """
         if not frame:
             return
-        self._schedule(self._send_audio_bytes_async(frame))
+        with self._lock:
+            self._audio_pending.append(frame)
+            start_pump = not self._audio_pump_scheduled
+            if start_pump:
+                self._audio_pump_scheduled = True
+        if start_pump:
+            self._schedule(self._pump_audio_out())
 
-    async def _send_audio_bytes_async(self, frame: bytes) -> None:
+    async def _pump_audio_out(self) -> None:
+        """Send queued audio frames one at a time, in submit order."""
+        try:
+            while True:
+                with self._lock:
+                    if not self._audio_pending:
+                        return
+                    frame = self._audio_pending.popleft()
+                await self._deliver_audio_frame(frame)
+        finally:
+            with self._lock:
+                if self._audio_pending:
+                    # A producer raced the empty-check. Stay marked
+                    # scheduled and drain the rest.
+                    self._schedule(self._pump_audio_out())
+                else:
+                    self._audio_pump_scheduled = False
+
+    async def _deliver_audio_frame(self, frame: bytes) -> None:
         with self._lock:
             ws = self._audio_owner_socket_locked()
         if ws is None:
@@ -679,7 +716,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
         # Deliberately not gated on ``_stream_started``. An ``audio_end``
         # closes the *sending* side but the client keeps playing what it
         # already holds, so a stop landing just after one still has to
-        # reach a client with ~250 ms queued. Clearing the flag makes the
+        # reach a client with the pre-roll queued. Clearing the flag makes the
         # next clip re-announce its format, which is what we want: the
         # client has thrown its schedule away and needs a fresh start.
         hub.send_audio_bytes(_frames.build_audio_cancel(stream_byte))

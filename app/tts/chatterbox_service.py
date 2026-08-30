@@ -142,6 +142,7 @@ class ChatterboxTtsService(PcmPlaybackMixin):
         self._pcm_listener: Callable[[int, int, bytes], None] | None = None
         self._clip_end_listener: Callable[[], None] | None = None
         self._clip_cancel_listener: Callable[[], None] | None = None
+        self._configure_pre_roll(settings)
         self._pitch_preserving_speed = bool(
             getattr(settings, "pitch_preserving_speed", True)
         )

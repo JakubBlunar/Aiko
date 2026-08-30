@@ -16,12 +16,12 @@ export const FRAME_AUDIO_END = 0x13;
 /**
  * `0x14 audio_cancel` — drop scheduled audio that has not been heard.
  *
- * Distinct from `audio_end` on purpose. The server runs ~250 ms ahead of
- * real time, so `audio_end` cannot mean "discard": the next sentence
- * chains onto the tail of the current one, and flushing there would clip
- * every sentence short. This frame is the other half of that split, sent
- * only when a clip was cut, and without it the pre-roll plays out as a
- * fragment after the sentence has finished.
+ * Distinct from `audio_end` on purpose. The server runs several hundred
+ * ms ahead of real time, so `audio_end` cannot mean "discard": the next
+ * sentence chains onto the tail of the current one, and flushing there
+ * would clip every sentence short. This frame is the other half of that
+ * split, sent only when a clip was cut, and without it the pre-roll
+ * plays out as a fragment after the sentence has finished.
  */
 export const FRAME_AUDIO_CANCEL = 0x14;
 

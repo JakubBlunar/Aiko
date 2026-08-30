@@ -183,7 +183,7 @@ class LiveClockAudioContext extends FakeAudioContext {
 }
 
 /** Drain the manager's internal async chains (audio_start -> pcm). */
-async function flush(rounds = 12): Promise<void> {
+async function flush(rounds = 24): Promise<void> {
   for (let i = 0; i < rounds; i++) {
     await Promise.resolve();
   }
@@ -450,7 +450,7 @@ describe("AudioOutputManager", () => {
     // A turn's first ``audio_start`` is followed by a burst of PCM chunks
     // while the main thread re-renders the chat list / persona. Each
     // chunk must get a distinct, monotonically increasing start time
-    // seeded from the widened margin (~0.1 s) rather than all clamping to
+    // seeded from the widened margin (~0.15 s) rather than all clamping to
     // ``currentTime + 0.005`` and stacking.
     const mgr = new AudioOutputManager();
 
@@ -469,11 +469,34 @@ describe("AudioOutputManager", () => {
     const starts = clipSources.map((s) => s.startedAt as number);
     starts.forEach((t) => expect(t).not.toBeNull());
     // First chunk seeded from the widened margin, not the +0.005 floor.
-    expect(starts[0]).toBeGreaterThanOrEqual(0.1 - 1e-9);
+    expect(starts[0]).toBeGreaterThanOrEqual(0.15 - 1e-9);
     expect(starts[0]).toBeGreaterThan(0.005);
     // Strictly increasing — no two chunks share a start time (no stack).
     expect(starts[1]).toBeGreaterThan(starts[0]);
     expect(starts[2]).toBeGreaterThan(starts[1]);
+  });
+
+  it("rebuilds lead after an underrun so a delayed burst does not stack", async () => {
+    // Phone-over-Tailscale: the schedule elapsed while frames were in
+    // flight. Each late chunk used to clamp to now+5ms independently
+    // and overlap. A wider rebuild lead plus the enqueue chain keeps
+    // them consecutive after one pause.
+    const mgr = new AudioOutputManager();
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    await flush();
+    const streams = (
+      mgr as unknown as { _streams: { tts: { nextStartTime: number } } }
+    )._streams;
+    streams.tts.nextStartTime = 0;
+    const ctx = createdContexts[0];
+    ctx.currentTime = 1.0;
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    await flush();
+    const clip = ctx.activeSources.filter((s) => !s.loop);
+    expect(clip.length).toBe(2);
+    expect(clip[0].startedAt as number).toBeGreaterThanOrEqual(1.12 - 1e-9);
+    expect(clip[1].startedAt as number).toBeGreaterThan(clip[0].startedAt as number);
   });
 
   it("starts a single looping keep-alive on resume() and is idempotent", async () => {
@@ -885,9 +908,9 @@ describe("AudioOutputManager error handling", () => {
 /**
  * The half-second of speech that arrives after the sentence.
  *
- * The server ships ~250 ms ahead of real time so this scheduler never
- * underruns, which means it is always holding audio that has not been
- * heard. `audio_end` deliberately does not discard that — the next
+ * The server ships several hundred ms ahead of real time so this
+ * scheduler never underruns, which means it is always holding audio that
+ * has not been heard. `audio_end` deliberately does not discard that — the next
  * sentence chains onto it — so a *cut* clip needs its own frame or the
  * pre-roll plays out as a fragment with nothing to retract it.
  */
@@ -910,6 +933,20 @@ describe("AudioOutputManager cancel", () => {
 
     expect(mgr.handleFrame(cancelFrame(FRAME_TTS_PCM))).toBe("tts");
     expect(clip[0].stopped).toBe(true);
+  });
+
+  it("drops in-flight PCM that had not scheduled yet", async () => {
+    // Cancel used to stop already-scheduled sources but leave a
+    // ``void _enqueuePcm`` running; that chunk then landed on the
+    // next clip. The epoch captured at queue time drops it.
+    const mgr = new AudioOutputManager();
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    expect(mgr.handleFrame(cancelFrame(FRAME_TTS_PCM))).toBe("tts");
+    await flush();
+    const ctx = createdContexts[0];
+    const live = ctx.activeSources.filter((s) => !s.loop && !s.stopped);
+    expect(live.length).toBe(0);
   });
 
   it("leaves a finished clip alone, so sentences still chain", async () => {

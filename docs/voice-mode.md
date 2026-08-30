@@ -110,8 +110,10 @@ the desktop shell's hidden persona webview AND the visible main window
 both receive and play each clip ~tens of ms apart — audible as an
 echo/mumble on the first sentence of every turn. So the hub elects a
 single **audio owner** and sends binary audio frames only to it
-(`_send_audio_bytes_async` targets one socket; lipsync `audio_amplitude`
-JSON still broadcasts so a hidden persona can keep animating its mouth).
+(`_Hub.send_audio_bytes` drains a single ordered queue so a slow hop
+cannot deliver clip N's last PCM after clip N+1's `audio_start`; lipsync
+`audio_amplitude` JSON still broadcasts so a hidden persona can keep
+animating its mouth).
 
 The election (`_Hub._elect_audio_owner_locked`) is **most-recently-active
 wins**:

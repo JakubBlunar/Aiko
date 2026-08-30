@@ -37,12 +37,16 @@ type StreamTag = "tts" | "earcon";
  * old ``+0.005`` floor, that jank could push a buffer's computed start
  * time behind ``ctx.currentTime`` by the time ``source.start()`` actually
  * runs; Web Audio then clamps it to "now" and the burst stacks (echo +
- * mumble on sentence one). A ~100 ms cushion absorbs that jitter. It only
- * applies to the first clip after idle — steady-state chaining between
- * sentences inside a turn is left tight, so there is no added mid-reply
- * latency.
+ * mumble on sentence one). A ~150 ms cushion absorbs that jitter plus a
+ * slow first hop (phone over Tailscale). It only applies to the first
+ * clip after idle — steady-state chaining between sentences inside a
+ * turn is left tight, so there is no added mid-reply latency.
  */
-const FIRST_CLIP_IDLE_MARGIN_SEC = 0.1;
+const FIRST_CLIP_IDLE_MARGIN_SEC = 0.15;
+/** When a chunk arrives after its scheduled time, start this far ahead
+ * of ``currentTime`` so the rest of a burst can chain instead of each
+ * slice clamping to "now" and stacking (echo / mumble). */
+const UNDERRUN_REBUILD_SEC = 0.12;
 
 // ── Real-output lipsync tap (mobile) ────────────────────────────────
 // On mobile the buffered PCM playback lands well after the server's
@@ -112,6 +116,16 @@ export class AudioOutputManager {
     tts: false,
     earcon: false,
   };
+  // Serialise PCM onto the timeline in arrival order. ``handleFrame``
+  // used to ``void _enqueuePcm`` so overlapping ``await ready`` /
+  // ``await _ensureContext`` could all read the same ``nextStartTime``
+  // and stack (echo + mumble on a delayed burst). Cancel bumps
+  // ``_epoch`` so an in-flight enqueue from a cut clip is dropped.
+  private _pcmTail: Record<StreamTag, Promise<void>> = {
+    tts: Promise.resolve(),
+    earcon: Promise.resolve(),
+  };
+  private _epoch: Record<StreamTag, number> = { tts: 0, earcon: 0 };
   // Real-output lipsync tap. ``_outputNode`` is the node every scheduled
   // source connects to: an ``AnalyserNode`` (sitting before
   // ``destination``) when the browser supports one, else ``destination``
@@ -400,11 +414,11 @@ export class AudioOutputManager {
       return tag;
     }
     if (type === FRAME_TTS_PCM) {
-      void this._enqueuePcm("tts", body);
+      this._queuePcm("tts", body);
       return "tts";
     }
     if (type === FRAME_EARCON_PCM) {
-      void this._enqueuePcm("earcon", body);
+      this._queuePcm("earcon", body);
       return "earcon";
     }
     return null;
@@ -716,12 +730,12 @@ export class AudioOutputManager {
   /**
    * Drop scheduled audio that has not been played.
    *
-   * The server ships ~250 ms ahead of real time so the scheduler never
-   * underruns, which means a cut clip leaves us holding audio the server
-   * has already given up on. Left alone the Web Audio graph plays it: a
-   * quarter-second of speech, mid-word, after the sentence appeared to
-   * end. `_stopStream` both stops the scheduled sources and rewinds
-   * `nextStartTime`, so the next clip starts from now instead of
+   * The server ships several hundred ms ahead of real time so the
+   * scheduler never underruns, which means a cut clip leaves us holding
+   * audio the server has already given up on. Left alone the Web Audio
+   * graph plays it: a fragment of speech, mid-word, after the sentence
+   * appeared to end. `_stopStream` both stops the scheduled sources and
+   * rewinds `nextStartTime`, so the next clip starts from now instead of
    * chaining onto a schedule that no longer exists.
    */
   private _onAudioCancel(tag: StreamTag): void {
@@ -783,8 +797,26 @@ export class AudioOutputManager {
     }
   }
 
-  private async _enqueuePcm(tag: StreamTag, body: Uint8Array): Promise<void> {
+  private _queuePcm(tag: StreamTag, body: Uint8Array): void {
+    // Copy: the WS ArrayBuffer is only valid for this turn, and the
+    // chain may run after handleFrame returns.
+    const copy = body.slice();
+    const epoch = this._epoch[tag];
+    const next = this._pcmTail[tag].then(() => this._enqueuePcm(tag, copy, epoch));
+    this._pcmTail[tag] = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    void next;
+  }
+
+  private async _enqueuePcm(
+    tag: StreamTag,
+    body: Uint8Array,
+    epoch: number,
+  ): Promise<void> {
     if (body.byteLength < 2) return;
+    if (epoch !== this._epoch[tag]) return;
     // Serialize behind the stream's ``audio_start`` so we never schedule
     // against a stale sample rate or a frozen clock. The promise
     // resolves once ``_onAudioStart`` has resumed the context and seeded
@@ -799,6 +831,7 @@ export class AudioOutputManager {
       }
     }
     const ctx = await this._ensureContext();
+    if (epoch !== this._epoch[tag]) return;
     // TTS / earcon audio is real-time. If the context can't play *right
     // now* — iOS PWA before the unlocking gesture, or an OS audio-session
     // interruption while we're backgrounded (a YouTube video, a call) —
@@ -839,8 +872,13 @@ export class AudioOutputManager {
     // without ``createAnalyser``.
     source.connect(this._outputNode ?? ctx.destination);
     // Compute the start time: never schedule in the past, otherwise
-    // the Web Audio scheduler silently drops the buffer.
-    const startAt = Math.max(state.nextStartTime, ctx.currentTime + 0.005);
+    // the Web Audio scheduler silently drops the buffer. An underrun
+    // uses a wider lead so a delayed burst chains instead of stacking.
+    const minLead =
+      state.nextStartTime <= ctx.currentTime
+        ? UNDERRUN_REBUILD_SEC
+        : 0.005;
+    const startAt = Math.max(state.nextStartTime, ctx.currentTime + minLead);
     state.nextStartTime = startAt + buffer.duration;
     // Diagnostics: log the first scheduled chunk of each clip. ``startAt``
     // vs ``currentTime`` is the value that exposes overlap / past-
@@ -873,6 +911,7 @@ export class AudioOutputManager {
   }
 
   private _stopStream(tag: StreamTag): void {
+    this._epoch[tag] += 1;
     const state = this._streams[tag];
     for (const src of state.active) {
       try {

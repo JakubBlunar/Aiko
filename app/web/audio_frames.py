@@ -27,12 +27,13 @@ Frame catalog (single source of truth — keep
                      clip every sentence short.
     0x14  audio_cancel ``<uint8 stream>`` — drop whatever is scheduled and
                      not yet heard. The counterpart to ``audio_end``, and
-                     the reason both exist: the server runs ~250 ms ahead
-                     of real time (``PcmPlaybackMixin._PRE_ROLL_CHUNKS``),
-                     so when a clip is cut mid-way the client is already
-                     holding audio the server has stopped sending. Without
-                     a way to say "throw that away" it plays out anyway --
-                     a quarter-second of speech after the sentence ended.
+                     the reason both exist: the server runs several
+                     hundred ms ahead of real time
+                     (``PcmPlaybackMixin._PRE_ROLL_CHUNKS``), so when a
+                     clip is cut mid-way the client is already holding
+                     audio the server has stopped sending. Without a
+                     way to say "throw that away" it plays out anyway --
+                     leftover speech after the sentence ended.
 
 All integers are big-endian unsigned (network byte order). The
 helpers below are intentionally tiny so both sides can match them
