@@ -3207,6 +3207,10 @@ see [`concept_surfacing.py`](../../../app/core/concepts/concept_surfacing.py) an
 **Remaining (deferred):** the optional live **tension** (L12) / fresh **drift**
 (L17) override stays deferred with those entries. Legacy
 `context_budget_identity_cap` / `_min_confidence` config keys still parse.
+Do not raise `context_budget_core_cap` or pin `ritual` / `taste` / `pursuit`
+to dump standing generics — those kinds are relevance-or-lull by construction.
+A cap bump is only after measuring core-lane starvation, never as a substitute
+for T3 priming (L4 extra buckets).
 
 Original framing (retained for context):
 

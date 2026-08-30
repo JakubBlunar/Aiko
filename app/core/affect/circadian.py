@@ -155,6 +155,23 @@ def _classify_period(hour: int) -> CircadianPeriod:
     return "night"
 
 
+def coarse_coactivation_period(hour: int) -> str:
+    """Collapse the seven-period clock to L4's four co-activation bins.
+
+    Finer bins fragment pair support (a late-night coding memory would
+    never co-fire with a 22:00 one). Morning/afternoon/evening/night is
+    the grain the co-activation accumulator can actually accrue.
+    """
+    period = _classify_period(int(hour))
+    if period in ("late_night", "night"):
+        return "night"
+    if period in ("early_morning", "morning", "midday"):
+        return "morning"
+    if period == "afternoon":
+        return "afternoon"
+    return "evening"
+
+
 def _energy_curve(hour: int, minute: int, drift: float = 0.0) -> float:
     """Continuous 0..1 energy curve over a 24h day.
 

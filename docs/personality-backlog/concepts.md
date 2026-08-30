@@ -281,7 +281,7 @@ feed the proposer once it exists?
 
 ## L4. Cluster co-activation signal
 
-**Status: BUILT (session bucket).** The primitive behind "Maker Mode" and
+**Status: BUILT (session + day + circadian + weekday).** The primitive behind "Maker Mode" and
 "you've been in Maker Mode a lot this week — I don't think you've taken one of
 your long walks recently." The topic graph knew cluster *recency*
 (`TopicGraph.cluster_activity`) but not which clusters **light up together**;
@@ -292,35 +292,44 @@ now it does.
 (alongside `cluster_activity`): one bulk mirror snapshot → per-bucket co-firing
 rep sets → pairwise Jaccard (kept above `coactivation_min_pair_support` /
 `coactivation_min_strength`) → connected-component **modes**
-(`CoactivationMode`: `reps` + `labels` + `strength` + `bucket_by`), capped by
+(`CoactivationMode`: `reps` + `labels` + `strength` + `bucket_by` + `partition`), capped by
 `coactivation_max_modes` / `coactivation_max_reps_per_mode`, coarsely cached,
-empty in the non-persistent mode. Two consumers wired: **L2** — the
-`identity_user` proposer takes a `coactivation=` kwarg and renders a soft
-"TOPIC MODES (clusters that tend to light up together)" grouping hint (no hard
-gating; still falsifiable, still ≥ `min_sources`), computed once per run in
-`ConceptSynthesisWorker._coactivation_modes`. **L5** — a T1 `coactivation_block`
-([`_render_coactivation_block`](../../app/core/session/inner_life_part1.py),
-right after `concept_block`) renders one hedged "lately you and {user} keep
-circling X / Y / Z together, meanwhile W has gone quiet" line (quiet side from
-`cluster_activity` ≥ `coactivation_quiet_min_days`), gated by
-`agent.coactivation_block_enabled`, silent when disabled / immature (L21 guard)
-/ no clear mode, dropped under aggressive pressure.
+empty in the non-persistent mode. The bucket axis is a **strategy registry**
+(`_BUCKET_STRATEGIES: {name → (key_fn, partition_fn | None)}`). Session and day
+are a single graph; circadian and weekday run pair-count + union-find **per
+partition** so morning does not merge with night through a shared cluster.
+[`cluster_coactivations`](../../app/core/conversation/topic_graph.py) walks the
+mirror once then every requested axis.
 
-**Pluggable bucket keys.** The bucket axis is a **strategy registry**
-(`_BUCKET_STRATEGIES: {name → (_CoactMember) → str | None}`) over an extensible
-`_CoactMember` snapshot; the accumulator is strategy-agnostic (it consumes
-`(rep, bucket_key)` pairs), so a new axis = one pure function + (only if it
-needs more data) one snapshot field with a default. Only **`session`** ships.
-Roadmap axes, captured for later:
+Shipped axes: **`session`** (conversation id), **`day`** (local `YYYY-MM-DD`),
+**`circadian`** (`{period}|{date}`, period collapsed to morning/afternoon/evening/night),
+**`weekday`** (`{weekday}|{ISO week}`).
 
-- *Cheap follow-ups (derive from fields already on the snapshot):* `day`
-  (calendar-day truncation), `window` (fixed-width time bucket), `circadian`
-  (`(day, morning/afternoon/evening/night)` — the "programming at night →
-  night activities" case), `weekday`/`week` (weekly rhythm), `gap_session`
-  (re-sessionize by inter-memory gap).
+**Consumers.**
+- **T1** `coactivation_block` stays **session-only** (clock-invariant). A byte
+  change there busts the prompt-cache prefix through T2; the renderer must not
+  read `timephrase.now()` / current period / today's weekday. Quiet-cluster
+  contrast is unchanged.
+- **L2** — `_coactivation_modes` concatenates all four axes into the identity/value
+  TOPIC MODES hint, tagged `(same conversations)` / `(at night)` / `(on Mondays)`.
+- **T3** — temporal priming appends current-period circadian reps and today's
+  weekday reps onto `hot_reps` before `ConceptView.activated()`, gated by
+  `concept_surfacing_activation_enabled`. This is the "it's night, those pairings
+  come to mind" path. It is **not** the L23 tension/drift override.
+
+**Remaining.**
+
+- *Cheap still (snapshot fields already exist):* `window` (fixed-width time
+  bucket), `gap_session` (re-sessionize by inter-memory gap — not a pure
+  per-member function; needs a sorted pre-pass).
 - *Join-gated (wait on upstream data):* `mood` (affect band at creation),
-  `arc`/`dialogue_act` (via `source_message_id` → chat_db tags),
-  `world_context` (Aiko's room / activity, once persisted per memory).
+  `arc` / `dialogue_act` (`source_message_id` → chat_db tags), `world_context`
+  (Aiko's room / activity once persisted per memory).
+- *T1 consumer:* sticky session+day clause. Clock-invariant (no `now()`), so it
+  is T1-legal in principle, but it still adds a byte that can flip when a
+  day-mode appears or labels change. Needs a measured prefix-stability check
+  (`turn_prompt_blocks` / P44 `lost_chars`) before it earns a place next to the
+  session line. Circadian/weekday phrasing stays out of T1.
 
 Semantic cluster similarity is **deliberately excluded** — clustering already
 merges similar memories; co-activation's value is the non-obvious *behavioral*
@@ -841,9 +850,14 @@ stock is cleared and the rate is no longer hidden behind it.
 >
 > Still genuinely open (deferred): the **tension/drift priority override** and a
 > **cluster-affect** term for salience (the `affect` input to `salience()` is
-> threaded but fed `0.0` today). The **always-on core concept lane** shipped
+> threaded but fed `0.0` today). L4 extra-buckets temporal priming (circadian /
+> weekday reps into `hot_reps`) is **not** that work. The **always-on core concept lane** shipped
 > *identity-only* first (`context_budget_identity_cap` / `_min_confidence`) and
-> was generalised to be **kind-aware** in **L27**.
+> was generalised to be **kind-aware** in **L27**. Do not raise
+> `context_budget_core_cap` or pin `ritual` / `taste` / `pursuit` as a way to
+> dump "generics that define her" — those kinds stay relevance-or-lull
+> (canned-hobby). A cap bump is only on the table after measuring core-lane
+> starvation, never as a substitute for T3 priming.
 
 > **Follow-on — self-authored *style* concepts. SHIPPED (kind + mining +
 > surfacing; persona-lightening deferred).** The budget is the delivery vehicle
@@ -878,7 +892,8 @@ stock is cleared and the rate is no longer hidden behind it.
 >   `memory.concept_synthesis_max_comm_style_memories` (see
 >   [`docs/configuration.md`](../configuration.md)).
 >
-> **Deferred (do not forget) — lighten the hard-coded persona.** The concept kind
+> **Deferred (do not forget) — lighten the hard-coded persona.** Still open
+> after L4 extra buckets. The concept kind
 > ships first; the actual *trimming* of the fixed persona style copy is a
 > follow-up once style concepts have populated (mirrors how the aiko identity /
 > value concepts shipped before the self-image persona copy was pulled). Candidate

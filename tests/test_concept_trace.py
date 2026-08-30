@@ -14,10 +14,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 from app.core.infra.chat_database import ChatDatabase
+from app.core.infra import timephrase
 from app.core.session.inner_life_part1 import InnerLifePart1Mixin
 from app.core.session.prompt_assembler import PromptAssembler, PromptTelemetry
 
@@ -44,11 +46,13 @@ class _MatureGraph:
     def __init__(self, modes=None, activity=None) -> None:
         self._modes = modes or []
         self._activity = activity or []
+        self.coactivation_calls: list[dict] = []
 
     def mature(self, *, min_clusters: int = 6) -> bool:
         return True
 
-    def cluster_coactivation(self, **_kw):
+    def cluster_coactivation(self, **kw):
+        self.coactivation_calls.append(kw)
         return list(self._modes)
 
     def cluster_activity(self, *, top_n: int = 64):
@@ -132,6 +136,41 @@ class CoactivationBlockTraceTests(unittest.TestCase):
             InnerLifePart1Mixin._render_coactivation_block(stub), "",
         )
         self.assertEqual(stub._coactivation_block_trace["reason"], "no_mode")
+
+    def test_t1_line_ignores_the_clock(self) -> None:
+        """Prefix-stability: night vs morning must not change the T1 bytes,
+        and the renderer must keep asking for the session axis only."""
+        stub = _concept_stub(concepts=[])
+        stub._topic_graph = _MatureGraph(
+            modes=[
+                SimpleNamespace(
+                    reps=(1, 2),
+                    labels=("guitar", "recording"),
+                    strength=0.6,
+                    bucket_by="session",
+                ),
+            ],
+        )
+        night = datetime(2026, 3, 1, 23, 0, tzinfo=timezone.utc)
+        morning = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)
+        timephrase.set_now_provider(lambda: night)
+        try:
+            a = InnerLifePart1Mixin._render_coactivation_block(stub)
+        finally:
+            timephrase.set_now_provider(None)
+        timephrase.set_now_provider(lambda: morning)
+        try:
+            b = InnerLifePart1Mixin._render_coactivation_block(stub)
+        finally:
+            timephrase.set_now_provider(None)
+        self.assertEqual(a, b)
+        self.assertIn("same conversations", a)
+        self.assertNotIn("at night", a)
+        self.assertNotIn("on Mondays", a)
+        calls = stub._topic_graph.coactivation_calls
+        self.assertTrue(calls)
+        for kw in calls:
+            self.assertEqual(kw.get("bucket_by", "session"), "session")
 
 
 # ── assembler-level trace flow ────────────────────────────────────────
