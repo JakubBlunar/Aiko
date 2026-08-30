@@ -11,9 +11,8 @@ first-person entry.
 Design mirrors :class:`app.core.world.idle_activity_worker.IdleAwayActivityWorker`:
 
   * runs from the shared :class:`IdleWorkerScheduler` during quiet windows,
-  * paces itself with a kv_meta cooldown + local-midnight daily cap so it
-    writes *occasionally* (a diary written every tick stops meaning
-    anything), and
+  * paces itself with a kv_meta cooldown so it writes *occasionally*
+    (a diary written every tick stops meaning anything), and
   * swallows every failure at debug — a broken compose / insert must
     never crash a scheduler tick.
 
@@ -48,8 +47,6 @@ log = logging.getLogger("app.diary_worker")
 
 # kv_meta keys this worker owns (namespaced under ``diary_worker.``).
 _KV_LAST_FIRED_AT = "diary_worker.last_fired_at"
-_KV_DAY = "diary_worker.day"
-_KV_DAY_COUNT = "diary_worker.day_count"
 
 # Minimum length of a composed entry to be worth persisting — guards
 # against the LLM returning a stray token / empty clause.
@@ -139,7 +136,6 @@ class DiaryWorker:
         salience: float = 0.6,
         interval_seconds: float = 1800.0,
         cooldown_seconds: float = 10800.0,
-        daily_cap: int = 3,
         min_context_chars: int = 80,
     ) -> None:
         self._memory_store = memory_store
@@ -158,10 +154,9 @@ class DiaryWorker:
         self._salience = float(salience)
         self._interval_seconds = max(30.0, float(interval_seconds))
         self._cooldown_seconds = max(0.0, float(cooldown_seconds))
-        self._daily_cap = max(0, int(daily_cap))
         self._min_context_chars = max(0, int(min_context_chars))
         # MCP debug: when set, the next run() bypasses the away /
-        # cooldown / daily-cap gates (everything else still applies).
+        # cooldown gates (everything else still applies).
         self._forced: bool = False
 
     # ── IdleWorker protocol ──────────────────────────────────────────
@@ -236,8 +231,6 @@ class DiaryWorker:
                 return "client_connected"
             if not self._cooldown_elapsed(now):
                 return "cooldown"
-            if not self._under_daily_cap(now):
-                return "daily_cap"
         try:
             if len(self._recent_context()) < self._min_context_chars:
                 return "no_context"
@@ -410,35 +403,13 @@ class DiaryWorker:
             return True
         return (now - last).total_seconds() >= self._cooldown_seconds
 
-    def _under_daily_cap(self, now: datetime) -> bool:
-        if self._daily_cap <= 0:
-            return False
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            return True
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        return count < self._daily_cap
-
     def _mark_fired(self, now: datetime) -> None:
         self._kv_set_safe(_KV_LAST_FIRED_AT, now.isoformat(timespec="seconds"))
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            self._kv_set_safe(_KV_DAY, today)
-            self._kv_set_safe(_KV_DAY_COUNT, "1")
-            return
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        self._kv_set_safe(_KV_DAY_COUNT, str(count + 1))
 
     # ── helpers ──────────────────────────────────────────────────────
 
     def force_next(self) -> None:
-        """Arm a one-shot bypass of the away / cooldown / cap gates (MCP)."""
+        """Arm a one-shot bypass of the away / cooldown gates (MCP)."""
         self._forced = True
 
     def state(self) -> dict[str, Any]:
@@ -456,12 +427,8 @@ class DiaryWorker:
             "has_llm": self._ollama is not None and bool(self._model),
             "interval_seconds": self._interval_seconds,
             "cooldown_seconds": self._cooldown_seconds,
-            "daily_cap": self._daily_cap,
             "cooldown_elapsed": self._cooldown_elapsed(now),
-            "under_daily_cap": self._under_daily_cap(now),
             "last_fired_at": self._kv_get_safe(_KV_LAST_FIRED_AT),
-            "day": self._kv_get_safe(_KV_DAY),
-            "day_count": self._kv_get_safe(_KV_DAY_COUNT),
             "forced": self._forced,
             "recent_context_chars": len(self._recent_context()),
         }

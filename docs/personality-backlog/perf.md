@@ -903,7 +903,7 @@ old interval behaviour byte-for-byte, and
 The mechanism itself is documented in
 [`docs/idle-workers.md`](../idle-workers.md); follow-ups are
 [P44](shipped/perf.md#p44-migrate-the-remaining-idle-workers-to-demand),
-[P45](#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
+[P45](shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
 and [P46](#p46-parallel-compute-lane-drain).
 
 ---
@@ -1134,44 +1134,10 @@ Related to P31 (lazy-render) — that reduces the *cost* side of the same ratio.
 
 ## P45. Retire the per-hour / per-day caps in favour of satisfaction
 
-**Status: partly shipped.** The seven subject-naming cue workers now run
-off the [cue pool](../cue-pool.md): they count unspent rows and report
-pressure from the deficit against `CuePolicy.inventory_target`, which
-retired five `*_daily_cap` keys outright. That is the *inventory* half
-of the idea — a full shelf means the worker is not admitted — and it
-lands the "she has said enough for now" intent through a mechanism that
-is exact rather than arbitrary, since the pool knows what is unspent
-where a ring never did. The *satisfaction* half below is still open, but
-its input now exists for the pooled types: `used` vs. `expired` per cue
-type is a direct read on whether the user is biting, at a resolution
-`engaged_rate` never had. The remaining `*_per_hour_cap` keys on
-non-pooled workers are untouched.
-
-**Motivation.** Keys like `idle_curiosity_per_hour_cap` /
-`idle_curiosity_per_day_cap` do two unrelated jobs. As *cost*
-protection they are now redundant with the [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
-lane budgets, which bound LLM time directly rather than by proxy. As
-*behavioural* protection they are doing something real — five curiosity
-cues an hour is annoying regardless of what it cost — but they express
-it as an arbitrary count instead of as the thing actually meant: *she
-has said enough for now*.
-
-**Sketched approach.** Replace the count with a satisfaction signal
-fed back from consumption. `SurfacingOutcomeStore` already tracks
-whether a surfaced item was engaged with, neutral, or abandoned, and
-exposes `engaged_rate`. A worker whose last few cues were never taken up
-should report *low* pressure regardless of how many it is nominally
-allowed; one whose cues keep landing should be free to keep going. That
-turns "at most 5/hour" into "produce until the user stops biting", which
-is both closer to the intent and self-tuning per user.
-
-**Prerequisite.** [P44](shipped/perf.md#p44-migrate-the-remaining-idle-workers-to-demand)
-for the workers concerned — the satisfaction signal has to live
-somewhere, and `demand()` is that somewhere.
-
-**Effort.** Medium. Needs a per-worker mapping from surfacing outcomes
-back to the worker that produced the item, which does not exist yet for
-every cue type.
+**Status: SHIPPED.** Remaining speaking daily-count caps retired in
+favour of demand + inventory targets + cooldowns; LLM/web spend caps
+kept. Satisfaction-from-engagement declined as redundant. See
+[shipped/perf.md](shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction).
 
 ---
 

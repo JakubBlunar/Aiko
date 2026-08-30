@@ -14,12 +14,13 @@ Two triggers, in priority order:
     (``world.last_user_gift`` -> ``{"id", "name", "at"}``) whenever the
     user drops something in the room. When that watermark is newer than
     the one we last handled, prime a short proactive line acknowledging
-    the gift. Gift nudges bypass the daily cap (they're naturally
-    one-per-distinct-gift) so a thoughtful gesture is never swallowed.
+    the gift. Gift nudges are naturally one-per-distinct-gift, so a
+    thoughtful gesture is never swallowed.
   * **Stale room** — when nothing new has been given but it's been
     longer than the cooldown since the last world nudge, occasionally
     prime a small in-character beat about what she's doing in her room.
-    Bounded by a per-day cap so she stays subtle, not chatty.
+    Demand + the cooldown are the only pacing: a full quiet day is
+    still one beat per cooldown, not a count of "enough for today".
 
 The composed text is written into the same
 :class:`PreparedNudgeStore` the :class:`NarrativeWeaver` fills, tagged
@@ -60,8 +61,6 @@ WORLD_LAST_USER_GIFT_KEY = "world.last_user_gift"
 # kv_meta keys this worker owns (namespaced under ``world_notice.``).
 _KV_GIFT_HANDLED_AT = "world_notice.last_gift_handled_at"
 _KV_LAST_FIRED_AT = "world_notice.last_fired_at"
-_KV_DAY = "world_notice.day"
-_KV_DAY_COUNT = "world_notice.day_count"
 
 
 def _utcnow() -> datetime:
@@ -104,7 +103,6 @@ class WorldNoticeWorker:
         model: str | None = None,
         interval_seconds: float = 300.0,
         cooldown_seconds: float = 3600.0,
-        daily_cap: int = 4,
         ttl_seconds: float = 1800.0,
     ) -> None:
         self._world_store = world_store
@@ -118,7 +116,6 @@ class WorldNoticeWorker:
         self._model = model
         self._interval_seconds = max(30.0, float(interval_seconds))
         self._cooldown_seconds = max(0.0, float(cooldown_seconds))
-        self._daily_cap = max(0, int(daily_cap))
         self._ttl_seconds = max(60.0, float(ttl_seconds))
 
     # ── IdleWorker protocol ──────────────────────────────────────────
@@ -135,13 +132,12 @@ class WorldNoticeWorker:
     ) -> bool:
         """Enabled, and something to say.
 
-        The cooldown and the daily cap are hard vetoes rather than
-        pressure, because a run that fails either is a *guaranteed*
-        no-op — and the heartbeat is checked before pressure in
-        ``evaluate_admission``, so expressing them as zero pressure
-        would not stop it. The cooldown is 3600s against a 300s
-        heartbeat, so leaving them to the probe meant eleven wasted
-        admissions per cooldown window.
+        The cooldown is a hard veto rather than pressure, because a
+        run that fails it is a *guaranteed* no-op — and the heartbeat
+        is checked before pressure in ``evaluate_admission``, so
+        expressing it as zero pressure would not stop it. The cooldown
+        is 3600s against a 300s heartbeat, so leaving it to the probe
+        meant eleven wasted admissions per cooldown window.
         """
         if not self._enabled():
             return False
@@ -186,7 +182,7 @@ class WorldNoticeWorker:
         try:
             if self._fresh_gift() is not None:
                 return "gift"
-            if self._cooldown_elapsed(now) and self._under_daily_cap(now):
+            if self._cooldown_elapsed(now):
                 return "room"
         except Exception:
             log.debug("world_notice trigger probe failed", exc_info=True)
@@ -214,11 +210,10 @@ class WorldNoticeWorker:
         if gift is not None:
             text = self._compose_gift_line(user_name, gift)
             if self._prime(user_id, text, source_id=f"gift:{gift.get('at')}"):
-                # Gift nudges bypass the daily cap but still advance the
-                # cooldown clock so a stale-room nudge doesn't pile on
-                # right after.
+                # Gifts still advance the cooldown clock so a stale-room
+                # nudge doesn't pile on right after.
                 self._mark_gift_handled(gift)
-                self._mark_fired(_utcnow(), count_against_cap=False)
+                self._mark_fired(_utcnow())
                 log.info(
                     "world_notice primed gift nudge user=%s item=%s",
                     user_id, gift.get("name"),
@@ -226,17 +221,15 @@ class WorldNoticeWorker:
                 return {"fired": 1, "kind": "gift", "item": gift.get("name")}
             return {"fired": 0, "kind": "gift", "errored": True}
 
-        # ── Trigger 2: stale room (occasional, capped) ───────────────
+        # ── Trigger 2: stale room (occasional, cooldown-paced) ───────
         now = _utcnow()
         if not self._cooldown_elapsed(now):
             return {"fired": 0, "skipped_cooldown": True}
-        if not self._under_daily_cap(now):
-            return {"fired": 0, "skipped_daily_cap": True}
         line = self._compose_room_line(user_name)
         if not line:
             return {"fired": 0, "kind": "room", "no_line": True}
         if self._prime(user_id, line, source_id="room"):
-            self._mark_fired(now, count_against_cap=True)
+            self._mark_fired(now)
             log.info("world_notice primed room nudge user=%s", user_id)
             return {"fired": 1, "kind": "room"}
         return {"fired": 0, "kind": "room", "errored": True}
@@ -266,18 +259,6 @@ class WorldNoticeWorker:
         if last is None:
             return True
         return (now - last).total_seconds() >= self._cooldown_seconds
-
-    def _under_daily_cap(self, now: datetime) -> bool:
-        if self._daily_cap <= 0:
-            return False
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            return True
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        return count < self._daily_cap
 
     # ── composition ──────────────────────────────────────────────────
 
@@ -383,20 +364,8 @@ class WorldNoticeWorker:
     def _mark_gift_handled(self, gift: dict[str, Any]) -> None:
         self._kv_set_safe(_KV_GIFT_HANDLED_AT, str(gift.get("at") or ""))
 
-    def _mark_fired(self, now: datetime, *, count_against_cap: bool) -> None:
+    def _mark_fired(self, now: datetime) -> None:
         self._kv_set_safe(_KV_LAST_FIRED_AT, now.isoformat(timespec="seconds"))
-        if not count_against_cap:
-            return
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            self._kv_set_safe(_KV_DAY, today)
-            self._kv_set_safe(_KV_DAY_COUNT, "1")
-            return
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        self._kv_set_safe(_KV_DAY_COUNT, str(count + 1))
 
     def _kv_get_safe(self, key: str) -> str | None:
         try:

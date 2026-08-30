@@ -186,13 +186,11 @@ def _make_worker(
     kv: _FakeKV,
     enabled: bool = True,
     cooldown: float = 5400.0,
-    daily_cap: int = 6,
     seed: int = 0,
     notify: Any = None,
     intentional_hold_seconds: float = 0.0,
     outings_enabled: bool = True,
     outing_cooldown_seconds: float = 6.0 * 3600,
-    outing_daily_cap: int = 2,
     period: str | None = None,
     episode_ratio: float = 0.0,
     episode_min_gap_seconds: float = 0.0,
@@ -212,12 +210,10 @@ def _make_worker(
         model=None,
         interval_seconds=1200.0,
         cooldown_seconds=cooldown,
-        daily_cap=daily_cap,
         journal_max=8,
         intentional_hold_seconds=intentional_hold_seconds,
         outings_enabled_provider=lambda: outings_enabled,
         outing_cooldown_seconds=outing_cooldown_seconds,
-        outing_daily_cap=outing_daily_cap,
         circadian_period_provider=(
             (lambda: period) if period is not None else None
         ),
@@ -476,7 +472,7 @@ class JournalTests(unittest.TestCase):
     def test_journal_ring_trims_to_max(self) -> None:
         kv = _FakeKV()
         world = _FakeWorldStore()
-        worker = _make_worker(world=world, kv=kv, cooldown=0.0, daily_cap=999)
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
         for _ in range(12):
             worker.force_activity("doodle")
             worker.run()
@@ -507,17 +503,6 @@ class GateTests(unittest.TestCase):
         result = worker.run()
         self.assertEqual(result["fired"], 0)
         self.assertTrue(result.get("skipped_cooldown"))
-
-    def test_daily_cap_blocks(self) -> None:
-        kv = _FakeKV()
-        today = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
-        kv.set("away_activity.day", today)
-        kv.set("away_activity.day_count", "6")
-        world = _FakeWorldStore()
-        worker = _make_worker(world=world, kv=kv, cooldown=0.0, daily_cap=6)
-        result = worker.run()
-        self.assertEqual(result["fired"], 0)
-        self.assertTrue(result.get("skipped_daily_cap"))
 
     def test_garden_visit_outstanding_defers(self) -> None:
         kv = _FakeKV()
@@ -610,7 +595,7 @@ class ItemEffectTests(unittest.TestCase):
         kv = _FakeKV()
         book = self._book()
         world = _FakeWorldStore(items=[book])
-        worker = _make_worker(world=world, kv=kv, cooldown=0.0, daily_cap=99)
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
         worker.force_activity("read_book")
         worker.run()
         worker.force_activity("read_book")
@@ -824,17 +809,17 @@ class EpisodeTests(unittest.TestCase):
         result = worker.run()
         self.assertNotIn("episode", result)
 
-    def test_an_episode_costs_one_beat_against_the_daily_cap(self) -> None:
+    def test_an_episode_stamps_cooldown_so_a_second_run_waits(self) -> None:
         kv = _FakeKV()
         world = self._furnished()
         worker = _make_worker(
-            world=world, kv=kv, cooldown=0.0, episode_ratio=1.0, daily_cap=1,
+            world=world, kv=kv, cooldown=3600.0, episode_ratio=1.0,
         )
         worker.force_activity("tea")
         first = worker.run()
         self.assertEqual(first["fired"], 1)
         second = worker.run()
-        self.assertTrue(second.get("skipped_daily_cap"))
+        self.assertTrue(second.get("skipped_cooldown"))
 
     def test_recency_reads_every_beat_of_an_episode(self) -> None:
         kv = _FakeKV()
@@ -1035,7 +1020,6 @@ class DayIntentionTests(unittest.TestCase):
             world=self._book_world(),
             kv=kv,
             cooldown=0.0,
-            daily_cap=99,
             day_intention=True,
         )
         worker.run()
@@ -1065,7 +1049,6 @@ class DayIntentionTests(unittest.TestCase):
             world=self._book_world(),
             kv=kv,
             cooldown=0.0,
-            daily_cap=99,
             day_intention=True,
         )
         worker.force_activity("read_book")
@@ -1204,9 +1187,8 @@ class OutingTests(unittest.TestCase):
         self.assertEqual(result["key"], "outing")
         journal = load_journal(kv.get)
         self.assertEqual(journal[-1]["key"], "outing")
-        # Outing watermarks were stamped so the next one is gated.
+        # Outing cooldown was stamped so the next one is gated.
         self.assertIsNotNone(kv.get("outing.last_fired_at"))
-        self.assertEqual(kv.get("outing.day_count"), "1")
 
     def test_outing_not_offered_when_disabled(self) -> None:
         kv = _FakeKV()
@@ -1232,18 +1214,6 @@ class OutingTests(unittest.TestCase):
         )
         now = datetime.now(timezone.utc)
         self.assertFalse(worker._outing_eligible(now))
-
-    def test_outing_daily_cap_blocks(self) -> None:
-        kv = _FakeKV()
-        today = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
-        kv.set("outing.day", today)
-        kv.set("outing.day_count", "2")
-        world = _FakeWorldStore()
-        worker = _make_worker(
-            world=world, kv=kv, cooldown=0.0, outing_daily_cap=2,
-            outing_cooldown_seconds=0.0, period="afternoon",
-        )
-        self.assertFalse(worker._outing_eligible(datetime.now(timezone.utc)))
 
     def test_outing_blocked_at_night(self) -> None:
         kv = _FakeKV()

@@ -51,11 +51,12 @@ REFLECTIVE = frozenset({"getattr", "setattr", "hasattr", "delattr"})
 # excuse. ``app/mcp/server_tools`` is a debug surface whose whole job is poking
 # at internals, so it gets a budget rather than a ban. It came down from 569
 # when the one-shot ``_force_*`` flags moved into ``session.debug_overrides``,
-# then to 467 with the ``session.debug_clock`` accessor; the rest waits on
-# typed handle accessors for the subsystems.
+# then to 467 with the ``session.debug_clock`` accessor, then to 466 when
+# P45 dropped the idle-seed daily-cap kv read; the rest waits on typed
+# handle accessors for the subsystems.
 BUDGETS: dict[str, int] = {
     "app/web": 0,
-    "app/mcp/server_tools": 467,
+    "app/mcp/server_tools": 466,
 }
 
 MAX_REPORTED = 15

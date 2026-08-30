@@ -309,7 +309,6 @@ export interface CompanionSettings {
   world_notice_enabled: boolean;
   world_notice_interval_seconds: number;
   world_notice_cooldown_seconds: number;
-  world_notice_daily_cap: number;
   world_notice_ttl_seconds: number;
   grounding_line_mode: GroundingLineMode;
   touch_enabled: boolean;

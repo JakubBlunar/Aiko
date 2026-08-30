@@ -1,7 +1,7 @@
 """Tests for H17 — idle beats feed the idea machine.
 
 Two halves: the producer (``IdleAwayActivityWorker._maybe_emit_seed`` →
-``aiko.idle_seeds`` kv ring, gated by the worker model + ratio + daily cap)
+``aiko.idle_seeds`` kv ring, gated by the worker model + ratio)
 and the consumer (``_render_idle_seed_block`` cue producer — watermark +
 wall-clock surfacing cooldown, NOT part of the ``_gap_cue_surfaced``
 gap-return family).
@@ -67,7 +67,6 @@ def _worker(
     kv: _FakeKV,
     ollama: Any = None,
     idle_seed_ratio: float = 1.0,
-    idle_seed_daily_cap: int = 3,
     seed: int = 0,
 ) -> IdleAwayActivityWorker:
     return IdleAwayActivityWorker(
@@ -80,10 +79,8 @@ def _worker(
         model="worker-model" if ollama is not None else None,
         interval_seconds=1200.0,
         cooldown_seconds=0.0,
-        daily_cap=6,
         journal_max=8,
         idle_seed_ratio=idle_seed_ratio,
-        idle_seed_daily_cap=idle_seed_daily_cap,
         rng=random.Random(seed),
     )
 
@@ -127,23 +124,9 @@ class ProducerTests(unittest.TestCase):
         )
         self.assertIsNone(out)
 
-    def test_daily_cap_blocks_further_seeds(self) -> None:
-        kv = _FakeKV()
-        worker = _worker(
-            kv=kv, ollama=_FakeOllama(), idle_seed_daily_cap=1
-        )
-        now = datetime.now(timezone.utc)
-        first = worker._maybe_emit_seed(now, "Jacob", _plan(), "read a novel")
-        self.assertIsNotNone(first)
-        second = worker._maybe_emit_seed(now, "Jacob", _plan(), "read a novel")
-        self.assertIsNone(second)
-        self.assertEqual(len(load_idle_seeds(kv.get)), 1)
-
     def test_ring_trims_to_max(self) -> None:
         kv = _FakeKV()
-        worker = _worker(
-            kv=kv, ollama=_FakeOllama(), idle_seed_daily_cap=100
-        )
+        worker = _worker(kv=kv, ollama=_FakeOllama())
         worker._idle_seed_max_ring = 3
         now = datetime.now(timezone.utc)
         for _ in range(5):

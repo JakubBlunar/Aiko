@@ -1835,25 +1835,22 @@ class MemorySettings:
     # WorldNoticeWorker cadence + pacing. The worker checks for a freshly
     # user-given item (kv watermark) or a long-enough quiet stretch and
     # primes a single proactive "I noticed my room" nudge. Runs often
-    # (default 5 min) because it's cheap and quiet-gated, but a
-    # per-fire cooldown (default 1h) plus a daily cap keep the actual
-    # nudges rare so she stays subtle rather than chatty. ``ttl`` bounds
+    # (default 5 min) because it's cheap and quiet-gated; a per-fire
+    # cooldown (default 1h) is the pacing, via demand(). ``ttl`` bounds
     # how long a primed nudge stays fresh before the proactive director
     # drops it unspoken.
     world_notice_interval_seconds: int = 300
     world_notice_cooldown_seconds: int = 3600
-    world_notice_daily_cap: int = 4
     world_notice_ttl_seconds: int = 1800
     # K36 IdleAwayActivityWorker cadence + pacing. The worker runs during
     # quiet windows (default every 20 min) and, paced by a per-fire
-    # cooldown (default 90 min) + daily cap, performs one small room
-    # activity, mutating the world + journaling it. ``min_gap_hours`` is
+    # cooldown (default 90 min), performs one small room activity,
+    # mutating the world + journaling it. ``min_gap_hours`` is
     # the typed-absence threshold the surfacing provider gates on (only
     # mention "while you were away" after a real gap). ``journal_max``
     # bounds the kv ring of recent activities.
     away_activities_interval_seconds: int = 1200
     away_activities_cooldown_seconds: int = 5400
-    away_activities_daily_cap: int = 6
     away_activities_min_gap_hours: float = 4.0
     away_activities_journal_max: int = 8
     # H21 — sleep & overnight rhythm. ``min_gap_hours`` is the shortest
@@ -1874,7 +1871,7 @@ class MemorySettings:
     # long she must have been left alone for a chain to read as plausible
     # (default 3h, twice the beat cooldown); ``max_beats`` caps the chain
     # so a quiet day doesn't turn into a montage. An episode still costs
-    # one beat against the daily cap and one rephrase generation.
+    # one cooldown fire and one rephrase generation.
     away_activities_episode_ratio: float = 0.35
     away_activities_episode_max_beats: int = 3
     away_activities_episode_min_gap_seconds: int = 10800
@@ -1887,11 +1884,10 @@ class MemorySettings:
     away_activities_in_progress_ratio: float = 0.3
     # H17 — idle beats feed the idea machine. ``ratio`` is the fraction of
     # beats that also produce a conversational seed (LLM-composed; needs a
-    # worker model). ``daily_cap`` bounds seeds/day; ``max_ring`` bounds the
-    # kv ring; ``surface_cooldown`` is the wall-clock floor between surfacing
-    # one seed as an inner-life cue.
+    # worker model). ``max_ring`` bounds the kv ring; ``surface_cooldown``
+    # is the wall-clock floor between surfacing one seed as an inner-life
+    # cue.
     idle_seed_ratio: float = 0.25
-    idle_seed_daily_cap: int = 3
     idle_seed_max_ring: int = 6
     idle_seed_surface_cooldown_seconds: int = 1800
     # H19 — hobby worker cadence. ``interval`` is the idle-tick cadence;
@@ -1923,11 +1919,10 @@ class MemorySettings:
     garden_visit_max_minutes: float = 10.0
     garden_journal_max: int = 8
     # H22 — light outings ("I stepped out for a bit"). A rare away-beat
-    # gated to daylight + its own ``cooldown_hours`` + ``daily_cap`` that
-    # narrates a short trip out and back (and feeds H17 through the shared
-    # idle-seed path). Long cooldown + small cap keep it special.
+    # gated to daylight + its own ``cooldown_hours`` that narrates a
+    # short trip out and back (and feeds H17 through the shared idle-seed
+    # path). The long cooldown keeps it special.
     outing_cooldown_hours: float = 6.0
-    outing_daily_cap: int = 2
     # H16 circadian-settle worker cadence. ``interval`` is how often the
     # scheduler may consider it; ``settle_after`` is how long Aiko's room
     # state must have been static before it drifts her to the time-of-day
@@ -1937,20 +1932,19 @@ class MemorySettings:
     # H9 away-diary worker cadence. ``interval`` is how often the
     # scheduler may consider it; ``cooldown`` is the wall-clock floor
     # between actual entries (3h default — a diary written too often
-    # stops meaning anything); ``daily_cap`` bounds entries per local
-    # day; ``min_context_chars`` is the minimum recent-transcript length
-    # before there's anything worth reflecting on.
+    # stops meaning anything); ``min_context_chars`` is the minimum
+    # recent-transcript length before there's anything worth reflecting
+    # on.
     diary_worker_interval_seconds: int = 1800
     diary_worker_cooldown_seconds: int = 10800
-    diary_worker_daily_cap: int = 3
     diary_worker_min_context_chars: int = 80
     # K34 ForwardCuriosityWorker cadence + pacing. The worker runs during
     # quiet windows (default every 30 min) and, paced by a per-fire
-    # cooldown (default 1h) + daily cap, drafts one forward question into
-    # the ``aiko.forward_curiosity`` kv ring. ``min_gap_hours`` is the
-    # typed-absence threshold the surfacing provider gates on (only
-    # surface "I've been wondering" after a real gap). ``journal_max``
-    # bounds the kv ring of drafted questions.
+    # cooldown (default 1h) plus cue-pool inventory, drafts one forward
+    # question. ``min_gap_hours`` is the typed-absence threshold the
+    # surfacing provider gates on (only surface "I've been wondering"
+    # after a real gap). ``journal_max`` bounds the kv ring of drafted
+    # questions.
     forward_curiosity_interval_seconds: int = 900
     forward_curiosity_cooldown_seconds: int = 3600
     forward_curiosity_min_gap_hours: float = 4.0
@@ -4914,10 +4908,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 0,
                 int(memory_raw.get("world_notice_cooldown_seconds", 3600)),
             ),
-            world_notice_daily_cap=max(
-                0,
-                int(memory_raw.get("world_notice_daily_cap", 4)),
-            ),
             world_notice_ttl_seconds=max(
                 60,
                 int(memory_raw.get("world_notice_ttl_seconds", 1800)),
@@ -4929,10 +4919,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             away_activities_cooldown_seconds=max(
                 0,
                 int(memory_raw.get("away_activities_cooldown_seconds", 5400)),
-            ),
-            away_activities_daily_cap=max(
-                0,
-                int(memory_raw.get("away_activities_daily_cap", 6)),
             ),
             away_activities_min_gap_hours=max(
                 0.0,
@@ -4999,9 +4985,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
                 1.0,
                 max(0.0, float(memory_raw.get("idle_seed_ratio", 0.25))),
             ),
-            idle_seed_daily_cap=max(
-                0, int(memory_raw.get("idle_seed_daily_cap", 3)),
-            ),
             idle_seed_max_ring=max(
                 1, int(memory_raw.get("idle_seed_max_ring", 6)),
             ),
@@ -5051,9 +5034,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             outing_cooldown_hours=max(
                 0.0, float(memory_raw.get("outing_cooldown_hours", 6.0)),
             ),
-            outing_daily_cap=max(
-                0, int(memory_raw.get("outing_daily_cap", 2)),
-            ),
             circadian_settle_interval_seconds=max(
                 60,
                 int(memory_raw.get("circadian_settle_interval_seconds", 3600)),
@@ -5069,10 +5049,6 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             diary_worker_cooldown_seconds=max(
                 0,
                 int(memory_raw.get("diary_worker_cooldown_seconds", 10800)),
-            ),
-            diary_worker_daily_cap=max(
-                0,
-                int(memory_raw.get("diary_worker_daily_cap", 3)),
             ),
             diary_worker_min_context_chars=max(
                 0,

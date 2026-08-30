@@ -254,7 +254,10 @@ pool so it does not redraft one it is already holding.
 
 This retired five config keys (`*_daily_cap` for associative wander,
 interest drift, dormant interest, curiosity gradient, and forward
-curiosity).
+curiosity). [P45](personality-backlog/shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
+then retired the five remaining *speaking* daily counts on workers
+that never joined the pool (world notice, away activities, idle seed,
+outing, diary).
 
 ### Cues drafted from a memory row: keyed on lineage, not wording
 

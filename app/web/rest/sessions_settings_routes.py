@@ -272,13 +272,6 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                         3600,
                     ),
                 ),
-                "world_notice_daily_cap": int(
-                    getattr(
-                        getattr(s, "memory", None),
-                        "world_notice_daily_cap",
-                        4,
-                    ),
-                ),
                 "world_notice_ttl_seconds": int(
                     getattr(
                         getattr(s, "memory", None),
@@ -653,7 +646,6 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             for key, floor, default in (
                 ("world_notice_interval_seconds", 30, 300),
                 ("world_notice_cooldown_seconds", 0, 3600),
-                ("world_notice_daily_cap", 0, 4),
                 ("world_notice_ttl_seconds", 60, 1800),
             ):
                 if key in companion:
@@ -731,9 +723,6 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                         ),
                         "world_notice_cooldown_seconds": int(
                             getattr(mem, "world_notice_cooldown_seconds", 3600),
-                        ),
-                        "world_notice_daily_cap": int(
-                            getattr(mem, "world_notice_daily_cap", 4),
                         ),
                         "world_notice_ttl_seconds": int(
                             getattr(mem, "world_notice_ttl_seconds", 1800),

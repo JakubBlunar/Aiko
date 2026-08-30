@@ -1,7 +1,7 @@
 """Tests for :class:`app.core.world.world_notice_worker.WorldNoticeWorker`.
 
 Exercises the two triggers (fresh gift, stale room) and the pacing
-gates (cooldown, daily cap, enabled switch) with lightweight fakes —
+gates (cooldown, enabled switch) with lightweight fakes —
 no real WorldStore, LLM, or DB. The worker composes its line via the
 deterministic fallback (``ollama=None``) so the assertions don't depend
 on a model.
@@ -66,7 +66,6 @@ def _make_worker(
     nudges: _FakeNudgeStore,
     enabled: bool = True,
     cooldown: float = 3600.0,
-    daily_cap: int = 4,
 ) -> WorldNoticeWorker:
     return WorldNoticeWorker(
         world_store=_FakeWorldStore(),
@@ -80,7 +79,6 @@ def _make_worker(
         model=None,
         interval_seconds=300.0,
         cooldown_seconds=cooldown,
-        daily_cap=daily_cap,
         ttl_seconds=1800.0,
     )
 
@@ -119,15 +117,15 @@ class GiftTriggerTests(unittest.TestCase):
         self.assertEqual(second["fired"], 0)
         self.assertEqual(len(nudges.upserts), 1)
 
-    def test_gift_bypasses_daily_cap(self) -> None:
+    def test_gift_fires_while_room_is_on_cooldown(self) -> None:
         kv, nudges = _FakeKV(), _FakeNudgeStore()
-        # Exhaust the daily cap counter for today.
-        today = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
-        kv.set("world_notice.day", today)
-        kv.set("world_notice.day_count", "99")
+        recent = datetime.now(timezone.utc) - timedelta(seconds=60)
+        kv.set("world_notice.last_fired_at", recent.isoformat())
         _stamp_gift(kv)
-        worker = _make_worker(kv=kv, nudges=nudges, daily_cap=4)
-        self.assertEqual(worker.run()["fired"], 1)
+        worker = _make_worker(kv=kv, nudges=nudges, cooldown=3600.0)
+        result = worker.run()
+        self.assertEqual(result["fired"], 1)
+        self.assertEqual(result["kind"], "gift")
 
 
 class StaleRoomTriggerTests(unittest.TestCase):
@@ -147,16 +145,6 @@ class StaleRoomTriggerTests(unittest.TestCase):
         result = worker.run()
         self.assertEqual(result["fired"], 0)
         self.assertTrue(result.get("skipped_cooldown"))
-
-    def test_stale_room_blocked_by_daily_cap(self) -> None:
-        kv, nudges = _FakeKV(), _FakeNudgeStore()
-        today = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
-        kv.set("world_notice.day", today)
-        kv.set("world_notice.day_count", "4")
-        worker = _make_worker(kv=kv, nudges=nudges, cooldown=0.0, daily_cap=4)
-        result = worker.run()
-        self.assertEqual(result["fired"], 0)
-        self.assertTrue(result.get("skipped_daily_cap"))
 
 
 class GateTests(unittest.TestCase):
@@ -219,17 +207,6 @@ class DemandTests(unittest.TestCase):
         gift = worker.demand(now=now, last_run_at=None)
         self.assertEqual(gift.reason, "gift")
         self.assertGreater(gift.pressure, room.pressure)
-
-    def test_daily_cap_reached_reports_nothing(self) -> None:
-        kv, nudges = _FakeKV(), _FakeNudgeStore()
-        worker = _make_worker(kv=kv, nudges=nudges, daily_cap=2)
-        now = datetime.now(timezone.utc)
-        kv.set("world_notice.day", now.astimezone().strftime("%Y-%m-%d"))
-        kv.set("world_notice.day_count", "2")
-        self.assertFalse(worker.is_ready(now=now, last_run_at=None))
-        self.assertEqual(
-            worker.demand(now=now, last_run_at=None).pressure, 0.0,
-        )
 
     def test_probe_writes_nothing(self) -> None:
         kv, nudges = _FakeKV(), _FakeNudgeStore()

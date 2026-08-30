@@ -99,7 +99,6 @@ class _AudioBlock:
 class _MemoryBlock:
     world_notice_interval_seconds: int = 300
     world_notice_cooldown_seconds: int = 3600
-    world_notice_daily_cap: int = 4
     world_notice_ttl_seconds: int = 1800
 
 
@@ -215,7 +214,7 @@ class CompanionSettingsTests(unittest.TestCase):
         self.assertIn("companion", body)
         comp = body["companion"]
         self.assertEqual(comp["world_notice_enabled"], True)
-        self.assertEqual(comp["world_notice_daily_cap"], 4)
+        self.assertNotIn("world_notice_daily_cap", comp)
         self.assertEqual(comp["world_notice_cooldown_seconds"], 3600)
         self.assertEqual(comp["grounding_line_mode"], "off")
         self.assertEqual(comp["touch_enabled"], True)
@@ -282,14 +281,14 @@ class CompanionSettingsTests(unittest.TestCase):
                     "companion": {
                         "world_notice_enabled": False,
                         "world_notice_interval_seconds": 5,
-                        "world_notice_daily_cap": 9,
+                        "world_notice_cooldown_seconds": 7200,
                     },
                 },
             )
         self.assertFalse(settings.agent.world_notice_enabled)
         # interval floor is 30s.
         self.assertEqual(settings.memory.world_notice_interval_seconds, 30)
-        self.assertEqual(settings.memory.world_notice_daily_cap, 9)
+        self.assertEqual(settings.memory.world_notice_cooldown_seconds, 7200)
         persist.assert_called_once()
 
     def test_patch_banner_duration_clamps(self) -> None:

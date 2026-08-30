@@ -285,8 +285,6 @@ def register(mcp, session: "SessionController") -> None:
             from app.core.world.idle_activity_worker import (
                 load_journal,
                 _KV_LAST_FIRED_AT,
-                _KV_DAY,
-                _KV_DAY_COUNT,
             )
 
             kv = session._chat_db.kv_get
@@ -320,8 +318,6 @@ def register(mcp, session: "SessionController") -> None:
                     "journal": journal,
                     "last_surfaced_at": kv("away_activity.last_surfaced_at"),
                     "last_fired_at": kv(_KV_LAST_FIRED_AT),
-                    "day": kv(_KV_DAY),
-                    "day_count": kv(_KV_DAY_COUNT),
                 },
                 indent=2,
             )
@@ -332,7 +328,7 @@ def register(mcp, session: "SessionController") -> None:
     def force_away_activity(key: str = "") -> str:
         """K36 — run the idle away-activity worker once, right now.
 
-        Bypasses the worker's cooldown + daily-cap + quiet-window gates
+        Bypasses the worker's cooldown + quiet-window gates
         by calling ``run()`` directly, so it mutates the world and
         appends a fresh journal entry immediately. Pass ``key`` to force
         a specific activity (``snack`` / ``read_book`` / ``move_cat`` /
@@ -440,8 +436,8 @@ def register(mcp, session: "SessionController") -> None:
         """H22 — force a rare "I stepped out for a bit" away-beat now.
 
         Arms the outing key on the away-activity worker (so its own
-        daylight + cooldown + daily-cap gates are bypassed when the beat
-        is offered) and calls ``run()`` once. A past-tense outing line
+        daylight + cooldown gates are bypassed when the beat is offered)
+        and calls ``run()`` once. A past-tense outing line
         lands in the away-activities journal; pair with
         ``force_away_activities_surface`` for the end-to-end repro.
         """
@@ -509,15 +505,13 @@ def register(mcp, session: "SessionController") -> None:
         """H17 — dump the idle-seed ring + surfacing watermarks.
 
         Idle beats occasionally turn into a forward-looking conversational
-        seed (LLM-composed, daily-capped) that surfaces ONCE as a private
+        seed (LLM-composed, ratio-gated) that surfaces ONCE as a private
         inner-life cue ("while I was reading earlier I started wondering
         ...") so Aiko phrases it herself. This shows the ring, the master
         switch, and both surfacing watermarks (per-seed + cooldown clock).
         """
         try:
             from app.core.world.idle_activity_worker import (
-                _KV_SEED_DAY,
-                _KV_SEED_DAY_COUNT,
                 load_idle_seeds,
             )
 
@@ -542,11 +536,6 @@ def register(mcp, session: "SessionController") -> None:
                             session._memory_settings, "idle_seed_ratio", 0.25
                         )
                     ),
-                    "daily_cap": int(
-                        getattr(
-                            session._memory_settings, "idle_seed_daily_cap", 3
-                        )
-                    ),
                     "surface_cooldown_seconds": int(
                         getattr(
                             session._memory_settings,
@@ -560,8 +549,6 @@ def register(mcp, session: "SessionController") -> None:
                     "ring": ring,
                     "surfaced_at": kv("idle_seed.surfaced_at"),
                     "surfaced_clock": kv("idle_seed.surfaced_clock"),
-                    "seed_day": kv(_KV_SEED_DAY),
-                    "seed_day_count": kv(_KV_SEED_DAY_COUNT),
                 },
                 indent=2,
             )
@@ -908,7 +895,7 @@ def register(mcp, session: "SessionController") -> None:
         registered (needs a MemoryStore + embedder), the live
         ``away`` reading (``True`` == no UI client connected, which is
         the gate the worker fires on), whether a worker LLM is wired,
-        the cadence knobs, the cooldown / daily-cap watermarks, and the
+        the cadence knobs, the cooldown watermark, and the
         current recent-context length. ``away=False`` means a UI client
         is connected and the worker is deferring to the live
         ``[[diary:...]]`` tag.
@@ -945,7 +932,7 @@ def register(mcp, session: "SessionController") -> None:
     def force_diary_entry() -> str:
         """H9 — run the away-diary worker once, right now.
 
-        Arms a one-shot bypass of the away / cooldown / daily-cap gates
+        Arms a one-shot bypass of the away / cooldown gates
         (the recent-context + worker-LLM requirements still apply) and
         calls ``run()`` directly. On success a fresh ``diary`` memory is
         written and appears in the Diary tab. Use this to verify the
