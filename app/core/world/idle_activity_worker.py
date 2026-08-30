@@ -45,8 +45,7 @@ optional, casual line ("while you were away I …"). This worker never
 speaks or fires a proactive nudge — it's the silent producer; the
 provider is the consumer.
 
-Paced by its own cooldown + daily cap (kv watermarks, local-midnight
-reset like :class:`WorldNoticeWorker`). Skips while a garden visit is
+Paced by its own cooldown. Skips while a garden visit is
 outstanding so it doesn't fight :class:`GardenVisitWorker` over Aiko's
 location. Every failure path is swallowed and logged at debug — the
 worst case is a missed beat, never a broken insert or a crashed tick.
@@ -95,21 +94,15 @@ log = logging.getLogger("app.idle_activity_worker")
 # plus the shared journal key the surfacing provider reads.
 AWAY_ACTIVITIES_JOURNAL_KEY = "aiko.away_activities"
 _KV_LAST_FIRED_AT = "away_activity.last_fired_at"
-_KV_DAY = "away_activity.day"
-_KV_DAY_COUNT = "away_activity.day_count"
 
 # H17 — idle beats feed the idea machine. Seeds drafted here land in this
 # ring; the consumer is ``InnerLifeProvidersMixin._render_idle_seed_block``.
 IDLE_SEEDS_KEY = "aiko.idle_seeds"
-_KV_SEED_DAY = "idle_seed.day"
-_KV_SEED_DAY_COUNT = "idle_seed.day_count"
 
-# H22 — light outings ("I stepped out for a bit"). Own cooldown + daily
-# cap kv watermarks, independent of the general away pacing so the outing
+# H22 — light outings ("I stepped out for a bit"). Own cooldown kv
+# watermark, independent of the general away pacing so the outing
 # stays rare even when ordinary beats fire often.
 _KV_OUTING_LAST_FIRED_AT = "outing.last_fired_at"
-_KV_OUTING_DAY = "outing.day"
-_KV_OUTING_DAY_COUNT = "outing.day_count"
 
 # Must match the literal GardenVisitWorker writes (see
 # ``garden_visit_worker.GardenVisitWorker._RETURN_KEY``). Duplicated to
@@ -242,16 +235,13 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         model: str | None = None,
         interval_seconds: float = 1200.0,
         cooldown_seconds: float = 5400.0,
-        daily_cap: int = 6,
         journal_max: int = 8,
         intentional_hold_seconds: float = 0.0,
         llm_activity_ratio: float = 0.0,
         idle_seed_ratio: float = 0.0,
-        idle_seed_daily_cap: int = 3,
         idle_seed_max_ring: int = 6,
         outings_enabled_provider: Callable[[], bool] | None = None,
         outing_cooldown_seconds: float = 6.0 * 3600,
-        outing_daily_cap: int = 2,
         episode_ratio: float = 0.0,
         episode_max_beats: int = 3,
         episode_min_gap_seconds: float = 10800.0,
@@ -274,16 +264,13 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         self._model = model
         self._interval_seconds = max(30.0, float(interval_seconds))
         self._cooldown_seconds = max(0.0, float(cooldown_seconds))
-        self._daily_cap = max(0, int(daily_cap))
         self._journal_max = max(1, int(journal_max))
         self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
         self._llm_activity_ratio = min(1.0, max(0.0, float(llm_activity_ratio)))
         self._idle_seed_ratio = min(1.0, max(0.0, float(idle_seed_ratio)))
-        self._idle_seed_daily_cap = max(0, int(idle_seed_daily_cap))
         self._idle_seed_max_ring = max(1, int(idle_seed_max_ring))
         self._outings_enabled_provider = outings_enabled_provider
         self._outing_cooldown_seconds = max(0.0, float(outing_cooldown_seconds))
-        self._outing_daily_cap = max(0, int(outing_daily_cap))
         self._episode_ratio = min(1.0, max(0.0, float(episode_ratio)))
         self._episode_max_beats = max(1, int(episode_max_beats))
         self._episode_min_gap_seconds = max(0.0, float(episode_min_gap_seconds))
@@ -329,9 +316,9 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
     ) -> "WorkSignal | None":
         """Is a beat due, and will composing it cost a generation?
 
-        Hoists the four gates that used to burn a scheduler slot inside
-        ``run()`` -- intentional hold, garden deferral, cooldown, daily
-        cap -- into a probe that is four kv reads.
+        Hoists the three gates that used to burn a scheduler slot inside
+        ``run()`` -- intentional hold, garden deferral, cooldown -- into
+        a probe that is three kv reads.
 
         Pressure rises with how long past the cooldown she is, so a long
         absence produces beats promptly rather than at whatever cadence
@@ -354,8 +341,6 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             return WorkSignal(pressure=0.0, reason="garden_visit")
         if not self._cooldown_elapsed(now):
             return WorkSignal(pressure=0.0, reason="cooldown")
-        if not self._under_daily_cap(now):
-            return WorkSignal(pressure=0.0, reason="daily_cap")
 
         pressure = 1.0
         if self._cooldown_seconds > 0:
@@ -394,8 +379,6 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             return settled
         if not self._cooldown_elapsed(now):
             return {"fired": 0, "skipped_cooldown": True}
-        if not self._under_daily_cap(now):
-            return {"fired": 0, "skipped_daily_cap": True}
 
         user_name = self._resolve(self._user_display_name_provider) or "you"
         snapshot = self._build_candidates(user_name, now)
@@ -411,7 +394,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         chain = self._plan_episode(plan, snapshot, now)
         effects: list[dict[str, Any]] = []
         for beat in chain:
-            # H22 — stamp the outing's own cooldown + daily cap when chosen.
+            # H22 — stamp the outing's own cooldown when chosen.
             if beat.key == "outing":
                 self._mark_outing_fired(now)
             beat_effect = self._apply_world_mutation(beat)
@@ -662,8 +645,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
     ) -> str | None:
         """Occasionally turn a beat into a forward-looking conversational seed.
 
-        Bounded hard: needs a worker model, fires only a ``ratio`` fraction
-        of beats, and is daily-capped. The seed lands in the kv ring read by
+        Bounded hard: needs a worker model and fires only a ``ratio``
+        fraction of beats. The seed lands in the kv ring read by
         the one-shot ``_render_idle_seed_block`` cue producer so Aiko phrases
         the "while I was reading I started wondering ..." line herself.
         """
@@ -672,8 +655,6 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         if self._ollama is None or not self._model:
             return None
         if self._rng.random() >= self._idle_seed_ratio:
-            return None
-        if not self._under_seed_daily_cap(now):
             return None
 
         seed = self._compose_seed_llm(user_name, plan, summary)
@@ -693,7 +674,6 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         )
         if not ok:
             return None
-        self._bump_seed_day_count(now)
         log.info(
             "idle_seed produced: key=%s activity=%s seed=%s",
             plan.key,
@@ -701,34 +681,6 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             seed[:80],
         )
         return seed
-
-    def _under_seed_daily_cap(self, now: datetime) -> bool:
-        if self._idle_seed_daily_cap <= 0:
-            return False
-        today = now.date().isoformat()
-        try:
-            day = self._kv_get(_KV_SEED_DAY)
-            count = int(self._kv_get(_KV_SEED_DAY_COUNT) or "0")
-        except Exception:
-            day, count = None, 0
-        if day != today:
-            return True
-        return count < self._idle_seed_daily_cap
-
-    def _bump_seed_day_count(self, now: datetime) -> None:
-        today = now.date().isoformat()
-        try:
-            day = self._kv_get(_KV_SEED_DAY)
-            count = int(self._kv_get(_KV_SEED_DAY_COUNT) or "0")
-        except Exception:
-            day, count = None, 0
-        if day != today:
-            count = 0
-        try:
-            self._kv_set(_KV_SEED_DAY, today)
-            self._kv_set(_KV_SEED_DAY_COUNT, str(count + 1))
-        except Exception:
-            log.debug("idle_seed day-count write failed", exc_info=True)
 
     def _compose_seed_llm(
         self, user_name: str, plan: ActivityPlan, summary: str,
@@ -1380,30 +1332,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             return True
         return (now - last).total_seconds() >= self._cooldown_seconds
 
-    def _under_daily_cap(self, now: datetime) -> bool:
-        if self._daily_cap <= 0:
-            return False
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            return True
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        return count < self._daily_cap
-
     def _mark_fired(self, now: datetime) -> None:
         self._kv_set_safe(_KV_LAST_FIRED_AT, now.isoformat(timespec="seconds"))
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_DAY) != today:
-            self._kv_set_safe(_KV_DAY, today)
-            self._kv_set_safe(_KV_DAY_COUNT, "1")
-            return
-        try:
-            count = int(self._kv_get_safe(_KV_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        self._kv_set_safe(_KV_DAY_COUNT, str(count + 1))
 
     # ── H22: light-outing gates ───────────────────────────────────────
 
@@ -1419,8 +1349,6 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         """True when a rare daylight outing may be offered this tick."""
         if not self._outings_enabled():
             return False
-        if self._outing_daily_cap <= 0:
-            return False
         # Daylight only — but tolerate an unknown period (no provider).
         period = self._read_period()
         if period and period not in OUTING_DAYLIGHT_PERIODS:
@@ -1432,34 +1360,12 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 (now - last).total_seconds() < self._outing_cooldown_seconds
             ):
                 return False
-        return self._under_outing_daily_cap(now)
-
-    def _under_outing_daily_cap(self, now: datetime) -> bool:
-        if self._outing_daily_cap <= 0:
-            return False
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_OUTING_DAY) != today:
-            return True
-        try:
-            count = int(self._kv_get_safe(_KV_OUTING_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        return count < self._outing_daily_cap
+        return True
 
     def _mark_outing_fired(self, now: datetime) -> None:
         self._kv_set_safe(
             _KV_OUTING_LAST_FIRED_AT, now.isoformat(timespec="seconds")
         )
-        today = now.astimezone().strftime("%Y-%m-%d")
-        if self._kv_get_safe(_KV_OUTING_DAY) != today:
-            self._kv_set_safe(_KV_OUTING_DAY, today)
-            self._kv_set_safe(_KV_OUTING_DAY_COUNT, "1")
-            return
-        try:
-            count = int(self._kv_get_safe(_KV_OUTING_DAY_COUNT) or "0")
-        except (TypeError, ValueError):
-            count = 0
-        self._kv_set_safe(_KV_OUTING_DAY_COUNT, str(count + 1))
 
     def outing_debug_state(self, now: datetime | None = None) -> dict[str, Any]:
         """Snapshot of the H22 outing gates for the MCP state tool."""
@@ -1468,10 +1374,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             "enabled": self._outings_enabled(),
             "eligible": self._outing_eligible(now),
             "cooldown_seconds": self._outing_cooldown_seconds,
-            "daily_cap": self._outing_daily_cap,
             "last_fired_at": self._kv_get_safe(_KV_OUTING_LAST_FIRED_AT),
-            "day": self._kv_get_safe(_KV_OUTING_DAY),
-            "day_count": self._kv_get_safe(_KV_OUTING_DAY_COUNT),
             "period": self._read_period(),
         }
 

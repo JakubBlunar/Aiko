@@ -1492,13 +1492,15 @@ compound across every K-series entry:
   four mis-rated probes the first log turned up are fixed. Remaining:
   none of it has been read back off a real log, which is the only place
   a miscalibrated probe shows up.
-- **P45.** Retire the per-hour / per-day cue caps in favour of a
-  satisfaction signal fed back from whether the cues were engaged with.
+- **P45.** Remaining speaking daily-count caps retired in favour of
+  demand + inventory targets + cooldowns — **shipped**. LLM/web
+  `per_hour`/`per_day` spend caps kept. See
+  [`shipped/perf.md`](shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction).
 - **P46.** Drain the compute lane in parallel — blocked on shared
   mutable state (the `WorldStore` mirror, `ConceptStore` caches,
   `threading.local()` SQLite connections).
 
-(P1-P6, P8-P10, P12-P15, P17-P23, P25, P27-P29, P31a, P37, P38, P40 and P41 have
+(P1-P6, P8-P10, P12-P15, P17-P23, P25, P27-P29, P31a, P37, P38, P40, P41 and P45 have
 shipped — the embed budget and prompt-build telemetry, the slice-cache
 and RAG batch-lookup work, the Lance scan push-downs, the streaming
 accumulator and the streaming-draft rework, the RAG reader-writer lock,

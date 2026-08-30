@@ -1148,3 +1148,54 @@ reading the *sketch* of the code rather than the code, and both were
 stale. Worth re-checking claims of the form "nothing calls X".
 
 ---
+
+## P45. Retire the per-hour / per-day caps in favour of satisfaction
+
+The inventory half already shipped with the
+[cue pool](../../cue-pool.md): seven subject-naming workers report
+pressure from the deficit against `CuePolicy.inventory_target`, which
+retired five `*_daily_cap` keys. This slice finishes the *speaking*
+half of the same idea for workers that never joined the pool.
+
+Five remaining daily-count caps gated how often a worker was *allowed
+to fire*, not how much LLM or search it was allowed to spend:
+
+| key | worker | remaining gate |
+|---|---|---|
+| `memory.world_notice_daily_cap` | `WorldNoticeWorker` | `world_notice_cooldown_seconds` |
+| `memory.away_activities_daily_cap` | `IdleAwayActivityWorker` | `away_activities_cooldown_seconds` |
+| `memory.idle_seed_daily_cap` | `_maybe_emit_seed` | `idle_seed_ratio` + surface cooldown |
+| `memory.outing_daily_cap` | outing eligibility | `outing_cooldown_hours` + daylight + `outings_enabled` |
+| `memory.diary_worker_daily_cap` | `DiaryWorker` | `diary_worker_cooldown_seconds` + away + context |
+
+Cap `0` used to mean "off". That job moves to the existing flag /
+ratio (`outings_enabled`, `idle_seed_ratio <= 0`, the feature
+switches). A leftover `world_notice_daily_cap` in `config/user.json`
+is an orphan — `load_settings` no longer reads it.
+
+Demand + inventory targets already mean a worker runs when there is
+work. The original sketch asked for a second loop: feed
+`SurfacingOutcomeStore.engaged_rate` / pool `used` vs `expired` back
+into `demand()` so "she has said enough" is satisfaction rather than
+a count. That is redundant with the shelf being full, and with pool
+consumption tracking for the types that name a subject, so it was
+declined.
+
+**Kept.** `FactCheckRateLimiter` `*_per_hour_cap` / `*_per_day_cap`
+on fact-check, idle curiosity searches, consolidation, conflict, and
+the belief/promise/goal workers. Those bound LLM and web-search
+spend. [P36](../perf.md#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
+lane budgets are per-tick wall-clock, not a daily API ceiling, so
+they do not replace them. K31/K32 touch `daily_cap` is a different
+job (gesture / axis movement) and was not touched.
+
+Gifts on world-notice still fire while a room beat would be on
+cooldown, and still stamp the cooldown so a room line does not pile
+on. An away episode still costs one cooldown fire.
+
+The World tab daily-cap slider is gone; cooldown remains. Tests:
+`tests/test_world_notice_worker.py`,
+`tests/test_idle_activity_worker.py`, `tests/test_idle_seed.py`,
+`tests/test_diary_worker.py`, `tests/test_web_server_settings.py`.
+
+---

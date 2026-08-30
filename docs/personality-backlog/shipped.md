@@ -85,6 +85,7 @@ When an entry lands, move its write-up here and leave the open file only a one-l
 - [P37. Residual per-token and per-mic-frame React re-renders](shipped/perf.md#p37-residual-per-token-and-per-mic-frame-react-re-renders)
 - [P38. Live2D channels allocate a store snapshot several times per frame](shipped/perf.md#p38-live2d-channels-allocate-a-store-snapshot-several-times-per-frame)
 - [P44. Migrate the remaining idle workers to `demand()`](shipped/perf.md#p44-migrate-the-remaining-idle-workers-to-demand)
+- [P45. Retire the per-hour / per-day caps in favour of satisfaction](shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
 - [P40. Engine swaps leak the previous model](shipped/perf.md#p40-engine-swaps-leak-the-previous-model)
 
 ## [Shipped — Companion patterns K1–K15](shipped/patterns-k01-k15.md)

@@ -343,7 +343,6 @@ class IdleWorkersInitMixin:
                         model=self._effective_worker_model,
                         interval_seconds=mem.world_notice_interval_seconds,
                         cooldown_seconds=mem.world_notice_cooldown_seconds,
-                        daily_cap=mem.world_notice_daily_cap,
                         ttl_seconds=mem.world_notice_ttl_seconds,
                     )
                 )
@@ -423,7 +422,6 @@ class IdleWorkersInitMixin:
                     model=self._effective_worker_model,
                     interval_seconds=mem.away_activities_interval_seconds,
                     cooldown_seconds=mem.away_activities_cooldown_seconds,
-                    daily_cap=mem.away_activities_daily_cap,
                     journal_max=mem.away_activities_journal_max,
                     intentional_hold_seconds=getattr(
                         self._settings.agent,
@@ -460,7 +458,7 @@ class IdleWorkersInitMixin:
                     # K85b — keep the beats that left a trace in the room.
                     pursuit_notes=self._pursuit_note_writer(),
                     # H17 — fraction of beats that also spawn a conversational
-                    # seed (LLM-composed), plus the daily/ring bounds.
+                    # seed (LLM-composed), plus the ring bound.
                     idle_seed_ratio=(
                         getattr(mem, "idle_seed_ratio", 0.25)
                         if getattr(
@@ -468,14 +466,11 @@ class IdleWorkersInitMixin:
                         )
                         else 0.0
                     ),
-                    idle_seed_daily_cap=getattr(
-                        mem, "idle_seed_daily_cap", 3,
-                    ),
                     idle_seed_max_ring=getattr(
                         mem, "idle_seed_max_ring", 6,
                     ),
                     # H22 — rare daylight "I stepped out for a bit" beat,
-                    # paced by its own cooldown + daily cap.
+                    # paced by its own cooldown.
                     outings_enabled_provider=lambda: bool(
                         getattr(
                             self._settings.agent, "outings_enabled", True,
@@ -484,7 +479,6 @@ class IdleWorkersInitMixin:
                     outing_cooldown_seconds=(
                         getattr(mem, "outing_cooldown_hours", 6.0) * 3600.0
                     ),
-                    outing_daily_cap=getattr(mem, "outing_daily_cap", 2),
                     # H18 — tilt the weighted activity draw by time of day,
                     # current mood, and the daily personality colour.
                     circadian_period_provider=(
@@ -614,7 +608,6 @@ class IdleWorkersInitMixin:
                     source_session_provider=lambda: self.session_key,
                     interval_seconds=mem.diary_worker_interval_seconds,
                     cooldown_seconds=mem.diary_worker_cooldown_seconds,
-                    daily_cap=mem.diary_worker_daily_cap,
                     min_context_chars=mem.diary_worker_min_context_chars,
                 )
                 self._idle_scheduler.register(self._diary_worker)
@@ -854,8 +847,8 @@ class IdleWorkersInitMixin:
         # LLM for a genuine connection ("both reward following a faint trail
         # patiently"). The provider only surfaces it when the live turn is
         # on one of the two topics. First member of the K64 freedom-of-
-        # thought family; paced hard (long interval + small daily cap + long
-        # per-pair cooldown) because rarity is the whole point.
+        # thought family; paced hard (long interval + cue-pool inventory +
+        # long per-pair cooldown) because rarity is the whole point.
         self._associative_wander_worker = None
         if (
             self._idle_scheduler is not None

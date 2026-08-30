@@ -1,6 +1,6 @@
 """Unit tests for the H9 away-diary worker (:class:`DiaryWorker`).
 
-Covers the gate matrix (away / cooldown / daily-cap / LLM / context),
+Covers the gate matrix (away / cooldown / LLM / context),
 the LLM compose round-trip, persistence into a ``diary`` memory, the
 kv watermark accounting, the ``force_next`` MCP bypass, and the
 ``build_recent_context`` transcript helper.
@@ -62,7 +62,6 @@ def _make_worker(
     kv: dict[str, str] | None = None,
     enabled: bool = True,
     cooldown_seconds: float = 0.0,
-    daily_cap: int = 3,
     min_context_chars: int = 8,
     notified: list[Any] | None = None,
 ) -> DiaryWorker:
@@ -89,7 +88,6 @@ def _make_worker(
         on_memory_added=(notified.append if notified is not None else None),
         interval_seconds=1800.0,
         cooldown_seconds=cooldown_seconds,
-        daily_cap=daily_cap,
         min_context_chars=min_context_chars,
     )
 
@@ -176,16 +174,6 @@ class GateTests(unittest.TestCase):
         self.assertEqual(second["fired"], 0)
         self.assertEqual(second["reason"], "cooldown")
         self.assertEqual(len(store.added), 1)
-
-    def test_daily_cap(self) -> None:
-        kv: dict[str, str] = {}
-        store = _FakeStore()
-        worker = _make_worker(
-            store=store, kv=kv, cooldown_seconds=0.0, daily_cap=1
-        )
-        self.assertEqual(worker.run()["fired"], 1)
-        blocked = worker.run()
-        self.assertEqual(blocked["reason"], "daily_cap")
 
     def test_force_next_bypasses_client_and_cooldown(self) -> None:
         store = _FakeStore()
@@ -284,7 +272,6 @@ class StateTests(unittest.TestCase):
             "has_llm",
             "interval_seconds",
             "cooldown_seconds",
-            "daily_cap",
             "recent_context_chars",
         ):
             self.assertIn(key, state)

@@ -518,7 +518,7 @@ export function WorldTab({
           <p className="text-[11px] text-ink-100/50">
             When on, Aiko occasionally reaches out about her room — when
             you've left her something, or after a long quiet stretch.
-            Cooldown + daily cap keep it subtle, not chatty.
+            Cooldown keeps it subtle, not chatty.
           </p>
           <Toggle
             checked={companion.world_notice_enabled}
@@ -528,46 +528,25 @@ export function WorldTab({
           >
             Enable proactive room / gift notices
           </Toggle>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
-              <span>Daily cap</span>
-              <input
-                type="number"
-                min={0}
-                max={24}
-                value={companion.world_notice_daily_cap}
-                disabled={!companion.world_notice_enabled}
-                onChange={(e) =>
-                  onPatchCompanion({
-                    world_notice_daily_cap: Math.max(
-                      0,
-                      Number(e.target.value) || 0,
-                    ),
-                  })
-                }
-                className="w-16 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
-              />
-            </label>
-            <label className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
-              <span>Cooldown (s)</span>
-              <input
-                type="number"
-                min={0}
-                step={60}
-                value={companion.world_notice_cooldown_seconds}
-                disabled={!companion.world_notice_enabled}
-                onChange={(e) =>
-                  onPatchCompanion({
-                    world_notice_cooldown_seconds: Math.max(
-                      0,
-                      Number(e.target.value) || 0,
-                    ),
-                  })
-                }
-                className="w-20 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
-              />
-            </label>
-          </div>
+          <label className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
+            <span>Cooldown (s)</span>
+            <input
+              type="number"
+              min={0}
+              step={60}
+              value={companion.world_notice_cooldown_seconds}
+              disabled={!companion.world_notice_enabled}
+              onChange={(e) =>
+                onPatchCompanion({
+                  world_notice_cooldown_seconds: Math.max(
+                    0,
+                    Number(e.target.value) || 0,
+                  ),
+                })
+              }
+              className="w-20 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
+            />
+          </label>
         </Section>
       ) : null}
 

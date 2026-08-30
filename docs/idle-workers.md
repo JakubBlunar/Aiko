@@ -608,17 +608,12 @@ conservative while letting compute scale.
   does not catch. The next long session's `app.log` wants the same
   runs-per-worker tally: divide each worker's run count by wall time
   and compare against its configured interval.
-- **[P45](personality-backlog/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)**
-  — partly done. The seven cue workers on the
-  [cue pool](cue-pool.md) report pressure from their unspent inventory,
-  which retired five `*_daily_cap` keys. The three event-armed types that
-  joined the pool later need no scheduling work at all — nothing produces
-  them, so they carry `inventory_target=0` and never ask for a slot. The
-  remaining `*_per_hour_cap`
-  keys on other workers are still fixed numbers. The intended
-  replacement there is the same idea: a worker that produced a cue
-  nobody engaged with should report low pressure because it has said
-  enough, not because a counter hit five.
+- **LLM/web spend caps stay.** [P45](personality-backlog/shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
+  retired the remaining *speaking* daily-count caps (world notice, away
+  activities, idle seed, outing, diary) in favour of demand + cooldown.
+  The `*_per_hour_cap` / `*_per_day_cap` keys on fact-check, idle
+  curiosity searches, consolidation, and the rest bound API spend, not
+  how often she talks, and live on `FactCheckRateLimiter`.
 - **[P46](personality-backlog/perf.md#p46-parallel-compute-lane-drain)**
   — the compute lane drains sequentially. True parallelism is blocked on
   shared mutable state, notably the `WorldStore` in-memory mirror and
