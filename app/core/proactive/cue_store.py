@@ -459,6 +459,21 @@ class CueStore:
             (STATE_EXPIRED, str(evidence or "")),
         )
 
+    def patch_payload(self, cue_id: int, updates: dict[str, Any]) -> bool:
+        """Merge ``updates`` into the row's JSON payload.
+
+        Used by the H7 hold counter so an off-subject turn can be counted
+        without a new column.
+        """
+        row = self.get(cue_id)
+        if row is None:
+            return False
+        payload = dict(row.payload or {})
+        payload.update(updates)
+        return self._update(
+            cue_id, "payload = ?", (_encode_payload(payload),),
+        )
+
     def supersede(self, cue_id: int, *, evidence: str = "") -> bool:
         """Another cue says this one's thing, so this one stops asking.
 

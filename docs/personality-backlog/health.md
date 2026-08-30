@@ -566,6 +566,31 @@ it surfaced is that someone went looking for stale notes on purpose. **Rule: if 
 finding depends on a number moving, leave behind the thing that checks the
 number.**
 
+### Fourth pass (30 Aug 2026): UNCLEAR no longer burns the only ask
+
+The 1-of-5 conversion was not "the resolver did not run". It ran, returned
+`UNCLEAR`, and `_release_unanswered_hypothesis` expired the cue at
+`max_asks=1` without writing `last_tested_at`. An echo miss on a long
+paraphrase of *her* wording, or a missing worker client, looked identical
+to a dodge.
+
+**What landed.** Split by reason in
+[`hypothesis_resolve_mixin.py`](../../app/core/session/hypothesis_resolve_mixin.py):
+
+- `off_subject` / `no_client` / `unparsed` stay `awaiting` (she already
+  asked; listening is not a second ask). Stage B skips
+  `concept_hypothesis` so it cannot expire the hold on topical overlap.
+  Three later user turns or 24h from `last_asked_at` expire as
+  `max_asks/awaiting_timeout`.
+- An LLM dodge still expires. `max_asks=1` is unchanged.
+- The echo gate also matches the previous assistant turn (the question
+  she actually asked), not only the stored label + cue embedding.
+
+[`scripts/cue_reach_report.py`](../../scripts/cue_reach_report.py) now
+tallies `concept_hypothesis` cue states and expire reasons next to the
+funnel, so "asked and unscored" has a *why*. The H44 ambient listen is
+the second confirmation; this pass only stops throwing the first away.
+
 ---
 
 ## H8. Cold-start and supply — measured, and *not* bugs
@@ -1118,6 +1143,18 @@ owns "did the lane spend what it produced" for the cue side.
 
 **Effort.** Small to measure and to add the report line; the resolver work behind
 it is medium and belongs to H7.
+
+**What landed (30 Aug 2026).** Did not lower `hypothesis_graduate_min_support`.
+The missing second event is now a **passive listen**: after an *asked*
+row reaches `support_count == 1`, a later turn that echo-gates against
+the statement can CONFIRM or DENY it (one LLM call per turn).
+`asked_count == 0` is never ambient-scored, so the never-asked
+supported row still cannot graduate on chat noise. `is_ready` still
+refuses to fast-track a linked row on one confirm.
+
+Leave this entry **open** until `cue_reach_report.py` shows a real
+`graduated` (or `merged`) exit. The report already prints the funnel;
+the new cue expire-reason tally is the H7 half of the same page.
 
 ---
 

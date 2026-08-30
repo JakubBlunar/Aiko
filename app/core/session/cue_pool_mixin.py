@@ -599,6 +599,11 @@ class CuePoolMixin:
         user_vec = self._user_vec_for(rows, user_text)
         now = timephrase.utcnow()
         for row in rows:
+            if row.cue_type == "concept_hypothesis":
+                # H7: the hypothesis resolver owns this type for the whole
+                # awaiting life, including an off-subject hold. Stage B
+                # would treat a denial as a satisfied question.
+                continue
             policy = self._policy_for(row.cue_type)
             if policy is None:
                 continue
