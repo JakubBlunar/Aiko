@@ -58,6 +58,7 @@ class _Host(InnerLifePart2Mixin, CuePoolMixin):
 def _open_beat(
     *,
     activity: str = "reading on the sofa",
+    summary: str = "got a few chapters in",
     started_minutes_ago: float = 20.0,
     ends_in_minutes: float = 25.0,
     interrupted: bool = False,
@@ -67,7 +68,7 @@ def _open_beat(
         key="reading",
         activity=activity,
         posture="curled up",
-        summary="got a few chapters in",
+        summary=summary,
         now=now - timedelta(minutes=started_minutes_ago),
         rng=random.Random(0),
     )
@@ -124,8 +125,14 @@ class FiringTests(unittest.TestCase):
     def test_block_names_the_activity_in_the_present_tense(self) -> None:
         host = _Host(chat_db=_db_with(_open_beat()))
         block = host._render_caught_mid_activity_block()
-        self.assertIn("in the middle of reading on the sofa", block)
+        self.assertIn("in the middle of got a few chapters in", block)
+        self.assertNotIn("in the middle of reading on the sofa", block)
         self.assertIn("didn't finish it", block)
+
+    def test_empty_summary_falls_back_to_the_activity(self) -> None:
+        host = _Host(chat_db=_db_with(_open_beat(summary="")))
+        block = host._render_caught_mid_activity_block()
+        self.assertIn("in the middle of reading on the sofa", block)
 
     def test_block_reports_how_far_in_she_is(self) -> None:
         host = _Host(chat_db=_db_with(_open_beat(started_minutes_ago=20.0)))

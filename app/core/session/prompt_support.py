@@ -145,6 +145,15 @@ HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
         "Meeting {user_name} at his level (explanation depth):",
     ),
     # ── small physical / social beats ─────────────────────────────────
+    # H19/H28: standing "what she's been up to lately". Ambient, not a
+    # steer — the note exists so that when he asks she has a name to
+    # give, not a genre. Hoisted with the other rare-on-this-turn notes
+    # even though the block itself is standing: the instruction is "when
+    # it comes up, say the name", and a turn that does not mention the
+    # hobby should not still carry that.
+    "hobby_block": (
+        "What you've been up to lately:",
+    ),
     # K24: an item plus a gesture, offered as permission to replace a limp
     # emotional line. The note is mostly about restraint -- one per reply,
     # never a tour of the room -- which leaves no trace when followed.

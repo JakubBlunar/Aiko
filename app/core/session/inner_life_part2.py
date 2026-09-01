@@ -65,6 +65,29 @@ def _strip_dream_prefix(content: str) -> str:
     return text
 
 
+def _hobby_book_state(host: Any, slug: str) -> dict[str, Any] | None:
+    """Room-paperback ``item.state`` so a reading hobby can cite chapters."""
+    store = getattr(host, "_world_store", None)
+    if store is None or not hasattr(store, "list_items"):
+        return None
+    try:
+        items = store.list_items()
+    except Exception:
+        return None
+    book = next(
+        (i for i in items if (getattr(i, "slug", "") or "") == slug),
+        None,
+    )
+    if book is None:
+        return None
+    state = dict(getattr(book, "state", None) or {})
+    if not str(state.get("title") or "").strip():
+        name = str(getattr(book, "name", "") or "").strip()
+        if name:
+            state["title"] = name
+    return state
+
+
 class InnerLifePart2Mixin(DebugOverridesHostMixin):
     """Inner-life prompt-block providers (part 2 of 4)."""
 
@@ -1146,8 +1169,9 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             f" You're about {minutes} minutes into it."
             if 3 <= minutes <= 180 else ""
         )
+        what = (beat.summary or "").strip() or beat.activity
         block = (
-            f"You are in the middle of {beat.activity} right now — you "
+            f"You are in the middle of {what} right now — you "
             f"didn't finish it before {self.user_display_name} showed "
             f"up.{elapsed} Let that show in how you arrive: you might "
             "need a second to set it down, and it's the kind of thing "
@@ -1775,7 +1799,8 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
 
         try:
             from app.core.proactive.hobby_worker import load_hobby
-            from app.core.world.hobby import render_hobby_line
+            from app.core.world.hobby import prompt_progress, render_hobby_line
+            from app.core.world.room_evolution import BOOK_SLUG
         except Exception:
             log.debug("hobby block import failed", exc_info=True)
             return ""
@@ -1785,14 +1810,23 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             return ""
 
         label = str(state.get("label") or "").strip()
-        if not label:
+        artifact = str(state.get("artifact") or "").strip()
+        kind = str(state.get("kind") or "").strip()
+        book_state = None
+        if kind == "reading":
+            book_state = _hobby_book_state(self, BOOK_SLUG)
+            if book_state:
+                titled = str(
+                    book_state.get("title") or ""
+                ).strip()
+                if titled:
+                    artifact = titled
+        if not label and not artifact:
             return ""
-        try:
-            progress = int(state.get("progress", 0))
-        except (TypeError, ValueError):
-            progress = 0
-        unit = str(state.get("unit") or "step")
-        line = render_hobby_line(label, progress, unit)
+        progress, unit = prompt_progress(state, book_state)
+        line = render_hobby_line(
+            label, progress, unit, artifact=artifact, kind=kind,
+        )
         return (
             f"Lately, in your own time, you've been {line}. Bring it up only "
             "if it comes up naturally — don't force it."

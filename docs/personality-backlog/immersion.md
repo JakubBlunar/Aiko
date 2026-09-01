@@ -1,7 +1,7 @@
 # Immersion polish
 
 Small additions that compound. The world / idle-life / co-presence
-items that have shipped (**H0, H1, H3–H5, H8, H9, H11, H13–H22, H25, H26** + the
+items that have shipped (**H0, H1, H3–H5, H8, H9, H11, H13–H22, H25, H26, H28** + the
 SSML prosody minor item) have been moved to
 [`shipped/immersion.md`](shipped/immersion.md) (and `H1` /
 SSML live in [`shipped/features.md`](shipped/features.md)). This file
@@ -30,6 +30,7 @@ now holds **only the open work**.
 | H25 | Show-and-tell — share an image, she reacts    | ✅ shipped — [immersion.md](shipped/immersion.md#h25-show-and-tell--share-an-image-she-reacts-and-remembers) |
 | H26 | Caught mid-something — busy when you arrive   | ✅ shipped — [immersion.md](shipped/immersion.md#h26-caught-mid-something--she-was-busy-when-you-opened-the-app) |
 | H27 | Co-presence mode — in the room, not talking   | ❌ open (depends on H10) |
+| H28 | Ground inner life in named artifacts          | ✅ shipped — [immersion.md](shipped/immersion.md#h28-ground-inner-life-in-named-artifacts) |
 
 ---
 

@@ -208,6 +208,7 @@ than renamed, because every inbound link in the backlog points at it.)*
 - [H22. Light outings — "I stepped out for a bit"](shipped/immersion.md#h22-light-outings--i-stepped-out-for-a-bit)
 - [H25. Show-and-tell — share an image, she reacts and remembers](shipped/immersion.md#h25-show-and-tell--share-an-image-she-reacts-and-remembers)
 - [H26. Caught mid-something — she was busy when you opened the app](shipped/immersion.md#h26-caught-mid-something--she-was-busy-when-you-opened-the-app)
+- [H28. Ground inner life in named artifacts](shipped/immersion.md#h28-ground-inner-life-in-named-artifacts)
 
 ## [Closed — health-audit entries (H-series, the *other* one)](shipped/health.md)
 
@@ -220,7 +221,7 @@ against. The [recurring-shapes catalogue](health.md#recurring-shapes) stays in
 the live file for the same reason: it is the part you read *before* shipping.
 
 **The H numbers collide with the immersion section above**, and always have:
-immersion H0-H26 are features, health H1-H54 are audit findings. They are
+immersion H0-H28 are features, health H1-H54 are audit findings. They are
 unrelated sequences that happen to share a letter, so "H22" is ambiguous
 without its file — say "immersion H22" or "health H22".
 
