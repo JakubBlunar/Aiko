@@ -13,6 +13,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from app.core.infra.chat_database import ChatDatabase
+from app.core.world.room_evolution import BOOK_TITLES
 from app.core.world.world_store import (
     VALID_KINDS,
     VALID_POSTURES,
@@ -81,6 +82,12 @@ class SeedTests(unittest.TestCase):
             self.assertIsNotNone(cookies)
             self.assertTrue(cookies.consumable)
             self.assertGreaterEqual(cookies.quantity, 1)
+            book = next((i for i in items if i.slug == "scifi_paperback"), None)
+            self.assertIsNotNone(book)
+            titles = {name for name, _blurb in BOOK_TITLES}
+            self.assertIn(book.name, titles)
+            self.assertEqual(book.state.get("title"), book.name)
+            self.assertNotEqual(book.name.lower(), "sci-fi paperback")
 
     def test_seed_default_idempotent(self) -> None:
         with _TempDb() as (path, _db):
@@ -462,6 +469,26 @@ class RenderBlockTests(unittest.TestCase):
             # Tonal nudge must be present so Aiko doesn't force-mention.
             self.assertIn("natural", block.lower())
             self.assertIn("force", block.lower())
+
+    def test_render_block_names_the_book_while_reading(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            book = next(
+                i for i in store.list_items() if i.slug == "scifi_paperback"
+            )
+            beanbag = store.find_location("beanbag")
+            self.assertIsNotNone(beanbag)
+            store.set_state(location_id=beanbag.id, activity="reading")
+            block = store.render_block()
+            self.assertIn(book.name, block)
+            self.assertIn("reading", block.lower())
+            # The paperback lives on the bookshelf, not next to the beanbag.
+            nearby = [
+                i for i in store.list_items()
+                if i.location_id == beanbag.id
+            ]
+            self.assertFalse(any(i.slug == "scifi_paperback" for i in nearby))
 
     def test_render_block_surfaces_user_gift(self) -> None:
         with _TempDb() as (path, _db):

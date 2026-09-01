@@ -58,7 +58,7 @@ items, anchored at the desk:
 | dual monitors | desk | gadget | non-consumable |
 | retro keyboard | desk | gadget | |
 | warm lamp | desk | decor | |
-| sci-fi paperback | bookshelf | book | |
+| paperback (titled from `BOOK_TITLES` at seed; slug stays `scifi_paperback`) | bookshelf | book | |
 | photo of Jacob | bookshelf | keepsake | the relationship anchor |
 | plush blanket | bed | decor | |
 | cat pillow | bed | toy | |

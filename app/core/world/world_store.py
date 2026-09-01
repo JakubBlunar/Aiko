@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import sqlite3
 import threading
@@ -1732,6 +1733,10 @@ class WorldStore(WorldScenesMixin):
         )
         posture = (state.posture or "sitting").replace("_", " ")
         activity = (state.activity or "idle").replace("_", " ")
+        if canonical_activity(state.activity) == "reading":
+            book_clause = _reading_book_clause(items)
+            if book_clause:
+                activity = book_clause
         if loc is not None and loc.slug in _OUTDOOR_SLUGS and at_home:
             lines.append(
                 f"You are at home, currently outside in {where}. "
@@ -1879,19 +1884,33 @@ class WorldStore(WorldScenesMixin):
             loc_id = slug_to_id.get(seed.location_slug or "")
             seed_slug = seed.slug
             seed_name = seed.name
+            seed_desc = seed.description
+            seed_state = dict(seed.state)
             if "{user_name}" in seed_name:
                 seed_name = seed_name.format(user_name=templated_name)
                 if seed_slug == "photo_of_user":
                     seed_slug = slug_for_name
+            if seed_slug == "scifi_paperback":
+                from app.core.world.room_evolution import pick_book_title
+                title, blurb = pick_book_title(random.Random())
+                seed_name = title
+                seed_desc = blurb
+                seed_state = {
+                    "title": title,
+                    "blurb": blurb,
+                    "progress": 0,
+                    "total": 12,
+                    "status": "reading",
+                }
             self.add_item(
                 slug=seed_slug,
                 name=seed_name,
-                description=seed.description,
+                description=seed_desc,
                 kind=seed.kind,
                 location_id=loc_id,
                 consumable=seed.consumable,
                 quantity=seed.quantity,
-                state=dict(seed.state),
+                state=seed_state,
             )
         # Drop the garden's starter plants + seed packet using the same
         # idempotent helper so a fresh seed and a migrating-empty world
@@ -2166,6 +2185,35 @@ def _looks_plural(name: str) -> bool:
     if last.endswith("ss"):  # "glass", "dress" — singular
         return False
     return last.endswith(_PLURAL_HINT_SUFFIXES)
+
+
+def _reading_book_clause(items: list[Item]) -> str:
+    """``reading The Glasshouse Letters (5/12)`` when the paperback is titled.
+
+    The book lives on the bookshelf; she reads it on the beanbag, so
+    nearby-item labels never mention it. Fold the title into the
+    activity clause instead of leaving a bare "reading".
+    """
+    book = next(
+        (i for i in items if (i.slug or "") == "scifi_paperback"),
+        None,
+    )
+    if book is None:
+        book = next((i for i in items if (i.kind or "") == "book"), None)
+    if book is None:
+        return ""
+    state = book.state or {}
+    title = str(state.get("title") or book.name or "").strip()
+    if not title:
+        return ""
+    try:
+        progress = int(state.get("progress", 0) or 0)
+        total = int(state.get("total", 0) or 0)
+    except (TypeError, ValueError):
+        progress, total = 0, 0
+    if total > 0 and progress > 0:
+        return f"reading {title} ({progress}/{total})"
+    return f"reading {title}"
 
 
 def _render_item_label(item: Item, *, with_qty: bool = False) -> str:

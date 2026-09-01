@@ -102,9 +102,23 @@ def fresh_cookie_batch(
     return desc, {"flavor": flavor, "freshness": "fresh"}
 
 
+# Seed / leftover name that is a genre, not a title. Treated as untitled
+# so a live room never spends a whole book called "sci-fi paperback".
+GENERIC_BOOK_TITLE = "sci-fi paperback"
+
+
+def is_generic_book_title(title: str | None) -> bool:
+    """True when ``title`` is missing or the seeded genre placeholder."""
+    cleaned = str(title or "").strip().lower()
+    if not cleaned:
+        return True
+    return cleaned == GENERIC_BOOK_TITLE
+
+
 def _norm_book(state: dict | None) -> tuple[str, str, int, int]:
     state = state or {}
-    title = str(state.get("title") or "sci-fi paperback")
+    raw = str(state.get("title") or "").strip()
+    title = "" if is_generic_book_title(raw) else raw
     blurb = str(state.get("blurb") or "")
     try:
         progress = int(state.get("progress", 0))
@@ -115,6 +129,72 @@ def _norm_book(state: dict | None) -> tuple[str, str, int, int]:
     except (TypeError, ValueError):
         total = 12
     return title, blurb, max(0, progress), max(1, total)
+
+
+def _book_state(
+    title: str,
+    blurb: str,
+    progress: int,
+    total: int,
+    *,
+    status: str = "reading",
+) -> dict:
+    return {
+        "title": title,
+        "blurb": blurb,
+        "progress": max(0, progress),
+        "total": max(1, total),
+        "status": status,
+    }
+
+
+def pick_book_title(
+    rng: random.Random, *, exclude: str = "",
+) -> tuple[str, str]:
+    """Pick ``(title, blurb)`` from :data:`BOOK_TITLES`, avoiding ``exclude``."""
+    skip = str(exclude or "").strip()
+    pool = [b for b in BOOK_TITLES if b[0] != skip] or list(BOOK_TITLES)
+    return rng.choice(pool)
+
+
+def ensure_book_titled(
+    state: dict | None, rng: random.Random, *, exclude: str = "",
+) -> dict:
+    """Guarantee ``state`` has a real :data:`BOOK_TITLES` title.
+
+    Progress and total are preserved. A missing or generic title
+    (``sci-fi paperback``) is replaced; an already-named book is
+    returned unchanged. Used to heal live rooms that were seeded
+    before titles existed, without resetting the chapter count.
+    """
+    title, blurb, progress, total = _norm_book(state)
+    if title:
+        return _book_state(title, blurb, progress, total)
+    new_title, new_blurb = pick_book_title(rng, exclude=exclude)
+    return _book_state(new_title, new_blurb, progress, total)
+
+
+def stamp_book_title(
+    state: dict | None,
+    title: str,
+    blurb: str,
+    rng: random.Random,
+    *,
+    reset_progress: bool,
+) -> dict:
+    """Write a (possibly invented) title onto the paperback.
+
+    Returning to the same title keeps the chapter count. A *new*
+    title starts at progress 0 with a fresh length.
+    """
+    named = str(title or "").strip()
+    detail = str(blurb or "").strip()
+    old_title, old_blurb, progress, total = _norm_book(state)
+    if not named:
+        return ensure_book_titled(state, rng)
+    if old_title and old_title.lower() == named.lower() and not reset_progress:
+        return _book_state(named, detail or old_blurb, progress, total)
+    return _book_state(named, detail, 0, rng.randint(10, 16))
 
 
 def advance_book(
@@ -128,23 +208,20 @@ def advance_book(
     - on finish: ``new_state`` is a fresh book at progress 0, ``new_name`` /
       ``new_description`` describe it, and ``finished_title`` is the book she
       just completed (the H17 seed material).
+
+    Untitled / generic books are titled first (progress kept) so a live
+    install never advances a paperback whose name is still the genre.
     """
-    title, blurb, progress, total = _norm_book(state)
+    titled = ensure_book_titled(state, rng)
+    title, blurb, progress, total = _norm_book(titled)
     progress += 1
     if progress < total:
-        new = {
-            "title": title, "blurb": blurb,
-            "progress": progress, "total": total, "status": "reading",
-        }
+        new = _book_state(title, blurb, progress, total)
         desc = blurb or f"a paperback ({progress}/{total} chapters in)"
         return new, title, desc, None
     # finished → pick a new book (avoid the one she just read)
-    pool = [b for b in BOOK_TITLES if b[0] != title] or list(BOOK_TITLES)
-    new_title, new_blurb = rng.choice(pool)
-    new = {
-        "title": new_title, "blurb": new_blurb,
-        "progress": 0, "total": rng.randint(10, 16), "status": "reading",
-    }
+    new_title, new_blurb = pick_book_title(rng, exclude=title)
+    new = _book_state(new_title, new_blurb, 0, rng.randint(10, 16))
     return new, new_title, new_blurb, title
 
 
@@ -152,10 +229,15 @@ __all__ = [
     "TEA_POT_SLUG",
     "COOKIE_JAR_SLUG",
     "BOOK_SLUG",
+    "GENERIC_BOOK_TITLE",
     "TEA_FLAVORS",
     "COOKIE_FLAVORS",
     "BOOK_TITLES",
+    "is_generic_book_title",
     "next_tea",
     "fresh_cookie_batch",
+    "pick_book_title",
+    "ensure_book_titled",
+    "stamp_book_title",
     "advance_book",
 ]

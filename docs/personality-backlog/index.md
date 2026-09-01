@@ -352,12 +352,16 @@ and I3, I6, I7, I8, I10 in
 - **H27.** Co-presence mode — a posture for being *around* rather than in
   conversation. Inverts the proactive stack's assumption that silence is a
   problem to solve. Needs H10 to carry the presence visually.
+- **H28.** Ground inner life in named artifacts — *shipped*. The standing
+  hobby was a genre catalogue ("a sci-fi series") while the room already
+  had titled books; she now invents the next named thread on the worker
+  LLM and drifts kinds rather than stacking.
 - *Minor polish* — second TTS provider, barge-in default flip (**now
   unblocked**: P25 shipped, so the client drops its scheduled audio when
   speech is cut off — an interrupt is actually silent). SSML prosody
   shipped.
 
-H0, H1, H3–H5, H8, H9, H11 and H13-H22 have shipped — see
+H0, H1, H3–H5, H8, H9, H11, H13–H22, H25, H26 and H28 have shipped — see
 [`shipped/immersion.md`](shipped/immersion.md).
 
 ### J. Shared-moments follow-ups — [`moments.md`](moments.md)

@@ -79,6 +79,62 @@ class BookTests(unittest.TestCase):
         self.assertEqual(s["progress"], 0)
         self.assertEqual(s["status"], "reading")
 
+    def test_untitled_state_gets_a_real_title_progress_kept(self) -> None:
+        rng = random.Random(0)
+        titled = evo.ensure_book_titled(
+            {"progress": 4, "total": 12}, rng,
+        )
+        self.assertIn(
+            titled["title"], {name for name, _blurb in evo.BOOK_TITLES},
+        )
+        self.assertEqual(titled["progress"], 4)
+        self.assertEqual(titled["total"], 12)
+
+    def test_generic_title_is_replaced_progress_kept(self) -> None:
+        rng = random.Random(1)
+        titled = evo.ensure_book_titled(
+            {"title": "sci-fi paperback", "progress": 7, "total": 14}, rng,
+        )
+        self.assertNotEqual(titled["title"].lower(), "sci-fi paperback")
+        self.assertIn(
+            titled["title"], {name for name, _blurb in evo.BOOK_TITLES},
+        )
+        self.assertEqual(titled["progress"], 7)
+
+    def test_named_book_is_left_alone(self) -> None:
+        rng = random.Random(0)
+        titled = evo.ensure_book_titled(
+            {"title": "The Glasshouse Letters", "blurb": "x",
+             "progress": 3, "total": 12},
+            rng,
+        )
+        self.assertEqual(titled["title"], "The Glasshouse Letters")
+        self.assertEqual(titled["progress"], 3)
+
+    def test_stamp_same_title_keeps_progress(self) -> None:
+        rng = random.Random(0)
+        stamped = evo.stamp_book_title(
+            {"title": "The Glasshouse Letters", "progress": 6, "total": 12},
+            "The Glasshouse Letters",
+            "an epistolary novel",
+            rng,
+            reset_progress=False,
+        )
+        self.assertEqual(stamped["progress"], 6)
+        self.assertEqual(stamped["title"], "The Glasshouse Letters")
+
+    def test_stamp_new_title_resets_progress(self) -> None:
+        rng = random.Random(0)
+        stamped = evo.stamp_book_title(
+            {"title": "The Glasshouse Letters", "progress": 6, "total": 12},
+            "Eleven Doors",
+            "a twisty thriller",
+            rng,
+            reset_progress=True,
+        )
+        self.assertEqual(stamped["title"], "Eleven Doors")
+        self.assertEqual(stamped["progress"], 0)
+
 
 # ── worker ────────────────────────────────────────────────────────────
 

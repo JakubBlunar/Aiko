@@ -520,6 +520,7 @@ class IdleWorkersInitMixin:
                     # K85b — keep the milestone the rotation is about to
                     # overwrite.
                     pursuit_notes=self._pursuit_note_writer(),
+                    world_store=getattr(self, "_world_store", None),
                 )
                 self._idle_scheduler.register(self._hobby_worker)
             except Exception:
