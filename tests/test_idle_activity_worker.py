@@ -52,6 +52,7 @@ class _FakeItem:
         location_id: int | None = None,
         slug: str = "",
         state: dict[str, Any] | None = None,
+        home_location_id: int | None = None,
     ) -> None:
         self.id = id_
         self.name = name
@@ -59,19 +60,24 @@ class _FakeItem:
         self.consumable = consumable
         self.quantity = quantity
         self.location_id = location_id
+        self.home_location_id = home_location_id
         self.slug = slug or name.lower().replace(" ", "_")
         self.state: dict[str, Any] = state if state is not None else {}
         self.description = ""
+        self.updated_at = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "quantity": self.quantity}
 
 
 class _FakeLoc:
-    def __init__(self, id_: int, name: str, slug: str = "") -> None:
+    def __init__(
+        self, id_: int, name: str, slug: str = "", *, scene_id: int = 1,
+    ) -> None:
         self.id = id_
         self.name = name
         self.slug = slug or name.lower().replace(" ", "_")
+        self.scene_id = scene_id
 
 
 class _FakeRoomState:
@@ -107,12 +113,62 @@ class _FakeWorldStore:
         self.consumed: list[int] = []
         self.moved: list[tuple[int, int]] = []
         self.watered: list[int] = []
+        self._scene_id = 1
+        self.restored_home: list[int] = []
+        self.restored_strays: list[int] = []
+        self.put_down_calls: list[tuple[int, int | None]] = []
+
+    def current_scene_id(self) -> int:
+        return self._scene_id
 
     def list_items(self) -> list[_FakeItem]:
         return list(self._items)
 
-    def list_locations(self) -> list[_FakeLoc]:
+    def list_locations(self, **_kwargs: Any) -> list[_FakeLoc]:
         return list(self._locations)
+
+    def restore_home(self, item_id: int) -> _FakeItem | None:
+        item = self.get_item(item_id)
+        if item is None:
+            return None
+        home = item.home_location_id
+        if home is None:
+            return item
+        item.location_id = int(home)
+        self.restored_home.append(int(item_id))
+        self.moved.append((int(item_id), int(home)))
+        return item
+
+    def restore_strays_at(self, location_id: int) -> list[_FakeItem]:
+        self.restored_strays.append(int(location_id))
+        lid = int(location_id)
+        moved: list[_FakeItem] = []
+        for item in list(self._items):
+            if item.location_id != lid:
+                continue
+            home = item.home_location_id
+            if home is None or int(home) == lid:
+                continue
+            if item.kind not in ("food", "book", "toy", "keepsake", "seed"):
+                continue
+            item.location_id = int(home)
+            self.moved.append((item.id, int(home)))
+            moved.append(item)
+        return moved
+
+    def put_down(
+        self, item_id: int, *, location_id: int | None = None,
+    ) -> _FakeItem | None:
+        item = self.get_item(item_id)
+        if item is None:
+            return None
+        dest = location_id if location_id is not None else item.home_location_id
+        self.put_down_calls.append((int(item_id), dest))
+        if dest is None:
+            return item
+        item.location_id = int(dest)
+        self.moved.append((int(item_id), int(dest)))
+        return item
 
     def set_state(
         self,
@@ -260,6 +316,68 @@ class ActivitySelectionTests(unittest.TestCase):
         self.assertEqual(len(world.moved), 1)
         self.assertEqual(world.moved[0][0], 3)
 
+    def test_read_book_moves_the_book_then_puts_it_home(self) -> None:
+        kv = _FakeKV()
+        book = _FakeItem(
+            4,
+            "paperback",
+            kind="book",
+            slug="scifi_paperback",
+            location_id=2,
+            home_location_id=2,
+            state={"title": "paperback", "progress": 3, "total": 16},
+        )
+        world = _FakeWorldStore(
+            items=[book],
+            locations=[
+                _FakeLoc(1, "the desk", "desk"),
+                _FakeLoc(2, "the bookshelf", "bookshelf"),
+                _FakeLoc(3, "the beanbag", "beanbag"),
+            ],
+        )
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("read_book")
+        worker.run()
+        self.assertIn((4, 3), world.moved)
+        self.assertEqual(book.location_id, 2)
+        self.assertIn(4, world.restored_home)
+
+    def test_tidy_desk_returns_strays_home(self) -> None:
+        kv = _FakeKV()
+        book = _FakeItem(
+            4, "paperback", kind="book", location_id=1, home_location_id=2,
+        )
+        world = _FakeWorldStore(
+            items=[book],
+            locations=[
+                _FakeLoc(1, "the desk", "desk"),
+                _FakeLoc(2, "the bookshelf", "bookshelf"),
+            ],
+        )
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("tidy_desk")
+        worker.run()
+        self.assertEqual(world.restored_strays, [1])
+        self.assertEqual(book.location_id, 2)
+
+    def test_move_cat_stays_in_the_current_scene(self) -> None:
+        kv = _FakeKV()
+        cat = _FakeItem(3, "the cat", kind="pet", location_id=1)
+        world = _FakeWorldStore(
+            items=[cat],
+            locations=[
+                _FakeLoc(1, "the desk", "desk", scene_id=1),
+                _FakeLoc(2, "the bed", "bed", scene_id=1),
+                _FakeLoc(9, "the garden", "garden", scene_id=2),
+            ],
+        )
+        worker = _make_worker(world=world, kv=kv, cooldown=0.0)
+        worker.force_activity("move_cat")
+        worker.run()
+        self.assertEqual(world.moved, [(3, 2)])
+        self.assertEqual(cat.location_id, 2)
+        self.assertNotIn(3, world.restored_home)
+
     def test_beat_moves_aiko_to_matching_location(self) -> None:
         kv = _FakeKV()
         world = _FakeWorldStore(
@@ -379,6 +497,41 @@ class InProgressBeatTests(unittest.TestCase):
         self.assertFalse(result["resumed"])
         self.assertEqual(len(load_journal(kv.get)), 1)
         self.assertIsNone(in_progress_beat.load(kv.get))
+
+    def test_settling_an_open_read_puts_the_book_home(self) -> None:
+        kv = _FakeKV()
+        book = _FakeItem(
+            4,
+            "paperback",
+            kind="book",
+            slug="scifi_paperback",
+            location_id=2,
+            home_location_id=2,
+            state={"title": "paperback", "progress": 3, "total": 16},
+        )
+        world = _FakeWorldStore(
+            items=[book],
+            locations=[
+                _FakeLoc(1, "the desk", "desk"),
+                _FakeLoc(2, "the bookshelf", "bookshelf"),
+                _FakeLoc(3, "the beanbag", "beanbag"),
+            ],
+        )
+        worker = _make_worker(
+            world=world, kv=kv, cooldown=0.0, in_progress_ratio=1.0,
+        )
+        worker.force_activity("read_book")
+        worker.run()
+        self.assertEqual(book.location_id, 3)
+        beat = in_progress_beat.load(kv.get)
+        assert beat is not None
+        self.assertEqual(beat.used_item_id, 4)
+        beat.expected_end_at = (
+            datetime.now(timezone.utc) - timedelta(minutes=5)
+        ).isoformat(timespec="seconds")
+        in_progress_beat.save(kv.set, beat)
+        worker.run()
+        self.assertEqual(book.location_id, 2)
 
     def test_an_interrupted_beat_is_resumed_and_reads_as_a_thread(
         self,

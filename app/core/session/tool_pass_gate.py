@@ -103,6 +103,8 @@ _TOOL_FAMILY: dict[str, str] = {
     "water_plant": "world",
     "plant_seed": "world",
     "harvest_plant": "world",
+    "take_item": "world",
+    "put_item": "world",
     # goals
     "add_goal": "goals",
     "update_goal_progress": "goals",
@@ -204,6 +206,7 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"eat", r"drink", r"cookies?", r"tea", r"snacks?",
         r"look around", r"garden", r"plants?", r"water", r"seeds?",
         r"harvest", r"sprout",
+        r"pick up", r"put down", r"put it back", r"pocket",
         r"come over", r"my place", r"your (?:room|apartment|place)",
         r"visit", r"go home",
     ]),

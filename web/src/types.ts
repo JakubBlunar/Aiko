@@ -1980,6 +1980,18 @@ export const WORLD_KINDS: readonly WorldKind[] = [
   "other",
 ];
 
+export const WORLD_PORTABLE_KINDS: readonly WorldKind[] = [
+  "food",
+  "book",
+  "toy",
+  "keepsake",
+  "seed",
+];
+
+export function isWorldPortableKind(kind: string): boolean {
+  return (WORLD_PORTABLE_KINDS as readonly string[]).includes(kind);
+}
+
 export type WorldPosture =
   | "lying"
   | "sitting"
@@ -2050,6 +2062,7 @@ export interface WorldItem {
   consumable: boolean;
   quantity: number;
   location_id: number | null;
+  home_location_id?: number | null;
   state: Record<string, unknown>;
   given_by: string | null;
   created_at: string;

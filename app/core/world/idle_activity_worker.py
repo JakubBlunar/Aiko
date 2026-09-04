@@ -411,7 +411,13 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         # while she is still in the middle of it, and writing the
         # past-tense line now is exactly how the away-life ended up
         # reading as a list of completed errands.
-        if self._should_leave_open(chain, now):
+        leave_open = self._should_leave_open(chain, now)
+        last = chain[-1]
+        last_held = None
+        if leave_open and last.move_item_id is not None and last.restore_moved_item:
+            last_held = last.move_item_id
+        self._restore_moved_items(chain, keep_id=last_held)
+        if leave_open:
             open_beat = in_progress_beat.build(
                 key=chain[-1].key,
                 activity=chain[-1].activity,
@@ -419,6 +425,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 summary=summary,
                 now=now,
                 rng=self._rng,
+                used_item_id=last_held,
             )
             in_progress_beat.save(self._kv_set, open_beat)
             self._mark_fired(now)
@@ -544,6 +551,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
         )
         in_progress_beat.clear(self._kv_set)
+        self._restore_used_item(getattr(beat, "used_item_id", None))
         log.info(
             "away_activity completed: key=%s resumed=%s",
             beat.key, beat.interrupted,
@@ -979,6 +987,41 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         except Exception:
             return None
 
+    def _restore_used_item(self, item_id: int | None) -> None:
+        if item_id is None:
+            return
+        restore = getattr(self._world_store, "restore_home", None)
+        if not callable(restore):
+            return
+        try:
+            item = restore(int(item_id))
+        except Exception:
+            log.debug("away_activity restore_home failed", exc_info=True)
+            return
+        if item is not None:
+            try:
+                self._broadcast({"item": item.to_dict()})
+            except Exception:
+                log.debug("away_activity restore broadcast failed", exc_info=True)
+
+    def _restore_moved_items(
+        self,
+        chain: list[ActivityPlan],
+        *,
+        keep_id: int | None,
+    ) -> None:
+        seen: set[int] = set()
+        for beat in chain:
+            if not beat.restore_moved_item:
+                continue
+            iid = beat.move_item_id
+            if iid is None or iid in seen:
+                continue
+            if keep_id is not None and int(iid) == int(keep_id):
+                continue
+            seen.add(int(iid))
+            self._restore_used_item(int(iid))
+
     # ── world mutation ───────────────────────────────────────────────
 
     def _apply_world_mutation(self, plan: ActivityPlan) -> dict[str, Any] | None:
@@ -1020,6 +1063,17 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                     self._broadcast({"item": moved.to_dict()})
             except Exception:
                 log.debug("away_activity update_item failed", exc_info=True)
+
+        if plan.restore_strays_at_location_id is not None:
+            restore = getattr(self._world_store, "restore_strays_at", None)
+            if callable(restore):
+                try:
+                    for restored in restore(plan.restore_strays_at_location_id) or []:
+                        self._broadcast({"item": restored.to_dict()})
+                except Exception:
+                    log.debug(
+                        "away_activity restore_strays failed", exc_info=True,
+                    )
 
         if plan.item_effect is not None:
             return self._apply_item_effect(plan.item_effect)

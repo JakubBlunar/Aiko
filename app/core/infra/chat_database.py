@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 40
+_SCHEMA_VERSION = 41
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -322,6 +322,7 @@ CREATE TABLE IF NOT EXISTS world_items (
     consumable INTEGER NOT NULL DEFAULT 0,
     quantity INTEGER NOT NULL DEFAULT 1,
     location_id INTEGER REFERENCES world_locations(id) ON DELETE SET NULL,
+    home_location_id INTEGER REFERENCES world_locations(id) ON DELETE SET NULL,
     state_json TEXT NOT NULL DEFAULT '{}',
     given_by TEXT,
     created_at TEXT NOT NULL,
@@ -1867,6 +1868,16 @@ class ChatDatabase:
         # v39 -> v40: activity_events / activity_sessions. CREATE TABLE
         # IF NOT EXISTS above is enough; no ALTER. Retention ships with
         # the tables (ActivityPruneWorker).
+        # v40 -> v41: pocketable carrying. ``home_location_id`` is the
+        # spot an item returns to after an idle beat or a put_item; the
+        # WorldStore backfills it from the current location / seed map.
+        try:
+            conn.execute(
+                "ALTER TABLE world_items ADD COLUMN home_location_id "
+                "INTEGER REFERENCES world_locations(id) ON DELETE SET NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
         for stmt in (
             "ALTER TABLE turn_stance ADD COLUMN brevity INTEGER NOT NULL "
             "DEFAULT 0",

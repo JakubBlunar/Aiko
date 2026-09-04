@@ -11,6 +11,8 @@ of it to the LLM so Aiko can:
 - ``inspect_item`` for an item's full description and state.
 - ``consume_item`` for a consumable like a cookie (decrements quantity).
 - ``water_plant`` / ``plant_seed`` / ``harvest_plant`` — garden loop.
+- ``take_item`` / ``put_item`` — pick up a pocketable thing or put it
+  back (cap 2, excluding seeds).
 
 Two categories of tool with different usage profiles:
 
@@ -833,6 +835,8 @@ def build_world_tools(session: "SessionController") -> list[Any]:
     Returned in registration order so the registry exposes them
     consistently in :func:`ToolRegistry.names`.
     """
+    from app.llm.tools.world_carry import carry_tools
+
     return [
         LookAroundTool(session),
         MoveToTool(session),
@@ -843,4 +847,5 @@ def build_world_tools(session: "SessionController") -> list[Any]:
         WaterPlantTool(session),
         PlantSeedTool(session),
         HarvestPlantTool(session),
+        *carry_tools(session),
     ]

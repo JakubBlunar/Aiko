@@ -103,6 +103,23 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(loaded.summary, "got a few chapters in")
         self.assertEqual(loaded.expected_end_at, beat.expected_end_at)
 
+    def test_round_trip_preserves_the_used_item(self) -> None:
+        now = _now()
+        kv = _FakeKV()
+        beat = in_progress_beat.build(
+            key="read_book",
+            activity="reading",
+            posture="curled_up",
+            summary="got a few chapters in",
+            now=now,
+            rng=random.Random(1),
+            used_item_id=4,
+        )
+        in_progress_beat.save(kv.set, beat)
+        loaded = in_progress_beat.load(kv.get)
+        assert loaded is not None
+        self.assertEqual(loaded.used_item_id, 4)
+
     def test_clear_removes_it(self) -> None:
         kv = _FakeKV()
         in_progress_beat.save(kv.set, self._beat(_now()))

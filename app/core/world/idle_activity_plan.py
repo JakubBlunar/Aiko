@@ -64,6 +64,12 @@ class ActivityPlan:
     consume_item_id: int | None = None
     move_item_id: int | None = None
     move_to_location_id: int | None = None
+    # After the beat, put ``move_item_id`` back at home (a book she
+    # took to the beanbag). False for beats whose whole point is the
+    # relocation (the cat wandering to another cushion).
+    restore_moved_item: bool = True
+    # Portable items sitting at this spot whose home is elsewhere go home.
+    restore_strays_at_location_id: int | None = None
     # H13 — where Aiko herself relocates to for this beat (None = stay put).
     aiko_location_id: int | None = None
     # H14 — set when the worker LLM already composed a final summary, so

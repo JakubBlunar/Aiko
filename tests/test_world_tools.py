@@ -82,10 +82,10 @@ class _Harness:
 
 
 class BuildToolsTests(unittest.TestCase):
-    def test_build_returns_nine_tools(self) -> None:
+    def test_build_returns_eleven_tools(self) -> None:
         h = _Harness()
         tools = build_world_tools(h)
-        self.assertEqual(len(tools), 9)
+        self.assertEqual(len(tools), 11)
         names = {t.schema().name for t in tools}
         self.assertEqual(
             names,
@@ -99,6 +99,8 @@ class BuildToolsTests(unittest.TestCase):
                 "water_plant",
                 "plant_seed",
                 "harvest_plant",
+                "take_item",
+                "put_item",
             },
         )
         h.cleanup()
@@ -398,6 +400,61 @@ class GoToSceneTests(unittest.TestCase):
         tool = MoveToTool(h)
         with self.assertRaises(ToolError):
             tool.run({"location": "kitchenette"})
+        h.cleanup()
+
+
+class CarryToolTests(unittest.TestCase):
+    def test_take_and_put_a_book(self) -> None:
+        from app.llm.tools.world_carry import PutItemTool, TakeItemTool
+
+        h = _Harness()
+        take = TakeItemTool(h)
+        result = json.loads(take.run({"item": "scifi_paperback"}))
+        self.assertTrue(result["ok"])
+        book = next(
+            i for i in h._world_store.list_items()
+            if i.slug == "scifi_paperback"
+        )
+        self.assertIsNone(book.location_id)
+        put = PutItemTool(h)
+        placed = json.loads(put.run({"item": "scifi_paperback", "location": "desk"}))
+        self.assertTrue(placed["ok"])
+        self.assertEqual(placed["where"], "the desk")
+        self.assertEqual(
+            h._world_store.get_item(book.id).location_id,
+            h._world_store.get_location("desk").id,
+        )
+        h.cleanup()
+
+    def test_take_refuses_furniture(self) -> None:
+        from app.llm.tools.base import ToolError
+        from app.llm.tools.world_carry import TakeItemTool
+
+        h = _Harness()
+        take = TakeItemTool(h)
+        with self.assertRaises(ToolError):
+            take.run({"item": "warm lamp"})
+        h.cleanup()
+
+    def test_take_cap_snaps_oldest(self) -> None:
+        from app.llm.tools.world_carry import TakeItemTool
+
+        h = _Harness()
+        shelf = h._world_store.get_location("bookshelf")
+        h._world_store.add_item(
+            name="book a", kind="book", location_id=shelf.id,
+        )
+        h._world_store.add_item(
+            name="book b", kind="book", location_id=shelf.id,
+        )
+        take = TakeItemTool(h)
+        take.run({"item": "book a"})
+        take.run({"item": "book b"})
+        take.run({"item": "scifi_paperback"})
+        held = h._world_store.carried_items(include_seeds=False)
+        self.assertEqual(len(held), 2)
+        names = {i.name for i in held}
+        self.assertNotIn("book a", names)
         h.cleanup()
 
 

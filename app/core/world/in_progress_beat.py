@@ -81,6 +81,7 @@ class InProgressBeat:
     # Set when a return caught her at it; the beat becomes a thread to
     # pick back up rather than something to report.
     interrupted_at: str = ""
+    used_item_id: int | None = None
 
     @property
     def interrupted(self) -> bool:
@@ -145,6 +146,7 @@ def build(
     summary: str,
     now: datetime,
     rng: random.Random | None = None,
+    used_item_id: int | None = None,
 ) -> InProgressBeat:
     """Open a beat now, ending after a plausible span."""
     minutes = pick_duration_minutes(key, rng)
@@ -157,6 +159,7 @@ def build(
         expected_end_at=(
             now + timedelta(minutes=minutes)
         ).isoformat(timespec="seconds"),
+        used_item_id=int(used_item_id) if used_item_id is not None else None,
     )
 
 
@@ -183,6 +186,11 @@ def load(kv_get: Callable[[str], str | None]) -> InProgressBeat | None:
             started_at=str(blob.get("started_at") or ""),
             expected_end_at=str(blob.get("expected_end_at") or ""),
             interrupted_at=str(blob.get("interrupted_at") or ""),
+            used_item_id=(
+                int(blob["used_item_id"])
+                if blob.get("used_item_id") is not None
+                else None
+            ),
         )
     except Exception:
         log.debug("in-progress beat decode failed", exc_info=True)
