@@ -14,7 +14,7 @@ and how to extend it.
 
 ## Data model
 
-Four SQLite tables (schema v39 adds scenes). Created by
+Four SQLite tables (schema v41 adds `home_location_id` on items). Created by
 [`app/core/infra/chat_database.py`](../app/core/infra/chat_database.py):
 
 ```
@@ -24,15 +24,23 @@ world_scenes     (id, slug, name, description, origin, created_at, updated_at)
 world_locations  (id, scene_id, slug, name, description, position, locked)
                  UNIQUE(scene_id, slug). Seeded apartment spots are locked.
 world_items      (id, slug, name, description, kind, consumable,
-                  quantity, location_id NULLABLE, state_json,
-                  given_by, created_at, updated_at)
+                  quantity, location_id NULLABLE, home_location_id NULLABLE,
+                  state_json, given_by, created_at, updated_at)
 world_state      (id=1 singleton, scene_id, location_id, posture, activity,
                   mood_note, updated_at)
 ```
 
-- `location_id IS NULL` on a `world_items` row means **Aiko is
-  carrying that item** (e.g. she pocketed a cookie before walking to
-  the beanbag).
+- `location_id IS NULL` on a `world_items` row means **Aiko is holding
+  that item**. Only pocketable kinds can land there: `food`, `book`,
+  `toy`, `keepsake`, `seed`. Not gadgets, furniture, decor, plants, or
+  `other`. Cap is **2**, excluding seeds (they live in inventory until
+  planted). Constants: `PORTABLE_KINDS` / `CARRY_CAP` in
+  [`app/core/world/carry.py`](../app/core/world/carry.py).
+- `home_location_id` is the spot the item returns to after an idle beat
+  or `put_item`. Seeded on add (current location, else the rich-room
+  slug map, else the first spot in the scene). Deleting a location
+  relocates items to their home (or another remaining spot) — **never**
+  into her hands.
 - `world_state` is intentionally a singleton: there's one Aiko per
   assistant.
 - All vocabulary is whitelisted. Invalid `kind` / `posture` /
@@ -94,6 +102,8 @@ Example block:
 ```
 You are in your room. Right now: at the desk, sitting, watching screens.
 Nearby at the desk: dual monitors, a retro keyboard, a warm lamp.
+You're holding a sci-fi paperback. Put it down with put_item when
+you're done — don't wander around with an armful.
 Jacob gave you 3 cookies in the kitchenette.
 Acknowledge your surroundings only when it feels natural — never force
 a room mention or list your inventory.
@@ -110,9 +120,10 @@ system prompt (see `assemble_with_budget` in
 
 ## Agent tools
 
-Nine tools in [`app/llm/tools/world.py`](../app/llm/tools/world.py),
-gated by `tools.world` in config (default `true`). The last three are the
-garden loop, documented under [Garden](#garden-living-plants-outside-the-apartment):
+Eleven tools in [`app/llm/tools/world.py`](../app/llm/tools/world.py)
+(take/put live in [`world_carry.py`](../app/llm/tools/world_carry.py)),
+gated by `tools.world` in config (default `true`). The garden three are
+documented under [Garden](#garden-living-plants-outside-the-apartment):
 
 | Tool | What it does |
 |---|---|
@@ -123,6 +134,8 @@ garden loop, documented under [Garden](#garden-living-plants-outside-the-apartme
 | `inspect_item` | Detailed read of one item (description, current state, quantity remaining). |
 | `consume_item` | Decrement a consumable's quantity. Refuses politely on non-consumables ("the lamp isn't something you can consume"). The row is deleted at quantity zero. |
 | `water_plant` / `plant_seed` / `harvest_plant` | The garden loop. Each takes a plant/seed name and is restricted to rows of that `kind`, so `lavender` can't resolve to the cooking sprigs in the kitchenette. |
+| `take_item` | Pick up one pocketable thing (food / book / toy / keepsake / seed). Cap 2 excluding seeds; furniture and gadgets stay put. |
+| `put_item` | Put a held item down at the current spot, a named spot, or home. |
 
 Each tool description includes the same "only when natural" tonal
 nudge so Aiko doesn't spray tool calls.
@@ -176,6 +189,29 @@ while she narrated a biscuit that kept vanishing before it reached her.
 
 ---
 
+## Idle life puts things back
+
+Carrying is a chat-time pocket, not how the room rearranges itself while
+you are away. [`IdleAwayActivityWorker`](../app/core/world/idle_activity_worker.py)
+never persists `location_id=NULL` for a beat:
+
+- A `read_book` beat moves the paperback **to the beanbag** with her,
+  then restores it to `home_location_id` (the shelf) when the beat or
+  episode finishes. A chain of tea → read → nap does not leave the book
+  on the beanbag overnight.
+- `tidy_desk` is a real mutation: portable strays sitting on the desk
+  whose home is elsewhere go home. It never picks them up.
+- `move_cat` only targets other spots in the **current scene**. The cat
+  stays there; that beat is a wander, not a borrow.
+- If you return mid-beat, the caught-mid-activity cue `put_item`s the
+  used object at her current spot (matching the line she already says).
+  When the window later settles, it goes home.
+
+Garden harvest still drops produce in the kitchenette and can leave a
+fresh seed in inventory. That pattern is seed-only.
+
+---
+
 ## Give-cookie flow (silent)
 
 The user-facing surface is the **World** tab in `SettingsDrawer.tsx`,
@@ -218,7 +254,7 @@ All routes live in [`app/web/server.py`](../app/web/server.py):
 | `PATCH /api/world/state` | Patch posture / activity / location_id / mood_note. |
 | `POST /api/world/locations` | Create a location. |
 | `PATCH /api/world/locations/{id}` | Update name / description / position. |
-| `DELETE /api/world/locations/{id}` | Delete (cascades item.location_id to NULL; clears state pointer). |
+| `DELETE /api/world/locations/{id}` | Delete. Items there go home (or another remaining spot), never carried; clears Aiko's state pointer if she was standing there. |
 | `POST /api/world/items` | Create an item. The "give" wrapper passes `given_by: "user"`. |
 | `PATCH /api/world/items/{id}` | Update name / description / kind / location / quantity / state. |
 | `DELETE /api/world/items/{id}` | Delete an item. |
@@ -231,8 +267,9 @@ in `web/src/store.ts` (`applyWorldPatch`) handles each shape:
 - `{ state }` — replace `world.state`.
 - `{ location }` — upsert by id, sort by position.
 - `{ item }` — upsert by id.
-- `{ deleted_location_id }` — remove location, NULL out items at it,
-  clear state pointer if it was there.
+- `{ deleted_location_id }` — remove location, send items that lived
+  there to `home_location_id` (or the first remaining spot), clear
+  state pointer if it was there. A `{ snapshot }` usually follows.
 - `{ deleted_item_id }` — remove item.
 - `{ snapshot }` — replace everything (used after a reseed).
 
@@ -248,10 +285,12 @@ and renders four sections:
    inline `<select>`s that fire `PATCH /api/world/state`.
 2. **Give Aiko something** — the four quick-give presets plus a
    custom form. Each give is silent.
-3. **Items** — grouped by location. Items given by the user have a
-   green "gift" pill. Each row supports edit-in-place, delete, and
-   (for consumables) a "consume" button that decrements quantity and
-   deletes the row at zero.
+3. **Items** — grouped by location, with **carrying** last and only for
+   pocketable kinds (`WORLD_PORTABLE_KINDS`). The where-dropdown lists
+   spots first, then "in her hands" for those kinds. Items given by the
+   user have a green "gift" pill. Each row supports edit-in-place,
+   delete, and (for consumables) a "consume" button that decrements
+   quantity and deletes the row at zero.
 4. **Locations** — full editor for the room layout, plus a "+ Add"
    form for new locations.
 5. **Reset** — wipe + re-seed the default room (with a confirm
@@ -259,8 +298,8 @@ and renders four sections:
 
 Types live in [`web/src/types.ts`](../web/src/types.ts):
 `WorldLocation`, `WorldItem`, `WorldState`, `WorldSnapshot`,
-`WorldPatch`, plus the `WORLD_KINDS` / `WORLD_POSTURES` /
-`WORLD_ACTIVITIES` const arrays.
+`WorldPatch`, plus the `WORLD_KINDS` / `WORLD_PORTABLE_KINDS` /
+`WORLD_POSTURES` / `WORLD_ACTIVITIES` const arrays.
 
 API helpers live in [`web/src/api.ts`](../web/src/api.ts):
 `getWorld`, `patchWorldState`, `createWorldLocation`,
@@ -428,10 +467,11 @@ plant.
 
 | Suite | What it covers |
 |---|---|
-| [`tests/test_world_store.py`](../tests/test_world_store.py) | Schema migration, seed idempotency, CRUD, stacking on consumables, consume-to-zero, location-cascade, render-block shape, vocabulary clamping, garden seed + plant promotion + watering, harvest perennial/annual branches, outdoor render phrasing. |
+| [`tests/test_world_store.py`](../tests/test_world_store.py) | Schema migration, seed idempotency, CRUD, stacking on consumables, consume-to-zero, location-cascade (home, not NULL), carry refuse/cap/tidy-on-load, render-block shape + holding nudge, vocabulary clamping, garden seed + plant promotion + watering, harvest perennial/annual branches, outdoor render phrasing. |
+| [`tests/test_idle_activity_worker.py`](../tests/test_idle_activity_worker.py) | Idle beats: book to beanbag then home, tidy_desk returns strays, move_cat stays in-scene, in-progress settle puts the used item home. |
 | [`tests/test_session_controller_world.py`](../tests/test_session_controller_world.py) | Listener fan-out, `give_item` defaults, render fallback when the store is missing, reseed snapshot. |
 | [`tests/test_web_server_world.py`](../tests/test_web_server_world.py) | REST surface — status codes, payload shapes, error branches. |
-| [`tests/test_world_tools.py`](../tests/test_world_tools.py) | Each agent tool's happy + sad paths, including `water_plant` / `plant_seed` / `harvest_plant`. |
+| [`tests/test_world_tools.py`](../tests/test_world_tools.py) | Each agent tool's happy + sad paths, including `water_plant` / `plant_seed` / `harvest_plant` / `take_item` / `put_item`. |
 | [`tests/test_plant_growth_worker.py`](../tests/test_plant_growth_worker.py) | Hourly promotion: due sprouts advance, immature plants stay put, interval gate respected. |
 | [`tests/test_garden_visit_worker.py`](../tests/test_garden_visit_worker.py) | Outbound phase moves + waters + auto-harvests; daylight gate blocks night; cooldown blocks repeat visits; inbound phase fires after `return_at`. |
 | [`web/src/stores/useWorldStore.test.ts`](../web/src/stores/useWorldStore.test.ts) | `applyWorldPatch` reducer per discriminator + plant/seed kind round-trip. |

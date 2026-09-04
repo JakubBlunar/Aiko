@@ -5,9 +5,11 @@ place. It has four tables (created in :mod:`app.core.infra.chat_database`):
 
 - ``world_scenes`` — named places (builtin apartment + user-authored scenes).
 - ``world_locations`` — spots inside a scene (bed, desk, ...).
-- ``world_items`` — things. ``location_id IS NULL`` means Aiko is carrying
-  the item. Consumable items (cookies, tea) decrement on
-  ``consume_item`` and the row is deleted when ``quantity`` hits zero.
+- ``world_items`` — things. ``location_id IS NULL`` means Aiko is holding
+  the item (pocketable kinds only, cap 2 excluding seeds).
+  ``home_location_id`` is where it lives when put back. Consumable
+  items (cookies, tea) decrement on ``consume_item`` and the row is
+  deleted when ``quantity`` hits zero.
 - ``world_state`` — singleton (``id=1``) row holding Aiko's current
   scene, location, posture, activity, and an optional mood note.
 
@@ -41,6 +43,8 @@ from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
 from app.core.world.scene import BUILTIN_LOCATION_SLUGS, ORIGIN_BUILTIN
+from app.core.world.carry import CARRY_CAP
+from app.core.world.world_carry_mixin import WorldCarryMixin
 from app.core.world.world_scenes_mixin import WorldScenesMixin
 
 
@@ -334,6 +338,7 @@ class Item:
     given_by: str | None
     created_at: str
     updated_at: str
+    home_location_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -345,6 +350,11 @@ class Item:
             "consumable": bool(self.consumable),
             "quantity": int(self.quantity),
             "location_id": int(self.location_id) if self.location_id is not None else None,
+            "home_location_id": (
+                int(self.home_location_id)
+                if self.home_location_id is not None
+                else None
+            ),
             "state": dict(self.state or {}),
             "given_by": self.given_by,
             "created_at": self.created_at,
@@ -864,7 +874,7 @@ _DEFAULT_INITIAL_STATE = {
 # ── Store ───────────────────────────────────────────────────────────────
 
 
-class WorldStore(WorldScenesMixin):
+class WorldStore(WorldCarryMixin, WorldScenesMixin):
     """Thread-safe room model backed by ``world_*`` SQLite tables."""
 
     def __init__(self, db_path: Path) -> None:
@@ -897,8 +907,8 @@ class WorldStore(WorldScenesMixin):
             ).fetchall()
             item_rows = conn.execute(
                 "SELECT id, slug, name, description, kind, consumable, quantity, "
-                "location_id, state_json, given_by, created_at, updated_at "
-                "FROM world_items",
+                "location_id, state_json, given_by, created_at, updated_at, "
+                "home_location_id FROM world_items",
             ).fetchall()
             state_row = conn.execute(
                 "SELECT location_id, posture, activity, mood_note, updated_at, "
@@ -940,6 +950,7 @@ class WorldStore(WorldScenesMixin):
                     given_by=r[9],
                     created_at=r[10],
                     updated_at=r[11],
+                    home_location_id=int(r[12]) if r[12] is not None else None,
                 )
                 for r in item_rows
             }
@@ -960,6 +971,7 @@ class WorldStore(WorldScenesMixin):
             len(self._items),
             "yes" if self._state is not None else "no",
         )
+        self.tidy_carry_state()
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
@@ -1122,18 +1134,15 @@ class WorldStore(WorldScenesMixin):
         return loc
 
     def remove_location(self, location_id: int) -> bool:
-        """Delete a location. Items there have ``location_id`` set to NULL."""
+        """Delete a location. Items there go home (or another spot), never carried."""
         lid = int(location_id)
         with self._lock:
             loc = self._locations.get(lid)
             if loc is None or loc.locked:
                 return False
+            scene_id = loc.scene_id
+        self.relocate_from_deleted_location(lid, scene_id=scene_id)
         conn = self._get_conn()
-        conn.execute(
-            "UPDATE world_items SET location_id = NULL, updated_at = ? "
-            "WHERE location_id = ?",
-            (_now_iso(), lid),
-        )
         conn.execute("DELETE FROM world_locations WHERE id = ?", (lid,))
         # If Aiko was here, clear her location pointer too.
         conn.execute(
@@ -1145,13 +1154,16 @@ class WorldStore(WorldScenesMixin):
         now = _now_iso()
         with self._lock:
             self._locations.pop(lid, None)
-            for item in self._items.values():
-                if item.location_id == lid:
-                    item.location_id = None
-                    item.updated_at = now
             if self._state is not None and self._state.location_id == lid:
                 self._state.location_id = None
                 self._state.updated_at = now
+            # SQLite SET NULL may have cleared leftover FKs; keep the
+            # mirror from pointing at a row that no longer exists.
+            for item in self._items.values():
+                if item.location_id == lid:
+                    item.location_id = None
+                if getattr(item, "home_location_id", None) == lid:
+                    item.home_location_id = None
         return True
 
     # ── items ────────────────────────────────────────────────────────
@@ -1411,12 +1423,20 @@ class WorldStore(WorldScenesMixin):
             # spawn two "warm lamp" rows.
             return existing, False
 
+        loc_id, home_id = self.coerce_carry_location(
+            kind=clean_kind,
+            location_id=int(location_id) if location_id is not None else None,
+            home_location_id=None,
+            slug=clean_slug,
+        )
+
         now = _now_iso()
         conn = self._get_conn()
         cursor = conn.execute(
             "INSERT INTO world_items (slug, name, description, kind, consumable, "
-            "quantity, location_id, state_json, given_by, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "quantity, location_id, home_location_id, state_json, given_by, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 clean_slug,
                 clean_name,
@@ -1424,7 +1444,8 @@ class WorldStore(WorldScenesMixin):
                 clean_kind,
                 1 if consumable else 0,
                 clean_qty,
-                int(location_id) if location_id is not None else None,
+                int(loc_id) if loc_id is not None else None,
+                int(home_id) if home_id is not None else None,
                 _encode_state(clean_state),
                 given_by,
                 now,
@@ -1441,11 +1462,12 @@ class WorldStore(WorldScenesMixin):
             kind=clean_kind,
             consumable=bool(consumable),
             quantity=clean_qty,
-            location_id=int(location_id) if location_id is not None else None,
+            location_id=int(loc_id) if loc_id is not None else None,
             state=clean_state,
             given_by=given_by,
             created_at=now,
             updated_at=now,
+            home_location_id=int(home_id) if home_id is not None else None,
         )
         with self._lock:
             self._items[new_id] = item
@@ -1475,19 +1497,30 @@ class WorldStore(WorldScenesMixin):
         new_loc = item.location_id
         if location_id is not ...:
             new_loc = int(location_id) if location_id is not None else None
+        new_kind_for_home = new_kind
+        new_home = getattr(item, "home_location_id", None)
+        new_loc, new_home = self.coerce_carry_location(
+            kind=new_kind_for_home,
+            location_id=new_loc,
+            home_location_id=new_home,
+            slug=item.slug,
+            item_id=int(item_id),
+        )
         new_qty = item.quantity if quantity is None else max(0, int(quantity))
         new_state = dict(item.state or {}) if state is None else dict(state or {})
         now = _now_iso()
         conn = self._get_conn()
         conn.execute(
             "UPDATE world_items SET name = ?, description = ?, kind = ?, "
-            "location_id = ?, quantity = ?, state_json = ?, updated_at = ? "
+            "location_id = ?, home_location_id = ?, quantity = ?, "
+            "state_json = ?, updated_at = ? "
             "WHERE id = ?",
             (
                 new_name,
                 new_desc,
                 new_kind,
                 new_loc,
+                int(new_home) if new_home is not None else None,
                 new_qty,
                 _encode_state(new_state),
                 now,
@@ -1500,6 +1533,9 @@ class WorldStore(WorldScenesMixin):
             item.description = new_desc
             item.kind = new_kind
             item.location_id = new_loc
+            item.home_location_id = (
+                int(new_home) if new_home is not None else None
+            )
             item.quantity = new_qty
             item.state = new_state
             item.updated_at = now
@@ -1763,6 +1799,23 @@ class WorldStore(WorldScenesMixin):
                     _render_item_label(i) for i in here[:max_nearby]
                 )
                 lines.append(f"Nearby at {loc.name}: {rendered}.")
+        held = [
+            i for i in items
+            if i.location_id is None and (i.kind or "") != "seed"
+        ]
+        if held:
+            held.sort(key=lambda i: i.name.lower())
+            names = ", ".join(_render_item_label(i) for i in held)
+            if len(held) >= CARRY_CAP:
+                lines.append(
+                    f"You're holding too much: {names}. Put extras down "
+                    "with put_item before you pick anything else up."
+                )
+            else:
+                lines.append(
+                    f"You're holding {names}. Put it down with put_item "
+                    "when you're done — don't wander around with an armful."
+                )
         # Line 3: the most recent gift / consumable highlight.
         visible_ids = {i.id for i in self._visible_items()}
         gifts = [

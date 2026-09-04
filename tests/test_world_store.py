@@ -6,6 +6,7 @@ default seed, location/item CRUD, consume semantics, and the
 """
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,7 +55,12 @@ class SchemaTests(unittest.TestCase):
             version = conn.execute(
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
-            self.assertGreaterEqual(version[0], 39)
+            self.assertGreaterEqual(version[0], 41)
+            cols = {
+                r[1]
+                for r in conn.execute("PRAGMA table_info(world_items)").fetchall()
+            }
+            self.assertIn("home_location_id", cols)
 
     def test_world_store_loads_empty(self) -> None:
         with _TempDb() as (path, _db):
@@ -88,6 +94,10 @@ class SeedTests(unittest.TestCase):
             self.assertIn(book.name, titles)
             self.assertEqual(book.state.get("title"), book.name)
             self.assertNotEqual(book.name.lower(), "sci-fi paperback")
+            bookshelf = store.get_location("bookshelf")
+            self.assertIsNotNone(bookshelf)
+            self.assertEqual(book.home_location_id, bookshelf.id)
+            self.assertEqual(book.location_id, bookshelf.id)
 
     def test_seed_default_idempotent(self) -> None:
         with _TempDb() as (path, _db):
@@ -134,6 +144,7 @@ class LocationTests(unittest.TestCase):
     def test_add_and_remove_cascades_items(self) -> None:
         with _TempDb() as (path, _db):
             store = WorldStore(path)
+            store.seed_default()
             loc = store.add_location(name="the balcony")
             self.assertIsNotNone(loc)
             result = store.add_item(
@@ -144,10 +155,14 @@ class LocationTests(unittest.TestCase):
             self.assertEqual(item.location_id, loc.id)
             removed = store.remove_location(loc.id)
             self.assertTrue(removed)
-            # Item still exists, but its location is now NULL (carried).
-            survivors = store.list_items()
+            # Item still exists, relocated to another spot — never carried.
+            survivors = [i for i in store.list_items() if i.id == item.id]
             self.assertEqual(len(survivors), 1)
-            self.assertIsNone(survivors[0].location_id)
+            self.assertIsNotNone(survivors[0].location_id)
+            self.assertNotEqual(survivors[0].location_id, loc.id)
+            self.assertIsNotNone(
+                store.get_location_by_id(survivors[0].location_id),
+            )
 
     def test_remove_location_clears_aiko_state_pointer(self) -> None:
         with _TempDb() as (path, _db):
@@ -922,14 +937,15 @@ class SceneTests(unittest.TestCase):
                 name="cookies", kind="food", location_id=kitchen.id,
                 consumable=True, quantity=2,
             )[0]
-            lamp = store.add_item(
-                name="pocket lamp", kind="gadget", location_id=None,
+            book = store.add_item(
+                name="travel paperback", kind="book", location_id=None,
             )[0]
+            self.assertIsNone(book.location_id)
             scene = store.add_scene(name="the loft")
             store.travel_to_scene(scene.id)
             visible = {i.id for i in store._visible_items()}
             self.assertNotIn(cookies.id, visible)
-            self.assertIn(lamp.id, visible)
+            self.assertIn(book.id, visible)
             self.assertEqual(store.get_item(cookies.id).location_id, kitchen.id)
 
     def test_force_reseed_keeps_custom_scene(self) -> None:
@@ -953,6 +969,137 @@ class SceneTests(unittest.TestCase):
             store.seed_default()
             home = store.home_scene()
             self.assertFalse(store.remove_scene(home.id))
+
+
+class CarryTests(unittest.TestCase):
+    def test_non_portable_cannot_be_carried(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            lamp = next(i for i in store.list_items() if i.slug == "warm_lamp")
+            desk = store.get_location("desk")
+            updated = store.update_item(lamp.id, location_id=None)
+            self.assertIsNotNone(updated)
+            self.assertEqual(updated.location_id, desk.id)
+
+    def test_add_gadget_with_null_location_snaps_home(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            lamp = store.add_item(
+                name="pocket lamp", kind="gadget", location_id=None,
+            )[0]
+            self.assertIsNotNone(lamp.location_id)
+            self.assertEqual(lamp.location_id, lamp.home_location_id)
+            self.assertIsNotNone(store.get_location_by_id(lamp.location_id))
+
+    def test_carry_cap_snaps_oldest_home(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            shelf = store.get_location("bookshelf")
+            a = store.add_item(name="book a", kind="book", location_id=shelf.id)[0]
+            b = store.add_item(name="book b", kind="book", location_id=shelf.id)[0]
+            c = store.add_item(name="book c", kind="book", location_id=shelf.id)[0]
+            store.take_into_hands(a.id)
+            store.take_into_hands(b.id)
+            store.take_into_hands(c.id)
+            held = store.carried_items(include_seeds=False)
+            self.assertEqual(len(held), 2)
+            held_ids = {i.id for i in held}
+            self.assertNotIn(a.id, held_ids)
+            self.assertEqual(store.get_item(a.id).location_id, shelf.id)
+            self.assertIsNone(store.get_item(c.id).location_id)
+
+    def test_seeds_do_not_count_toward_cap(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            shelf = store.get_location("bookshelf")
+            a = store.add_item(name="book a", kind="book", location_id=shelf.id)[0]
+            b = store.add_item(name="book b", kind="book", location_id=shelf.id)[0]
+            seed = store.add_item(
+                name="sunflower seeds", kind="seed", location_id=None,
+            )[0]
+            store.take_into_hands(a.id)
+            store.take_into_hands(b.id)
+            self.assertIsNone(store.get_item(seed.id).location_id)
+            self.assertEqual(len(store.carried_items(include_seeds=False)), 2)
+
+    def test_remove_location_sends_item_home(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            balcony = store.add_location(name="the balcony")
+            book = store.add_item(
+                name="travel paperback", kind="book", location_id=balcony.id,
+            )[0]
+            store.remove_location(balcony.id)
+            moved = store.get_item(book.id)
+            self.assertIsNotNone(moved.location_id)
+            self.assertNotEqual(moved.location_id, balcony.id)
+            self.assertIsNotNone(store.get_location_by_id(moved.location_id))
+
+    def test_remove_location_honours_home_elsewhere(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            shelf = store.get_location("bookshelf")
+            balcony = store.add_location(name="the balcony")
+            book = store.add_item(
+                name="travel paperback", kind="book", location_id=shelf.id,
+            )[0]
+            store.update_item(book.id, location_id=balcony.id)
+            self.assertEqual(store.get_item(book.id).home_location_id, shelf.id)
+            store.remove_location(balcony.id)
+            self.assertEqual(store.get_item(book.id).location_id, shelf.id)
+
+    def test_tidy_illegal_carry_on_load(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            lamp = next(i for i in store.list_items() if i.slug == "warm_lamp")
+            lamp_id = lamp.id
+            store.close()
+            conn = sqlite3.connect(str(path))
+            conn.execute(
+                "UPDATE world_items SET location_id = NULL WHERE id = ?",
+                (lamp_id,),
+            )
+            conn.commit()
+            conn.close()
+            store2 = WorldStore(path)
+            restored = store2.get_item(lamp_id)
+            self.assertIsNotNone(restored.location_id)
+            store2.close()
+
+    def test_render_block_nudge_when_holding(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            empty = store.render_block()
+            self.assertNotIn("put_item", empty)
+            book = next(
+                i for i in store.list_items() if i.slug == "scifi_paperback"
+            )
+            store.take_into_hands(book.id)
+            block = store.render_block()
+            self.assertIn("put_item", block)
+            self.assertIn(book.name, block)
+            self.assertNotIn("too much", block)
+
+    def test_render_block_stronger_at_cap(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            shelf = store.get_location("bookshelf")
+            a = store.add_item(name="book a", kind="book", location_id=shelf.id)[0]
+            b = store.add_item(name="book b", kind="book", location_id=shelf.id)[0]
+            store.take_into_hands(a.id)
+            store.take_into_hands(b.id)
+            block = store.render_block()
+            self.assertIn("too much", block)
+            self.assertIn("put_item", block)
 
 
 if __name__ == "__main__":

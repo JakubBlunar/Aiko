@@ -62,6 +62,7 @@ def _open_beat(
     started_minutes_ago: float = 20.0,
     ends_in_minutes: float = 25.0,
     interrupted: bool = False,
+    used_item_id: int | None = None,
 ) -> in_progress_beat.InProgressBeat:
     now = datetime.now(timezone.utc)
     beat = in_progress_beat.build(
@@ -71,6 +72,7 @@ def _open_beat(
         summary=summary,
         now=now - timedelta(minutes=started_minutes_ago),
         rng=random.Random(0),
+        used_item_id=used_item_id,
     )
     beat.expected_end_at = (
         now + timedelta(minutes=ends_in_minutes)
@@ -154,6 +156,25 @@ class FiringTests(unittest.TestCase):
 
         stored = json.loads(db.values[in_progress_beat.IN_PROGRESS_KEY])
         self.assertTrue(stored["interrupted_at"])
+
+    def test_interrupt_puts_the_used_item_down(self) -> None:
+        calls: list[tuple[int, int | None]] = []
+
+        class _Store:
+            def get_state(self) -> SimpleNamespace:
+                return SimpleNamespace(location_id=7)
+
+            def put_down(self, item_id: int, *, location_id=None):
+                calls.append((item_id, location_id))
+                item = SimpleNamespace(id=item_id, location_id=location_id)
+                item.to_dict = lambda: {"id": item_id}
+                return item
+
+        host = _Host(chat_db=_db_with(_open_beat(used_item_id=4)))
+        host._world_store = _Store()
+        host._notify_world = lambda _patch: None
+        self.assertTrue(host._render_caught_mid_activity_block())
+        self.assertEqual(calls, [(4, 7)])
 
     def test_firing_claims_the_shared_gap_slot(self) -> None:
         # Both halves matter: the flag stops away_activities contradicting

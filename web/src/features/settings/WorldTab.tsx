@@ -4,6 +4,7 @@ import {
   WORLD_ACTIVITIES,
   WORLD_KINDS,
   WORLD_POSTURES,
+  isWorldPortableKind,
 } from "../../types";
 import type {
   CompanionSettings,
@@ -252,7 +253,9 @@ export function WorldTab({
   }
   const carriedItems =
     viewing != null && viewing.id === state.scene_id
-      ? (itemsByLocation.get(null) ?? [])
+      ? (itemsByLocation.get(null) ?? []).filter((item) =>
+          isWorldPortableKind(item.kind),
+        )
       : [];
   const sceneItemCount = locations.reduce(
     (n, loc) => n + (itemsByLocation.get(loc.id)?.length ?? 0),
@@ -1030,7 +1033,18 @@ function ItemRow({
               <span>kind:</span>
               <select
                 value={draft.kind}
-                onChange={(e) => setDraft({ ...draft, kind: e.target.value })}
+                onChange={(e) => {
+                  const kind = e.target.value;
+                  const next: ItemDraft = { ...draft, kind };
+                  if (
+                    !isWorldPortableKind(kind) &&
+                    next.location_id == null &&
+                    locations[0]
+                  ) {
+                    next.location_id = locations[0].id;
+                  }
+                  setDraft(next);
+                }}
                 className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
               >
                 {WORLD_KINDS.map((k) => (
@@ -1054,12 +1068,14 @@ function ItemRow({
                 }
                 className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
               >
-                <option value="">carried</option>
                 {locations.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.name}
                   </option>
                 ))}
+                {isWorldPortableKind(draft.kind) ? (
+                  <option value="">in her hands</option>
+                ) : null}
               </select>
             </label>
             <label className="flex items-center gap-1 text-[11px] text-ink-100/60">

@@ -1161,6 +1161,19 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         # and that is equally true whether he stepped out for an hour or
         # closed the laptop yesterday.
         in_progress_beat.mark_interrupted(chat_db.kv_set, beat, now)
+        used_id = getattr(beat, "used_item_id", None)
+        store = getattr(self, "_world_store", None)
+        if store is not None and used_id is not None:
+            try:
+                here = store.get_state().location_id
+                put = getattr(store, "put_down", None)
+                item = put(int(used_id), location_id=here) if callable(put) else None
+                if item is not None:
+                    notify = getattr(self, "_notify_world", None)
+                    if callable(notify):
+                        notify({"item": item.to_dict()})
+            except Exception:
+                log.debug("caught-mid-activity put_down failed", exc_info=True)
         self._gap_cue_surfaced = True
         self._spend_gap_slot("_pending_away_activities_seconds", fired=True)
 

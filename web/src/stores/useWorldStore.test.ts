@@ -256,7 +256,7 @@ describe("applyWorldPatch — deletions", () => {
     expect(items[0].id).toBe(2);
   });
 
-  it("removes a location and clears item.location_id + state pointer", () => {
+  it("removes a location and sends items home, not into her hands", () => {
     useWorldStore.getState().setWorld(
       makeSnapshot({
         locations: [
@@ -264,7 +264,7 @@ describe("applyWorldPatch — deletions", () => {
           makeLocation({ id: 2, slug: "bed", name: "bed" }),
         ],
         items: [
-          makeItem({ id: 1, location_id: 1 }),
+          makeItem({ id: 1, location_id: 1, home_location_id: 2 }),
           makeItem({ id: 2, location_id: 2 }),
         ],
         state: makeState({ location_id: 1 }),
@@ -273,7 +273,7 @@ describe("applyWorldPatch — deletions", () => {
     useWorldStore.getState().applyWorldPatch({ deleted_location_id: 1 });
     const world = useWorldStore.getState().world!;
     expect(world.locations.length).toBe(1);
-    expect(world.items.find((i) => i.id === 1)?.location_id).toBeNull();
+    expect(world.items.find((i) => i.id === 1)?.location_id).toBe(2);
     expect(world.state.location_id).toBeNull();
     // Item that wasn't at the deleted location is untouched.
     expect(world.items.find((i) => i.id === 2)?.location_id).toBe(2);

@@ -37,6 +37,7 @@ _ALL_TOOLS = [
     "get_time", "recall", "recall_topic",
     "look_around", "move_to", "go_to_scene", "change_posture", "inspect_item",
     "consume_item", "water_plant", "plant_seed", "harvest_plant",
+    "take_item", "put_item",
     "add_goal", "update_goal_progress", "archive_goal", "list_goals",
     "start_workflow", "check_my_work", "cancel_work",
     "get_weather", "get_forecast", "web_search",
@@ -167,6 +168,9 @@ class SignalFamilyTests(unittest.TestCase):
 
     def test_world_signal(self) -> None:
         self._assert_runs("go sit by the window", "world")
+
+    def test_world_carry_signal(self) -> None:
+        self._assert_runs("can you pick that up and put it back?", "world")
 
     def test_world_consume_signal(self) -> None:
         self._assert_runs("have a cookie!", "world")

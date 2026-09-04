@@ -91,13 +91,22 @@ export const useWorldStore = create<WorldSlice>()((set) => ({
           world: {
             ...current,
             locations: current.locations.filter((l) => l.id !== lid),
-            // Items that lived in this location now have their
-            // location_id cleared. The backend has already done this in
-            // SQLite; mirror it here so the UI doesn't flash a stale
-            // location reference until the next snapshot arrives.
-            items: current.items.map((i) =>
-              i.location_id === lid ? { ...i, location_id: null } : i,
-            ),
+            // Items that lived here go home (or the first remaining
+            // spot), never into her hands. A snapshot usually follows
+            // this patch; this keeps the flash from dumping the room
+            // into "carrying".
+            items: current.items.map((i) => {
+              if (i.location_id !== lid) return i;
+              const home = i.home_location_id;
+              if (home != null && home !== lid) {
+                return { ...i, location_id: home };
+              }
+              const fallback = current.locations.find((l) => l.id !== lid);
+              return {
+                ...i,
+                location_id: fallback != null ? fallback.id : i.location_id,
+              };
+            }),
             state:
               current.state.location_id === lid
                 ? { ...current.state, location_id: null }

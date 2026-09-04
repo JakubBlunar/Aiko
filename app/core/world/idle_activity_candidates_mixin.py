@@ -45,6 +45,18 @@ class ActivityCandidatesMixin:
             locations = self._world_store.list_locations()
         except Exception:
             locations = []
+        scene_id = None
+        current_scene = getattr(self._world_store, "current_scene_id", None)
+        if callable(current_scene):
+            try:
+                scene_id = current_scene()
+            except Exception:
+                scene_id = None
+        if scene_id is not None:
+            locations = [
+                loc for loc in locations
+                if getattr(loc, "scene_id", scene_id) == scene_id
+            ]
 
         candidates: dict[str, ActivityPlan] = {}
 
@@ -73,14 +85,15 @@ class ActivityCandidatesMixin:
                 aiko_location_id=window.id,
             )
 
-        # Desk — tidy / tinker (almost always present).
+        # Desk — tidy / tinker: put stray pocketables back where they live.
         if loc_desk is not None:
             candidates["tidy_desk"] = ActivityPlan(
                 key="tidy_desk",
                 posture="sitting",
                 activity="tinkering",
-                summary="tidied up my desk and tinkered with a little project",
+                summary="tidied up my desk and put a few things back where they belong",
                 aiko_location_id=loc_desk.id,
+                restore_strays_at_location_id=loc_desk.id,
             )
 
         # Nap — only when there's a bed to do it in.
@@ -220,15 +233,18 @@ class ActivityCandidatesMixin:
         )
         if book is None:
             return
+        dest_id = (
+            loc_beanbag.id if loc_beanbag
+            else (loc_bookshelf.id if loc_bookshelf else None)
+        )
         candidates["read_book"] = ActivityPlan(
             key="read_book",
             posture="curled_up",
             activity="reading",
             summary=beat_detail.read_book_summary(book),
-            aiko_location_id=(
-                loc_beanbag.id if loc_beanbag
-                else (loc_bookshelf.id if loc_bookshelf else None)
-            ),
+            aiko_location_id=dest_id,
+            move_item_id=book.id,
+            move_to_location_id=dest_id,
             item_effect=ItemEffect(
                 item_id=book.id, action=EFFECT_ADVANCE_BOOK,
             ),
@@ -252,18 +268,32 @@ class ActivityCandidatesMixin:
         )
         if pet is None or not locations:
             return
+        pet_scene = None
+        pet_loc_id = getattr(pet, "location_id", None)
+        if pet_loc_id is not None:
+            for loc in locations:
+                if loc.id == pet_loc_id:
+                    pet_scene = getattr(loc, "scene_id", None)
+                    break
         other = [
             loc for loc in locations
-            if loc.id != getattr(pet, "location_id", None)
+            if loc.id != pet_loc_id
+            and (
+                pet_scene is None
+                or getattr(loc, "scene_id", pet_scene) == pet_scene
+            )
         ]
         target = self._rng.choice(other) if other else None
+        if target is None:
+            return
         candidates["move_cat"] = ActivityPlan(
             key="move_cat",
             posture="sitting",
             activity="idle",
             summary=pet.name + " curled up next to me and kept me company",
             move_item_id=pet.id,
-            move_to_location_id=target.id if target is not None else None,
+            move_to_location_id=target.id,
+            restore_moved_item=False,
         )
 
 
