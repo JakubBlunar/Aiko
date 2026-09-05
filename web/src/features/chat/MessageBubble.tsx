@@ -272,7 +272,7 @@ function MessageBubbleImpl({
                 ★ saved
               </span>
             ) : markOpen ? (
-              <div className="flex items-center gap-1 rounded-md border border-white/15 bg-black/70 px-2 py-1 shadow-lg">
+              <div className="flex items-center gap-1 rounded-md border border-white/15 bg-black/70 px-2 py-1 shadow-lg select-none">
                 <span className="text-[10px] text-ink-100/55">vibe:</span>
                 {SHARED_MOMENT_VIBES.map((v) => (
                   <button
@@ -300,7 +300,7 @@ function MessageBubbleImpl({
               <button
                 type="button"
                 onClick={() => setMarkOpen(true)}
-                className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-ink-100/70 hover:bg-white/10"
+                className="rounded-md border border-white/10 bg-black/40 px-2 py-0.5 text-[10px] text-ink-100/70 hover:bg-white/10 select-none"
                 title="Save this exchange as a shared moment"
               >
                 ★ mark as moment
@@ -327,7 +327,7 @@ function MessageBubbleImpl({
         </div>
       ) : null}
       {canReact ? (
-        <div className="flex flex-wrap items-center gap-1 self-start">
+        <div className="flex flex-wrap items-center gap-1 self-start select-none">
           {reactionEntries.length > 0 ? (
             <div className="flex flex-wrap items-center gap-1">
               {reactionEntries.map(([kindKey, count]) => {
