@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 42
+_SCHEMA_VERSION = 43
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -276,6 +276,43 @@ CREATE TABLE IF NOT EXISTS conversation_situation (
     source_message_id INTEGER NOT NULL DEFAULT 0,
     miss_count INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
+);
+
+-- Schema v43: Aiko's identity-wide sleep lifecycle. ``sleep_state`` is a
+-- generation-checked singleton; ``sleep_episodes`` is its bounded narrative
+-- history and owns interruption/dream/diary deduplication.
+CREATE TABLE IF NOT EXISTS sleep_episodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL DEFAULT 'overnight',
+    reason_code TEXT NOT NULL DEFAULT '',
+    reason_text TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    outcome TEXT NOT NULL DEFAULT '',
+    previous_world_json TEXT NOT NULL DEFAULT '{}',
+    interruptions_json TEXT NOT NULL DEFAULT '[]',
+    source_session TEXT,
+    source_message_id INTEGER,
+    dream_memory_id INTEGER,
+    diary_memory_id INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sleep_episodes_started
+    ON sleep_episodes(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS sleep_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    status TEXT NOT NULL DEFAULT 'awake',
+    generation INTEGER NOT NULL DEFAULT 0,
+    entered_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    current_episode_id INTEGER REFERENCES sleep_episodes(id) ON DELETE SET NULL,
+    sleep_kind TEXT,
+    reason_code TEXT NOT NULL DEFAULT '',
+    reason_text TEXT NOT NULL DEFAULT '',
+    last_woken_at TEXT,
+    previous_world_json TEXT NOT NULL DEFAULT '{}'
 );
 
 -- Phase 4c: prepared nudges (single row per user; ProactiveDirector consumes).
@@ -1897,6 +1934,9 @@ class ChatDatabase:
         # block above handles fresh and upgraded databases; there is no
         # historical backfill because present-tense context cannot be
         # reconstructed honestly from an old transcript.
+        # v42 -> v43: identity-wide sleep state and episode history. Existing
+        # installs deliberately receive no inferred episode: SleepStore lazily
+        # creates the singleton in ``awake`` on its first read.
         for stmt in (
             "ALTER TABLE turn_stance ADD COLUMN brevity INTEGER NOT NULL "
             "DEFAULT 0",

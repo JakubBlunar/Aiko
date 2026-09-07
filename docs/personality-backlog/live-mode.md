@@ -77,11 +77,10 @@ producer:
    independent threads. Task escalation enters `BrainEventQueue`, but ordinary
    silence does not. Live mode cannot add a fifth speech path; all autonomous
    floor-taking must converge on one gate.
-2. [`lifecycle_mixin.py`](../../app/core/session/lifecycle_mixin.py) checks
-   `_live_mode_enabled` when deciding whether idle workers may run, while the
-   active voice state is `_live_voice_session_active`. The former is not set
-   elsewhere. That documentation/code drift must be fixed rather than copied
-   into a new mode.
+2. **Shipped prerequisite:** [`lifecycle_mixin.py`](../../app/core/session/lifecycle_mixin.py)
+   now checks `_live_voice_session_active` when deciding whether idle workers
+   may run. Live mode must keep that existing voice ownership gate rather than
+   introducing a parallel `_live_mode_enabled` flag.
 3. [`OllamaClient.chat_json`](../../app/llm/ollama_client.py) supports
    `format: "json"` but cannot pass an actual JSON schema. Live actions need a
    supplied schema plus normal client-side validation.
@@ -487,6 +486,8 @@ Typed and voice turns now share a Phase-2-lite core:
 - `conversation_situation_snapshot()` joins that semantic state with same-turn
   dialogue act, interaction mode, affect/vitality, activity awareness, and the
   authoritative room state;
+- the same snapshot now projects the durable sleep state and active episode,
+  including reason, duration, prior activity, and interruption count;
 - a compact T6 block carries only the semantic/shared delta, while K16 reads
   its ambient world/mood/app fields from the same snapshot;
 - `WorldMutationGuard` prevents away, garden, and circadian movers from
@@ -496,6 +497,14 @@ Typed and voice turns now share a Phase-2-lite core:
 This is deliberately not the complete `LiveSituationFrame`: frontend typing
 edges, playback acknowledgement, attention, urges, monotonic action timing,
 budgets, and Live policy decisions remain in the phases below.
+
+**Shipped precursor — sleep and day continuity (September 2026).** Sleep is
+already owned by a generation-checked persisted lifecycle, not by inferred
+message gaps or a future Live policy. Live situation assembly must consume
+`SleepSnapshot` and emit environmental wake/interruption impulses into that
+controller. It must not create another sleep state machine. While `asleep`,
+ordinary world movers and proactive speech are suspended; only validated
+lifecycle transitions may change sleep/world truth.
 
 ### `LiveSituationFrame`
 

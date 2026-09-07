@@ -892,65 +892,122 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         )
         return block
 
+    def _render_sleep_state_block(self) -> str:
+        """Authoritative sleep facts and the model's validated decision grammar."""
+        store = getattr(self, "_sleep_store", None)
+        if store is None or not bool(
+            getattr(self._settings.agent, "sleep_enabled", True)
+        ):
+            return ""
+        try:
+            snapshot = dict(
+                getattr(self, "_active_sleep_context", None) or store.snapshot()
+            )
+        except Exception:
+            return ""
+        status = str(snapshot.get("status") or "awake")
+        user_text = str(getattr(self, "_active_turn_user_text", "") or "").lower()
+        sleep_intent = any(
+            phrase in user_text
+            for phrase in (
+                "goodnight",
+                "good night",
+                "go to bed",
+                "go to sleep",
+                "get some sleep",
+                "you should sleep",
+            )
+        )
+        if status == "awake" and not sleep_intent:
+            return ""
+
+        episode = snapshot.get("episode")
+        episode = episode if isinstance(episode, dict) else {}
+        prior = snapshot.get("previous_world")
+        prior = prior if isinstance(prior, dict) else {}
+        reason = str(snapshot.get("reason_code") or episode.get("reason_code") or "tired")
+        reason_text = str(
+            snapshot.get("reason_text") or episode.get("reason_text") or ""
+        )
+        lines = [
+            "AUTHORITATIVE SLEEP LIFECYCLE (private state; do not quote as telemetry):",
+            f"- state={status}; local_time={timephrase.now().strftime('%Y-%m-%d %H:%M')}",
+            (
+                f"- kind={snapshot.get('sleep_kind') or episode.get('kind') or 'none'}; "
+                f"duration_minutes={float(snapshot.get('duration_seconds') or 0.0) / 60.0:.1f}; "
+                f"interruptions={int(snapshot.get('interruption_count') or 0)}"
+            ),
+            f"- reason_code={reason}; reason_text={reason_text or 'none recorded'}",
+            (
+                "- before sleep: "
+                f"location={prior.get('location_slug') or prior.get('location_id') or 'unknown'}, "
+                f"posture={prior.get('posture') or 'unknown'}, "
+                f"activity={prior.get('activity') or 'unknown'}"
+            ),
+        ]
+        if status == "asleep":
+            lines.extend(
+                [
+                    "- This message interrupted ongoing sleep; it does NOT wake you automatically.",
+                    "- End the response with exactly one decision: [[sleep:wake]] or "
+                    "[[sleep:stay_asleep]].",
+                    "- stay_asleep means at most one brief foggy fragment, then remain asleep.",
+                ]
+            )
+        elif status == "woken":
+            lines.extend(
+                [
+                    "- You are awake enough to answer but still lying down and sleepy.",
+                    "- Use [[sleep:fully_awake]] only if you genuinely get up; use "
+                    "[[sleep:back_to_sleep]] if you settle back down. No tag preserves woken.",
+                ]
+            )
+        elif status == "winding_down":
+            lines.append(
+                "- Use [[sleep:fall_asleep]] if you now settle to sleep, or "
+                "[[sleep:cancel]] if you decide to stay up. No tag preserves winding_down."
+            )
+        else:
+            lines.append(
+                "- The user's message opens a bedtime choice. Use [[sleep:wind_down]] only "
+                "if you actually choose to go to bed; otherwise emit no sleep tag."
+            )
+        return "\n".join(lines)
+
     def _render_sleep_return_block(self) -> str:
-        """H21: narrate having dozed off on return from an overnight gap.
-
-        The behavioural anchor for the dream system. Runs first in the
-        gap-cue family (immediately after K28 ``turning_over``, before K36
-        ``away_activities`` / K34 ``forward_curiosity``) so an overnight
-        return reads as "I actually fell asleep …" rather than "I tidied
-        the desk while you were away". When a recent ``[dream]`` reflection
-        exists, it's woven into the line so the dream finally has a cause.
-
-        Two ways to fire, the pool first: a line she was shown and did
-        not use comes back before a new one is composed. Otherwise the
-        slot ``self._pending_sleep_return_seconds`` (armed in
-        ``post_turn_helpers_mixin._maybe_arm_sleep_return_slot`` on a typed
-        gap >= ``memory.sleep_return_min_gap_hours``) opens the door and
-        the finer return-hour-aware overnight gate
-        (:func:`sleep_return.looks_like_overnight`) decides. A gap that
-        doesn't read as a sleep returns "" WITHOUT touching
-        ``_gap_cue_surfaced``, so the ordinary away / forward cues still
-        get their turn -- and now without burning the slot either, since
-        nothing was spent. When it does fire it sets ``_gap_cue_surfaced``
-        so the rest of the family defers, and logs the line to the pool.
-
-        Defers to ``turning_over`` (which runs first and owns the
-        ``_gap_cue_surfaced`` reset). MCP debug:
-        ``force_sleep_return_surface`` arms ``_sleep_return_force_next`` to
-        bypass the slot + overnight gates.
-        """
+        """Surface one completed recorded episode; never infer sleep from a gap."""
         if not bool(
             getattr(self._settings.agent, "sleep_return_enabled", True)
         ):
             return ""
-
-        force_next = bool(
-            self._debug_overrides.take("sleep_return_force_next", False)
+        store = getattr(self, "_sleep_store", None)
+        if store is None or getattr(self, "_gap_cue_surfaced", False):
+            return ""
+        episodes = store.list_episodes(limit=1)
+        if not episodes or not episodes[0].ended_at:
+            return ""
+        episode = episodes[0]
+        watermark = self._chat_db.kv_get("sleep.return_surfaced_episode")
+        if watermark == str(episode.id):
+            return ""
+        started = timephrase.parse_iso(episode.started_at)
+        ended = timephrase.parse_iso(episode.ended_at)
+        hours = (
+            max(0.0, (ended - started).total_seconds() / 3600.0)
+            if started is not None and ended is not None
+            else 0.0
         )
-
-        # One-of guard: turning_over already surfaced a gap cue this
-        # assembly. Stand down (unless explicitly forced).
-        if not force_next and getattr(self, "_gap_cue_surfaced", False):
-            return ""
-
-        row = self.take_pool_cue("sleep_return")
-        if row is not None:
-            self._pending_sleep_return_seconds = None
-            self._gap_cue_surfaced = True
-            log.info("sleep-return retry: cue=%d", row.id)
-            return row.text
-
-        seconds = getattr(self, "_pending_sleep_return_seconds", None)
-        if not force_next and seconds is None:
-            # Already reported by ``take_pool_cue``; see ``turning_over``.
-            # This is the bail behind 6 of the 7 impossible mutex rows on
-            # the live ledger, and the reason was never missing -- the
-            # structural attribution was overwriting it.
-            return ""
-
-        block = self._sleep_return_line(seconds, force_next=force_next)
-        self._spend_gap_slot("_pending_sleep_return_seconds", fired=bool(block))
+        reason = episode.reason_text or episode.reason_code or "being tired"
+        block = (
+            "RECORDED SLEEP CONTINUITY: You just completed a real "
+            f"{episode.kind} sleep episode ({hours:.1f} hours; reason: {reason}; "
+            f"interruptions: {len(episode.interruptions)}; outcome: "
+            f"{episode.outcome or 'awake'}). You may remember this naturally, "
+            "but do not recite these fields or invent unrecorded sleep."
+        )
+        self._chat_db.kv_set("sleep.return_surfaced_episode", str(episode.id))
+        self._pending_sleep_return_seconds = None
+        self._gap_cue_surfaced = True
         return block
 
     def _sleep_return_line(self, seconds: Any, *, force_next: bool) -> str:

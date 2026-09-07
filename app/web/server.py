@@ -1114,6 +1114,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 # multiplier so the avatar starts at the right droop on
                 # connect (e.g. sleepy at 2am) without waiting for a turn.
                 "vitality": session.vitality_snapshot(),
+                "sleep": session.sleep_snapshot(),
                 "identity": {
                     "user_display_name": (
                         session.settings.assistant.user_display_name or ""

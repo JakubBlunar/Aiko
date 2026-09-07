@@ -53,6 +53,7 @@ export function AvatarPanel() {
   const reaction = useAssistantStore((s) => s.reaction);
   const voiceMode = useAssistantStore((s) => s.voiceMode);
   const avatar = useAssistantStore((s) => s.avatar);
+  const sleep = useAssistantStore((s) => s.sleep);
   const world = useWorldStore((s) => s.world);
   const connectionStatus = useAssistantStore((s) => s.connection.status);
   const panelWidth = useAssistantStore((s) => s.personaPanelWidth);
@@ -112,6 +113,14 @@ export function AvatarPanel() {
           <span className="line-clamp-2 text-[10px] uppercase leading-[14px] tracking-[0.2em] text-ink-100/40">
             {ttsState === "speaking"
               ? "speaking"
+              : sleep?.status === "asleep"
+                ? sleep.sleep_kind === "nap"
+                  ? "napping"
+                  : "asleep"
+                : sleep?.status === "winding_down"
+                  ? "winding down"
+                  : sleep?.status === "woken"
+                    ? "waking up"
               : voiceMode !== "off"
                 ? voiceMode
                 : worldCaption(world) || "idle"}

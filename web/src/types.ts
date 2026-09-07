@@ -306,6 +306,8 @@ export type GroundingLineMode = "off" | "replace" | "split";
 export type ExpressionMaskMode = "off" | "tsundere_light" | "tsundere_full";
 
 export interface CompanionSettings {
+  sleep_enabled: boolean;
+  sleep_naps_enabled: boolean;
   world_notice_enabled: boolean;
   world_notice_interval_seconds: number;
   world_notice_cooldown_seconds: number;
@@ -842,6 +844,37 @@ export interface VitalitySnapshot {
   energy: number | null;
   expressiveness_mult: number;
   band: string;
+}
+
+export type SleepStatus = "awake" | "winding_down" | "asleep" | "woken";
+export type SleepKind = "overnight" | "nap";
+
+export interface SleepEpisodeSnapshot {
+  id: number;
+  kind: SleepKind;
+  reason_code: string;
+  reason_text: string;
+  started_at: string;
+  ended_at: string | null;
+  outcome: string;
+  interruptions: Array<Record<string, unknown>>;
+  dream_memory_id: number | null;
+  diary_memory_id: number | null;
+}
+
+export interface SleepSnapshot {
+  status: SleepStatus;
+  generation: number;
+  entered_at: string;
+  updated_at: string;
+  duration_seconds: number;
+  current_episode_id: number | null;
+  sleep_kind: SleepKind | null;
+  reason_code: string;
+  reason_text: string;
+  interruption_count: number;
+  enabled?: boolean;
+  episode: SleepEpisodeSnapshot | null;
 }
 
 export interface MilestoneEntry {
@@ -2224,6 +2257,7 @@ export type WsServerEvent =
       /** K68: current body-energy snapshot so the avatar starts at the
        * right gesture/breath amplitude on connect. */
       vitality?: VitalitySnapshot;
+      sleep?: SleepSnapshot;
     }
   | {
       type: "voice_owner_changed";
@@ -2313,6 +2347,7 @@ export type WsServerEvent =
   | { type: "belief_deleted"; id: number }
   | { type: "agenda_updated"; item: AgendaItem }
   | { type: "world_updated"; patch: WorldPatch }
+  | { type: "sleep_state_changed"; snapshot: SleepSnapshot }
   | {
       /** H11. Fresh weather snapshot from the WeatherWorker (or an
        * immediate post-reconfigure fetch). Drives the persona backdrop. */

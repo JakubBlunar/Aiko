@@ -52,6 +52,32 @@ def _utcnow() -> datetime:
 LANE_COMPUTE = "compute"
 LANE_LLM = "llm"
 
+SLEEP_CONTINUE = "continue"
+SLEEP_PAUSE = "pause"
+SLEEP_ONLY = "sleep_only"
+SLEEP_POLICIES = frozenset({SLEEP_CONTINUE, SLEEP_PAUSE, SLEEP_ONLY})
+# Conservative defaults for pre-existing workers. Anything not listed pauses
+# while asleep, so a newly-added world/cue producer cannot accidentally create
+# waking-life continuity during a sleep episode.
+SLEEP_CONTINUE_WORKER_NAMES = frozenset(
+    {
+        "activity_prune",
+        "affection_style_decay",
+        "concept_edge_integrity",
+        "concept_lifecycle",
+        "day_color",
+        "humor_style_decay",
+        "memory_decay",
+        "memory_promotion",
+        "plant_growth",
+        "rag_maintenance",
+        "task_cleanup",
+        "topic_graph_rebuild",
+        "vitality",
+        "weather",
+    }
+)
+
 # Urgency blend. Pressure dominates -- the whole point is to serve real
 # backlog first -- but staleness keeps a persistently low-pressure worker
 # from being starved forever by noisier neighbours.
@@ -143,6 +169,15 @@ class DemandAwareWorker(IdleWorker, Protocol):
     def demand(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> "WorkSignal | None":
+        ...
+
+
+@runtime_checkable
+class SleepAwareWorker(IdleWorker, Protocol):
+    """A worker declaring whether it runs during the persisted sleep state."""
+
+    @property
+    def sleep_policy(self) -> str:
         ...
 
 

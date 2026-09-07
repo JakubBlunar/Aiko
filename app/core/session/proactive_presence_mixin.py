@@ -29,8 +29,19 @@ class ProactivePresenceMixin:
     def generate_proactive_message(self) -> str | None:
         # The new ProactiveDirector speaks directly via TTS. Returning ``None``
         # tells LiveWorker not to also queue something itself.
+        if self._sleeping_now():
+            return None
         self._proactive.notify_silence(self.session_key)
         return None
+
+    def _sleeping_now(self) -> bool:
+        store = getattr(self, "_sleep_store", None)
+        if store is None:
+            return False
+        try:
+            return store.get_state().status == "asleep"
+        except Exception:
+            return False
 
     def set_live_voice_session_active(self, active: bool) -> None:
         was_active = self._live_voice_session_active
@@ -62,6 +73,8 @@ class ProactivePresenceMixin:
         """
         agent = self._settings.agent
         if not bool(getattr(agent, "proactive_typed_enabled", True)):
+            return False
+        if self._sleeping_now():
             return False
         if self._live_voice_session_active:
             return False
@@ -122,6 +135,8 @@ class ProactivePresenceMixin:
         agent = self._settings.agent
         if not bool(getattr(agent, "proactive_typed_enabled", True)):
             return
+        if self._sleeping_now():
+            return
         budget = float(getattr(agent, "proactive_silence_seconds_typed", 240.0))
         if budget <= 0.0:
             return
@@ -170,6 +185,8 @@ class ProactivePresenceMixin:
             self._typed_silence_armed_at = None
             self._typed_silence_armed_budget = None
         try:
+            if self._sleeping_now():
+                return
             self._proactive.notify_typed_silence(self.session_key)
         except Exception:
             log.debug("notify_typed_silence raised", exc_info=True)

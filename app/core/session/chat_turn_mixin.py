@@ -110,6 +110,7 @@ class ChatTurnMixin:
         # reply-on-complete turn to remind Aiko what the user asked for.
         # Best-effort and opportunistic; only read during the same turn.
         self._active_turn_user_text = cleaned
+        self._active_sleep_context: dict[str, Any] | None = None
         # Schema v8: refresh the activity timestamp so the idle worker
         # scheduler defers background sweeps while the user is actively
         # chatting (typed turns also count; voice paths touch the gate
@@ -165,6 +166,24 @@ class ChatTurnMixin:
                 token_count=estimate_tokens(cleaned),
                 attachments=attachments_json,
             )
+
+        # Schema v43: capture the durable lifecycle after the user row exists
+        # but before either prompt pass. An asleep message is an interruption,
+        # not an implicit wake; the main model chooses the validated edge.
+        sleep_store = getattr(self, "_sleep_store", None)
+        if sleep_store is not None:
+            try:
+                sleep_state = sleep_store.get_state()
+                if sleep_state.status == "asleep" and _resume_message_id is None:
+                    sleep_store.record_interruption(
+                        session_id=session_key,
+                        message_id=user_message_id,
+                        message_text=cleaned,
+                    )
+                if sleep_state.sleep_active:
+                    self._active_sleep_context = sleep_store.snapshot()
+            except Exception:
+                log.debug("sleep interruption capture failed", exc_info=True)
 
         # The transcript just moved; make the restore pointer follow it so
         # the next launch reopens the conversation he was actually in.
@@ -484,6 +503,10 @@ class ChatTurnMixin:
         executor. Runs *before* the resume opener so the resume weaver
         can pick up the freshly-written dream memory as a candidate.
         """
+        # Schema v43 dreams belong to recorded sleep episodes and are driven
+        # by the sleep-only idle policy, never by a startup message gap.
+        if getattr(self, "_sleep_store", None) is not None:
+            return
         worker = getattr(self, "_dream_worker", None)
         memory = getattr(self, "_memory_store", None)
         executor = getattr(self, "_listening_window_executor", None)
@@ -542,9 +565,10 @@ class ChatTurnMixin:
     def _top_inner_life_contents(
         self, kind: str, *, limit: int = 3,
     ) -> list[str]:
-        """Return up to ``limit`` content strings of the top-salience
-        memories of the requested kind. Used by the dream pass to seed
-        the prompt with recent threads / self-thoughts.
+        """Return age-tagged top-salience memories for the dream prompt.
+
+        Dream output is stored and may surface later, so every memory fed to
+        that worker retains its age rather than becoming timeless prompt text.
         """
         store = getattr(self, "_memory_store", None)
         if store is None:
@@ -558,10 +582,10 @@ class ChatTurnMixin:
             return []
         out: list[str] = []
         for mem in top:
-            content = (mem.content or "").strip()
-            if not content:
+            rendered = timephrase.format_memory_block([mem], max_items=1).strip()
+            if not rendered:
                 continue
-            out.append(content)
+            out.append(rendered)
             if len(out) >= limit:
                 break
         return out

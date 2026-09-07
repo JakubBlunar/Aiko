@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -144,6 +144,7 @@ class ConversationSituationSnapshot:
     conflict_reason: str
     shared_commitment_active: bool
     since_user_activity_ms: int
+    sleep: dict[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)

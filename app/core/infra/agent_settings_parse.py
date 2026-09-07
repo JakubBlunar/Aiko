@@ -58,6 +58,41 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             proactive_typed_when_away=bool(
                 agent_raw.get("proactive_typed_when_away", False),
             ),
+            sleep_enabled=bool(agent_raw.get("sleep_enabled", True)),
+            sleep_naps_enabled=bool(agent_raw.get("sleep_naps_enabled", True)),
+            sleep_check_interval_seconds=max(
+                15.0, float(agent_raw.get("sleep_check_interval_seconds", 60.0))
+            ),
+            sleep_wind_down_minutes=max(
+                0.0, float(agent_raw.get("sleep_wind_down_minutes", 5.0))
+            ),
+            sleep_min_idle_minutes=max(
+                0.0, float(agent_raw.get("sleep_min_idle_minutes", 15.0))
+            ),
+            sleep_min_awake_hours=max(
+                0.0, float(agent_raw.get("sleep_min_awake_hours", 4.0))
+            ),
+            sleep_overnight_threshold=max(
+                0.0,
+                min(1.0, float(agent_raw.get("sleep_overnight_threshold", 0.58))),
+            ),
+            sleep_nap_energy_threshold=max(
+                0.0,
+                min(1.0, float(agent_raw.get("sleep_nap_energy_threshold", 0.22))),
+            ),
+            sleep_nap_max_hours=max(
+                0.25, float(agent_raw.get("sleep_nap_max_hours", 2.0))
+            ),
+            sleep_wake_energy_threshold=max(
+                0.0,
+                min(1.0, float(agent_raw.get("sleep_wake_energy_threshold", 0.48))),
+            ),
+            sleep_max_woken_minutes=max(
+                1.0, float(agent_raw.get("sleep_max_woken_minutes", 90.0))
+            ),
+            sleep_back_to_sleep_minutes=max(
+                1.0, float(agent_raw.get("sleep_back_to_sleep_minutes", 20.0))
+            ),
             world_notice_enabled=bool(
                 agent_raw.get("world_notice_enabled", True),
             ),

@@ -42,6 +42,11 @@ from typing import Any, Callable
 from app.core.proactive.idle_worker import (
     LANE_COMPUTE,
     LANE_LLM,
+    SLEEP_CONTINUE,
+    SLEEP_CONTINUE_WORKER_NAMES,
+    SLEEP_ONLY,
+    SLEEP_PAUSE,
+    SLEEP_POLICIES,
     Admission,
     IdleWorker,
     IdleWorkerRecord,
@@ -113,6 +118,7 @@ class IdleWorkerScheduler:
         depth_max_multiplier: float = 10.0,
         idle_depth_provider: Callable[[], float] | None = None,
         contention_provider: Callable[[], str] | None = None,
+        sleep_state_provider: Callable[[], Any] | None = None,
     ) -> None:
         """
         Parameters
@@ -181,6 +187,7 @@ class IdleWorkerScheduler:
         self._depth_max_multiplier = max(1.0, float(depth_max_multiplier))
         self._idle_depth_provider = idle_depth_provider
         self._contention_provider = contention_provider
+        self._sleep_state_provider = sleep_state_provider
         self._workers: dict[str, IdleWorker] = {}
         self._records: dict[str, IdleWorkerRecord] = {}
         self._lock = threading.Lock()
@@ -316,6 +323,7 @@ class IdleWorkerScheduler:
         except Exception:
             quiet = False
 
+        sleep_status = self._sleep_status()
         rows: list[dict[str, Any]] = []
         with self._lock:
             for name, worker in self._workers.items():
@@ -330,6 +338,10 @@ class IdleWorkerScheduler:
                     overdue_seconds = (now - next_due_at).total_seconds()
                 rows.append({
                     "name": name,
+                    "sleep_policy": self._sleep_policy(worker),
+                    "sleep_suppressed": not self._sleep_allows(
+                        worker, sleep_status=sleep_status,
+                    ),
                     "interval_seconds": interval,
                     "last_run_at": (
                         last_run_at.isoformat() if last_run_at else None
@@ -417,6 +429,7 @@ class IdleWorkerScheduler:
             "idle_depth": depth_name,
             "depth_multiplier": depth_mult,
             "contention": grade,
+            "sleep_status": sleep_status,
             "effective_compute_budget_ms": round(
                 float(self._compute_budget_ms) * depth_mult, 1,
             ),
@@ -444,6 +457,44 @@ class IdleWorkerScheduler:
         except Exception:
             log.debug("is_quiet_callback raised; treating as busy", exc_info=True)
             return False
+
+    def _sleep_status(self) -> str:
+        if self._sleep_state_provider is None:
+            return "awake"
+        try:
+            value = self._sleep_state_provider()
+            if isinstance(value, dict):
+                value = value.get("status")
+            else:
+                value = getattr(value, "status", value)
+            status = str(value or "").strip().lower()
+            return (
+                status
+                if status in {"awake", "winding_down", "asleep", "woken"}
+                else "asleep"
+            )
+        except Exception:
+            log.debug("sleep_state_provider raised; pausing waking workers", exc_info=True)
+            return "asleep"
+
+    @staticmethod
+    def _sleep_policy(worker: IdleWorker) -> str:
+        declared = getattr(worker, "sleep_policy", None)
+        if declared is None and str(worker.name) in SLEEP_CONTINUE_WORKER_NAMES:
+            declared = SLEEP_CONTINUE
+        policy = str(declared or SLEEP_PAUSE).strip().lower()
+        return policy if policy in SLEEP_POLICIES else SLEEP_PAUSE
+
+    def _sleep_allows(
+        self, worker: IdleWorker, *, sleep_status: str | None = None,
+    ) -> bool:
+        status = sleep_status or self._sleep_status()
+        policy = self._sleep_policy(worker)
+        if status == "asleep":
+            return policy in {SLEEP_CONTINUE, SLEEP_ONLY}
+        if status in {"winding_down", "woken"}:
+            return policy == SLEEP_CONTINUE
+        return policy != SLEEP_ONLY
 
     def _tick(self) -> None:
         if not self._quiet():
@@ -526,6 +577,9 @@ class IdleWorkerScheduler:
 
         for name, worker in ranked:
             record = self._records[name]
+            if not self._sleep_allows(worker):
+                record.last_admit_reason = "sleep_suppressed"
+                continue
             if not self._is_ready_legacy(worker, record, now):
                 continue
             due_total += 1
@@ -702,6 +756,9 @@ class IdleWorkerScheduler:
             record = self._records.get(name)
             if record is None:
                 continue
+            if not self._sleep_allows(worker):
+                record.last_admit_reason = "sleep_suppressed"
+                continue
             if not self._is_ready(worker, record, now):
                 continue
             due_total += 1
@@ -773,6 +830,9 @@ class IdleWorkerScheduler:
             if not self._quiet():
                 stopped_early = True
                 break
+            if not self._sleep_allows(worker):
+                record.last_admit_reason = "sleep_suppressed"
+                continue
 
             lane = _LANE_ORDER[lane_rank]
             estimate_ms = (

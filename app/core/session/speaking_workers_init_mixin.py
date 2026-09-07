@@ -111,11 +111,24 @@ class SpeakingWorkersInitMixin:
                     chat_db=self._chat_db,
                     min_hours_since_last=float(
                         getattr(
-                            settings.agent,
-                            "dream_worker_min_hours_since_last", 6.0,
+                            self._memory_settings,
+                            "sleep_dream_min_hours", 1.5,
                         ),
                     ),
                     user_display_name_provider=lambda: self.user_display_name,
+                    sleep_store=getattr(self, "_sleep_store", None),
+                    context_provider=lambda: {
+                        "recent_callbacks": self._top_inner_life_contents(
+                            "callback", limit=3
+                        ),
+                        "recent_self_memories": self._top_inner_life_contents(
+                            "self", limit=3
+                        ),
+                        "hot_clusters": self._dream_hot_clusters(),
+                    },
+                    user_id_provider=lambda: self._user_id,
+                    session_key_provider=lambda: self.session_key,
+                    affect_provider=lambda: self._affect_store.get(self._user_id),
                 )
             except Exception:
                 log.warning("DreamWorker init failed", exc_info=True)
@@ -344,6 +357,11 @@ class SpeakingWorkersInitMixin:
                         "world_intentional_hold_seconds",
                         7200.0,
                     )
+                ),
+                sleep_state_provider=(
+                    lambda: self._sleep_store.get_state()
+                    if getattr(self, "_sleep_store", None) is not None
+                    else "awake"
                 ),
             )
         except Exception:
@@ -746,6 +764,7 @@ class SpeakingWorkersInitMixin:
             appreciation=self._render_appreciation_block,
             reciprocal_vulnerability=self._render_reciprocal_vulnerability_block,
             turning_over=self._render_turning_over_block,
+            sleep_state=self._render_sleep_state_block,
             sleep_return=self._render_sleep_return_block,
             away_activities=self._render_away_activities_block,
             caught_mid_activity=self._render_caught_mid_activity_block,
@@ -1151,6 +1170,11 @@ class SpeakingWorkersInitMixin:
                     depth_max_multiplier=mem.idle_worker_depth_max_multiplier,
                     idle_depth_provider=self._idle_depth_seconds,
                     contention_provider=self._llm_contention_grade,
+                    sleep_state_provider=(
+                        lambda: self._sleep_store.get_state()
+                        if getattr(self, "_sleep_store", None) is not None
+                        else "awake"
+                    ),
                 )
                 self._idle_scheduler.register(
                     MemoryPromotionWorker(self._memory_store, self._memory_settings)
@@ -3238,6 +3262,90 @@ class SpeakingWorkersInitMixin:
             except Exception:
                 log.warning("idle worker scheduler boot failed", exc_info=True)
                 self._idle_scheduler = None
+        # Sleep must not depend on the long-term-memory feature being enabled.
+        # Reuse the normal scheduler when present; otherwise create the same
+        # compute scheduler with an empty memory-worker registry.
+        if self._idle_scheduler is None and getattr(self, "_sleep_store", None):
+            try:
+                from app.core.proactive.idle_worker_scheduler import IdleWorkerScheduler
+
+                mem = self._memory_settings
+                self._idle_scheduler = IdleWorkerScheduler(
+                    wake_seconds=mem.idle_worker_wake_seconds,
+                    is_quiet_callback=self._is_user_idle,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    tick_budget_ms=mem.idle_worker_tick_budget_ms,
+                    max_per_tick=mem.idle_worker_max_per_tick,
+                    compute_budget_ms=mem.idle_worker_compute_budget_ms,
+                    pressure_enabled=mem.idle_worker_pressure_enabled,
+                    urgency_threshold=mem.idle_worker_urgency_threshold,
+                    min_interval_ratio=mem.idle_worker_min_interval_ratio,
+                    depth_max_multiplier=mem.idle_worker_depth_max_multiplier,
+                    idle_depth_provider=self._idle_depth_seconds,
+                    contention_provider=self._llm_contention_grade,
+                    sleep_state_provider=lambda: self._sleep_store.get_state(),
+                )
+                self._idle_scheduler.start()
+            except Exception:
+                log.warning("sleep scheduler fallback boot failed", exc_info=True)
+                self._idle_scheduler = None
+        if self._idle_scheduler is not None and getattr(self, "_sleep_store", None):
+            try:
+                from app.core.world.sleep_lifecycle_worker import SleepLifecycleWorker
+
+                self._sleep_lifecycle_worker = SleepLifecycleWorker(
+                    sleep_store=self._sleep_store,
+                    chat_db=self._chat_db,
+                    world_store=self._world_store,
+                    world_guard=getattr(self, "_world_mutation_guard", None),
+                    idle_depth_provider=self._idle_depth_seconds,
+                    settings_provider=lambda: self._settings.agent,
+                    world_notify=self._notify_world,
+                    override_take=self.debug_overrides.take,
+                    interval_seconds=float(
+                        getattr(settings.agent, "sleep_check_interval_seconds", 60.0)
+                    ),
+                )
+                self._idle_scheduler.register(self._sleep_lifecycle_worker)
+                if getattr(self, "_dream_worker", None) is not None:
+                    self._idle_scheduler.register(self._dream_worker)
+                if (
+                    self._memory_store is not None
+                    and self._embedder is not None
+                    and self._maintenance_client is not None
+                ):
+                    from app.core.proactive.post_sleep_diary_worker import (
+                        PostSleepDiaryWorker,
+                    )
+
+                    self._post_sleep_diary_worker = PostSleepDiaryWorker(
+                        sleep_store=self._sleep_store,
+                        memory_store=self._memory_store,
+                        embedder=self._embedder,
+                        client=self._maintenance_client,
+                        model_provider=lambda: self._effective_worker_model,
+                        user_name_provider=lambda: self.user_display_name,
+                        session_provider=lambda: self.session_key,
+                        min_hours=float(
+                            getattr(
+                                self._memory_settings,
+                                "sleep_diary_min_hours",
+                                3.0,
+                            )
+                        ),
+                        short_sleep_hours=float(
+                            getattr(
+                                self._memory_settings,
+                                "sleep_diary_short_sleep_hours",
+                                4.0,
+                            )
+                        ),
+                    )
+                    self._idle_scheduler.register(self._post_sleep_diary_worker)
+            except Exception:
+                log.warning("SleepLifecycleWorker init failed", exc_info=True)
+                self._sleep_lifecycle_worker = None
         self._turn_runner = TurnRunner(
             self._chat_client,
             self._chat_db,
@@ -3274,6 +3382,10 @@ class SpeakingWorkersInitMixin:
             # while any task is running / awaiting_input / paused (the
             # user's message may be the answer a pending task needs).
             tasks_active_provider=self._any_tasks_active,
+            diary_allowed_provider=lambda: (
+                getattr(self, "_sleep_store", None) is None
+                or self._sleep_store.get_state().status != "asleep"
+            ),
         )
         self._tool_event_listeners: list[Callable[[str, dict[str, Any]], None]] = []
         self._tool_registry = None

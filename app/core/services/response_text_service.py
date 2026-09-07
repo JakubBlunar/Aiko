@@ -330,6 +330,25 @@ _DIARY_TAG_CAPTURE = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Schema v43: model-proposed sleep lifecycle decisions. Code validates the
+# edge against SleepStore; this parser only extracts the closed proposal.
+_SLEEP_TAG_PATTERN = re.compile(
+    r"\[\[sleep:[ \t]*(wake|stay_asleep|fully_awake|back_to_sleep|"
+    r"wind_down|fall_asleep|cancel)[ \t]*\]\]",
+    flags=re.IGNORECASE,
+)
+_SLEEP_OPEN_TAIL_PATTERN = re.compile(
+    r"\[\[sleep:[^\]]*\Z",
+    flags=re.IGNORECASE,
+)
+
+
+def extract_sleep_decisions(text: str) -> list[str]:
+    """Return normalized, closed ``[[sleep:...]]`` proposals in order."""
+    return [match.group(1).strip().lower() for match in _SLEEP_TAG_PATTERN.finditer(
+        str(text or "")
+    )]
+
 
 def extract_diary_entries(text: str) -> list[str]:
     """Return the body of every fully-formed ``[[diary:...]]`` tag.
@@ -889,6 +908,9 @@ def strip_all_meta_tags(text: str) -> str:
     # H9: same treatment for [[diary:entry] self-authored journal entries.
     s = _DIARY_TAG_PATTERN.sub("", s)
     s = _DIARY_OPEN_TAIL_PATTERN.sub("", s)
+    # Schema v43: sleep decisions are an invisible control side-channel.
+    s = _SLEEP_TAG_PATTERN.sub("", s)
+    s = _SLEEP_OPEN_TAIL_PATTERN.sub("", s)
     # H1: same treatment for [[arc:NAME]] self-tags.
     s = _ARC_TAG_PATTERN.sub("", s)
     s = _ARC_OPEN_TAIL_PATTERN.sub("", s)
@@ -1026,6 +1048,7 @@ _META_OPENERS = (
     "[[motion:",
     "[[moment:",
     "[[diary:",
+    "[[sleep:",
     "[[arc:",
     "[[gap:",
     "[[conflict:",
@@ -1063,6 +1086,8 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     if lowered.startswith("[[moment:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[diary:") and "]]" not in lowered:
+        return True
+    if lowered.startswith("[[sleep:") and "]]" not in lowered:
         return True
     if lowered.startswith("[[arc:") and "]]" not in lowered:
         return True

@@ -49,10 +49,16 @@ describe("AvatarPanel status footer", () => {
     expect(panelSource).toMatch(/w-full max-w-xs shrink-0/);
   });
 
-  it("still shows speaking / voice mode / world caption in that order", () => {
+  it("shows speaking / sleep / voice / world status in that order", () => {
     expect(panelSource).toMatch(/ttsState === "speaking"/);
     expect(panelSource).toMatch(/voiceMode !== "off"/);
-    expect(panelSource).toMatch(/worldCaption\(world\) \|\| "idle"/);
+    const speakingAt = panelSource.indexOf('ttsState === "speaking"');
+    const sleepAt = panelSource.indexOf('sleep?.status === "asleep"');
+    const voiceAt = panelSource.indexOf('voiceMode !== "off"');
+    const worldAt = panelSource.indexOf('worldCaption(world) || "idle"');
+    expect(speakingAt).toBeLessThan(voiceAt);
+    expect(sleepAt).toBeLessThan(voiceAt);
+    expect(voiceAt).toBeLessThan(worldAt);
   });
 });
 

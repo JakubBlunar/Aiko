@@ -1,10 +1,10 @@
-"""Bootstrap-time "dream" worker (Phase 2b).
+"""Episode-bound sleep dream worker.
 
 A close cousin of :class:`app.core.proactive.reflection_worker.ReflectionWorker`,
 but with a different trigger and a different prompt. While the
 reflection worker fires after every emotionally interesting turn, the
-dream worker fires *once per app start* — and only when there's been a
-significant gap (default 6+ hours) since the last assistant message.
+dream worker fires at most once per recorded sleep episode after a
+minimum sleep duration.
 
 Output: a single ``kind="reflection"`` memory tagged ``[dream]`` in
 its content prefix so the resume opener / NarrativeWeaver can prefer
@@ -28,10 +28,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Callable
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.affect.affect_state import felt_phrase
 from app.core.infra import timephrase
+from app.core.proactive.idle_worker import SLEEP_ONLY, WorkSignal
 from app.core.session.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
@@ -69,13 +71,14 @@ _DREAM_PREFIX = "[dream] "
 
 
 class DreamWorker:
-    """One-shot bootstrap-time reflection on the recent conversation.
+    """One reflection produced during a sufficiently long sleep episode.
 
-    Designed to be invoked exactly once per :class:`SessionController`
-    bootstrap, gated on ``hours_since_last`` exceeding a threshold.
-    Stores its output as a salience-boosted ``reflection`` memory so
-    the existing RAG / NarrativeWeaver path can surface it naturally.
+    Stores its output as a salience-boosted ``reflection`` memory so the
+    existing RAG / NarrativeWeaver path can surface it naturally.
     """
+
+    name = "sleep_dream"
+    sleep_policy = SLEEP_ONLY
 
     def __init__(
         self,
@@ -89,6 +92,12 @@ class DreamWorker:
         max_tokens: int = 100,
         salience: float = 0.62,
         user_display_name_provider: "Callable[[], str] | None" = None,
+        sleep_store: Any | None = None,
+        context_provider: Callable[[], dict[str, Any]] | None = None,
+        user_id_provider: Callable[[], str] | None = None,
+        session_key_provider: Callable[[], str] | None = None,
+        affect_provider: Callable[[], Any] | None = None,
+        interval_seconds: float = 900.0,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
@@ -99,6 +108,12 @@ class DreamWorker:
         self._max_tokens = max(40, int(max_tokens))
         self._salience = max(0.0, min(1.0, float(salience)))
         self._user_display_name_provider = user_display_name_provider
+        self._sleep_store = sleep_store
+        self._context_provider = context_provider
+        self._user_id_provider = user_id_provider
+        self._session_key_provider = session_key_provider
+        self._affect_provider = affect_provider
+        self._interval_seconds = max(60.0, float(interval_seconds))
         self._has_run_this_boot = False
         self._stats = {
             "scheduled": 0,
@@ -112,6 +127,52 @@ class DreamWorker:
 
     def stats(self) -> dict[str, int]:
         return dict(self._stats)
+
+    @property
+    def interval_seconds(self) -> float:
+        return self._interval_seconds
+
+    def is_ready(self, *, now: datetime, last_run_at: datetime | None) -> bool:
+        del last_run_at
+        if self._sleep_store is None:
+            return False
+        state = self._sleep_store.get_state()
+        episode = self._sleep_store.get_episode(state.current_episode_id)
+        if state.status != "asleep" or episode is None or episode.dream_memory_id:
+            return False
+        started = timephrase.parse_iso(episode.started_at)
+        return bool(
+            started is not None
+            and (now - timephrase.to_aware(started)).total_seconds()
+            >= self._min_hours * 3600.0
+        )
+
+    def demand(
+        self, *, now: datetime, last_run_at: datetime | None,
+    ) -> WorkSignal:
+        ready = self.is_ready(now=now, last_run_at=last_run_at)
+        return WorkSignal(
+            1.0 if ready else 0.0,
+            "sleep_episode_dream",
+            needs_llm=True,
+        )
+
+    def run(self) -> dict[str, Any]:
+        context = self._context_provider() if self._context_provider else {}
+        affect = self._affect_provider() if self._affect_provider else None
+        memory = self.maybe_run(
+            user_id=self._user_id_provider() if self._user_id_provider else "default",
+            session_key=(
+                self._session_key_provider() if self._session_key_provider else "default"
+            ),
+            hours_since_last=None,
+            rolling_summary=str(context.get("rolling_summary") or ""),
+            recent_callbacks=list(context.get("recent_callbacks") or []),
+            recent_self_memories=list(context.get("recent_self_memories") or []),
+            hot_clusters=list(context.get("hot_clusters") or []),
+            affect=affect,
+        )
+        return {"written": memory is not None, "memory_id": getattr(memory, "id", None)}
 
     def update_runtime(
         self,
@@ -137,8 +198,9 @@ class DreamWorker:
         affect: "AffectState | None" = None,
         on_memory_added: Callable[["Memory"], None] | None = None,
     ) -> "Memory | None":
-        """Run the dream pass at most once per process. Returns the
-        persisted ``Memory`` (with ``kind="reflection"``) on success.
+        """Run once per sleep episode (or once per boot on the legacy path).
+
+        Returns the persisted ``Memory`` with ``kind="reflection"`` on success.
 
         Skips when:
           * we already ran this boot,
@@ -147,7 +209,28 @@ class DreamWorker:
           * there's nothing meaningful to dream about (no summary, no
             callbacks, no self memories).
         """
-        if self._has_run_this_boot:
+        active_episode = None
+        if self._sleep_store is not None:
+            state = self._sleep_store.get_state()
+            active_episode = self._sleep_store.get_episode(state.current_episode_id)
+            if (
+                state.status != "asleep"
+                or active_episode is None
+                or active_episode.dream_memory_id is not None
+            ):
+                self._stats["skipped_recent"] += 1
+                return None
+            started = timephrase.parse_iso(active_episode.started_at)
+            if started is None:
+                return None
+            hours_since_last = max(
+                0.0,
+                (
+                    timephrase.utcnow() - timephrase.to_aware(started)
+                ).total_seconds()
+                / 3600.0,
+            )
+        elif self._has_run_this_boot:
             self._stats["skipped_recent"] += 1
             return None
         if (
@@ -171,6 +254,16 @@ class DreamWorker:
         if not (rolling or callbacks or selfs):
             self._stats["skipped_no_context"] += 1
             return None
+
+        reserved_episode_id: int | None = None
+        if active_episode is not None:
+            if not self._sleep_store.reserve_episode_output(
+                active_episode.id,
+                kind="dream",
+            ):
+                self._stats["skipped_recent"] += 1
+                return None
+            reserved_episode_id = int(active_episode.id)
 
         self._has_run_this_boot = True
         self._stats["scheduled"] += 1
@@ -218,12 +311,20 @@ class DreamWorker:
             )
             llm_ms = (time.monotonic() - t0) * 1000.0
         except Exception:
+            if reserved_episode_id is not None:
+                self._sleep_store.finish_episode_output(
+                    reserved_episode_id, kind="dream", memory_id=None
+                )
             log.debug("dream worker LLM call failed", exc_info=True)
             self._stats["failed"] += 1
             return None
 
         cleaned = _clean_dream_output(raw)
         if not cleaned:
+            if reserved_episode_id is not None:
+                self._sleep_store.finish_episode_output(
+                    reserved_episode_id, kind="dream", memory_id=None
+                )
             self._stats["failed"] += 1
             return None
 
@@ -231,6 +332,10 @@ class DreamWorker:
         try:
             embedding = self._embedder.embed(content)
         except Exception:
+            if reserved_episode_id is not None:
+                self._sleep_store.finish_episode_output(
+                    reserved_episode_id, kind="dream", memory_id=None
+                )
             log.debug("dream embed failed", exc_info=True)
             self._stats["failed"] += 1
             return None
@@ -242,16 +347,36 @@ class DreamWorker:
                 salience=self._salience,
                 source_session=session_key,
                 source_message_id=None,
+                metadata=(
+                    {"sleep_episode_id": int(active_episode.id)}
+                    if active_episode is not None
+                    else None
+                ),
                 # Schema v8: dream reflections are speculative
                 # LLM-journal output. Scratchpad so they decay fast
                 # unless they earn promotion.
                 tier="scratchpad",
             )
         except Exception:
+            if reserved_episode_id is not None:
+                self._sleep_store.finish_episode_output(
+                    reserved_episode_id, kind="dream", memory_id=None
+                )
             log.debug("dream memory insert failed", exc_info=True)
             self._stats["failed"] += 1
             return None
         if memory is None:
+            if reserved_episode_id is not None:
+                self._sleep_store.finish_episode_output(
+                    reserved_episode_id, kind="dream", memory_id=None
+                )
+            self._stats["failed"] += 1
+            return None
+        if reserved_episode_id is not None and not self._sleep_store.finish_episode_output(
+            reserved_episode_id,
+            kind="dream",
+            memory_id=int(memory.id),
+        ):
             self._stats["failed"] += 1
             return None
         self._stats["completed"] += 1

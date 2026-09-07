@@ -190,6 +190,8 @@ export interface ChannelStoreSnapshot {
    * implied affect target and the smoothed mood. Mouth params
    * (lipsync ids + mouth-overlay grin) are never damped. */
   moodInertiaDamping?: boolean;
+  /** Persisted lifecycle state; SleepChannel owns eyes/body parameters last. */
+  sleepStatus?: "awake" | "winding_down" | "asleep" | "woken";
 }
 
 /** Base channel contract. Each method is optional — channels opt in

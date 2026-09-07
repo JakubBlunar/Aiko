@@ -270,6 +270,12 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             # banner). Grouped under one block the Settings drawer + the
             # persona window both read from.
             "companion": {
+                "sleep_enabled": bool(
+                    getattr(s.agent, "sleep_enabled", True),
+                ),
+                "sleep_naps_enabled": bool(
+                    getattr(s.agent, "sleep_naps_enabled", True),
+                ),
                 "world_notice_enabled": bool(
                     getattr(s.agent, "world_notice_enabled", True),
                 ),
@@ -697,6 +703,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 session.set_grounding_line_mode(mode)
                 persist_patch["agent"]["grounding_line_mode"] = mode
             for flag in (
+                "sleep_enabled",
+                "sleep_naps_enabled",
                 "touch_enabled",
                 "user_reactions_enabled",
                 "persona_touch_banner_enabled",
@@ -752,6 +760,12 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 hub.broadcast({
                     "type": "companion_settings_changed",
                     "companion": {
+                        "sleep_enabled": bool(
+                            getattr(agent, "sleep_enabled", True),
+                        ),
+                        "sleep_naps_enabled": bool(
+                            getattr(agent, "sleep_naps_enabled", True),
+                        ),
                         "world_notice_enabled": bool(
                             getattr(agent, "world_notice_enabled", True),
                         ),

@@ -1,4 +1,4 @@
-import type { CompanionSettings, Identity } from "@/types";
+import type { CompanionSettings, Identity, SleepSnapshot } from "@/types";
 import type { SliceCreator } from "../types";
 
 export interface ConnectionState {
@@ -54,6 +54,8 @@ export interface SessionSlice {
     expressiveness_mult?: number;
     band?: string;
   }) => void;
+  sleep: SleepSnapshot | null;
+  setSleep: (snapshot: SleepSnapshot | null) => void;
 
   // Status
   status: string;
@@ -116,6 +118,8 @@ export const createSessionSlice: SliceCreator<SessionSlice> = (set) => ({
           typeof patch.band === "string" ? patch.band : state.vitality.band,
       },
     })),
+  sleep: null,
+  setSleep: (sleep) => set({ sleep }),
 
   status: "",
   setStatus: (status) => set({ status }),

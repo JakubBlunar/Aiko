@@ -36,6 +36,90 @@ class PostTurnMixin(PostTurnHelpersMixin):
     """The cold-path ``_post_turn_inner_life`` orchestrator (helpers live in
     :class:`PostTurnHelpersMixin`)."""
 
+    def _apply_sleep_decision(
+        self,
+        *,
+        raw_assistant_text: str,
+        assistant_text: str,
+        assistant_message_id: int | None,
+    ) -> str | None:
+        """Validate and persist at most one model-proposed lifecycle edge."""
+        store = getattr(self, "_sleep_store", None)
+        if store is None or not raw_assistant_text:
+            return None
+        from app.core.services.response_text_service import extract_sleep_decisions
+        from app.core.world.sleep_state import InvalidSleepTransition
+        from app.core.world.sleep_store import SleepGenerationConflict
+
+        decisions = extract_sleep_decisions(raw_assistant_text)
+        if not decisions:
+            return None
+        action = decisions[-1]
+        current = store.get_state()
+        episode_id = current.current_episode_id
+        if current.status == "asleep" and action in {"wake", "stay_asleep"}:
+            store.set_last_interruption_decision(action, episode_id=episode_id)
+        previous_world: dict[str, Any] = {}
+        world = getattr(self, "_world_store", None)
+        if world is not None:
+            try:
+                room = world.get_state()
+                location = world.get_location_by_id(room.location_id)
+                previous_world = {
+                    **room.to_dict(),
+                    "location_slug": getattr(location, "slug", None),
+                }
+            except Exception:
+                previous_world = {}
+        try:
+            updated = store.transition(
+                action,
+                expected_generation=current.generation,
+                sleep_kind="overnight",
+                reason_code="model_authored_goodnight",
+                reason_text=assistant_text,
+                previous_world=previous_world,
+                source_session=self.session_key,
+                source_message_id=assistant_message_id,
+                outcome="model_decision",
+            )
+        except (InvalidSleepTransition, SleepGenerationConflict):
+            log.info(
+                "sleep decision rejected: state=%s action=%s",
+                current.status,
+                action,
+            )
+            return None
+
+        if world is not None:
+            try:
+                if updated.status == "asleep":
+                    bed = world.get_location("bed")
+                    room = world.set_state(
+                        location_id=getattr(bed, "id", None) if bed is not None else ...,
+                        posture="lying",
+                        activity="napping",
+                    )
+                    self._notify_world({"state": room.to_dict()})
+                elif updated.status == "woken":
+                    room = world.set_state(posture="lying", activity="waking_up")
+                    self._notify_world({"state": room.to_dict()})
+                elif updated.status == "awake":
+                    room = world.get_state()
+                    if room.activity in {"napping", "waking_up"}:
+                        room = world.set_state(activity="idle")
+                        self._notify_world({"state": room.to_dict()})
+            except Exception:
+                log.debug("sleep decision world projection failed", exc_info=True)
+        log.info(
+            "sleep transition: action=%s state=%s generation=%d episode=%s",
+            action,
+            updated.status,
+            updated.generation,
+            updated.current_episode_id,
+        )
+        return action
+
     def _post_turn_inner_life(
         self,
         *,
@@ -58,6 +142,14 @@ class PostTurnMixin(PostTurnHelpersMixin):
         More post-turn jobs (user-state estimator, promise regex, agenda
         regex) will hang off this method as the relevant phases land.
         """
+        try:
+            self._apply_sleep_decision(
+                raw_assistant_text=raw_assistant_text,
+                assistant_text=assistant_text,
+                assistant_message_id=assistant_message_id,
+            )
+        except Exception:
+            log.debug("sleep decision apply failed", exc_info=True)
         try:
             affect_before = self._affect_store.get(self._user_id)
         except Exception:
@@ -1332,7 +1424,15 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # doing right now. Open-vocab; applied via update_world_state,
         # which stamps the intentional-placement watermark so the idle
         # workers defer to her stated activity for the hold window.
-        if getattr(self, "_world_store", None) is not None and raw_assistant_text:
+        sleep_store = getattr(self, "_sleep_store", None)
+        asleep_now = bool(
+            sleep_store is not None and sleep_store.get_state().status == "asleep"
+        )
+        if (
+            getattr(self, "_world_store", None) is not None
+            and raw_assistant_text
+            and not asleep_now
+        ):
             try:
                 from app.core.services.response_text_service import (
                     extract_activity_tag,

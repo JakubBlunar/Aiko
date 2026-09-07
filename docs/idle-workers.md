@@ -12,6 +12,7 @@ the backlog history see [P36](personality-backlog/perf.md#p36-idle-worker-llm-pi
 
 - [The problem the old design had](#the-problem-the-old-design-had)
 - [The quiet gate](#the-quiet-gate)
+- [Sleep admission](#sleep-admission)
 - [Anatomy of a tick](#anatomy-of-a-tick)
 - [Pressure: what a worker reports](#pressure-what-a-worker-reports)
 - [Urgency: how the scheduler ranks](#urgency-how-the-scheduler-ranks)
@@ -66,6 +67,26 @@ finishes, and your message queues behind it. That is a deliberate
 trade: killing a half-written concept synthesis costs more than making
 you wait a moment, and bounding that wait is what the fit rules below
 are for.
+
+## Sleep admission
+
+Sleep is a second, observable admission gate applied per worker. A worker
+declares `sleep_policy = "continue" | "pause" | "sleep_only"`; unclassified
+workers default to `pause` unless their established maintenance name appears
+in the conservative continue allow-list.
+
+- `pause` covers waking-life producers and world movers: diary, away activity,
+  circadian settle, hobbies, outings, garden visits, room evolution/notices,
+  and proactive cue generation.
+- `continue` is for non-experiential upkeep such as vitality, retention, RAG,
+  memory/concept lifecycle, weather observation, plant time, and day color.
+- `sleep_only` currently owns episode-bound dream generation.
+
+`SleepLifecycleWorker` itself is compute-only and continues so it can advance
+`winding_down`, expire a nap, or settle `woken` back to sleep. Scheduler status
+reports each worker's policy and `sleep_suppressed` result. A message can still
+receive a short sleep-talk reply; typed and voice proactive speech remain
+suppressed until the durable state leaves `asleep`.
 
 ## Anatomy of a tick
 

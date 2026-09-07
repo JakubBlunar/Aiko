@@ -98,7 +98,26 @@ A low-cadence [`RoomEvolutionWorker`](../../../app/core/world/room_evolution_wor
 
 ## H21. Sleep & overnight rhythm — and dreams that surface
 
-The producer side rode in on H16 (`CircadianSettleWorker` settles her into `bed`/`napping` late-night) and H18 (`_CIRCADIAN_BIAS` boosts `nap` overnight). H21 adds the missing behavioural anchor + dream home: a one-shot **sleep-return cue**. Pure [`sleep_return.py`](../../../app/core/world/sleep_return.py) decides whether a typed gap plausibly spanned an overnight sleep (`looks_like_overnight` — morning-band return after `sleep_return_min_gap_hours`=5h, OR any gap ≥ `sleep_return_overnight_hours`=9h) and picks a believable spot. The provider [`_render_sleep_return_block`](../../../app/core/session/inner_life_part2.py) is armed post-turn and runs **first** in the gap-cue family so an overnight return wins the one-of `_gap_cue_surfaced` slot; a recent `[dream]` reflection (within `sleep_return_dream_lookback_hours`=18h) is woven in, finally giving [`DreamWorker`](../../../app/core/proactive/dream_worker.py) dreams a cause. A non-overnight gap returns silently without consuming the slot. Settings: `agent.sleep_return_enabled` + `memory.sleep_return_*`. Persona: "When I dozed off" block. MCP: `get_sleep_return_state`, `force_sleep_return_surface`. Tests: `tests/test_sleep_return.py`.
+H21 now has an identity-wide persisted lifecycle: `awake → winding_down →
+asleep → woken → awake|asleep`, with explicit overnight/nap episodes in schema
+v43. [`SleepLifecycleWorker`](../../../app/core/world/sleep_lifecycle_worker.py)
+combines vitality, the learned circadian baseline, time awake, quiet depth, and
+world/situation guards; waking never resets vitality. A message while asleep
+records an interruption before prompt assembly. The main conversational model
+may answer with validated `[[sleep:wake|stay_asleep|fully_awake|back_to_sleep]]`
+tags, including one brief sleep-talk fragment that leaves Aiko asleep.
+
+The old message-gap inference in
+[`sleep_return.py`](../../../app/core/world/sleep_return.py) is retired from
+narrative authority: only recorded episodes may be described as sleep. Waking
+life/world workers and proactive speech pause while asleep, while maintenance
+continues. Dreams are sleep-only and once per episode; a separate post-sleep
+pass may write one dated diary memory for a notable completed episode. WebSocket
+snapshots, World settings/status, and the capability-safe Live2D sleep channel
+all read the same durable state. MCP diagnostics expose state, recent episodes,
+propensity inputs, worker suppression, and one-shot force controls. Tests:
+`tests/test_sleep_continuity.py` and
+`web/src/live2d/channels/SleepChannel.test.ts`.
 
 ---
 

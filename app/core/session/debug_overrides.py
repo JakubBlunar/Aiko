@@ -108,6 +108,12 @@ KNOWN_OVERRIDES: Mapping[str, str] = MappingProxyType({
     "question_balance_suppress_remaining": "K47 - suppress Aiko's questions for this many turns.",
     "tease_rhythm_force": "K48 - arm this tease-rhythm band for the next turn.",
     "vitality_force_energy": "K68 - override body energy with this value.",
+    "sleep_force_transition": (
+        "Force one legal persisted sleep lifecycle action on the next sleep-worker tick."
+    ),
+    "sleep_force_interruption": (
+        "Record one synthetic interruption on the next sleep-worker tick."
+    ),
 })
 
 

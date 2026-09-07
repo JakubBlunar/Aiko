@@ -90,6 +90,57 @@ class WorldMixin:
             except Exception:
                 log.debug("world listener raised", exc_info=True)
 
+    def sleep_snapshot(self) -> dict[str, Any]:
+        store = getattr(self, "_sleep_store", None)
+        if store is None:
+            return {"status": "awake", "enabled": False}
+        payload = store.snapshot()
+        payload["enabled"] = bool(
+            getattr(self._settings.agent, "sleep_enabled", True)
+        )
+        return payload
+
+    def add_sleep_listener(
+        self, callback: Callable[[dict[str, Any]], None],
+    ) -> None:
+        store = getattr(self, "_sleep_store", None)
+        if store is not None:
+            store.add_listener(callback)
+
+    def sleep_diagnostics(self, *, episode_limit: int = 10) -> dict[str, Any]:
+        """Public diagnostics facade for web/debug integrations."""
+        store = getattr(self, "_sleep_store", None)
+        if store is None:
+            return {"enabled": False, "error": "sleep store unavailable"}
+        scheduler = getattr(self, "_idle_scheduler", None)
+        lifecycle = getattr(self, "_sleep_lifecycle_worker", None)
+        return {
+            "enabled": bool(getattr(self._settings.agent, "sleep_enabled", True)),
+            "snapshot": store.snapshot(),
+            "lifecycle": (
+                lifecycle.status()
+                if lifecycle is not None and hasattr(lifecycle, "status")
+                else {}
+            ),
+            "episodes": [
+                row.to_payload()
+                for row in store.list_episodes(
+                    limit=max(1, min(100, int(episode_limit)))
+                )
+            ],
+            "workers": scheduler.get_status() if scheduler is not None else {},
+        }
+
+    def run_sleep_lifecycle_debug(self) -> dict[str, Any]:
+        """Run the registered sleep lifecycle once after arming an override."""
+        scheduler = getattr(self, "_idle_scheduler", None)
+        if scheduler is None:
+            return {"ran": False, "result": None}
+        return {
+            "ran": True,
+            "result": scheduler.force_run("sleep_lifecycle"),
+        }
+
     # ── K21 fresh-eyes thread-note listeners ─────────────────────────
 
     def add_thread_note_listener(

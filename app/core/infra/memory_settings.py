@@ -2315,6 +2315,10 @@ class MemorySettings:
     # last user activity before the scheduler considers itself idle.
     idle_worker_wake_seconds: float = 60.0
     idle_worker_quiet_threshold_seconds: int = 30
+    # Sleep-episode outputs are generated at most once per durable episode.
+    sleep_dream_min_hours: float = 1.5
+    sleep_diary_min_hours: float = 3.0
+    sleep_diary_short_sleep_hours: float = 4.0
     # P8: per-tick wall-time budget in milliseconds. The scheduler runs
     # as many due workers as fit into this budget per wake-up so the
     # natural typing/speaking gap between turns drains backlog instead
@@ -5553,6 +5557,16 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             idle_worker_quiet_threshold_seconds=max(
                 0,
                 int(memory_raw.get("idle_worker_quiet_threshold_seconds", 30)),
+            ),
+            sleep_dream_min_hours=max(
+                0.0, float(memory_raw.get("sleep_dream_min_hours", 1.5))
+            ),
+            sleep_diary_min_hours=max(
+                0.0, float(memory_raw.get("sleep_diary_min_hours", 3.0))
+            ),
+            sleep_diary_short_sleep_hours=max(
+                0.0,
+                float(memory_raw.get("sleep_diary_short_sleep_hours", 4.0)),
             ),
             idle_worker_tick_budget_ms=max(
                 0,

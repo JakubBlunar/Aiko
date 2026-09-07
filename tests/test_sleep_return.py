@@ -210,16 +210,12 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(host._render_sleep_return_block(), "")
         self.assertEqual(host._pending_sleep_return_seconds, 10 * 3600.0)
 
-    def test_long_gap_fires_and_sets_flag(self) -> None:
-        # 10h >= overnight_hours → overnight regardless of clock hour.
+    def test_long_gap_does_not_invent_an_unrecorded_sleep(self) -> None:
         host = _Host(pending_seconds=10 * 3600.0, location_slug="bed")
-        out = host._render_sleep_return_block()
-        self.assertIn("dozed off", out)
-        self.assertIn("in bed", out)
-        # One-shot: slot cleared; one-of flag set so siblings defer.
-        self.assertIsNone(host._pending_sleep_return_seconds)
-        self.assertTrue(host._gap_cue_surfaced)
-        self.assertIsNotNone(host._last_sleep_return)
+        self.assertEqual(host._render_sleep_return_block(), "")
+        self.assertEqual(host._pending_sleep_return_seconds, 10 * 3600.0)
+        self.assertFalse(host._gap_cue_surfaced)
+        self.assertIsNone(host._last_sleep_return)
 
     def test_non_overnight_gap_silent_flag_untouched(self) -> None:
         # 5.5h gap but min_gap raised to 12h → never overnight, and the
@@ -236,11 +232,9 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(host._pending_sleep_return_seconds, 5.5 * 3600.0)
         self.assertFalse(host._gap_cue_surfaced)
 
-    def test_force_next_bypasses_gates(self) -> None:
+    def test_legacy_force_cannot_invent_sleep(self) -> None:
         host = _Host(pending_seconds=None, force_next=True)
-        out = host._render_sleep_return_block()
-        self.assertIn("dozed off", out)
-        self.assertFalse(host.debug_overrides.peek("sleep_return_force_next"))
+        self.assertEqual(host._render_sleep_return_block(), "")
 
     def test_recent_dream_woven_in(self) -> None:
         dreams = [
@@ -253,9 +247,8 @@ class ProviderTests(unittest.TestCase):
         ]
         host = _Host(pending_seconds=10 * 3600.0, dreams=dreams)
         out = host._render_sleep_return_block()
-        self.assertIn("dream", out.lower())
-        self.assertIn("a quiet train through a snowfield", out)
-        self.assertTrue(host._last_sleep_return["dream"])
+        self.assertEqual(out, "")
+        self.assertIsNone(host._last_sleep_return)
 
     def test_stale_dream_not_woven(self) -> None:
         dreams = [
@@ -268,8 +261,8 @@ class ProviderTests(unittest.TestCase):
         ]
         host = _Host(pending_seconds=10 * 3600.0, dreams=dreams)
         out = host._render_sleep_return_block()
-        self.assertNotIn("an old dream", out)
-        self.assertFalse(host._last_sleep_return["dream"])
+        self.assertEqual(out, "")
+        self.assertIsNone(host._last_sleep_return)
 
     def test_non_dream_reflection_ignored(self) -> None:
         rows = [
@@ -282,8 +275,8 @@ class ProviderTests(unittest.TestCase):
         ]
         host = _Host(pending_seconds=10 * 3600.0, dreams=rows)
         out = host._render_sleep_return_block()
-        self.assertNotIn("guitar", out)
-        self.assertFalse(host._last_sleep_return["dream"])
+        self.assertEqual(out, "")
+        self.assertIsNone(host._last_sleep_return)
 
 
 if __name__ == "__main__":

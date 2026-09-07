@@ -135,6 +135,28 @@ class ConversationSituationMixin:
             if last_activity > 0
             else 0
         )
+        sleep: dict[str, Any] = {"status": "awake"}
+        sleep_store = getattr(self, "_sleep_store", None)
+        if sleep_store is not None:
+            try:
+                raw_sleep = sleep_store.snapshot()
+                sleep = {
+                    key: raw_sleep.get(key)
+                    for key in (
+                        "status",
+                        "generation",
+                        "entered_at",
+                        "duration_seconds",
+                        "current_episode_id",
+                        "sleep_kind",
+                        "reason_code",
+                        "reason_text",
+                        "interruption_count",
+                        "previous_world",
+                    )
+                }
+            except Exception:
+                pass
         snapshot = ConversationSituationSnapshot(
             session_id=session_id,
             generation=int(state.generation if state is not None else 0),
@@ -165,6 +187,7 @@ class ConversationSituationMixin:
             conflict_reason=conflict_reason,
             shared_commitment_active=shared_commitment_active,
             since_user_activity_ms=elapsed_ms,
+            sleep=sleep,
         )
         self._conversation_situation_snapshot_cache = (cache_key, snapshot)
         return snapshot

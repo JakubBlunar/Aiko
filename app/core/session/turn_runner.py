@@ -240,6 +240,7 @@ class TurnRunner:
         listen_extensions_provider: Callable[[], int] | None = None,
         tool_pass_gate_enabled: bool = True,
         tasks_active_provider: Callable[[], bool] | None = None,
+        diary_allowed_provider: Callable[[], bool] | None = None,
         skill_router_enabled: bool = False,
         brain_core_families: "Iterable[str] | None" = None,
     ) -> None:
@@ -293,6 +294,7 @@ class TurnRunner:
         # answer a pending task is waiting for).
         self._tool_pass_gate_enabled = bool(tool_pass_gate_enabled)
         self._tasks_active_provider = tasks_active_provider
+        self._diary_allowed_provider = diary_allowed_provider
         # True when the *previous* turn dispatched at least one real
         # tool — follow-ups like "and the other folder?" carry no
         # tool-shaped token of their own, so the gate lets them through.
@@ -1805,6 +1807,15 @@ class TurnRunner:
             or not raw_text
         ):
             return
+        diary_allowed_provider = getattr(self, "_diary_allowed_provider", None)
+        if diary_allowed_provider is not None:
+            try:
+                if not bool(diary_allowed_provider()):
+                    log.info("diary memory suppressed: Aiko is asleep")
+                    return
+            except Exception:
+                log.debug("diary sleep gate failed closed", exc_info=True)
+                return
         seen: set[str] = set()
         for body in extract_diary_entries(raw_text):
             content = body.strip()

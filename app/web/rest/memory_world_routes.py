@@ -976,6 +976,19 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     except Exception:
         log.debug("world listener subscription failed", exc_info=True)
 
+    def _on_sleep(snapshot: dict[str, Any]) -> None:
+        try:
+            hub.broadcast(
+                {"type": "sleep_state_changed", "snapshot": dict(snapshot)}
+            )
+        except Exception:
+            log.debug("sleep state broadcast failed", exc_info=True)
+
+    try:
+        session.add_sleep_listener(_on_sleep)
+    except Exception:
+        log.debug("sleep listener subscription failed", exc_info=True)
+
     # H11 weather snapshot fan-out. The WeatherWorker (and an immediate
     # post-reconfigure fetch) call ``_notify_weather(snapshot)``; we relay
     # each snapshot to every connected window as a ``weather_updated`` frame

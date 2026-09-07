@@ -71,6 +71,9 @@ def conditional_handling_path_for(persona_path: Path) -> Path:
 # cached token for an uncached one, so it only pays when the block is
 # usually absent; see ``_STAYS_IN_T0`` below for the ones that are not.
 HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
+    "sleep_state_block": (
+        "When sleep is interrupted:",
+    ),
     # ── gap return ────────────────────────────────────────────────────
     # K14: a register instruction built from the gap duration, with no
     # subject of its own.

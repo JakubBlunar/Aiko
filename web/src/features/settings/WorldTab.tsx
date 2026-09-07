@@ -209,6 +209,7 @@ export function WorldTab({
   onPatchWeather,
 }: WorldTabProps) {
   const identity = useAssistantStore((s) => s.identity);
+  const sleep = useAssistantStore((s) => s.sleep);
   const quickGivePresets = useMemo(
     () => buildQuickGivePresets(identity?.user_display_name ?? ""),
     [identity?.user_display_name],
@@ -312,11 +313,27 @@ export function WorldTab({
           </span>
           .
         </p>
+        {sleep && sleep.status !== "awake" ? (
+          <p className="rounded-md border border-indigo-300/15 bg-indigo-400/5 px-3 py-2 text-[11px] text-indigo-100/70">
+            Sleep: <span className="font-medium">{sleep.status.replace("_", " ")}</span>
+            {sleep.sleep_kind ? ` · ${sleep.sleep_kind}` : ""}
+            {sleep.duration_seconds > 0
+              ? ` · ${Math.round(sleep.duration_seconds / 60)} min`
+              : ""}
+            {sleep.interruption_count > 0
+              ? ` · ${sleep.interruption_count} interruption${sleep.interruption_count === 1 ? "" : "s"}`
+              : ""}
+            {sleep.reason_text || sleep.reason_code
+              ? ` · ${sleep.reason_text || sleep.reason_code.replaceAll("_", " ")}`
+              : ""}
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
             <span>Where:</span>
             <select
               value={state.location_id ?? ""}
+              disabled={sleep?.status === "asleep"}
               onChange={(e) =>
                 onPatchState({
                   location_id: e.target.value ? Number(e.target.value) : null,
@@ -336,6 +353,7 @@ export function WorldTab({
             <span>Posture:</span>
             <select
               value={state.posture}
+              disabled={sleep?.status === "asleep"}
               onChange={(e) => onPatchState({ posture: e.target.value })}
               className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
             >
@@ -350,6 +368,7 @@ export function WorldTab({
             <span>Activity:</span>
             <select
               value={state.activity}
+              disabled={sleep?.status === "asleep"}
               onChange={(e) => onPatchState({ activity: e.target.value })}
               className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
             >
@@ -375,6 +394,30 @@ export function WorldTab({
           </p>
         ) : null}
       </Section>
+
+      {companion ? (
+        <Section title="Sleep rhythm">
+          <p className="text-[11px] text-ink-100/50">
+            Sleep follows her persistent energy and body clock. A message can
+            interrupt her without automatically waking her.
+          </p>
+          <Toggle
+            checked={companion.sleep_enabled}
+            onChange={(checked) => onPatchCompanion({ sleep_enabled: checked })}
+          >
+            Enable sleep continuity
+          </Toggle>
+          <Toggle
+            checked={companion.sleep_naps_enabled}
+            disabled={!companion.sleep_enabled}
+            onChange={(checked) =>
+              onPatchCompanion({ sleep_naps_enabled: checked })
+            }
+          >
+            Allow afternoon naps
+          </Toggle>
+        </Section>
+      ) : null}
 
       <Section title="Give Aiko something">
         <p className="text-[11px] text-ink-100/50">

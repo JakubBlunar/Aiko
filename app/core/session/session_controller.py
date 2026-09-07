@@ -76,6 +76,7 @@ from app.core.session import (
     WorldMixin,
 )
 from app.core.world.world_store import WorldStore
+from app.core.world.sleep_store import SleepStore
 from app.core.infra.gate_tuning_store import apply_gates
 from app.core.infra.settings import (
     AppSettings,
@@ -849,6 +850,41 @@ class SessionController(
         except Exception:
             log.warning("WorldStore failed to initialise", exc_info=True)
             self._world_store = None
+
+        # Schema v43 — persisted identity-wide sleep lifecycle. It is not
+        # session-scoped: every chat window, worker, and web client sees the
+        # same generation-checked state.
+        self._sleep_store: SleepStore | None = None
+        try:
+            self._sleep_store = SleepStore(self._chat_db)
+            sleep_state = self._sleep_store.reconcile(
+                wind_down_minutes=float(
+                    getattr(settings.agent, "sleep_wind_down_minutes", 5.0)
+                ),
+                nap_max_hours=float(
+                    getattr(settings.agent, "sleep_nap_max_hours", 2.0)
+                ),
+            )
+            # Reconciliation may advance an offline wind-down or expire a nap.
+            # Project that durable truth into the room without inventing any
+            # intervening activity.
+            if self._world_store is not None and sleep_state.status == "asleep":
+                bed = self._world_store.get_location("bed")
+                self._world_store.set_state(
+                    location_id=(
+                        getattr(bed, "id", None) if bed is not None else ...
+                    ),
+                    posture="lying",
+                    activity="napping",
+                )
+            elif self._world_store is not None and sleep_state.status == "woken":
+                self._world_store.set_state(
+                    posture="lying",
+                    activity="waking_up",
+                )
+        except Exception:
+            log.warning("SleepStore failed to initialise", exc_info=True)
+            self._sleep_store = None
 
         # ── TTS engine + queue ───────────────────────────────────────────
         # Audio frame listener hook — wired by the web server when the

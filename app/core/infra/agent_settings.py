@@ -46,6 +46,19 @@ class AgentSettings:
     # spoken line then is more startling than helpful. Voice-mode
     # proactive always speaks regardless of this flag.
     proactive_typed_tts_enabled: bool = False
+    # ── Persisted sleep and day continuity (schema v43) ─────────────
+    sleep_enabled: bool = True
+    sleep_naps_enabled: bool = True
+    sleep_check_interval_seconds: float = 60.0
+    sleep_wind_down_minutes: float = 5.0
+    sleep_min_idle_minutes: float = 15.0
+    sleep_min_awake_hours: float = 4.0
+    sleep_overnight_threshold: float = 0.58
+    sleep_nap_energy_threshold: float = 0.22
+    sleep_nap_max_hours: float = 2.0
+    sleep_wake_energy_threshold: float = 0.48
+    sleep_max_woken_minutes: float = 90.0
+    sleep_back_to_sleep_minutes: float = 20.0
     # ── World-notice proactive (Aiko reaches out about her room) ──────
     # Master switch for the WorldNoticeWorker, which primes a proactive
     # nudge when the user has left something in Aiko's room or after a

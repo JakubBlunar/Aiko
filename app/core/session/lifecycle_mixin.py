@@ -783,7 +783,7 @@ class LifecycleMixin(DebugOverridesHostMixin):
             last user activity -> not idle.
         """
         try:
-            if getattr(self, "_live_mode_enabled", False):
+            if getattr(self, "_live_voice_session_active", False):
                 return False
             if getattr(self, "_turn_in_progress", False):
                 return False

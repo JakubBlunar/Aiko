@@ -220,6 +220,7 @@ class PromptAssemblerHelpersMixin:
         appreciation: Callable[[], str] | None = None,
         reciprocal_vulnerability: Callable[[str], str] | None = None,
         turning_over: Callable[[], str] | None = None,
+        sleep_state: Callable[[], str] | None = None,
         sleep_return: Callable[[], str] | None = None,
         away_activities: Callable[[], str] | None = None,
         caught_mid_activity: Callable[[], str] | None = None,
@@ -403,6 +404,8 @@ class PromptAssemblerHelpersMixin:
             self._reciprocal_vulnerability_provider = reciprocal_vulnerability
         if turning_over is not None:
             self._turning_over_provider = turning_over
+        if sleep_state is not None:
+            self._sleep_state_provider = sleep_state
         if sleep_return is not None:
             self._sleep_return_provider = sleep_return
         if away_activities is not None:

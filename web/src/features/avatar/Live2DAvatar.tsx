@@ -23,6 +23,7 @@ import { MotionChannel } from "@/live2d/channels/MotionChannel";
 import { OutfitChannel } from "@/live2d/channels/OutfitChannel";
 import { OverlayChannel } from "@/live2d/channels/OverlayChannel";
 import { ReachChannel } from "@/live2d/channels/ReachChannel";
+import { SleepChannel } from "@/live2d/channels/SleepChannel";
 import { GlobalMouseSource } from "@/live2d/GlobalMouseSource";
 import { WindowMouseSource } from "@/live2d/WindowMouseSource";
 import {
@@ -254,6 +255,7 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
                 (s.vitality?.expressivenessMult ?? 1),
               moodInertiaDamping:
                 s.avatar?.settings?.mood_inertia_damping ?? true,
+              sleepStatus: s.sleep?.status ?? "awake",
             };
           },
         });
@@ -272,6 +274,9 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
           // of the always-on body-language drivers rather than
           // clobbering them.
           new ReachChannel(),
+          // Last writer for eye-open, breath, and body angles while sleep is
+          // active. It never touches lip-sync parameters.
+          new SleepChannel(),
         );
         engine.start(adapter);
         const bridge = new StoreBridge(engine, useAssistantStore);

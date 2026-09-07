@@ -138,6 +138,9 @@ export function useAssistantSocket(): {
         store.setSessionKey(evt.session);
         store.setModel(evt.model);
         store.setTtsEnabled(evt.tts_enabled);
+        if (evt.sleep) {
+          store.setSleep(evt.sleep);
+        }
         if (typeof evt.client_id === "string") {
           store.setClientId(evt.client_id);
         }
@@ -474,6 +477,10 @@ export function useAssistantSocket(): {
 
       case "world_updated":
         world.applyWorldPatch(evt.patch);
+        break;
+
+      case "sleep_state_changed":
+        store.setSleep(evt.snapshot);
         break;
 
       case "weather_updated":

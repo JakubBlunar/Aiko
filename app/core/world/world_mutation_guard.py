@@ -46,10 +46,12 @@ class WorldMutationGuard:
         kv_get: Callable[[str], str | None],
         situation_snapshot_provider: Callable[[], Any] | None,
         intentional_hold_seconds: float,
+        sleep_state_provider: Callable[[], Any] | None = None,
     ) -> None:
         self._kv_get = kv_get
         self._situation_snapshot_provider = situation_snapshot_provider
         self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
+        self._sleep_state_provider = sleep_state_provider
         self._lock = threading.Lock()
         self._last_decision = WorldMutationDecision(
             allowed=True,
@@ -71,6 +73,25 @@ class WorldMutationGuard:
             )
 
         current = now or timephrase.utcnow()
+        if self._sleep_state_provider is not None:
+            try:
+                sleep = self._sleep_state_provider()
+                status = (
+                    sleep.get("status")
+                    if isinstance(sleep, dict)
+                    else getattr(sleep, "status", sleep)
+                )
+            except Exception:
+                status = "awake"
+            if str(status or "").strip().lower() == "asleep":
+                return self._record(
+                    WorldMutationDecision(
+                        False,
+                        "aiko_asleep",
+                        classes,
+                        checked_at=checked_at,
+                    )
+                )
         if self._intentional_hold_active(current):
             return self._record(
                 WorldMutationDecision(

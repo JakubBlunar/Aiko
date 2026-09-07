@@ -196,6 +196,9 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
     # the LLM reads before the user message. Almost always change
     # turn-to-turn.
     "T6_detectors": (
+        # Schema v43: authoritative identity-wide sleep state. It precedes
+        # every inferred return cue and suppresses contradictory floor-taking.
+        "sleep_state_block",
         # Semantic present-continuity extracted off-turn, joined with this
         # turn's dialogue act and authoritative world state. It reports
         # facts rather than offering a floor-taking move.
@@ -963,6 +966,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # optional dream woven in) rather than as ordinary away-activities.
         # Defers to turning_over via the shared _gap_cue_surfaced flag.
         self._sleep_return_provider: Callable[[], str] | None = None
+        self._sleep_state_provider: Callable[[], str] | None = None
         # K36 "things I did while you were away" one-shot. Consumer of the
         # IdleAwayActivityWorker journal; same post-turn-armed slot as K28
         # turning_over but reads the kv journal ring. Defers to
@@ -1827,6 +1831,15 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     knowledge_grounding_block = ""
 
+        sleep_state_block = ""
+        if self._sleep_state_provider is not None:
+            with _timed_phase(provider_ms, "sleep_state"):
+                try:
+                    sleep_state_block = self._sleep_state_provider() or ""
+                except Exception:
+                    log.debug("sleep state provider raised", exc_info=True)
+                    sleep_state_block = ""
+
         conversation_situation_block = ""
         if self._conversation_situation_provider is not None:
             with _timed_phase(provider_ms, "conversation_situation"):
@@ -2145,6 +2158,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # behaviour Jacob signed off on.
         absence_curiosity_block = ""
         if (
+            not sleep_state_block
+            and
             getattr(self, "_absence_curiosity_provider", None) is not None
         ):
             with _timed_phase(provider_ms, "absence_curiosity"):
@@ -2170,6 +2185,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # purely additive on top.
         turning_over_block = ""
         if (
+            not sleep_state_block
+            and
             getattr(self, "_turning_over_provider", None) is not None
         ):
             with _timed_phase(provider_ms, "turning_over"):
@@ -2190,6 +2207,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # dream) rather than an ordinary away-activity beat.
         sleep_return_block = ""
         if (
+            not sleep_state_block
+            and
             getattr(self, "_sleep_return_provider", None) is not None
         ):
             with _timed_phase(provider_ms, "sleep_return"):
@@ -2210,6 +2229,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # takes the slot.
         caught_mid_activity_block = ""
         if (
+            not sleep_state_block
+            and
             getattr(self, "_caught_mid_activity_provider", None) is not None
         ):
             with _timed_phase(provider_ms, "caught_mid_activity"):
@@ -2228,6 +2249,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # _gap_cue_surfaced flag and defer (only one gap cue per return).
         away_activities_block = ""
         if (
+            not sleep_state_block
+            and
             getattr(self, "_away_activities_provider", None) is not None
         ):
             with _timed_phase(provider_ms, "away_activities"):
@@ -2246,6 +2269,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # defers (only one of the three gap cues surfaces per return).
         forward_curiosity_block = ""
         if (
+            not sleep_state_block
+            and
             getattr(self, "_forward_curiosity_provider", None) is not None
         ):
             with _timed_phase(provider_ms, "forward_curiosity"):
@@ -2839,7 +2864,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # dropping the call here would silently lose a scheduled
         # beat; the provider itself fires rarely (cadence + gates).
         initiative_block = ""
-        if self._initiative_provider is not None:
+        if not sleep_state_block and self._initiative_provider is not None:
             with _timed_phase(provider_ms, "initiative"):
                 try:
                     initiative_block = (
@@ -3302,6 +3327,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # Almost always change turn-to-turn. WITHIN this tier the
         # existing relative ordering preserves the behavioural
         # clusters (noticing cues / pacing cues / reaction cluster).
+        if sleep_state_block:
+            system_parts.append(sleep_state_block)
         if conversation_situation_block:
             system_parts.append(conversation_situation_block)
         if belief_gaps_block:
