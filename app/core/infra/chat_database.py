@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 41
+_SCHEMA_VERSION = 42
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -261,6 +261,20 @@ CREATE TABLE IF NOT EXISTS conversation_arc (
     arc TEXT NOT NULL DEFAULT 'casual_check_in',
     since_turn INTEGER NOT NULL DEFAULT 0,
     confidence REAL NOT NULL DEFAULT 0.5,
+    updated_at TEXT NOT NULL
+);
+
+-- Schema v42: open-ended present situation inferred from each chat thread.
+-- The row is deliberately bounded to one per session and stores semantic
+-- interpretation only; current world/runtime truth is joined at read time.
+CREATE TABLE IF NOT EXISTS conversation_situation (
+    session_id TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'ended',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    evidence_message_ids TEXT NOT NULL DEFAULT '[]',
+    source_message_id INTEGER NOT NULL DEFAULT 0,
+    miss_count INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
 
@@ -1878,6 +1892,11 @@ class ChatDatabase:
             )
         except sqlite3.OperationalError:
             pass
+        # v41 -> v42: ``conversation_situation`` is a bounded semantic
+        # interpretation row per chat session. The idempotent CREATE TABLE
+        # block above handles fresh and upgraded databases; there is no
+        # historical backfill because present-tense context cannot be
+        # reconstructed honestly from an old transcript.
         for stmt in (
             "ALTER TABLE turn_stance ADD COLUMN brevity INTEGER NOT NULL "
             "DEFAULT 0",

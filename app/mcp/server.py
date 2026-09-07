@@ -49,6 +49,7 @@ def create_mcp_server(
         cue_outcome_tools,
         gate_tuning_tools,
         activity_tools,
+        conversation_situation_tools,
     )
 
     core_tools.register(mcp, session)
@@ -64,5 +65,6 @@ def create_mcp_server(
     cue_outcome_tools.register(mcp, session)
     gate_tuning_tools.register(mcp, session)
     activity_tools.register(mcp, session)
+    conversation_situation_tools.register(mcp, session)
     return mcp
 

@@ -1731,6 +1731,17 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 0.0,
                 float(agent_raw.get("world_intentional_hold_seconds", 7200.0)),
             ),
+            conversation_situation_enabled=bool(
+                agent_raw.get("conversation_situation_enabled", True),
+            ),
+            conversation_situation_every_n_user_turns=max(
+                1,
+                int(agent_raw.get("conversation_situation_every_n_user_turns", 2)),
+            ),
+            conversation_situation_stale_seconds=max(
+                300.0,
+                float(agent_raw.get("conversation_situation_stale_seconds", 21600.0)),
+            ),
             circadian_settle_enabled=bool(
                 agent_raw.get("circadian_settle_enabled", True),
             ),

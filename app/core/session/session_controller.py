@@ -48,6 +48,7 @@ from app.core.session.prompt_assembler import PromptAssembler
 from app.core.session import (
     AvatarMixin,
     ChatTurnMixin,
+    ConversationSituationMixin,
     CuePoolMixin,
     DetectorsInitMixin,
     HypothesisDebugMixin,
@@ -228,6 +229,7 @@ class SessionController(
     MemoryFacadeMixin,
     HypothesisDebugMixin,
     SecondThoughtDebugMixin,
+    ConversationSituationMixin,
     WorldMixin,
     InnerLifeProvidersMixin,
     CuePoolMixin,
@@ -1072,6 +1074,7 @@ class SessionController(
         "_summary_worker",
         "_memory_extractor",
         "_dialogue_act_tagger",
+        "_conversation_situation_worker",
         "_reflection_worker",
         "_dream_worker",
         "_curiosity_worker",

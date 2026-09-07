@@ -84,6 +84,7 @@ from app.core.infra import timephrase
 if TYPE_CHECKING:
     from app.core.memory.pursuit_notes import PursuitNoteWriter
     from app.core.world.world_store import WorldStore
+    from app.core.world.world_mutation_guard import WorldMutationGuard
     from app.llm.chat_client import ChatClient
 
 
@@ -237,6 +238,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         cooldown_seconds: float = 5400.0,
         journal_max: int = 8,
         intentional_hold_seconds: float = 0.0,
+        mutation_guard: "WorldMutationGuard | None" = None,
         llm_activity_ratio: float = 0.0,
         idle_seed_ratio: float = 0.0,
         idle_seed_max_ring: int = 6,
@@ -266,6 +268,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         self._cooldown_seconds = max(0.0, float(cooldown_seconds))
         self._journal_max = max(1, int(journal_max))
         self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
+        self._mutation_guard = mutation_guard
         self._llm_activity_ratio = min(1.0, max(0.0, float(llm_activity_ratio)))
         self._idle_seed_ratio = min(1.0, max(0.0, float(idle_seed_ratio)))
         self._idle_seed_max_ring = max(1, int(idle_seed_max_ring))
@@ -335,8 +338,9 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                     return WorkSignal(pressure=0.0, reason="disabled")
             except Exception:
                 pass
-        if self._intentional_hold_active(now):
-            return WorkSignal(pressure=0.0, reason="intentional_hold")
+        mutation_block = self._mutation_block_reason(now)
+        if mutation_block:
+            return WorkSignal(pressure=0.0, reason=mutation_block)
         if self._garden_visit_outstanding(now):
             return WorkSignal(pressure=0.0, reason="garden_visit")
         if not self._cooldown_elapsed(now):
@@ -365,8 +369,9 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         now = _utcnow()
         # Respect a deliberate placement: if the brain / user just set
         # Aiko's spot, leave her there — never override a chosen location.
-        if self._intentional_hold_active(now):
-            return {"fired": 0, "skipped_intentional_hold": True}
+        mutation_block = self._mutation_block_reason(now)
+        if mutation_block:
+            return {"fired": 0, f"skipped_{mutation_block}": True}
         # Don't fight the garden worker: if Aiko is mid-visit (return_at
         # in the future) defer entirely.
         if self._garden_visit_outstanding(now):
@@ -1377,6 +1382,16 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         if stamped is None:
             return False
         return (now - stamped).total_seconds() < self._intentional_hold_seconds
+
+    def _mutation_block_reason(self, now: datetime) -> str:
+        guard = self._mutation_guard
+        if guard is not None:
+            decision = guard.check_autonomous(
+                ("location", "posture", "activity"),
+                now=now,
+            )
+            return "" if decision.allowed else decision.reason
+        return "intentional_hold" if self._intentional_hold_active(now) else ""
 
     def _cooldown_elapsed(self, now: datetime) -> bool:
         if self._cooldown_seconds <= 0:

@@ -229,6 +229,14 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
 - **C8.** OS idle as a gap-cue qualifier (`sleep_return` first).
 - **C9.** Activity duration as wellbeing evidence (into K72, not a new cue).
 
+### Live mode architecture — [`live-mode.md`](live-mode.md)
+
+- Event-driven presence runtime: impulse generation, current-situation
+  assembly, concept-aware behavior, deterministic action arbitration, hybrid
+  speech, local policy-model evaluation, and staged rollout.
+- Builds on C6 perception and H27 co-presence without making either subsystem
+  a second behavioral controller.
+
 ### D. New tools / capabilities — [`tools.md`](tools.md)
 
 - **D-approval.** Spoken / Aiko-voiced task approvals.

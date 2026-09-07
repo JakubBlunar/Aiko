@@ -9,6 +9,11 @@ report if multi-tab presence ever becomes a real complaint.
 C2-C4 are small deferred knobs; C6 is a design for the whole channel and
 it subsumes C2.
 
+For the larger event-driven runtime that consumes C6 signals, assembles the
+current situation, retrieves relevant concepts, and arbitrates Aiko's actions,
+see [`live-mode.md`](live-mode.md). C6 remains perception; it does not own
+behavior or permission to speak.
+
 ---
 
 ## C2. Window-title-aware activity
@@ -76,7 +81,7 @@ forever — typed-proactive is *meant* to be text-only.
 
 ---
 
-## C6. Companion mode — the desktop as a sensory channel
+ ## C6. Companion mode — the desktop as a sensory channel
 
 **Phases 1–2 shipped** (collection pipeline). Write-up:
 [`shipped/proactive-tasks.md`](shipped/proactive-tasks.md#c6-companion-mode-collection-pipeline-phases-12).
@@ -321,7 +326,10 @@ other workers rather than with her ability to answer him.
   the highest-risk content. Probably worth a spike once the privacy
   layering from phase 1 has actually been used in anger.
 
-**Cross-refs.** Subsumes **C2** (window titles) as its phase 1.
+**Cross-refs.** The canonical behavior/controller design that consumes this
+pipeline is [`live-mode.md`](live-mode.md); C6 supplies evidence to its
+current-situation frame rather than issuing actions. Subsumes **C2** (window
+titles) as its phase 1.
 Immersion **H27** co-presence mode is the posture this is most useful in
 and the natural home for a glanceable readout; it depends on immersion
 **H10** (avatar idle-life). **K16**'s unified grounding line is where a

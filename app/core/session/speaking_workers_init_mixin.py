@@ -290,6 +290,65 @@ class SpeakingWorkersInitMixin:
             log.warning("DialogueActTagger init failed", exc_info=True)
             self._dialogue_act_tagger = None
 
+        # Present conversation situation — open-ended worker-model read of
+        # what Aiko and the user are doing together. It runs after the reply
+        # in the speaking window and feeds the next turn plus the world mover
+        # guard; no inference lands on the user-visible response path.
+        self._conversation_situation_store = None
+        self._conversation_situation_worker = None
+        if bool(getattr(settings.agent, "conversation_situation_enabled", True)):
+            try:
+                from app.core.conversation.conversation_situation import (
+                    ConversationSituationStore,
+                )
+                from app.core.conversation.conversation_situation_worker import (
+                    ConversationSituationWorker,
+                )
+
+                self._conversation_situation_store = ConversationSituationStore(
+                    self._chat_db
+                )
+                self._conversation_situation_worker = ConversationSituationWorker(
+                    client=self._worker_client,
+                    chat_db=self._chat_db,
+                    store=self._conversation_situation_store,
+                    model=self._effective_worker_model,
+                    world_snapshot_provider=self.world_snapshot,
+                    every_n_user_turns=int(
+                        getattr(
+                            settings.agent,
+                            "conversation_situation_every_n_user_turns",
+                            2,
+                        )
+                    ),
+                )
+            except Exception:
+                log.warning(
+                    "ConversationSituationWorker init failed", exc_info=True
+                )
+                self._conversation_situation_store = None
+                self._conversation_situation_worker = None
+
+        self._world_mutation_guard = None
+        try:
+            from app.core.world.world_mutation_guard import WorldMutationGuard
+
+            self._world_mutation_guard = WorldMutationGuard(
+                kv_get=self._chat_db.kv_get,
+                situation_snapshot_provider=(
+                    lambda: self.conversation_situation_snapshot(fresh=True)
+                ),
+                intentional_hold_seconds=float(
+                    getattr(
+                        settings.agent,
+                        "world_intentional_hold_seconds",
+                        7200.0,
+                    )
+                ),
+            )
+        except Exception:
+            log.warning("WorldMutationGuard init failed", exc_info=True)
+
         # Phase 3a: structured user profile + per-turn user-state estimator.
         # The store is hot-path-safe (small SQL reads) and the estimator
         # runs after every turn (regex only). The worker is LLM-driven and
@@ -643,6 +702,7 @@ class SpeakingWorkersInitMixin:
             pajama=self._render_pajama_block,
             motion_names=self._avatar_motion_names,
             world=self._render_world_block,
+            conversation_situation=self._render_conversation_situation_block,
             activity=self._render_activity_block,
             weather=self._render_weather_block,
             hobby=self._render_hobby_block,
@@ -3093,6 +3153,9 @@ class SpeakingWorkersInitMixin:
                                 "world_intentional_hold_seconds",
                                 7200.0,
                             ),
+                            mutation_guard=getattr(
+                                self, "_world_mutation_guard", None
+                            ),
                             circadian_period_provider=(
                                 lambda: self.current_circadian_period()
                             ),
@@ -3160,6 +3223,9 @@ class SpeakingWorkersInitMixin:
                                     self._settings.agent,
                                     "world_intentional_hold_seconds",
                                     7200.0,
+                                ),
+                                mutation_guard=getattr(
+                                    self, "_world_mutation_guard", None
                                 ),
                             )
                         )

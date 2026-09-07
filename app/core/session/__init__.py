@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 _LAZY_EXPORTS: dict[str, str] = {
     "AvatarMixin": "avatar_mixin",
     "ChatTurnMixin": "chat_turn_mixin",
+    "ConversationSituationMixin": "conversation_situation_mixin",
     "CuePoolMixin": "cue_pool_mixin",
     "DetectorsInitMixin": "detectors_init_mixin",
     "HypothesisDebugMixin": "hypothesis_debug_mixin",
@@ -94,6 +95,7 @@ def __dir__() -> list[str]:
 if TYPE_CHECKING:  # import-time cost only for type checkers
     from app.core.session.avatar_mixin import AvatarMixin
     from app.core.session.chat_turn_mixin import ChatTurnMixin
+    from app.core.session.conversation_situation_mixin import ConversationSituationMixin
     from app.core.session.cue_pool_mixin import CuePoolMixin
     from app.core.session.debug_overrides import (
         KNOWN_OVERRIDES,
@@ -136,6 +138,7 @@ __all__ = [
     "KNOWN_OVERRIDES",
     "AvatarMixin",
     "ChatTurnMixin",
+    "ConversationSituationMixin",
     "CuePoolMixin",
     "DebugOverrides",
     "DetectorsInitMixin",

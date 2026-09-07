@@ -2360,6 +2360,15 @@ class AgentSettings:
     # don't relocate her are unaffected.
     world_intentional_hold_seconds: float = 7200.0
 
+    # Present conversation situation: a worker-model pass every N user turns
+    # records an open-ended, evidence-linked read of what Aiko and the user
+    # are doing together. It runs in the speaking window, never on TTFT.
+    conversation_situation_enabled: bool = True
+    conversation_situation_every_n_user_turns: int = 2
+    # Hard persistence ceiling. Ordinary cadence refreshes an active situation;
+    # a row older than this cannot constrain the world after a restart/gap.
+    conversation_situation_stale_seconds: float = 21600.0
+
     # ── H16: circadian "where you find her" default ───────────────────
     # Master switch for the :class:`CircadianSettleWorker` — the gentlest
     # mover, which drifts Aiko to a believable time-of-day resting spot

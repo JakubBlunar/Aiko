@@ -428,6 +428,9 @@ class IdleWorkersInitMixin:
                         "world_intentional_hold_seconds",
                         7200.0,
                     ),
+                    mutation_guard=getattr(
+                        self, "_world_mutation_guard", None
+                    ),
                     # H14 — fraction of beats the worker LLM composes fresh.
                     llm_activity_ratio=getattr(
                         mem, "away_activities_llm_ratio", 0.5,

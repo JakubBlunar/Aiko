@@ -196,6 +196,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
     # the LLM reads before the user message. Almost always change
     # turn-to-turn.
     "T6_detectors": (
+        # Semantic present-continuity extracted off-turn, joined with this
+        # turn's dialogue act and authoritative world state. It reports
+        # facts rather than offering a floor-taking move.
+        "conversation_situation_block",
         "belief_gaps_block",
         "clarification_block",
         "calibration_block",
@@ -736,6 +740,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # Aiko's room: compact ambient block describing her current
         # location + nearby items. See WorldStore.render_block.
         self._world_provider: Callable[[], str] | None = None
+        self._conversation_situation_provider: Callable[[str], str] | None = None
         # Activity awareness (Phase 4c): the foreground app the user
         # is in, surfaced as "<user> is currently working in <App>."
         # Always empty string when the feature is disabled or no app
@@ -1821,6 +1826,19 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                         exc_info=True,
                     )
                     knowledge_grounding_block = ""
+
+        conversation_situation_block = ""
+        if self._conversation_situation_provider is not None:
+            with _timed_phase(provider_ms, "conversation_situation"):
+                try:
+                    conversation_situation_block = (
+                        self._conversation_situation_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "conversation situation provider raised", exc_info=True
+                    )
+                    conversation_situation_block = ""
 
         belief_gaps_block = ""
         if not aggressive and self._belief_gaps_provider is not None:
@@ -3284,6 +3302,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # Almost always change turn-to-turn. WITHIN this tier the
         # existing relative ordering preserves the behavioural
         # clusters (noticing cues / pacing cues / reaction cluster).
+        if conversation_situation_block:
+            system_parts.append(conversation_situation_block)
         if belief_gaps_block:
             # K2: surface up to two "your read on X doesn't match the
             # room" lines right alongside the knowledge-gap block.

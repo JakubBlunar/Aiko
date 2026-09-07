@@ -29,7 +29,7 @@ now holds **only the open work**.
 | H24 | Occasion- / season-aware outfits              | ❌ open (rig-dependent) |
 | H25 | Show-and-tell — share an image, she reacts    | ✅ shipped — [immersion.md](shipped/immersion.md#h25-show-and-tell--share-an-image-she-reacts-and-remembers) |
 | H26 | Caught mid-something — busy when you arrive   | ✅ shipped — [immersion.md](shipped/immersion.md#h26-caught-mid-something--she-was-busy-when-you-opened-the-app) |
-| H27 | Co-presence mode — in the room, not talking   | ❌ open (depends on H10) |
+| H27 | Co-presence mode — in the room, not talking   | ❌ open — runtime design in [`live-mode.md`](live-mode.md) |
 | H28 | Ground inner life in named artifacts          | ✅ shipped — [immersion.md](shipped/immersion.md#h28-ground-inner-life-in-named-artifacts) |
 
 ---
@@ -208,6 +208,13 @@ acknowledgment so she can mention it once when natural,
 
 ## H27. Co-presence mode — in the room, not in conversation
 
+**Runtime design moved to [`live-mode.md`](live-mode.md).** This entry keeps the
+product motivation. The dedicated document owns impulse generation,
+current-situation and concept surfacing, action authority, model selection,
+hybrid speech, and the implementation phases. Internally, co-presence is a
+behavior posture independent of typed/voice input rather than a third value in
+one session-mode enum.
+
 **Motivation.** Every mode Aiko has is a *conversation* mode: he says something,
 she replies, the turn machinery runs. There is no posture for simply **being
 around** — him working with the app open for two hours, her present but not
@@ -236,12 +243,12 @@ much stricter gating in the proactive director
 the avatar, a UI affordance for entering the mode, and reuse of the K33 cozy
 register for anything she does say.
 
-**See also [C6](proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel)**
-— desktop perception as a sensory channel. C6 is what would give this mode
+**See also [`live-mode.md`](live-mode.md)** for the canonical controller and
+[C6](proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel) for
+desktop perception as a sensory channel. C6 is what would give this posture
 something to be present *about*: H10 carries the presence visually, C6 supplies
-the rare thing worth interjecting, and the "much higher bar" this entry demands
-is the same bar C6 has to clear. The two are complementary rather than
-sequential, and neither blocks the other.
+evidence about the shared situation, and Live mode decides whether the rare
+thing is worth acting on. They are complementary rather than sequential.
 
 ---
 

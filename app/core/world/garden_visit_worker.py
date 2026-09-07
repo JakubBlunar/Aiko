@@ -42,6 +42,7 @@ from app.core.infra import timephrase
 if TYPE_CHECKING:
     from app.core.memory.pursuit_notes import PursuitNoteWriter
     from app.core.world.world_store import WorldStore
+    from app.core.world.world_mutation_guard import WorldMutationGuard
 
 
 log = logging.getLogger("app.garden_visit_worker")
@@ -148,6 +149,7 @@ class GardenVisitWorker:
         rng: random.Random | None = None,
         circadian_period_provider: Callable[[], str] | None = None,
         intentional_hold_seconds: float = 0.0,
+        mutation_guard: "WorldMutationGuard | None" = None,
         enabled_provider: Callable[[], bool] | None = None,
         # H15 — needs-driven + varied + journalled.
         need_dry_days: float = 2.0,
@@ -162,6 +164,7 @@ class GardenVisitWorker:
         self._notify = notify
         self._interval_seconds = float(interval_seconds)
         self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
+        self._mutation_guard = mutation_guard
         # Per-instance bookkeeping — return_at + next_eligible are
         # stored here when no kv_get/kv_set are supplied so tests can
         # exercise the two-phase logic without a real ChatDatabase.
@@ -219,7 +222,7 @@ class GardenVisitWorker:
             return True
         # Phase 1 — outside the garden: don't start a visit right after a
         # deliberate placement, then respect daylight + cooldown.
-        if self._intentional_hold_active(now):
+        if self._mutation_block_reason(now):
             return False
         if not self._is_daylight(now):
             return False
@@ -253,6 +256,9 @@ class GardenVisitWorker:
         is the difference between "the timer fired" and "there is
         something to do out there".
         """
+        mutation_block = self._mutation_block_reason(now)
+        if mutation_block:
+            return WorkSignal(pressure=0.0, reason=mutation_block)
         try:
             garden = self._store.get_location("garden")
             if garden is not None:
@@ -329,14 +335,26 @@ class GardenVisitWorker:
         except Exception:
             return {"skipped": True, "reason": "state_unavailable"}
         in_garden = state.location_id == garden.id
-        if in_garden:
-            # If Aiko deliberately re-set her state after we walked her out
-            # (e.g. told the user "I'll stay out here a while"), honour that:
-            # drop the pending auto-return instead of dragging her back.
-            if self._intentional_override_during_visit(now):
+        if in_garden and self._intentional_override_during_visit(now):
+            self._save_return_at(None)
+            log.info("garden_visit: auto-return cancelled (intentional stay)")
+            return {"phase": "inbound", "cancelled_intentional": True}
+        mutation_block = self._mutation_block_reason(now)
+        if mutation_block:
+            if (
+                in_garden
+                and mutation_block == "active_shared_conversation_situation"
+            ):
                 self._save_return_at(None)
-                log.info("garden_visit: auto-return cancelled (intentional stay)")
-                return {"phase": "inbound", "cancelled_intentional": True}
+                log.info(
+                    "garden_visit: auto-return cancelled (shared conversation)"
+                )
+                return {
+                    "phase": "inbound",
+                    "cancelled_shared_situation": True,
+                }
+            return {"skipped": True, "reason": mutation_block}
+        if in_garden:
             return self._return_home(now=now)
         return self._visit_garden(garden=garden, now=now, forced=forced)
 
@@ -780,6 +798,16 @@ class GardenVisitWorker:
         if stamped is None:
             return False
         return (now - stamped).total_seconds() < self._intentional_hold_seconds
+
+    def _mutation_block_reason(self, now: datetime) -> str:
+        guard = self._mutation_guard
+        if guard is not None:
+            decision = guard.check_autonomous(
+                ("location", "posture", "activity"),
+                now=now,
+            )
+            return "" if decision.allowed else decision.reason
+        return "intentional_hold" if self._intentional_hold_active(now) else ""
 
     def _intentional_override_during_visit(self, now: datetime) -> bool:
         """True if Aiko was deliberately placed *after* we walked her out.

@@ -176,6 +176,7 @@ class PromptAssemblerHelpersMixin:
         pajama: Callable[[], str] | None = None,
         motion_names: Callable[[], list[str]] | None = None,
         world: Callable[[], str] | None = None,
+        conversation_situation: Callable[[str], str] | None = None,
         activity: Callable[[], str] | None = None,
         weather: Callable[[], str] | None = None,
         hobby: Callable[[], str] | None = None,
@@ -314,6 +315,8 @@ class PromptAssemblerHelpersMixin:
             self._motion_names_provider = motion_names
         if world is not None:
             self._world_provider = world
+        if conversation_situation is not None:
+            self._conversation_situation_provider = conversation_situation
         if activity is not None:
             self._activity_provider = activity
         if weather is not None:

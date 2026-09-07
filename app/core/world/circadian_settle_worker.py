@@ -36,6 +36,7 @@ from app.core.infra import timephrase
 
 if TYPE_CHECKING:
     from app.core.world.world_store import WorldStore
+    from app.core.world.world_mutation_guard import WorldMutationGuard
 
 
 log = logging.getLogger("app.circadian_settle")
@@ -97,6 +98,7 @@ class CircadianSettleWorker:
         interval_seconds: float = 3600.0,
         settle_after_seconds: float = 7200.0,
         intentional_hold_seconds: float = 0.0,
+        mutation_guard: "WorldMutationGuard | None" = None,
         rng: random.Random | None = None,
     ) -> None:
         self._store = store
@@ -107,6 +109,7 @@ class CircadianSettleWorker:
         self._interval_seconds = max(60.0, float(interval_seconds))
         self._settle_after_seconds = max(0.0, float(settle_after_seconds))
         self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
+        self._mutation_guard = mutation_guard
         self._rng = rng or random.Random()
 
     @property
@@ -156,8 +159,9 @@ class CircadianSettleWorker:
                     return "disabled", None
             except Exception:
                 pass
-        if self._intentional_hold_active(now):
-            return "skipped_intentional_hold", None
+        mutation_block = self._mutation_block_reason(now)
+        if mutation_block:
+            return f"skipped_{mutation_block}", None
         if self._garden_visit_outstanding(now):
             return "skipped_garden_visit", None
 
@@ -258,6 +262,16 @@ class CircadianSettleWorker:
         if stamped is None:
             return False
         return (now - stamped).total_seconds() < self._intentional_hold_seconds
+
+    def _mutation_block_reason(self, now: datetime) -> str:
+        guard = self._mutation_guard
+        if guard is not None:
+            decision = guard.check_autonomous(
+                ("location", "posture", "activity"),
+                now=now,
+            )
+            return "" if decision.allowed else decision.reason
+        return "intentional_hold" if self._intentional_hold_active(now) else ""
 
     def _garden_visit_outstanding(self, now: datetime) -> bool:
         return_at = _parse_iso(self._kv_read(_GARDEN_RETURN_KEY))

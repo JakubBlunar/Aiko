@@ -327,6 +327,41 @@ class SpeakingWindowJobsMixin:
         except Exception:
             log.debug("dialogue_act llm submit failed", exc_info=True)
 
+    def _maybe_schedule_conversation_situation(self) -> None:
+        """Enqueue the periodic present-situation interpretation."""
+        worker = getattr(self, "_conversation_situation_worker", None)
+        if worker is None or not bool(getattr(self, "_remember_history", True)):
+            return
+        session_key = self.session_key
+        try:
+            if not worker.should_run(session_key):
+                return
+        except Exception:
+            log.debug("conversation situation cadence check failed", exc_info=True)
+            return
+
+        def _job(_stop_flag: Any) -> None:
+            if _stop_flag is not None and _stop_flag.is_set():
+                return
+            try:
+                worker.run(session_key)
+            except Exception:
+                log.debug("conversation situation job raised", exc_info=True)
+
+        try:
+            from app.core.voice.speaking_window_scheduler import ScheduledJob
+
+            self._scheduler.submit(ScheduledJob(
+                name="conversation_situation",
+                priority=71,
+                estimated_seconds=3.0,
+                callable=_job,
+                dedupe_key=f"conversation_situation:{session_key}",
+            ))
+            worker.mark_scheduled(session_key)
+        except Exception:
+            log.debug("conversation situation submit failed", exc_info=True)
+
     def _maybe_schedule_moment_llm_job(
         self,
         *,

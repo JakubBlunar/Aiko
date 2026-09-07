@@ -51,13 +51,21 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
         except Exception:
             log.debug("grounding circadian slot failed", exc_info=True)
 
+        situation_snapshot = None
         try:
-            affect = self._affect_store.get(self._user_id)
-            label = (affect.mood_label or "").strip()
-            if label:
-                ctx.mood_label = label
+            situation_snapshot = self.conversation_situation_snapshot()
+            if situation_snapshot.mood_label:
+                ctx.mood_label = situation_snapshot.mood_label
         except Exception:
-            log.debug("grounding affect slot failed", exc_info=True)
+            log.debug("grounding situation snapshot failed", exc_info=True)
+        if situation_snapshot is None:
+            try:
+                affect = self._affect_store.get(self._user_id)
+                label = (affect.mood_label or "").strip()
+                if label:
+                    ctx.mood_label = label
+            except Exception:
+                log.debug("grounding affect slot failed", exc_info=True)
 
         store = getattr(self, "_user_state_store", None)
         if store is not None:
@@ -75,21 +83,28 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
             except Exception:
                 log.debug("grounding user_state slot failed", exc_info=True)
 
-        world = getattr(self, "_world_store", None)
-        if world is not None:
-            try:
-                wstate = world.get_state()
-                if wstate.location_id is not None:
-                    loc = world.get_location_by_id(int(wstate.location_id))
-                    if loc is not None:
-                        ctx.world_location = loc.name
-                        ctx.world_outdoor = bool(
-                            getattr(loc, "slug", "") in _OUTDOOR_SLUGS
-                        )
-                ctx.world_posture = (wstate.posture or "").strip() or None
-                ctx.world_activity = (wstate.activity or "").strip() or None
-            except Exception:
-                log.debug("grounding world slot failed", exc_info=True)
+        if situation_snapshot is not None:
+            world = situation_snapshot.world
+            ctx.world_location = world.location_name or None
+            ctx.world_outdoor = world.location_slug in _OUTDOOR_SLUGS
+            ctx.world_posture = world.posture or None
+            ctx.world_activity = world.activity or None
+        else:
+            world_store = getattr(self, "_world_store", None)
+            if world_store is not None:
+                try:
+                    wstate = world_store.get_state()
+                    if wstate.location_id is not None:
+                        loc = world_store.get_location_by_id(int(wstate.location_id))
+                        if loc is not None:
+                            ctx.world_location = loc.name
+                            ctx.world_outdoor = bool(
+                                getattr(loc, "slug", "") in _OUTDOOR_SLUGS
+                            )
+                    ctx.world_posture = (wstate.posture or "").strip() or None
+                    ctx.world_activity = (wstate.activity or "").strip() or None
+                except Exception:
+                    log.debug("grounding world slot failed", exc_info=True)
 
         tracker = getattr(self, "_relationship_tracker", None)
         if tracker is not None:
@@ -104,15 +119,21 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
             except Exception:
                 log.debug("grounding relationship slot failed", exc_info=True)
 
-        try:
-            app = self._user_active_app
-            if (
-                app
-                and bool(getattr(self._settings.agent, "activity_awareness_enabled", False))
-            ):
-                ctx.user_app = app
-        except Exception:
-            log.debug("grounding activity slot failed", exc_info=True)
+        if situation_snapshot is not None and situation_snapshot.user_active_app:
+            ctx.user_app = situation_snapshot.user_active_app
+        elif situation_snapshot is None:
+            try:
+                app = self._user_active_app
+                if app and bool(
+                    getattr(
+                        self._settings.agent,
+                        "activity_awareness_enabled",
+                        False,
+                    )
+                ):
+                    ctx.user_app = app
+            except Exception:
+                log.debug("grounding activity slot failed", exc_info=True)
 
         noise = getattr(self, "_ambient_noise", None)
         if noise is not None:

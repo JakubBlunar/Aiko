@@ -999,6 +999,25 @@ class PostTurnMixin(PostTurnHelpersMixin):
             except Exception:
                 log.debug("dialogue_act tagger failed", exc_info=True)
 
+        # Present-situation extraction runs off-turn on the shared worker
+        # model. Both typed and voice turns converge here, so the semantic
+        # state is modality-independent.
+        situation_worker = getattr(self, "_conversation_situation_worker", None)
+        if situation_worker is not None and bool(
+            getattr(self, "_remember_history", True)
+        ):
+            try:
+                self._renew_conversation_situation_on_turn(user_message_id)
+                situation_worker.notify_user_turn(
+                    self.session_key,
+                    message_id=user_message_id,
+                )
+                self._maybe_schedule_conversation_situation()
+            except Exception:
+                log.debug(
+                    "conversation situation schedule failed", exc_info=True
+                )
+
         # K17 — clarification-repair detector. Regex-only, runs inline
         # right after the dialogue_act tagger so its result lands in
         # the same "what was the shape of this turn" cluster. Stashes

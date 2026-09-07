@@ -1076,6 +1076,10 @@ class WorldMixin:
             )
         except Exception:
             log.debug("intentional-state stamp failed", exc_info=True)
+        try:
+            self._reconcile_conversation_situation_after_world_mutation()
+        except Exception:
+            log.debug("conversation-situation world reconcile failed", exc_info=True)
         snap = state.to_dict()
         self._notify_world({"state": snap})
         return snap
@@ -1213,6 +1217,10 @@ class WorldMixin:
             )
         except Exception:
             log.debug("intentional-state stamp failed", exc_info=True)
+        try:
+            self._reconcile_conversation_situation_after_world_mutation()
+        except Exception:
+            log.debug("conversation-situation world reconcile failed", exc_info=True)
         state = result.get("state") or {}
         self._notify_world({"state": state})
         return result

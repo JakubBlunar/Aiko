@@ -118,6 +118,42 @@ system prompt (see `assemble_with_budget` in
 
 ---
 
+## Conversation-owned room lease
+
+Conversation context can temporarily own the current scene. Every two user
+turns by default, `ConversationSituationWorker` reads a bounded, age-tagged
+transcript and records one open-ended per-session interpretation in
+`conversation_situation`. For example, if the conversation establishes that
+Aiko and the user are sitting together on the beanbag, that interpretation
+becomes a room lease only while the authoritative world state also says Aiko
+is at the beanbag.
+
+`WorldMutationGuard` combines that lease with the existing
+`world.intentional_state_at` hold. The away-activity, garden-visit, and
+circadian-settle workers check it in both their demand probe and mutation
+step. While a compatible shared situation is active they cannot change
+location, posture, or activity, even after the old two-hour intentional hold
+expires. Item-only maintenance remains eligible. A pending garden auto-return
+is cancelled if the conversation establishes a newer shared situation in the
+garden.
+
+The lease is conservative:
+
+- current world/runtime truth always wins over the worker interpretation;
+- malformed or timed-out extraction preserves the previous state;
+- one implicit miss makes the interpretation uncertain and two end it;
+- a direct conversational ending or contradictory deliberate world action
+  releases it immediately;
+- compatible current turns and deliberate room edits refresh it;
+- the persistence ceiling defaults to six hours, so a stale row cannot lock
+  the room after a restart or long gap.
+
+World tools and World-tab actions remain deliberate, higher-authority writes.
+An incompatible deliberate move clears the inferred lease rather than being
+blocked.
+
+---
+
 ## Agent tools
 
 Eleven tools in [`app/llm/tools/world.py`](../app/llm/tools/world.py)
