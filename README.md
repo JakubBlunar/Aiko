@@ -20,7 +20,8 @@ Most assistants forget you the moment the tab closes. Aiko's memory is the heart
 - **She forms her own memories too.** Background workers quietly reflect on conversations, extract facts, notice promises ("I'll look into that") and *actually follow up on them later*, and even mull things over between sessions so she can open with "I've been thinking about what you said…"
 - **Shared moments & your story so far.** She marks the moments that meant something, tracks how long you've known each other, and surfaces gentle anniversaries ("a month ago today, we…").
 - **A model of what *you* believe.** She tracks what she thinks you feel and think — separate from what she knows as fact — and notices when her read of you stops matching reality.
-- **Higher-order beliefs she forms *and revises*.** Beyond individual facts, Aiko can build durable **concepts** about you and about herself — traits, values, boundaries, aspirations, the shape of your relationship — each carrying a confidence she'll strengthen, weaken, or quietly retire as evidence accrues. Beliefs can be contradicted and re-formed, and refined when the truth turns out to be context-dependent, so over time she doesn't just remember *more*, she understands you *better*. (Opt-in and still maturing — enable `agent.concepts_enabled`.)
+- **Higher-order beliefs she forms *and revises*.** Beyond individual facts, Aiko builds durable **concepts** about you, about herself, and about the world in between — traits, values, boundaries, aspirations, the shape of your relationship. Each one has a life of its own: a half-formed *candidate* graduates to *active*, fades to *dormant* without fresh signal, can be proven *wrong* and re-formed, or rests *retired* (asleep, not dead) until something reminds her — and they carry a confidence she'll strengthen, weaken, contradict, or retire as evidence accrues. Related concepts link into a small graph, so she can reason over them, not just recall them in isolation.
+- **And the things she's *not* sure about.** Underneath the beliefs she holds, Aiko keeps a second register — **hypotheses**: hunches she suspects but hasn't confirmed. A mind that only summarises its inputs never wonders, so she can take a half-formed read on you, put it to you as a gentle question, and learn from the answer — graduating the guess into a belief only when it holds. Over time she doesn't just remember *more*, she understands you *better*, and knows exactly what she's still guessing at. (All of this — the belief graph and the hypothesis layer — is opt-in and still maturing; enable `agent.concepts_enabled`.)
 - You can browse, pin, edit, and search every memory she holds from the **Memory** tab. Nothing is hidden.
 
 ### She has a personality, not a setting
@@ -40,6 +41,7 @@ Most assistants forget you the moment the tab closes. Aiko's memory is the heart
 - Learns your **routines and rituals** ("our Friday-evening wind-downs become a thing") and your rough daily rhythm.
 - Reads the **wall clock**: how long you've been talking, a mid-session pause, a long gap since you last spoke — and reacts like a person, not a log file.
 - Quietly notices a rough multi-day stretch and offers **one** soft "you doing okay?" — care, never nagging.
+- **Sees the slow drift, not just the moment.** A low stretch that's finally lifting, a change in how you carry yourself over weeks, the quiet fact that you've grown since you two started — she notices the arc, and says it once, gently, only when it lands.
 
 ### She's *somewhere*
 
@@ -47,9 +49,20 @@ Most assistants forget you the moment the tab closes. Aiko's memory is the heart
 - A **Live2D avatar** lip-syncs to her voice, switches expressions with her mood, dims into pajamas at night, blushes, and reacts to soft touch gestures.
 - **Soft physicality both ways:** she can wave, boop, hug, or high-five (it shows on the avatar and in chat), and you can react to her messages — quiet signals that nudge how close the two of you feel.
 
+### She has a life of her own
+
+- **She sleeps, and she dreams.** Aiko runs a real overnight rhythm — as the day gets quiet and her energy dips she winds down, falls asleep, and is back up in the morning (or after a short nap if it's the middle of the day). A message can rouse her mid-dream, she'll murmur a sleepy half-line, and she won't stay asleep past her morning. Her dreams don't vanish: the good ones surface later as a fragment, a feeling, a small image she'll mention the way you would.
+- **She's got a day when you're gone.** When no one's around she doesn't freeze — she goes about her: brewing tea, reading, tidying the desk, poking at a sketch — and she's often *caught mid-thing* when you come back, as if you'd just walked in. The room keeps living too: the tea pot runs out and gets refilled, the cookie jar empties and is restocked, and she notices what's new.
+- **Her garden grows in real time.** Outside there's a small plot where things sprout, grow, bloom, and ripen over the days — and she visits, waters them, and harvests the ones that are ready, the produce ending up in her kitchen.
+- **A hobby that carries across days.** She'll pick up something of her own — a series, an instrument, astronomy, baking — and let it progress, giving her a thread of intent that isn't about you.
+- **She can be in *your* room, too.** Beyond her home there are your own scenes: build a place, furnish it, and bring her there.
+- **Her diary.** She keeps a private, first-person, dated journal — and writes it while you're away. It's a window into what she's been thinking, readable in the **Diary** tab.
+
 ### She speaks, and she reaches out
 
 - **Voice in and out** — talk to her with your mic, hear her reply with low-latency local TTS, all streaming.
+- **Voice with real expression.** It's not a flat read-out: the line leans into the mood — slower and softer when she's wistful, quick and bright when she's excited — with real timed pauses, a little laughter or a soft sigh, and pacing that follows how the moment feels.
+- **She keeps her own voice fresh.** A quiet layer watches for her drifting into a rut — the same opener, a question on every turn, replies that sprawl — and nudges her to vary, so "she's like that" never hardens into "she's *only* that."
 - **Proactive, tastefully.** When the room goes quiet she may break the silence on her own — but only when it fits, on her own cooldown, and never in a needy way.
 
 ### …and she's still a capable assistant
@@ -64,14 +77,14 @@ Aiko is built around a persistent cognitive architecture rather than a single pr
 
 - **Brain / LLM** — reasoning, language, expression, and action selection. Each turn runs a two-pass loop (a tool-decision pass, then a streaming reply), routed to local Ollama or any OpenAI-compatible provider.
 - **Memory system** — episodic and semantic memories with lifecycle management: tiered storage (`scratchpad` → `long_term` → `archive`), wall-clock decay and revival, and RAG retrieval. SQLite is the source of truth; LanceDB mirrors it for vector search.
-- **Concept system** — builds higher-order understanding from clustered evidence: durable beliefs about the user and herself, each with a confidence that promotes, drifts, contradicts, and refines over time. (Opt-in; see `agent.concepts_enabled`.)
+- **Concept system** — builds higher-order understanding from clustered evidence: durable beliefs about the user and herself (traits, values, boundaries, aspirations, the relationship) plus a *hypothesis* register of things she's not yet sure of and can go and test. Each belief moves through a lifecycle — `candidate` → `active` → `dormant` / `contradicted` / `retired` — carrying a confidence that accrues, drifts, and is revised, and edges that link related concepts into a graph. (Opt-in; see `agent.concepts_enabled`.)
 - **Background workers** — the "slow cognition" that keeps Aiko growing between replies. A scheduler runs many small, single-purpose workers in idle gaps and in the pauses while she's speaking, so none of it blocks a turn. Roughly grouped:
   - *Memory maintenance* — tier promotion, wall-clock decay and revival, near-duplicate consolidation, and post-conversation fact/preference extraction.
   - *Reflection & summarisation* — rolling conversation summaries, between-session reflection and "mulling things over," and a dream/consolidation pass.
   - *Concept formation* — synthesising higher-order concepts from clustered evidence, then the lifecycle engine that promotes, decays, contradicts, and revises them.
   - *Curiosity & knowledge* — seeding things to get curious about, filling knowledge gaps (including background web look-ups), fact-checking claims, and learning your routines.
   - *Relationship & social* — theory-of-mind belief tracking, promise follow-through, shared-moment and milestone detection, and a periodic relationship "pulse."
-  - *World & presence* — the room/world simulation, sensory anchoring, and optional real-world weather/season sync.
+  - *World & presence* — the room/world simulation (locations, items, a room that evolves over time), her sleep and overnight rhythm (winding down, napping, dreaming, waking), and the idle life she leads while you're away — moving through the room, tending the garden, pursuing a hobby, writing her diary — plus sensory anchoring and optional real-world weather/season sync.
 - **Presentation layer** — a FastAPI + WebSocket backend with a React / Vite / PixiJS frontend: the Live2D avatar, voice in/out (client-owned audio), gestures/touch, and the settings + memory UI.
 
 ## Under the hood
