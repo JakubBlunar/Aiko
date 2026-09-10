@@ -2371,7 +2371,7 @@ class AgentSettings:
     # worker drags her back to the desk. Default 2h; 0 disables the hold
     # (workers always free to move her). Posture/activity-only beats that
     # don't relocate her are unaffected.
-    world_intentional_hold_seconds: float = 7200.0
+    world_intentional_hold_seconds: float = 1800.0
 
     # Present conversation situation: a worker-model pass every N user turns
     # records an open-ended, evidence-linked read of what Aiko and the user

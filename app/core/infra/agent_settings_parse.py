@@ -1764,7 +1764,7 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ),
             world_intentional_hold_seconds=max(
                 0.0,
-                float(agent_raw.get("world_intentional_hold_seconds", 7200.0)),
+                float(agent_raw.get("world_intentional_hold_seconds", 1800.0)),
             ),
             conversation_situation_enabled=bool(
                 agent_raw.get("conversation_situation_enabled", True),

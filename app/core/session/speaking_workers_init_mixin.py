@@ -355,7 +355,7 @@ class SpeakingWorkersInitMixin:
                     getattr(
                         settings.agent,
                         "world_intentional_hold_seconds",
-                        7200.0,
+                        1800.0,
                     )
                 ),
                 sleep_state_provider=(
@@ -3175,7 +3175,7 @@ class SpeakingWorkersInitMixin:
                             intentional_hold_seconds=getattr(
                                 self._settings.agent,
                                 "world_intentional_hold_seconds",
-                                7200.0,
+                                1800.0,
                             ),
                             mutation_guard=getattr(
                                 self, "_world_mutation_guard", None
@@ -3246,7 +3246,7 @@ class SpeakingWorkersInitMixin:
                                 intentional_hold_seconds=getattr(
                                     self._settings.agent,
                                     "world_intentional_hold_seconds",
-                                    7200.0,
+                                    1800.0,
                                 ),
                                 mutation_guard=getattr(
                                     self, "_world_mutation_guard", None

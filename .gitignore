@@ -17,7 +17,7 @@ data/crashlog.txt
 # and process memory is the same personal data as the database.
 data/crash-*.dmp
 # Runtime prompt-cache diagnostics; generated only when cache logging is enabled.
-data/prompt-cache.jsonl
+data/prompt-cache.jsonl*
 # Legacy runtime artifact from the removed SelfImageWorker; still ignored so
 # any stale local copy stays untracked. Aiko's self-model is now concept-driven.
 # The human-authored persona (aiko_companion.txt) stays tracked.
