@@ -76,6 +76,7 @@ from app.core.session import (
     WorldMixin,
 )
 from app.core.world.world_store import WorldStore
+from app.core.world.sleep_state import REST_ACTIVITIES
 from app.core.world.sleep_store import SleepStore
 from app.core.infra.gate_tuning_store import apply_gates
 from app.core.infra.settings import (
@@ -864,6 +865,18 @@ class SessionController(
                 nap_max_hours=float(
                     getattr(settings.agent, "sleep_nap_max_hours", 2.0)
                 ),
+                overnight_wake_hour=float(
+                    getattr(settings.agent, "sleep_overnight_wake_hour", 7.0)
+                ),
+                overnight_wake_minute=int(
+                    getattr(settings.agent, "sleep_overnight_wake_minute", 0)
+                ),
+                overnight_min_hours=float(
+                    getattr(settings.agent, "sleep_overnight_min_hours", 5.0)
+                ),
+                overnight_max_hours=float(
+                    getattr(settings.agent, "sleep_overnight_max_hours", 10.0)
+                ),
             )
             # Reconciliation may advance an offline wind-down or expire a nap.
             # Project that durable truth into the room without inventing any
@@ -882,6 +895,15 @@ class SessionController(
                     posture="lying",
                     activity="waking_up",
                 )
+            elif self._world_store is not None and sleep_state.status == "awake":
+                # Self-heal a stale rest projection: if the last flip to
+                # ``awake`` happened while the app was down (or its world
+                # write was lost), the room can still read "napping" /
+                # "waking up". Clear it back to idle so the World tab
+                # matches the durable state.
+                current = self._world_store.get_state()
+                if current.activity in REST_ACTIVITIES:
+                    self._world_store.set_state(activity="idle")
         except Exception:
             log.warning("SleepStore failed to initialise", exc_info=True)
             self._sleep_store = None

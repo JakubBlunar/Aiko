@@ -11,6 +11,7 @@ from app.core.proactive.idle_worker import SLEEP_CONTINUE, WorkSignal
 from app.core.world.sleep_state import (
     ASLEEP,
     AWAKE,
+    REST_ACTIVITIES,
     WINDING_DOWN,
     WOKEN,
     PropensityInputs,
@@ -118,7 +119,7 @@ class SleepLifecycleWorker:
                 elif updated.status == WOKEN and self._world is not None:
                     self._set_woken_world()
                 elif updated.status == AWAKE:
-                    self._clear_napping()
+                    self._clear_rest_world()
                 return {"status": updated.status, "forced_action": payload.get("action")}
         settings = self._settings_provider()
         state = self._sleep_store.get_state()
@@ -134,6 +135,18 @@ class SleepLifecycleWorker:
                 ),
                 nap_max_hours=float(
                     getattr(settings, "sleep_nap_max_hours", 2.0)
+                ),
+                overnight_wake_hour=float(
+                    getattr(settings, "sleep_overnight_wake_hour", 7.0)
+                ),
+                overnight_wake_minute=int(
+                    getattr(settings, "sleep_overnight_wake_minute", 0)
+                ),
+                overnight_min_hours=float(
+                    getattr(settings, "sleep_overnight_min_hours", 5.0)
+                ),
+                overnight_max_hours=float(
+                    getattr(settings, "sleep_overnight_max_hours", 10.0)
                 ),
             )
             if prior_status == ASLEEP and state.status == WOKEN:
@@ -155,7 +168,7 @@ class SleepLifecycleWorker:
                     now=now,
                     outcome="disabled",
                 )
-                self._clear_napping()
+                self._clear_rest_world()
             elif state.status == WOKEN:
                 state = self._sleep_store.transition(
                     "fully_awake",
@@ -163,7 +176,7 @@ class SleepLifecycleWorker:
                     now=now,
                     outcome="disabled",
                 )
-                self._clear_napping()
+                self._clear_rest_world()
             return {"status": state.status, "reason": "disabled"}
 
         if state.status == WINDING_DOWN:
@@ -325,7 +338,7 @@ class SleepLifecycleWorker:
                 getattr(settings, "sleep_wake_energy_threshold", 0.48)
             ),
             max_woken_minutes=float(
-                getattr(settings, "sleep_max_woken_minutes", 90.0)
+                getattr(settings, "sleep_max_woken_minutes", 45.0)
             ),
         ):
             updated = self._sleep_store.transition(
@@ -334,7 +347,7 @@ class SleepLifecycleWorker:
                 now=now,
                 outcome="gradual_wake",
             )
-            self._clear_napping()
+            self._clear_rest_world()
             return {"status": updated.status, "reason": "recovered"}
 
         back_minutes = float(
@@ -382,12 +395,12 @@ class SleepLifecycleWorker:
         except Exception:
             log.debug("sleep world update failed", exc_info=True)
 
-    def _clear_napping(self) -> None:
+    def _clear_rest_world(self) -> None:
         if self._world is None:
             return
         try:
             current = self._world.get_state()
-            if current.activity != "napping":
+            if current.activity not in REST_ACTIVITIES:
                 return
             state = self._world.set_state(activity="idle")
             if self._world_notify is not None:

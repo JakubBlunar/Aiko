@@ -14,11 +14,13 @@ from app.core.infra.chat_database import ChatDatabase
 from app.core.world.sleep_state import (
     ASLEEP,
     NAP,
+    OVERNIGHT,
     WINDING_DOWN,
     SleepEpisode,
     SleepState,
     clean_reason_text,
     initial_state,
+    should_wake_overnight,
     transition,
 )
 
@@ -458,8 +460,17 @@ class SleepStore:
         now: datetime | None = None,
         wind_down_minutes: float = 5.0,
         nap_max_hours: float = 2.0,
+        overnight_wake_hour: float = 7.0,
+        overnight_wake_minute: int = 0,
+        overnight_min_hours: float = 5.0,
+        overnight_max_hours: float = 10.0,
     ) -> SleepState:
-        """Repair safe startup edges without fabricating offline experiences."""
+        """Repair safe startup edges without fabricating offline experiences.
+
+        Naps expire on a short wall-clock cap; overnight sleeps wake either
+        once the local clock passes the morning target (after a minimum
+        sleep) or once the hard cap is reached — whichever is earlier.
+        """
         when = timephrase.to_aware(now or timephrase.utcnow())
         state = self.get_state()
         entered = timephrase.parse_iso(state.entered_at) or when
@@ -472,23 +483,36 @@ class SleepStore:
                 expected_generation=state.generation,
                 now=when,
             )
-        if (
-            state.status == ASLEEP
-            and state.sleep_kind == NAP
-        ):
+        if state.status == ASLEEP:
             episode = self.get_episode(state.current_episode_id)
             started = (
                 timephrase.parse_iso(episode.started_at)
                 if episode is not None
                 else entered
             )
-            nap_age = max(timedelta(0), when - timephrase.to_aware(started or entered))
-            if nap_age >= timedelta(hours=max(0.25, float(nap_max_hours))):
-                return self.transition(
-                    "wake",
-                    expected_generation=state.generation,
-                    now=when,
-                )
+            anchor = timephrase.to_aware(started or entered)
+            sleep_age = max(timedelta(0), when - anchor)
+            if state.sleep_kind == NAP:
+                if sleep_age >= timedelta(hours=max(0.25, float(nap_max_hours))):
+                    return self.transition(
+                        "wake",
+                        expected_generation=state.generation,
+                        now=when,
+                    )
+            elif state.sleep_kind == OVERNIGHT:
+                if should_wake_overnight(
+                    now_local=when.astimezone(),
+                    sleep_started_local=anchor.astimezone(),
+                    wake_hour=float(overnight_wake_hour),
+                    wake_minute=int(overnight_wake_minute),
+                    min_sleep_hours=float(overnight_min_hours),
+                    max_sleep_hours=float(overnight_max_hours),
+                ):
+                    return self.transition(
+                        "wake",
+                        expected_generation=state.generation,
+                        now=when,
+                    )
         return state
 
     def snapshot(self, *, state: SleepState | None = None) -> dict[str, Any]:

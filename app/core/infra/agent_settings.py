@@ -56,8 +56,18 @@ class AgentSettings:
     sleep_overnight_threshold: float = 0.58
     sleep_nap_energy_threshold: float = 0.22
     sleep_nap_max_hours: float = 2.0
+    # Overnight sleep (the long night sleep) wakes when the local clock
+    # passes the morning target — after she has slept at least
+    # ``sleep_overnight_min_hours`` — or when the hard cap
+    # ``sleep_overnight_max_hours`` is reached, whichever comes first.
+    # The cap is the safety floor so an overnight sleep can never run the
+    # whole day.
+    sleep_overnight_wake_hour: float = 7.0
+    sleep_overnight_wake_minute: int = 0
+    sleep_overnight_min_hours: float = 5.0
+    sleep_overnight_max_hours: float = 10.0
     sleep_wake_energy_threshold: float = 0.48
-    sleep_max_woken_minutes: float = 90.0
+    sleep_max_woken_minutes: float = 45.0
     sleep_back_to_sleep_minutes: float = 20.0
     # ── World-notice proactive (Aiko reaches out about her room) ──────
     # Master switch for the WorldNoticeWorker, which primes a proactive

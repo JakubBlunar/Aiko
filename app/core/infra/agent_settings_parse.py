@@ -83,12 +83,26 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             sleep_nap_max_hours=max(
                 0.25, float(agent_raw.get("sleep_nap_max_hours", 2.0))
             ),
+            sleep_overnight_wake_hour=max(
+                0.0,
+                min(23.0, float(agent_raw.get("sleep_overnight_wake_hour", 7.0))),
+            ),
+            sleep_overnight_wake_minute=max(
+                0,
+                min(59, int(agent_raw.get("sleep_overnight_wake_minute", 0))),
+            ),
+            sleep_overnight_min_hours=max(
+                0.0, float(agent_raw.get("sleep_overnight_min_hours", 5.0))
+            ),
+            sleep_overnight_max_hours=max(
+                1.0, float(agent_raw.get("sleep_overnight_max_hours", 10.0))
+            ),
             sleep_wake_energy_threshold=max(
                 0.0,
                 min(1.0, float(agent_raw.get("sleep_wake_energy_threshold", 0.48))),
             ),
             sleep_max_woken_minutes=max(
-                1.0, float(agent_raw.get("sleep_max_woken_minutes", 90.0))
+                1.0, float(agent_raw.get("sleep_max_woken_minutes", 45.0))
             ),
             sleep_back_to_sleep_minutes=max(
                 1.0, float(agent_raw.get("sleep_back_to_sleep_minutes", 20.0))

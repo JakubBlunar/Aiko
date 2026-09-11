@@ -29,6 +29,7 @@ from app.core.world.sleep_state import (
     PropensityInputs,
     evaluate_propensity,
     initial_state,
+    should_wake_overnight,
     transition,
 )
 from app.core.world.sleep_store import SleepGenerationConflict, SleepStore
@@ -212,6 +213,165 @@ def test_debug_clock_advances_sleep_reconciliation(tmp_path: Path) -> None:
     finally:
         clock.uninstall()
         timephrase.set_now_provider(None)
+
+
+def _overnight_args(
+    *,
+    wake_hour: float = 7.0,
+    wake_minute: int = 0,
+    min_h: float = 5.0,
+    max_h: float = 10.0,
+) -> dict[str, float | int]:
+    return {
+        "wake_hour": wake_hour,
+        "wake_minute": wake_minute,
+        "min_sleep_hours": min_h,
+        "max_sleep_hours": max_h,
+    }
+
+
+def test_overnight_wakes_at_morning_target_not_before() -> None:
+    # Fallback 01:00 sleep, 07:00 target, 5h floor: still asleep at 05:00
+    # (under the floor), asleep at 06:00 (floor met but pre-target),
+    # woken at 07:00 (target reached).
+    started = datetime(2026, 9, 9, 1, 0, tzinfo=UTC)
+    assert not should_wake_overnight(
+        now_local=started + timedelta(hours=4),
+        sleep_started_local=started,
+        **_overnight_args(),
+    )
+    assert not should_wake_overnight(
+        now_local=started + timedelta(hours=5, minutes=30),
+        sleep_started_local=started,
+        **_overnight_args(),
+    )
+    assert should_wake_overnight(
+        now_local=started + timedelta(hours=6, minutes=30),
+        sleep_started_local=started,
+        **_overnight_args(),
+    )
+    assert should_wake_overnight(
+        now_local=started + timedelta(hours=12),
+        sleep_started_local=started,
+        **_overnight_args(),
+    )
+
+
+def test_overnight_min_sleep_floor_holds_even_past_target() -> None:
+    # 04:30 sleep, 05:00 target, 6h floor: floor is not met until 10:30,
+    # so the (early) target at 05:00 must not fire.
+    started = datetime(2026, 9, 9, 4, 30, tzinfo=UTC)
+    assert not should_wake_overnight(
+        now_local=started + timedelta(hours=1),
+        sleep_started_local=started,
+        **_overnight_args(min_h=6.0),
+    )
+    assert not should_wake_overnight(
+        now_local=started + timedelta(hours=3),
+        sleep_started_local=started,
+        **_overnight_args(min_h=6.0),
+    )
+    assert should_wake_overnight(
+        now_local=started + timedelta(hours=6, minutes=31),
+        sleep_started_local=started,
+        **_overnight_args(min_h=6.0),
+    )
+
+
+def test_overnight_hard_cap_wins_before_morning() -> None:
+    # 02:00 sleep, 07:00 target (5h away), but a 4h cap: the cap (06:00)
+    # fires before the morning target, bounding the sleep earlier.
+    started = datetime(2026, 9, 9, 2, 0, tzinfo=UTC)
+    assert not should_wake_overnight(
+        now_local=started + timedelta(hours=3, minutes=59),
+        sleep_started_local=started,
+        **_overnight_args(min_h=1.0, max_h=4.0),
+    )
+    assert should_wake_overnight(
+        now_local=started + timedelta(hours=4, minutes=1),
+        sleep_started_local=started,
+        **_overnight_args(min_h=1.0, max_h=4.0),
+    )
+
+
+def test_overnight_late_sleep_wakes_next_morning() -> None:
+    # 23:30 sleep, 07:00 target: next-day 07:00 is 7.5h, past the 5h floor.
+    started = datetime(2026, 9, 9, 23, 30, tzinfo=UTC)
+    assert not should_wake_overnight(
+        now_local=started + timedelta(hours=6),
+        sleep_started_local=started,
+        **_overnight_args(),
+    )
+    assert should_wake_overnight(
+        now_local=started + timedelta(hours=8),
+        sleep_started_local=started,
+        **_overnight_args(),
+    )
+
+
+def test_reconcile_wakes_overnight_at_morning_and_by_cap(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    started = datetime(2026, 9, 9, 6, 0, tzinfo=UTC)
+    state = store.get_state()
+    state = store.transition(
+        "wind_down",
+        expected_generation=state.generation,
+        now=started,
+        sleep_kind="overnight",
+    )
+    store.transition(
+        "fall_asleep", expected_generation=state.generation, now=started
+    )
+    # Anchor the morning target one hour after sleep onset in local time,
+    # so the test is independent of the host timezone offset.
+    anchor_local_hour = started.astimezone().hour
+    wake_hour = (anchor_local_hour + 1) % 24
+    # +0.5h — under the 1h floor: still asleep.
+    assert store.reconcile(
+        now=started + timedelta(minutes=30),
+        overnight_wake_hour=wake_hour,
+        overnight_min_hours=1.0,
+        overnight_max_hours=10.0,
+    ).status == ASLEEP
+    # +2h — floor met and the (one-hour-later) target has passed: woken.
+    assert store.reconcile(
+        now=started + timedelta(hours=2),
+        overnight_wake_hour=wake_hour,
+        overnight_min_hours=1.0,
+        overnight_max_hours=10.0,
+    ).status == WOKEN
+
+
+def test_reconcile_caps_overnight_before_morning(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    started = datetime(2026, 9, 9, 4, 0, tzinfo=UTC)
+    state = store.get_state()
+    state = store.transition(
+        "wind_down",
+        expected_generation=state.generation,
+        now=started,
+        sleep_kind="overnight",
+    )
+    store.transition(
+        "fall_asleep", expected_generation=state.generation, now=started
+    )
+    # Push the morning target to 23:00 so it cannot fire before the cap.
+    # +8h — under the 10h cap: still asleep.
+    assert store.reconcile(
+        now=started + timedelta(hours=8),
+        overnight_wake_hour=23,
+        overnight_min_hours=5.0,
+        overnight_max_hours=10.0,
+    ).status == ASLEEP
+    # +11h — past the 10h hard cap: woken by the cap alone.
+    assert store.reconcile(
+        now=started + timedelta(hours=11),
+        overnight_wake_hour=23,
+        overnight_min_hours=5.0,
+        overnight_max_hours=10.0,
+    ).status == WOKEN
 
 
 def test_sleep_tag_is_held_stripped_and_parsed() -> None:
@@ -414,6 +574,71 @@ def test_disabling_sleep_closes_an_active_episode(
     episode = store.list_episodes(limit=1)[0]
     assert episode.ended_at is not None
     assert episode.outcome == "disabled"
+
+
+class _FakeWorld:
+    """Minimal world store: exposes ``get_state()`` and records every
+    ``set_state(activity=...)`` write so tests can assert on the room
+    projection without a real SQLite world."""
+
+    def __init__(self, activity: str) -> None:
+        self._activity = activity
+        self.set_activities = []
+
+    def get_state(self):
+        return SimpleNamespace(activity=self._activity)
+
+    def set_state(self, **kwargs):
+        if "activity" in kwargs:
+            self._activity = kwargs["activity"]
+            self.set_activities.append(kwargs["activity"])
+        return SimpleNamespace(activity=self._activity)
+
+
+def test_woken_awake_transition_clears_stale_waking_up_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression: the worker flipped the sleep store to ``awake`` but the
+    # old room-clear helper only recognised ``napping``, so a ``waking_up``
+    # projection stuck on the World tab forever ("Aiko at the bed, waking
+    # up"). Both rest activities must clear back to ``idle``.
+    store = _store(tmp_path)
+    now = datetime(2026, 9, 8, 2, 0, tzinfo=UTC)
+    store.transition(
+        "wind_down", expected_generation=store.get_state().generation, now=now
+    )
+    store.transition(
+        "fall_asleep", expected_generation=store.get_state().generation, now=now
+    )
+    store.transition(
+        "wake", expected_generation=store.get_state().generation, now=now
+    )
+    assert store.get_state().status == WOKEN
+
+    world = _FakeWorld(activity="waking_up")
+    worker = SleepLifecycleWorker(
+        sleep_store=store,
+        chat_db=store._db,
+        world_store=world,
+        world_guard=None,
+        idle_depth_provider=lambda: 0.0,
+        settings_provider=lambda: _sleep_settings(),
+    )
+    # High energy so ``should_finish_waking`` is True and the worker takes
+    # the ``fully_awake`` path (the one that was dropping the projection).
+    monkeypatch.setattr(
+        SleepLifecycleWorker,
+        "_energy_and_baseline",
+        lambda self, now, settings: (0.9, 0.5, "day"),
+    )
+    monkeypatch.setattr(timephrase, "now", lambda: now + timedelta(minutes=1))
+
+    assert worker.run()["status"] == AWAKE
+    assert store.get_state().status == AWAKE
+    # The room must not be left on "waking up".
+    assert world.set_activities == ["idle"]
+    assert world.get_state().activity == "idle"
 
 
 class _Worker:

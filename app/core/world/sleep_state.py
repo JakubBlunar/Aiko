@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from typing import Any, Literal
 
 from app.core.infra import timephrase
@@ -27,6 +27,12 @@ WOKEN = "woken"
 
 OVERNIGHT = "overnight"
 NAP = "nap"
+
+# Room activities that mark a resting Aiko. Cleared back to ``idle`` the
+# moment the lifecycle reaches ``awake`` — both the worker's autonomous
+# flip and the startup self-heal read this same set, so a projection of
+# ``waking_up`` can never outlive the state it describes.
+REST_ACTIVITIES = frozenset({"napping", "waking_up"})
 
 VALID_STATUSES = frozenset({AWAKE, WINDING_DOWN, ASLEEP, WOKEN})
 VALID_KINDS = frozenset({OVERNIGHT, NAP})
@@ -301,11 +307,59 @@ def should_finish_waking(
     )
 
 
+def should_wake_overnight(
+    *,
+    now_local: datetime,
+    sleep_started_local: datetime,
+    wake_hour: float,
+    wake_minute: int,
+    min_sleep_hours: float,
+    max_sleep_hours: float,
+) -> bool:
+    """Decide whether an overnight sleep has earned a wake.
+
+    The earliest of two conditions wins:
+
+    * **Morning target** — once the local clock passes the configured wake
+      hour on the day after sleep started (or, for a late-night sleep that
+      crosses midnight, the very next day), and she has slept at least
+      ``min_sleep_hours``, the sleep is due to end. This is the "wakes up
+      in the morning" behaviour.
+    * **Hard cap** — ``max_sleep_hours`` of total sleep, so no sleep can
+      run away (the "whole day" failure mode).
+
+    Both anchors are taken from the sleep onset in local time, so the rule
+    is deterministic from timestamps alone — no LLM, no I/O.
+    """
+    slept_h = max(
+        0.0, (now_local - sleep_started_local).total_seconds() / 3600.0
+    )
+    if slept_h >= max(0.0, float(max_sleep_hours)):
+        return True
+    if slept_h < max(0.0, float(min_sleep_hours)):
+        return False
+    target = time(
+        int(max(0, min(23, int(float(wake_hour))))),
+        int(max(0, min(59, int(wake_minute)))),
+    )
+    # The wake instant is the first occurrence of the target wall-clock
+    # time at or after sleep began. A sleep that started at 23:30 with a
+    # 07:00 target therefore wakes at 07:00 the following day (7.5h);
+    # a sleep that started at 00:30 wakes at 07:00 the same day (6.5h).
+    candidate = sleep_started_local.replace(
+        hour=target.hour, minute=target.minute, second=0, microsecond=0
+    )
+    if candidate < sleep_started_local:
+        candidate += timedelta(days=1)
+    return now_local >= candidate
+
+
 __all__ = [
     "ASLEEP",
     "AWAKE",
     "NAP",
     "OVERNIGHT",
+    "REST_ACTIVITIES",
     "VALID_ACTIONS",
     "VALID_KINDS",
     "VALID_STATUSES",
@@ -321,5 +375,6 @@ __all__ = [
     "evaluate_propensity",
     "initial_state",
     "should_finish_waking",
+    "should_wake_overnight",
     "transition",
 ]

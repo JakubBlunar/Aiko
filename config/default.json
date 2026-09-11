@@ -63,7 +63,7 @@
     "sleep_nap_energy_threshold": 0.22,
     "sleep_nap_max_hours": 2,
     "sleep_wake_energy_threshold": 0.48,
-    "sleep_max_woken_minutes": 90,
+    "sleep_max_woken_minutes": 45,
     "sleep_back_to_sleep_minutes": 20,
     "activity_awareness_enabled": false,
     "activity_title_allowlist": [],
