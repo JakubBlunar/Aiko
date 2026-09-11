@@ -265,6 +265,69 @@ describe("GazeChannel — thinking drift", () => {
   });
 });
 
+describe("GazeChannel — asleep (no cursor follow, resting droop)", () => {
+  it("does not track the cursor while asleep and eases the head to the rest pose", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const { deps, clock } = makeDeps({ sleepStatus: "asleep" });
+    channel.attach(adapter, deps);
+
+    // The cursor is parked hard at the right edge — cursor-follow would
+    // lift the gaze to ~+0.7 X. Asleep, the head must instead ease to the
+    // resting droop (x -> 0, y -> negative).
+    for (let i = 0; i < 120; i += 1) {
+      clock.advance(16);
+      channel.tickGaze!(clock.now(), 0.016, mouseAt(1600, 100, clock.now()));
+    }
+    const last = adapter.focusCalls[adapter.focusCalls.length - 1];
+    expect(Math.abs(last.x)).toBeLessThan(0.05);
+    expect(last.y).toBeLessThan(0);
+    expect(last.y).toBeGreaterThanOrEqual(-0.25);
+  });
+
+  it("suppresses saccades while asleep", () => {
+    let randomCalls = 0;
+    const random = () => {
+      randomCalls += 1;
+      return 0.5;
+    };
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random });
+    const { deps, clock } = makeDeps({ sleepStatus: "asleep" });
+    channel.attach(adapter, deps);
+    // attach() rolls the initial saccade interval exactly once.
+    expect(randomCalls).toBe(1);
+    // Run well past several saccade intervals. While asleep no new
+    // interval roll or saccade offset may fire, so the counter stays put.
+    for (let i = 0; i < 200; i += 1) {
+      clock.advance(16);
+      channel.tickGaze!(clock.now(), 0.016, mouseAt(0, 0, clock.now()));
+    }
+    expect(randomCalls).toBe(1);
+  });
+
+  it("resumes cursor follow after waking", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const bundle = makeDeps({ sleepStatus: "asleep" });
+    channel.attach(adapter, bundle.deps);
+    // Asleep: cursor parked hard at the right edge, but the head still
+    // eases to the resting droop (no cursor follow).
+    for (let i = 0; i < 60; i += 1) {
+      bundle.clock.advance(16);
+      channel.tickGaze!(bundle.clock.now(), 0.016, mouseAt(1600, 100, bundle.clock.now()));
+    }
+    expect(Math.abs(adapter.focusCalls[adapter.focusCalls.length - 1].x)).toBeLessThan(0.05);
+    // Wake her: cursor follow should now lift the gaze to the right edge.
+    bundle.setSnapshot({ sleepStatus: "awake" });
+    for (let i = 0; i < 120; i += 1) {
+      bundle.clock.advance(16);
+      channel.tickGaze!(bundle.clock.now(), 0.016, mouseAt(1600, 100, bundle.clock.now()));
+    }
+    expect(adapter.focusCalls[adapter.focusCalls.length - 1].x).toBeGreaterThan(0.5);
+  });
+});
+
 describe("GazeChannel — saccades", () => {
   it("re-rolls the saccade when the interval elapses, then decays each frame", () => {
     let calls = 0;

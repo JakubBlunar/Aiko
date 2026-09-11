@@ -3,6 +3,10 @@
  *
  * Priority pipeline (highest first):
  *
+ *   0. **Sleep** (``sleepStatus === "asleep"``): no cursor follow and no
+ *      saccades — the head eases to a gentle resting droop. A sleeping
+ *      Aiko does not track the mouse.
+ *
  *   1. **Conversation lock** (``listening`` / ``transcribing`` /
  *      ``speaking``): centred X with slight upward bias so the user
  *      reads as being looked at.
@@ -51,6 +55,9 @@ const SACCADE_INTERVAL_MIN_MS = 1_500;
 const SACCADE_INTERVAL_RANGE_MS = 1_500;
 const SACCADE_DECAY = 0.92;
 const IDLE_DECAY = 0.92;
+/** How fast (seconds) the head eases to the resting droop when she
+ * falls asleep — slow enough to read as settling, not snapping. */
+const SLEEP_REST_TIME_CONSTANT_S = 1.2;
 /** Eye-contact bias when the conversation has the floor. The user is
  * usually below the screen; lifting the gaze ~0.2 reads as "looking
  * at you" rather than "staring at your hairline". */
@@ -62,6 +69,12 @@ const COMPOSING_SWAY_Y = 0.05;
 const CURSOR_X_CLAMP = 0.7;
 const CURSOR_Y_LO = -0.5;
 const CURSOR_Y_HI = 0.7;
+/** Resting gaze while asleep. The rig's focusController eases the head
+ * to this, so it reads as a gentle downward droop (a sleeping head
+ * tilts forward) rather than a frozen stare. +Y is up, so a small
+ * negative Y tips the head down. Saccades are suspended for the same
+ * state so the eyes don't keep twitching. */
+const SLEEP_REST_Y = -0.2;
 
 export interface GazeChannelOptions {
   /** Random source, defaults to ``Math.random``. Tests pass a
@@ -105,7 +118,7 @@ export class GazeChannel implements AvatarChannel {
     this._microSaccade.y = 0;
   }
 
-  tickGaze(now: number, _dt: number, mouse: MouseSnapshot): void {
+  tickGaze(now: number, dt: number, mouse: MouseSnapshot): void {
     const adapter = this._adapter;
     const deps = this._deps;
     if (!adapter || !deps) {
@@ -122,8 +135,16 @@ export class GazeChannel implements AvatarChannel {
     const cursorStillActive =
       mouse.lastMoveAt > 0 && now - mouse.lastMoveAt <= IDLE_BREAK_MS;
     const isIdle = !mouse.windowFocused || !cursorStillActive;
+    // Asleep: no cursor follow, no conversation lock, no saccades. Ease
+    // the head to a gentle resting droop so she reads as sleeping rather
+    // than staring at the screen.
+    const isSleeping = snap.sleepStatus === "asleep";
 
-    if (isListening || isSpeaking) {
+    if (isSleeping) {
+      const rate = dt / SLEEP_REST_TIME_CONSTANT_S;
+      this._target.x += (0 - this._target.x) * (1 - Math.exp(-rate));
+      this._target.y += (SLEEP_REST_Y - this._target.y) * (1 - Math.exp(-rate));
+    } else if (isListening || isSpeaking) {
       this._target.x = 0;
       this._target.y = CONVERSATION_LOCK_Y;
     } else if (isComposing) {
@@ -157,7 +178,7 @@ export class GazeChannel implements AvatarChannel {
       // No cursor data yet (initial mount) — hold whatever we have.
     }
 
-    if (now >= this._nextSaccadeAt) {
+    if (!isSleeping && now >= this._nextSaccadeAt) {
       this._lastSaccadeAt = now;
       this._nextSaccadeAt = now + this._saccadeInterval();
       this._microSaccade.x = (this._random() - 0.5) * 0.1;

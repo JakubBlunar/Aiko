@@ -94,6 +94,11 @@ const TAIL_BOOST_AMP_MUL = 1.5;
 // expressiveness slider.
 const TAIL_BREATH_BOOST_FREQ_MUL = 2.5;
 const TAIL_BREATH_BOOST_AMP_MUL = 1.5;
+/** Cat-tail damping while asleep. The wave keeps a slow, tiny sway so
+ * she still reads as alive (a sleeping tail doesn't freeze), but the
+ * speed and amplitude drop to ~a third. */
+const SLEEP_TAIL_FREQ_SCALE = 0.3;
+const SLEEP_TAIL_AMP_SCALE = 0.3;
 /** Base breath frequency (Hz) — matches the pixi-live2d-display
  * default of ~0.21 Hz / 4.8s period. We modulate around this with
  * arousal: low arousal -> slower breath, high arousal -> faster. */
@@ -218,9 +223,16 @@ export class AmbientBodyChannel implements AvatarChannel {
     // ── cat-tail steady-state + tail-wag boost ───────────────────
     if (caps.has_cat_tail && catTailIds.length > 0) {
       const boostUntil = deps.engineState.tailWagBoostUntil;
-      const tailBoost = boostUntil > 0 && now < boostUntil;
-      const freq = (0.3 + 1.1 * arousal) * (tailBoost ? TAIL_BOOST_FREQ_MUL : 1);
-      const amp = (4 + 12 * arousal) * (tailBoost ? TAIL_BOOST_AMP_MUL : 1);
+      // A sleeping Aiko's tail barely moves: slow the wave and shrink
+      // its amplitude, and skip the tail-wag boost (no wagging asleep).
+      // The body-angle sway below is already damped by SleepChannel;
+      // the cat-tail params are its own write so we damp them here.
+      const isSleeping = snap.sleepStatus === "asleep";
+      const tailBoost = !isSleeping && boostUntil > 0 && now < boostUntil;
+      const sleepFreq = isSleeping ? SLEEP_TAIL_FREQ_SCALE : 1;
+      const sleepAmp = isSleeping ? SLEEP_TAIL_AMP_SCALE : 1;
+      const freq = (0.3 + 1.1 * arousal) * (tailBoost ? TAIL_BOOST_FREQ_MUL : 1) * sleepFreq;
+      const amp = (4 + 12 * arousal) * (tailBoost ? TAIL_BOOST_AMP_MUL : 1) * sleepAmp;
       const t = now / 1000;
       for (let i = 0; i < catTailIds.length; i += 1) {
         const phase = i * 0.7;

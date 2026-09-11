@@ -416,7 +416,11 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
           state.ttsState === "speaking" ||
           state.voiceMode === "listening" ||
           state.voiceMode === "transcribing" ||
-          state.voiceMode === "thinking";
+          state.voiceMode === "thinking" ||
+          // A sleeping Aiko should not run her full-body idle motions —
+          // she's resting, not idling. The per-frame body-language
+          // drivers still move her (just dampened by the SleepChannel).
+          state.sleep?.status === "asleep";
         if (model && !blocked) {
           try {
             (

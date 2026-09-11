@@ -198,6 +198,39 @@ describe("AmbientBodyChannel — cat-tail sine", () => {
 
     expect(boostMax).toBeGreaterThan(baseMax * 1.2);
   });
+
+  it("damps the tail sway and skips the wag boost while asleep", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock, engineState, setSnapshot } = makeDeps(
+      { has_cat_tail: true },
+      { mood: { label: "content", intensity: 0.5, valence: 0, arousal: 0.5 } },
+      { cat_tail_param_ids: ["Tail1"] },
+    );
+    channel.attach(adapter, deps);
+
+    // Awake baseline peak over a full window (no boost armed).
+    let baseMax = 0;
+    for (let i = 0; i < 200; i += 1) {
+      channel.tickTier3!(clock.advance(20), 0.02);
+      baseMax = Math.max(baseMax, Math.abs(adapter.params.get("Tail1") ?? 0));
+    }
+
+    // Asleep with a tail-wag boost armed: the boost must be ignored and
+    // the sway amplitude dropped to a fraction of baseline. Same channel
+    // + deps, only the snapshot's sleepStatus flips.
+    setSnapshot({ sleepStatus: "asleep" });
+    engineState.tailWagBoostUntil = clock.now() + 5_000;
+    let sleepMax = 0;
+    for (let i = 0; i < 200; i += 1) {
+      channel.tickTier3!(clock.advance(20), 0.02);
+      sleepMax = Math.max(sleepMax, Math.abs(adapter.params.get("Tail1") ?? 0));
+    }
+    // Still moving a little (not frozen), but clearly smaller than the
+    // awake baseline (amp dropped to 0.3x and the boost suppressed).
+    expect(sleepMax).toBeGreaterThan(0);
+    expect(sleepMax).toBeLessThan(baseMax * 0.5);
+  });
 });
 
 describe("AmbientBodyChannel — body language", () => {
