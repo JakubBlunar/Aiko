@@ -229,6 +229,33 @@ class UserActivityWsCommandTests(unittest.TestCase):
         session.set_user_active_app.assert_not_called()
         session._touch_user_activity.assert_not_called()
 
+    def test_activity_request_listener_is_wired(self) -> None:
+        _client, session = _build_client()
+        session.add_activity_request_listener.assert_called()
+
+
+class ComposingWsCommandTests(unittest.TestCase):
+    def test_composing_frame_publishes_impulse_without_draft(self) -> None:
+        client, session = _build_client()
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_text()
+            ws.send_text(
+                json.dumps({
+                    "type": "composing",
+                    "active": True,
+                    "surface": "chat",
+                    "draft": "must-not-be-read",
+                }),
+            )
+            ws.send_text(json.dumps({"type": "ping"}))
+            frame = json.loads(ws.receive_text())
+            while frame.get("type") != "pong":
+                frame = json.loads(ws.receive_text())
+        kwargs = session.publish_live_impulse.call_args.kwargs
+        self.assertEqual(kwargs["payload"]["surface"], "chat")
+        self.assertTrue(kwargs["payload"]["active"])
+        self.assertNotIn("draft", kwargs["payload"])
+
 
 if __name__ == "__main__":
     unittest.main()

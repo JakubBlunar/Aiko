@@ -137,10 +137,11 @@ HOLD = "HOLD"
 # ``tests/test_stance.py`` asserts every name below is registered.
 
 _OFFERS: dict[str, tuple[str, ...]] = {
-    # K53's explicit "this turn is yours" is the only block in the
-    # system that already means INITIATE.
+    # K53's explicit "this turn is yours" and Live's talk-about
+    # (an admitted main-wake) both mean INITIATE.
     INITIATE: (
         "initiative_block",
+        "live_talk_about_block",
     ),
     # Both of these say the current subject is spent, which is a
     # different move from having something of her own to raise.
@@ -162,6 +163,7 @@ _OFFERS: dict[str, tuple[str, ...]] = {
         "opinion_injection_block",
         "interest_drift_block",
         "associative_wander_block",
+        "companion_activity_block",
     ),
     # Reaching back to something that is already between the two of
     # them. Lower on the ladder than SHARE because shared history is a

@@ -16,7 +16,7 @@ export interface ChatMessage {
   /** Optional reaction word emitted by the assistant via [[reaction:X]]. */
   reaction?: string;
   /** Subtype hint -- e.g. "proactive" for unsolicited Aiko nudges. */
-  kind?: "proactive";
+  kind?: "proactive" | "live_micro";
   /** K31 / B7 soft physicality: gestures Aiko emitted via
    * ``[[touch:KIND]]`` during this turn. Painted as small badges on the
    * chat bubble footer (e.g. "🫂 Aiko gave you a hug"). Each entry is
@@ -170,14 +170,15 @@ export interface LlmProviderPreset {
 
 // ── Provider catalogue + role-assignment table ───────────────────
 //
-// The single source of truth for LLM routing. Three roles ship today:
+// The single source of truth for LLM routing. Four roles ship today:
 // ``main_chat`` (the chat path), ``worker_default`` (the ~24
-// background workers) and ``workflow`` (the nested-workflow planner).
+// background workers), ``workflow`` (the nested-workflow planner),
+// and ``live_policy`` (Live presence shadow bake-off).
 // Future roles (``heavy_workers`` for browser tools, the Playwright
 // agent, …) can be added without a schema migration.
 
 /** Stable identifier for an LLM role. */
-export type LlmRoleId = "main_chat" | "worker_default" | "workflow" | string;
+export type LlmRoleId = "main_chat" | "worker_default" | "workflow" | "live_policy" | string;
 
 /**
  * One row in the provider catalogue. ``api_key`` is intentionally
@@ -219,6 +220,8 @@ export interface LlmRoute {
   /** Per-route override of the provider's reasoning-effort hint.
    * Empty = inherit the provider value, then the client default. */
   reasoning_effort: string;
+  /** Optional VRAM contention lane. Empty = identity is the model tag. */
+  contention_group?: string;
 }
 
 /** Server response shape for the test-provider endpoint. */
@@ -327,6 +330,37 @@ export interface CompanionSettings {
    * EMA + the "follow his pace" cue). The ceiling above works
    * regardless. */
   intimacy_pacing_enabled: boolean;
+  /** Live presence posture. ``turn_based`` is Text/Speak; ``live_presence``
+   * is the third UI profile. Independent of the microphone. */
+  behavior_posture: "turn_based" | "live_presence";
+  live_quiet: boolean;
+  live_unprompted_speech: boolean;
+  live_main_wake_max_per_hour: number;
+  live_min_gap_after_speech_ms: number;
+  live_mic_consented: boolean;
+  live_impulse_bus_enabled: boolean;
+}
+
+/** Semantic Live embodiment plan. No Live2D Param IDs or motion filenames. */
+export interface LiveEmbodimentPlan {
+  intent: string;
+  attention_target: string;
+  gaze_class: string;
+  body_class: string;
+  breath_class: string;
+  expression_class: string;
+  motion_class: string;
+  degrade_to_sleep: boolean;
+  hold_attention?: boolean;
+  cancel_reason?: string;
+}
+
+export interface LiveEmbodimentState {
+  plan: LiveEmbodimentPlan | null;
+  attention_target?: string;
+  world_activity?: string;
+  world_posture?: string;
+  sleep_status?: string;
 }
 
 /** One entry in the TTS engine catalogue. Unavailable engines are sent
@@ -377,6 +411,8 @@ export interface AssistantSettings {
      * Voice tab; persisted to ``config/user.json``.
      */
     earcons_enabled?: boolean;
+    /** H6: play a low-volume mm / chuckle while the user is speaking. */
+    backchannel_audio_enabled?: boolean;
   };
   proactive?: {
     silence_seconds: number;
@@ -2243,9 +2279,9 @@ export type WsServerEvent =
        * destructive LanceDB rebuild after an embedding-model swap.
        * Optional for backwards compatibility with older backends. */
       notices?: StartupNotice[];
-      /** Companion soft-physicality knobs (touch / reactions / persona
-       * banner) so the persona overlay honours the master switches on
-       * connect (I5). Optional for backwards compatibility. */
+      /** Companion knobs so the persona overlay and Live header toggle
+       * honour master switches on connect. Optional for backwards
+       * compatibility. */
       companion?: Pick<
         CompanionSettings,
         | "touch_enabled"
@@ -2253,11 +2289,16 @@ export type WsServerEvent =
         | "persona_touch_banner_enabled"
         | "persona_touch_banner_duration_seconds"
         | "persona_task_banner_enabled"
+        | "behavior_posture"
+        | "live_quiet"
+        | "live_unprompted_speech"
+        | "live_mic_consented"
       >;
       /** K68: current body-energy snapshot so the avatar starts at the
        * right gesture/breath amplitude on connect. */
       vitality?: VitalitySnapshot;
       sleep?: SleepSnapshot;
+      live_embodiment?: LiveEmbodimentState | null;
     }
   | {
       type: "voice_owner_changed";
@@ -2315,7 +2356,7 @@ export type WsServerEvent =
       speaker: string;
       content: string;
       /** Subtype hint -- e.g. "proactive" for unsolicited Aiko nudges. */
-      kind?: "proactive";
+      kind?: "proactive" | "live_micro";
       /** K32: persisted SQLite ``messages.id`` for proactive bubbles
        * (which bypass the streamed ``turn_done`` path) so reactions
        * work on them immediately. */
@@ -2493,7 +2534,18 @@ export type WsServerEvent =
       type: "companion_settings_changed";
       companion: CompanionSettings;
     }
-  | { type: "pong" };
+  | { type: "pong" }
+  /** C7: ask the desktop collector for a forced sample. JS must not
+   * await an OS poll; the sample returns on ``user_activity``. */
+  | { type: "activity_request"; request_id: string }
+  | {
+      type: "live_embodiment";
+      plan: LiveEmbodimentPlan | null;
+      attention_target?: string;
+      world_activity?: string;
+      world_posture?: string;
+      sleep_status?: string;
+    };
 
 export interface ActivityEnvelope {
   v: number;
@@ -2507,6 +2559,7 @@ export interface ActivityEnvelope {
   };
   signal?: { kind?: string };
   payload?: Record<string, unknown>;
+  request_id?: string;
 }
 
 export type WsClientCommand =
@@ -2532,4 +2585,8 @@ export type WsClientCommand =
   /** Collector envelope (preferred) or the legacy app-name frame.
    * Desktop-only. Backend drops both when awareness is off. Never
    * resets the idle gate — coding-not-chatting must look idle. */
-  | { type: "user_activity"; app?: string | null; envelope?: ActivityEnvelope };
+  | { type: "user_activity"; app?: string | null; envelope?: ActivityEnvelope }
+  /** Typing edge for Live. Never includes draft text. */
+  | { type: "composing"; active: boolean; surface: "chat" | "persona" }
+  /** H7: this client finished playing the last TTS buffer. */
+  | { type: "playback_drained" };

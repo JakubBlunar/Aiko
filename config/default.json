@@ -36,6 +36,13 @@
         "model": "qwen3.5:9b",
         "context_window": 65536,
         "max_tokens": 512
+      },
+      "live_policy": {
+        "provider_id": "local_ollama",
+        "model": "qwen3.5:4b",
+        "context_window": 40960,
+        "max_tokens": 512,
+        "temperature": 0
       }
     },
     "embedding": {
@@ -120,6 +127,7 @@
     "relationship_pulse_min_hours": 168,
     "relationship_pulse_min_turns": 30,
     "cadence_enabled": true,
+    "backchannel_audio_enabled": true,
     "fact_checker_enabled": true,
     "fact_checker_per_hour_cap": 10,
     "fact_checker_per_day_cap": 50,
@@ -328,7 +336,7 @@
     "enable_microphone": true,
     "vad_level_threshold": 0.02,
     "vad_silence_seconds": 1.0,
-    "barge_in_enabled": false,
+    "barge_in_enabled": true,
     "earcons_enabled": true
   },
   "stt": {
@@ -498,6 +506,7 @@
     "idle_worker_min_interval_ratio": 0.1,
     "idle_worker_depth_max_multiplier": 10.0,
     "idle_worker_contention_override": "auto",
+    "live_policy_prompt_max_tokens": 12000,
     "task_approval_mode": "ask",
     "task_approval_overrides": {},
     "knowledge_gap_notice_enabled": true,
@@ -530,7 +539,8 @@
     "web_search": true,
     "world": true,
     "goals": true,
-    "weather": true
+    "weather": true,
+    "activity": true
   },
   "search": {
     "provider": "duckduckgo",

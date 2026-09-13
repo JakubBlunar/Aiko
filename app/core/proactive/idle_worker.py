@@ -61,6 +61,9 @@ SLEEP_POLICIES = frozenset({SLEEP_CONTINUE, SLEEP_PAUSE, SLEEP_ONLY})
 # waking-life continuity during a sleep episode.
 SLEEP_CONTINUE_WORKER_NAMES = frozenset(
     {
+        "activity_aggregation",
+        "activity_interpretation",
+        "companion_activity",
         "activity_prune",
         "affection_style_decay",
         "concept_edge_integrity",

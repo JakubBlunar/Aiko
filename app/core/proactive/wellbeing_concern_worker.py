@@ -27,7 +27,11 @@ signature and is meant to break through.
 
 Reads ``messages`` directly (timestamps + content for the lexical scan),
 local-tz the same way K3 ``ScheduleLearner`` does (``dt.astimezone()``).
-The ``aiko.wellbeing_concern`` ring is still written for the debug tools.
+When activity awareness is on, OS foreground sessions that overlap the
+same 01–05h window are unioned into those dates (C9), and daytime coding
+sessions that clear a long-focus bar feed ``detect_long_focus`` through
+the same K72 door. The
+``aiko.wellbeing_concern`` ring is still written for the debug tools.
 Every failure path is swallowed and logged at debug — the worst case is
 a missed beat, never a crashed tick.
 """
@@ -93,8 +97,12 @@ class WellbeingConcernWorker:
         neglect_min_days: int = _wc.DEFAULT_NEGLECT_MIN_DAYS,
         rough_run: int = _wc.DEFAULT_ROUGH_RUN,
         rough_threshold: float = _wc.DEFAULT_ROUGH_THRESHOLD,
+        long_focus_min_days: int = _wc.DEFAULT_LONG_FOCUS_MIN_DAYS,
+        long_focus_min_seconds: int = _wc.DEFAULT_LONG_FOCUS_MIN_SECONDS,
         journal_max: int = 4,
         clock: Callable[[], datetime] | None = None,
+        activity_store_provider: Callable[[], Any] | None = None,
+        activity_enabled_provider: Callable[[], bool] | None = None,
     ) -> None:
         self._chat_db = chat_db
         self._enabled_provider = enabled_provider
@@ -106,8 +114,12 @@ class WellbeingConcernWorker:
         self._neglect_min_days = max(1, int(neglect_min_days))
         self._rough_run = max(1, int(rough_run))
         self._rough_threshold = float(rough_threshold)
+        self._long_focus_min_days = max(1, int(long_focus_min_days))
+        self._long_focus_min_seconds = max(1, int(long_focus_min_seconds))
         self._journal_max = max(1, int(journal_max))
         self._clock = clock or _utcnow
+        self._activity_store_provider = activity_store_provider
+        self._activity_enabled_provider = activity_enabled_provider
         # MCP debug: bypass the signature gate on next run().
         self._force_next = False
 
@@ -147,14 +159,17 @@ class WellbeingConcernWorker:
         self._force_next = False
 
         late_dates, neglect_days, neglect_cats = self._collect_message_signal(now)
+        focus_dates = self._collect_activity_long_focus_dates(now)
         drift_samples = _md.deserialize_samples(self._kv_get_safe(_md.KV_SAMPLES))
 
         finding = _wc.pick_concern(
             late_night_dates=late_dates,
+            long_focus_dates=focus_dates,
             neglect_days=neglect_days,
             neglect_categories=neglect_cats,
             drift_samples=drift_samples,
             late_night_min=self._late_night_min,
+            long_focus_min_days=self._long_focus_min_days,
             neglect_min_days=self._neglect_min_days,
             rough_run=self._rough_run,
             rough_threshold=self._rough_threshold,
@@ -164,6 +179,7 @@ class WellbeingConcernWorker:
                 "drafted": 0,
                 "no_finding": True,
                 "late_nights": len(late_dates),
+                "long_focus": len(focus_dates),
                 "neglect_days": len(neglect_days),
                 "samples": len(drift_samples),
             }
@@ -243,7 +259,7 @@ class WellbeingConcernWorker:
             )
         except Exception:
             log.debug("wellbeing-concern SELECT failed", exc_info=True)
-            return [], [], []
+            rows = []
 
         late_dates: set[str] = set()
         neglect_days: set[str] = set()
@@ -263,7 +279,79 @@ class WellbeingConcernWorker:
             if cats:
                 neglect_days.add(date_key)
                 neglect_cats.update(cats)
+        late_dates.update(self._collect_activity_late_dates(now))
         return sorted(late_dates), sorted(neglect_days), sorted(neglect_cats)
+
+    def _collect_activity_late_dates(self, now: datetime) -> list[str]:
+        """OS foreground sessions overlapping K72's small-hours window."""
+        if self._activity_enabled_provider is None:
+            return []
+        try:
+            if not bool(self._activity_enabled_provider()):
+                return []
+        except Exception:
+            return []
+        if self._activity_store_provider is None:
+            return []
+        try:
+            store = self._activity_store_provider()
+        except Exception:
+            log.debug("wellbeing-concern activity store failed", exc_info=True)
+            return []
+        if store is None:
+            return []
+        try:
+            from app.core.activity.evidence import late_night_dates_from_sessions
+
+            sessions = store.recent_sessions(limit=200)
+            return late_night_dates_from_sessions(
+                sessions,
+                now=now,
+                window_days=self._window_days,
+                start_hour=_wc.LATE_NIGHT_START_HOUR,
+                end_hour=_wc.LATE_NIGHT_END_HOUR,
+            )
+        except Exception:
+            log.debug("wellbeing-concern activity dates failed", exc_info=True)
+            return []
+
+    def _collect_activity_long_focus_dates(self, now: datetime) -> list[str]:
+        """OS coding sessions whose daytime duration clears the long-focus bar."""
+        if self._activity_enabled_provider is None:
+            return []
+        try:
+            if not bool(self._activity_enabled_provider()):
+                return []
+        except Exception:
+            return []
+        if self._activity_store_provider is None:
+            return []
+        try:
+            store = self._activity_store_provider()
+        except Exception:
+            log.debug(
+                "wellbeing-concern long-focus store failed", exc_info=True,
+            )
+            return []
+        if store is None:
+            return []
+        try:
+            from app.core.activity.evidence import long_focus_dates_from_sessions
+
+            sessions = store.recent_sessions(limit=200)
+            return long_focus_dates_from_sessions(
+                sessions,
+                now=now,
+                window_days=self._window_days,
+                min_seconds=self._long_focus_min_seconds,
+                night_start_hour=_wc.LATE_NIGHT_START_HOUR,
+                night_end_hour=_wc.LATE_NIGHT_END_HOUR,
+            )
+        except Exception:
+            log.debug(
+                "wellbeing-concern long-focus dates failed", exc_info=True,
+            )
+            return []
 
     # ── gates ────────────────────────────────────────────────────────
 

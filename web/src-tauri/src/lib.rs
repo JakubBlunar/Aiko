@@ -210,6 +210,17 @@ fn set_activity_collector_config(
     handle.set_config(enabled, title_allowlist);
 }
 
+/// C7: ask the collector thread for a forced sample. Returns immediately;
+/// the sample arrives on ``activity://sample`` with ``request_id`` set.
+/// Never polls OS APIs on this thread.
+#[tauri::command]
+fn request_activity_snapshot(
+    handle: tauri::State<activity::CollectorHandle>,
+    request_id: String,
+) {
+    handle.request_snapshot(request_id);
+}
+
 /// Fallback for the settings-drawer readout when no envelope has
 /// arrived yet. Live reporting uses the collector push path, not this.
 /// Still app-name only — titles ride the envelope + allowlist. See
@@ -353,6 +364,7 @@ pub fn run() {
             set_persona_always_on_top,
             get_active_app,
             set_activity_collector_config,
+            request_activity_snapshot,
             ensure_backend_running,
         ])
         .setup(|app| {

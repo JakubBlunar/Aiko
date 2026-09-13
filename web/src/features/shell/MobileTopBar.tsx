@@ -1,4 +1,5 @@
 import { useAssistantStore } from "@/store";
+import { LiveModeToggle } from "@/features/chat/LiveModeToggle";
 import { NotificationBell } from "@/features/notifications/NotificationBell";
 
 interface MobileTopBarProps {
@@ -48,8 +49,9 @@ function PersonaGlyph() {
 /**
  * Phone-only top bar. Left: hamburger that opens the navigation drawer
  * (chat history, new chat, settings). Center: title + connection state.
- * Right: a toggle for the floating persona window. Rendered only by the
- * mobile layout branch in ``App`` so the desktop chrome is untouched.
+ * Right: Live posture, notifications, and the floating persona toggle.
+ * Rendered only by the mobile layout branch in ``App`` so the desktop
+ * chrome is untouched.
  */
 export function MobileTopBar({
   onOpenNav,
@@ -84,6 +86,8 @@ export function MobileTopBar({
           aria-label={`Connection: ${status}`}
         />
       </div>
+
+      <LiveModeToggle variant="bar" />
 
       <NotificationBell className="flex h-9 w-9 items-center justify-center rounded-md border border-white/10 text-ink-100/80 transition hover:border-ink-400 hover:text-ink-100" />
 

@@ -150,6 +150,12 @@ export class AudioOutputManager {
   // context. Backgrounding is the only thing that gets the audio unit
   // reclaimed, so there is nothing to replace without it.
   private _wasBackgrounded = false;
+  // H6: earcon stream sits behind a gain node ducked by live mic RMS.
+  private _earconGain: GainNode | null = null;
+  private _micRms = 0;
+  // H7: fire once per TTS clip group when the speaker is actually quiet.
+  private _onPlaybackDrained: (() => void) | null = null;
+  private _drainNotified = true;
 
   constructor(options: AudioOutputOptions = {}) {
     this._sinkId = options.sinkId ?? "";
@@ -344,6 +350,21 @@ export class AudioOutputManager {
   }
 
   /**
+   * Latest microphone RMS (raw worklet value, typically 0–0.3). Scales
+   * the earcon gain so a continuer sits under the user's voice.
+   */
+  setMicLevel(rms: number): void {
+    const value = Number(rms);
+    this._micRms = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+    this._applyEarconDuck();
+  }
+
+  /** Subscribe to "TTS is actually quiet on this client". */
+  setPlaybackDrainedListener(listener: (() => void) | null): void {
+    this._onPlaybackDrained = listener;
+  }
+
+  /**
    * Switch the output device. `deviceId === ""` resolves to the OS default.
    * Falls back to the sink-element route on browsers that don't expose
    * `AudioContext.setSinkId`.
@@ -429,6 +450,7 @@ export class AudioOutputManager {
     for (const tag of ["tts", "earcon"] as StreamTag[]) {
       this._stopStream(tag);
     }
+    this._maybeNotifyTtsDrained();
   }
 
   /** Tear down the audio context entirely. */
@@ -437,6 +459,7 @@ export class AudioOutputManager {
     this._stopLipLoop();
     this._analyser = null;
     this._outputNode = null;
+    this._earconGain = null;
     this._lipBuf = null;
     this._stopKeepAlive();
     const ctx = this._ctx;
@@ -492,6 +515,7 @@ export class AudioOutputManager {
       // dead, so clear the routing before we (re)build it.
       this._analyser = null;
       this._outputNode = null;
+      this._earconGain = null;
       this._lipBuf = null;
       // A fresh context restarts ``currentTime`` at 0, so any schedule
       // carried over from the previous one points however long that
@@ -692,6 +716,9 @@ export class AudioOutputManager {
         (src) => (src as unknown as { _stopped?: boolean })._stopped !== true,
       ),
     };
+    if (tag === "tts") {
+      this._drainNotified = false;
+    }
     // Arm the one-shot first-PCM startAt log for this clip.
     this._pendingFirstPcmLog[tag] = true;
     // Diagnostics (no-op unless Debug logging is on). The pre-resume
@@ -870,7 +897,7 @@ export class AudioOutputManager {
     // Route through the analyser (when present) so the lipsync tap reads
     // the real playback; falls back to the destination on contexts
     // without ``createAnalyser``.
-    source.connect(this._outputNode ?? ctx.destination);
+    source.connect(this._routeFor(tag, ctx));
     // Compute the start time: never schedule in the past, otherwise
     // the Web Audio scheduler silently drops the buffer. An underrun
     // uses a wider lead so a delayed burst chains instead of stacking.
@@ -899,6 +926,8 @@ export class AudioOutputManager {
     }
     source.onended = () => {
       (source as unknown as { _stopped: boolean })._stopped = true;
+      state.active = state.active.filter((item) => item !== source);
+      if (tag === "tts") this._maybeNotifyTtsDrained();
     };
     state.active.push(source);
     // There is audio again, so the lipsync loop has something to read.
@@ -923,6 +952,68 @@ export class AudioOutputManager {
     state.active = [];
     const ctx = this._ctx;
     state.nextStartTime = ctx ? ctx.currentTime : 0;
+  }
+
+  private _routeFor(tag: StreamTag, ctx: AudioContext): AudioNode {
+    const dest = this._outputNode ?? ctx.destination;
+    if (tag !== "earcon") return dest;
+    return this._ensureEarconGain(ctx, dest);
+  }
+
+  private _ensureEarconGain(ctx: AudioContext, dest: AudioNode): AudioNode {
+    if (this._earconGain) return this._earconGain;
+    const ctxAny = ctx as unknown as { createGain?: () => GainNode };
+    if (typeof ctxAny.createGain !== "function") {
+      return dest;
+    }
+    try {
+      const gain = ctx.createGain();
+      gain.gain.value = 1;
+      gain.connect(dest);
+      this._earconGain = gain;
+      this._applyEarconDuck();
+      return gain;
+    } catch {
+      return dest;
+    }
+  }
+
+  private _applyEarconDuck(): void {
+    const gain = this._earconGain;
+    if (!gain) return;
+    // Worklet RMS tops out around 0.3 on loud speech. At 0 the
+    // continuer is full (quiet) volume; at 0.3 it ducks to ~0.12.
+    const ducked = Math.max(0.12, 1 - this._micRms * 2.5);
+    const ctx = this._ctx;
+    try {
+      if (ctx && typeof gain.gain.setTargetAtTime === "function") {
+        gain.gain.setTargetAtTime(ducked, ctx.currentTime, 0.04);
+      } else {
+        gain.gain.value = ducked;
+      }
+    } catch {
+      gain.gain.value = ducked;
+    }
+  }
+
+  private _maybeNotifyTtsDrained(): void {
+    const state = this._streams.tts;
+    const stillActive = state.active.some(
+      (src) => (src as unknown as { _stopped?: boolean })._stopped !== true,
+    );
+    if (stillActive) return;
+    this._notifyPlaybackDrained();
+  }
+
+  private _notifyPlaybackDrained(): void {
+    if (this._drainNotified) return;
+    this._drainNotified = true;
+    if (!this._onPlaybackDrained) return;
+    try {
+      this._onPlaybackDrained();
+    } catch {
+      /* listener errors are non-fatal */
+    }
   }
 
   private async _routeViaSinkElement(): Promise<void> {

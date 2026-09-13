@@ -2070,6 +2070,76 @@ class WellbeingConcernProviderSlotTests(unittest.TestCase):
         )
 
 
+class CompanionActivityProviderSlotTests(unittest.TestCase):
+    """C6 Level-3 companion intake lands in T6 like the other pooled cues."""
+
+    _CUE = "Something you've quietly clocked about Jacob"
+
+    def _cue_line(self) -> str:
+        return (
+            "Something you've quietly clocked about Jacob: he's been "
+            "working in the editor. If a warm moment opens, you can "
+            "notice it ONCE in passing."
+        )
+
+    def test_block_lands_in_system_prompt(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ca1", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(
+                companion_activity=lambda: self._cue_line(),
+            )
+            messages, _ = assembler.assemble_with_budget(
+                "ca1", "x", context_window=4096, response_budget=256,
+            )
+            self.assertIn(self._CUE, messages[0]["content"])
+
+    def test_silent_when_empty(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ca2", role="user", content="hi", token_count=2,
+            )
+            assembler.set_inner_life_providers(companion_activity=lambda: "")
+            messages, _ = assembler.assemble_with_budget(
+                "ca2", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_provider_exception_swallowed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            db.add_message(
+                session_id="ca3", role="user", content="hi", token_count=2,
+            )
+
+            def _boom() -> str:
+                raise RuntimeError("kaboom")
+
+            assembler.set_inner_life_providers(companion_activity=_boom)
+            messages, _ = assembler.assemble_with_budget(
+                "ca3", "x", context_window=4096, response_budget=256,
+            )
+            self.assertNotIn(self._CUE, messages[0]["content"])
+
+    def test_registered_after_second_thought(self) -> None:
+        from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS
+
+        t6 = _PROMPT_BLOCK_TIERS["T6_detectors"]
+        self.assertIn("companion_activity_block", t6)
+        self.assertEqual(
+            t6.index("companion_activity_block"),
+            t6.index("second_thought_block") + 1,
+        )
+        # Do not insert into the pinned cue-family adjacencies.
+        self.assertEqual(
+            t6.index("second_thought_block"),
+            t6.index("shared_ritual_block") + 1,
+        )
+
+
 class ContinuitySlotTests(unittest.TestCase):
     """The session-continuity bridge lands on the opening turns of a new
     conversation, goes quiet once the conversation stands on its own, and

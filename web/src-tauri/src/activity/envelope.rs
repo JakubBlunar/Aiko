@@ -48,6 +48,11 @@ pub struct Envelope {
     pub subject: Subject,
     pub signal: Signal,
     pub payload: serde_json::Value,
+    /// C7 live pull: stamped on a forced ``snapshot()`` sample so Python
+    /// can match the WS round-trip. Omitted on ordinary change-detected
+    /// ticks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 impl Envelope {
@@ -68,6 +73,7 @@ impl Envelope {
                 kind: kind.to_string(),
             },
             payload,
+            request_id: None,
         }
     }
 }

@@ -158,6 +158,32 @@ class IngestEnvelopeTests(unittest.TestCase):
         })
         self.assertEqual(controller._last_user_activity_at, 0.0)
 
+    def test_idle_and_lock_clear_live_app(self) -> None:
+        controller = _make_controller(enabled=True)
+        controller._activity_store = None
+        controller.set_user_active_app("Code")
+        controller.ingest_activity_envelope({
+            "v": 1,
+            "at": "2026-08-30T19:01:00Z",
+            "source": "idle",
+            "tier": "cheap",
+            "subject": {"app": None, "title": None},
+            "signal": {"kind": "idle"},
+            "payload": {},
+        })
+        self.assertIsNone(controller._user_active_app)
+        controller.set_user_active_app("Code")
+        controller.ingest_activity_envelope({
+            "v": 1,
+            "at": "2026-08-30T19:02:00Z",
+            "source": "lock",
+            "tier": "cheap",
+            "subject": {"app": None, "title": None},
+            "signal": {"kind": "lock"},
+            "payload": {},
+        })
+        self.assertIsNone(controller._user_active_app)
+
 
 if __name__ == "__main__":
     unittest.main()

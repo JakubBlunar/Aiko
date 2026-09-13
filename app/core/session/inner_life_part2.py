@@ -975,40 +975,71 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         return "\n".join(lines)
 
     def _render_sleep_return_block(self) -> str:
-        """Surface one completed recorded episode; never infer sleep from a gap."""
+        """Surface recorded sleep, else a C8-qualified gap cue."""
         if not bool(
             getattr(self._settings.agent, "sleep_return_enabled", True)
         ):
             return ""
+        if getattr(self, "_gap_cue_surfaced", False):
+            return ""
         store = getattr(self, "_sleep_store", None)
-        if store is None or getattr(self, "_gap_cue_surfaced", False):
+        if store is not None:
+            try:
+                episodes = store.list_episodes(limit=1)
+            except Exception:
+                episodes = []
+            if episodes and getattr(episodes[0], "ended_at", None):
+                episode = episodes[0]
+                watermark = None
+                chat_db = getattr(self, "_chat_db", None)
+                if chat_db is not None:
+                    try:
+                        watermark = chat_db.kv_get("sleep.return_surfaced_episode")
+                    except Exception:
+                        watermark = None
+                if watermark != str(episode.id):
+                    started = timephrase.parse_iso(episode.started_at)
+                    ended = timephrase.parse_iso(episode.ended_at)
+                    hours = (
+                        max(0.0, (ended - started).total_seconds() / 3600.0)
+                        if started is not None and ended is not None
+                        else 0.0
+                    )
+                    reason = episode.reason_text or episode.reason_code or "being tired"
+                    block = (
+                        "RECORDED SLEEP CONTINUITY: You just completed a real "
+                        f"{episode.kind} sleep episode ({hours:.1f} hours; reason: {reason}; "
+                        f"interruptions: {len(episode.interruptions)}; outcome: "
+                        f"{episode.outcome or 'awake'}). You may remember this naturally, "
+                        "but do not recite these fields or invent unrecorded sleep."
+                    )
+                    if chat_db is not None:
+                        try:
+                            chat_db.kv_set(
+                                "sleep.return_surfaced_episode", str(episode.id),
+                            )
+                        except Exception:
+                            pass
+                    self._pending_sleep_return_seconds = None
+                    self._gap_cue_surfaced = True
+                    return block
+        pending = getattr(self, "_pending_sleep_return_seconds", None)
+        if pending is None:
             return ""
-        episodes = store.list_episodes(limit=1)
-        if not episodes or not episodes[0].ended_at:
-            return ""
-        episode = episodes[0]
-        watermark = self._chat_db.kv_get("sleep.return_surfaced_episode")
-        if watermark == str(episode.id):
-            return ""
-        started = timephrase.parse_iso(episode.started_at)
-        ended = timephrase.parse_iso(episode.ended_at)
-        hours = (
-            max(0.0, (ended - started).total_seconds() / 3600.0)
-            if started is not None and ended is not None
-            else 0.0
-        )
-        reason = episode.reason_text or episode.reason_code or "being tired"
-        block = (
-            "RECORDED SLEEP CONTINUITY: You just completed a real "
-            f"{episode.kind} sleep episode ({hours:.1f} hours; reason: {reason}; "
-            f"interruptions: {len(episode.interruptions)}; outcome: "
-            f"{episode.outcome or 'awake'}). You may remember this naturally, "
-            "but do not recite these fields or invent unrecorded sleep."
-        )
-        self._chat_db.kv_set("sleep.return_surfaced_episode", str(episode.id))
-        self._pending_sleep_return_seconds = None
-        self._gap_cue_surfaced = True
-        return block
+        return self._sleep_return_line(pending, force_next=False)
+
+    def _sleep_return_os_idle(self) -> str:
+        """Best-effort C6 idle/lock. Missing collectors do not stall."""
+        try:
+            from app.core.activity.evidence import evidence_from_store
+
+            evidence = evidence_from_store(getattr(self, "_activity_store", None))
+        except Exception:
+            return "missing"
+        if evidence is None or not evidence.present:
+            return "missing"
+        token = str(evidence.os_idle or "missing").strip().lower()
+        return token or "missing"
 
     def _sleep_return_line(self, seconds: Any, *, force_next: bool) -> str:
         """Compose the dozed-off line, or ``""`` when the gap isn't one.
@@ -1051,6 +1082,13 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                     gap_hours, now_local.hour,
                 )
                 return ""
+            os_idle = self._sleep_return_os_idle()
+            if not _sr.os_idle_allows_sleep_return(os_idle):
+                log.debug(
+                    "sleep-return silent: gap=%.1fh os_idle=%s",
+                    gap_hours, os_idle,
+                )
+                return ""
 
         # Where she dozed off — her current room location if it reads as a
         # restful spot, else the cozy default. Best-effort; never fatal.
@@ -1082,6 +1120,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             return ""
 
         self._gap_cue_surfaced = True
+        self._pending_sleep_return_seconds = None
         self._last_sleep_return = {
             "gap_hours": round(gap_hours, 2),
             "return_hour": now_local.hour,
@@ -1186,6 +1225,13 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         force_next = bool(
             self._debug_overrides.take("caught_mid_activity_force_next", False)
         )
+        posture = str(
+            getattr(self._settings.agent, "behavior_posture", "turn_based")
+            or "turn_based"
+        )
+        if posture == "live_presence" and not force_next:
+            # Live is continuous presence; H26 is a *return* surprise.
+            return ""
         if not force_next and getattr(self, "_gap_cue_surfaced", False):
             return ""
 
@@ -2464,6 +2510,32 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         log.info(
             "wellbeing-concern fire: cue=%s kind=%s",
             row.id, row.payload.get("kind"),
+        )
+        return row.text
+
+    def _render_companion_activity_block(self) -> str:
+        """C6 Level-3: surface one optional notice of desktop activity.
+
+        Consumer side of :class:`CompanionActivityWorker`. The worker
+        reads a Level-2 interpretation and, when the reading is confident
+        and not idle, queues one cue. This provider claims it as a
+        private line Aiko phrases herself -- a glance, not a screen
+        report. NEVER spoken verbatim. Live peeks the pool; it does not
+        call this.
+
+        Spacing is the type's ``surface_cooldown_hours`` (half a day).
+        MCP debug: ``force_companion_activity_surface`` arms
+        ``companion_activity_force_next`` (the pool must hold a cue).
+        """
+        force_next = bool(
+            self._debug_overrides.take("companion_activity_force_next", False)
+        )
+        row = self.take_pool_cue("companion_activity", force=force_next)
+        if row is None:
+            return ""
+        log.info(
+            "companion-activity fire: cue=%s kind=%s app=%s",
+            row.id, row.payload.get("kind"), row.payload.get("app"),
         )
         return row.text
 

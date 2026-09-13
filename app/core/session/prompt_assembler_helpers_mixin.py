@@ -235,6 +235,7 @@ class PromptAssemblerHelpersMixin:
         aspiration_momentum: Callable[[], str] | None = None,
         tension: Callable[[], str] | None = None,
         wellbeing_concern: Callable[[], str] | None = None,
+        companion_activity: Callable[[], str] | None = None,
         shared_ritual: Callable[[], str] | None = None,
         upcoming_horizon: Callable[[], str] | None = None,
         mood_shell: Callable[[], str] | None = None,
@@ -251,6 +252,7 @@ class PromptAssemblerHelpersMixin:
         idle_seeds: Callable[[], str] | None = None,
         wants: Callable[[], str] | None = None,
         initiative: Callable[[str], str] | None = None,
+        live_talk_about: Callable[[], str] | None = None,
         thread_ownership: Callable[[str], str] | None = None,
         topic_appetite: Callable[[], str] | None = None,
         taste_lean: Callable[[], str] | None = None,
@@ -430,6 +432,8 @@ class PromptAssemblerHelpersMixin:
             self._tension_provider = tension
         if wellbeing_concern is not None:
             self._wellbeing_concern_provider = wellbeing_concern
+        if companion_activity is not None:
+            self._companion_activity_provider = companion_activity
         if shared_ritual is not None:
             self._shared_ritual_provider = shared_ritual
         if upcoming_horizon is not None:
@@ -462,6 +466,8 @@ class PromptAssemblerHelpersMixin:
             self._wants_provider = wants
         if initiative is not None:
             self._initiative_provider = initiative
+        if live_talk_about is not None:
+            self._live_talk_about_provider = live_talk_about
         if thread_ownership is not None:
             self._thread_ownership_provider = thread_ownership
         if topic_appetite is not None:

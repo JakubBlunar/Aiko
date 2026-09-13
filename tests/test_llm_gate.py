@@ -8,11 +8,13 @@ import unittest
 from app.llm.chat_client import ChatClient
 from app.llm.llm_gate import (
     CONVERSATION_WORKER,
+    LIVE_POLICY,
     MAINTENANCE_WORKER,
     TASK,
     USER_BLOCKING,
     GatedChatClient,
     LlmPriorityGate,
+    llm_resource_key,
     tier_from_name,
     tier_label,
 )
@@ -263,14 +265,29 @@ class GatedClientTests(unittest.TestCase):
 class TierHelperTests(unittest.TestCase):
     def test_tier_from_name(self) -> None:
         self.assertEqual(tier_from_name("conversation"), CONVERSATION_WORKER)
+        self.assertEqual(tier_from_name("live_policy"), LIVE_POLICY)
         self.assertEqual(tier_from_name("MAINTENANCE"), MAINTENANCE_WORKER)
         self.assertEqual(tier_from_name("task"), TASK)
         self.assertEqual(tier_from_name("unknown"), MAINTENANCE_WORKER)
 
     def test_tier_label(self) -> None:
         self.assertEqual(tier_label(CONVERSATION_WORKER), "conversation")
+        self.assertEqual(tier_label(LIVE_POLICY), "live_policy")
         self.assertEqual(tier_label(MAINTENANCE_WORKER), "maintenance")
         self.assertEqual(tier_label(TASK), "task")
+
+    def test_resource_key_normalises_endpoint(self) -> None:
+        a = llm_resource_key(
+            kind="Ollama",
+            base_url="http://127.0.0.1:11434/",
+            model="qwen3.5:4b",
+        )
+        b = llm_resource_key(
+            kind="ollama",
+            base_url="http://127.0.0.1:11434",
+            model="qwen3.5:4b",
+        )
+        self.assertEqual(a, b)
 
 
 if __name__ == "__main__":

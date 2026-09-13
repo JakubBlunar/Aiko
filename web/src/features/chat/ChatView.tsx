@@ -7,6 +7,7 @@ import { useAssistantStore } from "@/store";
 import { useTasksStore } from "@/stores/useTasksStore";
 import type { AttachmentRef, ChatMessage, WsClientCommand } from "@/types";
 import { ContextBadge } from "./ContextBadge";
+import { LiveModeToggle } from "./LiveModeToggle";
 import { MicButton } from "@/features/voice/MicButton";
 import { TaskStrip } from "@/features/tasks/TaskStrip";
 import { AttachmentTray } from "./AttachmentTray";
@@ -314,23 +315,37 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
   // draft clear it immediately. The timer relaxes the pose if the user
   // stops typing without sending.
   const composingTimerRef = useRef<number | null>(null);
+  const composingSentRef = useRef(false);
+  const reportComposing = useCallback(
+    (active: boolean) => {
+      if (composingSentRef.current === active) {
+        return;
+      }
+      composingSentRef.current = active;
+      send({ type: "composing", active, surface: "chat" });
+    },
+    [send],
+  );
   const stopComposing = useCallback(() => {
     if (composingTimerRef.current !== null) {
       window.clearTimeout(composingTimerRef.current);
       composingTimerRef.current = null;
     }
     setComposing(false);
-  }, [setComposing]);
+    reportComposing(false);
+  }, [reportComposing, setComposing]);
   const markComposing = useCallback(() => {
     setComposing(true);
+    reportComposing(true);
     if (composingTimerRef.current !== null) {
       window.clearTimeout(composingTimerRef.current);
     }
     composingTimerRef.current = window.setTimeout(() => {
       composingTimerRef.current = null;
       setComposing(false);
+      reportComposing(false);
     }, COMPOSING_IDLE_MS);
-  }, [setComposing]);
+  }, [reportComposing, setComposing]);
   // Clear the pose on unmount so a view switch mid-draft doesn't leave
   // her stuck leaning in.
   useEffect(() => stopComposing, [stopComposing]);
@@ -513,8 +528,16 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
     [renderHeader],
   );
 
-  const headerStatus =
-    voiceMode !== "off"
+  const liveOn =
+    useAssistantStore((s) => s.companionSettings?.behavior_posture) ===
+    "live_presence";
+  const headerStatus = liveOn
+    ? voiceMode !== "off"
+      ? `Live · ${voiceMode}`
+      : ttsState === "speaking"
+        ? "Live · speaking"
+        : "Live"
+    : voiceMode !== "off"
       ? `Voice: ${voiceMode}`
       : ttsState === "speaking"
         ? "Speaking..."
@@ -535,6 +558,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {isMobile ? null : <LiveModeToggle />}
           <ContextBadge />
           <ConnectionBadge />
         </div>

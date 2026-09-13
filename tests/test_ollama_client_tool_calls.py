@@ -312,6 +312,24 @@ class OllamaClientNumCtxInjectionTests(unittest.TestCase):
         # confirm we didn't accidentally regress that.
         self.assertEqual(payload["options"].get("temperature"), 0.0)
 
+    def test_chat_json_sends_schema_object_as_format(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"intent": {"type": "string"}},
+            "required": ["intent"],
+        }
+        client = OllamaClient(self._base_settings)
+        fake = self._fake_chat_response()
+        with patch(
+            "app.llm.ollama_client.requests.post", return_value=fake,
+        ) as posted:
+            client.chat_json(
+                [{"role": "user", "content": "x"}],
+                json_schema=schema,
+            )
+        payload = posted.call_args.kwargs["json"]
+        self.assertEqual(payload["format"], schema)
+
 
 if __name__ == "__main__":
     unittest.main()

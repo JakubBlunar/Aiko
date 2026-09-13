@@ -3,7 +3,8 @@
 C6 perception is supposed to run while the user is coding and not
 chatting. If ``user_activity`` WS frames ever reset the idle gate, the
 whole pipeline silently stops. This file fails the run if a new caller
-appears outside the chat-turn mixin.
+appears outside the chat-turn mixin (and the Live main-wake path, which
+is a conversation turn, not an activity envelope).
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ APP = REPO / "app"
 _ALLOWED = {
     (APP / "core" / "session" / "lifecycle_mixin.py").resolve(): {"_touch_user_activity"},
     (APP / "core" / "session" / "chat_turn_mixin.py").resolve(): {"chat_once_streaming"},
+    (APP / "core" / "session" / "live_mode_mixin.py").resolve(): {"_run_live_main_wake"},
 }
 
 

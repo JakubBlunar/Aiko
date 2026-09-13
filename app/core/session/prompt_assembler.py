@@ -274,10 +274,15 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # gone out, drafted by the post-reply think pass. Nearest in spirit
         # to self_callback — both are her own continuity rather than a read
         # on him, that one reaching back weeks and this one a few turns —
-        # but appended at the END of the cue-producer family rather than
-        # beside it, because self_callback -> aspiration_momentum ->
+        # but appended after shared_ritual rather than beside
+        # self_callback, because self_callback -> aspiration_momentum ->
         # wellbeing_concern is an adjacency three tests pin deliberately.
         "second_thought_block",
+        # C6 Level-3 companion intake. Own CueSpec / CuePolicy; not a
+        # gap cue. After second_thought so the pinned adjacencies
+        # (self_callback -> aspiration_momentum -> wellbeing_concern,
+        # shared_ritual -> second_thought) stay intact.
+        "companion_activity_block",
         # P44 measurement moved these two down from T0/T1. Both looked
         # stable and neither is: ``anniversary_block`` stamps
         # ``last_anniversaried_at`` as a side effect of rendering, so it
@@ -410,6 +415,10 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # A thin cluster on the rim of a dense one; sits with the other
         # topic-graph-derived surfaces.
         "curiosity_gradient_block",
+        # Live Pass 10: one-shot talk-about from an admitted main-wake.
+        # Lands before handling notes / K92 so INITIATE already has a
+        # provider when stance runs.
+        "live_talk_about_block",
         # The handling notes for whichever hoisted blocks rendered above,
         # lifted out of the persona so they cost nothing on the turns
         # their block is absent. Second-last in the tier because it is
@@ -995,6 +1004,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # independent of the gap-return cue family (like follow_up).
         self._growth_witness_provider: Callable[[], str] | None = None
         self._wellbeing_concern_provider: Callable[[], str] | None = None
+        self._companion_activity_provider: Callable[[], str] | None = None
         self._shared_ritual_provider: Callable[[], str] | None = None
         # K71 self-callback cue. Consumer of the SelfCallbackWorker ring;
         # surfaces a rare "close the loop on my own aged feeling /
@@ -1220,6 +1230,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # substantial-message escape hatch) and returns the one-turn
         # "this turn is yours" directive on cadence, else "".
         self._initiative_provider: Callable[[str], str] | None = None
+        # Live Pass 10: one-shot talk-about for an admitted main-wake.
+        # The session stashes a payload and this provider consumes it.
+        self._live_talk_about_provider: Callable[[], str] | None = None
         # K55 thread ownership. Takes the live ``user_text`` (the
         # reply being evaluated against the opened-thread embedding)
         # and returns the one-shot "circle back" cue on a pivot,
@@ -2400,6 +2413,22 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     )
                     wellbeing_concern_block = ""
 
+        # C6 Level-3 companion intake: one optional notice of what he's
+        # doing on the machine. Built every turn (claims a pool row) but
+        # empty unless a Level-2 reading armed a cue. Not a gap cue.
+        companion_activity_block = ""
+        if getattr(self, "_companion_activity_provider", None) is not None:
+            with _timed_phase(provider_ms, "companion_activity"):
+                try:
+                    companion_activity_block = (
+                        self._companion_activity_provider() or ""
+                    )
+                except Exception:
+                    log.debug(
+                        "companion_activity provider raised", exc_info=True,
+                    )
+                    companion_activity_block = ""
+
         # K73 shared ritual: warm "this has become our thing" beat.
         # Built every turn (consumes a cooldown/ack flag) but rare.
         shared_ritual_block = ""
@@ -3528,10 +3557,15 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts.append(shared_ritual_block)
         if second_thought_block:
             # K96: a loose end from earlier in this same conversation, the
-            # same instinct as self_callback at a much shorter range. Last
-            # of the cue-producer family; see the note in the ladder for
-            # why it sits here rather than beside its sibling.
+            # same instinct as self_callback at a much shorter range.
+            # Stays immediately after shared_ritual (tests pin that
+            # adjacency); companion_activity follows as its own surface.
             system_parts.append(second_thought_block)
+        if companion_activity_block:
+            # C6 Level-3: noticing what he's doing on the machine. Own
+            # cue-producer surface; not in the gap mutex. After
+            # second_thought so the pinned cue-family adjacencies stay.
+            system_parts.append(companion_activity_block)
         # Relocated from T0/T1 by the P44 prefix-break measurements. Both
         # are volatile in practice despite reading as background: see the
         # note beside them in ``_PROMPT_BLOCK_TIERS``. The constant and
@@ -3770,6 +3804,18 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # K64c: curiosity gradient — "I keep brushing past X" cue, last
             # of the topic-graph-derived surfaces.
             system_parts.append(curiosity_gradient_block)
+        live_talk_about_block = ""
+        if self._live_talk_about_provider is not None:
+            live_talk_about_block = _safe_provider(
+                self._live_talk_about_provider,
+                timing_sink=provider_ms,
+                timing_name="live_talk_about",
+            )
+        if live_talk_about_block:
+            # Live Pass 10: the 4B intent packet for an admitted main-wake.
+            # Present-tense steer, not a fake user line. Lands before
+            # handling notes so K92 sees INITIATE already has a provider.
+            system_parts.append(live_talk_about_block)
         # Read off this frame's locals by the names the tier ladder
         # registers -- the same resolution ``block_char_table`` uses, so
         # adding a hoisted block needs no edit here. Must stay below every

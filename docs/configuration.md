@@ -75,7 +75,7 @@ exists to keep them in lock-step.
 | Long-term memory cap | `memory.max_memories` | `0` (uncapped) |
 | TTS provider / voice | `tts.provider`, `tts.voice` | `pocket-tts`, `aiko1_refined.safetensors` |
 | Voice mode mic on at boot | `audio.enable_microphone` | `true` |
-| Enable barge-in (interrupt Aiko while she's talking) | `audio.barge_in_enabled` | `false` |
+| Enable barge-in (interrupt Aiko while she's talking) | `audio.barge_in_enabled` | `true` |
 | Debug log to file | `logging.level`, `logging.file_enabled` | `INFO`, `true` |
 | UI-side debug log bridge | `logging.ui_log_enabled` | `false` |
 
@@ -133,7 +133,7 @@ instance through the cache in [`app/llm/factory.py`](../app/llm/factory.py).
 
 ### `llm.routes{}` — role assignments
 
-Maps a role name (`"main_chat"`, `"worker_default"`, `"workflow"`) to an `LlmRoute`:
+Maps a role name (`"main_chat"`, `"worker_default"`, `"workflow"`, `"live_policy"`) to an `LlmRoute`:
 
 - `llm.routes[role].provider_id` *(string, required)* — references `llm.providers[].id`. Server returns 404 when unknown.
 - `llm.routes[role].model` *(string, required)* — model name (for `openai_compatible`) or tag (for `ollama`). Free-text combobox in the drawer.
@@ -141,10 +141,12 @@ Maps a role name (`"main_chat"`, `"worker_default"`, `"workflow"`) to an `LlmRou
 - `llm.routes[role].max_tokens` *(int, `512`)* — hard cap on tokens **per reply** for this role. Without it, models routinely emit 2 k+ tokens of rambling on casual chat. **Higher → longer replies**, more chance of drift; lower → terser, more chance of mid-sentence truncation. `0` / negative disables the cap. Watch `data/app.log` for `ollama response truncated:` / `openai-compat response truncated:` warnings — they fire only when the cap actually clipped a reply.
 - `llm.routes[role].temperature` *(float | null, `null`)* — sampling temperature; `null` uses the provider's default.
 - `llm.routes[role].reasoning_effort` *(string, `""`)* — per-role override of the provider's value.
+- `llm.routes[role].contention_group` *(string, `""`)* — optional VRAM lane identity. Empty = the resource key is `(provider.kind, endpoint, model)`. Set the same non-empty group on two routes to force them onto one `LlmPriorityGate` even when the tags differ. The shipped `live_policy` route (`qwen3.5:4b` / `40960` / `max_tokens` 512 / `temperature` 0) is a **distinct** key from `worker_default` (`qwen3.5:9b`), so Live policy is `gate=None` (pass-through). Point `live_policy` at the same 9B worker model and it joins that lane at the `LIVE_POLICY` tier (30), between conversation workers (10) and maintenance (50). User turns still outrank Live. `max_tokens` here is the decision-JSON budget (including a short `arguments.reasoning`), not Aiko's spoken line. Pass 6 shipped 64, which clipped mid-JSON; installs still on 64 are raised to 512 on boot.
 
-Editing any of the three roles takes effect immediately: `update_route`
+Editing any of the four shipped roles takes effect immediately: `update_route`
 persists the change and rebuilds the live clients, re-pointing the
-`TurnRunner`, the `ProactiveDirector` and every background worker.
+`TurnRunner`, the `ProactiveDirector`, every background worker, and the
+Live policy controller.
 
 Pointing `main_chat` and `worker_default` at the same provider **and**
 the same context window makes them share one client — on a single-GPU
@@ -182,12 +184,28 @@ Typed-mode runs an independent timer so the cadence can differ (typing sessions 
 - `agent.proactive_typed_when_away` *(bool, `false`)* — when `false`, typed proactive respects `_user_present` (browser visibility + Tauri focus); when `true`, Aiko can typed-chime in even when no client window is visible. Voice mode ignores this on purpose.
 - `agent.proactive_typed_tts_enabled` *(bool, `false`)* — when `false`, a typed-mode proactive line is **text-only** (bubble, no speech); when `true`, it's also spoken via TTS through the same enqueue the voice path uses. Default off because a typed-silence nudge can land minutes later when you may be away from the speakers. Voice-mode proactive always speaks regardless of this flag.
 
+### Live policy (Pass 10 gated main-wake)
+
+The Live presence controller is a small on-device model (`llm.routes.live_policy`), not the main chat model. Accepted nonverbal intents overlay IdleLife. Validated `micro_utterance` deliveries speak and persist as Live actions (`dialogue_act=live_micro`) without a relationship-turn increment. Unprompted `request_main_speech` is admitted through a deterministic gate (substantive urge, open floor, sleep/DND/budget, same-generation lock) into a BrainLoop-gated main-model turn with a talk-about intent block. Chat/STT replies still run `TurnRunner`. The 4B prompt reserves a LAST CONVERSATION floor so recent chat cannot be starved by concepts.
+
+Pass 11 (Live Phase 9) feeds C6 collection into that frame: app name, `os_idle`, session duration, and stale/confidence. Titles never enter the 4B situation line. Locked/idle/stale evidence stays silent; coding `speech_budget=rare` only when the evidence is fresh and confident. Heartbeat stays `data_only`.
+
+Pass 12 (Phase 10 hardening): cadence knobs persist in the same setters. Heartbeat stays `data_only`.
+
+- `agent.live_quiet` *(bool, `false`)* — Live DND. Forbids Live speech; IdleLife still runs.
+- `agent.live_unprompted_speech` *(bool, `true`)* — when `false`, unprompted main-wake and micro-utterances no-op (`speech_forbidden`). Visual-only Live. Does not intercept typed/STT `TurnRunner` replies.
+- `agent.live_main_wake_max_per_hour` *(int, `6`, clamp `0`–`30`)* — main-wake token budget. Default `6` is one wake per 10 minutes. `0` forbids main-wake.
+- `agent.live_min_gap_after_speech_ms` *(int, `8000`, clamp `0`–`60000`)* — floor on the Live speech gap after Aiko spoke.
+- `agent.live_mic_consented` *(bool, `false`)* — user confirmed the always-listening copy. Does not open the microphone.
+- `agent.live_policy_prompt_max_tokens` *(int, `12000`, clamp `2000`–`24000`)* — ceiling on the **whole** Live-policy prompt, applied before window-aware region fill. Lower this to measure latency; raise `llm.routes.live_policy.context_window` (shipped `40960`, easy to set to `65536`) to grow the concept and transcript slices. Does not pull persona, T3 memory, or tools. Output length is `llm.routes.live_policy.max_tokens` (shipped `512`).
+
 ### Activity awareness (desktop opt-in)
 
 C6 collection pipeline. The prompt still gets **app name only**; titles
-are stored (not spoken) for allowlisted apps. Privacy posture: see
-`docs/presence-and-activity.md`. Remaining work (interpretation, cues,
-UIA, a live tool-pass pull) is in
+are stored (not spoken) for allowlisted apps. Live (Pass 11) and K72
+read duration / idle / lock / stale from the same store — still never
+titles. Remaining work (cue/memory intake, UIA, a live tool-pass
+pull) is in
 [`docs/personality-backlog/proactive.md`](personality-backlog/proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel).
 
 - `agent.activity_awareness_enabled` *(bool, `false`)* — master switch for the desktop collector. Off → no OS reads, envelopes dropped, live cache cleared. Browser shells render the toggle but never produce samples.
@@ -291,6 +309,7 @@ Closes the loop on Aiko's own "I'll look into that" commitments. Assistant-side 
 
 - `agent.cadence_enabled` *(bool, `true`)* — `ProsodyDispatcher` adds micro prefixes (`"Mm."`, `"Oh,"`) and pause-style punctuation hints. Text-only; engines that ignore punctuation are safe. Off → flat delivery.
 - `agent.earcon_auto_sprinkle` *(bool, `true`)* — auto-add `breath` / `soft_sigh` earcons on the first sentence of melancholy / wistful / sad turns. Cooldown-gated. Off → Aiko's inline `[[breath]]` etc. tags still play, but nothing is auto-added.
+- `agent.backchannel_audio_enabled` *(bool, `true`)* — play a low-volume continuer (`mm` / `chuckle`) when the listening-window backchannel classifier fires. Off → avatar still nods; no sound. Independent of `audio.earcons_enabled`.
 - `agent.tts_runtime_temp_enabled` *(bool, `false`)* — opt-in: let cadence mutate Pocket-TTS `model.temp` per reaction. **Off by default** because Pocket-TTS is sensitive to temperature excursions (±0.05 can produce pitch artefacts on some voices). Validate on your voice first.
 - `agent.tts_runtime_speed_enabled` *(bool, `false`)* — opt-in: let cadence jitter speech speed per reaction. **Off by default** because Pocket-TTS couples speed and pitch (a 10 % faster sentence is also ~1.6 semitones higher), so per-sentence drift gets perceived as "her voice keeps changing." Validate via `tools/tts_speed_ab.py`. The global `assistant.tts_length_scale` is honoured regardless.
 
@@ -1557,7 +1576,7 @@ Server-side audio knobs. The browser / Tauri client owns the mic + speakers; onl
 - `audio.enable_microphone` *(bool, `true`)* — voice mode allowed at boot. Off → typed-only.
 - `audio.vad_level_threshold` *(float, `0.02`)* — RMS energy threshold for "speech detected." Higher → more aggressive silence (drops faint speech); lower → more sensitive (picks up keyboard clicks).
 - `audio.vad_silence_seconds` *(float, `1.0`)* — silence duration that closes an utterance.
-- `audio.barge_in_enabled` *(bool, `false`)* — let user speech interrupt Aiko's TTS mid-reply. Off → Aiko finishes the sentence; on → her TTS stops and she listens.
+- `audio.barge_in_enabled` *(bool, `true`)* — let user speech interrupt Aiko's TTS mid-reply. Off → Aiko finishes the sentence; on → her TTS stops and she listens. Existing `user.json` `false` stays false.
 - `audio.earcons_enabled` *(bool, `true`)* — play stage-direction earcons (`[[laugh]]`, `[[breath]]`, `[[sigh]]`, …). Off → those tags are silently stripped.
 
 ---
@@ -1658,6 +1677,7 @@ Agent tool registry switches. Each toggles a single tool; `tools.enabled = false
 - `tools.goals` *(bool, `true`)* — K1 goal tools (`list_goals`, `add_goal`, `update_goal_progress`, `archive_goal`). Off → Aiko's prompt block + worker still surface goals but she can't *act* on them mid-turn. Independent from `agent.goals_enabled`: if the master switch is off the tools are wired but no-op because the store is unset.
 - `calculate` is no longer a `tools.*` flag — it moved to the bundled `calculator` plugin (`plugins/calculator/`), a synchronous exact-arithmetic fast tool contributed through the ToolPlugin SDK (`api.register_fast_tool`). It evaluates an expression through an AST whitelist (no `eval`) and returns the result in the same turn so Aiko never guesses a number. Toggle it by enabling/disabling the plugin (`plugin.json` `enabled`, or `plugins.entries.calculator.enabled`). See [`docs/skills-framework.md`](skills-framework.md) for the fast-tool plugin capability.
 - `tools.weather` *(bool, `true`)* — H11 synchronous weather tools (`get_weather` / `get_forecast`). Lets Aiko answer "what's the forecast?" for the configured home location or any named city (geocoded at call time). Independent of the passive ambient `agent.weather_sync_enabled` feed — the tools work even with the overlay off. Backend configured under the `weather` block below.
+- `tools.activity` *(bool, `true`)* — C7 `get_activity` tool. Forces a desktop collector snapshot on the same ingest + redact path as the push samples. Timeout or no desktop returns the last stored session, not an error. Independent of `agent.activity_awareness_enabled` for *registration* — if awareness is off the tool still registers and reports `enabled=false` plus the last stored session. See [`docs/presence-and-activity.md`](presence-and-activity.md).
 
 ---
 

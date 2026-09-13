@@ -166,7 +166,15 @@ export function PersonaWindow({ send, sendBytes }: PersonaWindowProps) {
           size="compact"
           remotelyOwned={remotelyOwned}
         />
-        <PersonaInput onSend={onSend} connected={connected} busy={turnInProgress} />
+        <PersonaInput
+          onSend={onSend}
+          onComposing={(active) => {
+            useAssistantStore.getState().setComposing(active);
+            send({ type: "composing", active, surface: "persona" });
+          }}
+          connected={connected}
+          busy={turnInProgress}
+        />
       </div>
     </div>
   );

@@ -182,5 +182,142 @@ class PoolProductionTests(unittest.TestCase):
         )
 
 
+class FakeActivityStore:
+    def __init__(self, sessions, boom: bool = False) -> None:
+        self._sessions = sessions
+        self._boom = boom
+
+    def recent_sessions(self, *, limit=20):  # noqa: ARG002
+        if self._boom:
+            raise RuntimeError("store down")
+        return list(self._sessions)
+
+
+def _session_at(day_offset: int, hour: int) -> dict:
+    stamp = _local_ts(day_offset, hour)
+    return {
+        "source": "foreground",
+        "app": "Cursor",
+        "title": "secret.py — assistant",
+        "started_at": stamp,
+        "ended_at": stamp,
+        "duration_seconds": 1800,
+    }
+
+
+def _focus_session(
+    day_offset: int,
+    hour: int = 10,
+    *,
+    seconds: int = 6 * 3600,
+    app: str = "Cursor",
+) -> dict:
+    start = datetime.fromisoformat(_local_ts(day_offset, hour))
+    end = start + timedelta(seconds=seconds)
+    return {
+        "source": "foreground",
+        "app": app,
+        "title": "secret.py — assistant",
+        "started_at": start.isoformat(),
+        "ended_at": end.isoformat(),
+        "duration_seconds": seconds,
+    }
+
+
+class ActivityLateNightTests(unittest.TestCase):
+    def test_editor_sessions_supply_late_nights_without_chat(self) -> None:
+        sessions = [_session_at(d, 3) for d in (1, 2, 3)]
+        db = FakeDB([])
+        w = _worker(
+            db,
+            activity_store_provider=lambda: FakeActivityStore(sessions),
+            activity_enabled_provider=lambda: True,
+        )
+        result = w.run()
+        self.assertEqual(result["drafted"], 1)
+        self.assertEqual(result["kind"], wc.KIND_LATE_NIGHTS)
+
+    def test_disabled_c6_does_not_use_sessions(self) -> None:
+        sessions = [_session_at(d, 3) for d in (1, 2, 3)]
+        db = FakeDB([])
+        result = _worker(
+            db,
+            activity_store_provider=lambda: FakeActivityStore(sessions),
+            activity_enabled_provider=lambda: False,
+        ).run()
+        self.assertEqual(result["drafted"], 0)
+        self.assertTrue(result.get("no_finding"))
+
+    def test_store_exception_is_empty_extra_dates(self) -> None:
+        db = FakeDB([])
+        result = _worker(
+            db,
+            activity_store_provider=lambda: FakeActivityStore([], boom=True),
+            activity_enabled_provider=lambda: True,
+        ).run()
+        self.assertEqual(result["drafted"], 0)
+        self.assertTrue(result.get("no_finding"))
+
+
+class ActivityLongFocusTests(unittest.TestCase):
+    def test_daytime_coding_sessions_draft_without_chat(self) -> None:
+        sessions = [_focus_session(d) for d in (1, 2, 3)]
+        db = FakeDB([])
+        result = _worker(
+            db,
+            activity_store_provider=lambda: FakeActivityStore(sessions),
+            activity_enabled_provider=lambda: True,
+        ).run()
+        self.assertEqual(result["drafted"], 1)
+        self.assertEqual(result["kind"], wc.KIND_LONG_FOCUS)
+        self.assertNotIn("secret.py", result["detail"])
+
+    def test_media_sessions_do_not_count(self) -> None:
+        sessions = [
+            _focus_session(d, app="YouTube") for d in (1, 2, 3)
+        ]
+        db = FakeDB([])
+        result = _worker(
+            db,
+            activity_store_provider=lambda: FakeActivityStore(sessions),
+            activity_enabled_provider=lambda: True,
+        ).run()
+        self.assertEqual(result["drafted"], 0)
+        self.assertTrue(result.get("no_finding"))
+
+    def test_short_days_do_not_count(self) -> None:
+        sessions = [
+            _focus_session(d, seconds=2 * 3600) for d in (1, 2, 3)
+        ]
+        db = FakeDB([])
+        result = _worker(
+            db,
+            activity_store_provider=lambda: FakeActivityStore(sessions),
+            activity_enabled_provider=lambda: True,
+        ).run()
+        self.assertEqual(result["drafted"], 0)
+
+    def test_late_nights_outrank_long_focus(self) -> None:
+        sessions = [_focus_session(d) for d in (1, 2, 3)]
+        rows = [(_local_ts(d, 3), "just chatting") for d in (1, 2, 3)]
+        db = FakeDB(rows)
+        result = _worker(
+            db,
+            activity_store_provider=lambda: FakeActivityStore(sessions),
+            activity_enabled_provider=lambda: True,
+        ).run()
+        self.assertEqual(result["kind"], wc.KIND_LATE_NIGHTS)
+
+    def test_disabled_c6_does_not_use_focus_sessions(self) -> None:
+        sessions = [_focus_session(d) for d in (1, 2, 3)]
+        db = FakeDB([])
+        result = _worker(
+            db,
+            activity_store_provider=lambda: FakeActivityStore(sessions),
+            activity_enabled_provider=lambda: False,
+        ).run()
+        self.assertEqual(result["drafted"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

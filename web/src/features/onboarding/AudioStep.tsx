@@ -14,6 +14,7 @@ import {
   type DspPreferences,
   type MicPermissionState,
 } from "@/audio/DeviceManager";
+import { api } from "@/api";
 
 /**
  * First-run audio step: microphone permission, the input/output device
@@ -56,6 +57,11 @@ export function AudioStep({ onDone }: { onDone: () => void }) {
     };
     void queryMicPermission().then((state) => {
       if (!cancelled) setPermission(state);
+      if (!cancelled && state === "granted") {
+        void api.patchSettings({
+          companion: { live_mic_consented: true },
+        });
+      }
     });
     void refresh();
     const unsub = onDeviceListChange(() => void refresh());
@@ -219,6 +225,9 @@ export function AudioStep({ onDone }: { onDone: () => void }) {
                 const lists = await listDevices();
                 setInputs(lists.inputs);
                 setOutputs(lists.outputs);
+                void api.patchSettings({
+                  companion: { live_mic_consented: true },
+                });
               } else {
                 setPermission("denied");
               }

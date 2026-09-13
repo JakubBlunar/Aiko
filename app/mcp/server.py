@@ -50,6 +50,7 @@ def create_mcp_server(
         gate_tuning_tools,
         activity_tools,
         conversation_situation_tools,
+        live_mode_tools,
         sleep_tools,
     )
 
@@ -67,6 +68,7 @@ def create_mcp_server(
     gate_tuning_tools.register(mcp, session)
     activity_tools.register(mcp, session)
     conversation_situation_tools.register(mcp, session)
+    live_mode_tools.register(mcp, session)
     sleep_tools.register(mcp, session)
     return mcp
 

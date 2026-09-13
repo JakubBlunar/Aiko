@@ -24,6 +24,7 @@ from app.llm.chat_client import ChatClient
 from app.llm.ollama_client import OllamaClient
 from app.core.infra.settings import local_ollama_provider
 from app.core.infra.settings import transport_for_provider
+from app.core.infra.settings import LLM_ROLE_LIVE_POLICY
 from app.core.infra.settings import LLM_ROLE_MAIN_CHAT
 from app.core.infra.settings import LLM_ROLE_WORKER_DEFAULT
 from app.core.infra.settings import LLM_ROLE_WORKFLOW
@@ -79,6 +80,7 @@ class LlmSettingsMixin:
                 "max_tokens": int(route.max_tokens or 512),
                 "temperature": route.temperature,
                 "reasoning_effort": getattr(route, "reasoning_effort", "") or "",
+                "contention_group": getattr(route, "contention_group", "") or "",
             }
         return out
 
@@ -360,6 +362,10 @@ class LlmSettingsMixin:
             current.reasoning_effort = str(
                 draft["reasoning_effort"] or ""
             ).strip().lower()
+        if "contention_group" in draft:
+            current.contention_group = str(
+                draft["contention_group"] or ""
+            ).strip()
         provider = self._find_llm_provider(current.provider_id)
         if provider is None:
             raise KeyError(
@@ -370,6 +376,7 @@ class LlmSettingsMixin:
         self._persist_llm_settings()
         if role_name in {
             LLM_ROLE_MAIN_CHAT, LLM_ROLE_WORKER_DEFAULT, LLM_ROLE_WORKFLOW,
+            LLM_ROLE_LIVE_POLICY,
         }:
             self._rebuild_llm_clients()
         log.info(
@@ -386,6 +393,7 @@ class LlmSettingsMixin:
             "max_tokens": int(current.max_tokens or 512),
             "temperature": current.temperature,
             "reasoning_effort": getattr(current, "reasoning_effort", "") or "",
+            "contention_group": getattr(current, "contention_group", "") or "",
         }
 
     def _provider_is_live(self, provider_id: str) -> bool:
@@ -717,6 +725,7 @@ class LlmSettingsMixin:
 
         for role in (
             LLM_ROLE_MAIN_CHAT, LLM_ROLE_WORKER_DEFAULT, LLM_ROLE_WORKFLOW,
+            LLM_ROLE_LIVE_POLICY,
         ):
             route = llm.routes.get(role)
             if route is not None:

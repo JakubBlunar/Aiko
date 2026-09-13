@@ -74,6 +74,11 @@ export const desktop = {
       enabled,
       titleAllowlist,
     }),
+  /** C7: fire-and-forget snapshot. The sample arrives on
+   * ``activity://sample`` with ``request_id``; never await an OS poll. */
+  requestActivitySnapshot: (requestId: string) => {
+    void tauriInvoke<void>("request_activity_snapshot", { requestId });
+  },
   /** Boot the Python FastAPI backend if it isn't already responding,
    * then wait until ``/api/health`` answers (timeout ~25s).
    *

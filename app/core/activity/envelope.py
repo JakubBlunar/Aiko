@@ -6,7 +6,7 @@ from typing import Any
 
 CURRENT_VERSION = 1
 _KNOWN_TOP = frozenset(
-    {"v", "at", "source", "tier", "subject", "signal", "payload"},
+    {"v", "at", "source", "tier", "subject", "signal", "payload", "request_id"},
 )
 
 
@@ -27,6 +27,7 @@ class ActivityEnvelope:
     signal_kind: str
     payload: dict[str, Any] = field(default_factory=dict)
     extras: dict[str, Any] = field(default_factory=dict)
+    request_id: str | None = None
 
     def to_payload_json(self) -> dict[str, Any]:
         """Payload plus any unknown v1 top-level keys (forward compatible)."""
@@ -82,6 +83,7 @@ def parse_envelope(raw: Any) -> ActivityEnvelope | None:
         signal_kind=kind,
         payload=dict(payload),
         extras=extras,
+        request_id=_optional_str(raw.get("request_id")),
     )
 
 

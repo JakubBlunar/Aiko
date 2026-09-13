@@ -348,6 +348,7 @@ class ChatClient(Protocol):
         options: dict[str, object] | None = None,
         timeout_seconds: float | None = None,
         format_json: bool = True,
+        json_schema: dict[str, Any] | None = None,
         think: bool = False,
         keep_alive: str | None = None,
         surface: str = "chat_json",
@@ -357,6 +358,10 @@ class ChatClient(Protocol):
         Used by background workers that need a bounded response and
         don't want to manage a stream. Returns ``(raw_content, usage)``.
         Set ``format_json=False`` for plain text (e.g. summarisation).
+        When ``json_schema`` is set, Ollama receives ``format`` as that
+        object (structured outputs); OpenAI-compat uses
+        ``response_format.json_schema``. Client-side validation still
+        belongs to the caller.
         """
 
     def list_models(self) -> list[str]:

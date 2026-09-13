@@ -77,6 +77,26 @@ class DetectLateNightsTests(unittest.TestCase):
         self.assertNotEqual(f3.signature, f4.signature)
 
 
+class DetectLongFocusTests(unittest.TestCase):
+    def test_fires_at_threshold(self) -> None:
+        f = wc.detect_long_focus(
+            ["2026-01-01", "2026-01-02", "2026-01-03"], min_days=3,
+        )
+        self.assertIsNotNone(f)
+        self.assertEqual(f.kind, wc.KIND_LONG_FOCUS)
+        self.assertEqual(f.signature, "long_focus:3")
+
+    def test_below_threshold_silent(self) -> None:
+        self.assertIsNone(
+            wc.detect_long_focus(["2026-01-01", "2026-01-02"], min_days=3)
+        )
+
+    def test_escalation_changes_signature(self) -> None:
+        f3 = wc.detect_long_focus(["a", "b", "c"], min_days=3)
+        f4 = wc.detect_long_focus(["a", "b", "c", "d"], min_days=3)
+        self.assertNotEqual(f3.signature, f4.signature)
+
+
 class DetectSelfNeglectTests(unittest.TestCase):
     def test_fires_with_days_and_category(self) -> None:
         f = wc.detect_self_neglect(
@@ -143,6 +163,24 @@ class PickConcernTests(unittest.TestCase):
         )
         self.assertEqual(f.kind, wc.KIND_SELF_NEGLECT)
 
+    def test_late_nights_outranks_long_focus(self) -> None:
+        f = wc.pick_concern(
+            late_night_dates=["a", "b", "c"],
+            long_focus_dates=["x", "y", "z"],
+            late_night_min=3,
+            long_focus_min_days=3,
+        )
+        self.assertEqual(f.kind, wc.KIND_LATE_NIGHTS)
+
+    def test_long_focus_outranks_rough(self) -> None:
+        samples = [_drift(-0.3) for _ in range(5)]
+        f = wc.pick_concern(
+            long_focus_dates=["a", "b", "c"],
+            drift_samples=samples,
+            long_focus_min_days=3,
+        )
+        self.assertEqual(f.kind, wc.KIND_LONG_FOCUS)
+
     def test_late_nights_outranks_rough(self) -> None:
         samples = [_drift(-0.3) for _ in range(5)]
         f = wc.pick_concern(
@@ -170,6 +208,14 @@ class RenderTests(unittest.TestCase):
         self.assertIn("small hours", line)
         self.assertIn("ONCE", line)
 
+    def test_long_focus_render(self) -> None:
+        line = wc.render_inner_life_block(
+            wc.KIND_LONG_FOCUS, user_display_name="Jacob",
+        )
+        self.assertIn("Jacob", line)
+        self.assertIn("long", line.lower())
+        self.assertIn("ONCE", line)
+
     def test_self_neglect_render_uses_detail(self) -> None:
         line = wc.render_inner_life_block(
             wc.KIND_SELF_NEGLECT, user_display_name="Jacob",
@@ -185,7 +231,12 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(wc.render_inner_life_block("bogus"), "")
 
     def test_never_lecture_language(self) -> None:
-        for kind in (wc.KIND_LATE_NIGHTS, wc.KIND_SELF_NEGLECT, wc.KIND_ROUGH_STRETCH):
+        for kind in (
+            wc.KIND_LATE_NIGHTS,
+            wc.KIND_LONG_FOCUS,
+            wc.KIND_SELF_NEGLECT,
+            wc.KIND_ROUGH_STRETCH,
+        ):
             line = wc.render_inner_life_block(kind)
             self.assertIn("never", line.lower())
 

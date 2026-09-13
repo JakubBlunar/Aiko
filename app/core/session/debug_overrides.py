@@ -84,6 +84,9 @@ KNOWN_OVERRIDES: Mapping[str, str] = MappingProxyType({
     "user_expertise_force_next": "K75 - bypass the user-expertise provider gates once.",
     "wants_force_imperative": "K52 - bypass the want imperative band once.",
     "wellbeing_concern_force_next": "Bypass the wellbeing-concern cue watermark once.",
+    "companion_activity_force_next": (
+        "Bypass the companion-activity cue cadence once."
+    ),
     # ── self-noticing (K30) ──────────────────────────────────────────
     "self_noticing_force_agreement": "K30 - bypass the agreement-streak cooldown once.",
     "self_noticing_force_flat_affect": "K30 - bypass the flat-affect cooldown once.",

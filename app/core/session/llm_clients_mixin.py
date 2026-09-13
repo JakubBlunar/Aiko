@@ -20,17 +20,20 @@ from collections.abc import Callable
 from app.llm.chat_client import ChatClient
 from app.llm.llm_gate import GatedChatClient
 from app.core.infra.settings import find_provider
+from app.core.infra.settings import LLM_ROLE_LIVE_POLICY
 from app.core.infra.settings import LLM_ROLE_MAIN_CHAT
 from app.core.infra.settings import LLM_ROLE_WORKER_DEFAULT
 from app.core.infra.settings import LLM_ROLE_WORKFLOW
 from app.core.infra.settings import LlmRoute
 from app.core.infra.settings import local_ollama_provider
 from app.core.infra.settings import transport_for_provider
+from app.llm.llm_gate import LIVE_POLICY
 from app.llm.llm_gate import LlmPriorityGate
 from app.llm.llm_gate import MAINTENANCE_WORKER
 from app.llm.ollama_client import OllamaClient
 from app.llm.llm_gate import TASK
 from app.llm.factory import build_client_for_route
+from app.llm.llm_gate import llm_resource_key
 from app.llm.llm_gate import tier_from_name
 
 
@@ -268,6 +271,7 @@ class LlmClientsMixin:
             maint_prio,
             task_prio,
         )
+        self._install_live_policy_client()
 
     def _build_workflow_client(
         self, worker_gate: "LlmPriorityGate | None", task_priority: int
@@ -328,6 +332,81 @@ class LlmClientsMixin:
             return GatedChatClient(
                 self._worker_client_inner, worker_gate, task_priority, name="task"
             )
+
+    def _live_policy_resource_key(
+        self, route: LlmRoute | None,
+    ) -> tuple[str, str, str] | None:
+        if route is None:
+            return None
+        provider = self._find_llm_provider(route.provider_id)
+        if provider is None:
+            return None
+        return llm_resource_key(
+            kind=provider.kind,
+            base_url=provider.base_url,
+            model=route.model,
+            contention_group=getattr(route, "contention_group", "") or "",
+        )
+
+    def _build_live_policy_raw_client(self) -> ChatClient | None:
+        """Dedicated transport for ``live_policy`` so ``num_ctx`` matches the route."""
+        route = self._route_or_none(LLM_ROLE_LIVE_POLICY)
+        if route is None:
+            return None
+        provider = (
+            find_provider(self._settings.llm, route.provider_id)
+            if route is not None
+            else None
+        ) or local_ollama_provider(self._settings.llm)
+        if provider.kind != "ollama":
+            return self._build_route_client(route, role=LLM_ROLE_LIVE_POLICY)
+        return OllamaClient(
+            transport_for_provider(provider, route=route),
+            base_url=provider.base_url,
+            keep_alive=provider.keep_alive,
+        )
+
+    def _install_live_policy_client(self) -> None:
+        """Wrap the Live-policy client: share the worker gate only on collision.
+
+        Distinct model (the shipped 4B vs worker 9B) => ``gate=None``.
+        Same resource key as ``worker_default`` => ``LIVE_POLICY`` tier
+        on the existing worker gate. User turns still outrank Live.
+        """
+        raw = self._build_live_policy_raw_client()
+        if raw is None:
+            self._live_policy_client = None
+            return
+        live_route = self._route_or_none(LLM_ROLE_LIVE_POLICY)
+        worker_route = self._route_or_none(LLM_ROLE_WORKER_DEFAULT)
+        live_key = self._live_policy_resource_key(live_route)
+        worker_key = self._live_policy_resource_key(worker_route)
+        gate_enabled = bool(
+            getattr(self._settings.agent, "worker_llm_gate_enabled", True)
+        )
+        share = (
+            gate_enabled
+            and live_key is not None
+            and live_key == worker_key
+            and getattr(self, "_worker_llm_gate", None) is not None
+        )
+        gate = self._worker_llm_gate if share else None
+        overrides = dict(
+            getattr(self._settings.agent, "worker_llm_priority_overrides", {}) or {}
+        )
+        prio = tier_from_name(overrides.get("live_policy", ""), LIVE_POLICY)
+        existing = getattr(self, "_live_policy_client", None)
+        if isinstance(existing, GatedChatClient):
+            existing.retarget(raw, gate, prio)
+        else:
+            self._live_policy_client = GatedChatClient(
+                raw, gate, prio, name="live_policy",
+            )
+        log.info(
+            "live-policy client: model=%s share_gate=%s",
+            (live_route.model if live_route is not None else ""),
+            "1" if share else "0",
+        )
 
     def _resolve_context_window(
         self, override: int | None, model: str,

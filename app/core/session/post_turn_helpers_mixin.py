@@ -159,11 +159,9 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
         ``turning_over`` so at most one gap cue surfaces per return. Voice
         turns never arm H21.
         """
-        # Schema v43 retired gap-based sleep inference. A return may be
-        # narrated only from a completed SleepEpisode.
-        if getattr(self, "_sleep_store", None) is not None:
-            self._pending_sleep_return_seconds = None
-            return
+        # Schema v43 prefers recorded SleepEpisode narration. C8 still
+        # arms the message-gap slot so ``_sleep_return_line`` can fire
+        # when OS idle/lock says the keyboard was actually away.
         if engagement is None:
             return
         if not bool(

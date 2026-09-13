@@ -11,9 +11,12 @@ for any moved method must patch
 ``app.core.session.proactive_presence_mixin.<symbol>`` instead."""
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
+import uuid
+from collections.abc import Callable
 from typing import Any
 
 
@@ -27,11 +30,11 @@ class ProactivePresenceMixin:
         return "Welcome back. Audio is ready."
 
     def generate_proactive_message(self) -> str | None:
-        # The new ProactiveDirector speaks directly via TTS. Returning ``None``
-        # tells LiveWorker not to also queue something itself.
+        # Silence wakes BrainLoop. The director only speaks after the
+        # free-to-speak gate, and never while Live posture is on.
         if self._sleeping_now():
             return None
-        self._proactive.notify_silence(self.session_key)
+        self._enqueue_silence_proactive("voice_silence")
         return None
 
     def _sleeping_now(self) -> bool:
@@ -53,6 +56,10 @@ class ProactivePresenceMixin:
         # to get back into "we just had a typed turn" state.
         if active and not was_active:
             self._disarm_typed_silence_timer()
+        if bool(active) != bool(was_active):
+            bump = getattr(self, "bump_live_mode_generation", None)
+            if callable(bump):
+                bump("voice_session")
 
     def _is_typed_proactive_eligible(self) -> bool:
         """Predicate handed to :class:`ProactiveDirector`.
@@ -187,7 +194,7 @@ class ProactivePresenceMixin:
         try:
             if self._sleeping_now():
                 return
-            self._proactive.notify_typed_silence(self.session_key)
+            self._enqueue_silence_proactive("typed_silence")
         except Exception:
             log.debug("notify_typed_silence raised", exc_info=True)
 
@@ -274,10 +281,15 @@ class ProactivePresenceMixin:
         window is open — when a client is connected, Aiko uses the live
         ``[[diary:...]]`` tag instead. Coerced to a non-negative int.
         """
+        previous = int(getattr(self, "_connected_clients", 0) or 0)
         try:
             self._connected_clients = max(0, int(count))
         except (TypeError, ValueError):
             self._connected_clients = 0
+        if previous <= 0 and int(self._connected_clients) >= 1:
+            bump = getattr(self, "bump_live_mode_generation", None)
+            if callable(bump):
+                bump("reconnect")
 
     def is_user_away(self) -> bool:
         """``True`` when no UI websocket client is currently connected.
@@ -317,7 +329,9 @@ class ProactivePresenceMixin:
         Does **not** call ``_touch_user_activity`` — coding-not-chatting
         must look idle to the scheduler. Toggle off drops the envelope
         and clears the live app-name cache. Titles never land in
-        ``_user_active_app`` (prompt stays app-name only).
+        ``_user_active_app`` (prompt stays app-name only). Idle and lock
+        envelopes clear the live app cache and publish a coalesced Live
+        impulse; they do not early-return before that publish.
         """
         if not bool(getattr(self._settings.agent, "activity_awareness_enabled", False)):
             self._user_active_app = None
@@ -334,9 +348,33 @@ class ProactivePresenceMixin:
             return
         if redacted is None:
             return
-        if redacted.source != "foreground":
+        self._complete_activity_pull(redacted)
+        if redacted.source == "foreground":
+            self.set_user_active_app(redacted.subject.app)
+            kind = "activity.session_changed"
+        elif redacted.source in {"idle", "lock"}:
+            self.set_user_active_app(None)
+            kind = f"activity.{redacted.source}"
+        else:
             return
-        self.set_user_active_app(redacted.subject.app)
+        publish = getattr(self, "publish_live_impulse", None)
+        if not callable(publish):
+            return
+        try:
+            publish(
+                kind=kind,
+                source="activity.ingest",
+                coalesce_key=kind,
+                privacy="local_state",
+                priority="attention",
+                ttl_ms=30_000,
+                payload={
+                    "source": redacted.source,
+                    "app": str(redacted.subject.app or ""),
+                },
+            )
+        except Exception:
+            log.debug("activity live impulse failed", exc_info=True)
 
     def activity_timeline_snapshot(self, *, limit: int = 20) -> dict[str, Any]:
         """Debug dump of the C6 collection store (MCP + tests)."""
@@ -354,6 +392,17 @@ class ProactivePresenceMixin:
             keep_days = max(0, int(getattr(memory, "activity_keep_days", 30)))
         except (TypeError, ValueError):
             keep_days = 30
+        interpretation = None
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is not None:
+            try:
+                from app.core.activity.interpretation_worker import (
+                    load_activity_interpretation,
+                )
+
+                interpretation = load_activity_interpretation(chat_db.kv_get)
+            except Exception:
+                interpretation = None
         return {
             "enabled": bool(
                 getattr(agent, "activity_awareness_enabled", False),
@@ -368,4 +417,134 @@ class ProactivePresenceMixin:
             "event_count": counts.get("events", 0),
             "session_count": counts.get("sessions", 0),
             "oldest_event_at": counts.get("oldest_event_at"),
+            "interpretation": interpretation,
         }
+
+    def add_activity_request_listener(
+        self, callback: Callable[[str], None],
+    ) -> None:
+        listeners = getattr(self, "_activity_request_listeners", None)
+        if listeners is None:
+            listeners = []
+            self._activity_request_listeners = listeners
+        if callback and callback not in listeners:
+            listeners.append(callback)
+
+    def pull_activity_for_tool(self) -> str:
+        """C7 ``get_activity`` body. Never raises."""
+        try:
+            view = self.pull_activity()
+        except Exception:
+            log.debug("pull_activity failed", exc_info=True)
+            view = {
+                "fresh": False,
+                "enabled": False,
+                "app": None,
+                "title": None,
+                "source": None,
+                "as_of_seconds": None,
+                "note": "no recent desktop activity",
+            }
+        return json.dumps(view, ensure_ascii=False)
+
+    def pull_activity(self, *, timeout_s: float | None = None) -> dict[str, Any]:
+        """Bounded live pull; last stored session on timeout."""
+        from app.core.activity.pull import (
+            PULL_TIMEOUT_SECONDS,
+            format_activity_view,
+            pick_last_session,
+        )
+
+        enabled = bool(
+            getattr(self._settings.agent, "activity_awareness_enabled", False)
+        )
+        store = getattr(self, "_activity_store", None)
+        sessions = []
+        if store is not None:
+            try:
+                sessions = store.recent_sessions(limit=8)
+            except Exception:
+                log.debug("activity pull sessions failed", exc_info=True)
+                sessions = []
+        fallback = pick_last_session(sessions)
+        if not enabled:
+            return format_activity_view(
+                session_row=fallback, fresh=False, enabled=False,
+            )
+        wait_s = (
+            PULL_TIMEOUT_SECONDS if timeout_s is None else max(0.0, float(timeout_s))
+        )
+        live = self._request_activity_snapshot(timeout_s=wait_s)
+        if live is not None:
+            return format_activity_view(
+                session_row=fallback, live=live, fresh=True, enabled=True,
+            )
+        return format_activity_view(
+            session_row=fallback, fresh=False, enabled=True,
+        )
+
+    def _request_activity_snapshot(
+        self, *, timeout_s: float,
+    ) -> Any:
+        from app.core.activity.envelope import ActivityEnvelope
+
+        request_id = uuid.uuid4().hex[:12]
+        event = threading.Event()
+        bucket: list[ActivityEnvelope] = []
+        lock = self._activity_pull_lock()
+        waiters = self._activity_pull_waiters()
+        with lock:
+            waiters[request_id] = (event, bucket)
+        self._notify_activity_request(request_id)
+        listeners = getattr(self, "_activity_request_listeners", None) or []
+        # No WS listener (tests, browser-only) → do not block the turn.
+        if timeout_s > 0 and listeners:
+            event.wait(timeout_s)
+        with lock:
+            waiters.pop(request_id, None)
+        for env in bucket:
+            if env.source == "foreground":
+                return env
+        return bucket[0] if bucket else None
+
+    def _notify_activity_request(self, request_id: str) -> None:
+        listeners = getattr(self, "_activity_request_listeners", None) or []
+        for listener in list(listeners):
+            try:
+                listener(request_id)
+            except Exception:
+                log.debug("activity request listener raised", exc_info=True)
+
+    def _complete_activity_pull(self, envelope: Any) -> None:
+        request_id = str(getattr(envelope, "request_id", None) or "").strip()
+        if not request_id:
+            extras = getattr(envelope, "extras", None) or {}
+            if isinstance(extras, dict):
+                request_id = str(extras.get("request_id") or "").strip()
+        if not request_id:
+            return
+        lock = self._activity_pull_lock()
+        waiters = self._activity_pull_waiters()
+        with lock:
+            waiter = waiters.get(request_id)
+            if waiter is None:
+                return
+            event, bucket = waiter
+            bucket.append(envelope)
+            if getattr(envelope, "source", "") == "foreground":
+                event.set()
+
+    def _activity_pull_waiters(self) -> dict[str, Any]:
+        waits = getattr(self, "_activity_pulls", None)
+        if waits is None:
+            self._activity_pulls = {}
+            waits = self._activity_pulls
+        return waits
+
+    def _activity_pull_lock(self) -> threading.Lock:
+        lock = getattr(self, "_activity_pull_mutex", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._activity_pull_mutex = lock
+        return lock
+

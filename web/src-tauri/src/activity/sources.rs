@@ -37,31 +37,8 @@ impl ActivitySource for ForegroundSource {
     }
 
     fn tick(&mut self, ctx: &TickContext<'_>) -> Option<Envelope> {
-        let mut subject = match read_foreground() {
-            Some(s) => Subject {
-                app: s.app,
-                title: s.title,
-                surface_id: s.surface_id,
-            },
-            None => Subject {
-                app: None,
-                title: None,
-                surface_id: None,
-            },
-        };
-        if let Some(app) = subject.app.as_deref() {
-            if !app_on_allowlist(app, ctx.allowlist) {
-                subject.title = None;
-            }
-        } else {
-            subject.title = None;
-        }
-        let key = format!(
-            "{}|{}|{}",
-            subject.app.as_deref().unwrap_or(""),
-            subject.surface_id.as_deref().unwrap_or(""),
-            subject.title.as_deref().unwrap_or(""),
-        );
+        let subject = current_foreground(ctx);
+        let key = foreground_key(&subject);
         if self.last_key.as_deref() == Some(key.as_str()) {
             return None;
         }
@@ -71,6 +48,16 @@ impl ActivitySource for ForegroundSource {
             Tier::Cheap,
             "focus",
             subject,
+            serde_json::json!({}),
+        ))
+    }
+
+    fn snapshot(&mut self, ctx: &TickContext<'_>) -> Option<Envelope> {
+        Some(Envelope::new(
+            "foreground",
+            Tier::Cheap,
+            "focus",
+            current_foreground(ctx),
             serde_json::json!({}),
         ))
     }
@@ -106,6 +93,38 @@ fn read_foreground() -> Option<ForegroundRead> {
     }
 }
 
+fn current_foreground(ctx: &TickContext<'_>) -> Subject {
+    let mut subject = match read_foreground() {
+        Some(s) => Subject {
+            app: s.app,
+            title: s.title,
+            surface_id: s.surface_id,
+        },
+        None => Subject {
+            app: None,
+            title: None,
+            surface_id: None,
+        },
+    };
+    if let Some(app) = subject.app.as_deref() {
+        if !app_on_allowlist(app, ctx.allowlist) {
+            subject.title = None;
+        }
+    } else {
+        subject.title = None;
+    }
+    subject
+}
+
+fn foreground_key(subject: &Subject) -> String {
+    format!(
+        "{}|{}|{}",
+        subject.app.as_deref().unwrap_or(""),
+        subject.surface_id.as_deref().unwrap_or(""),
+        subject.title.as_deref().unwrap_or(""),
+    )
+}
+
 #[derive(Default)]
 struct IdleSource {
     last_idle: Option<bool>,
@@ -131,6 +150,27 @@ impl ActivitySource for IdleSource {
         if !is_idle {
             // Return-from-idle is a foreground focus event. Only the
             // crossing *into* idle is this source's signal.
+            return None;
+        }
+        Some(Envelope::new(
+            "idle",
+            Tier::Cheap,
+            "idle",
+            Subject {
+                app: None,
+                title: None,
+                surface_id: None,
+            },
+            serde_json::json!({ "idle": true }),
+        ))
+    }
+
+    fn snapshot(&mut self, _ctx: &TickContext<'_>) -> Option<Envelope> {
+        let idle = os_idle_ms().map(|ms| ms >= IDLE_THRESHOLD_MS);
+        let Some(is_idle) = idle else {
+            return None;
+        };
+        if !is_idle {
             return None;
         }
         Some(Envelope::new(
@@ -183,6 +223,26 @@ impl ActivitySource for LockSource {
                 surface_id: None,
             },
             serde_json::json!({ "locked": locked }),
+        ))
+    }
+
+    fn snapshot(&mut self, _ctx: &TickContext<'_>) -> Option<Envelope> {
+        let Some(locked) = os_session_locked() else {
+            return None;
+        };
+        if !locked {
+            return None;
+        }
+        Some(Envelope::new(
+            "lock",
+            Tier::Cheap,
+            "lock",
+            Subject {
+                app: None,
+                title: None,
+                surface_id: None,
+            },
+            serde_json::json!({ "locked": true }),
         ))
     }
 

@@ -39,6 +39,22 @@ class AgentSettings:
     # conversation even when away from the screen) so this flag does
     # not affect it.
     proactive_typed_when_away: bool = False
+    # Live presence (Pass 1): orthogonal to ``_live_voice_session_active``.
+    # ``turn_based`` keeps today's reply-every-line Text/Speak. ``live_presence``
+    # is the third UI profile; silence must not call ProactiveDirector.
+    behavior_posture: str = "turn_based"
+    live_quiet: bool = False
+    # Visual-only gate: Live posture stays on, IdleLife still runs,
+    # but unprompted main-wake and micro-utterances no-op.
+    live_unprompted_speech: bool = True
+    live_main_wake_max_per_hour: int = 6
+    live_min_gap_after_speech_ms: int = 8000
+    live_mic_consented: bool = False
+    live_impulse_bus_enabled: bool = False
+    # Ceiling on the whole Live-policy prompt, applied before
+    # window-aware region fill. Clamped ``[2000, 24000]`` at parse.
+    # A latency test is one JSON knob.
+    live_policy_prompt_max_tokens: int = 12000
     # When ``True`` a typed-mode proactive line is ALSO spoken via TTS
     # (same enqueue path as voice-mode proactive). Default ``False``:
     # typed proactive is text-only because the nudge can land minutes
@@ -1375,6 +1391,11 @@ class AgentSettings:
     # silence all auto-sprinkle behaviour; the LLM can still emit
     # ``[[breath]]`` / ``[[chuckle]]`` etc. inline regardless.
     earcon_auto_sprinkle: bool = True
+    # H6: play a low-volume continuer (``mm`` / ``chuckle``) on a
+    # BackchannelGate fire while the user is speaking. Independent of
+    # ``audio.earcons_enabled`` (stage-direction tags) so a user can
+    # keep [[laugh]] and still mute listening-window mm-hms.
+    backchannel_audio_enabled: bool = True
     # Layer 1c (expressive speech): opt-in gate for runtime per-reaction
     # ``model.temp`` mutation. Pocket-TTS is sensitive to temperature
     # excursions away from its tuned baseline -- empirically a delta

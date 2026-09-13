@@ -64,6 +64,19 @@ class LooksLikeOvernightTests(unittest.TestCase):
         self.assertFalse(sr.looks_like_overnight("nope", 8))  # type: ignore[arg-type]
 
 
+class OsIdleAllowsSleepReturnTests(unittest.TestCase):
+    def test_keyboard_busy_blocks(self) -> None:
+        self.assertFalse(sr.os_idle_allows_sleep_return("active"))
+
+    def test_idle_and_lock_allow(self) -> None:
+        self.assertTrue(sr.os_idle_allows_sleep_return("idle"))
+        self.assertTrue(sr.os_idle_allows_sleep_return("locked"))
+
+    def test_missing_does_not_invent(self) -> None:
+        self.assertFalse(sr.os_idle_allows_sleep_return("missing"))
+        self.assertFalse(sr.os_idle_allows_sleep_return(""))
+
+
 # ── Pure module: sleep_spot_phrase ─────────────────────────────────────
 
 
@@ -180,11 +193,13 @@ class _Host(InnerLifePart2Mixin, CuePoolMixin):
         memory_settings: SimpleNamespace | None = None,
         dreams: list[_StubMemory] | None = None,
         location_slug: str | None = "beanbag",
+        activity_store: Any | None = None,
     ) -> None:
         self._settings = SimpleNamespace(agent=agent_settings or _agent())
         self._memory_settings = memory_settings or _mem_settings()
         self._memory_store = _FakeMemoryStore(dreams or [])
         self._world_store = _FakeWorldStore(location_slug)
+        self._activity_store = activity_store
         self._pending_sleep_return_seconds = pending_seconds
         self.debug_overrides.arm("sleep_return_force_next", force_next)
         self._gap_cue_surfaced = gap_cue_surfaced
@@ -277,6 +292,51 @@ class ProviderTests(unittest.TestCase):
         out = host._render_sleep_return_block()
         self.assertEqual(out, "")
         self.assertIsNone(host._last_sleep_return)
+
+
+class _FakeActivityStore:
+    def __init__(self, source: str) -> None:
+        self.source = source
+
+    def last_event(self) -> dict[str, str]:
+        return {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "source": self.source,
+            "app": "Cursor",
+        }
+
+    def recent_sessions(self, *, limit: int = 20) -> list[dict[str, object]]:
+        del limit
+        return []
+
+
+class C8OsIdleQualifierTests(unittest.TestCase):
+    def test_active_keyboard_does_not_fire_gap_cue(self) -> None:
+        host = _Host(
+            pending_seconds=10 * 3600.0,
+            activity_store=_FakeActivityStore("foreground"),
+        )
+        self.assertEqual(host._render_sleep_return_block(), "")
+        self.assertEqual(host._pending_sleep_return_seconds, 10 * 3600.0)
+        self.assertFalse(host._gap_cue_surfaced)
+
+    def test_os_idle_can_fire_gap_cue(self) -> None:
+        host = _Host(
+            pending_seconds=10 * 3600.0,
+            activity_store=_FakeActivityStore("idle"),
+        )
+        out = host._render_sleep_return_block()
+        self.assertIn("dozed off", out)
+        self.assertTrue(host._gap_cue_surfaced)
+        self.assertIsNone(host._pending_sleep_return_seconds)
+
+    def test_lock_is_as_strong_as_idle(self) -> None:
+        host = _Host(
+            pending_seconds=10 * 3600.0,
+            activity_store=_FakeActivityStore("lock"),
+        )
+        out = host._render_sleep_return_block()
+        self.assertIn("dozed off", out)
 
 
 if __name__ == "__main__":

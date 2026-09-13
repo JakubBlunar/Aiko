@@ -777,6 +777,7 @@ class SpeakingWorkersInitMixin:
             aspiration_momentum=self._render_aspiration_momentum_block,
             tension=self._render_tension_block,
             wellbeing_concern=self._render_wellbeing_concern_block,
+            companion_activity=self._render_companion_activity_block,
             shared_ritual=self._render_shared_ritual_block,
             upcoming_horizon=self._render_upcoming_horizon_block,
             mood_shell=self._render_mood_shell_block,
@@ -792,6 +793,7 @@ class SpeakingWorkersInitMixin:
             idle_seeds=self._render_idle_seed_block,
             wants=self._render_wants_block,
             initiative=self._render_initiative_block,
+            live_talk_about=self._render_live_talk_about_block,
             thread_ownership=self._render_thread_ownership_block,
             topic_appetite=self._render_topic_appetite_block,
             stance=self._render_stance_block,
@@ -3388,6 +3390,7 @@ class SpeakingWorkersInitMixin:
             ),
         )
         self._tool_event_listeners: list[Callable[[str, dict[str, Any]], None]] = []
+        self._activity_request_listeners: list[Callable[[str], None]] = []
         self._tool_registry = None
         try:
             self.rebuild_tool_registry()

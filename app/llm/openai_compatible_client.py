@@ -28,7 +28,9 @@ Quirks handled here:
   :func:`_warn_if_truncated`).
 - ``response_format={"type":"json_object"}`` is set when
   ``format_json=True`` so background workers (summary, extractor) get
-  JSON-shaped output on providers that respect it. Providers that
+  JSON-shaped output on providers that respect it. When
+  ``json_schema`` is passed, that becomes ``response_format.json_schema``
+  (or ``text.format`` on the Responses surface). Providers that
   don't (looking at you, Groq with some models) will just return
   text and the existing parsers tolerate that.
 - Extra headers (``HTTP-Referer`` / ``X-Title`` for OpenRouter, etc.)
@@ -735,6 +737,49 @@ def _iter_sse_data_lines(
             yield value
 
 
+def _apply_json_output_format(
+    payload: dict[str, Any],
+    *,
+    format_json: bool,
+    json_schema: dict[str, Any] | None,
+    responses: bool,
+) -> None:
+    """Set structured-output / JSON-mode fields on a request body.
+
+    ``json_schema`` wins over ``format_json``. Chat Completions uses
+    ``response_format``; the Responses surface uses ``text.format``.
+    """
+    if json_schema:
+        name = str(json_schema.get("title") or "structured_output")[:64] or "structured_output"
+        if responses:
+            payload["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": name,
+                    "schema": json_schema,
+                    "strict": True,
+                }
+            }
+        else:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": name,
+                    "schema": json_schema,
+                    "strict": True,
+                },
+            }
+        return
+    if format_json:
+        if responses:
+            payload["text"] = {"format": {"type": "json_object"}}
+        else:
+            # response_format is OpenAI-only; Gemini's OpenAI-compat
+            # layer accepts it but enforces it weakly. Providers that
+            # don't understand it ignore the field.
+            payload["response_format"] = {"type": "json_object"}
+
+
 class OpenAICompatibleClient:
     """Chat client for OpenAI-shape ``/v1/chat/completions`` endpoints.
 
@@ -909,6 +954,7 @@ class OpenAICompatibleClient:
         tools: list[dict[str, Any]] | None,
         stream: bool,
         format_json: bool,
+        json_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Assemble the JSON body for ``/v1/chat/completions``.
 
@@ -1059,11 +1105,9 @@ class OpenAICompatibleClient:
                 payload["temperature"] = max(0.0, min(2.0, float(temp)))
         if tools:
             payload["tools"] = tools
-        if format_json:
-            # response_format is OpenAI-only; Gemini's OpenAI-compat
-            # layer accepts it but enforces it weakly. Providers that
-            # don't understand it ignore the field.
-            payload["response_format"] = {"type": "json_object"}
+        _apply_json_output_format(
+            payload, format_json=format_json, json_schema=json_schema, responses=False,
+        )
         if not self._store and _host_is_openai(self._base_url):
             # Only OpenAI's own host: this endpoint is served by a dozen
             # compatible clones, an unknown field is a 400 on the strict
@@ -1152,6 +1196,7 @@ class OpenAICompatibleClient:
         stream: bool,
         format_json: bool,
         tool_choice: "str | dict[str, Any] | None",
+        json_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Assemble a ``POST /v1/responses`` body.
 
@@ -1228,8 +1273,9 @@ class OpenAICompatibleClient:
             payload["tools"] = _tools_to_responses(tools)
             if tool_choice is not None:
                 payload["tool_choice"] = _tool_choice_to_responses(tool_choice)
-        if format_json:
-            payload["text"] = {"format": {"type": "json_object"}}
+        _apply_json_output_format(
+            payload, format_json=format_json, json_schema=json_schema, responses=True,
+        )
         # Data retention. This endpoint defaults to ``store=true``, which
         # keeps the full request — persona, retrieved memories, RAG
         # chunks, transcript — as application state for 30 days and
@@ -1361,6 +1407,7 @@ class OpenAICompatibleClient:
         timeout: float,
         surface: str,
         think: bool,
+        json_schema: dict[str, Any] | None = None,
     ) -> tuple[str, list[ChatToolCall], ChatUsage, list[dict[str, Any]]]:
         """Non-streaming ``POST /v1/responses``.
 
@@ -1376,6 +1423,7 @@ class OpenAICompatibleClient:
             stream=False,
             format_json=format_json,
             tool_choice=tool_choice,
+            json_schema=json_schema,
         )
         t0 = time.monotonic()
         try:
@@ -1830,6 +1878,7 @@ class OpenAICompatibleClient:
         options: dict[str, object] | None = None,
         timeout_seconds: float | None = None,
         format_json: bool = True,
+        json_schema: dict[str, Any] | None = None,
         think: bool = False,
         keep_alive: str | None = None,
         surface: str = "chat_json",
@@ -1858,6 +1907,7 @@ class OpenAICompatibleClient:
                 timeout=effective_timeout,
                 surface=surface,
                 think=think,
+                json_schema=json_schema,
             )
             return content, usage
         payload = self._build_payload(
@@ -1867,6 +1917,7 @@ class OpenAICompatibleClient:
             tools=None,
             stream=False,
             format_json=format_json,
+            json_schema=json_schema,
         )
         t0 = time.monotonic()
         try:

@@ -109,6 +109,10 @@ class ListenersMetricsMixin:
                 self._scheduler.on_tts_state("start")
             except Exception:
                 log.debug("scheduler.on_tts_state(start) failed", exc_info=True)
+            try:
+                self.mark_playback_pending()
+            except Exception:
+                log.debug("mark_playback_pending failed", exc_info=True)
         elif event == "end":
             # Queue is drained for this turn. Compute total tts_ms (LLM done
             # → audio fully played) and back-fill the last metrics record.

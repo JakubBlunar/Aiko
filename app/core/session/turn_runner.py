@@ -535,6 +535,7 @@ class TurnRunner:
         on_touch: TouchCallback | None = None,
         stop_requested: StopPredicate | None = None,
         resume_user_message_id: int | None = None,
+        allow_empty_user: bool = False,
     ) -> TurnResult:
         # Allocate a short-lived correlation id so every nested log line
         # carries `turn=…`. Cleared in the finally below regardless of how
@@ -568,6 +569,7 @@ class TurnRunner:
                 on_touch=on_touch,
                 stop_requested=stop_requested,
                 resume_user_message_id=resume_user_message_id,
+                allow_empty_user=allow_empty_user,
             )
         finally:
             if self._embedder is not None:
@@ -593,10 +595,11 @@ class TurnRunner:
         on_touch: TouchCallback | None,
         stop_requested: StopPredicate | None,
         resume_user_message_id: int | None,
+        allow_empty_user: bool = False,
     ) -> TurnResult:
         self._stop.clear()
         cleaned_user = sanitize_user_text(user_text)
-        if not cleaned_user:
+        if not cleaned_user and not allow_empty_user:
             return TurnResult(text="", reaction="neutral")
 
         # ``resume_user_message_id`` set: caller (voice merge in
@@ -604,7 +607,9 @@ class TurnRunner:
         # existing user row in the chat DB with the merged text, so we
         # must NOT insert a duplicate ``role="user"`` row here. The id
         # is captured purely for the structured log line below.
-        if resume_user_message_id is None:
+        # Live main-wake passes ``allow_empty_user`` and must not mint a
+        # fake user line.
+        if resume_user_message_id is None and cleaned_user:
             self._db.add_message(
                 session_id=session_key,
                 role="user",

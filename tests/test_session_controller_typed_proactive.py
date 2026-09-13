@@ -30,6 +30,15 @@ class _AgentStub:
     proactive_silence_seconds_typed: float = 0.05
     activity_awareness_enabled: bool = False
     proactive_typed_when_away: bool = False
+    behavior_posture: str = "turn_based"
+
+
+class _LoopStub:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    def enqueue(self, event: object) -> None:
+        self.events.append(event)
 
 
 @dataclass
@@ -73,6 +82,8 @@ def _make_controller(
     controller._state = type("S", (), {"session_type": "chat"})()  # type: ignore[attr-defined]
     director = _DirectorStub()
     controller._proactive = director  # type: ignore[attr-defined]
+    controller._brain_loop = _LoopStub()  # type: ignore[attr-defined]
+    controller._live_mode_generation = 0  # type: ignore[attr-defined]
     # ``session_key`` is a property reading ``_user_id`` + ``_session_id``;
     # set the inputs rather than the computed value.
     controller._user_id = "u1"  # type: ignore[attr-defined]
@@ -90,11 +101,14 @@ def _wait_for(predicate, *, timeout: float = 2.0) -> bool:
 
 
 class TypedSilenceTimerTests(unittest.TestCase):
-    def test_arm_then_fire_calls_director(self) -> None:
+    def test_arm_then_fire_enqueues_proactive_event(self) -> None:
         controller, director = _make_controller(silence=0.05)
         controller._arm_typed_silence_timer()
-        self.assertTrue(_wait_for(lambda: bool(director.calls)))
-        self.assertEqual(director.calls, ["u1:s1"])
+        loop = controller._brain_loop
+        self.assertTrue(_wait_for(lambda: bool(loop.events)))
+        self.assertEqual(director.calls, [])
+        event = loop.events[0]
+        self.assertEqual(event.source, "typed_silence")
 
     def test_disarm_cancels_pending_timer(self) -> None:
         controller, director = _make_controller(silence=0.20)
@@ -112,9 +126,10 @@ class TypedSilenceTimerTests(unittest.TestCase):
         controller._arm_typed_silence_timer()
         second_timer = controller._typed_silence_timer
         self.assertIsNot(first_timer, second_timer)
-        self.assertTrue(_wait_for(lambda: bool(director.calls), timeout=1.0))
-        # Only one notify regardless of the two arms.
-        self.assertEqual(len(director.calls), 1)
+        self.assertTrue(_wait_for(lambda: bool(controller._brain_loop.events), timeout=1.0))
+        # Only one enqueue regardless of the two arms.
+        self.assertEqual(len(controller._brain_loop.events), 1)
+        self.assertEqual(director.calls, [])
 
     def test_typed_disabled_skips_arm(self) -> None:
         controller, director = _make_controller(typed_enabled=False)
@@ -169,7 +184,8 @@ class PresenceGateTests(unittest.TestCase):
         # Now come back. The remaining budget should be ~0.20, so the
         # next fire happens within ~0.30 s.
         controller.set_user_present(True)
-        self.assertTrue(_wait_for(lambda: bool(director.calls), timeout=1.0))
+        self.assertTrue(_wait_for(lambda: bool(controller._brain_loop.events), timeout=1.0))
+        self.assertEqual(director.calls, [])
 
     def test_voice_start_disarms_typed_timer(self) -> None:
         controller, director = _make_controller(silence=0.30)

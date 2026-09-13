@@ -17,8 +17,8 @@ def register(mcp, session: "SessionController") -> None:
     def get_activity_timeline(limit: int = 20) -> str:
         """C6 — dump recent activity sessions and the last envelope.
 
-        Collection only: what was stored after redaction. Does not
-        interpret. ``registered_sources`` is the Python handler set
+        Collection plus the Level-2 kv reading when one exists (no
+        titles). ``registered_sources`` is the Python handler set
         (mirrors the Rust cheap sources). Unknown sources never persist.
         """
         try:

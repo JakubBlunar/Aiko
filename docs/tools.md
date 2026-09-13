@@ -25,6 +25,7 @@ For things she can't just know:
 | `recall_self_history` | Walks how a belief *changed* — eras of formed / replaced / faded / revived / held-all-along, each with the reason recorded at the time. Returns `thin_record` rather than improvising when the trail is too sparse. |
 | `recall_hypotheses` | Lists what she is still **unsure** about: open guesses with a credence, and an `origin` marking whether she derived each from something she noticed (`grounded`) or invented it outright (`invented`). See [`hypotheses.md`](hypotheses.md). |
 | `web_search` | Web results, fetched **synchronously inside the turn** so she can answer from them in the same reply. See [Synchronous web search](#synchronous-web-search-d3) below. |
+| `get_activity` | What is on the machine right now — foreground app, and a window title only when that app is allowlisted. Live sample when the desktop collector answers within ~250 ms; otherwise the last stored session and how stale it is. Never a screen recording. Gated by `tools.activity`. Independent of `agent.activity_awareness_enabled` for registration — the tool itself reports when awareness is off. |
 
 ## Synchronous web search (D3)
 

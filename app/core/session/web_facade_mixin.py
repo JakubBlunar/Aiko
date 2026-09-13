@@ -123,6 +123,23 @@ class WebFacadeMixin:
         except Exception:
             log.debug("persist earcons override failed", exc_info=True)
 
+    def backchannel_audio_enabled(self) -> bool:
+        agent = getattr(getattr(self, "_settings", None), "agent", None)
+        return bool(getattr(agent, "backchannel_audio_enabled", True))
+
+    def set_backchannel_audio_enabled(self, enabled: bool) -> None:
+        """Toggle H6 continuer earcons and persist the override."""
+        enabled = bool(enabled)
+        agent = getattr(getattr(self, "_settings", None), "agent", None)
+        if agent is not None:
+            agent.backchannel_audio_enabled = enabled
+        try:
+            persist_user_overrides(
+                {"agent": {"backchannel_audio_enabled": enabled}},
+            )
+        except Exception:
+            log.debug("persist backchannel audio override failed", exc_info=True)
+
     def set_proactive_runtime(
         self,
         *,

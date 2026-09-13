@@ -87,6 +87,7 @@ class TestSchemaCreation(unittest.TestCase):
                 "consolidator_state",
                 "activity_events",
                 "activity_sessions",
+                "live_experience_journal",
             ):
                 self.assertIn(expected, tables)
 

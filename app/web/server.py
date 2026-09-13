@@ -44,9 +44,15 @@ from app.core.infra.settings import (
     persist_user_overrides,
 )
 from app.web import audio_frames as _frames
+from app.web.ws_live_commands import (
+    client_owns_live_impulses,
+    handle_live_ws_command,
+    live_impulse_owner_id,
+)
 
 
 log = logging.getLogger("app.web.server")
+live_log = logging.getLogger("app.live")
 
 
 def _classify_test_error(exc: BaseException) -> tuple[str, str]:
@@ -183,6 +189,7 @@ class _Hub:
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._voice_owner_id: str | None = None
+        self._last_live_impulse_owner: str | None = None
         # Single elected "audio owner" — the one client that actually
         # plays TTS / earcon PCM. The desktop shell keeps the persona
         # window's webview alive-but-hidden in the background (see
@@ -395,6 +402,7 @@ class _Hub:
                 new_owner,
                 n_clients,
             )
+            self._maybe_log_live_impulse_owner(reason="audio_elect")
         return changed, new_owner
 
     @property
@@ -477,15 +485,36 @@ class _Hub:
         with self._lock:
             previous = self._voice_owner_id
             self._voice_owner_id = client_id
-            return True, previous
+        if previous != client_id:
+            self._maybe_log_live_impulse_owner(reason="voice_claim")
+        return True, previous
+
+    def _maybe_log_live_impulse_owner(self, *, reason: str) -> None:
+        owner = live_impulse_owner_id(self)
+        if owner == self._last_live_impulse_owner:
+            return
+        previous = self._last_live_impulse_owner
+        self._last_live_impulse_owner = owner
+        live_log.info(
+            "live owner: voice=%s audio=%s impulse=%s previous=%s reason=%s",
+            (self.voice_owner_id or "-")[:8],
+            (self.audio_owner_id or "-")[:8],
+            (owner or "-")[:8],
+            (previous or "-")[:8],
+            reason,
+        )
 
     def release_voice(self, client_id: str) -> bool:
         """Release the lock if ``client_id`` is the current owner."""
         with self._lock:
             if self._voice_owner_id == client_id:
                 self._voice_owner_id = None
-                return True
-            return False
+                released = True
+            else:
+                released = False
+        if released:
+            self._maybe_log_live_impulse_owner(reason="voice_release")
+        return released
 
     def _schedule(self, coro: Any) -> None:
         """Submit ``coro`` onto the hub's asyncio loop.
@@ -599,6 +628,8 @@ def create_web_app(session: "SessionController") -> FastAPI:
             role = "assistant"
             if "proactive" in lowered:
                 kind = "proactive"
+            elif "live" in lowered:
+                kind = "live_micro"
         else:
             role = "system"
         payload: dict[str, Any] = {
@@ -741,6 +772,17 @@ def create_web_app(session: "SessionController") -> FastAPI:
         session.add_mood_state_listener(_on_mood_state)
     except Exception:
         log.debug("mood state listener subscription failed", exc_info=True)
+
+    def _on_live_embodiment(payload: dict[str, Any]) -> None:
+        try:
+            hub.broadcast(dict(payload))
+        except Exception:
+            log.debug("live embodiment broadcast failed", exc_info=True)
+
+    try:
+        session.add_live_embodiment_listener(_on_live_embodiment)
+    except Exception:
+        log.debug("live embodiment listener subscription failed", exc_info=True)
     try:
         session.add_backchannel_listener(_on_backchannel)
     except Exception:
@@ -819,6 +861,22 @@ def create_web_app(session: "SessionController") -> FastAPI:
         session.add_tool_event_listener(_on_tool_event)
     except Exception:
         log.debug("tool event listener subscription failed", exc_info=True)
+
+    def _on_activity_request(request_id: str) -> None:
+        # C7: JS is a dumb pipe. The sample comes back on user_activity
+        # with request_id set; never poll OS APIs on this thread.
+        try:
+            hub.broadcast({
+                "type": "activity_request",
+                "request_id": str(request_id),
+            })
+        except Exception:
+            log.debug("activity_request broadcast failed", exc_info=True)
+
+    try:
+        session.add_activity_request_listener(_on_activity_request)
+    except Exception:
+        log.debug("activity request listener subscription failed", exc_info=True)
 
     def _on_avatar_settings(settings_snapshot: dict[str, Any]) -> None:
         # Inline the resolved outfit + circadian period so the
@@ -1115,6 +1173,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 # connect (e.g. sleepy at 2am) without waiting for a turn.
                 "vitality": session.vitality_snapshot(),
                 "sleep": session.sleep_snapshot(),
+                "live_embodiment": session.live_embodiment_payload(),
                 "identity": {
                     "user_display_name": (
                         session.settings.assistant.user_display_name or ""
@@ -1162,6 +1221,31 @@ def create_web_app(session: "SessionController") -> FastAPI:
                             session.settings.agent,
                             "persona_task_banner_enabled",
                             True,
+                        ),
+                    ),
+                    "behavior_posture": str(
+                        getattr(
+                            session.settings.agent,
+                            "behavior_posture",
+                            "turn_based",
+                        )
+                        or "turn_based",
+                    ),
+                    "live_quiet": bool(
+                        getattr(session.settings.agent, "live_quiet", False),
+                    ),
+                    "live_unprompted_speech": bool(
+                        getattr(
+                            session.settings.agent,
+                            "live_unprompted_speech",
+                            True,
+                        ),
+                    ),
+                    "live_mic_consented": bool(
+                        getattr(
+                            session.settings.agent,
+                            "live_mic_consented",
+                            False,
                         ),
                     ),
                 },
@@ -1253,6 +1337,11 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     continue
 
                 msg_type = str(msg.get("type") or "").lower()
+
+                if handle_live_ws_command(
+                    session, msg_type, msg, client_id=client_id, hub=hub,
+                ):
+                    continue
 
                 if msg_type == "chat":
                     text = str(msg.get("text") or "").strip()
@@ -1396,7 +1485,14 @@ def create_web_app(session: "SessionController") -> FastAPI:
                     # ``_touch_user_activity``: coding-not-chatting
                     # must look idle to the scheduler. Server-side
                     # gate drops samples when the privacy toggle is
-                    # off.
+                    # off. Non-owner windows do not publish Live
+                    # activity impulses; presence still updates.
+                    if not client_owns_live_impulses(hub, client_id):
+                        log.debug(
+                            "live activity dropped: non-owner client=%s",
+                            client_id[:8],
+                        )
+                        continue
                     envelope = msg.get("envelope")
                     if isinstance(envelope, dict):
                         try:

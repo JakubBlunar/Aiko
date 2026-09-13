@@ -3,9 +3,8 @@
  *
  * Priority pipeline (highest first):
  *
- *   0. **Sleep** (``sleepStatus === "asleep"``): no cursor follow and no
- *      saccades — the head eases to a gentle resting droop. A sleeping
- *      Aiko does not track the mouse.
+ *   0. **Sleep** (asleep / winding_down / woken): no cursor follow and
+ *      no saccades — the head eases to a gentle resting droop.
  *
  *   1. **Conversation lock** (``listening`` / ``transcribing`` /
  *      ``speaking``): centred X with slight upward bias so the user
@@ -21,12 +20,14 @@
  *   3. **Thinking drift**: slow random wander while the LLM is
  *      composing (no TTS playing yet).
  *
- *   4. **Idle break**: window unfocused OR cursor stopped >
- *      ``IDLE_BREAK_MS`` — ease the current target back to centre.
- *      Saccades + the focusController's own velocity smoothing keep
- *      her alive even at rest.
+ *   4. **Held Live gaze** (shared activity / rest / window class):
+ *      ignore cursor jitter so a minor mouse move does not break a
+ *      held commitment. Conversation lock still outranks this.
  *
- *   5. **Cursor follow** (default): track normalised mouse offset,
+ *   5. **Idle break**: window unfocused OR cursor stopped >
+ *      ``IDLE_BREAK_MS`` — ease the current target back to centre.
+ *
+ *   6. **Cursor follow** (default): track normalised mouse offset,
  *      clamped to a comfortable range so the rig saturates near the
  *      bounds and never feels like she's straining.
  *
@@ -43,6 +44,7 @@
  * so passing values through is safe even on minimal rigs.
  */
 import { clamp } from "../math";
+import { gazeFocusForClass, SLEEP_DEGRADE, WORLD_GAZE } from "../behavior/resolver";
 import type {
   AvatarChannel,
   ChannelDeps,
@@ -138,7 +140,17 @@ export class GazeChannel implements AvatarChannel {
     // Asleep: no cursor follow, no conversation lock, no saccades. Ease
     // the head to a gentle resting droop so she reads as sleeping rather
     // than staring at the screen.
-    const isSleeping = snap.sleepStatus === "asleep";
+    const isSleeping = SLEEP_DEGRADE.has(snap.sleepStatus ?? "awake");
+    const livePlan = snap.liveEmbodiment ?? null;
+    const worldGaze = WORLD_GAZE[(snap.worldActivity ?? "").toLowerCase()];
+    const gazeClass = livePlan?.gaze_class || worldGaze || "";
+    const holdLiveGaze =
+      !isSleeping
+      && (
+        gazeClass === "rest"
+        || gazeClass === "window"
+        || snap.liveAttentionTarget === "shared_activity"
+      );
 
     if (isSleeping) {
       const rate = dt / SLEEP_REST_TIME_CONSTANT_S;
@@ -157,6 +169,13 @@ export class GazeChannel implements AvatarChannel {
       const t = now / 1000;
       this._target.x = 0.35 * Math.sin(t * 0.6);
       this._target.y = 0.18 * Math.cos(t * 0.43) + 0.05;
+    } else if (holdLiveGaze) {
+      const focus = gazeFocusForClass(
+        gazeClass === "window" ? "window" : gazeClass || "rest",
+      );
+      const held = focus === "cursor" ? { x: 0, y: 0 } : focus;
+      this._target.x = held.x;
+      this._target.y = held.y;
     } else if (isIdle) {
       this._target.x *= IDLE_DECAY;
       this._target.y *= IDLE_DECAY;

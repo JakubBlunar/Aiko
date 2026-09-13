@@ -68,6 +68,8 @@ class LiveSession:
         self._last_audio_emit = 0.0
         # Activity / silence tracking for proactive nudges.
         self._last_activity_monotonic = 0.0
+        self._overlap_barge = threading.Event()
+        self._overlap_speech_ms = 0.0
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -164,6 +166,8 @@ class LiveSession:
                         )
 
                 self._processing.set()
+                self._overlap_barge.clear()
+                self._overlap_speech_ms = 0.0
                 try:
                     turn = self._session.process_live_capture(
                         wav_path=wav_path,
@@ -240,6 +244,7 @@ class LiveSession:
         last_error_message = ""
         while not self._stop_requested:
             if self._processing.is_set():
+                self._tick_overlap_watch()
                 time.sleep(0.05)
                 continue
             with self._pending_lock:
@@ -313,19 +318,72 @@ class LiveSession:
         self._last_activity_monotonic = time.monotonic()
 
     def _wait_for_tts_drain(self) -> None:
-        # Up to ~30s; bail early if a stop was requested.
+        # Wait until the *client* says the speaker is quiet, not until
+        # the server finished sending PCM. Cap at ~30s; bail early on stop.
+        try:
+            if self._session.is_tts_playing():
+                mark = getattr(self._session, "mark_playback_pending", None)
+                if callable(mark):
+                    mark()
+        except Exception:
+            pass
         for _ in range(600):  # 600 * 0.05s = 30s
             if self._stop_requested:
                 return
             try:
-                if not self._session.is_tts_playing():
+                drained = getattr(self._session, "is_playback_drained", None)
+                if callable(drained) and drained():
+                    return
+                if not callable(drained) and not self._session.is_tts_playing():
                     return
             except Exception:
                 return
             time.sleep(0.05)
 
+    def _tick_overlap_watch(self) -> None:
+        """PCM-only barge-in while transcribe/LLM holds the capture loop."""
+        try:
+            if not self._session.barge_in_enabled():
+                self._overlap_speech_ms = 0.0
+                return
+        except Exception:
+            return
+        try:
+            level_fn = getattr(self._session, "mic_last_level", None)
+            level = float(level_fn()) if callable(level_fn) else 0.0
+        except Exception:
+            level = 0.0
+        threshold = 0.02
+        try:
+            threshold = max(
+                0.004,
+                float(self._session.vad_level_threshold) * 0.4,
+            )
+        except Exception:
+            pass
+        if level >= threshold:
+            self._overlap_speech_ms += 50.0
+        else:
+            self._overlap_speech_ms = 0.0
+        if self._overlap_speech_ms < self._barge_in_min_speech_ms():
+            return
+        self._overlap_barge.set()
+        self._overlap_speech_ms = 0.0
+        try:
+            self._session.stop_tts()
+        except Exception:
+            log.debug("overlap barge-in stop_tts failed", exc_info=True)
+        abort = getattr(self._session, "request_turn_stop", None)
+        if callable(abort):
+            try:
+                abort()
+            except Exception:
+                log.debug("overlap barge-in request_stop failed", exc_info=True)
+
     def _is_turn_aborted(self) -> bool:
         if self._stop_requested:
+            return True
+        if self._overlap_barge.is_set():
             return True
         # Barge-in: if a fresh phrase arrived while Aiko was responding,
         # abort the current stream so we can react to the new input.
@@ -352,6 +410,12 @@ class LiveSession:
 
     def _on_audio_level(self, level: float) -> None:
         now = time.monotonic()
+        note = getattr(self._session, "note_mic_rms", None)
+        if callable(note):
+            try:
+                note(level)
+            except Exception:
+                pass
         if now - self._last_audio_emit < _AUDIO_LEVEL_MIN_INTERVAL_S:
             return
         self._last_audio_emit = now

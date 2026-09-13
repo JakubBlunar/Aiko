@@ -5,6 +5,27 @@ from typing import Any
 from app.core.infra.agent_settings import AgentSettings
 
 
+def clamp_live_main_wake_max_per_hour(raw: Any) -> int:
+    try:
+        return max(0, min(30, int(raw)))
+    except (TypeError, ValueError):
+        return 6
+
+
+def clamp_live_min_gap_after_speech_ms(raw: Any) -> int:
+    try:
+        return max(0, min(60_000, int(raw)))
+    except (TypeError, ValueError):
+        return 8000
+
+
+def _parse_behavior_posture(raw: Any) -> str:
+    value = str(raw or "turn_based").strip().lower()
+    if value in ("turn_based", "live_presence"):
+        return value
+    return "turn_based"
+
+
 def _parse_title_allowlist(raw: Any) -> list[str]:
     """Positive app-name allowlist. Empty / garbage → no titles stored."""
     if not isinstance(raw, (list, tuple)):
@@ -57,6 +78,32 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             ),
             proactive_typed_when_away=bool(
                 agent_raw.get("proactive_typed_when_away", False),
+            ),
+            behavior_posture=_parse_behavior_posture(
+                agent_raw.get("behavior_posture"),
+            ),
+            live_quiet=bool(agent_raw.get("live_quiet", False)),
+            live_unprompted_speech=bool(
+                agent_raw.get("live_unprompted_speech", True),
+            ),
+            live_main_wake_max_per_hour=clamp_live_main_wake_max_per_hour(
+                agent_raw.get("live_main_wake_max_per_hour", 6),
+            ),
+            live_min_gap_after_speech_ms=clamp_live_min_gap_after_speech_ms(
+                agent_raw.get("live_min_gap_after_speech_ms", 8000),
+            ),
+            live_mic_consented=bool(
+                agent_raw.get("live_mic_consented", False),
+            ),
+            live_impulse_bus_enabled=bool(
+                agent_raw.get("live_impulse_bus_enabled", False),
+            ),
+            live_policy_prompt_max_tokens=max(
+                2000,
+                min(
+                    24000,
+                    int(agent_raw.get("live_policy_prompt_max_tokens", 12000)),
+                ),
             ),
             sleep_enabled=bool(agent_raw.get("sleep_enabled", True)),
             sleep_naps_enabled=bool(agent_raw.get("sleep_naps_enabled", True)),
@@ -939,6 +986,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             cadence_enabled=bool(agent_raw.get("cadence_enabled", True)),
             earcon_auto_sprinkle=bool(
                 agent_raw.get("earcon_auto_sprinkle", True),
+            ),
+            backchannel_audio_enabled=bool(
+                agent_raw.get("backchannel_audio_enabled", True),
             ),
             tts_runtime_temp_enabled=bool(
                 agent_raw.get("tts_runtime_temp_enabled", False),

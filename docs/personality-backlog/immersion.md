@@ -21,7 +21,7 @@ now holds **only the open work**.
 | H7  | Listen while speaking (soften half-duplex)    | ❌ open |
 | H8  | Topic mood-origin memory                      | ✅ shipped — [immersion.md](shipped/immersion.md#h8-topic-mood-origin-memory) |
 | H9  | Aiko's diary                                  | ✅ shipped — [immersion.md](shipped/immersion.md#h9-aikos-diary--a-readable-window-into-her-inner-life) |
-| H10 | Autonomous idle-life on the avatar            | ❌ open (no `IdleLifeChannel` yet — the data moves, the rig doesn't act it out) |
+| H10 | Autonomous idle-life on the avatar            | ✅ shipped Pass 5 — [`IdleLifeChannel.ts`](../../web/src/live2d/channels/IdleLifeChannel.ts) |
 | H11 | Real-world co-location — weather + season     | ✅ shipped — [immersion.md](shipped/immersion.md#h11-real-world-co-location--weather--season-sync) |
 | H12 | Aiko-initiated intentional gifts              | ❌ open |
 | H13–H22 | Idle-life / world batch                   | ✅ shipped — [immersion.md](shipped/immersion.md) |
@@ -56,6 +56,11 @@ right after `world_block` and dropped in `aggressive` mode,
 
 ## H6. Audible backchannels — "mm-hm" while the user speaks
 
+**Status: shipped (Live Pass 8).** `BackchannelGate` fires a continuer
+earcon (`mm` / `chuckle`) via `EarconPlayer.play`, ducked under mic RMS,
+gated by `agent.backchannel_audio_enabled`. Visual hints still fire for
+every label. Speech still does not go through Live.
+
 While the user talks in voice mode, the `BackchannelGate` can
 flicker a micro-expression — but Aiko never makes a *sound*, so
 long user turns feel like speaking into a void. Humans backchannel
@@ -76,6 +81,11 @@ broadcast), the earcon player frontend path, new settings knob.
 ---
 
 ## H7. Listen while speaking — soften the half-duplex turn lock
+
+**Status: shipped (Live Pass 8), except H7c.** Idle mic ring (~1.5 s)
+survives processing; energy barge-in can abort the turn; `LiveSession`
+waits on client `playback_drained`. Full duplex + software AEC is still
+open. Barge-in now defaults on.
 
 Voice mode is strictly half-duplex: `_capture_loop` skips capture
 while `_processing` is set, and the session only returns to
@@ -101,9 +111,10 @@ feel interruptible and alive. Key files:
 
 ## H10. Autonomous idle-life on the avatar — act out the room, not just narrate it
 
-**Status: not yet built.** The data half (H13–H22) all shipped, so Aiko's
-location / posture / activity now genuinely move in `world_state` — but the
-Live2D rig still doesn't *act any of it out*; there's no `IdleLifeChannel`.
+**Status: shipped (Live Pass 5).** `IdleLifeChannel` consumes world
+activity/posture plus the semantic Live embodiment plan and writes
+capability-gated body/breath envelopes; sleep statuses still belong to
+`SleepChannel`. See [`live-mode.md`](live-mode.md) Phase 5.
 
 **Motivation.** K36 ([`idle_activity_worker.py`](../../app/core/world/idle_activity_worker.py))
 already gives Aiko an autonomous life *in data* — it mutates `world_state`
@@ -272,14 +283,11 @@ forgotten.
   `[[prosody:whisper|soft|slow|fast|firm]]` markup family, expanded the
   earcon palette, and widened the speed clamp to ±12% with per-reaction
   sub-caps. All CPU, no new model.
-- **Barge-in enabled by default for Live mode.** _Open._ Currently
-  `audio.barge_in_enabled: false` in [`config/default.json`](../../config/default.json).
+- **Barge-in enabled by default.** _Shipped (Live Pass 8)._
+  `audio.barge_in_enabled: true` in [`config/default.json`](../../config/default.json).
   The plumbing is there in [`app/core/session/live_session.py`](../../app/core/session/live_session.py);
-  flip the flag and validate against the existing
-  `barge_in_min_speech_seconds` floor. The prerequisite is **done**: P25
+  existing `user.json` `false` stays false. The prerequisite is **done**: P25
   shipped the client-side audio flush
   ([`shipped/perf.md`](shipped/perf.md#p25-client-audio-is-flushed-when-speech-is-cut-off)),
   so an interrupt is now actually silent instead of talking over the user
-  for up to a few seconds of already-scheduled audio. That was
-  deliberately kept out of the P25 change — flipping the default is an
-  immersion decision, and it belongs here.
+  for up to a few seconds of already-scheduled audio.

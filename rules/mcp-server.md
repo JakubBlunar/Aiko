@@ -110,7 +110,7 @@ Both answer "did any of this inner life *do* anything", which was unanswerable b
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `get_activity_timeline` | `limit: int = 20` | JSON: last redacted envelope, recent sessions, registered sources, allowlist, prune watermark (`app/mcp/server_tools/activity_tools.py`). **First stop for "is the desktop collector actually storing anything?"** |
+| `get_activity_timeline` | `limit: int = 20` | JSON: last redacted envelope, recent sessions, registered sources, allowlist, prune watermark, title-free Level-2 interpretation (`app/mcp/server_tools/activity_tools.py`). **First stop for "is the desktop collector actually storing anything?"** |
 
 Reading them:
 

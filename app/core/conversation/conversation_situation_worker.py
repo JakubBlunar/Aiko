@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -79,6 +80,7 @@ class ConversationSituationWorker:
         self._turns_at_last_run: dict[str, int] = defaultdict(int)
         self._last_user_message_id: dict[str, int] = {}
         self._last_result: dict[str, dict[str, Any]] = {}
+        self._last_live_run_at: dict[str, float] = {}
         self._stats = {
             "scheduled": 0,
             "completed": 0,
@@ -115,6 +117,32 @@ class ConversationSituationWorker:
     def mark_scheduled(self, session_id: str) -> None:
         key = str(session_id)
         self._turns_at_last_run[key] = self._turns_seen[key]
+        self._stats["scheduled"] += 1
+
+    def should_run_live(
+        self,
+        session_id: str,
+        *,
+        inferred_stale: bool,
+        has_new_journal: bool,
+        min_interval_s: float = 180.0,
+        now_mono: float | None = None,
+    ) -> bool:
+        """Wall-clock Live cadence. Does not count as a user turn."""
+        if self._client is None or not self._model:
+            return False
+        if not (inferred_stale or has_new_journal):
+            return False
+        key = str(session_id)
+        now = time.monotonic() if now_mono is None else float(now_mono)
+        last = self._last_live_run_at.get(key)
+        if last is not None and (now - last) < max(30.0, float(min_interval_s)):
+            return False
+        return True
+
+    def mark_live_run(self, session_id: str, *, now_mono: float | None = None) -> None:
+        now = time.monotonic() if now_mono is None else float(now_mono)
+        self._last_live_run_at[str(session_id)] = now
         self._stats["scheduled"] += 1
 
     def stats(self, session_id: str | None = None) -> dict[str, Any]:

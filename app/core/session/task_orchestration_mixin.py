@@ -2052,27 +2052,11 @@ class TaskOrchestrationMixin:
         # at INFO so this still appears in ``tail_logs``.
 
     def _on_task_proactive_event(self, event: Any) -> None:
-        """Handle a ``proactive`` brain event.
+        """Handle a ``proactive`` brain event after the free-to-speak gate.
 
-        Chunk 6: route ``source=task_escalation`` events into
-        :class:`ProactiveDirector.notify_task_escalation`. The
-        director picks voice vs typed mode internally and dispatches
-        the speaking thread; the parked cues land in the new
-        proactive turn's prompt via the existing T6 task-cues
-        provider (drained on assembly, which also cancels the
-        matching escalation timer).
-
-        When the host hasn't wired a proactive director (early
-        boot, partial init, or a unit test using the stub host),
-        the handler logs at INFO and leaves the cue parked — a
-        future user message will still surface it through the
-        natural prompt path.
-
-        Events with other ``source`` values (``voice_silence`` /
-        ``typed_silence``) are NOT this handler's responsibility in
-        phase 1 — they flow through the legacy direct ``notify_*``
-        path on :class:`SessionController`. Chunk 8 will swap them
-        onto the queue and into this handler.
+        Task escalation always speaks through the director. Silence
+        sources speak only in turn-based posture; Live posture publishes
+        a bus wake and does not call ``ProactiveDirector``.
         """
         if not isinstance(event, ProactiveEvent):
             log.debug(
@@ -2081,10 +2065,63 @@ class TaskOrchestrationMixin:
             )
             return
         source = getattr(event, "source", "")
+        if source in ("voice_silence", "typed_silence"):
+            if source == "typed_silence" and bool(
+                getattr(self, "_live_voice_session_active", False),
+            ):
+                log.debug("typed_silence dropped: voice session active")
+                return
+            is_live = bool(getattr(self, "is_live_presence", lambda: False)())
+            publish = getattr(self, "publish_live_impulse", None)
+            if callable(publish):
+                try:
+                    publish(
+                        kind="silence.wake",
+                        source=f"proactive.{source}",
+                        coalesce_key=f"silence.{source}",
+                        privacy="local_state",
+                        priority="ambient",
+                        ttl_ms=15_000,
+                        payload={"source": source},
+                    )
+                except Exception:
+                    log.debug("silence impulse publish failed", exc_info=True)
+            if is_live:
+                log.debug("live posture starved proactive source=%s", source)
+                return
+            director = getattr(self, "_proactive", None)
+            if director is None:
+                log.debug("silence proactive skipped: no director source=%s", source)
+                return
+            try:
+                if source == "voice_silence":
+                    director.notify_silence(event.session_key)
+                else:
+                    director.notify_typed_silence(event.session_key)
+            except Exception:
+                log.exception(
+                    "silence proactive dispatch failed: source=%s session=%s",
+                    source,
+                    event.session_key,
+                )
+            return
+        if source == "live_main_wake":
+            run = getattr(self, "_run_live_main_wake", None)
+            if not callable(run):
+                log.debug("live main-wake skipped: no runner")
+                return
+            try:
+                run(event)
+            except Exception:
+                log.exception(
+                    "live main-wake dispatch failed: session=%s generation=%s",
+                    event.session_key,
+                    getattr(event, "live_generation", 0),
+                )
+            return
         if source != "task_escalation":
             log.debug(
-                "proactive handler ignored: source=%s (chunk-6 only "
-                "routes task_escalation)",
+                "proactive handler ignored: source=%s",
                 source,
             )
             return

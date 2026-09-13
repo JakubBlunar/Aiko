@@ -148,6 +148,7 @@ def test_v41_database_gains_conversation_situation_table(tmp_path) -> None:
         )
     }
     assert "conversation_situation" in tables
+    assert "live_experience_journal" in tables
 
 
 class _FakeSituationClient:
@@ -303,6 +304,10 @@ def test_snapshot_joins_same_turn_dialogue_and_world_truth() -> None:
     assert snapshot.world.location_slug == "beanbag"
     assert snapshot.world_compatible is True
     assert snapshot.shared_commitment_active is True
+    assert snapshot.floor_owner == "neither"
+    assert snapshot.typing_active is False
+    assert snapshot.attention_target == "none"
+    assert snapshot.live_frame_generation == 0
 
 
 def test_snapshot_text_voice_parity_and_world_conflict() -> None:

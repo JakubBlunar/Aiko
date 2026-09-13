@@ -110,6 +110,18 @@ class ChatTurnMixin:
         # reply-on-complete turn to remind Aiko what the user asked for.
         # Best-effort and opportunistic; only read during the same turn.
         self._active_turn_user_text = cleaned
+        publish_meaning = getattr(self, "publish_live_user_meaning", None)
+        if callable(publish_meaning):
+            try:
+                publish_meaning(cleaned, mode=self._last_turn_mode)
+            except Exception:
+                log.debug("live user-meaning impulse failed", exc_info=True)
+        admit = getattr(self, "admit_live_user_intent", None)
+        if callable(admit):
+            try:
+                admit()
+            except Exception:
+                log.debug("live user-intent admit failed", exc_info=True)
         self._active_sleep_context: dict[str, Any] | None = None
         # Schema v8: refresh the activity timestamp so the idle worker
         # scheduler defers background sweeps while the user is actively

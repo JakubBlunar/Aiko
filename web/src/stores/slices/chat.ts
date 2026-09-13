@@ -55,7 +55,11 @@ export interface ChatSlice {
   /** K32: stamp the just-finished assistant bubble with its persisted
    * SQLite ``messages.id`` (delivered on ``turn_done``). */
   stampAssistantBackendId: (backendId: number | null | undefined) => void;
-  appendProactiveMessage: (content: string, backendId?: number) => void;
+  appendProactiveMessage: (
+    content: string,
+    backendId?: number,
+    kind?: "proactive" | "live_micro",
+  ) => void;
   pushSystemMessage: (content: string) => void;
   clearMessages: () => void;
   /** K32: merge a fresh reactions counter map onto the matching message
@@ -220,7 +224,7 @@ export const createChatSlice: SliceCreator<ChatSlice> = (set) => ({
         },
       ],
     })),
-  appendProactiveMessage: (content, backendId) =>
+  appendProactiveMessage: (content, backendId, kind) =>
     set((state) => ({
       messages: [
         ...state.messages,
@@ -229,7 +233,7 @@ export const createChatSlice: SliceCreator<ChatSlice> = (set) => ({
           role: "assistant",
           content: stripMetaMarkers(content),
           createdAt: new Date().toISOString(),
-          kind: "proactive",
+          kind: kind ?? "proactive",
           // K32: proactive bubbles carry their persisted id from the
           // ``message`` WS event so reactions work on them immediately.
           ...(backendId != null ? { backendId } : {}),

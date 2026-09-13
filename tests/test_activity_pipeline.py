@@ -67,6 +67,13 @@ class ParseTests(unittest.TestCase):
         assert parsed is not None
         self.assertEqual(parsed.to_payload_json()["quality"], 0.9)
 
+    def test_request_id_is_typed_not_payload(self) -> None:
+        parsed = parse_envelope(_env(extra={"request_id": "abc123"}))
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.request_id, "abc123")
+        self.assertNotIn("request_id", parsed.to_payload_json())
+
 
 class RedactTests(unittest.TestCase):
     def test_unknown_source_dropped(self) -> None:

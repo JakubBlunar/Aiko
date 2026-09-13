@@ -29,6 +29,22 @@ class FakeAudioBuffer {
   }
 }
 
+class FakeGainNode {
+  gain = {
+    value: 1,
+    setTargetAtTime(value: number, _when?: number, _tc?: number) {
+      this.value = value;
+    },
+  };
+  connectedTo: unknown = null;
+  connect(node: unknown) {
+    this.connectedTo = node;
+  }
+  disconnect() {
+    this.connectedTo = null;
+  }
+}
+
 class FakeBufferSource {
   buffer: FakeAudioBuffer | null = null;
   startedAt: number | null = null;
@@ -85,6 +101,9 @@ class FakeAudioContext {
   }
   createBufferSource() {
     return new FakeBufferSource(this);
+  }
+  createGain() {
+    return new FakeGainNode();
   }
   async close() {
     this.state = "closed";
@@ -1009,5 +1028,69 @@ describe("AudioOutputManager cancel", () => {
   it("survives a cancel before anything has played", () => {
     const mgr = new AudioOutputManager();
     expect(() => mgr.handleFrame(cancelFrame(FRAME_TTS_PCM))).not.toThrow();
+  });
+});
+
+function earconStartFrame(rate: number): ArrayBuffer {
+  const start = new Uint8Array(7);
+  start[0] = FRAME_AUDIO_START;
+  start[1] = FRAME_EARCON_PCM;
+  new DataView(start.buffer).setUint32(2, rate, false);
+  start[6] = 1;
+  return start.buffer;
+}
+
+function earconPcmFrame(samples: number): ArrayBuffer {
+  const body = new Uint8Array(samples * 2 + 1);
+  body[0] = FRAME_EARCON_PCM;
+  return body.buffer;
+}
+
+describe("AudioOutputManager H6 duck + H7 drain", () => {
+  it("ducks earcon gain from mic RMS", async () => {
+    const mgr = new AudioOutputManager();
+    expect(mgr.handleFrame(earconStartFrame(16000))).toBe("earcon");
+    expect(mgr.handleFrame(earconPcmFrame(160))).toBe("earcon");
+    await flush();
+    const ctx = createdContexts[0] as FakeAudioContext & {
+      // created via createGain
+    };
+    const sources = ctx.activeSources.filter((s) => !s.loop);
+    expect(sources.length).toBe(1);
+    const gain = sources[0].connectedTo as FakeGainNode;
+    expect(gain.gain.value).toBe(1);
+    mgr.setMicLevel(0.3);
+    expect(gain.gain.value).toBeCloseTo(0.25, 5);
+  });
+
+  it("fires playback drained when the last TTS source ends", async () => {
+    const mgr = new AudioOutputManager();
+    let drained = 0;
+    mgr.setPlaybackDrainedListener(() => {
+      drained += 1;
+    });
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(160))).toBe("tts");
+    await flush();
+    expect(drained).toBe(0);
+    const ctx = createdContexts[0];
+    const src = ctx.activeSources.find((s) => !s.loop);
+    src?.onended?.();
+    expect(drained).toBe(1);
+    mgr.flush();
+    expect(drained).toBe(1);
+  });
+
+  it("fires playback drained on abort flush", async () => {
+    const mgr = new AudioOutputManager();
+    let drained = 0;
+    mgr.setPlaybackDrainedListener(() => {
+      drained += 1;
+    });
+    expect(mgr.handleFrame(ttsStartFrame(16000))).toBe("tts");
+    expect(mgr.handleFrame(ttsPcmFrame(1600))).toBe("tts");
+    await flush();
+    mgr.flush();
+    expect(drained).toBe(1);
   });
 });

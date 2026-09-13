@@ -1,9 +1,13 @@
-import { useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+
+const COMPOSING_IDLE_MS = 2500;
 
 interface PersonaInputProps {
   /** Wire to the same WS dispatch the main window uses; the parent
    * remains the single point that talks to the backend. */
   onSend(text: string): void;
+  /** Typing edge for Live / the listening face. Never includes draft. */
+  onComposing?(active: boolean): void;
   /** Disabled while the WS is reconnecting so we don't queue messages
    * the backend will never see. */
   connected: boolean;
@@ -18,8 +22,44 @@ interface PersonaInputProps {
  * stays in the main window's full ``ChatView``. The persona window is
  * meant for short pings: "hey", "what's the time?", "remind me later".
  */
-export function PersonaInput({ onSend, connected, busy }: PersonaInputProps) {
+export function PersonaInput({
+  onSend,
+  onComposing,
+  connected,
+  busy,
+}: PersonaInputProps) {
   const [draft, setDraft] = useState("");
+  const idleRef = useRef<number | null>(null);
+  const sentRef = useRef(false);
+
+  const emitComposing = (active: boolean) => {
+    if (sentRef.current === active) {
+      return;
+    }
+    sentRef.current = active;
+    onComposing?.(active);
+  };
+
+  const stopComposing = () => {
+    if (idleRef.current !== null) {
+      window.clearTimeout(idleRef.current);
+      idleRef.current = null;
+    }
+    emitComposing(false);
+  };
+
+  const markComposing = () => {
+    emitComposing(true);
+    if (idleRef.current !== null) {
+      window.clearTimeout(idleRef.current);
+    }
+    idleRef.current = window.setTimeout(() => {
+      idleRef.current = null;
+      emitComposing(false);
+    }, COMPOSING_IDLE_MS);
+  };
+
+  useEffect(() => () => stopComposing(), []);
 
   const submit = () => {
     const text = draft.trim();
@@ -28,6 +68,7 @@ export function PersonaInput({ onSend, connected, busy }: PersonaInputProps) {
     }
     onSend(text);
     setDraft("");
+    stopComposing();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -41,7 +82,16 @@ export function PersonaInput({ onSend, connected, busy }: PersonaInputProps) {
     <input
       type="text"
       value={draft}
-      onChange={(event) => setDraft(event.target.value)}
+      onChange={(event) => {
+        const next = event.target.value;
+        setDraft(next);
+        if (next) {
+          markComposing();
+        } else {
+          stopComposing();
+        }
+      }}
+      onBlur={stopComposing}
       onKeyDown={onKeyDown}
       disabled={!connected}
       placeholder={

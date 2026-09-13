@@ -56,6 +56,7 @@ from app.core.session import (
     InnerLifeProvidersMixin,
     LifecycleMixin,
     ListenersMetricsMixin,
+    LiveModeMixin,
     LlmClientsMixin,
     LlmSettingsMixin,
     MemoryFacadeMixin,
@@ -232,6 +233,7 @@ class SessionController(
     HypothesisDebugMixin,
     SecondThoughtDebugMixin,
     ConversationSituationMixin,
+    LiveModeMixin,
     WorldMixin,
     InnerLifeProvidersMixin,
     CuePoolMixin,
@@ -486,6 +488,7 @@ class SessionController(
         # Throttle for the WS partial broadcast so a 5 Hz cap doesn't
         # require touching every listener implementation.
         self._last_partial_broadcast_at: float = 0.0
+        self._last_mic_rms: float = 0.0
 
         # ── Voice utterance merge ───────────────────────────────────────
         # When the user pauses mid-thought ("Hey aiko how … are you doing

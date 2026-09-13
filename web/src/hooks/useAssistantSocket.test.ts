@@ -17,4 +17,26 @@ describe("sleep socket hydration", () => {
     expect(source).toMatch(/case "sleep_state_changed":/);
     expect(source).toMatch(/store\.setSleep\(evt\.snapshot\)/);
   });
+
+  it("hydrates live embodiment from hello and incremental events", () => {
+    expect(source).toMatch(/evt\.live_embodiment/);
+    expect(source).toMatch(/case "live_embodiment":/);
+    expect(source).toMatch(/store\.setLiveEmbodiment/);
+  });
+
+  it("defers listening and the done chirp until playback_drained", () => {
+    expect(source).toMatch(/type: "playback_drained"/);
+    expect(source).toMatch(/setPlaybackDrainedListener/);
+    expect(source).toMatch(/playDone\(\)/);
+  });
+
+  it("appends Live micro-utterances as aside bubbles", () => {
+    expect(source).toMatch(/evt\.kind === "live_micro"/);
+    expect(source).toMatch(/appendProactiveMessage\(evt\.content, evt\.message_id, evt\.kind\)/);
+  });
+
+  it("forwards activity_request to the desktop collector without awaiting", () => {
+    expect(source).toMatch(/case "activity_request":/);
+    expect(source).toMatch(/desktop\.requestActivitySnapshot\(evt\.request_id\)/);
+  });
 });

@@ -376,3 +376,52 @@ describe("GazeChannel — lifecycle", () => {
     expect(() => channel.tickGaze!(0, 0, fakeMouse)).not.toThrow();
   });
 });
+
+describe("GazeChannel — held Live gaze", () => {
+  it("ignores cursor jitter during a shared-activity hold", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const { deps, clock } = makeDeps({
+      liveAttentionTarget: "shared_activity",
+      liveEmbodiment: {
+        intent: "remain_present",
+        attention_target: "shared_activity",
+        gaze_class: "rest",
+        body_class: "settle",
+        breath_class: "slow",
+        expression_class: "content",
+        motion_class: "none",
+        degrade_to_sleep: false,
+        hold_attention: true,
+      },
+    });
+    channel.attach(adapter, deps);
+    channel.tickGaze!(clock.now(), 0.016, mouseAt(1600, 100, clock.now()));
+    const last = adapter.focusCalls[adapter.focusCalls.length - 1];
+    expect(Math.abs(last.x)).toBeLessThan(0.2);
+  });
+
+  it("conversation lock still outranks a held Live gaze", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const { deps, clock } = makeDeps({
+      voiceMode: "listening",
+      liveAttentionTarget: "shared_activity",
+      liveEmbodiment: {
+        intent: "remain_present",
+        attention_target: "shared_activity",
+        gaze_class: "rest",
+        body_class: "settle",
+        breath_class: "slow",
+        expression_class: "none",
+        motion_class: "none",
+        degrade_to_sleep: false,
+      },
+    });
+    channel.attach(adapter, deps);
+    channel.tickGaze!(clock.now(), 0.016, mouseAt(1600, 100, clock.now()));
+    const last = adapter.focusCalls[adapter.focusCalls.length - 1];
+    expect(last.x).toBeCloseTo(0, 5);
+    expect(last.y).toBeCloseTo(0.2, 5);
+  });
+});

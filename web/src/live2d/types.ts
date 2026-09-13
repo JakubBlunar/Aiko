@@ -18,6 +18,7 @@ import type {
   AvatarMotionState,
   AvatarOverlayState,
   AvatarProfile,
+  LiveEmbodimentPlan,
   MoodState,
   ResolvedOutfit,
 } from "../types";
@@ -192,6 +193,12 @@ export interface ChannelStoreSnapshot {
   moodInertiaDamping?: boolean;
   /** Persisted lifecycle state; SleepChannel owns eyes/body parameters last. */
   sleepStatus?: "awake" | "winding_down" | "asleep" | "woken";
+  /** World-room activity (H10). Optional for snapshots that pre-date it. */
+  worldActivity?: string;
+  worldPosture?: string;
+  /** Semantic Live plan. Null / absent when Live posture is off. */
+  liveEmbodiment?: LiveEmbodimentPlan | null;
+  liveAttentionTarget?: string;
 }
 
 /** Base channel contract. Each method is optional — channels opt in

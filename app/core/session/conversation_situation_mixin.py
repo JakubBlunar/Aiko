@@ -189,6 +189,22 @@ class ConversationSituationMixin:
             since_user_activity_ms=elapsed_ms,
             sleep=sleep,
         )
+        overlay = getattr(self, "_live_situation_overlay", None)
+        if overlay is not None:
+            snapshot = replace(
+                snapshot,
+                floor_owner=str(getattr(overlay, "floor_owner", snapshot.floor_owner)),
+                typing_active=bool(getattr(overlay, "typing_active", False)),
+                attention_target=str(
+                    getattr(overlay, "attention_target", snapshot.attention_target)
+                ),
+                attention_mode=str(
+                    getattr(overlay, "attention_mode", snapshot.attention_mode)
+                ),
+                live_frame_generation=int(
+                    getattr(overlay, "live_frame_generation", 0) or 0
+                ),
+            )
         self._conversation_situation_snapshot_cache = (cache_key, snapshot)
         return snapshot
 

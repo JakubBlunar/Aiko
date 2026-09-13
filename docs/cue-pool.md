@@ -588,6 +588,15 @@ the cue is *published* rather than when it is said: from the store's
 side the only question is whether the ritual still needs an offer, and
 the pool answers everything after that.
 
+**`companion_activity`** is the C6 Level-3 intake cue. A compute-lane
+worker reads the Level-2 kv reading and, when it is confident and not
+idle, queues one private T6 note. It is pool-only (a queued row is the
+arming signal) and is **not** on `GAP_CUE_ORDER`. The same `kind` +
+`app` signature does not re-draft; a newer reading supersedes any
+pending row of this type. TTL and surface cooldown are 12 hours —
+ephemeral "now", not a weekly K72 concern. TurnRunner claims the row;
+Live peeks the pool and never `take_pool_cue`. No MemoryStore.
+
 **`long_arc_callback`** is a ledger type. Its candidate is a RAG hit
 against the message being answered, so drafting ahead is impossible for
 the same reason as the gap-return family. It is also the one type whose

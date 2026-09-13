@@ -110,10 +110,14 @@ class ClientMicSource:
     # arithmetic identical to the old ``InputStream`` path.
     _CHUNK_SECONDS: float = 0.1
 
-    # Cap on queued chunks (~12 s of 100 ms blocks). Prevents an
-    # unbounded build-up if STT stalls; older chunks are dropped from
-    # the front so freshness wins.
+    # Cap on queued chunks (~12 s of 100 ms blocks) while a capture
+    # consumer is reading. Prevents an unbounded build-up if STT
+    # stalls; older chunks are dropped from the front so freshness
+    # wins. While idle (no capture consumer) the cap shrinks to
+    # ``_IDLE_RING_CHUNKS`` so a later resume only sees ~1.5 s of
+    # overlap, not 12 s of TTS-era audio.
     _MAX_QUEUE_CHUNKS: int = 120
+    _IDLE_RING_CHUNKS: int = 15
 
     def __init__(self, settings: AudioSettings) -> None:
         self._settings = settings
@@ -138,6 +142,7 @@ class ClientMicSource:
         # know whether to keep the source "hot" or let queued frames
         # drain on idle.
         self._open_streams: int = 0
+        self._last_level: float = 0.0
 
     # ── Hub-facing ingress ─────────────────────────────────────────
 
@@ -348,6 +353,12 @@ class ClientMicSource:
 
     def _enqueue_locked(self, chunk: np.ndarray) -> None:
         try:
+            flat = chunk.reshape(-1) if getattr(chunk, "ndim", 1) > 1 else chunk
+            if flat.size:
+                self._last_level = float(np.sqrt(np.mean(np.square(flat))))
+        except Exception:
+            pass
+        try:
             self._chunk_queue.put_nowait(chunk)
         except queue.Full:
             # Drop the oldest chunk so freshness wins.
@@ -359,6 +370,27 @@ class ClientMicSource:
                 self._chunk_queue.put_nowait(chunk)
             except queue.Full:
                 pass
+        cap = (
+            self._IDLE_RING_CHUNKS
+            if self._open_streams <= 0
+            else self._MAX_QUEUE_CHUNKS
+        )
+        while self._chunk_queue.qsize() > cap:
+            try:
+                dropped = self._chunk_queue.get_nowait()
+            except queue.Empty:
+                break
+            if dropped is None:
+                # Keep the shutdown sentinel at the tail.
+                try:
+                    self._chunk_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+                break
+
+    @property
+    def last_level(self) -> float:
+        return float(self._last_level)
 
     # ── MicrophoneCapture-compatible surface ───────────────────────
 

@@ -102,6 +102,14 @@ class VoiceCaptureMixin:
             )
 
         live_level_threshold = max(0.004, float(self._vad_level_threshold) * 0.4)
+        orig_on_audio_level = on_audio_level
+
+        def _on_audio_level(level: float) -> None:
+            self.note_mic_rms(level)
+            if orig_on_audio_level is not None:
+                orig_on_audio_level(level)
+
+        on_audio_level = _on_audio_level
         if self._live_no_speech_streak > 0:
             relax = min(0.7, 0.18 * float(self._live_no_speech_streak))
             live_level_threshold = max(0.002, live_level_threshold * (1.0 - relax))

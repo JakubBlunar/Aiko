@@ -53,6 +53,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "InnerLifeProvidersMixin": "inner_life_providers_mixin",
     "LifecycleMixin": "lifecycle_mixin",
     "ListenersMetricsMixin": "listeners_metrics_mixin",
+    "LiveModeMixin": "live_mode_mixin",
     "LlmClientsMixin": "llm_clients_mixin",
     "LlmSettingsMixin": "llm_settings_mixin",
     "MemoryFacadeMixin": "memory_facade_mixin",
@@ -109,6 +110,7 @@ if TYPE_CHECKING:  # import-time cost only for type checkers
     from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
     from app.core.session.lifecycle_mixin import LifecycleMixin
     from app.core.session.listeners_metrics_mixin import ListenersMetricsMixin
+    from app.core.session.live_mode_mixin import LiveModeMixin
     from app.core.session.llm_clients_mixin import LlmClientsMixin
     from app.core.session.llm_settings_mixin import LlmSettingsMixin
     from app.core.session.memory_facade_mixin import MemoryFacadeMixin
@@ -148,6 +150,7 @@ __all__ = [
     "InnerLifeProvidersMixin",
     "LifecycleMixin",
     "ListenersMetricsMixin",
+    "LiveModeMixin",
     "LlmClientsMixin",
     "LlmSettingsMixin",
     "MemoryFacadeMixin",

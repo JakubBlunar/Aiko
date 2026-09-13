@@ -24,6 +24,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from app.core.infra.settings import (
+    LLM_ROLE_LIVE_POLICY,
     LLM_ROLE_MAIN_CHAT,
     LLM_ROLE_WORKER_DEFAULT,
     LLM_ROLE_WORKFLOW,
@@ -58,6 +59,7 @@ class FirstRunSynthesisTests(unittest.TestCase):
         self.assertEqual(local.base_url, "http://127.0.0.1:11434")
         for role in (
             LLM_ROLE_MAIN_CHAT, LLM_ROLE_WORKER_DEFAULT, LLM_ROLE_WORKFLOW,
+            LLM_ROLE_LIVE_POLICY,
         ):
             self.assertEqual(llm.routes[role].provider_id, "local_ollama")
 

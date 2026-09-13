@@ -93,6 +93,8 @@ interface RawMessage {
   gestures?: string[] | null;
   /** D2 Part B: persisted in-chat attachments restored on reload. */
   attachments?: AttachmentRef[] | null;
+  /** Live micro-utterance rows stamp ``dialogue_act=live_micro``. */
+  dialogue_act?: string | null;
 }
 
 /** Map raw server message rows into store ``ChatMessage`` objects.
@@ -121,6 +123,7 @@ export function mapRawMessages(rows: RawMessage[]): ChatMessage[] {
     ...(row.attachments && row.attachments.length > 0
       ? { attachments: row.attachments }
       : {}),
+    ...(row.dialogue_act === "live_micro" ? { kind: "live_micro" as const } : {}),
     createdAt: row.created_at,
   }));
 }

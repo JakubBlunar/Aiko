@@ -14,12 +14,16 @@ from __future__ import annotations
 import logging
 import threading
 from typing import Any
-from app.core.conversation.backchannel_classifier import BackchannelHint
+from app.core.conversation.backchannel_classifier import (
+    BackchannelHint,
+    should_play_backchannel_audio,
+)
 from collections.abc import Callable
 from app.audio.client_mic_source import ClientMicSource
 from app.llm.ollama_client import OllamaClient
 from app.stt.realtime_stt_service import RealtimeSttService
 from app.core.voice.tts_queue import TtsQueue
+from app.core.infra.settings import persist_user_overrides
 from app.core.session.session_text_utils import infer_tts_reaction
 from app.core.session.session_text_utils import prepare_tts_text
 import time
@@ -123,10 +127,15 @@ class VoiceMixin:
             log.debug("audio frame cancel listener raised", exc_info=True)
 
     def barge_in_enabled(self) -> bool:
-        return bool(getattr(self._settings.audio, "barge_in_enabled", False))
+        return bool(getattr(self._settings.audio, "barge_in_enabled", True))
 
     def set_barge_in_enabled(self, enabled: bool) -> None:
-        self._settings.audio.barge_in_enabled = bool(enabled)
+        enabled = bool(enabled)
+        self._settings.audio.barge_in_enabled = enabled
+        try:
+            persist_user_overrides({"audio": {"barge_in_enabled": enabled}})
+        except Exception:
+            log.debug("persist barge_in_enabled failed", exc_info=True)
 
     @property
     def vad_level_threshold(self) -> float:
@@ -847,7 +856,46 @@ class VoiceMixin:
                 listener(hint, text)
             except Exception:
                 log.debug("backchannel listener raised", exc_info=True)
+        self._maybe_play_backchannel_audio(hint)
         return hint
+
+    def note_mic_rms(self, level: float) -> None:
+        """Remember the latest capture RMS for H6 mid-word gating."""
+        try:
+            self._last_mic_rms = max(0.0, float(level))
+        except (TypeError, ValueError):
+            return
+
+    def mic_last_level(self) -> float:
+        """Latest microphone RMS, preferring the live ClientMicSource."""
+        mic = getattr(self, "_microphone", None)
+        if mic is not None:
+            try:
+                return max(0.0, float(getattr(mic, "last_level", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                pass
+        try:
+            return max(0.0, float(getattr(self, "_last_mic_rms", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _maybe_play_backchannel_audio(self, hint: BackchannelHint) -> None:
+        """Fire a continuer earcon on a gated hint. Never uses TtsQueue."""
+        try:
+            kind = should_play_backchannel_audio(
+                enabled=self.backchannel_audio_enabled(),
+                tts_playing=bool(self.is_tts_playing()),
+                mic_rms=self.mic_last_level(),
+                hint=hint,
+            )
+            if not kind:
+                return
+            player = getattr(self, "_earcons", None)
+            if player is None:
+                return
+            player.play(kind)
+        except Exception:
+            log.debug("backchannel audio play failed", exc_info=True)
 
     def reset_backchannel_state(self) -> None:
         """Clear gate state at session boundaries so fresh hints can fire."""

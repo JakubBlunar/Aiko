@@ -491,21 +491,15 @@ class HandlerDispatchTests(unittest.TestCase):
         self.host._on_task_progress_event(event)
         self.assertEqual(self.host._task_cue_store.pending_count(), 0)
 
-    def test_proactive_non_task_source_is_noop(self) -> None:
-        # No director wired AND non-task source — handler should
-        # drop silently with a DEBUG line (chunk 8 will route
-        # voice_silence / typed_silence onto the queue, but in
-        # chunk 6 the handler only owns task_escalation).
-        with self.assertLogs(
-            "app.session", level="DEBUG"
-        ) as captured:
+    def test_proactive_voice_silence_without_director_is_skipped(self) -> None:
+        with self.assertLogs("app.session", level="DEBUG") as captured:
             self.host._on_task_proactive_event(
                 ProactiveEvent(session_key="x", source="voice_silence")
             )
         messages = [rec.getMessage() for rec in captured.records]
         self.assertTrue(
-            any("source=voice_silence" in m for m in messages),
-            f"expected source=voice_silence DEBUG, got {messages!r}",
+            any("no director" in m or "source=voice_silence" in m for m in messages),
+            f"expected silence skip DEBUG, got {messages!r}",
         )
 
     def test_proactive_task_escalation_without_director(self) -> None:
@@ -543,6 +537,8 @@ class ProactiveRoutingTests(unittest.TestCase):
     class _StubDirector:
         def __init__(self) -> None:
             self.calls: list[str] = []
+            self.silence_calls: list[str] = []
+            self.typed_calls: list[str] = []
             self.raise_next: Exception | None = None
 
         def notify_task_escalation(self, session_key: str) -> None:
@@ -551,6 +547,12 @@ class ProactiveRoutingTests(unittest.TestCase):
                 self.raise_next = None
                 raise exc
             self.calls.append(session_key)
+
+        def notify_silence(self, session_key: str) -> None:
+            self.silence_calls.append(session_key)
+
+        def notify_typed_silence(self, session_key: str) -> None:
+            self.typed_calls.append(session_key)
 
     def setUp(self) -> None:
         self.fx = _Fixture()
@@ -572,15 +574,35 @@ class ProactiveRoutingTests(unittest.TestCase):
         self.host._on_task_proactive_event(event)
         self.assertEqual(self.director.calls, ["test-user"])
 
-    def test_other_sources_do_not_dispatch(self) -> None:
-        for source in ("voice_silence", "typed_silence"):
-            self.host._on_task_proactive_event(
-                ProactiveEvent(
-                    session_key="test-user",
-                    source=source,  # type: ignore[arg-type]
-                )
-            )
+    def test_silence_sources_dispatch_when_turn_based(self) -> None:
+        self.host._on_task_proactive_event(
+            ProactiveEvent(session_key="test-user", source="voice_silence"),
+        )
+        self.host._on_task_proactive_event(
+            ProactiveEvent(session_key="test-user", source="typed_silence"),
+        )
         self.assertEqual(self.director.calls, [])
+        self.assertEqual(self.director.silence_calls, ["test-user"])
+        self.assertEqual(self.director.typed_calls, ["test-user"])
+
+    def test_live_posture_starves_silence_sources(self) -> None:
+        self.host.is_live_presence = lambda: True  # type: ignore[method-assign]
+        self.host._on_task_proactive_event(
+            ProactiveEvent(session_key="test-user", source="voice_silence"),
+        )
+        self.host._on_task_proactive_event(
+            ProactiveEvent(session_key="test-user", source="typed_silence"),
+        )
+        self.assertEqual(self.director.silence_calls, [])
+        self.assertEqual(self.director.typed_calls, [])
+        self.assertEqual(self.director.calls, [])
+
+    def test_typed_silence_dropped_when_voice_session_active(self) -> None:
+        self.host._live_voice_session_active = True
+        self.host._on_task_proactive_event(
+            ProactiveEvent(session_key="test-user", source="typed_silence"),
+        )
+        self.assertEqual(self.director.typed_calls, [])
 
     def test_wrong_event_type_does_not_dispatch(self) -> None:
         self.host._on_task_proactive_event("not-an-event")  # type: ignore[arg-type]

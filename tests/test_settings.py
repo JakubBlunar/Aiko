@@ -351,6 +351,13 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         result = load_settings(config_path=path)
         self.assertFalse(result.tools.recall_topic)
 
+    def test_activity_tool_setting_round_trip(self) -> None:
+        result = load_settings(config_path=self._write_config())
+        self.assertTrue(result.tools.activity)
+        path = self._write_config(tools_extra={"activity": False})
+        result = load_settings(config_path=path)
+        self.assertFalse(result.tools.activity)
+
     def test_knowledge_gap_notice_settings_round_trip(self) -> None:
         # Defaults.
         result = load_settings(config_path=self._write_config())
@@ -4107,7 +4114,7 @@ class LlmBlockSettingsTests(unittest.TestCase):
         result = load_settings(config_path=self._write_config())
         ids = {p.id for p in result.llm.providers}
         self.assertIn("local_ollama", ids)
-        for role in ("main_chat", "worker_default", "workflow"):
+        for role in ("main_chat", "worker_default", "workflow", "live_policy"):
             route = result.llm.routes[role]
             self.assertIn(
                 route.provider_id, ids,
@@ -4123,6 +4130,22 @@ class LlmBlockSettingsTests(unittest.TestCase):
         result = load_settings(config_path=self._write_config())
         for role in ("main_chat", "worker_default", "workflow"):
             self.assertEqual(result.llm.routes[role].context_window, 65_536)
+        live = result.llm.routes["live_policy"]
+        self.assertEqual(live.context_window, 40_960)
+        self.assertEqual(live.model, "qwen3.5:4b")
+        self.assertEqual(live.max_tokens, 512)
+
+    def test_legacy_live_policy_max_tokens_is_raised(self) -> None:
+        cfg = copy.deepcopy(self._base_config["llm"])
+        cfg["routes"]["live_policy"]["max_tokens"] = 64
+        result = load_settings(config_path=self._write_config(cfg))
+        self.assertEqual(result.llm.routes["live_policy"].max_tokens, 512)
+
+    def test_custom_live_policy_max_tokens_is_kept(self) -> None:
+        cfg = copy.deepcopy(self._base_config["llm"])
+        cfg["routes"]["live_policy"]["max_tokens"] = 256
+        result = load_settings(config_path=self._write_config(cfg))
+        self.assertEqual(result.llm.routes["live_policy"].max_tokens, 256)
 
     def test_route_context_window_override_round_trips(self) -> None:
         cfg = copy.deepcopy(self._base_config["llm"])

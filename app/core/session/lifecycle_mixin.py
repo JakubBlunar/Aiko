@@ -195,6 +195,9 @@ class LifecycleMixin(DebugOverridesHostMixin):
         # off in the session the user just switched to. This used to be a
         # hand-written list that covered 11 of the 43 flags.
         self._debug_overrides.clear()
+        bump = getattr(self, "bump_live_mode_generation", None)
+        if callable(bump):
+            bump("session_switch")
         # K28 — wipe any stashed turning-over slot so the new session
         # doesn't inherit a "this is a comeback" cue from the prior one.
         self._pending_turning_over_seconds = None
@@ -809,6 +812,10 @@ class LifecycleMixin(DebugOverridesHostMixin):
             self._disarm_typed_silence_timer()
         except Exception:
             log.debug("typed silence timer cancel on shutdown failed", exc_info=True)
+        try:
+            self._stop_live_heartbeat()
+        except Exception:
+            log.debug("live heartbeat stop on shutdown failed", exc_info=True)
         # Brain orchestration first: stop the loop + escalation timers
         # before downstream components disappear. The mixin is
         # exception-safe internally; the outer guard is just for the

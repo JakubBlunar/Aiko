@@ -30,6 +30,12 @@ pub trait ActivitySource: Send {
     }
     /// Change-detected push. `None` means nothing new this tick.
     fn tick(&mut self, ctx: &TickContext<'_>) -> Option<Envelope>;
+    /// Forced sample for C7 ``get_activity``. Default is silence so a
+    /// dedicated UIA source cannot be accidentally walked from the
+    /// turn path — UIA implements this on its own thread later.
+    fn snapshot(&mut self, _ctx: &TickContext<'_>) -> Option<Envelope> {
+        None
+    }
     fn on_focus_changed(&mut self, _event: &FocusChanged) {}
     fn reset(&mut self) {}
 }

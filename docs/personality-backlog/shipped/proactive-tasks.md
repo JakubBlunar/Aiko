@@ -32,18 +32,65 @@ The prompt `activity_block` stays app-name only. Settings: master
 toggle (off by default) plus a positive `title_allowlist`. MCP
 `get_activity_timeline` dumps what was stored.
 
-This is not companion mode yet — it is the sensory channel. Phases
-3–6 (aggregation, interpretation, cue/memory intake, UIA), a live
-tool-pass pull ([C7](../proactive.md#c7-live-activity-pull--get_activity-tool)),
+This is not companion mode yet — it is the sensory channel. Phase 3
+(Level-1 aggregation) shipped Pass 14; phase 4 (Level-2
+interpretation, kv only) shipped Pass 15; phase 5 (pool-only
+`companion_activity` cue) shipped Pass 17. Live pull (`get_activity`)
+shipped Pass 18 ([C7](#c7-live-activity-pull--get_activity-tool)).
+Still open: memories only if a pattern repeats, and phase 6 UIA.
 OS-idle as a gap-cue qualifier
-([C8](../proactive.md#c8-os-idle-as-a-gap-cue-qualifier)), and
-duration as K72 evidence
-([C9](../proactive.md#c9-activity-duration-as-wellbeing-evidence-k72))
-stay open.
+([C8](../proactive.md#c8-os-idle-as-a-gap-cue-qualifier)) shipped
+Pass 14. Duration as K72 evidence
+([C9](#c9-activity-duration-as-wellbeing-evidence-k72)) shipped in
+Pass 11.
 
 Privacy contract: [`docs/presence-and-activity.md`](../../presence-and-activity.md).
 Rust: [`web/src-tauri/src/activity/`](../../../web/src-tauri/src/activity/).
 Python: [`app/core/activity/`](../../../app/core/activity/).
+
+---
+
+## C7. Live activity pull / `get_activity` tool
+
+**Shipped Pass 18.** "What are you looking at?" forces a collector
+`snapshot()` on the same ingest + redact path as the push samples.
+Cheap sources implement `snapshot()`; the trait default is `None` so a
+later UIA source cannot be walked from the turn thread. The envelope
+carries an optional `request_id` that is not persisted. Server
+broadcasts `{ type: "activity_request", request_id }`; JS
+fire-and-forgets `request_activity_snapshot` and never awaits an OS
+poll. The brain thread waits 250 ms (or skips the wait when no WS
+listener is attached). Timeout, no desktop, or awareness off returns
+the last stored session — not an error. Tool JSON is
+`fresh` / `enabled` / `app` / `title` / `source` / `as_of_seconds` /
+`note`. No `surface_id`. Titles only if ingest already allowed them.
+Family `activity` in the P14 gate (looking at / on screen / which app;
+not a bare "doing" or bare "window"). `tools.activity` defaults true
+and is independent of `agent.activity_awareness_enabled` for
+registration. UIA remains deferred.
+
+Key files: [`app/core/activity/pull.py`](../../../app/core/activity/pull.py),
+[`app/llm/tools/activity.py`](../../../app/llm/tools/activity.py),
+[`web/src-tauri/src/activity/`](../../../web/src-tauri/src/activity/).
+
+---
+
+## C9. Activity duration as wellbeing evidence (K72)
+
+K72's late-nights detector used to infer "he was up at 3am" from chat
+message timestamps only. Pass 11 unions local-tz small-hours dates from
+[`ActivityStore.recent_sessions`](../../../app/core/activity/store.py)
+(foreground sessions overlapping 01–05h) into the same
+`detect_late_nights` / signature / cue-pool path. No parallel companion
+cue — that would starve the pool (C6 point 2). Gated on
+`activity_awareness_enabled` plus an attached store; store failures
+yield empty extra dates, never a crashed worker. Pass 16 adds daytime
+long-focus (`detect_long_focus`): coding foreground duration outside
+the 01–05h window, 6h+ on a local day, 3 distinct days in the window,
+same K72 cue-pool door. Media / idle / lock do not count. Late nights
+still outrank long-focus. Live consumes the same store as situation
+evidence (`app/core/activity/evidence.py`) without titles in the 4B
+prompt.
 
 ---
 

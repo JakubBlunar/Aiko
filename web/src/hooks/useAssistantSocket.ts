@@ -197,6 +197,9 @@ export function useAssistantSocket(): {
         if (evt.vitality && typeof evt.vitality === "object") {
           store.setVitality(evt.vitality);
         }
+        if (evt.live_embodiment && evt.live_embodiment.plan) {
+          store.setLiveEmbodiment(evt.live_embodiment);
+        }
         // One-shot boot notices (I7): destructive LanceDB rebuild, etc.
         // Surfaced as toasts; warnings stick around longer.
         if (Array.isArray(evt.notices)) {
@@ -245,10 +248,13 @@ export function useAssistantSocket(): {
             toolClearTimerRef.current = null;
           }
           store.clearToolActivity();
-        } else if (evt.role === "assistant" && evt.kind === "proactive") {
+        } else if (
+          evt.role === "assistant" &&
+          (evt.kind === "proactive" || evt.kind === "live_micro")
+        ) {
           // K32: carry the persisted id so reactions work on the
-          // proactive bubble immediately.
-          store.appendProactiveMessage(evt.content, evt.message_id);
+          // proactive / Live-micro bubble immediately.
+          store.appendProactiveMessage(evt.content, evt.message_id, evt.kind);
         }
         break;
 
@@ -348,16 +354,11 @@ export function useAssistantSocket(): {
         if (evt.event !== "start" && evt.aborted) {
           audioOutputRef.current?.flush();
         }
-        // While voice mode is on, mirror tts_state into voiceMode so the
-        // mic-button label reads "speaking" while Aiko is talking.
-        if (store.voiceMode !== "off") {
-          if (evt.event === "start") {
-            store.setVoiceMode("speaking");
-          } else if (store.voiceMode === "speaking") {
-            store.setVoiceMode("listening");
-            // Floor returns to user -- play the "done" earcon as a cue.
-            playDone();
-          }
+        // Voice-mode "speaking" follows server start; "listening" and the
+        // done chirp wait for client playback_drained (H7) so the floor
+        // does not return while the speaker still has audio.
+        if (store.voiceMode !== "off" && evt.event === "start") {
+          store.setVoiceMode("speaking");
         }
         break;
 
@@ -481,6 +482,20 @@ export function useAssistantSocket(): {
 
       case "sleep_state_changed":
         store.setSleep(evt.snapshot);
+        break;
+
+      case "live_embodiment":
+        store.setLiveEmbodiment(
+          evt.plan
+            ? {
+                plan: evt.plan,
+                attention_target: evt.attention_target,
+                world_activity: evt.world_activity,
+                world_posture: evt.world_posture,
+                sleep_status: evt.sleep_status,
+              }
+            : null,
+        );
         break;
 
       case "weather_updated":
@@ -744,6 +759,10 @@ export function useAssistantSocket(): {
 
       case "pong":
         break;
+
+      case "activity_request":
+        desktop.requestActivitySnapshot(evt.request_id);
+        break;
     }
   }, []);
 
@@ -989,6 +1008,22 @@ export function useAssistantSocket(): {
     }
     ws.send(frame);
   }, []);
+
+  useEffect(() => {
+    const out = audioOutputRef.current;
+    if (!out) return;
+    out.setPlaybackDrainedListener(() => {
+      send({ type: "playback_drained" });
+      const current = useAssistantStore.getState();
+      if (current.voiceMode === "speaking") {
+        current.setVoiceMode("listening");
+        playDone();
+      }
+    });
+    return () => {
+      out.setPlaybackDrainedListener(null);
+    };
+  }, [send]);
 
   // Keep the server's per-client mute in sync with the persisted local
   // toggle. Fires whenever the toggle flips AND on every (re)connect

@@ -49,6 +49,14 @@ class _AgentBlock:
     # L30: the only two hypothesis knobs a live PATCH can change.
     hypothesis_invention_enabled: bool = True
     concept_hypothesis_ask_enabled: bool = True
+    behavior_posture: str = "turn_based"
+    live_quiet: bool = False
+    live_unprompted_speech: bool = True
+    live_main_wake_max_per_hour: int = 6
+    live_min_gap_after_speech_ms: int = 8000
+    live_mic_consented: bool = False
+    live_impulse_bus_enabled: bool = False
+    backchannel_audio_enabled: bool = True
 
 
 @dataclass
@@ -220,7 +228,11 @@ class CompanionSettingsTests(unittest.TestCase):
         self.assertEqual(comp["grounding_line_mode"], "off")
         self.assertEqual(comp["touch_enabled"], True)
         self.assertEqual(comp["persona_touch_banner_duration_seconds"], 20)
+        self.assertEqual(comp["behavior_posture"], "turn_based")
+        self.assertEqual(comp["live_quiet"], False)
+        self.assertEqual(comp["live_impulse_bus_enabled"], False)
         self.assertTrue(body["audio"]["earcons_enabled"])
+        self.assertTrue(body["audio"]["backchannel_audio_enabled"])
 
     def test_task_banner_switch_is_reachable_from_the_api(self) -> None:
         """A7: the setting existed, the ``enabled`` prop existed, and
@@ -390,6 +402,19 @@ class CompanionSettingsTests(unittest.TestCase):
         self.assertFalse(settings.audio.earcons_enabled)
         # The runtime hook flips the live EarconPlayer too.
         self.assertFalse(session._earcons.enabled)
+        persist.assert_called_once()
+
+    def test_patch_backchannel_audio_runs_runtime_hook(self) -> None:
+        client, _session, settings = _build_client()
+        with patch(
+            "app.core.session.web_facade_mixin.persist_user_overrides",
+        ) as persist:
+            response = client.patch(
+                "/api/settings",
+                json={"audio": {"backchannel_audio_enabled": False}},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(settings.agent.backchannel_audio_enabled)
         persist.assert_called_once()
 
 

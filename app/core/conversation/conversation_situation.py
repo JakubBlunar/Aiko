@@ -145,6 +145,11 @@ class ConversationSituationSnapshot:
     shared_commitment_active: bool
     since_user_activity_ms: int
     sleep: dict[str, Any] = field(default_factory=dict)
+    floor_owner: str = "neither"
+    typing_active: bool = False
+    attention_target: str = "none"
+    attention_mode: str = "casual"
+    live_frame_generation: int = 0
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)

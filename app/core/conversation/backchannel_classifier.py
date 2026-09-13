@@ -110,6 +110,50 @@ def classify(partial: str) -> BackchannelHint | None:
     return None
 
 
+# Continuer earcons for H6. Visual hints still fire for every label;
+# only these map to a sound. Disagreement / surprise / confused stay
+# silent so a continuer cannot land on a correction or a gasp.
+BACKCHANNEL_AUDIO_KIND: dict[str, str] = {
+    "agreement": "mm",
+    "concern": "mm",
+    "thinking": "mm",
+    "amusement": "chuckle",
+}
+
+# RMS at or above this is treated as mid-word. Capture levels sit
+# around 0.02–0.3 while the user is talking; pauses drop well below.
+BACKCHANNEL_MID_WORD_RMS = 0.025
+
+
+def backchannel_audio_kind(hint: str | None) -> str | None:
+    """Return the continuer earcon kind for ``hint``, or ``None``."""
+    if not hint:
+        return None
+    return BACKCHANNEL_AUDIO_KIND.get(str(hint))
+
+
+def should_play_backchannel_audio(
+    *,
+    enabled: bool,
+    tts_playing: bool,
+    mic_rms: float,
+    hint: str | None,
+) -> str | None:
+    """Return the earcon kind to play, or ``None`` if gated out."""
+    if not enabled or tts_playing:
+        return None
+    kind = backchannel_audio_kind(hint)
+    if kind is None:
+        return None
+    try:
+        rms = float(mic_rms)
+    except (TypeError, ValueError):
+        rms = 0.0
+    if rms >= BACKCHANNEL_MID_WORD_RMS:
+        return None
+    return kind
+
+
 class BackchannelGate:
     """Stateful wrapper that rate-limits hints emitted from a session.
 

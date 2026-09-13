@@ -709,6 +709,7 @@ class DetectorsInitMixin:
         # The server only ever sees the resulting PCM stream.
         self._live_no_speech_streak = 0
         self._live_voice_session_active = False
+        self._init_live_mode()
         self._turn_in_progress = False
 
         # ── Typed-mode proactive timer + presence gate ──────────────

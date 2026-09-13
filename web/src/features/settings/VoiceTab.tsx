@@ -5,6 +5,8 @@ import { useAssistantStore } from "../../store";
 import { MobileAudioSection } from "./MobileAudioSection";
 import { Row, Section } from "./SettingsSection";
 import { TtsEnginePicker } from "./TtsEnginePicker";
+import { LiveMicConsentDialog } from "../chat/LiveModeToggle";
+import { liveMicNeedsConsent } from "../chat/livePresence";
 
 export interface DeviceLists {
   inputs: { deviceId: string; label: string; groupId: string }[];
@@ -85,12 +87,157 @@ export function VoiceTab({
 }: VoiceTabProps) {
   const allowlistKey = (settings.activity?.title_allowlist ?? []).join("\n");
   const [allowlistDraft, setAllowlistDraft] = useState(allowlistKey);
+  const voiceMode = useAssistantStore((s) => s.voiceMode);
   useEffect(() => {
     setAllowlistDraft(allowlistKey);
   }, [allowlistKey]);
+  const posture = settings.companion?.behavior_posture ?? "turn_based";
+  const liveOn = posture === "live_presence";
+  const speakOn = !liveOn && voiceMode !== "off";
+  const textOn = !liveOn && !speakOn;
+  const [liveConsentOpen, setLiveConsentOpen] = useState(false);
   return (
     <>
       <MobileAudioSection />
+
+      <Section title="Interaction">
+        <p className="text-[11px] text-ink-100/50">
+          Text and Speak still answer every submitted line. Live is a
+          third mode: presence, not a more talkative proactive. The
+          microphone stays independent — Live can run with it off.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {(
+            [
+              ["text", "Text", "turn_based", textOn],
+              ["speak", "Speak", "turn_based", speakOn],
+              ["live", "Live", "live_presence", liveOn],
+            ] as const
+          ).map(([id, label, nextPosture, pressed]) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={pressed}
+              onClick={() => {
+                if (id === "live") {
+                  void liveMicNeedsConsent(
+                    Boolean(settings.companion?.live_mic_consented),
+                  ).then((needs) => {
+                    if (needs) {
+                      setLiveConsentOpen(true);
+                      return;
+                    }
+                    void apply({
+                      companion: {
+                        behavior_posture: "live_presence",
+                        live_mic_consented: true,
+                      },
+                    });
+                  });
+                  return;
+                }
+                void apply({ companion: { behavior_posture: nextPosture } });
+              }}
+              className={`rounded-md border px-3 py-1.5 text-xs ${
+                pressed
+                  ? "border-pink-300/60 bg-pink-500/15 text-pink-50"
+                  : "border-white/10 bg-black/30 text-ink-100/70"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] text-ink-100/45">
+          Speak is Text plus the microphone button. Live posture stops
+          the old silence-timer blab; chat still replies this pass.
+        </p>
+        <Toggle
+          className="mt-3"
+          checked={settings.companion?.live_quiet ?? false}
+          onChange={(checked) =>
+            void apply({ companion: { live_quiet: checked } })
+          }
+        >
+          Quiet / do-not-disturb (Live)
+        </Toggle>
+        <Toggle
+          className="mt-3"
+          checked={settings.companion?.live_unprompted_speech ?? true}
+          onChange={(checked) =>
+            void apply({ companion: { live_unprompted_speech: checked } })
+          }
+        >
+          Unprompted speech (Live)
+        </Toggle>
+        <Row
+          label="Main-wake max / hour"
+          value={
+            <input
+              type="number"
+              min={0}
+              max={30}
+              step={1}
+              value={settings.companion?.live_main_wake_max_per_hour ?? 6}
+              onChange={(e) =>
+                void apply({
+                  companion: {
+                    live_main_wake_max_per_hour: Number(e.target.value),
+                  },
+                })
+              }
+              className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+            />
+          }
+        />
+        <Row
+          label="Min gap after speech (s)"
+          value={
+            <input
+              type="number"
+              min={0}
+              max={60}
+              step={1}
+              value={Math.round(
+                (settings.companion?.live_min_gap_after_speech_ms ?? 8000) /
+                  1000,
+              )}
+              onChange={(e) =>
+                void apply({
+                  companion: {
+                    live_min_gap_after_speech_ms:
+                      Number(e.target.value) * 1000,
+                  },
+                })
+              }
+              className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+            />
+          }
+        />
+      </Section>
+      {liveConsentOpen ? (
+        <LiveMicConsentDialog
+          onCancel={() => setLiveConsentOpen(false)}
+          onConfirm={() => {
+            void apply({
+              companion: {
+                behavior_posture: "live_presence",
+                live_mic_consented: true,
+              },
+            });
+            setLiveConsentOpen(false);
+          }}
+          onVisualOnly={() => {
+            void apply({
+              companion: {
+                behavior_posture: "live_presence",
+                live_unprompted_speech: false,
+              },
+            });
+            setLiveConsentOpen(false);
+          }}
+        />
+      ) : null}
 
       <Section title="Voice (TTS)">
         <TtsEnginePicker settings={settings} apply={apply} />
@@ -214,6 +361,15 @@ export function VoiceTab({
           }
         >
           Earcons (little [[laugh]] / [[sigh]] sound effects)
+        </Toggle>
+        <Toggle
+          className="mt-3"
+          checked={settings.audio.backchannel_audio_enabled ?? true}
+          onChange={(checked) =>
+            void apply({ audio: { backchannel_audio_enabled: checked } })
+          }
+        >
+          Listen-along sounds (soft mm-hm while you talk)
         </Toggle>
       </Section>
 

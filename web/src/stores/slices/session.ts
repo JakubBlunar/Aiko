@@ -1,4 +1,4 @@
-import type { CompanionSettings, Identity, SleepSnapshot } from "@/types";
+import type { CompanionSettings, Identity, LiveEmbodimentState, SleepSnapshot } from "@/types";
 import type { SliceCreator } from "../types";
 
 export interface ConnectionState {
@@ -56,6 +56,10 @@ export interface SessionSlice {
   }) => void;
   sleep: SleepSnapshot | null;
   setSleep: (snapshot: SleepSnapshot | null) => void;
+
+  /** Semantic Live idle-life plan. Null when Live posture is off. */
+  liveEmbodiment: LiveEmbodimentState | null;
+  setLiveEmbodiment: (next: LiveEmbodimentState | null) => void;
 
   // Status
   status: string;
@@ -120,6 +124,9 @@ export const createSessionSlice: SliceCreator<SessionSlice> = (set) => ({
     })),
   sleep: null,
   setSleep: (sleep) => set({ sleep }),
+
+  liveEmbodiment: null,
+  setLiveEmbodiment: (liveEmbodiment) => set({ liveEmbodiment }),
 
   status: "",
   setStatus: (status) => set({ status }),

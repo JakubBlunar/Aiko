@@ -164,6 +164,7 @@ def _build_client() -> tuple[TestClient, MagicMock]:
     session.vad_level_threshold = 0.02
     session.vad_silence_seconds = 1.0
     session.barge_in_enabled.return_value = False
+    session.backchannel_audio_enabled.return_value = True
     session.available_tool_names.return_value = []
     session._chat_llm_public_snapshot.return_value = {
         "provider": "openai_compatible",

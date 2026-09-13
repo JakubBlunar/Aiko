@@ -80,6 +80,7 @@ export function useMicCapture(
         // so the pulse ring still moves visibly without hitting the
         // ceiling and clamp to [0, 1].
         setAudioLevel(Math.min(1, Math.max(0, rms * 3)));
+        useAssistantStore.getState().audioOutput?.setMicLevel(rms);
       },
       onError: (err) => {
         console.warn("AudioInputManager error", err);

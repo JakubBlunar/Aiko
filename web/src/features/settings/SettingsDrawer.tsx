@@ -157,6 +157,9 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const setActivityTitleAllowlist = useAssistantStore(
     (s) => s.setActivityTitleAllowlist,
   );
+  const setCompanionSettings = useAssistantStore(
+    (s) => s.setCompanionSettings,
+  );
   const liveActiveApp = useAssistantStore((s) => s.liveActiveApp);
   const liveActiveTitle = useAssistantStore((s) => s.liveActiveTitle);
 
@@ -262,6 +265,9 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           ? s.activity.title_allowlist.map((name) => String(name))
           : [],
       );
+      if (s.companion) {
+        setCompanionSettings(s.companion);
+      }
       // H11: seed the weather store from the GET snapshot so the persona
       // overlay + Weather section have the cached conditions on first open
       // (before any ``weather_updated`` WS frame arrives).
@@ -274,7 +280,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     } finally {
       setBusy(false);
     }
-  }, [setActivityAwarenessEnabled, setActivityTitleAllowlist]);
+  }, [setActivityAwarenessEnabled, setActivityTitleAllowlist, setCompanionSettings]);
 
   useEffect(() => {
     if (open) {
@@ -391,6 +397,9 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     try {
       const next = await api.patchSettings(patch);
       setSettings(next);
+      if (next.companion) {
+        setCompanionSettings(next.companion);
+      }
       setActivityAwarenessEnabled(
         Boolean(next.activity?.awareness_enabled),
       );

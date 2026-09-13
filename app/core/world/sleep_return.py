@@ -69,6 +69,19 @@ def looks_like_overnight(
     return hour in _MORNING_RETURN_HOURS
 
 
+def os_idle_allows_sleep_return(os_idle: str) -> bool:
+    """C8: OS idle sits beside message-gap on ``sleep_return`` only.
+
+    Keyboard busy (``active``) means he was here, not asleep.
+    ``idle`` / ``locked`` can still look like overnight.
+    ``missing`` does not invent sleep when collectors are absent.
+    """
+    token = str(os_idle or "missing").strip().lower()
+    if token == "active":
+        return False
+    return token in {"idle", "locked"}
+
+
 # slug -> the phrase that completes "you dozed off ___". Anything not listed
 # falls through to the cozy default so a custom room never breaks the cue.
 _SPOT_PHRASES: dict[str, str] = {
@@ -129,6 +142,7 @@ __all__ = [
     "DEFAULT_OVERNIGHT_HOURS",
     "DEFAULT_DREAM_LOOKBACK_HOURS",
     "looks_like_overnight",
+    "os_idle_allows_sleep_return",
     "sleep_spot_phrase",
     "render_sleep_line",
 ]

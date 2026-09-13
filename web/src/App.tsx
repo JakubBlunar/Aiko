@@ -223,6 +223,9 @@ export default function App() {
     (s) => s.setActivityTitleAllowlist,
   );
   const setLoggingSettings = useAssistantStore((s) => s.setLoggingSettings);
+  const setCompanionSettings = useAssistantStore(
+    (s) => s.setCompanionSettings,
+  );
   const setWorld = useWorldStore((s) => s.setWorld);
   // Seed the toggle from /api/settings on mount so the activity
   // reporter picks up a previously-saved opt-in without waiting for
@@ -245,6 +248,9 @@ export default function App() {
             ? settings.activity.title_allowlist.map((name) => String(name))
             : [],
         );
+        if (settings.companion) {
+          setCompanionSettings(settings.companion);
+        }
         if (settings.logging) {
           setLoggingSettings({
             ui_log_enabled: Boolean(settings.logging.ui_log_enabled),
@@ -264,7 +270,12 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [setActivityAwarenessEnabled, setActivityTitleAllowlist, setLoggingSettings]);
+  }, [
+    setActivityAwarenessEnabled,
+    setActivityTitleAllowlist,
+    setCompanionSettings,
+    setLoggingSettings,
+  ]);
 
   // Seed Aiko's room snapshot on mount so the avatar-panel caption can
   // show what she's doing ("at the garden, standing, stretching")

@@ -14,7 +14,8 @@ import { Section } from "./SettingsSection";
  * Role -> Provider / Model / Context / Max-tokens table.
  *
  * One row per active role (``main_chat``, ``worker_default``,
- * ``workflow``, plus any future roles introduced server-side). The
+ * ``workflow``, ``live_policy``, plus any future roles introduced
+ * server-side). The
  * Model column is a free-text combobox: pick from the provider's live
  * list and curated suggestions, or type any id the provider accepts.
  *
@@ -270,7 +271,15 @@ export function LlmRoutesSection() {
     // ``main_chat`` first, then ``worker_default``, then anything
     // else alphabetically — keeps the most-used row at the top.
     const rank = (k: string) =>
-      k === "main_chat" ? 0 : k === "worker_default" ? 1 : 2;
+      k === "main_chat"
+        ? 0
+        : k === "worker_default"
+          ? 1
+          : k === "workflow"
+            ? 2
+            : k === "live_policy"
+              ? 3
+              : 4;
     const da = rank(a);
     const db = rank(b);
     if (da !== db) return da - db;
@@ -282,8 +291,9 @@ export function LlmRoutesSection() {
       <p className="text-[11px] text-ink-100/50">
         Pick which saved provider serves each Aiko role. Main chat is the
         path you talk to; Worker default covers the ~24 background
-        workers (reflection, dream, memory extraction, …). Two roles
-        pointing at the same provider share one underlying connection.
+        workers (reflection, dream, memory extraction, …). Live policy is
+        the small on-device model that decides presence while Live is on.
+        Two roles pointing at the same provider share one underlying connection.
       </p>
 
       {providers.length === 0 ? (

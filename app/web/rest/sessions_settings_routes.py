@@ -123,6 +123,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "reactions": _json_or_none(r.reactions),
                 "gestures": _json_or_none(r.gestures),
                 "attachments": _json_or_none(r.attachments),
+                "dialogue_act": getattr(r, "dialogue_act", None),
             }
             for r in rows
         ])
@@ -216,6 +217,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "earcons_enabled": bool(
                     getattr(s.audio, "earcons_enabled", True),
                 ),
+                "backchannel_audio_enabled": session.backchannel_audio_enabled(),
             },
             "proactive": {
                 "silence_seconds": float(getattr(s.agent, "proactive_silence_seconds", 45.0)),
@@ -331,6 +333,26 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 ),
                 "intimacy_pacing_enabled": bool(
                     getattr(s.agent, "intimacy_pacing_enabled", True),
+                ),
+                "behavior_posture": str(
+                    getattr(s.agent, "behavior_posture", "turn_based")
+                    or "turn_based",
+                ),
+                "live_quiet": bool(getattr(s.agent, "live_quiet", False)),
+                "live_unprompted_speech": bool(
+                    getattr(s.agent, "live_unprompted_speech", True),
+                ),
+                "live_main_wake_max_per_hour": int(
+                    getattr(s.agent, "live_main_wake_max_per_hour", 6),
+                ),
+                "live_min_gap_after_speech_ms": int(
+                    getattr(s.agent, "live_min_gap_after_speech_ms", 8000),
+                ),
+                "live_mic_consented": bool(
+                    getattr(s.agent, "live_mic_consented", False),
+                ),
+                "live_impulse_bus_enabled": bool(
+                    getattr(s.agent, "live_impulse_bus_enabled", False),
                 ),
                 # L30 hypothesis layer. Only the two master switches are
                 # writable: both worker ``enabled_provider``s re-read
@@ -470,6 +492,10 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             session.set_barge_in_enabled(bool(audio["barge_in_enabled"]))
         if "earcons_enabled" in audio:
             session.set_earcons_enabled(bool(audio["earcons_enabled"]))
+        if "backchannel_audio_enabled" in audio:
+            session.set_backchannel_audio_enabled(
+                bool(audio["backchannel_audio_enabled"]),
+            )
         proactive = payload.get("proactive") or {}
         if "silence_seconds" in proactive:
             try:
@@ -749,12 +775,49 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 v = bool(companion["intimacy_pacing_enabled"])
                 agent.intimacy_pacing_enabled = v
                 persist_patch["agent"]["intimacy_pacing_enabled"] = v
+            if "behavior_posture" in companion:
+                session.set_behavior_posture(companion["behavior_posture"])
+            if "live_quiet" in companion:
+                session.set_live_quiet(bool(companion["live_quiet"]))
+            if "live_unprompted_speech" in companion:
+                session.set_live_unprompted_speech(
+                    bool(companion["live_unprompted_speech"]),
+                )
+            if "live_main_wake_max_per_hour" in companion:
+                session.set_live_main_wake_max_per_hour(
+                    companion["live_main_wake_max_per_hour"],
+                )
+            if "live_min_gap_after_speech_ms" in companion:
+                session.set_live_min_gap_after_speech_ms(
+                    companion["live_min_gap_after_speech_ms"],
+                )
+            if "live_mic_consented" in companion:
+                session.set_live_mic_consented(
+                    bool(companion["live_mic_consented"]),
+                )
+            if "live_impulse_bus_enabled" in companion:
+                session.set_live_impulse_bus_enabled(
+                    bool(companion["live_impulse_bus_enabled"]),
+                )
             persist_patch = {k: v for k, v in persist_patch.items() if v}
+            live_only = any(
+                key in companion
+                for key in (
+                    "behavior_posture",
+                    "live_quiet",
+                    "live_unprompted_speech",
+                    "live_main_wake_max_per_hour",
+                    "live_min_gap_after_speech_ms",
+                    "live_mic_consented",
+                    "live_impulse_bus_enabled",
+                )
+            )
             if persist_patch:
                 try:
                     persist_user_overrides(persist_patch)
                 except Exception:
                     log.debug("persist companion overrides failed", exc_info=True)
+            if persist_patch or live_only:
                 # Broadcast so other windows (notably the persona overlay,
                 # which reads the touch-banner flags) reconcile live.
                 hub.broadcast({
@@ -808,6 +871,26 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                         ),
                         "intimacy_pacing_enabled": bool(
                             getattr(agent, "intimacy_pacing_enabled", True),
+                        ),
+                        "behavior_posture": str(
+                            getattr(agent, "behavior_posture", "turn_based")
+                            or "turn_based",
+                        ),
+                        "live_quiet": bool(getattr(agent, "live_quiet", False)),
+                        "live_unprompted_speech": bool(
+                            getattr(agent, "live_unprompted_speech", True),
+                        ),
+                        "live_main_wake_max_per_hour": int(
+                            getattr(agent, "live_main_wake_max_per_hour", 6),
+                        ),
+                        "live_min_gap_after_speech_ms": int(
+                            getattr(agent, "live_min_gap_after_speech_ms", 8000),
+                        ),
+                        "live_mic_consented": bool(
+                            getattr(agent, "live_mic_consented", False),
+                        ),
+                        "live_impulse_bus_enabled": bool(
+                            getattr(agent, "live_impulse_bus_enabled", False),
                         ),
                     },
                 })
@@ -1233,7 +1316,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
 
         Keys absent from the draft keep their current value. Roles that
         have live clients behind them (``main_chat``, ``worker_default``,
-        ``workflow``) are rebuilt in place, so the change takes effect
+        ``workflow``, ``live_policy``) are rebuilt in place, so the change takes effect
         on the next turn rather than at the next restart.
         """
         if not isinstance(payload, dict):

@@ -88,6 +88,22 @@ class ActivityStore:
             })
         return out
 
+    def latest_session_id(self) -> int:
+        """Cheap demand probe for Level-1 aggregation. Never raises."""
+        try:
+            row = self._db.execute_fetchone(
+                "SELECT id FROM activity_sessions ORDER BY id DESC LIMIT 1",
+            )
+        except Exception:
+            log.debug("activity latest session id failed", exc_info=True)
+            return 0
+        if row is None:
+            return 0
+        try:
+            return int(row[0] or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def last_event(self) -> dict[str, Any] | None:
         try:
             row = self._db.execute_fetchone(

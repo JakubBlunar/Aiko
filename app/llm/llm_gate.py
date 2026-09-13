@@ -21,7 +21,7 @@ Two pieces:
   priority-inversion deadlock) and delegates everything else straight
   through.
 
-Four tiers (lower int wins, matching ``BrainEventQueue``):
+Four tiers plus Live policy (lower int wins, matching ``BrainEventQueue``):
 
 * ``USER_BLOCKING`` (0) — the user is sitting there watching a spinner
   while this runs. Currently just H25's in-turn vision pass: he shared a
@@ -29,6 +29,9 @@ Four tiers (lower int wins, matching ``BrainEventQueue``):
   Nothing that merely *feeds* a later reply belongs here.
 * ``CONVERSATION_WORKER`` (10) — per-turn / speaking-window workers
   that feed the next reply (memory extraction, dialogue-act, …).
+* ``LIVE_POLICY`` (30) — Live presence policy inference. Only used when
+  ``live_policy`` resolves to the **same** resource as the worker
+  model; a distinct 4B on the same Ollama host is ``gate=None``.
 * ``MAINTENANCE_WORKER`` (50) — idle-scheduler workers (decay,
   promotion, conflict, schedule-learner, day-color, dream, …).
 * ``TASK`` (100) — nested-workflow planner + skills.
@@ -59,6 +62,7 @@ log = logging.getLogger("app.llm_gate")
 # ── priority tiers ────────────────────────────────────────────────────
 USER_BLOCKING = 0
 CONVERSATION_WORKER = 10
+LIVE_POLICY = 30
 MAINTENANCE_WORKER = 50
 TASK = 100
 
@@ -68,10 +72,31 @@ TIER_NAMES: dict[str, int] = {
     "blocking": USER_BLOCKING,
     "conversation": CONVERSATION_WORKER,
     "conversation_worker": CONVERSATION_WORKER,
+    "live_policy": LIVE_POLICY,
     "maintenance": MAINTENANCE_WORKER,
     "maintenance_worker": MAINTENANCE_WORKER,
     "task": TASK,
 }
+
+
+def llm_resource_key(
+    *,
+    kind: str,
+    base_url: str,
+    model: str,
+    contention_group: str = "",
+) -> tuple[str, str, str]:
+    """Identity of a contended LLM resource.
+
+    Keyed by provider kind + normalised endpoint + (contention group or
+    model). Two routes with the same key share one :class:`LlmPriorityGate`.
+    Distinct models on the same host are different keys unless they
+    share a ``contention_group``.
+    """
+    endpoint = (base_url or "").strip().rstrip("/").lower()
+    group = (contention_group or "").strip()
+    identity = group or (model or "").strip()
+    return ((kind or "").strip().lower(), endpoint, identity)
 
 
 def tier_from_name(name: str, default: int = MAINTENANCE_WORKER) -> int:
@@ -85,6 +110,8 @@ def tier_label(priority: int) -> str:
         return "user_blocking"
     if priority <= CONVERSATION_WORKER:
         return "conversation"
+    if priority <= LIVE_POLICY:
+        return "live_policy"
     if priority <= MAINTENANCE_WORKER:
         return "maintenance"
     return "task"
@@ -384,9 +411,11 @@ __all__ = [
     "LlmPriorityGate",
     "GatedChatClient",
     "CONVERSATION_WORKER",
+    "LIVE_POLICY",
     "MAINTENANCE_WORKER",
     "TASK",
     "TIER_NAMES",
+    "llm_resource_key",
     "tier_from_name",
     "tier_label",
 ]

@@ -87,5 +87,44 @@ class BackchannelGateTests(unittest.TestCase):
         self.assertIsNone(gate.consider("the weather is mild", now=0.0))
 
 
+class BackchannelAudioTests(unittest.TestCase):
+    def test_maps_support_and_playful(self) -> None:
+        from app.core.conversation.backchannel_classifier import (
+            backchannel_audio_kind,
+        )
+
+        self.assertEqual(backchannel_audio_kind("agreement"), "mm")
+        self.assertEqual(backchannel_audio_kind("amusement"), "chuckle")
+        self.assertIsNone(backchannel_audio_kind("disagreement"))
+        self.assertIsNone(backchannel_audio_kind("surprise"))
+
+    def test_gates_on_setting_tts_and_rms(self) -> None:
+        from app.core.conversation.backchannel_classifier import (
+            should_play_backchannel_audio,
+        )
+
+        self.assertEqual(
+            should_play_backchannel_audio(
+                enabled=True, tts_playing=False, mic_rms=0.0, hint="agreement",
+            ),
+            "mm",
+        )
+        self.assertIsNone(
+            should_play_backchannel_audio(
+                enabled=False, tts_playing=False, mic_rms=0.0, hint="agreement",
+            ),
+        )
+        self.assertIsNone(
+            should_play_backchannel_audio(
+                enabled=True, tts_playing=True, mic_rms=0.0, hint="agreement",
+            ),
+        )
+        self.assertIsNone(
+            should_play_backchannel_audio(
+                enabled=True, tts_playing=False, mic_rms=0.2, hint="agreement",
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

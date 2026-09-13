@@ -122,6 +122,11 @@ class SilencePathTests(unittest.TestCase):
         host = _Host(chat_db=_db_with(_open_beat()), gap_cue_surfaced=True)
         self.assertEqual(host._render_caught_mid_activity_block(), "")
 
+    def test_live_presence_is_not_a_return_surprise(self) -> None:
+        host = _Host(chat_db=_db_with(_open_beat()))
+        host._settings.agent.behavior_posture = "live_presence"
+        self.assertEqual(host._render_caught_mid_activity_block(), "")
+
 
 class FiringTests(unittest.TestCase):
     def test_block_names_the_activity_in_the_present_tense(self) -> None:

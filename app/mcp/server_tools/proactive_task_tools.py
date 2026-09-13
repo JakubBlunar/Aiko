@@ -1661,9 +1661,10 @@ def register(mcp, session: "SessionController") -> None:
         """K72 — dump the wellbeing-concern worker + surfacing state.
 
         The WellbeingConcernWorker reads multi-day signal (small-hours
-        activity, explicit "haven't slept / eaten" mentions, a heavy H3
-        low stretch) and, only when a real worrying pattern clears a high
-        bar + a long cooldown, drafts one gentle "you doing okay?" cue
+        activity, daytime long-focus coding stretches, explicit "haven't
+        slept / eaten" mentions, a heavy H3 low stretch) and, only when a
+        real worrying pattern clears a high bar + a long cooldown, drafts
+        one gentle "you doing okay?" cue
         into ``aiko.wellbeing_concern``; ``_render_wellbeing_concern_
         block`` surfaces the newest unseen finding (watermark-gated). It is
         NEVER spoken verbatim and drops the instant the user deflects.
@@ -1695,17 +1696,20 @@ def register(mcp, session: "SessionController") -> None:
                     late, neg_days, neg_cats = worker._collect_message_signal(
                         now
                     )
+                    focus = worker._collect_activity_long_focus_dates(now)
                     from app.core.affect import mood_drift as _md
 
                     drift = _md.deserialize_samples(kv(_md.KV_SAMPLES))
                     finding = _wc.pick_concern(
                         late_night_dates=late,
+                        long_focus_dates=focus,
                         neglect_days=neg_days,
                         neglect_categories=neg_cats,
                         drift_samples=drift,
                         late_night_min=int(
                             getattr(mem, "wellbeing_concern_late_night_min", 3)
                         ),
+                        long_focus_min_days=_wc.DEFAULT_LONG_FOCUS_MIN_DAYS,
                         neglect_min_days=int(
                             getattr(
                                 mem, "wellbeing_concern_neglect_min_days", 2
@@ -1724,6 +1728,7 @@ def register(mcp, session: "SessionController") -> None:
                     )
                     dry = {
                         "late_night_days": len(late),
+                        "long_focus_days": len(focus),
                         "neglect_days": len(neg_days),
                         "neglect_categories": neg_cats,
                         "drift_samples": len(drift),
@@ -1819,6 +1824,95 @@ def register(mcp, session: "SessionController") -> None:
             )
         except Exception as exc:
             return f"force_wellbeing_concern_surface raised: {exc}"
+
+    @mcp.tool()
+    def get_companion_activity_state() -> str:
+        """C6 Level-3 — dump companion-activity intake + surfacing state.
+
+        The worker drafts one pooled cue from a Level-2 reading; the
+        TurnRunner provider claims it. Live peeks the pool and never
+        takes. Returns title-free interpretation, last signature, pending
+        rows, and cadence. Never dumps window titles.
+        """
+        try:
+            from app.core.activity.interpretation_worker import (
+                load_activity_interpretation,
+            )
+
+            kv = session._chat_db.kv_get if session._chat_db else (lambda _k: None)
+            interp = load_activity_interpretation(kv) or {}
+            interp.pop("title", None)
+            worker = getattr(session, "_companion_activity_worker", None)
+            return json.dumps(
+                {
+                    "activity_awareness_enabled": bool(
+                        getattr(
+                            session._settings.agent,
+                            "activity_awareness_enabled",
+                            False,
+                        )
+                    ),
+                    "worker": worker is not None,
+                    "force_next": bool(
+                        session.debug_overrides.peek(
+                            "companion_activity_force_next", False,
+                        )
+                    ),
+                    "cadence": session.cue_pool_cadence("companion_activity"),
+                    "pending": session.list_cue_pool(
+                        cue_type="companion_activity", limit=6,
+                    ).get("cues", []),
+                    "last_signature": kv("companion_activity.last_signature"),
+                    "interpretation": interp,
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"get_companion_activity_state raised: {exc}"
+
+    @mcp.tool()
+    def force_companion_activity_draft() -> str:
+        """Run the companion-activity worker once, right now.
+
+        Arms a one-shot bypass of the signature gate, then calls
+        ``run()`` so a cue is queued when a Level-2 reading actually
+        exists. Pairs with ``force_companion_activity_surface``.
+        """
+        try:
+            worker = getattr(session, "_companion_activity_worker", None)
+            if worker is None:
+                return json.dumps(
+                    {"error": "worker not registered"}, indent=2
+                )
+            worker.force_next()
+            result = worker.run()
+            return json.dumps({"ran": True, "result": result}, indent=2)
+        except Exception as exc:
+            return f"force_companion_activity_draft raised: {exc}"
+
+    @mcp.tool()
+    def force_companion_activity_surface() -> str:
+        """Arm a one-shot bypass on the companion-activity surfacing cadence.
+
+        Sets ``companion_activity_force_next`` so the next provider call
+        claims a cue regardless of the 12h spacing. The pool still has
+        to hold one (run ``force_companion_activity_draft`` first if it
+        does not).
+        """
+        try:
+            session.debug_overrides.arm("companion_activity_force_next")
+            return json.dumps(
+                {
+                    "armed": True,
+                    "note": (
+                        "next assembly ignores the companion-activity "
+                        "cadence; the pool must hold a cue"
+                    ),
+                },
+                indent=2,
+            )
+        except Exception as exc:
+            return f"force_companion_activity_surface raised: {exc}"
 
     @mcp.tool()
     def get_shared_ritual_state() -> str:

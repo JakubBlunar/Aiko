@@ -5,6 +5,7 @@
 //! One source failing is catch-and-skip.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -36,6 +37,7 @@ impl Default for CollectorConfig {
 pub struct CollectorHandle {
     config: Arc<Mutex<CollectorConfig>>,
     stop: Arc<AtomicBool>,
+    snapshot_tx: Sender<String>,
 }
 
 impl CollectorHandle {
@@ -43,6 +45,16 @@ impl CollectorHandle {
         let mut cfg = self.config.lock().unwrap_or_else(|e| e.into_inner());
         cfg.enabled = enabled;
         cfg.title_allowlist = title_allowlist;
+    }
+
+    /// Wake the collector thread for a C7 forced sample. Does not poll
+    /// on this thread — JS must not await an OS read.
+    pub fn request_snapshot(&self, request_id: String) {
+        let trimmed = request_id.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let _ = self.snapshot_tx.send(trimmed.to_string());
     }
 }
 
@@ -55,9 +67,11 @@ impl Drop for CollectorHandle {
 pub fn start(app: AppHandle) -> CollectorHandle {
     let config = Arc::new(Mutex::new(CollectorConfig::default()));
     let stop = Arc::new(AtomicBool::new(false));
+    let (snapshot_tx, snapshot_rx) = mpsc::channel();
     let handle = CollectorHandle {
         config: config.clone(),
         stop: stop.clone(),
+        snapshot_tx,
     };
     let bus = EscalationBus::new();
     let (shared, dedicated) = partition_sources(cheap_sources());
@@ -66,7 +80,7 @@ pub fn start(app: AppHandle) -> CollectorHandle {
     }
     let _ = thread::Builder::new()
         .name("aiko-activity".into())
-        .spawn(move || shared_loop(app, config, stop, shared, bus));
+        .spawn(move || shared_loop(app, config, stop, shared, bus, snapshot_rx));
     handle
 }
 
@@ -113,22 +127,39 @@ fn shared_loop(
     stop: Arc<AtomicBool>,
     mut sources: Vec<Box<dyn ActivitySource>>,
     bus: EscalationBus,
+    snapshot_rx: mpsc::Receiver<String>,
 ) {
     let mut was_enabled = false;
     while !stop.load(Ordering::Relaxed) {
-        let snapshot = config.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if snapshot.enabled {
-            was_enabled = true;
-            tick_shared(&mut sources, &snapshot.title_allowlist, &bus, |env| {
-                emit_sample(&app, &env);
-            });
-        } else if was_enabled {
-            was_enabled = false;
-            for source in &mut sources {
-                source.reset();
+        match snapshot_rx.recv_timeout(POLL_INTERVAL) {
+            Ok(request_id) => {
+                let snapshot = config.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if snapshot.enabled {
+                    was_enabled = true;
+                    snapshot_shared(
+                        &mut sources,
+                        &snapshot.title_allowlist,
+                        &request_id,
+                        |env| emit_sample(&app, &env),
+                    );
+                }
             }
+            Err(RecvTimeoutError::Timeout) => {
+                let snapshot = config.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if snapshot.enabled {
+                    was_enabled = true;
+                    tick_shared(&mut sources, &snapshot.title_allowlist, &bus, |env| {
+                        emit_sample(&app, &env);
+                    });
+                } else if was_enabled {
+                    was_enabled = false;
+                    for source in &mut sources {
+                        source.reset();
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
         }
-        thread::sleep(POLL_INTERVAL);
     }
 }
 
@@ -189,8 +220,31 @@ pub fn tick_shared(
     }
 }
 
+pub fn snapshot_shared(
+    sources: &mut [Box<dyn ActivitySource>],
+    allowlist: &[String],
+    request_id: &str,
+    mut emit: impl FnMut(Envelope),
+) {
+    let ctx = TickContext { allowlist };
+    for source in sources.iter_mut() {
+        let Some(mut env) = catch_snapshot(&mut **source, &ctx) else {
+            continue;
+        };
+        env.request_id = Some(request_id.to_string());
+        emit(env);
+    }
+}
+
 fn catch_tick(source: &mut dyn ActivitySource, ctx: &TickContext<'_>) -> Option<Envelope> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.tick(ctx))) {
+        Ok(env) => env,
+        Err(_) => None,
+    }
+}
+
+fn catch_snapshot(source: &mut dyn ActivitySource, ctx: &TickContext<'_>) -> Option<Envelope> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.snapshot(ctx))) {
         Ok(env) => env,
         Err(_) => None,
     }
@@ -234,6 +288,10 @@ mod tests {
                 },
                 serde_json::json!({}),
             ))
+        }
+
+        fn snapshot(&mut self, ctx: &TickContext<'_>) -> Option<Envelope> {
+            self.tick(ctx)
         }
     }
 
@@ -317,5 +375,38 @@ mod tests {
         })];
         tick_shared(&mut sources, &[], &bus, |_| {});
         assert_eq!(*seen.lock().unwrap(), vec!["Code"]);
+    }
+
+    struct PanickingSnapshot;
+
+    impl ActivitySource for PanickingSnapshot {
+        fn name(&self) -> &'static str {
+            "boom-snap"
+        }
+        fn tier(&self) -> Tier {
+            Tier::Cheap
+        }
+        fn tick(&mut self, _ctx: &TickContext<'_>) -> Option<Envelope> {
+            None
+        }
+        fn snapshot(&mut self, _ctx: &TickContext<'_>) -> Option<Envelope> {
+            panic!("snapshot must not stall the loop");
+        }
+    }
+
+    #[test]
+    fn snapshot_stamps_request_id_and_skips_a_panic() {
+        let mut sources: Vec<Box<dyn ActivitySource>> = vec![
+            Box::new(PanickingSnapshot),
+            Box::new(CountingSource {
+                isolation: Isolation::Shared,
+                ticks: 0,
+            }),
+        ];
+        let mut emitted: Vec<(String, Option<String>)> = Vec::new();
+        snapshot_shared(&mut sources, &[], "req-1", |env| {
+            emitted.push((env.source.clone(), env.request_id.clone()));
+        });
+        assert_eq!(emitted, vec![("foreground".into(), Some("req-1".into()))]);
     }
 }

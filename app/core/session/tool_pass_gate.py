@@ -120,6 +120,9 @@ _TOOL_FAMILY: dict[str, str] = {
     # H11 weather (own family so "weather"/"forecast" route here, not web)
     "get_weather": "weather",
     "get_forecast": "weather",
+    # C7 live desktop pull. Own family so "looking at" / "on screen"
+    # does not open the world or web pass.
+    "get_activity": "activity",
     # D3 synchronous web search on the brain lane.
     "web_search": "web",
 }
@@ -175,6 +178,19 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"weather", r"forecast", r"temperature", r"how (?:hot|cold|warm)",
         r"rain", r"raining", r"snow", r"snowing", r"sunny", r"cloudy",
         r"humid", r"humidity", r"wind", r"windy", r"degrees",
+    ]),
+    "activity": _compile([
+        r"looking at",
+        r"on (?:my|the) screen",
+        r"see my screen",
+        r"what app",
+        r"which app",
+        r"active app",
+        r"current app",
+        r"foreground",
+        r"on the (?:machine|computer|desktop)",
+        r"window title",
+        r"what(?:'s| is) on (?:my|the) (?:screen|desktop)",
     ]),
     "recall": _compile([
         r"remember", r"recall", r"memor(?:y|ies)", r"forg[eo]t(?:ten)?",

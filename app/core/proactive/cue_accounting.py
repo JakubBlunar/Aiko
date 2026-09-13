@@ -399,6 +399,11 @@ CUE_SPECS: dict[str, CueSpec] = {
             journal_key="aiko.tension_cue",
             watermark_key="tension_cue.last_surfaced_at",
         ),
+        # C6 Level-3 companion intake. Pool-only: the idle worker writes
+        # straight to ``cue_pool`` from a Level-2 reading, so a queued
+        # row is the whole arming signal. NOT a gap cue -- putting it on
+        # ``GAP_CUE_ORDER`` would starve it behind turning_over.
+        CueSpec("companion_activity"),
         # These five used to dedupe by a per-topic key set rather than a
         # single watermark, so arming degraded to "the ring is non-empty"
         # and over-counted. They are pooled now and ``armed_cues`` reads
@@ -662,13 +667,14 @@ CUE_POLICIES: dict[str, CuePolicy] = {
         ),
         CuePolicy(
             "wellbeing_concern",
-            # Read off *behaviour* over days -- small-hours activity, "I
-            # haven't eaten" said twice in a week -- so the subject has no
-            # relationship to what the conversation is currently on and a
-            # cosine hit is real signal. It also does the work the lexical
-            # path cannot here: the subject is the pattern ("eating") and
-            # the check-in is the natural sentence ("have you actually
-            # eaten today"), which do not share a token.
+            # Read off *behaviour* over days -- small-hours activity, a
+            # daytime coding grind, "I haven't eaten" said twice in a
+            # week -- so the subject has no relationship to what the
+            # conversation is currently on and a cosine hit is real
+            # signal. It also does the work the lexical path cannot here:
+            # the subject is the pattern ("eating") and the check-in is
+            # the natural sentence ("have you actually eaten today"),
+            # which do not share a token.
             inventory_target=1,
             ttl_hours=72.0,
             fulfilment=FULFILMENT_SPOKEN,
@@ -680,6 +686,22 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             surface_cooldown_hours=168.0,
             handling_section="When I'm worried about you:",
             block="wellbeing_concern_block",
+        ),
+        CuePolicy(
+            "companion_activity",
+            # Off-topic by construction: noticing desktop activity that
+            # the conversation is not currently on. A cosine hit is the
+            # pivot we want. Ephemeral "now" rather than a weekly K72
+            # concern -- stale by the next sitting.
+            inventory_target=1,
+            ttl_hours=12.0,
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            surface_cooldown_hours=12.0,
+            handling_section=(
+                "When you notice what {user_name} is doing on the machine:"
+            ),
+            block="companion_activity_block",
         ),
         CuePolicy(
             "shared_ritual",

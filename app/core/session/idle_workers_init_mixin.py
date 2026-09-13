@@ -224,6 +224,16 @@ class IdleWorkersInitMixin:
                     journal_max=getattr(
                         mem, "wellbeing_concern_journal_max", 4
                     ),
+                    activity_store_provider=lambda: getattr(
+                        self, "_activity_store", None,
+                    ),
+                    activity_enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "activity_awareness_enabled",
+                            False,
+                        )
+                    ),
                 )
                 self._idle_scheduler.register(self._wellbeing_concern_worker)
             except Exception:
@@ -1715,6 +1725,9 @@ class IdleWorkersInitMixin:
         # when the scheduler is live.
         self._activity_store = None
         self._activity_prune_worker = None
+        self._activity_aggregation_worker = None
+        self._activity_interpretation_worker = None
+        self._companion_activity_worker = None
         if self._chat_db is not None:
             try:
                 from app.core.activity.store import ActivityStore
@@ -1746,6 +1759,89 @@ class IdleWorkersInitMixin:
                     "ActivityPruneWorker init failed", exc_info=True,
                 )
                 self._activity_prune_worker = None
+
+        if (
+            self._idle_scheduler is not None
+            and self._activity_store is not None
+            and self._chat_db is not None
+        ):
+            try:
+                from app.core.activity.aggregation_worker import (
+                    ActivityAggregationWorker,
+                )
+
+                self._activity_aggregation_worker = ActivityAggregationWorker(
+                    self._activity_store,
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                )
+                self._idle_scheduler.register(self._activity_aggregation_worker)
+            except Exception:
+                log.warning(
+                    "ActivityAggregationWorker init failed", exc_info=True,
+                )
+                self._activity_aggregation_worker = None
+
+        if (
+            self._idle_scheduler is not None
+            and self._activity_store is not None
+            and self._chat_db is not None
+        ):
+            try:
+                from app.core.activity.interpretation_worker import (
+                    ActivityInterpretationWorker,
+                )
+
+                self._activity_interpretation_worker = (
+                    ActivityInterpretationWorker(
+                        self._activity_store,
+                        kv_get=self._chat_db.kv_get,
+                        kv_set=self._chat_db.kv_set,
+                        ollama=getattr(self, "_maintenance_client", None),
+                        model=getattr(self, "_effective_worker_model", "") or "",
+                    )
+                )
+                self._idle_scheduler.register(
+                    self._activity_interpretation_worker,
+                )
+            except Exception:
+                log.warning(
+                    "ActivityInterpretationWorker init failed",
+                    exc_info=True,
+                )
+                self._activity_interpretation_worker = None
+
+        if (
+            self._idle_scheduler is not None
+            and self._chat_db is not None
+        ):
+            try:
+                from app.core.activity.companion_cue_worker import (
+                    CompanionActivityWorker,
+                )
+
+                self._companion_activity_worker = CompanionActivityWorker(
+                    kv_get=self._chat_db.kv_get,
+                    kv_set=self._chat_db.kv_set,
+                    enabled_provider=lambda: bool(
+                        getattr(
+                            self._settings.agent,
+                            "activity_awareness_enabled",
+                            False,
+                        )
+                    ),
+                    cue_store_provider=lambda: getattr(
+                        self, "_cue_store", None,
+                    ),
+                    user_name_provider=lambda: self.user_display_name,
+                )
+                self._idle_scheduler.register(self._companion_activity_worker)
+            except Exception:
+                log.warning(
+                    "CompanionActivityWorker init failed",
+                    exc_info=True,
+                )
+                self._companion_activity_worker = None
 
         # K2 — theory-of-mind / belief tracking. Always builds the store
         # (the [[predict:...]] tag dispatch + REST endpoints need it

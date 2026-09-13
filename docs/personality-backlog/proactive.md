@@ -22,11 +22,11 @@ behavior or permission to speak.
 Titles are now collected behind `activity.title_allowlist`, redacted
 before persist, and shown in the settings readout. They still do **not**
 enter the prompt `activity_block` (app name only). Remaining C6 work is
-interpretation, cues, UIA, the live pull in
-[C7](#c7-live-activity-pull--get_activity-tool), OS idle as a
-gap-cue qualifier in [C8](#c8-os-idle-as-a-gap-cue-qualifier), and
-duration as wellbeing evidence in
-[C9](#c9-activity-duration-as-wellbeing-evidence-k72).
+memories-on-repeat, UIA. Cue intake shipped
+Pass 17; live pull shipped Pass 18
+([C7](#c7-live-activity-pull--get_activity-tool)). [C8](#c8-os-idle-as-a-gap-cue-qualifier) shipped Pass 14.
+Duration as K72 evidence ([C9](#c9-activity-duration-as-wellbeing-evidence-k72))
+shipped in Pass 11.
 
 ---
 
@@ -81,15 +81,21 @@ forever — typed-proactive is *meant* to be text-only.
 
 ---
 
- ## C6. Companion mode — the desktop as a sensory channel
+## C6. Companion mode — the desktop as a sensory channel
 
-**Phases 1–2 shipped** (collection pipeline). Write-up:
+**Phases 1–5 shipped** (collection, Level-1 aggregation, Level-2
+interpretation, Level-3 companion cue). Write-up:
 [`shipped/proactive-tasks.md`](shipped/proactive-tasks.md#c6-companion-mode-collection-pipeline-phases-12).
-Still open: phases 3–6 below, plus [C7](#c7-live-activity-pull--get_activity-tool)
-(live pull / agent tool), [C8](#c8-os-idle-as-a-gap-cue-qualifier)
-(OS idle as a gap-cue qualifier), and
-[C9](#c9-activity-duration-as-wellbeing-evidence-k72)
-(duration as K72 evidence).
+Live Pass 11 consumes that store as situation evidence (app / duration /
+idle / lock / stale) and [C9](#c9-activity-duration-as-wellbeing-evidence-k72)
+is shipped into K72. **Pass 14 ships phase 3** (Level-1 aggregation worker)
+and [C8](#c8-os-idle-as-a-gap-cue-qualifier). **Pass 15 ships phase 4**
+(change-triggered local worker LLM; may return nothing; confidence
+required; kv only). **Pass 17 ships phase 5 cue intake** (pool-only
+`companion_activity` CueSpec / CuePolicy / `cue_decisions`; not a gap
+cue; no MemoryStore). Still open: memories only if a pattern repeats,
+phase 6 UIA. Live pull shipped Pass 18
+([C7](#c7-live-activity-pull--get_activity-tool)).
 
 **Motivation.** Every signal Aiko has about Jacob arrives through the
 chat box. She knows what he *says* and when he says it, and past that
@@ -163,10 +169,12 @@ after `turning_over`.
 
 ### The three things the sketch does not account for
 
-**1. The store exists; the aggregator does not.** Phase 2 shipped
-`activity_events` / `activity_sessions` with retention. Phase 3 still
-needs a compute-lane worker whose `demand()` is "has anything
-meaningful changed" — rollups over those sessions, not a second table.
+**1. The companion cue exists; memories still do not.**
+Phases 3–4 shipped the compute-lane rollup and the change-triggered
+interpretation worker. Level-2 writes kv, not `MemoryStore`. Pass 17
+ships the pool-only `companion_activity` cue (own CueSpec / CuePolicy /
+`cue_decisions`, not on `GAP_CUE_ORDER`). Memories wait until a
+pattern repeats.
 
 **2. A new cue lands in an oversubscribed pool and will starve
 invisibly.** The delightful version of this feature — *"you're doing the
@@ -175,20 +183,20 @@ priority mutex, and the audit file is a catalogue of exactly that going
 wrong: **H7** (16 hypotheses invented, 0 ever asked), **H29** (the wants
 ledger draining before pressure could accumulate), **H30** and **H32**
 (two cue-accounting metrics that were both artefacts). None of those
-were visible without instrumentation. So a companion cue gets a
+were visible without instrumentation. So Pass 17's companion cue got a
 `CueSpec`, a `CuePolicy` and a row in `cue_decisions` **in its first
-commit**, and its arming signal is its provider's own first real gate
-rather than the nearest available slot (audit shape 13). Assume the
-first measurement says it never fires, and plan to find out why.
+commit**, and its arming signal is a queued pool row rather than a
+`GAP_CUE_ORDER` slot (audit shape 13). Assume the first measurement
+says it never fires, and plan to find out why.
 
 **3. Titles and UI Automation are content, not buckets — and what she
 writes down is durable.** "Chrome" is a coarse category. "Barclays —
 Payments" is a fact about his finances, and a UIA text node is the
 sentence on his screen. Collection now redacts before persist and
-stores titles only for allowlisted apps. The sharper remaining problem
-is downstream: anything the interpretation worker concludes becomes a
-**memory** — mirrored into LanceDB, retrievable by RAG, surfaceable
-months later. Phase 4/5 must keep that bar.
+stores titles only for allowlisted apps. Phase 4 persists a kv reading
+(no titles, confidence required, may be empty). Phase 5 cues expire
+unsaid. The sharper remaining problem is a later memory: it would be
+mirrored into LanceDB, retrievable by RAG, surfaceable months later.
 
 ### The collector is its own thing, and must fail on its own
 
@@ -265,14 +273,16 @@ run and produced a list. **Defer, and expect that list to be short.**
 2. **Event store + sessionizer (Python, schema v40).** ✅ Shipped.
    Redact-before-persist, unknown sources dropped, focus-flicker
    collapse, `ActivityPruneWorker` from day one.
-3. **Level 1 aggregation worker.** Compute lane, no model — rollups and
-   a "has anything meaningful changed" signal, which is also the
-   `demand()` probe for phase 4. The store now exists for this to read.
-4. **Level 2 interpretation worker.** LLM lane, local worker model,
-   triggered only by phase 3's change signal. Must be able to return
-   *nothing* and must carry a confidence, because a confident wrong
-   reading ("you've been gaming for three hours" — he was watching a
-   tutorial) is worse than silence by a wide margin.
+3. **Level 1 aggregation worker.** ✅ Shipped Pass 14. Compute lane, no
+   model — rollups and a "has anything meaningful changed" `demand()`
+   probe for phase 4. Titles never enter the rollup.
+4. **Level 2 interpretation worker.** ✅ Shipped Pass 15. LLM lane,
+   local worker model, triggered only by phase 3's change signal. Must
+   be able to return *nothing* and must carry a confidence, because a
+   confident wrong reading ("you've been gaming for three hours" — he
+   was watching a tutorial) is worse than silence by a wide margin.
+   Allowlisted titles may enter the prompt; they never persist, never
+   enter Live 4B, and a title leak in the reading is treated as nothing.
 5. **Level 3 intake.** One memory path plus one gap cue, both
    instrumented. Stop here and measure for a fortnight.
 6. **UIA.** Only if phase 5's data names questions titles could not
@@ -292,22 +302,16 @@ setup*: with chat on a remote provider, local worker inference grades as
 other workers rather than with her ability to answer him.
 
 **Key files (remaining).**
-[`app/core/activity/`](../../app/core/activity/) (store + handlers),
-[`app/core/proactive/idle_worker.py`](../../app/core/proactive/idle_worker.py)
-(worker protocol, lanes),
-[`app/core/proactive/cue_accounting.py`](../../app/core/proactive/cue_accounting.py)
-(`CueSpec`, `CuePolicy`, `GAP_CUE_ORDER`),
-[`app/core/vision/image_describe.py`](../../app/core/vision/image_describe.py)
-(local-model + GPU-gate precedent),
 [`docs/presence-and-activity.md`](../../docs/presence-and-activity.md)
-(the privacy doc this must extend, not bypass).
+(the privacy doc UIA must extend, not bypass). Live pull shipped Pass 18
+([C7](#c7-live-activity-pull--get_activity-tool)).
 
 **Open questions.**
 - Does the interpretation layer write **memories** (durable, RAG-visible,
   and therefore a retention and redaction problem) or only **cues**
-  (ephemeral, expire unsaid)? Cheapest honest answer is cues first,
-  memories only once a pattern repeats — which is also how concepts
-  are supposed to form.
+  (ephemeral, expire unsaid)? Pass 17 shipped cues first. Memories only
+  once a pattern repeats — which is also how concepts are supposed to
+  form.
 - Where does the "he's been at it too long" judgement live? Extracted
   to [C9](#c9-activity-duration-as-wellbeing-evidence-k72) — evidence
   *into* K72, not a new companion cue.
@@ -343,40 +347,43 @@ intake. Immersion **H25** is the local-perception precedent. Audit
 
 ## C7. Live activity pull / `get_activity` tool
 
+**Shipped Pass 18.** Forced sample on the same ingest + redact path.
+`ActivitySource.snapshot()` (cheap sources only; UIA default remains
+`None`), optional `request_id` on the envelope, WS `activity_request`,
+a 250 ms wait on the brain thread, and `_TOOL_FAMILY` tool
+`get_activity`. Timeout or no desktop returns the last stored session,
+not an error. Titles only if ingest already allowed them. No
+`surface_id` in the tool JSON. JS never awaits an OS poll. UIA pull is
+still deferred — do not stub a walker.
+
 **Motivation.** Push samples are change-detected and can be seconds
 stale. A turn like "what are you looking at?" wants a forced sample on
 the same redact path, not a second pipeline.
 
-**Depends on.** C6 phases 1–2 (shipped). Do not start this until the
-push store has been used in anger — the collection envelope, handler
-registry, and `ActivityStore` are the reuse.
-
-**Sketched approach.** Add `ActivitySource.snapshot()`, optional
-`request_id` on the envelope, a WS `activity_request`, a bounded wait
-(~150–300 ms) on the **same** ingest + redact path, and a `_TOOL_FAMILY`
-tool. Timeout or no desktop → last stored session, not an error. UIA
-pull would be `snapshot()` on the dedicated thread, never COM on the
-turn thread. Do not stub those APIs ahead of this item.
+**Depends on.** C6 phases 1–2 (shipped).
 
 **Key files.** [`web/src-tauri/src/activity/`](../../web/src-tauri/src/activity/),
-[`app/core/activity/`](../../app/core/activity/),
+[`app/core/activity/pull.py`](../../app/core/activity/pull.py),
+[`app/llm/tools/activity.py`](../../app/llm/tools/activity.py),
 [`app/core/session/tool_pass_gate.py`](../../app/core/session/tool_pass_gate.py)
 `_TOOL_FAMILY`.
 
-**Open questions.** Does the tool return the last session summary, the
-raw last envelope, or both? Probably last session plus "as of Ns ago"
-so she can hedge when the collector is stale.
+Write-up: [`shipped/proactive-tasks.md`](shipped/proactive-tasks.md#c7-live-activity-pull--get_activity-tool).
 
 ---
 
 ## C8. OS idle as a gap-cue qualifier
 
+**Shipped Pass 14** on `sleep_return` only. Keyboard busy (`os_idle=active`)
+does not fire the gap cue. `idle` / `lock` sit beside the message-gap
+overnight gate. Missing collectors do not invent sleep. Locked is the
+same qualifier as idle, not a stronger one. Other `GAP_CUE_ORDER` cues
+are unchanged.
+
 **Motivation.** Idle depth currently conflates *away from the keyboard*
 with *here but not talking to me* — both are just "no messages for N
 minutes". `GetLastInputInfo` (now stored as `source: idle` events)
-separates them. `sleep_return` fires on a 5 h message gap and cannot
-tell a night's sleep from a long afternoon in another window; it is the
-highest-priority gap cue after `turning_over`.
+separates them.
 
 **Depends on.** C6 phases 1–2 (the idle source and store). Do not
 replace message-gap timing in five shipped cues at once.
@@ -387,45 +394,20 @@ for N hours" vs "no messages but the keyboard is busy". Start with
 `sleep_return` only.
 
 **Key files.** [`app/core/activity/store.py`](../../app/core/activity/store.py),
-gap-cue providers, `GAP_CUE_ORDER`.
+[`app/core/world/sleep_return.py`](../../app/core/world/sleep_return.py)
+`os_idle_allows_sleep_return`, `_sleep_return_line`.
 
-**Open questions.** Is a locked session (`source: lock`) a stronger
-sleep signal than idle, or the same one?
+Locked session is the same qualifier as idle, not a stronger one.
 
 ---
 
 ## C9. Activity duration as wellbeing evidence (K72)
 
-**Motivation.** K72's late-nights detector infers "he was up at 3am"
-from *chat message* timestamps. The activity store now has OS sessions
-with real start/end, so "he was in the editor from 01:00–04:00 without
-talking to me" is a first-class fact the detector cannot see. C6's
-open question was whether that judgement is a new companion cue or
-evidence into existing wellbeing machinery. It is the latter: a new
-cue in the oversubscribed pool would starve (C6 point 2). K72 already
-has the delivery posture — one soft check-in, never a lecture.
-
-**Depends on.** C6 phases 1–2 (the session table). Phase 3 rollups
-would make the signal cheaper but are not required — session rows
-already carry duration. Do not invent a parallel cue.
-
-**Sketched approach.** Add an OS-session late-night / long-focus
-detector beside `detect_late_nights` in
-[`wellbeing_concern.py`](../../app/core/relationship/wellbeing_concern.py).
-Feed [`ActivityStore.recent_sessions`](../../app/core/activity/store.py).
-Same signature and cooldown gates the worker already uses. Distinct
-from [C8](#c8-os-idle-as-a-gap-cue-qualifier) (C8 qualifies
-`sleep_return`; this feeds K72). Distinct from
-[D7](tools.md#d7-anticipatory-routine-assistance--act-on-what-shes-learned)
-(D7 offers help at a learned slot; this is concern, not a task).
-
-**Key files.** [`wellbeing_concern.py`](../../app/core/relationship/wellbeing_concern.py),
-[`wellbeing_concern_worker.py`](../../app/core/proactive/wellbeing_concern_worker.py),
-[`app/core/activity/store.py`](../../app/core/activity/store.py).
-
-**Open questions.** Is a four-hour coding session itself a concern, or
-only when it overlaps K72's small-hours window? Probably the latter
-first — "up late in the editor" is the finding K72 already names, just
-from a better sensor. Daytime long-focus stays a phase-5 companion cue
-if it ever earns one.
+**Shipped into K72** (Pass 11 / Live Phase 9). Write-up:
+[`shipped/proactive-tasks.md`](shipped/proactive-tasks.md#c9-activity-duration-as-wellbeing-evidence-k72).
+OS foreground sessions overlapping K72's 01–05h window are unioned into
+`detect_late_nights`. **Pass 16** feeds daytime coding grind (6h+ of
+editor time outside small hours, 3 distinct days) into
+`detect_long_focus` through the same K72 cue-pool door. No parallel
+companion cue. Titles never enter the finding.
 

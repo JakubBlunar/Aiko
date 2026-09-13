@@ -119,6 +119,17 @@ class ToolsRegistryMixin:
                     log.warning(
                         "weather tools failed to register", exc_info=True
                     )
+            if getattr(tools_cfg, "activity", True):
+                try:
+                    from app.llm.tools.activity import GetActivityTool
+
+                    registry.register(
+                        GetActivityTool(self.pull_activity_for_tool)
+                    )
+                except Exception:
+                    log.warning(
+                        "activity tool failed to register", exc_info=True
+                    )
             # D3: web_search is a brain tool again. It was pulled from
             # this lane when the only backend was a DuckDuckGo HTML
             # scrape; LangSearch answers in ~2.7s, the P14 gate keeps the

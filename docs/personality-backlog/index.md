@@ -222,12 +222,18 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
   behind an allowlist in C6 phases 1–2.
 - **C3.** Persisting last-fired typed-proactive cooldown to disk.
 - **C4.** TTS-on-typed-proactive toggle.
-- **C6.** Companion mode — *phases 1–2 shipped* (collectors + event
-  store). Still open: aggregation, interpretation, cue/memory intake,
-  UIA. See [`proactive.md`](proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel).
-- **C7.** Live activity pull / `get_activity` tool (after C6 collection).
-- **C8.** OS idle as a gap-cue qualifier (`sleep_return` first).
-- **C9.** Activity duration as wellbeing evidence (into K72, not a new cue).
+- **C6.** Companion mode — *phases 1–5 shipped* (collectors + event
+  store + Level-1 aggregation + Level-2 interpretation + Level-3
+  companion cue). Still open: memories-on-repeat, UIA. See
+  [`proactive.md`](proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel).
+- **C7.** Live activity pull / `get_activity` tool — *shipped Pass 18*.
+  Forced sample on the existing ingest + redact path; timeout returns
+  the last stored session. UIA remains deferred.
+- **C8.** OS idle as a gap-cue qualifier — *shipped Pass 14* on
+  `sleep_return` only.
+- **C9.** Activity duration as wellbeing evidence — *shipped into K72*
+  (Pass 11). OS small-hours sessions union into `detect_late_nights`.
+  Daytime long-focus shipped Pass 16 (`detect_long_focus`, same door).
 
 ### Live mode architecture — [`live-mode.md`](live-mode.md)
 
@@ -235,7 +241,30 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
   assembly, concept-aware behavior, deterministic action arbitration, hybrid
   speech, local policy-model evaluation, and staged rollout.
 - Builds on C6 perception and H27 co-presence without making either subsystem
-  a second behavioral controller.
+  a second behavioral controller. Conversation situation, `WorldMutationGuard`,
+  and the sleep lifecycle / `SleepSnapshot` are shipped precursors. Pass 1
+  shipped the shadow impulse bus, third-mode posture, and silence-floor
+  starve. Pass 2 shipped the situation assembler, Live heartbeat, and
+  bounded experience journal. Pass 3 shipped notices, urges, wait, and
+  budgets. Pass 4 shipped the `live_policy` concept diet, behavior rails,
+  and clamped modifiers. Pass 5 shipped H10 `IdleLifeChannel`, held
+  attention / commitment hysteresis, and the semantic behavior resolver.
+  Pass 6 shipped the shadow `LivePolicyController` (`qwen3.5:4b`):
+  propose / arbitrate / log, JSON Schema on `chat_json`, resource-keyed
+  gate, window-aware policy prompt. Pass 7 executes accepted nonverbal
+  intents through IdleLife; speech stays shadow and chat still replies
+  via a deterministic main-wake reflex. Pass 12 ships the Phase 10
+  hardening slice: cadence knobs, mic-consent copy, impulse ownership,
+  reconnect generation, grep-able `app.live` logs, and sanitized dumps.
+  Pass 13 closes idle 4B density (wait expiry → `idle.reconsider`,
+  heartbeat still data-only) and encodes the worker-ownership matrix.
+  Pass 14 ships C6 Level-1 aggregation and C8 `sleep_return` OS-idle
+  qualification. Pass 15 ships C6 Level-2 interpretation (kv only,
+  no companion cue). Pass 16 ships daytime long-focus into K72.
+  Pass 17 ships C6 Level-3 companion intake (`companion_activity`
+  CueSpec / CuePolicy / `cue_decisions`; not a gap cue; Live peek-only).
+  Pass 18 ships C7 `get_activity` (forced collector snapshot, 250 ms
+  wait, last stored session on timeout). UIA remains deferred.
 
 ### D. New tools / capabilities — [`tools.md`](tools.md)
 
@@ -346,9 +375,13 @@ and I3, I6, I7, I8, I10 in
 
 - **H2.** Calendar / time context block. *Partly superseded* — circadian
   and K3 cover most of it; holiday proximity + user birthday remain.
-- **H6.** Audible backchannels ("mm-hm" while the user speaks).
-- **H7.** Listen-while-speaking — soften the half-duplex voice lock.
-- **H10.** Autonomous idle-life on the avatar.
+- **H6.** ✅ **Shipped (Live Pass 8)** — audible mm-hm / chuckle while the
+  user speaks. See [`immersion.md`](immersion.md#h6-audible-backchannels--mm-hm-while-the-user-speaks).
+- **H7.** ✅ **Shipped (Live Pass 8)** except H7c full duplex/AEC —
+  overlap ring + client `playback_drained`. See
+  [`immersion.md`](immersion.md#h7-listen-while-speaking--soften-the-half-duplex-turn-lock).
+- **H10.** ✅ **Shipped (Live Pass 5)** — `IdleLifeChannel` acts out world
+  activity/posture. See [`live-mode.md`](live-mode.md).
 - **H12.** Aiko-initiated intentional gifts.
 - **H23.** Avatar shared-moment snapshot.
 - **H24.** Occasion- / season-aware outfits.

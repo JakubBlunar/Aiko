@@ -157,3 +157,18 @@ describe("MessageBubble — taxonomy contract", () => {
     expect(types.TOUCH_GESTURE_LABELS["hug"]).toBeDefined();
   });
 });
+
+describe("MessageBubble — unified assistant paint (Pass 10)", () => {
+  it("does not branch bubble color on proactive or live_micro", () => {
+    expect(bubbleSource).not.toMatch(/isProactive/);
+    expect(bubbleSource).not.toMatch(/isLiveMicro/);
+    expect(bubbleSource).not.toMatch(/emerald-500/);
+    expect(bubbleSource).not.toMatch(/aiko · proactive/);
+  });
+
+  it("uses the ordinary assistant footer for every non-user bubble", () => {
+    expect(bubbleSource).toMatch(
+      /\{isUser \? "you" : "aiko"\} ·\{\s*" "\}/,
+    );
+  });
+});

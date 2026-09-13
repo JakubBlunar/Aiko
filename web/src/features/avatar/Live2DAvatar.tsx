@@ -5,6 +5,7 @@ import { backendBase, isTauri } from "@/desktop/runtime";
 import { isMobileViewport, useIsMobile } from "@/hooks/useIsMobile";
 import { useWindowVisible } from "@/hooks/useWindowVisible";
 import { useAssistantStore } from "@/store";
+import { useWorldStore } from "@/stores/useWorldStore";
 import type { AvatarProfile, VoiceMode } from "@/types";
 import {
   AvatarEngine,
@@ -17,6 +18,7 @@ import { AmbientBodyChannel } from "@/live2d/channels/AmbientBodyChannel";
 import { AccessoryChannel } from "@/live2d/channels/AccessoryChannel";
 import { ExpressionChannel } from "@/live2d/channels/ExpressionChannel";
 import { GazeChannel } from "@/live2d/channels/GazeChannel";
+import { IdleLifeChannel } from "@/live2d/channels/IdleLifeChannel";
 import { GestureChannel } from "@/live2d/channels/GestureChannel";
 import { LipsyncChannel } from "@/live2d/channels/LipsyncChannel";
 import { MotionChannel } from "@/live2d/channels/MotionChannel";
@@ -256,6 +258,13 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
               moodInertiaDamping:
                 s.avatar?.settings?.mood_inertia_damping ?? true,
               sleepStatus: s.sleep?.status ?? "awake",
+              worldActivity: useWorldStore.getState().world?.state.activity ?? "",
+              worldPosture: useWorldStore.getState().world?.state.posture ?? "",
+              liveEmbodiment: s.liveEmbodiment?.plan ?? null,
+              liveAttentionTarget:
+                s.liveEmbodiment?.attention_target
+                ?? s.liveEmbodiment?.plan?.attention_target
+                ?? "",
             };
           },
         });
@@ -274,6 +283,7 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
           // of the always-on body-language drivers rather than
           // clobbering them.
           new ReachChannel(),
+          new IdleLifeChannel(),
           // Last writer for eye-open, breath, and body angles while sleep is
           // active. It never touches lip-sync parameters.
           new SleepChannel(),

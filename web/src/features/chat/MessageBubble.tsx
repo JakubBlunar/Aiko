@@ -16,7 +16,7 @@ interface BubbleProps {
   createdAt: string;
   streaming?: boolean;
   reaction?: string;
-  kind?: "proactive";
+  kind?: "proactive" | "live_micro";
   /** Backend message id (when known) — gates the "Mark as moment" action. */
   backendId?: number;
   /** K31 / B7: touch gestures Aiko emitted on this turn (one badge per
@@ -98,7 +98,6 @@ function MessageBubbleImpl({
   createdAt,
   streaming,
   reaction,
-  kind,
   backendId,
   gestures,
   reactions,
@@ -188,7 +187,6 @@ function MessageBubbleImpl({
   }
 
   const isUser = role === "user";
-  const isProactive = !isUser && kind === "proactive";
   // Mark-as-moment is available on any persisted user/assistant row
   // (system messages excluded above). Streaming rows don't have a
   // backendId yet so the button stays hidden until the turn lands.
@@ -215,9 +213,7 @@ function MessageBubbleImpl({
         className={`relative whitespace-pre-wrap break-words rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-md ${
           isUser
             ? "max-w-xl bg-ink-600/80 text-white"
-            : isProactive
-              ? "max-w-2xl border border-emerald-400/30 bg-emerald-500/[0.08] text-ink-100"
-              : "max-w-2xl border border-white/10 bg-white/[0.04] text-ink-100"
+            : "max-w-2xl border border-white/10 bg-white/[0.04] text-ink-100"
         } ${streaming ? "streaming-caret" : ""}`}
       >
         {liveContent
@@ -380,7 +376,7 @@ function MessageBubbleImpl({
         </div>
       ) : null}
       <div className="text-[10px] text-ink-100/40">
-        {isUser ? "you" : isProactive ? "aiko · proactive" : "aiko"} ·{" "}
+        {isUser ? "you" : "aiko"} ·{" "}
         {formatTime(createdAt)}
         {!isUser && liveReaction && liveReaction !== "neutral"
           ? ` · ${liveReaction}`

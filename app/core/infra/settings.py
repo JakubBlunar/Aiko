@@ -175,6 +175,11 @@ class LlmRoute:
     # Per-route reasoning-effort override. Empty = inherit the
     # provider-level value, then the client default.
     reasoning_effort: str = ""
+    # Optional lane identity for models that cannot coexist in VRAM.
+    # Empty = identity is ``(kind, endpoint, model)``. Set the same
+    # non-empty group on two routes to force them onto one priority
+    # gate even when the tags differ.
+    contention_group: str = ""
 
 
 @dataclass(slots=True)
@@ -206,6 +211,30 @@ LLM_ROLE_WORKER_DEFAULT = "worker_default"
 # Only diverges when a user deliberately repoints it at a remote /
 # bigger-context provider where VRAM is not the constraint.
 LLM_ROLE_WORKFLOW = "workflow"
+# Live presence policy (Pass 6). Default is a small local model so it
+# can sit beside ``main_chat`` / ``worker_default`` when VRAM allows.
+# Distinct resource key => pass-through gate; same model as workers
+# joins that lane at ``LIVE_POLICY`` priority.
+LLM_ROLE_LIVE_POLICY = "live_policy"
+
+_DEFAULT_LIVE_POLICY_MODEL = "qwen3.5:4b"
+_DEFAULT_LIVE_POLICY_CONTEXT = 40960
+# Compact JSON plus a short ``arguments.reasoning``. Pass 6 shipped 64
+# and the 4B routinely hit ``done_reason=length`` mid-sentence.
+_DEFAULT_LIVE_POLICY_MAX_TOKENS = 512
+_LEGACY_LIVE_POLICY_MAX_TOKENS = 64
+
+
+def default_live_policy_route(provider_id: str = "") -> LlmRoute:
+    """Shipped Live-policy assignment: small local model, JSON + reasoning."""
+    return LlmRoute(
+        provider_id=(provider_id or "").strip() or _LOCAL_OLLAMA_ID,
+        model=_DEFAULT_LIVE_POLICY_MODEL,
+        context_window=_DEFAULT_LIVE_POLICY_CONTEXT,
+        max_tokens=_DEFAULT_LIVE_POLICY_MAX_TOKENS,
+        temperature=0.0,
+    )
+
 
 # Fallback endpoint when the catalogue has no Ollama entry at all
 # (e.g. a hand-edited config that only lists a remote provider).
@@ -295,7 +324,7 @@ class AudioSettings:
     enable_microphone: bool
     vad_level_threshold: float
     vad_silence_seconds: float
-    barge_in_enabled: bool = False
+    barge_in_enabled: bool = True
     earcons_enabled: bool = True
 
 
@@ -908,6 +937,11 @@ class ToolsSettings:
     # the passive ambient ``agent.weather_sync_enabled`` feed -- the tools
     # work even with the ambient overlay off. See :mod:`app.llm.tools.weather`.
     weather: bool = True
+    # C7 live desktop pull (``get_activity``). Forced sample on the
+    # existing ingest + redact path; timeout returns the last stored
+    # session. Independent of ``agent.activity_awareness_enabled`` for
+    # registration -- the tool itself reports when awareness is off.
+    activity: bool = True
 
 
 @dataclass(slots=True)
@@ -1765,6 +1799,7 @@ def _parse_llm_route(payload: dict[str, Any]) -> LlmRoute | None:
         reasoning_effort=_norm_reasoning_effort(
             payload.get("reasoning_effort")
         ),
+        contention_group=str(payload.get("contention_group", "") or "").strip(),
     )
 
 
@@ -2117,6 +2152,7 @@ def _migrate_legacy_llm(
         ),
         LLM_ROLE_WORKER_DEFAULT: worker_route,
         LLM_ROLE_WORKFLOW: replace(worker_route),
+        LLM_ROLE_LIVE_POLICY: default_live_policy_route(_LOCAL_OLLAMA_ID),
     }
 
     # Step 5: embeddings.
@@ -2183,6 +2219,7 @@ def llm_route_to_dict(route: LlmRoute) -> dict[str, Any]:
         "max_tokens": int(route.max_tokens or 0),
         "temperature": route.temperature,
         "reasoning_effort": route.reasoning_effort,
+        "contention_group": getattr(route, "contention_group", "") or "",
     }
 
 
@@ -2373,7 +2410,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             enable_microphone=bool(_required(audio, "enable_microphone")),
             vad_level_threshold=float(audio.get("vad_level_threshold", 0.02)),
             vad_silence_seconds=float(audio.get("vad_silence_seconds", 1.0)),
-            barge_in_enabled=bool(audio.get("barge_in_enabled", False)),
+            barge_in_enabled=bool(audio.get("barge_in_enabled", True)),
             earcons_enabled=bool(audio.get("earcons_enabled", True)),
         ),
         stt=SttSettings(
@@ -2489,6 +2526,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             goals=bool(tools_raw.get("goals", True)),
             workflow=bool(tools_raw.get("workflow", True)),
             weather=bool(tools_raw.get("weather", True)),
+            activity=bool(tools_raw.get("activity", True)),
         ),
         search=SearchSettings(
             provider=(
@@ -2607,6 +2645,46 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         settings.llm.routes[LLM_ROLE_WORKFLOW] = replace(
             settings.llm.routes[LLM_ROLE_WORKER_DEFAULT],
         )
+
+    # Backfill Live policy for installs that predate Pass 6. Default is
+    # a distinct small local model so it does not share the worker
+    # VRAM lane unless the user later points it at the same tag.
+    if LLM_ROLE_LIVE_POLICY not in settings.llm.routes:
+        local = local_ollama_provider(settings.llm)
+        settings.llm.routes[LLM_ROLE_LIVE_POLICY] = default_live_policy_route(
+            local.id,
+        )
+
+    # Pass 6 shipped ``max_tokens`` 64. The 4B writes a short
+    # ``arguments.reasoning`` and the cap clipped the JSON closed.
+    # Raise that exact legacy value; any other cap is a user choice.
+    live_route = settings.llm.routes.get(LLM_ROLE_LIVE_POLICY)
+    if (
+        live_route is not None
+        and int(live_route.max_tokens or 0) == _LEGACY_LIVE_POLICY_MAX_TOKENS
+    ):
+        settings.llm.routes[LLM_ROLE_LIVE_POLICY] = replace(
+            live_route,
+            max_tokens=_DEFAULT_LIVE_POLICY_MAX_TOKENS,
+        )
+        if config_path is None:
+            try:
+                persist_user_overrides(
+                    {
+                        "llm": {
+                            "routes": {
+                                LLM_ROLE_LIVE_POLICY: {
+                                    "max_tokens": _DEFAULT_LIVE_POLICY_MAX_TOKENS,
+                                },
+                            },
+                        },
+                    },
+                )
+            except Exception:
+                log.warning(
+                    "persisting live_policy max_tokens bump failed",
+                    exc_info=True,
+                )
 
     # Derive the transport defaults now that ``llm`` is final.
     main_route = settings.llm.routes.get(LLM_ROLE_MAIN_CHAT)

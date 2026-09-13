@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 43
+_SCHEMA_VERSION = 44
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -314,6 +314,21 @@ CREATE TABLE IF NOT EXISTS sleep_state (
     last_woken_at TEXT,
     previous_world_json TEXT NOT NULL DEFAULT '{}'
 );
+
+-- Schema v44: bounded Live experience journal. Privacy-classified,
+-- TTL'd presence notes; not long-term memory.
+CREATE TABLE IF NOT EXISTS live_experience_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    privacy TEXT NOT NULL DEFAULT 'local_state',
+    kind TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_live_journal_session_time
+    ON live_experience_journal(session_id, occurred_at DESC);
 
 -- Phase 4c: prepared nudges (single row per user; ProactiveDirector consumes).
 CREATE TABLE IF NOT EXISTS prepared_nudge (
@@ -1937,6 +1952,9 @@ class ChatDatabase:
         # v42 -> v43: identity-wide sleep state and episode history. Existing
         # installs deliberately receive no inferred episode: SleepStore lazily
         # creates the singleton in ``awake`` on its first read.
+        # v43 -> v44: ``live_experience_journal`` is a bounded Live
+        # presence ring. CREATE TABLE IF NOT EXISTS above is enough;
+        # there is no historical backfill.
         for stmt in (
             "ALTER TABLE turn_stance ADD COLUMN brevity INTEGER NOT NULL "
             "DEFAULT 0",

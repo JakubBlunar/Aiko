@@ -13,8 +13,16 @@ questions:
   app, OS idle, session lock) push versioned envelopes to the server,
   which redacts then stores them. The prompt still gets **app name
   only**. Titles are stored only for apps on a positive allowlist.
-  This is C6 phases 1–2 (collection). Interpretation, cues, memories,
-  UIA, and a live tool-pass pull are later consumers — see
+  This is C6 phases 1–2 (collection). Live (Pass 11) and K72 now
+  consume the store as privacy-safe evidence — still **app-name only**
+  in prompts; titles never enter the Live situation line. Level-2
+  interpretation (Pass 15) may read allowlisted titles in the worker
+  prompt and persists a kv reading without them. Level-3 companion
+  intake (Pass 17) is a pooled `companion_activity` cue on the
+  TurnRunner path; Live peeks pending rows and never takes. The C7
+  `get_activity` tool (Pass 18) forces a collector snapshot on the
+  same ingest + redact path; timeout returns the last stored session.
+  Memories and UIA remain later consumers — see
   [`docs/personality-backlog/proactive.md`](personality-backlog/proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel).
 
 ## What gets sent over the wire
@@ -40,6 +48,12 @@ questions:
 A background `CollectorRuntime` in the Tauri process polls cheap
 sources on its own thread. JS **never awaits** an OS poll. Envelopes
 ride `activity://sample` → `{ type: "user_activity", envelope }`.
+A C7 `activity_request` frame (server → client, `{ request_id }`)
+asks the collector for a forced `snapshot()`. JS forwards that as
+`request_activity_snapshot` and must not await an OS poll; the sample
+comes back on the same `user_activity` path with `request_id` set.
+Timeout (~250 ms) or no desktop returns the last stored session, not
+an error.
 
 ```jsonc
 {
@@ -80,7 +94,9 @@ ride `activity://sample` → `{ type: "user_activity", envelope }`.
 - Per-window geometry
 - Keystrokes, mouse moves, clipboard contents
 - Anything from non-foreground windows
-- UIA trees (not implemented; the plug exists, the walker does not)
+- UIA trees (not implemented; the plug exists, the walker does not).
+  C7 `snapshot()` default is silence so a dedicated UIA source cannot
+  be walked from the turn path.
 
 The prompt `activity_block` remains **app name only**. Stored titles
 are for later interpretation, not for this turn's system prompt.
@@ -126,8 +142,10 @@ the toggle but the readout reads "Browser shell — desktop app
 required".
 
 MCP `get_activity_timeline` dumps recent sessions, the last
-envelope, the registered sources, the allowlist, and the prune
-watermark.
+envelope, the registered sources, the allowlist, the prune
+watermark, and a title-free Level-2 interpretation when one exists.
+MCP `get_companion_activity_state` dumps the Level-3 cue (pending
+rows, last signature, title-free interpretation).
 
 ## Disabling
 

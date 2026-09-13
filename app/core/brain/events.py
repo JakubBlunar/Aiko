@@ -234,19 +234,28 @@ class ProactiveEvent:
     """Aiko speaks unprompted. Routed to ``ProactiveDirector``.
 
     ``source`` distinguishes the trigger: ``"voice_silence"`` (live
-    mode), ``"typed_silence"`` (typed mode), or ``"task_escalation"``
-    (a parked task cue exceeded its silence window).
+    mode), ``"typed_silence"`` (typed mode), ``"task_escalation"``
+    (a parked task cue exceeded its silence window), or
+    ``"live_main_wake"`` (an admitted Live ``request_main_speech``).
     ``parked_cue_ids`` carries the task ids whose cues triggered the
     escalation, so the director can render them into the proactive
-    turn's prompt.
+    turn's prompt. Live main-wake fields default empty so existing
+    constructors stay valid.
     """
 
     kind: ClassVar[str] = KIND_PROACTIVE
     priority: ClassVar[Priority] = Priority.PROACTIVE
 
     session_key: str = ""
-    source: Literal["voice_silence", "typed_silence", "task_escalation"] = "typed_silence"
+    source: Literal[
+        "voice_silence", "typed_silence", "task_escalation", "live_main_wake"
+    ] = "typed_silence"
     parked_cue_ids: tuple[str, ...] = ()
+    live_generation: int = 0
+    urge_id: str = ""
+    reason_code: str = ""
+    situation_summary: str = ""
+    concept_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -50,7 +50,7 @@ beliefs, wants) are ordinary consumers and do get diets.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from app.core.concepts.concept_kinds import (
@@ -194,6 +194,28 @@ def tuning_from_host(host: object) -> DietTuning:
             getattr(ms, "cluster_affect_max_age_days", 120.0) or 0.0
         ),
     )
+
+
+def tuning_from_route(host: object, *, role: str) -> DietTuning:
+    """Like :func:`tuning_from_host` but sized against an explicit LLM role.
+
+    Live policy must not inherit the worker window. A 40k ``live_policy``
+    route should grow its concept slice when raised to 64k.
+    """
+    base = tuning_from_host(host)
+    window = 0
+    resolve = getattr(host, "_route_or_none", None)
+    if callable(resolve):
+        try:
+            route = resolve(str(role or "").strip())
+            if route is not None:
+                window = int(getattr(route, "context_window", 0) or 0)
+        except Exception:
+            log.debug("route context window read failed", exc_info=True)
+            window = 0
+    if window <= 0:
+        return base
+    return replace(base, context_window=window)
 
 
 def resolve_budget(diet: ConceptDiet, tuning: DietTuning) -> int:
@@ -512,6 +534,22 @@ register_diet(
     )
 )
 
+register_diet(
+    ConceptDiet(
+        consumer="live_policy",
+        kinds=("value", "boundary", "affective", "ritual", "taste"),
+        weight=0.35,
+        max_concepts=16,
+        per_kind_cap=3,
+        rationale=(
+            "Live policy thinks with behavior rails (values, boundaries, "
+            "affect, relationship rituals) plus a generative taste so the "
+            "selection cannot be all constraints. This consumer never "
+            "writes T3 habituation or L37 surfacing; it only reads."
+        ),
+    )
+)
+
 
 __all__ = [
     "CONCEPT_DIETS",
@@ -525,4 +563,5 @@ __all__ = [
     "registry_problems",
     "resolve_budget",
     "tuning_from_host",
+    "tuning_from_route",
 ]

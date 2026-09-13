@@ -40,7 +40,7 @@ _ALL_TOOLS = [
     "take_item", "put_item",
     "add_goal", "update_goal_progress", "archive_goal", "list_goals",
     "start_workflow", "check_my_work", "cancel_work",
-    "get_weather", "get_forecast", "web_search",
+    "get_weather", "get_forecast", "web_search", "get_activity",
 ]
 
 _NO_CONTEXT = GateContext()
@@ -128,6 +128,11 @@ class UnknownToolTests(unittest.TestCase):
         self.assertEqual(families, {"web"})
         self.assertEqual(unknown, set())
 
+    def test_get_activity_maps_to_the_activity_family(self) -> None:
+        families, unknown = families_for_tools(["get_activity"])
+        self.assertEqual(families, {"activity"})
+        self.assertEqual(unknown, set())
+
 
 class SignalFamilyTests(unittest.TestCase):
     """One representative phrase per family fires its patterns."""
@@ -150,6 +155,23 @@ class SignalFamilyTests(unittest.TestCase):
 
     def test_forecast_signal(self) -> None:
         self._assert_runs("what's the forecast for the weekend?", "weather")
+
+    def test_activity_looking_at_signal(self) -> None:
+        self._assert_runs("what am I looking at?", "activity")
+
+    def test_activity_screen_signal(self) -> None:
+        self._assert_runs("what's on my screen right now?", "activity")
+
+    def test_activity_does_not_fire_on_bare_doing(self) -> None:
+        decision = _decide("what are you doing?", tools=["get_activity"])
+        self.assertFalse(decision.run)
+        self.assertEqual(decision.reason, "no_signal")
+
+    def test_bare_window_is_world_not_activity(self) -> None:
+        decision = _decide("go sit by the window")
+        self.assertTrue(decision.run)
+        self.assertIn("world", decision.matched)
+        self.assertNotIn("activity", decision.matched)
 
     def test_weather_phrase_skips_when_weather_tools_disabled(self) -> None:
         # With the weather tools removed, "weather" patterns aren't
@@ -332,6 +354,7 @@ class SelectActiveToolNamesTests(unittest.TestCase):
         self.assertIn("recall", allow)
         self.assertIn("consume_item", allow)  # world is core
         self.assertNotIn("get_weather", allow)
+        self.assertNotIn("get_activity", allow)
         self.assertNotIn("add_goal", allow)
         self.assertNotIn("start_workflow", allow)
 
@@ -346,6 +369,18 @@ class SelectActiveToolNamesTests(unittest.TestCase):
         self.assertIn("consume_item", allow)
         self.assertIn("recall", allow)
         # Goals are not relevant -> excluded.
+        self.assertNotIn("add_goal", allow)
+        self.assertNotIn("get_activity", allow)
+
+    def test_activity_signal_includes_activity_plus_core(self) -> None:
+        decision = self._decide("what am I looking at?")
+        allow = select_active_tool_names(
+            decision, _ALL_TOOLS, router_enabled=True,
+        )
+        assert allow is not None
+        self.assertIn("get_activity", allow)
+        self.assertIn("consume_item", allow)
+        self.assertNotIn("get_weather", allow)
         self.assertNotIn("add_goal", allow)
 
     def test_world_always_present_via_core(self) -> None:

@@ -734,6 +734,7 @@ class OllamaClient:
         options: dict[str, object] | None = None,
         timeout_seconds: float | None = None,
         format_json: bool = True,
+        json_schema: dict[str, Any] | None = None,
         think: bool = False,
         keep_alive: str | None = None,
         surface: str = "chat_json",
@@ -745,6 +746,8 @@ class OllamaClient:
         ``(raw_content, usage)``. Pass ``format_json=False`` for plain text
         responses (e.g. summarisation). ``think`` is False by default so
         reasoning models don't burn the response budget on chain-of-thought.
+        ``json_schema`` becomes Ollama's structured-output ``format``
+        object and takes precedence over ``format_json``.
         """
         merged_options = self._default_options(0.0)
         if options:
@@ -767,7 +770,9 @@ class OllamaClient:
         }
         if effective_keep_alive:
             payload["keep_alive"] = effective_keep_alive
-        if format_json:
+        if json_schema:
+            payload["format"] = json_schema
+        elif format_json:
             payload["format"] = "json"
         t0 = time.monotonic()
         try:
@@ -840,12 +845,43 @@ class OllamaClient:
         self._announce_connection(use_model)
         log.debug(
             "ollama chat_json: model=%s msgs=%d elapsed_ms=%.0f "
-            "prompt_tokens=%d completion_tokens=%d format_json=%s",
+            "prompt_tokens=%d completion_tokens=%d format_json=%s schema=%s",
             use_model, len(messages), elapsed_ms,
             usage.prompt_tokens, usage.completion_tokens,
             "1" if format_json else "0",
+            "1" if json_schema else "0",
         )
         return content, usage
+
+    def set_model_keep_alive(
+        self,
+        model: str,
+        keep_alive: str | int,
+    ) -> None:
+        """Load or unload ``model`` without a real generation.
+
+        Ollama honours ``keep_alive=0`` as unload. Used by Live policy so
+        the 4B does not sit in VRAM after Live posture turns off.
+        """
+        use_model = (model or "").strip() or self._settings.chat_model
+        payload: dict[str, Any] = {
+            "model": use_model,
+            "prompt": "",
+            "stream": False,
+            "keep_alive": keep_alive,
+        }
+        try:
+            requests.post(
+                f"{self._base_url}/api/generate",
+                json=payload,
+                timeout=min(30, int(self._timeout_seconds) or 30),
+                headers=self._request_headers(),
+            )
+        except requests.RequestException:
+            log.debug(
+                "ollama set_model_keep_alive failed: model=%s keep_alive=%r",
+                use_model, keep_alive, exc_info=True,
+            )
 
     @staticmethod
     def _parse_tool_calls(raw_tool_calls: object) -> list[OllamaToolCall]:

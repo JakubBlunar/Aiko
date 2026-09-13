@@ -607,6 +607,22 @@ class AffectUpdater:
         )
         return state
 
+    def tick_elapsed(self, user_id: str, *, min_elapsed_s: float = 15.0) -> AffectState:
+        """Decay-only persist. A heartbeat is not a ``neutral`` turn."""
+        state = self._store.get(user_id)
+        elapsed_s = self._seconds_since(state.updated_at)
+        if elapsed_s < max(0.0, float(min_elapsed_s)):
+            return state
+        valence, arousal = state.decayed()
+        mood_label, mood_intensity = _classify_mood(valence, arousal)
+        state.valence = round(valence, 4)
+        state.arousal = round(arousal, 4)
+        state.mood_label = mood_label
+        state.mood_intensity = round(mood_intensity, 4)
+        state.updated_at = timephrase.utcnow().isoformat()
+        self._store.save(state)
+        return state
+
     @staticmethod
     def _seconds_since(iso_timestamp: str) -> float:
         try:

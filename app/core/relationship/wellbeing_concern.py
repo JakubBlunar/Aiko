@@ -10,9 +10,10 @@ soft, *once*, because they care.
 
 This module is the pure, deterministic core of K72:
 
-  * three independent detectors over multi-day aggregates the worker
+  * four independent detectors over multi-day aggregates the worker
     collects — :func:`detect_late_nights` (distinct small-hours days),
-    :func:`detect_self_neglect` (explicit "haven't slept / eaten"
+    :func:`detect_long_focus` (distinct daytime coding-grind days from
+    C6), :func:`detect_self_neglect` (explicit "haven't slept / eaten"
     mentions across days), :func:`detect_rough_stretch` (a sustained
     low run over the H3 ``DriftSample`` ring, gated *harder* than H3 so
     K72 reads as concern, not mood-narration);
@@ -61,6 +62,11 @@ DEFAULT_NEGLECT_MIN_DAYS = 2
 # (3 days <= -0.15) so K72 doesn't just echo the mood narrator.
 DEFAULT_ROUGH_RUN = 5
 DEFAULT_ROUGH_THRESHOLD = -0.25
+# Distinct daytime coding-grind days in the window. Six hours of editor
+# time outside small hours is a crunch day, not a normal sitting; three
+# of those in a week is the same bar as late nights.
+DEFAULT_LONG_FOCUS_MIN_DAYS = 3
+DEFAULT_LONG_FOCUS_MIN_SECONDS = 6 * 3600
 
 # Local clock hours that count as "the small hours" (genuinely worrying,
 # not just a late evening). 1am-4:59am. Module constants — rarely need
@@ -73,10 +79,16 @@ LATE_NIGHT_END_HOUR = 5
 # the mood-trend signal; explicit self-neglect is the most direct.
 KIND_SELF_NEGLECT = "self_neglect"
 KIND_LATE_NIGHTS = "late_nights"
+KIND_LONG_FOCUS = "long_focus"
 KIND_ROUGH_STRETCH = "rough_stretch"
 
 # Priority order pick_concern checks (first hit wins).
-_PRIORITY = (KIND_SELF_NEGLECT, KIND_LATE_NIGHTS, KIND_ROUGH_STRETCH)
+_PRIORITY = (
+    KIND_SELF_NEGLECT,
+    KIND_LATE_NIGHTS,
+    KIND_LONG_FOCUS,
+    KIND_ROUGH_STRETCH,
+)
 
 # Self-neglect categories.
 CATEGORY_SLEEP = "sleep"
@@ -174,6 +186,24 @@ def detect_late_nights(
     )
 
 
+def detect_long_focus(
+    long_focus_dates: Sequence[str],
+    *,
+    min_days: int = DEFAULT_LONG_FOCUS_MIN_DAYS,
+) -> ConcernFinding | None:
+    """Fire when distinct daytime long-focus days clear ``min_days``."""
+    n = len({d for d in long_focus_dates if d})
+    if n < max(1, int(min_days)):
+        return None
+    detail = f"{n} long focus days in the last while"
+    return ConcernFinding(
+        kind=KIND_LONG_FOCUS,
+        detail=detail,
+        severity=round(min(1.0, n / 7.0), 4),
+        signature=f"{KIND_LONG_FOCUS}:{n}",
+    )
+
+
 def detect_self_neglect(
     neglect_days: Sequence[str],
     categories: Sequence[str],
@@ -227,10 +257,12 @@ def detect_rough_stretch(
 def pick_concern(
     *,
     late_night_dates: Sequence[str] = (),
+    long_focus_dates: Sequence[str] = (),
     neglect_days: Sequence[str] = (),
     neglect_categories: Sequence[str] = (),
     drift_samples: Sequence[DriftSample] = (),
     late_night_min: int = DEFAULT_LATE_NIGHT_MIN,
+    long_focus_min_days: int = DEFAULT_LONG_FOCUS_MIN_DAYS,
     neglect_min_days: int = DEFAULT_NEGLECT_MIN_DAYS,
     rough_run: int = DEFAULT_ROUGH_RUN,
     rough_threshold: float = DEFAULT_ROUGH_THRESHOLD,
@@ -238,9 +270,10 @@ def pick_concern(
     """Return the single highest-priority concern, or ``None``.
 
     Priority (first hit wins): explicit self-neglect (most concrete) →
-    late nights (behavioral) → rough stretch (mood trend, lowest because
-    H3 already narrates mood). Returning at most one keeps a worried turn
-    from stacking three separate worries.
+    late nights (behavioral, small hours) → long focus (behavioral,
+    daytime grind) → rough stretch (mood trend, lowest because H3 already
+    narrates mood). Returning at most one keeps a worried turn from
+    stacking four separate worries.
     """
     findings: dict[str, ConcernFinding | None] = {
         KIND_SELF_NEGLECT: detect_self_neglect(
@@ -248,6 +281,9 @@ def pick_concern(
         ),
         KIND_LATE_NIGHTS: detect_late_nights(
             late_night_dates, min_nights=late_night_min,
+        ),
+        KIND_LONG_FOCUS: detect_long_focus(
+            long_focus_dates, min_days=long_focus_min_days,
         ),
         KIND_ROUGH_STRETCH: detect_rough_stretch(
             drift_samples, min_run=rough_run, threshold=rough_threshold,
@@ -283,6 +319,12 @@ def render_inner_life_block(
             "in the small hours several nights running now"
         )
         example = "hey... that's a few late nights in a row. you doing okay?"
+    elif kind == KIND_LONG_FOCUS:
+        core = (
+            f"Something you've quietly clocked about {name}: he's been deep "
+            "in the work for long stretches several days running now"
+        )
+        example = "hey -- that's a few long days in a row. you doing okay?"
     elif kind == KIND_SELF_NEGLECT:
         what = (detail or "looking after himself").strip()
         core = (
@@ -322,6 +364,8 @@ def concern_subject(kind: str, detail: str = "") -> str:
     """
     if kind == KIND_LATE_NIGHTS:
         return "late nights, up in the small hours"
+    if kind == KIND_LONG_FOCUS:
+        return "long days, deep in the work"
     if kind == KIND_SELF_NEGLECT:
         return (detail or "looking after himself").strip()
     if kind == KIND_ROUGH_STRETCH:
