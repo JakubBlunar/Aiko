@@ -92,4 +92,196 @@ describe("IdleLifeChannel", () => {
     channel.detach();
     expect(channel.motionCancelReason).toBe("detach");
   });
+
+  it("applies a Live amused expression when conversation is idle", () => {
+    const adapter = new FakeAdapter();
+    const clock = new FakeClock(1_000);
+    const snap = buildStoreSnapshot({
+      reaction: "neutral",
+      liveEmbodiment: {
+        intent: "react_affectively",
+        attention_target: "user",
+        gaze_class: "user_eye_contact",
+        body_class: "perk",
+        breath_class: "normal",
+        expression_class: "amused",
+        motion_class: "none",
+        degrade_to_sleep: false,
+        reaction_tone: "amused",
+        reaction_intensity: "high",
+      },
+    }) as ChannelStoreSnapshot;
+    const channel = new IdleLifeChannel();
+    channel.attach(adapter, {
+      now: clock.now,
+      manifest: buildManifest({
+        capabilities: {
+          has_body_angle_y: true,
+          has_body_angle_z: true,
+          has_breath: true,
+        },
+        parameters: [
+          { id: "ParamBodyAngleY", name: "y" },
+          { id: "ParamBodyAngleZ", name: "z" },
+          { id: "ParamBreath", name: "breath" },
+        ],
+        reaction_mapping: { amused: "lzx", playful: "zs1" },
+      }),
+      engineState: createEngineState(),
+      getStoreSnapshot: () => snap,
+    });
+    clock.advance(16);
+    channel.tickPreModel!();
+    expect(adapter.expressionCalls).toEqual(["lzx"]);
+  });
+
+  it("lets conversation reactions outrank Live tone", () => {
+    const adapter = new FakeAdapter();
+    const clock = new FakeClock(1_000);
+    const snap = buildStoreSnapshot({
+      reaction: "playful",
+      liveEmbodiment: {
+        intent: "react_affectively",
+        attention_target: "user",
+        gaze_class: "rest",
+        body_class: "perk",
+        breath_class: "normal",
+        expression_class: "amused",
+        motion_class: "none",
+        degrade_to_sleep: false,
+        reaction_tone: "amused",
+        reaction_intensity: "high",
+      },
+    }) as ChannelStoreSnapshot;
+    const channel = new IdleLifeChannel();
+    channel.attach(adapter, {
+      now: clock.now,
+      manifest: buildManifest({
+        capabilities: { has_body_angle_y: true },
+        reaction_mapping: { amused: "lzx", playful: "zs1" },
+      }),
+      engineState: createEngineState(),
+      getStoreSnapshot: () => snap,
+    });
+    clock.advance(16);
+    channel.tickPreModel!();
+    expect(adapter.expressionCalls).toEqual([]);
+  });
+
+  it("no-ops Live expression when the rig has no alias", () => {
+    const adapter = new FakeAdapter();
+    const clock = new FakeClock(1_000);
+    const snap = buildStoreSnapshot({
+      liveEmbodiment: {
+        intent: "react_affectively",
+        attention_target: "user",
+        gaze_class: "rest",
+        body_class: "none",
+        breath_class: "normal",
+        expression_class: "amused",
+        motion_class: "none",
+        degrade_to_sleep: false,
+        reaction_tone: "amused",
+        reaction_intensity: "high",
+      },
+    }) as ChannelStoreSnapshot;
+    const channel = new IdleLifeChannel();
+    channel.attach(adapter, {
+      now: clock.now,
+      manifest: buildManifest({
+        reaction_mapping: { neutral: "n" },
+      }),
+      engineState: createEngineState(),
+      getStoreSnapshot: () => snap,
+    });
+    clock.advance(16);
+    channel.tickPreModel!();
+    expect(adapter.expressionCalls).toEqual([]);
+  });
+
+  it("no-ops Live expression when the rig cannot express", () => {
+    const { adapter, tick } = setup({
+      liveEmbodiment: {
+        intent: "react_affectively",
+        attention_target: "user",
+        gaze_class: "rest",
+        body_class: "perk",
+        breath_class: "normal",
+        expression_class: "amused",
+        motion_class: "none",
+        degrade_to_sleep: false,
+        reaction_tone: "amused",
+        reaction_intensity: "high",
+      },
+    }, {
+      has_body_angle_y: true,
+      has_body_angle_z: true,
+      has_breath: true,
+    });
+    tick();
+    expect(adapter.expressionCalls).toEqual([]);
+  });
+
+  it("scales Live body less at low intensity than at high", () => {
+    const low = setup({
+      liveEmbodiment: {
+        intent: "react_affectively",
+        attention_target: "user",
+        gaze_class: "rest",
+        body_class: "perk",
+        breath_class: "normal",
+        expression_class: "amused",
+        motion_class: "none",
+        degrade_to_sleep: false,
+        reaction_tone: "amused",
+        reaction_intensity: "low",
+      },
+    });
+    const high = setup({
+      liveEmbodiment: {
+        intent: "react_affectively",
+        attention_target: "user",
+        gaze_class: "rest",
+        body_class: "perk",
+        breath_class: "normal",
+        expression_class: "amused",
+        motion_class: "none",
+        degrade_to_sleep: false,
+        reaction_tone: "amused",
+        reaction_intensity: "high",
+      },
+    });
+    low.tick();
+    high.tick();
+    const lowY = Math.abs(low.adapter.getParam("ParamBodyAngleY") ?? 0);
+    const highY = Math.abs(high.adapter.getParam("ParamBodyAngleY") ?? 0);
+    expect(lowY).toBeGreaterThan(0);
+    expect(lowY).toBeLessThan(highY);
+  });
+
+  it("does not shrink Pass 5 body when Live tone is neutral", () => {
+    const plan = {
+      intent: "remain_present",
+      attention_target: "none",
+      gaze_class: "rest",
+      body_class: "perk",
+      breath_class: "normal",
+      expression_class: "none",
+      motion_class: "none",
+      degrade_to_sleep: false,
+    };
+    const unscaled = setup({ liveEmbodiment: plan });
+    const neutralLow = setup({
+      liveEmbodiment: {
+        ...plan,
+        reaction_tone: "neutral",
+        reaction_intensity: "low",
+      },
+    });
+    unscaled.tick();
+    neutralLow.tick();
+    expect(neutralLow.adapter.getParam("ParamBodyAngleY")).toBeCloseTo(
+      unscaled.adapter.getParam("ParamBodyAngleY") ?? 0,
+    );
+  });
 });

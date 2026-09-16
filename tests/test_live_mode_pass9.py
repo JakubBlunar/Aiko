@@ -199,7 +199,7 @@ class MicroExecuteTests(unittest.TestCase):
             inclination_provider=lambda: runtime,
             on_micro_utterance=lambda text, *_a: spoken.append(text) or True,
         )
-        controller._infer(
+        result = controller._infer(
             frame,
             trigger_kind="silence.wake",
             prompt_input={},
@@ -208,7 +208,9 @@ class MicroExecuteTests(unittest.TestCase):
             cancel=threading.Event(),
             client=client,
         )
-        self.assertEqual(controller.last_proposal.get("micro_skipped"), "sleep")
+        assert result is not None
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "not_allowed")
         self.assertEqual(spoken, [])
 
 

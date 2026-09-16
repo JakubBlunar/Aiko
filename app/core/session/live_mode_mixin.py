@@ -21,8 +21,10 @@ from app.core.infra.agent_settings_parse import (
     clamp_live_min_gap_after_speech_ms,
 )
 from app.core.infra.settings import LLM_ROLE_LIVE_POLICY, persist_user_overrides
+from app.core.live.actions import action_result_kind
 from app.core.live.assembler import LiveAssembleInput, LiveSituationAssembler
 from app.core.live.bus import LiveImpulseBus
+from app.core.live.labels import cap_live_subject
 from app.core.live.capabilities import semantic_capabilities_from_profile
 from app.core.live.controller import LivePolicyController, USER_INTENT_KINDS
 from app.core.live.cue_adapter import CueUrgeAdapter
@@ -40,6 +42,7 @@ from app.core.live.main_wake import (
 from app.core.live.micro_utterance import validate_micro_utterance
 from app.core.live.policy_context import LivePolicyContextRuntime
 from app.core.live.resolver import LiveBehaviorResolver, ResolvedBehaviorPlan
+from app.core.live.urge_menu import menu_urge_ids
 from app.core.services.response_text_service import strip_all_meta_tags
 from app.core.session.session_text_utils import sanitize_assistant_text
 from app.llm.token_utils import estimate_tokens
@@ -95,6 +98,8 @@ class LiveModeMixin:
                 log.debug("live journal init failed", exc_info=True)
                 self._live_journal = None
         self._live_last_vitality_tick = 0.0
+        self._live_last_mood_label = ""
+        self._live_last_vitality_band = ""
         self._live_last_memory_extract = 0.0
         self._live_last_idle_reconsider = 0.0
         self._live_last_sleep_status = ""
@@ -127,6 +132,7 @@ class LiveModeMixin:
             on_executed=self._refresh_live_embodiment,
             on_micro_utterance=self._deliver_live_micro_utterance,
             on_main_wake=self._enqueue_live_main_wake,
+            on_action_result=self._publish_live_action_result,
             unprompted_speech_provider=self._live_unprompted_speech_enabled,
         )
         self._live_behavior_resolver = LiveBehaviorResolver()
@@ -134,6 +140,8 @@ class LiveModeMixin:
         self._live_embodiment_signature: tuple[Any, ...] | None = None
         self._live_embodiment_listeners: list[Any] = []
         self._live_talk_about_payload: dict[str, Any] | None = None
+        self._live_last_aiko_spoke_ms: float | None = None
+        self._live_last_semantic_action_ms: float | None = None
         self._live_heartbeat = LiveHeartbeat(self._live_heartbeat_tick)
         self._apply_live_main_wake_budget()
         if self._live_heartbeat_enabled():
@@ -359,6 +367,7 @@ class LiveModeMixin:
         priority: str = "attention",
         ttl_ms: int = 8000,
         payload: dict[str, Any] | None = None,
+        refresh: bool = True,
     ) -> None:
         if not self.live_impulse_bus_enabled():
             return
@@ -392,7 +401,78 @@ class LiveModeMixin:
             privacy=privacy,
             evidence_ids=(published.event_id,),
         )
-        self.refresh_live_situation(trigger_kind=kind)
+        if refresh:
+            self.refresh_live_situation(trigger_kind=kind)
+
+    def _publish_live_action_result(self, record: Any) -> None:
+        """Ack a Live action without re-entering situation refresh."""
+        kind = ""
+        payload: dict[str, Any] = {}
+        try:
+            kind = action_result_kind(getattr(record, "state", ""))
+            to_payload = getattr(record, "to_impulse_payload", None)
+            if callable(to_payload):
+                payload = dict(to_payload())
+        except Exception:
+            log.debug("live action result payload failed", exc_info=True)
+            return
+        if not kind:
+            return
+        action_id = str(payload.get("action_id") or "")
+        self.publish_live_impulse(
+            kind=kind,
+            source="live.action",
+            coalesce_key=f"{kind}:{action_id}" if action_id else kind,
+            privacy="local_state",
+            priority="control",
+            ttl_ms=4000,
+            payload=payload,
+            refresh=False,
+        )
+
+    def _live_inner_mood_and_band(self) -> tuple[str, str]:
+        mood = ""
+        band = ""
+        snapshot_fn = getattr(self, "conversation_situation_snapshot", None)
+        if not callable(snapshot_fn):
+            return mood, band
+        try:
+            snap = snapshot_fn(fresh=True)
+            mood = str(getattr(snap, "mood_label", "") or "")
+            band = str(getattr(snap, "vitality_band", "") or "")
+        except Exception:
+            log.debug("live inner-state snapshot failed", exc_info=True)
+        return mood, band
+
+    def _publish_live_inner_state_impulses(self) -> None:
+        """Ack affect/vitality edges without re-entering situation refresh."""
+        mood, band = self._live_inner_mood_and_band()
+        last_mood = str(getattr(self, "_live_last_mood_label", "") or "")
+        last_band = str(getattr(self, "_live_last_vitality_band", "") or "")
+        if mood and mood != last_mood:
+            self.publish_live_impulse(
+                kind="aiko.affect_changed",
+                source="live.inner_state",
+                coalesce_key="aiko.affect_changed",
+                privacy="local_state",
+                priority="control",
+                ttl_ms=4000,
+                payload={"mood_label": mood},
+                refresh=False,
+            )
+        if band and band != last_band:
+            self.publish_live_impulse(
+                kind="aiko.vitality_changed",
+                source="live.inner_state",
+                coalesce_key="aiko.vitality_changed",
+                privacy="local_state",
+                priority="control",
+                ttl_ms=4000,
+                payload={"band": band},
+                refresh=False,
+            )
+        self._live_last_mood_label = mood
+        self._live_last_vitality_band = band
 
     def _log_live_impulse(self, kind: str, payload: dict[str, Any]) -> None:
         token = str(kind or "")
@@ -512,6 +592,83 @@ class LiveModeMixin:
             log.debug("live activity evidence failed", exc_info=True)
             return None
 
+    def _live_current_actions(self) -> tuple[str, ...]:
+        controller = getattr(self, "_live_policy_controller", None)
+        held = getattr(controller, "last_accepted_nonverbal", None) or {}
+        if not isinstance(held, dict):
+            return ()
+        intent = str(held.get("intent") or "").strip()
+        if not intent:
+            return ()
+        until = float(held.get("hold_until_ms") or 0.0)
+        if until and time.monotonic() * 1000.0 >= until:
+            return ()
+        return (intent,)
+
+    def _live_recent_actions(self) -> tuple[str, ...]:
+        policy = getattr(self, "_live_policy_context", None)
+        getter = getattr(policy, "recent_completed_actions", None)
+        if not callable(getter):
+            return ()
+        try:
+            return tuple(getter(limit=4))
+        except Exception:
+            log.debug("live recent actions failed", exc_info=True)
+            return ()
+
+    def _live_relationship_phase(self) -> str:
+        tracker = getattr(self, "_relationship_tracker", None)
+        current = getattr(tracker, "current_phase", None)
+        if not callable(current):
+            return ""
+        user_id = str(getattr(self, "_user_id", "") or "")
+        if not user_id:
+            return ""
+        try:
+            return str(current(user_id) or "")
+        except Exception:
+            log.debug("live relationship phase failed", exc_info=True)
+            return ""
+
+    def _live_goal_summaries(self) -> tuple[str, ...]:
+        store = getattr(self, "_goal_store", None)
+        lister = getattr(store, "list_active", None)
+        if not callable(lister):
+            return ()
+        try:
+            active = list(lister())
+        except Exception:
+            log.debug("live goal summaries failed", exc_info=True)
+            return ()
+        out: list[str] = []
+        for goal in active:
+            meta = getattr(goal, "metadata", None) or {}
+            if not isinstance(meta, dict):
+                meta = {}
+            summary = str(
+                meta.get("summary") or getattr(goal, "content", "") or ""
+            ).strip()
+            capped = cap_live_subject(summary)
+            if not capped or capped in out:
+                continue
+            out.append(capped)
+            if len(out) >= 3:
+                break
+        return tuple(out)
+
+    def _live_resource_contention(self) -> str:
+        client = getattr(self, "_live_policy_client", None)
+        if client is None:
+            return "independent"
+        return (
+            "shared_worker"
+            if getattr(client, "_gate", None) is not None
+            else "independent"
+        )
+
+    def _live_mark_aiko_spoke(self) -> None:
+        self._live_last_aiko_spoke_ms = time.monotonic() * 1000.0
+
     def refresh_live_situation(
         self,
         *,
@@ -579,6 +736,16 @@ class LiveModeMixin:
             tts_active=bool(
                 getattr(self, "is_tts_playing", lambda: False)()
             ) if callable(getattr(self, "is_tts_playing", None)) else False,
+            playback_active=not bool(self.is_playback_drained()),
+            last_aiko_spoke_ms=getattr(self, "_live_last_aiko_spoke_ms", None),
+            last_semantic_action_ms=getattr(
+                self, "_live_last_semantic_action_ms", None,
+            ),
+            current_actions=self._live_current_actions(),
+            recent_actions=self._live_recent_actions(),
+            relationship_phase=self._live_relationship_phase(),
+            goals=self._live_goal_summaries(),
+            resource_contention=self._live_resource_contention(),
             activity_evidence=self._live_activity_evidence(),
         )
         try:
@@ -705,16 +872,17 @@ class LiveModeMixin:
         if bool(getattr(self, "_turn_in_progress", False)):
             return
         now_mono = time.monotonic()
+        self._tick_live_affect()
+        if now_mono - float(self._live_last_vitality_tick or 0.0) >= _VITALITY_TICK_S:
+            self._live_last_vitality_tick = now_mono
+            self._tick_live_vitality()
+        self._publish_live_inner_state_impulses()
         trigger = "heartbeat"
         if self._live_idle_reconsider_due(now_mono):
             trigger = "idle.reconsider"
             self._live_last_idle_reconsider = now_mono
             self._note_idle_reconsider_impulse()
         self.refresh_live_situation(trigger_kind=trigger)
-        self._tick_live_affect()
-        if now_mono - float(self._live_last_vitality_tick or 0.0) >= _VITALITY_TICK_S:
-            self._live_last_vitality_tick = now_mono
-            self._tick_live_vitality()
         self._maybe_schedule_live_situation_worker()
         self._maybe_live_memory_extract(now_mono)
 
@@ -981,6 +1149,13 @@ class LiveModeMixin:
             return False
         raw_ids = payload.get("concept_ids") or ()
         concept_ids = tuple(int(item) for item in raw_ids if str(item).strip())
+        cue_id = None
+        raw_cue = payload.get("cue_id")
+        if raw_cue not in (None, ""):
+            try:
+                cue_id = int(raw_cue)
+            except (TypeError, ValueError):
+                cue_id = None
         try:
             loop.enqueue(
                 ProactiveEvent(
@@ -991,6 +1166,9 @@ class LiveModeMixin:
                     reason_code=str(payload.get("reason_code") or ""),
                     situation_summary=str(payload.get("situation_summary") or ""),
                     concept_ids=concept_ids,
+                    speech_act=str(payload.get("speech_act") or ""),
+                    cue_subject=str(payload.get("cue_subject") or ""),
+                    cue_id=cue_id,
                 )
             )
         except Exception:
@@ -1043,6 +1221,9 @@ class LiveModeMixin:
             "urge_kind": "",
             "situation_summary": str(getattr(event, "situation_summary", "") or ""),
             "concept_ids": tuple(getattr(event, "concept_ids", ()) or ()),
+            "speech_act": str(getattr(event, "speech_act", "") or ""),
+            "cue_subject": str(getattr(event, "cue_subject", "") or ""),
+            "cue_id": getattr(event, "cue_id", None),
         }
         runtime = getattr(self, "_live_inclination", None)
         if runtime is not None:
@@ -1124,6 +1305,7 @@ class LiveModeMixin:
                     log.debug("live main-wake silence note failed", exc_info=True)
             log.info("live main-wake silence: generation=%s", gen)
             return
+        self._live_mark_aiko_spoke()
         notify = getattr(self, "_notify_message", None)
         if callable(notify):
             try:
@@ -1205,9 +1387,9 @@ class LiveModeMixin:
                 )
             except Exception:
                 rows = []
-        known_urge_ids = tuple(item.urge_id for item in urges)
+        known_urge_ids = menu_urge_ids(urges)
         known_refs = [str(frame.generation)]
-        known_refs.extend(f"urge:{item.urge_id}" for item in urges)
+        known_refs.extend(f"urge:{item}" for item in known_urge_ids)
         known_refs.extend(
             f"impulse:{item.event_id}" for item in impulses if getattr(item, "event_id", "")
         )
@@ -1306,6 +1488,7 @@ class LiveModeMixin:
                 speak(cleaned)
             except Exception:
                 log.debug("live micro speak failed", exc_info=True)
+        self._live_mark_aiko_spoke()
         return True
 
     def _live_policy_record_outcome(
@@ -1315,6 +1498,8 @@ class LiveModeMixin:
         arbiter_result: str,
         main_model_used: bool = False,
         executed: bool = False,
+        action_id: str = "",
+        action_state: str = "",
     ) -> None:
         runtime = getattr(self, "_live_policy_context", None)
         if runtime is None:
@@ -1324,6 +1509,8 @@ class LiveModeMixin:
             arbiter_result=arbiter_result,
             main_model_used=main_model_used,
             executed=executed,
+            action_id=action_id,
+            action_state=action_state,
         )
 
     def _live_policy_set_loaded(self, loaded: bool) -> None:
@@ -1385,6 +1572,7 @@ class LiveModeMixin:
         try:
             policy_intent = None
             ttl_ms = None
+            held = None
             controller = getattr(self, "_live_policy_controller", None)
             if controller is not None:
                 held = controller.accepted_nonverbal_for(int(frame.generation))
@@ -1393,11 +1581,35 @@ class LiveModeMixin:
                     raw_ttl = held.get("ttl_ms")
                     if raw_ttl is not None:
                         ttl_ms = int(raw_ttl)
+            presence_style = None
+            attention_target = None
+            reaction_tone = None
+            reaction_intensity = None
+            keep_attention = False
+            if held:
+                style = str(held.get("presence_style") or "").strip()
+                if style:
+                    presence_style = style
+                target = str(held.get("attention_target") or "").strip()
+                if target:
+                    attention_target = target
+                tone = str(held.get("reaction_tone") or "").strip()
+                if tone:
+                    reaction_tone = tone
+                band = str(held.get("reaction_intensity") or "").strip()
+                if band:
+                    reaction_intensity = band
+                keep_attention = bool(held.get("keep_attention"))
             plan = resolver.resolve(
                 frame,
                 self._live_semantic_capabilities(),
                 policy_intent=policy_intent,
                 ttl_ms=ttl_ms,
+                presence_style=presence_style,
+                attention_target=attention_target,
+                reaction_tone=reaction_tone,
+                reaction_intensity=reaction_intensity,
+                keep_attention=keep_attention,
             )
         except Exception:
             log.debug("live behavior resolve failed", exc_info=True)
@@ -1410,6 +1622,8 @@ class LiveModeMixin:
             plan.body_class,
             plan.breath_class,
             plan.expression_class,
+            plan.reaction_tone,
+            plan.reaction_intensity,
             plan.degrade_to_sleep,
             frame.aiko.activity,
             frame.aiko.posture,
@@ -1417,6 +1631,8 @@ class LiveModeMixin:
         if signature == getattr(self, "_live_embodiment_signature", None):
             return
         self._live_embodiment_signature = signature
+        if policy_intent:
+            self._live_last_semantic_action_ms = time.monotonic() * 1000.0
         self._notify_live_embodiment()
 
     def _clear_live_embodiment(self) -> None:

@@ -11,11 +11,14 @@ from app.core.concepts.concept_diets import (
     resolve_budget,
 )
 from app.core.infra import timephrase
+from app.core.live.allowed import speech_menu_open
+from app.core.live.fallback import render_fallback_prompt
 from app.core.live.frame import LiveSituationFrame
 from app.core.live.impulse import LiveImpulse
 from app.core.live.main_wake import TRANSCRIPT_FLOOR_TOKENS, TRANSCRIPT_MAX_ROWS
 from app.core.live.proposal import LIVE_POLICY_INTENTS
 from app.core.live.urge import LiveUrge
+from app.core.live.urge_menu import render_urge_menu
 from app.core.session.prompt_support import clip_text_to_tokens
 from app.llm.token_utils import chars_per_token, estimate_tokens
 
@@ -44,6 +47,41 @@ request_main_speech is only for a substantive contribution the main
 companion model should make — never for a backchannel or acknowledgement.
 Use LAST CONVERSATION to judge whether a main-wake would continue the
 thread or interrupt it. Still do not quote dialogue in the JSON.
+For request_main_speech you may set arguments.speech_act to one of:
+share_observation, celebrate, offer_support, continue_shared_topic,
+gentle_question. That is a candidate for the main model, not a script.
+Do not pick gentle_question when questions are not allowed.
+When FALLBACK is present, choose exactly one listed intent or wait.
+Do not retry the failed action_id. Missing capabilities are already
+handled; do not invent a third attempt.
+arguments.presence_style is one of: neutral, cofocus, give_space,
+share_delight, soft_support, playful. It is stance, not a new scene.
+Do not pick share_delight unless SITUATION sharing=shared. Style may
+only quiet speech or reaction intensity; it cannot raise a budget.
+For attend or remain_present you may set arguments.attention_target
+to user, cursor, shared_activity, world_entity, or none.
+shared_activity is only valid when sharing=shared. The runtime may
+keep a held target.
+arguments.reaction_tone is one of: neutral, warm, curious, amused,
+proud, concerned, drowsy. arguments.reaction_intensity is low, mid,
+or high. The runtime clamps intensity down; it cannot raise it.
+Do not pick concerned from weak or stale activity evidence.
+arguments.vitality_posture is keep, soften, or settle. It may only
+quiet presence or reaction intensity; it cannot raise a budget.
+Low vitality cannot pick playful, celebrate, or request_main_speech.
+arguments.wait_horizon is short, medium, or long. Do not emit
+reconsider_after_ms. arguments.wake_set is user_only,
+user_or_activity, or user_or_silence. Do not emit wake_on event
+names. Unknown tokens become the default wait. Sleep cannot pick a
+speech wake.
+arguments.keep_attention and arguments.keep_style are booleans,
+default false. When true, keep the current target or style. They
+cannot override the user, cannot outlast the max wait, and cannot
+survive a new generation.
+CANDIDATE URGES is a numbered peek-only menu. Copy selected_urge_id
+from it, or omit the id and choose wait or noop. Do not invent ids.
+If the menu is none, do not request_main_speech. Cue pressure is not
+a command.
 Intents: {intents}.
 """.replace("{intents}", ", ".join(LIVE_POLICY_INTENTS))
 
@@ -87,6 +125,7 @@ class LivePolicyPromptAssembler:
         max_tokens: int,
         prompt_ceiling: int,
         diet_tuning: DietTuning | None = None,
+        fallback: Any = None,
     ) -> LivePolicyPrompt:
         window = max(1024, int(context_window or 0))
         output_cap = max(1, int(max_tokens or 512))
@@ -97,9 +136,14 @@ class LivePolicyPromptAssembler:
         )
         instructions = _INSTRUCTIONS.strip()
         situation = self._render_situation(frame)
+        fallback_text = render_fallback_prompt(fallback)
+        if fallback_text:
+            situation = situation + "\n" + fallback_text
+        urge_menu = render_urge_menu(urges)
         instr_tokens = estimate_tokens(instructions)
         sit_tokens = estimate_tokens(situation)
-        reserved = instr_tokens + sit_tokens
+        menu_tokens = estimate_tokens(urge_menu)
+        reserved = instr_tokens + sit_tokens + menu_tokens
         remain = max(0, available - reserved)
 
         # Transcript floor is reserved before concepts/impulses so a fat
@@ -121,7 +165,6 @@ class LivePolicyPromptAssembler:
         transcript_tokens = estimate_tokens(transcript) if transcript else 0
 
         tail = self._render_tail(
-            urges=urges,
             impulses=impulses,
             journal_entries=journal_entries,
             ledger=ledger,
@@ -129,7 +172,11 @@ class LivePolicyPromptAssembler:
         )
         tail_tokens = estimate_tokens(tail) if tail else 0
 
-        body_parts = [instructions, "SITUATION:\n" + situation]
+        body_parts = [
+            instructions,
+            "SITUATION:\n" + situation,
+            urge_menu,
+        ]
         extras: list[str] = []
         if concepts_text:
             extras.append("CONCEPTS:\n" + concepts_text)
@@ -148,6 +195,7 @@ class LivePolicyPromptAssembler:
             region_tokens={
                 "instructions": instr_tokens,
                 "situation": sit_tokens,
+                "urges": menu_tokens,
                 "concepts": concept_tokens,
                 "transcript": transcript_tokens,
                 "impulses": tail_tokens,
@@ -169,6 +217,10 @@ class LivePolicyPromptAssembler:
         epoch = str(frame.epoch.kind or "data_only")
         commit = str(frame.commitment.intention or "wait")
         rails = "; ".join(frame.continuity.behavior_rails)
+        mood = str(frame.aiko.mood_label or "unknown")
+        vitality = str(frame.aiko.vitality_band or "unknown")
+        speech_ok = "yes" if speech_menu_open(frame) else "no"
+        playback = "1" if frame.interaction.playback_active else "0"
         return (
             f"generation={frame.generation} epoch={epoch}\n"
             f"world_truth inferred={inferred} sharing={sharing} "
@@ -178,7 +230,9 @@ class LivePolicyPromptAssembler:
             f"lock_s={int(frame.shared.lock_span_s or 0)} "
             f"activity={activity}\n"
             f"attention={attention} commitment={commit}\n"
+            f"mood={mood} vitality={vitality}\n"
             f"sleep={sleep} speech_budget={budget} "
+            f"speech_ok={speech_ok} playback={playback} "
             f"live_quiet={frame.constraints.dnd}\n"
             f"rails={rails or 'none'}"
         )
@@ -216,7 +270,6 @@ class LivePolicyPromptAssembler:
     def _render_tail(
         self,
         *,
-        urges: Sequence[LiveUrge],
         impulses: Sequence[LiveImpulse],
         journal_entries: Sequence[Any],
         ledger: Sequence[Any],
@@ -225,22 +278,6 @@ class LivePolicyPromptAssembler:
         if budget <= 0:
             return ""
         lines: list[str] = []
-        now_ms = 0.0
-        if impulses:
-            now_ms = max(float(item.monotonic_ms) for item in impulses)
-        for urge in urges:
-            age_ms = 0
-            if now_ms and urge.created_monotonic_ms:
-                age_ms = max(0, int(now_ms - float(urge.created_monotonic_ms)))
-            salience = 0.0
-            if urge.salience_inputs:
-                salience = sum(float(v) for v in urge.salience_inputs.values())
-            parked = " parked" if urge.state == "parked" else ""
-            lines.append(
-                f"urge id={urge.urge_id} kind={urge.kind} "
-                f"state={urge.state}{parked} salience={salience:.2f} "
-                f"age_ms={age_ms}"
-            )
         for impulse in list(impulses)[-8:]:
             lines.append(
                 f"impulse {impulse.kind} gen={impulse.mode_generation}"

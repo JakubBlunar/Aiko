@@ -256,6 +256,9 @@ class ProactiveEvent:
     reason_code: str = ""
     situation_summary: str = ""
     concept_ids: tuple[int, ...] = ()
+    speech_act: str = ""
+    cue_subject: str = ""
+    cue_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

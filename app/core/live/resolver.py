@@ -15,6 +15,8 @@ from typing import Any
 
 from app.core.live.capabilities import SemanticCapabilities
 from app.core.live.frame import SLEEP_SPEECH_FORBID, LiveSituationFrame
+from app.core.live.presence import PRESENCE_STYLE_SET, style_visuals
+from app.core.live.reaction import REACTION_TONE_SET, tone_visuals
 
 
 SEMANTIC_INTENTS = frozenset({
@@ -50,6 +52,11 @@ EXPRESSION_CLASSES = frozenset({
     "attentive",
     "content",
     "drowsy",
+    "warm",
+    "curious",
+    "amused",
+    "proud",
+    "concerned",
 })
 MOTION_CLASSES = frozenset({"none"})
 
@@ -115,6 +122,8 @@ class ResolvedBehaviorPlan:
     run_during_tts: bool = False
     degrade_to_sleep: bool = False
     cancel_reason: str = ""
+    reaction_tone: str = ""
+    reaction_intensity: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -261,6 +270,8 @@ def dataclass_replace(
         run_during_tts=plan.run_during_tts,
         degrade_to_sleep=plan.degrade_to_sleep,
         cancel_reason=plan.cancel_reason,
+        reaction_tone=plan.reaction_tone,
+        reaction_intensity=plan.reaction_intensity,
     )
 
 
@@ -279,6 +290,11 @@ class LiveBehaviorResolver:
         *,
         policy_intent: str | None = None,
         ttl_ms: int | None = None,
+        presence_style: str | None = None,
+        attention_target: str | None = None,
+        reaction_tone: str | None = None,
+        reaction_intensity: str | None = None,
+        keep_attention: bool = False,
     ) -> ResolvedBehaviorPlan:
         caps = capabilities or SemanticCapabilities()
         sleep = str(frame.constraints.sleep_status or "awake")
@@ -309,14 +325,36 @@ class LiveBehaviorResolver:
         body = _body_for(frame, visual)
         breath = _breath_for(frame)
         expression = _expression_for(visual, body)
-        hold = frame.attention.target in {"shared_activity", "world_entity", "user"}
+        style = str(presence_style or "").strip()
+        if style in PRESENCE_STYLE_SET:
+            gaze, body, expression = style_visuals(
+                style, gaze=gaze, body=body, expression=expression,
+            )
+        tone = str(reaction_tone or "").strip()
+        band = str(reaction_intensity or "").strip()
+        if tone in REACTION_TONE_SET:
+            gaze, body, expression = tone_visuals(
+                tone,
+                gaze=gaze,
+                body=body,
+                expression=expression,
+                intensity=band or "mid",
+            )
+        if expression not in EXPRESSION_CLASSES:
+            expression = "none"
+        target = str(attention_target or "").strip()
+        if not target:
+            target = frame.attention.target
+        hold = target in {"shared_activity", "world_entity", "user"}
+        if keep_attention:
+            hold = True
         if ttl_ms is None:
             plan_ttl = max(0, int(frame.temporal.min_hold_remaining_ms))
         else:
             plan_ttl = max(0, int(ttl_ms))
         plan = ResolvedBehaviorPlan(
             intent=intent,
-            attention_target=frame.attention.target,
+            attention_target=target,
             gaze_class=gaze,
             body_class=body,
             breath_class=breath,
@@ -330,5 +368,7 @@ class LiveBehaviorResolver:
             run_during_turn=False,
             run_during_tts=False,
             degrade_to_sleep=False,
+            reaction_tone=tone if tone in REACTION_TONE_SET else "",
+            reaction_intensity=band,
         )
         return _degrade(plan, caps)

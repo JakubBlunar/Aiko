@@ -34,9 +34,18 @@ _NOTICE_TO_URGE = {
     "sleep": ("remain_present", "sleep", "sleep"),
     "shared_commitment": ("share_delight", "shared_activity", "shared_activity"),
     "user_focus": ("remain_present", "coding", "world_truth_coding"),
+    "focus_started": ("remain_present", "coding", "focus_started"),
+    "focus_boundary": ("remain_present", "presence", "focus_boundary"),
+    "returned_to_machine": ("remain_present", "machine", "returned_to_machine"),
+    "app_category_changed": ("remain_present", "presence", "app_category_changed"),
+    "shared_activity_resumed": (
+        "share_delight", "shared_activity", "shared_activity_resumed",
+    ),
     "session": ("remain_present", "session", "session_changed"),
     "cue": ("ask_about_result", "", "cue_pool"),
     "nudge": ("remain_present", "proactive", "prepared_nudge"),
+    "affect_changed": ("remain_present", "presence", "affect_changed"),
+    "vitality_changed": ("remain_present", "presence", "vitality_changed"),
 }
 
 

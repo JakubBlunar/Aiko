@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from app.core.activity.evidence import CODING_CONFIDENCE_FLOOR
+from app.core.live.activity_notices import (
+    ACTIVITY_TRIGGERS,
+    activity_transition_notices,
+)
 from app.core.live.frame import LiveSituationFrame, SLEEP_SPEECH_FORBID
 from app.core.live.urge import LiveNotice
 
@@ -22,9 +26,10 @@ _NOTICE_TRIGGERS = {
         "shared_commitment",
     ),
     "user.session_changed": ("session", "session", "session_changed"),
+    "aiko.affect_changed": ("affect_changed", "presence", "affect_changed"),
+    "aiko.vitality_changed": ("vitality_changed", "presence", "vitality_changed"),
 }
 
-_ACTIVITY_SILENT = frozenset({"activity.idle", "activity.lock"})
 _EXPRESSIVE_KINDS = frozenset({
     "user_focus",
     "shared_commitment",
@@ -67,25 +72,12 @@ def notices_from_trigger(
         return ()
     suppress = _activity_speech_suppressed(frame)
     notices: list[LiveNotice] = []
-    if token in _ACTIVITY_SILENT:
-        pass
-    elif token == "activity.session_changed":
-        if (
-            not suppress
-            and frame.shared.inferred.label == "user_coding"
-            and frame.shared.inferred.confidence >= CODING_CONFIDENCE_FLOOR
-        ):
-            notices.append(
-                LiveNotice(
-                    notice_id=f"n:{token}",
-                    kind="user_focus",
-                    subject="coding",
-                    source=token,
-                    source_ids=(token, "observation:app"),
-                    reason_code="world_truth_coding",
-                )
-            )
-    else:
+    notices.extend(
+        activity_transition_notices(
+            token, frame, previous, suppress=suppress,
+        )
+    )
+    if token not in ACTIVITY_TRIGGERS:
         mapped = _NOTICE_TRIGGERS.get(token)
         if mapped is not None:
             kind, subject, reason = mapped
@@ -128,7 +120,7 @@ def notices_from_trigger(
                 reason_code=f"sleep_{frame.constraints.sleep_status}",
             )
         )
-    if previous is not None:
+    if previous is not None and token not in ACTIVITY_TRIGGERS:
         if (
             previous.shared.shared_commitment_active
             != frame.shared.shared_commitment_active

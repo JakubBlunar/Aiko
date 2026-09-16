@@ -8,24 +8,51 @@ without replacing either: C6 supplies environmental evidence, H27 describes the
 quiet product posture, and this document defines the control system between
 perception and behavior.
 
-**Status:** Pass 13 (Phase 10 idle density + worker-matrix polish) is in
-the tree: wait expiry promotes one coalesced `idle.reconsider` so 4B
-can wake after a Live wait without polling every heartbeat. Heartbeat
-itself stays `data_only`. The worker-ownership matrix is encoded in
-`app/core/live/worker_matrix.py`; the idle quiet gate is still
-`_live_voice_session_active` only. Unprompted `request_main_speech` is
-still admitted through the Pass 10 gate. Micros stay Live actions.
-User text/STT still wake `TurnRunner` via a deterministic
-`request_main_speech` reflex. Generation is stamped server-side; the
-4B echo is not authorization.
+**Status:** Pass 30 ships L16: the 4B may set `keep_attention` /
+`keep_style` (default false) so a new target or style is dropped and
+the current hold stands. Hold cannot extend a wait past `MAX_WAIT_MS`,
+cannot override user intent, and cannot keep a cancelled generation.
+Existing hysteresis and `attention_switch` budget still apply when the
+flags are false. Pass 29 ships L8: the 4B picks `wait_horizon`
+(`short` / `medium` / `long`) and `wake_set` (`user_only` /
+`user_or_activity` / `user_or_silence`). Raw `reconsider_after_ms` and
+`wake_on` event names are ignored. Unknown tokens become the default
+wait. Sleep cannot pick a speech wake. Critical user input still wakes
+even if omitted. Heartbeat stays `data_only`; wait expiry still
+promotes one coalesced `idle.reconsider`. Pass 28 ships L12: `aiko.affect_changed` / `aiko.vitality_changed`
+are `data_only` inner-state impulses (`refresh=False`, no titles), and
+the 4B may pick `vitality_posture` (`keep` / `soften` / `settle`) that
+only quiets. Low vitality cannot mint `playful`, `celebrate`, or
+`request_main_speech`. The 4B never writes affect, vitality, T3, L37,
+or `MemoryStore`. Heartbeat stays off the 4B tick. Pass 27 ships L10:
+a numbered peek-only urge menu. Pass 26 ships the inspectable 12-gate
+admission record that closes the remaining Live L0 leftover. The record
+lists every deterministic gate in the target order; it does not change
+who is allowed to act. Execute side effects stay in the controller.
+Pass 25 ships L7 one-shot fallback and Pass 24 ships L6 `speech_act`
+routing on top of Pass 23's reaction palette. The 4B may pick a
+candidate opening for an admitted main-wake; K92, question allowance,
+floor, and the main model still decide whether and what to say. Typed
+execute stalls (`budget_exhausted`, `floor_preempted`) may arm one
+fallback menu; the same `action_id` cannot retry, and silent capability
+no-ops never wake the 4B. L4 authored motion presets are deferred — the
+current rig does not expose enough idle-life motions. L5
+`delivery_style` remains open. DT4 exact/model replay remains a tools
+item — no third Live clock. UIA and C6 memories-on-repeat stay
+deferred. Heartbeat stays `data_only`; wait expiry alone promotes
+`idle.reconsider`. The idle quiet gate is still
+`_live_voice_session_active` only. User text/STT still wake `TurnRunner`.
+Generation is stamped server-side and the 4B echo is never authorization.
+Future 4B work is sketched as L8+ below; each item is still one enum
+plus a clamp, not a second Aiko.
 
 ### Shipped vs remaining
 
 | Piece | Status |
 | --- | --- |
-| `LivePresenceRuntime` / `LivePolicyController` | nonverbal Pass 7; micro-utterances Pass 9; gated unprompted main-wake Pass 10 |
-| Shadow `LiveImpulseBus` (`app/core/live/`) | shipped Pass 1; nothing executes |
-| `LiveSituationFrame` / `LiveSituationAssembler` | shipped Pass 2; no policy, no speech |
+| `LiveModeMixin` / `LivePolicyController` | nonverbal Pass 7; micro-utterances Pass 9; gated unprompted main-wake Pass 10 |
+| `LiveImpulseBus` (`app/core/live/`) | shadow Pass 1; feeds execution from Pass 7 onward |
+| `LiveSituationFrame` / `LiveSituationAssembler` | shipped Pass 2; policy Pass 6; nonverbal/micro/main-wake execution Passes 7/9/10 |
 | Live heartbeat (frame / affect / vitality) | shipped Pass 2; not idle-gated; 4B still not on the 1s tick |
 | Wait expiry → `idle.reconsider` | shipped Pass 13; heartbeat stays `data_only` |
 | Worker ownership matrix | encoded Pass 13; idle gate still `_live_voice_session_active` |
@@ -49,11 +76,102 @@ User text/STT still wake `TurnRunner` via a deterministic
 | Turn-independent situation refresh + experience journal | shipped Pass 2 |
 | H10 `IdleLifeChannel` | shipped Pass 5 |
 | Ollama JSON Schema on `chat_json` | shipped Pass 6 |
-| Resource-keyed `LlmPriorityGate` | shipped Pass 6 (`LIVE_POLICY` tier; distinct 4B is pass-through) |
+| Resource-keyed `LlmPriorityGate` | Live-vs-worker matching shipped Pass 6 (`LIVE_POLICY` tier; distinct 4B is pass-through); full cross-role topology remains target |
 | Intercept Live chat/STT (no automatic `TurnRunner`) | seam shipped Pass 6; deterministic admit still wakes chat |
 | Talk-about cue + load-on-enable policy model | load/unload shipped Pass 6; nonverbal execute Pass 7; gated unprompted main-wake Pass 10 |
 | Nonverbal policy → IdleLife | shipped Pass 7; micro-utterances Pass 9; gated unprompted main-wake Pass 10 |
 | C6 as Live / K72 evidence (duration, idle/lock, stale) | shipped Pass 11 (Phase 9); Level-1 + C8 Pass 14; Level-2 Pass 15 (kv); daytime long-focus K72 Pass 16; companion cue Pass 17 (TurnRunner; Live peek-only); C7 `get_activity` Pass 18 |
+| Frame clocks, `allowed_actions`, wake-name alignment, prompt fill | shipped Pass 19 (L0 slice) |
+| Action IDs, `aiko.action_*` result impulses, argument allowlists | shipped Pass 20 (L0 slice). DT4 replay remains |
+| Title-free activity-transition notices | shipped Pass 21 (L1). 4B still chooses existing intents only |
+| Presence style / attention target | shipped Pass 22 (L2). Style may only lower intensity |
+| Semantic reaction tone / intensity | shipped Pass 23 (L3). Concern needs user meaning; conversation/sleep still outrank |
+| Main-wake `speech_act` candidate | shipped Pass 24 (L6). Untrusted T6 hint; K92 silence is success |
+| One-shot typed fallback | shipped Pass 25 (L7). Same `action_id` cannot retry; capability no-ops stay silent |
+| Inspectable 12-gate admission record | shipped Pass 26 (L0 leftover). Does not change who is allowed to act |
+| Peek-only numbered urge menu | shipped Pass 27 (L10). Empty menu cannot `request_main_speech`; never takes the cue |
+| Affect/vitality inner-state notices | shipped Pass 28 (L12). `data_only`; posture may only quiet; low vitality cannot wake |
+| Wait horizon / wake-set | shipped Pass 29 (L8). Bands only; raw ms and invented wake names ignored |
+| Explicit keep hold | shipped Pass 30 (L16). `keep_attention` / `keep_style`; user intent and generation still win |
+| Future 4B expansions (L8+) | backlog. Floor manners, circadian quieting, glance menu, return beat, compact prompt. L8, L10, L12, L16 shipped |
+
+### Pass 18 code audit — contract gaps still open
+
+Pass 19 filled the dead frame fields, clocks, wait names, and cue-subject
+cap listed in the original audit. Pass 20 adds action IDs and result
+impulses. Pass 21 derives title-free activity-transition notices from
+existing C6 edges. Pass 22 admits a clamped presence style and attention
+target. Pass 23 admits a clamped reaction tone and intensity band.
+Pass 24 admits a clamped `speech_act` candidate on main-wake. Pass 25
+arms a one-shot fallback menu after typed execute stalls. Pass 26
+records every deterministic gate in the target order without moving
+authorization. These verified gaps are still open:
+
+- [`LiveSituationFrame`](../../app/core/live/frame.py) now fills
+  `playback_active`, `current_actions` / `recent_actions`,
+  `relationship_phase` / `goals`, and `allowed_actions` /
+  `resource_contention`. Mixin supplies `last_aiko_spoke_ms` /
+  `last_semantic_action_ms`. Remaining: do not add more empty prose fields.
+- [`LiveActionRecord`](../../app/core/live/actions.py) now mints an
+  `action_id` per parsed proposal. Nonverbal/micro execute emits
+  `aiko.action_started` then `aiko.action_completed`; arbiter/post-gates
+  emit `aiko.action_rejected`; stale inflight emits `aiko.action_cancelled`.
+  Those impulses are `data_only` and publish with `refresh=False` so they
+  cannot recurse into the 4B. They do not include spoken text or titles.
+  Shadow `request_main_speech` still does not emit a result impulse.
+- The documented arbiter is split across proposal parsing,
+  `arbitrate_live_proposal`, and controller-side checks. Pass 19 adds an
+  optional `not_allowed` reject when `allowed_actions` is non-empty.
+  Pass 26 ships [`admission.py`](../../app/core/live/admission.py): one
+  inspectable record listing the 12 gates in the target order below.
+  Authorization is unchanged. Missing-urge main-wake still accepts at
+  the arbiter (`talk_about=True`) and rejects at `main_wake`. Wait
+  during a turn still executes with `overlay_skipped`. Execute side
+  effects stay in the controller.
+- The producer catalogue below is a target catalogue, not a shipped list.
+  Wired bus producers cover composing edges, submitted text/STT, voice
+  start/stop controls, session/control edges, playback drained, C6
+  foreground/idle/lock, silence, and wait expiry. Sleep/shared changes are
+  controller `trigger_kind` + journal transitions, not bus producers. Action
+  result impulses (`aiko.action_started` / `completed` / `rejected` /
+  `cancelled`) shipped Pass 20 as `data_only`. Affect/vitality inner-state
+  impulses (`aiko.affect_changed` / `aiko.vitality_changed`) shipped
+  Pass 28 as `data_only` (`refresh=False`, payload is `mood_label` or
+  `band` only). Task/cue, world, and circadian edges are not yet
+  producers.
+- Wait and commitment wakes now use `user.voice_start` and
+  `activity.session_changed` / `activity.idle` / `activity.lock`. Dead names
+  `user.speech_started` and `world.activity_changed` alias at
+  [`wait.schedule`](../../app/core/live/wait.py) so old 4B output still maps.
+- Cue subjects reach the 4B only through
+  [`cap_live_subject`](../../app/core/live/labels.py) (length, URL, and
+  relative-deictic drop). Live still peeks and never takes or fulfils the cue.
+- Live directly consumes C6 `ActivityEvidence` (app class, duration,
+  session/idle/lock rollups). Pass 21 turns those edges into title-free
+  notices (`focus_started`, `focus_boundary`, `returned_to_machine`,
+  `app_category_changed`, `shared_activity_resumed`) mapped onto existing
+  urges. It does not load the Pass 15 Level-2 kv interpretation into the
+  frame. Pass 17 can turn that interpretation into a TurnRunner-owned
+  `companion_activity` cue, but that is not the same as giving the
+  interpretation to the Live policy.
+- The proposal schema still types `arguments` as an object. Pass 20
+  strips unknown keys client-side: every intent may keep `reasoning`;
+  micro intents may keep `delivery` / `text`. Pass 22 adds
+  `presence_style` (all intents) and `attention_target` (`attend` /
+  `remain_present`). Pass 23 adds `reaction_tone` /
+  `reaction_intensity` (all intents). Pass 24 adds `speech_act` on
+  `request_main_speech`. Pass 25 adds `fallback_for`. `delivery_style`
+  remains L5.
+- The implementation route is 40,960 context with a 12,000-token input
+  ceiling and 512 output tokens. That fixed Pass 6 JSON truncation, but it is
+  larger than the 2K–4K policy target described below. A compact prompt-v2
+  measurement remains worthwhile before adding more context.
+- DT4 scenario/model replay is still absent. The 48-row in-memory ledger
+  plus the impulse-bus replay tail are enough to inspect recent action IDs;
+  they are not a DT4 scenario corpus. Do not add a Live-only clock.
+
+These gaps are the prerequisite lane for the next expansion work; do not hide
+them by adding more prose fields to the frame.
 
 ## The goal
 
@@ -109,54 +227,16 @@ the expensive foundations:
 - role-based LLM routing plus an existing worker-side `LlmPriorityGate` that can
   be generalized around actual inference contention.
 
-What does **not** exist is the layer that continuously assembles those signals
-into one view of the present, assigns moment-to-moment authority, and safely
-turns a policy decision into an action.
-
-There is also prerequisite architecture debt to settle before adding another
-producer:
-
-1. Voice and typed silence can still call
-   [`ProactiveDirector`](../../app/core/proactive/proactive_director.py) on
-   independent threads. [`notify_typed_silence`](../../app/core/proactive/proactive_director.py)
-   and `live_session._maybe_proactive` spawn director threads; only task
-   escalation uses `BrainEventQueue`. Live mode cannot add a fifth speech path.
-   Once Live posture is on, silence timers may **wake** the controller, but
-   they must not call `generate_proactive_message` on a private thread.
-   `ProactiveDirector` becomes an urge/candidate service; `CueUrgeAdapter` is
-   its only Live projection. Cue-pool fulfilment stays owned by the existing
-   pool.
-2. **Shipped:** [`lifecycle_mixin.py`](../../app/core/session/lifecycle_mixin.py)
-   checks `_live_voice_session_active` when deciding whether idle workers may
-   run. There is no `_live_mode_enabled` flag. Live mode must keep that voice
-   ownership gate; a second boolean is a regression.
-3. [`OllamaClient.chat_json`](../../app/llm/ollama_client.py) supports
-   `format: "json"` but cannot pass an actual JSON schema. Needed before
-   Phase 6 local-policy evaluation, not before Phase 0. Live actions need a
-   supplied schema plus normal client-side validation.
-4. The client has a playback-drained acknowledgement (Pass 8 / H7).
-   [`is_tts_playing`](../../app/core/session/voice_mixin.py) is still
-   server-queue state; `LiveSession` waits on `aiko.playback_drained`
-   from the audio-owner client. `capture_available` is true while the
-   live voice session is active.
-5. Typing attention is local React/Live2D state. ChatView sets composing;
-   [`PersonaInput.tsx`](../../web/src/features/persona/PersonaInput.tsx) does
-   not. Neither surface reaches a backend policy.
-6. Concept selection for the main model is embedded in the large T3
-   `build_relevant_context` path. Live mode needs a shared bounded selector,
-   not a second copy of prompt assembly.
-7. The world state changes; H10's `IdleLifeChannel` (Pass 5) maps activity
-   and posture onto semantic body/breath/gaze classes. Live speech is still
-   absent.
-8. `LlmPriorityGate` is currently worker-centric rather than resource-centric.
-   It correctly prioritizes conversation, maintenance, and workflow calls that
-   share the worker model, but a divergent local workflow still inherits the
-   worker gate merely because it is Ollama, while `main_chat` is not in that
-   gate even if it targets the exact same local model. Live mode must not join a
-   global role queue; gate membership must follow resolved inference-resource
-   identity.
-
-These are tractable seams, not reasons to abandon the design.
+That missing control layer is now shipped. The remaining architecture debt is
+the concrete Pass 18 audit above: Pass 19–28 closed the frame/clock/wake,
+action-result, activity-notice, presence-style, reaction, speech-act,
+fallback, admission-record, urge-menu, and affect/vitality slices; L5
+`delivery_style` and DT4 replay remain before broadening autonomy. The
+shipped invariants remain:
+silence timers become impulses under Live, JSON Schema plus client validation
+guard the proposer, composing reaches the backend without draft text,
+`IdleLifeChannel` owns deterministic embodiment, and LLM gate membership
+follows resolved contention identity.
 
 ## Product model: two axes, not one three-value enum
 
@@ -174,16 +254,16 @@ The UI may offer three convenient profiles:
 
 - **Text:** typed channel + turn-based posture.
 - **Speak:** continuous voice + turn-based posture.
-- **Live:** live-presence posture, with continuous voice enabled by default but
-  independently switchable.
+- **Live:** live-presence posture; the microphone remains independently
+  controlled and is not opened by enabling the profile.
 
 This lets the user keep Aiko visually alive on a second monitor with the
 microphone off, or use ordinary turn-based voice without granting autonomous
 behavior.
 
-Use `LivePresenceRuntime` for the overall subsystem and
-`LivePolicyController` for the model-facing decision component. Do not name
-either `LiveSession`; that class already means continuous voice capture.
+The shipped overall subsystem is folded into `LiveModeMixin`; the model-facing
+decision component is `LivePolicyController`. Do not name either
+`LiveSession`; that class already means continuous voice capture.
 
 Switching profiles changes capabilities and authority, not identity. Aiko's
 stores, current affect, world activity, relationship, concepts, memories, and
@@ -203,8 +283,10 @@ unfinished tasks remain the same.
 5. The Live policy model proposes semantic intentions; it never executes them
    and never selects rig-specific expressions, motion groups, indices, or
    parameter IDs.
-6. `LiveActionArbiter` is the sole owner of immediate avatar and speech action
-   admission. Model-reported confidence never contributes to authorization.
+6. The deterministic Live admission lane (`arbitrate_live_proposal` plus
+   controller-side speech/budget gates) is the sole owner of immediate avatar
+   and speech action admission. Model-reported confidence never contributes to
+   authorization.
 7. At most one semantic speech stream may be active.
 8. User speech, a sent message, stop, and mode/session changes pre-empt
    autonomous behavior.
@@ -242,15 +324,15 @@ flowchart LR
     ImpulseBus --> Experience[Bounded live experience journal]
     Situation --> Policy[Policy and arbiter]
     Experience --> Memory[Existing MemoryStore on natural openings]
-    Sleep[SleepSnapshot] --> Arbiter[LiveActionArbiter]
+    Sleep[SleepSnapshot] --> Arbiter[Deterministic Live admission]
     Guard[WorldMutationGuard] --> Movers[World movers]
 ```
 
-Phase 2 must refresh the situation frame from impulses, world, C6, and time
-even when no user turn happens. Do **not** spawn a second situation store.
-Extend the shipped `ConversationSituationSnapshot` / `conversation_situation`
-row with Live-sourced evidence (attention, floor, playback, presence, sleep)
-and keep SQLite as the source of truth.
+Pass 2 refreshes the situation frame from impulses, world, C6, and time even
+when no user turn happens. It reuses the shipped
+`ConversationSituationSnapshot` / `conversation_situation` row rather than
+spawning a second situation store. The Pass 18 audit above records the
+remaining unpopulated frame fields.
 
 ### Experience without turning every glance into a memory
 
@@ -258,7 +340,7 @@ Rule 9 still holds: the policy model never writes `MemoryStore`. Hours of
 co-presence still need a place to put “we were sitting together and the rain
 started” so a later main wake or extractor can use it.
 
-Add a bounded **Live experience journal**:
+Pass 2 added a bounded **Live experience journal**:
 
 - privacy-classified at write time (`local_state` vs anything that may later
   become a memory);
@@ -269,14 +351,14 @@ Add a bounded **Live experience journal**:
   worker, and a main-wake “what we just did” prompt;
 - never a parallel long-term memory.
 
-Micro-utterances are not full turns. They must not increment
+Pass 9 micro-utterances are not full turns. They do not increment
 relationship-turn counters, arc-tagging cadence, memory-extraction cadence, or
-the rest of the post-turn cascade. Persist them through the transcript contract
-when Phase 8 enables speech, but account them as Live actions, not user turns.
+the rest of the post-turn cascade. They persist through the transcript contract
+with `dialogue_act=live_micro` and are accounted as Live actions, not user
+turns.
 
-Affect and vitality clocks that currently tick on user turns need a Live
-heartbeat: a cheap monotonic refresh from the same stores, not a second
-affect engine.
+The Live heartbeat now refreshes affect and vitality from the same stores; it
+does not create a second affect engine or wake the policy model every second.
 
 ## Worker ownership by posture
 
@@ -354,7 +436,7 @@ flowchart LR
     Frame --> Reflexes[Deterministic reflex policy]
     Urges --> Policy[Small local policy model]
     Frame --> Policy
-    Reflexes --> Arbiter[LiveActionArbiter]
+    Reflexes --> Arbiter[Deterministic Live admission]
     Policy --> Intent[Semantic behavior intention]
     Intent --> Arbiter
 
@@ -420,6 +502,10 @@ are required:
 
 ### Producer catalogue
 
+This is the **target** catalogue. The Pass 18 audit above names the subset that
+is actually wired. Add a producer only when it causes a meaningful state
+transition; do not mirror every existing callback onto the bus.
+
 #### User intent
 
 Frontend producers:
@@ -432,11 +518,10 @@ Frontend producers:
 - `user.live_profile_changed`, `user.quiet_changed`, and
   `user.stop_requested` as critical control edges.
 
-[`ChatView.tsx`](../../web/src/features/chat/ChatView.tsx) already computes
-`composing` for Live2D. Extend that edge to the wire rather than adding a second
-typing detector. [`PersonaInput.tsx`](../../web/src/features/persona/PersonaInput.tsx)
-needs parity. Draft text must never be sent; the event says only that composition
-is active.
+[`ChatView.tsx`](../../web/src/features/chat/ChatView.tsx) and
+[`PersonaInput.tsx`](../../web/src/features/persona/PersonaInput.tsx) now put
+the same composing edge on the wire. Draft text is never sent; the event says
+only that composition is active.
 
 Raw pointer movement stays in `GazeChannel`. Sending 60 Hz cursor coordinates to
 the backend would add latency and a privacy surface to behavior that is already
@@ -447,7 +532,8 @@ or an explicit attention target belong on the impulse bus.
 
 Voice producers:
 
-- `user.speech_started` from the client/server VAD edge;
+- `user.speech_started` from the client/server VAD edge (shipped impulse
+  is `user.voice_start`; the dead name aliases at wait schedule);
 - `user.speech_partial_changed` at the existing bounded STT-partial cadence;
 - `user.speech_ended` when endpointing closes the phrase;
 - `user.stt_final` and `user.stt_failed`;
@@ -470,8 +556,9 @@ Runtime producers:
   `turn.failed`;
 - `aiko.tts_started`, `aiko.tts_server_ended`,
   `aiko.playback_drained`, and `aiko.audio_cancelled`;
-- `aiko.action_proposed`, `accepted`, `rejected`, `started`, `completed`, and
-  `cancelled`;
+- `aiko.action_started`, `aiko.action_completed`, `aiko.action_rejected`,
+  and `aiko.action_cancelled` (Pass 20; `data_only`, no refresh, no spoken
+  text). `aiko.action_proposed` / `accepted` stay ledger-only.
 - `task.completed` and `task.input_needed`;
 - `cue.armed`, `cue.pressure_changed`, `cue.fulfilled`, and `cue.expired`;
 - `aiko.affect_changed`, `aiko.vitality_changed`, and `aiko.world_changed`.
@@ -651,12 +738,11 @@ Typed and voice turns now share a Phase-2-lite core:
   contradicting an active world-compatible shared scene. Deliberate world
   tools and World-tab changes remain higher authority.
 
-This is deliberately not the complete `LiveSituationFrame`: frontend typing
-edges, playback acknowledgement, attention, urges, monotonic action timing,
-budgets, and Live policy decisions remain in the phases below. The snapshot
-is also still **turn-driven**. Phase 2 must keep this store and refresh it
-from Live impulses when no user turn happens; see
-[Turn-independent presence](#turn-independent-presence).
+That snapshot remains the persisted semantic precursor rather than a second
+Live store. Passes 2–10 added typing edges, playback acknowledgement,
+attention, urges, budgets, and policy decisions around it. Monotonic
+action/speech timing and several declared frame fields remain incomplete; see
+the [Pass 18 audit](#pass-18-code-audit--contract-gaps-still-open).
 
 **Shipped precursor — sleep and day continuity (September 2026).** Sleep is
 already owned by a generation-checked persisted lifecycle, not by inferred
@@ -937,8 +1023,7 @@ parameter values.
   "intent": "react_affectively",
   "arguments": {
     "text": "oh, that was beautiful",
-    "delivery": "micro_utterance",
-    "tone": "soft"
+    "delivery": "micro_utterance"
   },
   "reason_code": "shared_media_reaction",
   "context_refs": ["situation:shared_anime", "concept:184"]
@@ -959,8 +1044,10 @@ The initial semantic vocabulary starts small:
 
 `micro_utterance` is a permitted delivery for a narrow semantic intention, not
 an animation/action family beside it. `LiveBehaviorResolver` may accompany an
-admitted `acknowledge_user` or `react_affectively` with gaze, expression, body
-orientation, or an authored motion when the rig supports them.
+admitted `acknowledge_user` or `react_affectively` with gaze, expression, and
+body orientation. A bounded tone argument and authored motions are expansion
+items below; they are not implemented merely because `arguments` is an open
+object.
 
 Outfit changes, snapshots, touch, world mutations, and tools stay out of v1.
 Add an intention only after its authorization rules, resolution fallbacks,
@@ -979,9 +1066,9 @@ commitment to silence with a bounded reconsideration contract:
   "intent": "wait",
   "reconsider_after_ms": 15000,
   "wake_on": [
-    "user.speech_started",
+    "user.voice_start",
     "user.message_sent",
-    "world.activity_changed"
+    "activity.session_changed"
   ],
   "reason_code": "shared_activity_in_progress"
 }
@@ -1051,7 +1138,7 @@ expression, an authored motion, or nothing. The policy sees semantic capability
 classes such as `can_orient`, `can_express`, and `can_motion`, never current
 Alexia filenames or parameter IDs.
 
-Every resolved plan defines:
+The target resolved plan defines:
 
 - required capabilities;
 - whether it may run during user speech, typing, a turn, or TTS;
@@ -1064,7 +1151,7 @@ Every resolved plan defines:
 
 ## Action arbitration
 
-`LiveActionArbiter` evaluates proposals in this order:
+The target consolidated Live admission lane evaluates proposals in this order:
 
 1. schema, enum, selected-urge, and context-reference validation;
 2. session/mode/ownership generation;
@@ -1079,9 +1166,12 @@ Every resolved plan defines:
 11. the stricter main-model admission gate when requested;
 12. resource contention and resolver/executor availability.
 
-Rejection is a normal result, not an exception. The reason is logged and fed
-back as an action-result impulse so the policy can avoid repeating the same
-proposal.
+Rejection is a normal result, not an exception. Shipped code logs the reason
+and records a bounded in-memory outcome. Pass 20 feeds typed action-result
+impulses back onto the bus without waking the 4B (`data_only`,
+`refresh=False`). Feeding a one-shot failure back into policy is L7.
+Pass 26 lists every gate in this order on `last_admission`; it does not
+replace the split arbiter/execute path.
 
 ### Floor and interruption rules
 
@@ -1121,8 +1211,8 @@ Maintain a deterministic `BehaviorCommitment` alongside attention:
   "switch_margin": 0.2,
   "wake_on": [
     "user.typing_started",
-    "user.speech_started",
-    "world.activity_changed"
+    "user.voice_start",
+    "activity.session_changed"
   ]
 }
 ```
@@ -1245,13 +1335,16 @@ silence. This metric is a primary guard against the small policy learning
 
 ## Persistence policy
 
-Persist:
+Persist now:
 
 - semantic user and Aiko utterances;
 - existing affect, relationship, world, task, concept, and memory state through
   their current stores;
-- bounded policy decision/action audit rows with retention;
 - C6 activity according to its existing privacy contract;
+
+Still to persist with bounded retention:
+
+- policy decision/action audit rows;
 - action outcomes needed for replay/tuning.
 
 Keep ephemeral:
@@ -1268,16 +1361,20 @@ only after repetition” rule remains the correct durability bar.
 
 ## LLM role and model candidates
 
-Add a dedicated `llm.routes.live_policy` route. It may default to the same local
+The dedicated `llm.routes.live_policy` route is shipped. It may default to the same local
 provider/model as `worker_default`, but remains independently configurable and
 observable. Do **not** put every Live call through the existing worker queue.
 Priority applies only among calls that contend for the same inference resource.
 
 ### Resource-keyed priority lanes
 
-Replace the one worker-centric topology with a small `LlmGateRegistry` (name
-illustrative) that assigns generating calls to a lane from their resolved
-execution identity, not from role names alone.
+Pass 6 shipped resource-key matching for `live_policy` versus
+`worker_default`: the distinct 4B uses `gate=None`, a matching key joins the
+worker gate at `LIVE_POLICY`, and `contention_group` can deliberately collide
+models. The broader topology below remains the target. In particular,
+`workflow` still shares the worker gate whenever it resolves to local Ollama,
+even when it uses a different model; it is not yet selected by the same
+resource-key rule.
 
 For local Ollama, the default contention key should include:
 
@@ -1648,10 +1745,12 @@ outrank idle-life. No policy model, no Live speech, chat/STT still
 
 ### Phase 6 — local policy bake-off in shadow mode — shipped (shadow)
 
-**Purpose:** choose a model from evidence. Pass 6 loads `qwen3.5:4b` as
+**Purpose:** choose a model from evidence. Pass 6 loaded `qwen3.5:4b` as
 `llm.routes.live_policy` (40960 context, `max_tokens` 512, temperature 0)
-and runs **propose / arbitrate / log only**. The shipped output cap was
-64 and clipped `arguments.reasoning` mid-JSON; reasoning stays allowed.
+and initially ran **propose / arbitrate / log only**. Passes 7, 9, and 10
+subsequently enabled nonverbal, micro, and gated main-wake execution. The
+original output cap was 64 and clipped `arguments.reasoning` mid-JSON;
+reasoning stays allowed.
 
 - `chat_json` accepts `json_schema`; Ollama gets `format: <schema object>`.
 - `LivePolicyPromptAssembler` sizes regions off the live_policy window
@@ -1661,18 +1760,21 @@ and runs **propose / arbitrate / log only**. The shipped output cap was
 - Distinct 4B vs worker 9B => `gate=None`. Same model joins the worker
   lane at `LIVE_POLICY` (30). Optional `LlmRoute.contention_group`.
 - User text/STT admit `request_main_speech` deterministically so
-  `TurnRunner` still replies. Unprompted `request_main_speech` is a
-  talk-about ledger row only (no `ProactiveEvent`).
+  `TurnRunner` still replies. At the Pass 6 checkpoint, unprompted
+  `request_main_speech` was a talk-about ledger row only; Pass 10 now routes
+  an admitted wake through a gated `ProactiveEvent`.
 - Keep-alive while Live posture is on; `keep_alive=0` when it turns off.
 - MCP `get_live_situation_frame` includes `last_policy_proposal` (the 4B
   shadow result: arbiter, latency, `prompt_tokens`, per-region counts)
   and `last_user_intent_admit` (the deterministic chat reflex). The
   reflex does not overwrite the model proposal.
-- Avatar still Pass 5 until Phase 7.
+- At this checkpoint the avatar still used Pass 5 behavior; Phase 7 later
+  enabled nonverbal policy overlays.
 
-**Exit:** chosen model clears explicit semantic, no-op, stale-action, latency,
-main-wake restraint, and memory thresholds on the target machine. Still open
-as a bake-off; this pass is the measuring lane.
+**Exit:** the chosen model clears explicit semantic, no-op, stale-action,
+latency, main-wake restraint, and memory thresholds on the target machine.
+Model/quantization comparison remains empirical even though the selected 4B is
+now executing bounded actions.
 
 ### Phase 7 — nonverbal policy execution — shipped (nonverbal only)
 
@@ -1684,8 +1786,9 @@ urge. Unknown `context_refs` are stripped rather than
 `unknown_context_ref` rejecting the whole proposal. Accepted `attend` /
 `acknowledge_user` / `react_affectively` / `remain_present` /
 `yield_floor` / `wait` / `noop` overlay IdleLife via
-`LiveBehaviorResolver.policy_intent`. Speech intents stay shadow.
-`TurnRunner` still replies to user text/STT.
+`LiveBehaviorResolver.policy_intent`. At the Pass 7 checkpoint speech intents
+stayed shadow; Pass 9 later enabled micros and Pass 10 enabled gated
+main-wakes. `TurnRunner` still replies to user text/STT.
 
 - `LiveWaitScheduler` gates 4B spawn; accepted wait/noop schedule a hold.
 - `LiveBehaviorBudget` is consumed on execute (`attend` →
@@ -1694,8 +1797,9 @@ urge. Unknown `context_refs` are stripped rather than
 - Budgets and hysteresis keep Pass 3/5 shipped numbers. Diagnostics
   expose `arbiter_reason_counts` and `executed_counts`.
 
-**Exit:** visual actions are timely, cancellable, capability-safe, and do not
-fight turn-driven avatar channels. Speech still Phase 8.
+**Exit at Pass 7:** visual actions are timely, cancellable, capability-safe,
+and do not fight turn-driven avatar channels. Speech was promoted separately
+in Passes 8–10.
 
 ### Phase 7.5 — do not fight the turn — shipped
 
@@ -1716,8 +1820,8 @@ data-only; more idle liveliness is Phase 8.
   coalesced `idle.reconsider` (Pass 13). The 1s heartbeat itself stays
   data-only.
 
-**Exit:** a typed send keeps attend/lean-in while TurnRunner/TTS own the
-floor. Speech still Phase 8.
+**Exit at Pass 7.5:** a typed send keeps attend/lean-in while TurnRunner/TTS
+own the floor. Speech was promoted separately in Passes 8–10.
 
 ### Phase 8 — hybrid speech
 
@@ -1737,7 +1841,9 @@ floor. Speech still Phase 8.
   INITIATE applies. The 4B keeps a reserved LAST CONVERSATION floor.
   Proactive and live_micro bubbles paint like ordinary assistant replies.
   Silence-timer `ProactiveDirector` stays starved under Live.
-- Add focus/DND/sensitive-context suppressors and user-facing cadence controls.
+- **Passes 11–12 shipped:** focus/DND suppression and user-facing cadence
+  controls. A deterministic sensitive-context suppressor beyond configured
+  concept rails remains open; the 4B must not infer sensitivity on its own.
 
 **Exit:** zero overlapping semantic speech, reliable barge-in, and acceptable
 interruption/dismissal rates in opt-in sessions.
@@ -1763,7 +1869,9 @@ UIA remains deferred. Titles still never enter the 4B prompt.
 
 **Purpose:** let desktop context inform Live behavior.
 
-- Consume C6 aggregation and interpretation as situation evidence.
+- Consume C6 aggregation as direct situation evidence. Keep Level-2
+  interpretation indirect through the TurnRunner-owned companion cue until a
+  bounded, title-free Live projection is designed.
 - Preserve C6 redaction, stale-data, confidence, and retention rules.
 - Feed duration into K72 rather than minting a parallel wellbeing policy.
 - Keep cues as urges/candidates, never direct permission to speak.
@@ -1791,26 +1899,414 @@ pinned; idle workers were not rewritten.
 
 Still open after testing:
 
-- Persist user settings in the same runtime setters that mutate them.
-  Two-axis profile, mic consent state, DND, and cadence knobs all go through
-  that path. **Done Pass 12.**
-- Define multi-window impulse ownership and dedupe. Mic/TTS ownership is
-  already shipped; impulse ownership is not. **Done Pass 12.**
 - Recover cleanly across reconnect, backend restart, and model unload.
   **Reconnect generation bump Pass 12; backend restart still empty-frame + C6 store.**
-- Add resource contention and thermal/battery budgets.
-- Add model keep-alive/unload policy. **Keep-alive already shipped Pass 6.**
-- Add diagnostics for the last decision without exposing private content.
-  **Done Pass 12.**
-- Roll out visual-only first, then backchannels, then semantic speech.
-  **`live_unprompted_speech=false` is the visual-only gate.**
+- Complete cross-role resource-keyed inference topology and add thermal/battery
+  budgets. Live-vs-worker resource matching is shipped.
 - Keep all autonomous speech opt-in until real data supports safer defaults.
 - Intercept typed/STT so Live owns chat replies. **Deferred; TurnRunner
   reflex still wakes chat.**
 - DT4 scenario replay. Do not invent a third clock.
+- Close remaining L0 items before adding new action classes. Pass 19–26
+  shipped the frame/clock/wake/prompt slice, action-result impulses, L1
+  activity-transition notices, L2 presence style / attention target, L3
+  reaction tone / intensity, L6 main-wake speech acts, L7 one-shot
+  fallback, and the inspectable admission record. Live L0 leftovers on
+  this document are closed. DT4 replay remains a tools item. L4 is
+  deferred. L5 `delivery_style` remains open. L8+ is sketched below;
+  do not start it before L5 and DT4 replay.
 
 **Exit:** Live mode can stay enabled for hours without queue growth, speech
 races, privacy leaks, worker starvation, or unexplained behavior.
+
+### Next 4B-sized expansion backlog
+
+The 4B should keep doing **bounded policy selection**, not perception,
+authorization, tool use, or substantive language. Every item below follows the
+same contract: deterministic code creates typed evidence and available
+choices; the model selects one enum plus small bounded arguments; the arbiter
+may only remove permission; the resolver maps semantics to capabilities.
+L0–L7 (except deferred L4 and open L5) are shipped. L8 shipped Pass
+29. L10 shipped Pass 27. L12 shipped Pass 28. L16 shipped Pass 30.
+Remaining L8+ starts after L5 and DT4 replay, one enum at a time.
+
+#### L0. Contract closeout — prerequisite, no new autonomy
+
+**Shipped Pass 19:** playback / held+recent actions / relationship phase /
+short goal summaries / `allowed_actions` / `resource_contention`; mixin
+clocks for last Aiko speech and last semantic action; wait/commitment
+producer names plus aliases for dead 4B tokens; mood, vitality, and
+`speech_ok` on the policy situation; privacy-capped peek-only cue
+subjects. The arbiter may reject `not_allowed` when the menu is
+non-empty. Sleep proposals are limited to `noop` / `wait` /
+`remain_present`.
+
+**Shipped Pass 20:** `LiveActionRecord` IDs; `aiko.action_started` /
+`completed` / `rejected` / `cancelled` impulses (`data_only`,
+`refresh=False`, no titles or spoken text); ledger `action_id` /
+`action_state`; client-side argument allowlist (`reasoning` everywhere,
+`delivery`/`text` on micro intents). Shadow main-wake does not emit a
+result impulse. DT4 still uses the existing DT1/`timephrase` seam — no
+third clock and no new SQLite action table.
+
+**Shipped Pass 26:** [`admission.py`](../../app/core/live/admission.py)
+builds one 12-gate record after arbiter + execute leftovers
+(`schema` → `generation` → `freshness` → `world_truth` → `floor` →
+`playback` → `constraints` → `hysteresis` → `repetition` →
+`capability` → `main_wake` → `executor`). The record is inspectable on
+`last_admission` / diagnostics; it never authorizes. Confidence, titles,
+and rig IDs stay out. Visual capability no-ops are not rejects. Wait
+during a turn still executes. Live L0 leftovers on this document are
+closed; DT4 exact/model replay stays a
+[tools item](tools.md#dt4-scenario--conversation-replay-harness).
+
+**Still open:** DT4 exact/model replay (tools); L5 `delivery_style`.
+L8+ is the next 4B wave, not more L0. This slice does not add autonomy.
+
+**Key files:** [`frame.py`](../../app/core/live/frame.py),
+[`assembler.py`](../../app/core/live/assembler.py),
+[`allowed.py`](../../app/core/live/allowed.py),
+[`labels.py`](../../app/core/live/labels.py),
+[`actions.py`](../../app/core/live/actions.py),
+[`admission.py`](../../app/core/live/admission.py),
+[`controller.py`](../../app/core/live/controller.py),
+[`proposal.py`](../../app/core/live/proposal.py),
+[`prompt.py`](../../app/core/live/prompt.py), and
+[`wait.py`](../../app/core/live/wait.py).
+
+#### L1. Meaningful activity transitions, not more raw telemetry
+
+**Shipped Pass 21:** [`activity_notices.py`](../../app/core/live/activity_notices.py)
+derives `focus_started`, `focus_boundary`, `returned_to_machine`,
+`app_category_changed`, and `shared_activity_resumed` from C6
+sessions/rollups plus sleep/shared state. Thresholds are deterministic
+(20-minute sustained focus, 30-second media floor, coding confidence
+floor). Subjects are category tokens (`coding`, `media`, `machine`,
+`presence`, `shared_activity`), never titles or raw app names. New kinds
+map onto existing urges (`remain_present` / `share_delight`); the 4B
+still chooses only `noop` / `wait` / `remain_present` / a visual reaction
+/ an already-gated speech request. Same session does not re-notice;
+stale, weak, locked, idle-without-previous, and missing C6 stay silent.
+Coding world-truth still blocks delight. Shared-commitment coding still
+emits `user_focus` on that trigger.
+
+**Why 4B fits:** one small state transition, a short urge list, and the
+existing intent enum. **Tests:** stale/weak/locked/missing evidence stays
+silent; same session does not re-notice; return and natural-boundary
+fixtures; category change coding→media; no title in prompt/diagnostics.
+**Seams:** `activity/evidence.py`, `activity_notices.py`, `notice.py`,
+`urge_store.py`.
+
+#### L2. Presence style and attention target as bounded companion stance
+
+**Shipped Pass 22:** [`presence.py`](../../app/core/live/presence.py)
+clamps `presence_style` (`neutral`, `cofocus`, `give_space`,
+`share_delight`, `soft_support`, `playful`) and admits
+`attention_target` for `attend` / `remain_present` from the existing
+`user` / `cursor` / `shared_activity` / `world_entity` / `none` enum.
+Style may only lower speech/reaction intensity via
+`apply_presence_style`; it cannot mint `sharing=shared`, raise a budget,
+or override DND/sleep/lock (those collapse to `give_space`). Coding plus
+user interruption maps illegal shared/playful styles to `cofocus`;
+coding without interruption maps them to `give_space`. Hysteresis and
+the `attention_switch` budget still reject target changes. The resolver
+picks among already-allowed gaze/body/expression classes; sleep still
+outranks Live. `delivery_style` is not this field.
+
+**Why 4B fits:** this is whole-situation taste, not factual reasoning.
+**Tests:** coding + interruption boundary resolves to `cofocus`/`give_space`;
+shared media may resolve to `share_delight`; contradictory evidence cannot
+select a shared style; DND always collapses to quiet presence. **Seams:**
+`presence.py`, `proposal.py`, `prompt.py`, `modifiers.py`, `resolver.py`.
+
+#### L3. A richer semantic reaction palette
+
+**Shipped Pass 23:** [`reaction.py`](../../app/core/live/reaction.py)
+clamps `reaction_tone` (`neutral`, `warm`, `curious`, `amused`, `proud`,
+`concerned`, `drowsy`) and `reaction_intensity` (`low` / `mid` / `high`).
+Unknown tokens are dropped at sanitize and treated as `neutral` /
+`mid` at clamp. Intensity may only lower to
+`frame.constraints.max_reaction_intensity`. `concerned` requires user
+meaning (`user.typing` / speech / floor, or non-empty
+`last_user_meaning`); weak or stale activity evidence cannot mint it.
+Sleep collapses tone to `drowsy` (the resolver still degrades expression
+to `none`); DND / lock collapse to `neutral`. Tone may change expression
+and, when intensity is not `low`, body; gaze stays presence-style.
+Python emits semantic classes only; TypeScript maps those onto
+`manifest.reaction_mapping` aliases or no-ops. Conversation reactions
+and `exprSlotLockUntil` still outrank Live. `delivery_style` is not this
+field.
+
+**Why 4B fits:** selecting one emotional color from present context is a
+small classification task. **Tests:** unknown tone dropped; concern
+cannot come from weak Chrome evidence; typing or last-user-meaning
+allows concern; DND/sleep collapse; capability-absent rigs no-op;
+conversation `playful` outranks Live `amused`; low intensity writes a
+smaller body envelope than high. **Seams:** `reaction.py`,
+`proposal.py`, `prompt.py`, `resolver.py`, `controller.py`,
+`web/src/live2d/behavior/resolver.ts`, `IdleLifeChannel.ts`.
+
+#### L4. Authored ambient motion presets
+
+**Deferred.** The current Live2D rig does not expose enough authored
+idle-life motions for a 4B-selected preset menu (`tiny_nod`,
+`settle_deeper`, `small_stretch`, `glance_shared`). Pass 5 still
+cancels motion execution; `motion_class` stays `"none"`. Revisit when
+a real idle-life motion group exists. L6 and L7 shipped instead.
+
+#### L5. Bounded micro and earcon delivery
+
+Keep `delivery: "micro_utterance"` as the permission marker and the eight-word
+lexical validator, but add a separate validated `delivery_style`:
+`plain`, `soft`, `bright`, `playful`, or `hushed`. Map the style enum
+deterministically onto the existing reaction/prosody and TTS pacing seams; the
+model never emits `[[prosody:...]]`, numeric speed, pitch, or engine parameters.
+Style cannot rescue text that fails the validator. For `backchannel_user`,
+offer a separate `backchannel_delivery` enum (`none` / `earcon`) plus a tiny
+semantic hint (`agreement` / `thinking` / `empathy`) mapped onto the existing
+H6 `EarconPlayer`; this creates no transcript bubble. If free-text micro
+validation remains noisy in replay, a fixed `template_id` bank is a later
+multiple-choice fallback rather than a wider language surface.
+
+**Why 4B fits:** the line and one style are already inside its narrow language
+lane. **Tests:** every style maps identically across TTS engines; forbidden
+speech never synthesizes; invalid text stays rejected; transcript stores the
+clean words only. **Seams:** `micro_utterance.py`, `live_mode_mixin.py`,
+`app/tts/reactions.py`, shared TTS playback.
+
+#### L6. Main-wake speech-act routing, not main-wake prose
+
+**Shipped Pass 24:** `request_main_speech` may set `arguments.speech_act`
+to `share_observation`, `celebrate`, `offer_support`,
+`continue_shared_topic`, or `gentle_question`. Unknown acts are dropped.
+`gentle_question` is removed when `questions_allowed` is false. The act
+is an untrusted candidate in the T6 talk-about block; K92, question
+allowance, floor, substantive urge, main-wake budget, and the main model
+still decide whether and what to say. Cue subjects pass through
+`cap_live_subject` (URLs, overlong titles, and relative deictics drop).
+K92 silence is a successful outcome and does not arm L7 fallback.
+
+**Why 4B fits:** it routes an eligible opening; it does not write the answer.
+**Tests:** unknown act dropped; `gentle_question` removed when questions are
+forbidden; selected cue ID/subject remains privacy-safe; K92 silence is a
+successful outcome. **Seams:** `main_wake.py`, `controller.py`,
+`conversation/stance.py`, prompt T6.
+
+#### L7. Result-aware one-shot fallback
+
+**Shipped Pass 25:** [`fallback.py`](../../app/core/live/fallback.py)
+classifies typed execute stalls as `budget_exhausted`, `floor_preempted`,
+or `capability_absent`. Only the first two may arm a one-shot FALLBACK
+menu (`wait` / `noop` / `remain_present`, plus `yield_floor` for floor
+preemption). The same `action_id` cannot recursively retry; a second
+failure becomes wait. Critical user input cancels the pending menu.
+Capability-absent visual no-ops stay deterministic and never wake the
+4B. `aiko.action_*` impulses remain `data_only`.
+
+**Why 4B fits:** one failure, a tiny menu, no planning loop. **Tests:** one
+retry maximum; critical user input cancels; repeated failure becomes wait;
+no extra inference for deterministic no-op degradation. **Seams:**
+`fallback.py`, `controller.py`, `prompt.py`, `wait.py`.
+
+Ship L5 and inspect DT4 replay before promoting L8+. The 4B remains a
+policy selector; none of the items below add producers that mint titles,
+take cues, write stores, or wake `TurnRunner` on their own.
+
+#### L8. Wait horizon and wake-set, not raw milliseconds
+
+**Shipped Pass 29:** [`wait.py`](../../app/core/live/wait.py) maps
+`wait_horizon` (`short` / `medium` / `long`) onto
+`MIN_WAIT_MS`–`MAX_WAIT_MS` and expands `wake_set` (`user_only` /
+`user_or_activity` / `user_or_silence`) onto `WAKE_ALLOWLIST`. The JSON
+schema no longer accepts `reconsider_after_ms` or `wake_on`; parse
+drops those fields if a client still sends them. Unknown tokens become
+medium / `user_only`. Critical user input still wakes even if omitted.
+Sleep strips `silence.wake`. Quiet / sleep / turn / TTS / inflight
+still skip `idle.reconsider`. Expiry still promotes one coalesced
+idle tick.
+
+**Why 4B fits:** choosing how long to stay quiet, and what should break
+that quiet, is a taste decision once the legal sets exist. **Tests:**
+raw `reconsider_after_ms` is ignored; unknown wake names drop; sleep
+still cannot pick a speech wake; expiry still promotes one coalesced
+`idle.reconsider`. **Seams:** `wait.py`, `proposal.py`, `prompt.py`,
+`controller.py`.
+
+#### L9. Floor manners while the user owns the floor
+
+When the user is speaking or composing, the 4B already has `attend`,
+`remain_present`, `yield_floor`, `backchannel_user`, and `wait`. Add a
+single `listen_posture` enum (`lean_in` / `give_space` / `hold_still` /
+`soft_backchannel`) that **collapses onto those intents** plus the L2
+style clamp. It cannot mint `request_main_speech`, cannot raise a
+budget, and cannot take the floor. `soft_backchannel` still needs the
+existing micro/earcon permission (L5); without it the enum degrades to
+`hold_still`. Typing never speaks.
+
+**Why 4B fits:** this is companion etiquette, not content. **Tests:**
+user speech / typing cannot select main-wake; DND / sleep collapse to
+`give_space` or `hold_still`; unknown tokens drop; conversation lock
+still outranks Live gaze. **Seams:** `presence.py`, `proposal.py`,
+`allowed.py`, `controller.py`, `resolver.py`.
+
+#### L10. Peek-only urge pick from a numbered menu
+
+**Shipped Pass 27:** [`urge_menu.py`](../../app/core/live/urge_menu.py)
+renders a numbered peek-only `CANDIDATE URGES` list (max 8, ranked,
+privacy-capped subjects, no cue bodies or titles). The 4B copies
+`selected_urge_id` from that list or omits it (`wait` / `noop`).
+Unknown ids are `unknown_urge`. An empty menu cannot
+`request_main_speech` (`missing_urge` with no id, `unknown_urge` if
+invented). Live still peeks and never calls `take_pool_cue` or fulfils
+the cue. Cue pressure may change the menu; it is not a command. The
+arbiter's known ids are the same menu ids. A selected id that is on
+the menu but gone from the store still accepts as talk-about and
+rejects at `main_wake` (`missing_urge`) — Pass 10 unchanged.
+
+**Why 4B fits:** picking among already-legal candidates is the job it
+was sized for. **Tests:** unknown id rejected; empty menu cannot wake
+the main model; URL / overlong / deictic subjects still drop via
+`cap_live_subject`; fulfilment counters do not move. **Seams:**
+`urge_menu.py`, `urge_store.py`, `cue_adapter.py`, `prompt.py`,
+`arbiter.py`, `labels.py`.
+
+#### L11. Circadian quieting from a period token
+
+Deterministic code (via `timephrase`, not a third clock) stamps a
+period token on the frame (`morning` / `day` / `evening` / `night` /
+`late_night`). The 4B may only **lower** intensity, pick a longer wait
+band, or collapse style toward `give_space` / `drowsy`. It cannot
+relocate her, mutate the world, arm garden/circadian movers, or invent
+a bedtime. Sleep / DND / lock still outrank the token. Missing C6 does
+not stall. Circadian bus producers remain optional; the frame token is
+enough.
+
+**Why 4B fits:** time-of-day manners are classification, not planning.
+**Tests:** night cannot mint `playful` or unprompted main-wake; DT1
+shift changes the token; sleep still wins; no `datetime.now` bypass.
+**Seams:** `timephrase`, `policy_context.py`, `presence.py`,
+`reaction.py`, `wait.py`.
+
+#### L12. Affect and vitality as typed notices, not mood authorship
+
+**Shipped Pass 28:** [`vitality_posture.py`](../../app/core/live/vitality_posture.py)
+exposes `keep` / `soften` / `settle`. Heartbeat ticks affect/vitality
+first, then publishes `aiko.affect_changed` / `aiko.vitality_changed`
+on change only (`data_only`, `refresh=False`, payload is `mood_label`
+or `band`). Those kinds stay `data_only` even if `situation_changed`.
+Low vitality drops `playful`, `celebrate`, and `request_main_speech`
+from the menu; `backchannel_user` stays. `admit_main_wake` still
+rejects unprompted main-wake as `speech_rare` when the allowed menu is
+empty. Posture may only quiet; it cannot raise a budget or rewrite
+intent to wait. The 4B never writes affect, vitality, T3, L37, or
+`MemoryStore`. Heartbeat stays off the 4B tick. Conversation
+`exprSlotLockUntil` still outranks Live.
+
+**Why 4B fits:** one inner-state edge, one quieter choice. **Tests:**
+capability-absent still no-ops; low vitality cannot raise speech
+budget; affect impulse does not recurse into policy by itself;
+conversation reactions still outrank Live. **Seams:** `notice.py`,
+`impulse.py`, `epochs.py`, `vitality_posture.py`, `controller.py`.
+
+#### L13. Glance targets from an allowlisted present-set
+
+`attention_target` already admits `user` / `cursor` / `shared_activity`
+/ `world_entity` / `none`. Build the menu from **what is actually in
+the frame** (semantic labels only: `user`, `cursor`, `shared_activity`,
+maybe a world-entity class such as `window` / `room`). The 4B may pick
+one present target or `none`. Unknown or absent targets drop. Titles,
+app names, and UIA strings never enter the menu. Hysteresis and the
+`attention_switch` budget still reject thrash; L16 can add an explicit
+hold.
+
+**Why 4B fits:** looking at something already in the room is a small
+choice. **Tests:** coding + interruption cannot pick a shared glance;
+missing entity drops; no title in prompt/diagnostics; sleep outranks.
+**Seams:** `presence.py`, `assembler.py`, `prompt.py`, `resolver.py`.
+
+#### L14. Return and reconnect companion beat
+
+Unlock, Live reconnect, and H26 “caught mid-something” already create
+return-shaped evidence. Let the 4B pick `remain_present` or a gated
+`request_main_speech` with an existing L6 act (`share_observation` /
+`continue_shared_topic` / `offer_support`) — never a free greeting.
+The main model still writes the words; K92 may silence. Missing C6,
+weak evidence, and same-session repeats stay silent (same as L1).
+Generation bump on reconnect still cancels old actions. Browser Live
+must not stall.
+
+**Why 4B fits:** “is this a hello, or just sit here?” is a policy
+call. **Tests:** missing/weak/locked evidence stays quiet; reconnect
+does not double-greet; user text/STT still wake `TurnRunner`; no
+titles. **Seams:** `activity_notices.py`, `main_wake.py`,
+`controller.py`, `live_mode_mixin.py`.
+
+#### L15. Compact policy prompt-v2 (keep the 4B reliable)
+
+The implementation route is 40,960 context with a 12,000-token input
+ceiling. That fixed Pass 6 truncation; it is still larger than the
+2K–4K policy target. Before adding L8–L14 menus, measure a compact
+prompt: drop dead prose, keep rails, keep the numbered urge menu, keep
+generation and `allowed_actions`. This is not autonomy. If a new enum
+needs a paragraph of handling notes, it does not belong on the 4B.
+
+**Why 4B fits:** extra tokens make this model worse, not wiser.
+**Tests:** schema still validates; truncation fixtures from Pass 6
+stay green; region-token diagnostics show the cheaper shape. **Seams:**
+`prompt.py`, `policy_context.py`, Pass 6 tests.
+
+#### L16. Explicit hold, so she can choose not to fidget
+
+**Shipped Pass 30:** `keep_attention` / `keep_style` (booleans, default
+false) live on the proposal arguments. When true, a new target or style
+is dropped and the current hold stands; when false, existing hysteresis
+and the `attention_switch` budget still apply. User speech / interrupting
+clears both flags. A new situation generation cannot reuse the previous
+hold's style. `_hold_nonverbal` clamps TTL to `MAX_WAIT_MS`. The
+resolver sets `hold_attention` so IdleLife can keep a gaze without
+fidgeting. Conversation lock still outranks Live.
+
+**Why 4B fits:** “stay” is as much a policy choice as “switch.”
+**Tests:** keep + new target preserves the current one; user speech
+still cancels; generation change still drops the hold. **Seams:**
+`presence.py`, `proposal.py`, `controller.py`, `resolver.py`.
+
+#### Later candidates (after L8–L16 have hours of evidence)
+
+These stay legal 4B jobs only if the earlier enums stay small and DT4
+shows the compact model still picks them:
+
+- Relationship-phase may **shrink** the presence/reaction menu, never
+  mint closeness.
+- Short goal summaries may bias `remain_present`, never mutate goals
+  or tasks.
+- A journal `already_noticed` flag may bias `noop` / `wait` for the
+  same session key L1 already de-dupes.
+- A semantic body class (`settle` / `lean` / `open`) only if it is
+  distinct from L3 intensity and still emits no Param IDs.
+- A fixed micro `template_id` bank if L5 free-text stays noisy
+  (already noted under L5).
+- World/circadian **bus producers** for L11 if frame restamps prove too
+  coarse; they remain `data_only`. L12 inner-state impulses already
+  ship from the heartbeat.
+
+#### Do not assign these to the 4B
+
+- UIA/screen interpretation, sensitive-context discovery, or deciding whether
+  title data is safe. Those require deterministic privacy gates and a
+  separate evidence worker, if they ship at all.
+- Substantive replies, factual claims, tools, memory writes, goals, tasks, or
+  world mutations. Route eligible speech to the main model and existing
+  owners.
+- Consent, floor ownership, sleep/DND, budget ceilings, capability mapping,
+  action freshness, or retry limits. These remain deterministic
+  authorization.
+- Free-form multi-step behavior plans or rig instructions. Prefer one semantic
+  style/reaction/motion choice per epoch.
+- Raw millisecond wait values, invented `wake_on` names, or a second
+  Live clock. L8 is bands and allowlisted sets only.
+- Ranking memories, reading titles to decide a greeting, or writing
+  the return/reconnect line. L14 routes; the main model speaks.
 
 ## Dependencies and boundaries
 
@@ -1836,9 +2332,9 @@ races, privacy leaks, worker starvation, or unexplained behavior.
 - UI “Live mode” is a profile; runtime channel and behavior posture are
   independent. The profile, mic consent, DND, and cadence knobs persist in
   the same setter that mutates runtime.
-- In Live, submitted text and STT finals are impulses. Automatic
-  `TurnRunner` replies stop in Phase 6; until then they are shadow
-  dual-written so Live is not mute.
+- In Live, submitted text and STT finals are impulses **and** still enter
+  `TurnRunner`. Interception is explicitly deferred; do not make the 4B
+  responsible for deciding whether direct user input deserves a reply.
 - When the small model wants real talk it emits a **talk-about cue**;
   `request_main_speech` carries that into the main/brain prompt. The
   Live policy model loads when Live is enabled and unloads when it is
@@ -1864,7 +2360,9 @@ races, privacy leaks, worker starvation, or unexplained behavior.
   situation.
 - Policy emits Aiko-level semantic intentions; only deterministic resolution
   knows Live2D expressions, motions, parameters, and fallbacks.
-- One deterministic arbiter owns all immediate actions.
+- One deterministic admission lane owns all immediate actions. Pass 26
+  ships the inspectable 12-gate record; validation and execute checks
+  remain split. The record does not change who is allowed to act.
 - Model-reported confidence never contributes to authorization.
 - LLM priority lanes follow actual inference-resource contention. A distinct
   Live/workflow model bypasses unrelated queues unless explicitly placed in a
@@ -1878,8 +2376,8 @@ races, privacy leaks, worker starvation, or unexplained behavior.
   not to nonverbal reflexes.
 - Once Live posture is on, silence timers may wake the controller; they
   never call `generate_proactive_message` on a private thread.
-- Live evaluation shifts `timephrase` via DT1 and shares DT4 scenario
-  replay. There is no third clock.
+- Live evaluation shifts `timephrase` via DT1 and must share DT4 once that
+  replay harness exists. There is no third clock.
 - Concepts inform policy through `ConceptView`; there is no parallel concept
   store.
 - Concept presence does not prove the concept's situation is active now.
@@ -1890,19 +2388,24 @@ races, privacy leaks, worker starvation, or unexplained behavior.
 
 ## Remaining product questions
 
-The two-axis UI, first-run consent copy, and DND/cadence knobs are Phase 0/10
-product work, not optional. These remaining questions can be answered from
-shadow-mode data rather than guessed now:
+The two-axis UI, separate first-run mic consent, visual-only option,
+DND/unprompted-speech controls, cadence knobs, ordinary Live micro bubbles,
+and immediate model unload on Live-off are implemented choices. The remaining
+questions require measured sessions rather than more architectural guessing:
 
-- Should the Live UI profile enable the microphone by default on first use, or
-  ask separately after explaining the always-listening implication?
 - What accepted-actions-per-hour range feels alive without becoming busy?
-- Should semantic micro-utterances appear as ordinary chat bubbles, a quieter
-  transcript style, or only in an expandable Live activity rail?
+- Should ordinary Live micro bubbles gain a quieter visual style?
 - Which concept kinds earn a place in the Live diet after measured use?
-- How long should the local model remain resident after Live posture turns off?
-- Is a 3–4B model sufficient, or does the no-op/situation judgment require the
-  8–9B tier on the target hardware?
+- Does the compact 4B remain reliable as L5 adds delivery choices, or should any
+  specific classification move back to deterministic code?
+- Which activity transitions are useful enough to notice without making
+  desktop awareness feel surveillant? Pass 21 ships the first title-free
+  set; measured sessions still decide whether to keep, drop, or split them.
+- Do wait-band and `listen_posture` choices beat the current defaults
+  in measured hours, or are they redundant with L2 presence style?
+- Does an explicit hold (L16) cut attention thrash, or does hysteresis
+  already do that job?
 
-Do not answer these by increasing autonomy first. Run the shadow lane, inspect
-what it would have done, and promote one action class at a time.
+Do not answer these by increasing autonomy first. Ship L5, add DT4
+model replay, inspect what the 4B would have done, then promote L8+
+one enum at a time.

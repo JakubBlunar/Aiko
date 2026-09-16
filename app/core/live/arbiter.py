@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
+from app.core.live.allowed import intent_is_allowed
 from app.core.live.proposal import LIVE_POLICY_INTENTS, LivePolicyProposal
 from app.core.live.resolver import FORBIDDEN_RIG_MARKERS
 
@@ -71,16 +72,17 @@ def arbitrate_live_proposal(
     known_urge_ids: Iterable[str] = (),
     known_context_refs: Iterable[str] = (),
     user_intent: bool = False,
+    allowed_actions: Iterable[str] = (),
 ) -> LiveArbiterResult:
     """Authorize a parsed proposal. Never reads ``confidence``.
 
     Generation is a server token: the caller stamps it and drops late
     proposals. This function does not reject a wrong model echo.
-    Unknown urge ids fail. Nonverbal intents may omit an urge; speech
-    intents still need one. Unknown context_refs are dropped, not a
-    reject. Rig identifiers are forbidden.
-    Unprompted ``request_main_speech`` is accepted as a talk-about
-    record only — the caller must not enqueue TurnRunner.
+    Unknown urge ids fail. An empty menu cannot ``request_main_speech``.
+    Nonverbal intents may omit an urge; speech intents still need one.
+    Unknown context_refs are dropped, not a reject. Rig identifiers are
+    forbidden. Unprompted ``request_main_speech`` is accepted as a
+    talk-about record only — the caller must not enqueue TurnRunner.
     """
     del snapshot_generation
     if "confidence" in proposal.arguments:
@@ -101,13 +103,22 @@ def arbitrate_live_proposal(
         )
     if proposal.intent not in LIVE_POLICY_INTENTS:
         return LiveArbiterResult(False, "unknown_intent", proposal)
+    allowed = tuple(str(item) for item in allowed_actions if str(item))
+    if allowed and not intent_is_allowed(proposal.intent, allowed):
+        return LiveArbiterResult(False, "not_allowed", proposal)
     if _has_rig_identifiers(proposal):
         return LiveArbiterResult(False, "rig_identifier", proposal)
     urge_ids = {str(item) for item in known_urge_ids if str(item)}
     if proposal.selected_urge_id:
-        if urge_ids and proposal.selected_urge_id not in urge_ids:
+        if proposal.selected_urge_id not in urge_ids:
             return LiveArbiterResult(False, "unknown_urge", proposal)
     elif proposal.intent not in NONVERBAL_OK_EMPTY_URGE:
+        return LiveArbiterResult(False, "missing_urge", proposal)
+    if (
+        proposal.intent == "request_main_speech"
+        and not user_intent
+        and not urge_ids
+    ):
         return LiveArbiterResult(False, "missing_urge", proposal)
     refs = {str(item) for item in known_context_refs if str(item)}
     if refs and proposal.context_refs:

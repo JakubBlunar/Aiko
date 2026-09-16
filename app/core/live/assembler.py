@@ -18,6 +18,7 @@ from app.core.conversation.conversation_situation import (
     ConversationSituationSnapshot,
 )
 from app.core.infra import timephrase
+from app.core.live.allowed import allowed_actions_for
 from app.core.live.epochs import EpochKind, classify_epoch
 from app.core.live.frame import (
     AikoNow,
@@ -46,8 +47,10 @@ SPEECH_HOLD_MS = 8_000
 TYPING_HOLD_MS = 4_000
 COMMITMENT_WAKE_ON = (
     "user.typing_started",
-    "user.speech_started",
-    "world.activity_changed",
+    "user.voice_start",
+    "activity.session_changed",
+    "activity.idle",
+    "activity.lock",
 )
 PHASE_IMMEDIATE_MS = 3_000
 PHASE_RECENT_MS = 30_000
@@ -73,6 +76,12 @@ class LiveAssembleInput:
     ritual_priors: tuple[str, ...] = ()
     trigger_kind: str = "heartbeat"
     tts_active: bool = False
+    playback_active: bool = False
+    current_actions: tuple[str, ...] = ()
+    recent_actions: tuple[str, ...] = ()
+    relationship_phase: str = ""
+    goals: tuple[str, ...] = ()
+    resource_contention: str = ""
     activity_evidence: ActivityEvidence | None = None
 
 
@@ -655,7 +664,7 @@ def assemble_live_situation(
             last_user_meaning=last_meaning,
             turn_active=inp.turn_in_progress,
             tts_active=inp.tts_active,
-            playback_active=False,
+            playback_active=bool(inp.playback_active) or bool(inp.tts_active),
             capture_available=bool(inp.capture_available),
             voice_session_active=inp.live_voice_session_active,
             connection_generation=int(inp.mode_generation),
@@ -693,10 +702,18 @@ def assemble_live_situation(
             vitality_band=snapshot.vitality_band,
             posture=snapshot.world.posture,
             activity=snapshot.world.activity,
+            current_actions=tuple(
+                action for action in inp.current_actions if action
+            )[:4],
+            recent_actions=tuple(
+                action for action in inp.recent_actions if action
+            )[:4],
         ),
         continuity=ContinuitySection(
+            relationship_phase=str(inp.relationship_phase or ""),
             arc=snapshot.arc,
             arc_confidence=float(snapshot.arc_confidence or 0.0),
+            goals=tuple(goal for goal in inp.goals if goal)[:3],
             situation_concepts=tuple(
                 prior for prior in inp.ritual_priors if prior
             ),
@@ -725,6 +742,7 @@ def assemble_live_situation(
             dnd=bool(inp.live_quiet),
             privacy="local_state",
             stale_sources=tuple(dict.fromkeys(stale)),
+            resource_contention=str(inp.resource_contention or ""),
             capture_available=bool(inp.capture_available),
             sleep_status=sleep_status,
         ),
@@ -735,7 +753,11 @@ def assemble_live_situation(
             at=_iso(inp.now),
         ),
     )
-    return frame
+    constraints = replace(
+        frame.constraints,
+        allowed_actions=allowed_actions_for(frame),
+    )
+    return replace(frame, constraints=constraints)
 
 
 class LiveSituationAssembler:

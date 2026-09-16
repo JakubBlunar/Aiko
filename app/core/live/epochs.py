@@ -44,6 +44,10 @@ def classify_epoch(
     token = str(kind or "").strip()
     if token in IMMEDIATE_KINDS:
         return "immediate"
+    if token.startswith("aiko.action_"):
+        return "data_only"
+    if token in {"aiko.affect_changed", "aiko.vitality_changed"}:
+        return "data_only"
     if token in COALESCED_KINDS or situation_changed:
         return "coalesced_transition"
     return "data_only"

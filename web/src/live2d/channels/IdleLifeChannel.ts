@@ -20,6 +20,7 @@ import {
   expressionNameForClass,
   rigCapabilitiesFromManifest,
   SLEEP_DEGRADE,
+  intensityScale,
   type RigCapabilities,
 } from "../behavior/resolver";
 import type {
@@ -111,9 +112,13 @@ export class IdleLifeChannel implements AvatarChannel {
       ? plan.breath_class
       : world.breathClass;
     const expressionClass = plan?.expression_class ?? "none";
+    const scale =
+      plan?.reaction_tone && plan.reaction_tone !== "neutral"
+        ? intensityScale(plan.reaction_intensity)
+        : 1;
     const delta = bodyDeltaForClass(bodyClass);
-    this._bodyY = approach(this._bodyY, delta.y, dt / ENVELOPE_TIME_S);
-    this._bodyZ = approach(this._bodyZ, delta.z, dt / ENVELOPE_TIME_S);
+    this._bodyY = approach(this._bodyY, delta.y * scale, dt / ENVELOPE_TIME_S);
+    this._bodyZ = approach(this._bodyZ, delta.z * scale, dt / ENVELOPE_TIME_S);
     this._write(adapter, caps, now, { breathClass, active: true });
     this._maybeExpression(adapter, deps, expressionClass);
   }

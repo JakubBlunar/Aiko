@@ -353,6 +353,8 @@ export interface LiveEmbodimentPlan {
   degrade_to_sleep: boolean;
   hold_attention?: boolean;
   cancel_reason?: string;
+  reaction_tone?: string;
+  reaction_intensity?: string;
 }
 
 export interface LiveEmbodimentState {

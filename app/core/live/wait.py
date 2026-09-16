@@ -4,19 +4,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.live.frame import SLEEP_SPEECH_FORBID
+
 WAKE_ALLOWLIST = frozenset({
     "user.message_sent",
     "user.speech_final",
-    "user.speech_started",
     "user.voice_start",
     "user.typing_started",
     "silence.wake",
-    "world.activity_changed",
+    "activity.session_changed",
+    "activity.idle",
+    "activity.lock",
     "sleep.status_changed",
     "situation.shared_commitment_changed",
     "user.session_changed",
     "idle.reconsider",
 })
+
+WAKE_ALIASES = {
+    "user.speech_started": "user.voice_start",
+    "world.activity_changed": "activity.session_changed",
+}
 
 CRITICAL_WAKES = frozenset({
     "user.message_sent",
@@ -27,6 +35,97 @@ CRITICAL_WAKES = frozenset({
 
 MIN_WAIT_MS = 1_000
 MAX_WAIT_MS = 60_000
+DEFAULT_WAIT_MS = 15_000
+
+WAIT_HORIZONS = ("short", "medium", "long")
+WAIT_HORIZON_SET = frozenset(WAIT_HORIZONS)
+DEFAULT_WAIT_HORIZON = "medium"
+WAIT_HORIZON_MS = {
+    "short": MIN_WAIT_MS,
+    "medium": DEFAULT_WAIT_MS,
+    "long": MAX_WAIT_MS,
+}
+
+WAKE_SETS = ("user_only", "user_or_activity", "user_or_silence")
+WAKE_SET_SET = frozenset(WAKE_SETS)
+DEFAULT_WAKE_SET = "user_only"
+SPEECH_WAKES = frozenset({"silence.wake", "idle.reconsider"})
+
+_USER_WAKES = (
+    "user.message_sent",
+    "user.speech_final",
+    "user.voice_start",
+    "user.typing_started",
+    "user.session_changed",
+)
+_ACTIVITY_WAKES = (
+    "activity.session_changed",
+    "activity.idle",
+    "activity.lock",
+    "situation.shared_commitment_changed",
+    "sleep.status_changed",
+)
+WAKE_SET_EVENTS = {
+    "user_only": _USER_WAKES,
+    "user_or_activity": _USER_WAKES + _ACTIVITY_WAKES,
+    "user_or_silence": _USER_WAKES + ("silence.wake",),
+}
+
+
+def clamp_wait_horizon(proposed: object) -> str:
+    """Admit short/medium/long. Unknown tokens become medium."""
+    token = str(proposed or "").strip()
+    if token not in WAIT_HORIZON_SET:
+        return DEFAULT_WAIT_HORIZON
+    return token
+
+
+def wait_ms_for_horizon(horizon: object) -> int:
+    token = clamp_wait_horizon(horizon)
+    return int(WAIT_HORIZON_MS[token])
+
+
+def clamp_wake_set(proposed: object) -> str:
+    """Admit the wake-set enum. Unknown tokens become user_only."""
+    token = str(proposed or "").strip()
+    if token not in WAKE_SET_SET:
+        return DEFAULT_WAKE_SET
+    return token
+
+
+def expand_wake_set(
+    wake_set: object,
+    *,
+    sleep_status: str = "",
+) -> tuple[str, ...]:
+    """Expand one wake-set into allowlisted event names.
+
+    Critical user input is always included. Sleep cannot pick a speech
+    wake. Unknown tokens drop to the default set.
+    """
+    token = clamp_wake_set(wake_set)
+    events: list[str] = []
+    for item in WAKE_SET_EVENTS[token]:
+        mapped = WAKE_ALIASES.get(str(item), str(item))
+        if mapped in WAKE_ALLOWLIST and mapped not in events:
+            events.append(mapped)
+    for item in CRITICAL_WAKES:
+        if item not in events:
+            events.append(item)
+    if str(sleep_status or "") in SLEEP_SPEECH_FORBID:
+        events = [item for item in events if item not in SPEECH_WAKES]
+    return tuple(events)
+
+
+def wait_horizon_from_proposal(arguments: object) -> str:
+    raw = arguments if isinstance(arguments, dict) else {}
+    return clamp_wait_horizon(raw.get("wait_horizon"))
+
+
+def wake_set_from_proposal(arguments: object) -> str:
+    raw = arguments if isinstance(arguments, dict) else {}
+    return clamp_wake_set(raw.get("wake_set"))
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,16 +174,18 @@ class LiveWaitScheduler:
         reason_code: str,
     ) -> LiveWait:
         clamped = max(MIN_WAIT_MS, min(MAX_WAIT_MS, int(reconsider_after_ms)))
-        allowed = tuple(
-            event for event in wake_on if event in WAKE_ALLOWLIST
-        )
+        allowed: list[str] = []
+        for event in wake_on:
+            token = WAKE_ALIASES.get(str(event), str(event))
+            if token in WAKE_ALLOWLIST and token not in allowed:
+                allowed.append(token)
         wait = LiveWait(
             snapshot_generation=int(generation),
             selected_urge_id=str(urge_id or ""),
             intent="wait",
             reconsider_after_ms=clamped,
             deadline_monotonic_ms=float(now_mono_ms) + clamped,
-            wake_on=allowed,
+            wake_on=tuple(allowed),
             reason_code=str(reason_code or "wait"),
         )
         self._wait = wait
@@ -132,3 +233,29 @@ class LiveWaitScheduler:
                 return False
             return True
         return True
+
+
+__all__ = [
+    "CRITICAL_WAKES",
+    "DEFAULT_WAIT_HORIZON",
+    "DEFAULT_WAIT_MS",
+    "DEFAULT_WAKE_SET",
+    "MAX_WAIT_MS",
+    "MIN_WAIT_MS",
+    "SPEECH_WAKES",
+    "WAKE_ALIASES",
+    "WAKE_ALLOWLIST",
+    "WAKE_SETS",
+    "WAKE_SET_SET",
+    "WAIT_HORIZONS",
+    "WAIT_HORIZON_MS",
+    "WAIT_HORIZON_SET",
+    "LiveWait",
+    "LiveWaitScheduler",
+    "clamp_wait_horizon",
+    "clamp_wake_set",
+    "expand_wake_set",
+    "wait_horizon_from_proposal",
+    "wait_ms_for_horizon",
+    "wake_set_from_proposal",
+]

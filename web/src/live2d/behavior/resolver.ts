@@ -113,6 +113,21 @@ export function breathHzForClass(breathClass: string): number {
   return BREATH_HZ[breathClass] ?? BREATH_HZ.normal;
 }
 
+/** Body-envelope scale for a non-neutral Live reaction tone. Omitted
+ *  bands stay unscaled so Pass 5 defaults do not shrink. */
+export const INTENSITY_SCALE: Record<string, number> = {
+  low: 0.4,
+  mid: 0.7,
+  high: 1,
+};
+
+export function intensityScale(band?: string): number {
+  if (!band) {
+    return 1;
+  }
+  return INTENSITY_SCALE[band] ?? 1;
+}
+
 export interface RigCapabilities {
   canOrientY: boolean;
   canOrientZ: boolean;
@@ -148,6 +163,11 @@ export function expressionNameForClass(
     attentive: ["thoughtful", "neutral", "content"],
     content: ["content", "warm", "neutral"],
     drowsy: ["tired", "sleepy", "neutral"],
+    warm: ["warm", "content", "neutral"],
+    curious: ["curious", "thoughtful", "content"],
+    amused: ["amused", "playful", "cheerful", "content"],
+    proud: ["proud", "cheerful", "warm", "content"],
+    concerned: ["concerned", "thoughtful", "tired"],
   };
   for (const key of aliases[expressionClass] ?? [expressionClass]) {
     const name = mapping[key];

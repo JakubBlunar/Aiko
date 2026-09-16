@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
 from app.core.infra import timephrase
+from app.core.live.labels import cap_live_subject
 from app.core.live.urge import LiveUrge
 from app.core.live.urge_store import LiveUrgeStore
 from app.core.proactive.cue_accounting import policy_for
@@ -39,11 +40,15 @@ class CueUrgeAdapter:
             if not self._eligible(row):
                 continue
             cue_id = int(getattr(row, "id", 0) or 0)
-            subject = str(getattr(row, "subject", "") or "")[:80]
             cue_type = str(getattr(row, "cue_type", "") or "cue")
+            subject = (
+                cap_live_subject(getattr(row, "subject", "") or "")
+                or cap_live_subject(cue_type)
+                or "cue"
+            )
             urge = store.propose(
                 kind="ask_about_result",
-                subject=subject or cue_type,
+                subject=subject,
                 source="cue_pool",
                 source_ids=(f"cue:{cue_id}",),
                 repetition_key=f"cue:{cue_id}",
@@ -55,9 +60,11 @@ class CueUrgeAdapter:
         nudge = self._nudge()
         if nudge is not None:
             source_id = str(getattr(nudge, "source_id", "") or "nudge")
+            kind_label = str(getattr(nudge, "source_kind", "") or "proactive")
+            subject = cap_live_subject(kind_label) or "proactive"
             urge = store.propose(
                 kind="remain_present",
-                subject=str(getattr(nudge, "source_kind", "") or "proactive"),
+                subject=subject,
                 source="proactive.nudge",
                 source_ids=(f"nudge:{source_id}",),
                 repetition_key=f"nudge:{source_id}",

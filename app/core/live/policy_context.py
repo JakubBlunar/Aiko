@@ -13,6 +13,7 @@ from app.core.concepts.policy_selector import (
     select_bounded_concepts,
 )
 from app.core.infra import timephrase
+from app.core.live.allowed import allowed_actions_for
 from app.core.live.epochs import classify_epoch
 from app.core.live.frame import LiveSituationFrame
 from app.core.live.modifiers import (
@@ -37,10 +38,13 @@ def situation_summary(frame: LiveSituationFrame) -> str:
     attention = f"{frame.attention.target} {frame.attention.mode}".strip()
     sleep = str(frame.constraints.sleep_status or "awake")
     activity = str(frame.shared.world_activity or "idle")
+    mood = str(frame.aiko.mood_label or "unknown")
+    vitality = str(frame.aiko.vitality_band or "unknown")
     return (
         f"inferred {inferred}; sharing {sharing}; app {app}; "
         f"os_idle {os_idle}; session_s={session_s}; "
-        f"attention {attention}; sleep {sleep}; activity {activity}"
+        f"attention {attention}; sleep {sleep}; activity {activity}; "
+        f"mood {mood}; vitality {vitality}"
     )
 
 
@@ -78,6 +82,8 @@ class LivePolicyLedgerEntry:
     proposed_action: str = ""
     arbiter_result: str = ""
     completed_action: str = ""
+    action_id: str = ""
+    action_state: str = ""
     main_model_used: bool = False
     occurred_at: str = ""
 
@@ -91,6 +97,8 @@ class LivePolicyLedgerEntry:
             "proposed_action": self.proposed_action,
             "arbiter_result": self.arbiter_result,
             "completed_action": self.completed_action,
+            "action_id": self.action_id,
+            "action_state": self.action_state,
             "main_model_used": self.main_model_used,
             "occurred_at": self.occurred_at,
         }
@@ -146,6 +154,19 @@ class LivePolicyContextRuntime:
             apply_modifiers_to_urges(urges, modifiers)
         self._append_ledger(frame, picks, modifiers)
         return self._stamp(frame, picks, modifiers)
+
+    def recent_completed_actions(self, *, limit: int = 4) -> tuple[str, ...]:
+        """Most recent distinct executed intents. Newest last."""
+        out: list[str] = []
+        for row in reversed(self._ledger):
+            action = str(row.completed_action or "").strip()
+            if not action or action in out:
+                continue
+            out.append(action)
+            if len(out) >= max(1, int(limit)):
+                break
+        out.reverse()
+        return tuple(out)
 
     def diagnostics(self) -> dict[str, Any]:
         return {
@@ -249,6 +270,8 @@ class LivePolicyContextRuntime:
         arbiter_result: str,
         main_model_used: bool = False,
         executed: bool = False,
+        action_id: str = "",
+        action_state: str = "",
     ) -> None:
         if not self._ledger:
             return
@@ -259,6 +282,8 @@ class LivePolicyContextRuntime:
             proposed_action=action,
             arbiter_result=str(arbiter_result or ""),
             completed_action=action if executed else "",
+            action_id=str(action_id or ""),
+            action_state=str(action_state or ""),
             main_model_used=bool(main_model_used),
         )
 
@@ -289,4 +314,9 @@ class LivePolicyContextRuntime:
             max_reaction_intensity=modifiers.max_reaction_intensity,
             speech_forbid_reasons=tuple(forbid),
         )
-        return replace(frame, continuity=continuity, constraints=constraints)
+        stamped = replace(frame, continuity=continuity, constraints=constraints)
+        constraints = replace(
+            stamped.constraints,
+            allowed_actions=allowed_actions_for(stamped),
+        )
+        return replace(stamped, constraints=constraints)

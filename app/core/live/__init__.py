@@ -6,7 +6,12 @@ validated micro-utterances, and gated unprompted main-wake execute.
 """
 from __future__ import annotations
 
-from app.core.live.actions import LiveActionState
+from app.core.live.actions import LiveActionRecord, LiveActionState
+from app.core.live.admission import (
+    ADMISSION_GATES,
+    LiveAdmissionRecord,
+    build_admission_record,
+)
 from app.core.live.arbiter import LiveArbiterResult, arbitrate_live_proposal
 from app.core.live.assembler import LiveAssembleInput, LiveSituationAssembler
 from app.core.live.bus import LiveImpulseBus
@@ -33,9 +38,12 @@ from app.core.live.worker_matrix import WORKER_POSTURE, role_for
 
 __all__ = [
     "FORBIDDEN_PAYLOAD_KEYS",
+    "ADMISSION_GATES",
     "LIVE_POLICY_JSON_SCHEMA",
     "BehaviorCommitment",
+    "LiveActionRecord",
     "LiveActionState",
+    "LiveAdmissionRecord",
     "LiveArbiterResult",
     "LiveAssembleInput",
     "LiveBehaviorModifiers",
@@ -56,6 +64,7 @@ __all__ = [
     "SemanticCapabilities",
     "WORKER_POSTURE",
     "arbitrate_live_proposal",
+    "build_admission_record",
     "classify_epoch",
     "new_impulse",
     "role_for",

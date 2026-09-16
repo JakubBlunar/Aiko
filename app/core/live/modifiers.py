@@ -6,6 +6,12 @@ from typing import Any, Mapping, Sequence
 
 from app.core.activity.evidence import CODING_CONFIDENCE_FLOOR
 from app.core.live.frame import SLEEP_SPEECH_FORBID, LiveSituationFrame
+from app.core.live.presence import (
+    PRESENCE_STYLE_SET,
+    STYLE_INTENSITY_CAP,
+    STYLE_SPEECH_CAP,
+    quieter_speech,
+)
 from app.core.live.urge import URGE_RANK
 from app.core.live.urge_store import LiveUrgeStore
 
@@ -155,6 +161,32 @@ def modifiers_from_situation(
         questions_allowed=questions,
         min_gap_after_speech_ms=max(0, int(gap)),
         reason_code=reason,
+    )
+
+
+def apply_presence_style(
+    modifiers: LiveBehaviorModifiers,
+    style: str,
+) -> LiveBehaviorModifiers:
+    """Lower speech/reaction intensity only. Never raise a budget."""
+    token = str(style or "neutral")
+    if token not in PRESENCE_STYLE_SET:
+        token = "neutral"
+    speech = quieter_speech(
+        modifiers.speech_budget, STYLE_SPEECH_CAP.get(token, "open"),
+    )
+    intensity = min(
+        float(modifiers.max_reaction_intensity),
+        float(STYLE_INTENSITY_CAP.get(token, 1.0)),
+    )
+    return LiveBehaviorModifiers(
+        speech_budget=_clamp_speech(speech),
+        min_interruption_score=modifiers.min_interruption_score,
+        attention_preference=modifiers.attention_preference,
+        max_reaction_intensity=intensity,
+        questions_allowed=modifiers.questions_allowed,
+        min_gap_after_speech_ms=modifiers.min_gap_after_speech_ms,
+        reason_code=modifiers.reason_code,
     )
 
 

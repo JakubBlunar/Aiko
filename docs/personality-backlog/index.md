@@ -264,7 +264,27 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
   Pass 17 ships C6 Level-3 companion intake (`companion_activity`
   CueSpec / CuePolicy / `cue_decisions`; not a gap cue; Live peek-only).
   Pass 18 ships C7 `get_activity` (forced collector snapshot, 250 ms
-  wait, last stored session on timeout). UIA remains deferred.
+  wait, last stored session on timeout). Pass 19 ships the first L0
+  slice (frame clocks, `allowed_actions`, wake-name alignment, mood /
+  vitality / capped cue subject). Pass 20 ships action IDs and
+  `aiko.action_*` result impulses plus an argument allowlist. Pass 21
+  ships L1 title-free activity-transition notices. Pass 22 ships L2
+  bounded `presence_style` / `attention_target`. Pass 23 ships L3
+  `reaction_tone` / intensity band. Pass 24 ships L6 `speech_act`
+  routing. Pass 25 ships L7 one-shot fallback. Pass 26 ships the
+  inspectable 12-gate admission record and closes Live L0 leftovers.
+  Pass 27 ships L10 peek-only numbered urge menu. Pass 28 ships L12
+  affect/vitality inner-state notices and a quieter-only
+  `vitality_posture`. Pass 29 ships L8 wait horizon / wake-set (raw ms
+  ignored). Pass 30 ships L16 explicit `keep_attention` / `keep_style`
+  hold. L4 motion presets are
+  deferred (the current rig lacks authored idle-life motions). Remaining:
+  L5 micro/earcon delivery, DT4 replay in
+  [`tools.md`](tools.md#dt4-scenario--conversation-replay-harness),
+  then the other L8+ 4B expansions in
+  [`live-mode.md`](live-mode.md#l8-wait-horizon-and-wake-set-not-raw-milliseconds)
+  (floor manners, circadian quieting,
+  glance menu, return beat, compact prompt). UIA remains deferred.
 
 ### D. New tools / capabilities — [`tools.md`](tools.md)
 

@@ -205,6 +205,7 @@ class FrameEvidenceTests(unittest.TestCase):
         self.assertEqual(mods.speech_budget, "forbidden")
         notices = notices_from_trigger("activity.lock", frame)
         self.assertFalse(any(item.kind == "user_focus" for item in notices))
+        self.assertFalse(any(item.kind == "focus_started" for item in notices))
         self.assertFalse(any(item.kind == "shared_commitment" for item in notices))
 
     def test_idle_is_not_expressive(self) -> None:
@@ -228,6 +229,7 @@ class FrameEvidenceTests(unittest.TestCase):
         self.assertNotEqual(mods.reason_code, "world_truth_coding")
         notices = notices_from_trigger("activity.session_changed", frame)
         self.assertFalse(any(item.kind == "user_focus" for item in notices))
+        self.assertFalse(any(item.kind == "focus_started" for item in notices))
 
     def test_disabled_or_missing_c6_does_not_stall(self) -> None:
         frame = assemble_live_situation(
@@ -279,6 +281,7 @@ class FrameEvidenceTests(unittest.TestCase):
         self.assertEqual(frame.shared.sharing, "user_only")
         notices = notices_from_trigger("activity.session_changed", frame)
         self.assertFalse(any(item.kind == "user_focus" for item in notices))
+        self.assertFalse(any(item.kind == "focus_started" for item in notices))
 
 
 class EpochTests(unittest.TestCase):

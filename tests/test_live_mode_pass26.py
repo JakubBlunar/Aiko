@@ -1,0 +1,316 @@
+"""Live mode Pass 26: inspectable 12-gate admission record (L0 leftover)."""
+from __future__ import annotations
+
+import json
+import threading
+import time
+import unittest
+
+from app.core.live.admission import (
+    ADMISSION_GATES,
+    admission_contains_forbidden,
+    build_admission_record,
+    parse_error_record,
+)
+from app.core.live.arbiter import LiveArbiterResult, arbitrate_live_proposal
+from app.core.live.inclination import LiveInclinationRuntime
+from app.core.live.proposal import LivePolicyProposal
+from tests.test_live_mode_pass7 import (
+    _FakePolicyClient,
+    _Usage,
+    _controller,
+    _frame,
+    _proposal,
+)
+
+
+def _gate_names(payload: dict) -> tuple[str, ...]:
+    return tuple(str(gate["name"]) for gate in payload.get("gates") or ())
+
+
+def _by_name(payload: dict) -> dict[str, dict]:
+    return {
+        str(gate["name"]): gate
+        for gate in payload.get("gates") or ()
+        if isinstance(gate, dict)
+    }
+
+
+class AdmissionRecordShapeTests(unittest.TestCase):
+    def test_wait_lists_twelve_gates_in_order(self) -> None:
+        client = _FakePolicyClient()
+        frame = _frame()
+        controller = _controller(
+            client_provider=lambda: client,
+            generation_provider=lambda: int(frame.generation),
+            inclination_provider=lambda: LiveInclinationRuntime(),
+        )
+        result = controller._infer(
+            frame,
+            trigger_kind="silence.wake",
+            prompt_input={},
+            user_intent=False,
+            started_generation=int(frame.generation),
+            cancel=threading.Event(),
+            client=client,
+        )
+        assert result is not None
+        self.assertTrue(result.accepted)
+        self.assertTrue(controller.last_proposal["executed"])
+        rec = controller.last_admission
+        assert rec is not None
+        payload = rec.to_payload()
+        self.assertEqual(_gate_names(payload), ADMISSION_GATES)
+        gates = _by_name(payload)
+        self.assertEqual(gates["schema"]["status"], "pass")
+        self.assertEqual(gates["main_wake"]["status"], "skip")
+        self.assertEqual(gates["main_wake"]["reason"], "not_requested")
+        self.assertEqual(gates["executor"]["status"], "pass")
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["rejected_gate"], "")
+        self.assertEqual(controller.diagnostics()["last_admission"], payload)
+        self.assertEqual(
+            controller.last_proposal["admission"]["gates"][10]["reason"],
+            "not_requested",
+        )
+        self.assertFalse(admission_contains_forbidden(rec))
+        blob = json.dumps(payload)
+        self.assertNotIn("confidence", blob.lower())
+        self.assertNotIn("Param", blob)
+        self.assertNotIn("title", blob.lower())
+
+    def test_invalid_json_rejects_schema_and_skips_rest(self) -> None:
+        truncated = (
+            '{"snapshot_generation": 1, "selected_urge_id": null, '
+            '"intent": "noop", "arguments": {"reasoning": "The user has'
+        )
+
+        class _Truncated:
+            def chat_json(self, messages, **kwargs):
+                del messages, kwargs
+                return truncated, _Usage()
+
+        frame = _frame()
+        controller = _controller(
+            generation_provider=lambda: int(frame.generation),
+        )
+        result = controller._infer(
+            frame,
+            trigger_kind="silence.wake",
+            prompt_input={},
+            user_intent=False,
+            started_generation=int(frame.generation),
+            cancel=threading.Event(),
+            client=_Truncated(),
+        )
+        assert result is not None
+        self.assertEqual(result.reason, "invalid_json")
+        rec = controller.last_admission
+        assert rec is not None
+        payload = rec.to_payload()
+        self.assertEqual(_gate_names(payload), ADMISSION_GATES)
+        gates = _by_name(payload)
+        self.assertEqual(gates["schema"]["status"], "reject")
+        self.assertEqual(gates["schema"]["reason"], "invalid_json")
+        self.assertEqual(payload["rejected_gate"], "schema")
+        for name in ADMISSION_GATES[1:]:
+            self.assertEqual(gates[name]["status"], "skip")
+            self.assertEqual(gates[name]["reason"], "schema")
+
+    def test_sleep_speech_is_schema_not_allowed(self) -> None:
+        client = _FakePolicyClient({
+            "snapshot_generation": 1,
+            "selected_urge_id": "u1",
+            "intent": "request_main_speech",
+            "arguments": {},
+            "reason_code": "want_to_talk",
+            "context_refs": [],
+        })
+        frame = _frame(sleep={"status": "asleep"})
+        controller = _controller(
+            client_provider=lambda: client,
+            generation_provider=lambda: int(frame.generation),
+        )
+        result = controller._infer(
+            frame,
+            trigger_kind="silence.wake",
+            prompt_input={"known_urge_ids": ("u1",)},
+            user_intent=False,
+            started_generation=int(frame.generation),
+            cancel=threading.Event(),
+            client=client,
+        )
+        assert result is not None
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "not_allowed")
+        rec = controller.last_admission
+        assert rec is not None
+        payload = rec.to_payload()
+        gates = _by_name(payload)
+        self.assertEqual(gates["schema"]["status"], "reject")
+        self.assertEqual(gates["schema"]["reason"], "not_allowed")
+        self.assertEqual(payload["rejected_gate"], "schema")
+        self.assertEqual(gates["main_wake"]["status"], "skip")
+
+    def test_budget_exhaust_rejects_constraints(self) -> None:
+        runtime = LiveInclinationRuntime()
+        now_ms = time.monotonic() * 1000.0
+        while runtime.budget.consume("expression", now_mono_ms=now_ms):
+            pass
+        client = _FakePolicyClient({
+            "snapshot_generation": 1,
+            "selected_urge_id": None,
+            "intent": "react_affectively",
+            "arguments": {},
+            "reason_code": "react",
+            "context_refs": [],
+        })
+        frame = _frame()
+        controller = _controller(
+            client_provider=lambda: client,
+            generation_provider=lambda: int(frame.generation),
+            inclination_provider=lambda: runtime,
+        )
+        result = controller._infer(
+            frame,
+            trigger_kind="silence.wake",
+            prompt_input={},
+            user_intent=False,
+            started_generation=int(frame.generation),
+            cancel=threading.Event(),
+            client=client,
+        )
+        assert result is not None
+        self.assertTrue(result.accepted)
+        self.assertTrue(controller.last_proposal.get("budget_exhausted"))
+        rec = controller.last_admission
+        assert rec is not None
+        payload = rec.to_payload()
+        gates = _by_name(payload)
+        self.assertEqual(gates["constraints"]["status"], "reject")
+        self.assertEqual(gates["constraints"]["reason"], "budget_exhausted")
+        self.assertEqual(payload["rejected_gate"], "constraints")
+        self.assertEqual(gates["main_wake"]["status"], "skip")
+        self.assertFalse(payload["accepted"])
+
+    def test_missing_urge_rejects_main_wake_and_keeps_talk_about(self) -> None:
+        spoken: list[str] = []
+        enqueued: list[dict] = []
+        client = _FakePolicyClient({
+            "snapshot_generation": 1,
+            "selected_urge_id": "u1",
+            "intent": "request_main_speech",
+            "arguments": {"confidence": 0.9, "title": "secret.md"},
+            "reason_code": "want_to_talk",
+            "context_refs": [],
+        })
+        frame = _frame()
+        controller = _controller(
+            client_provider=lambda: client,
+            generation_provider=lambda: int(frame.generation),
+            on_micro_utterance=lambda text, *_a: spoken.append(text) or True,
+            on_main_wake=lambda payload: enqueued.append(payload) or True,
+        )
+        result = controller._infer(
+            frame,
+            trigger_kind="silence.wake",
+            prompt_input={"known_urge_ids": ("u1",)},
+            user_intent=False,
+            started_generation=int(frame.generation),
+            cancel=threading.Event(),
+            client=client,
+        )
+        assert result is not None
+        self.assertTrue(result.talk_about)
+        self.assertEqual(
+            controller.last_proposal.get("main_wake_rejected"), "missing_urge",
+        )
+        rec = controller.last_admission
+        assert rec is not None
+        payload = rec.to_payload()
+        gates = _by_name(payload)
+        self.assertEqual(gates["schema"]["status"], "pass")
+        self.assertEqual(gates["main_wake"]["status"], "reject")
+        self.assertEqual(gates["main_wake"]["reason"], "missing_urge")
+        self.assertEqual(payload["rejected_gate"], "main_wake")
+        self.assertTrue(payload["talk_about"])
+        self.assertFalse(payload["accepted"])
+        self.assertEqual(enqueued, [])
+        self.assertEqual(spoken, [])
+        self.assertFalse(admission_contains_forbidden(rec))
+        blob = json.dumps(payload)
+        self.assertNotIn("confidence", blob.lower())
+        self.assertNotIn("secret.md", blob)
+        self.assertNotIn("Param", blob)
+
+    def test_parse_error_helper_matches_gate_order(self) -> None:
+        rec = parse_error_record(generation=4)
+        payload = rec.to_payload()
+        self.assertEqual(_gate_names(payload), ADMISSION_GATES)
+        self.assertEqual(payload["rejected_gate"], "schema")
+
+    def test_overlay_skip_does_not_reject_wait(self) -> None:
+        frame = _frame()
+        proposal = _proposal(intent="wait")
+        arbiter = LiveArbiterResult(True, "ok", proposal)
+        rec = build_admission_record(
+            frame=frame,
+            proposal=proposal,
+            arbiter=arbiter,
+            extra={"overlay_skipped": "turn_or_tts"},
+            executed=True,
+        )
+        payload = rec.to_payload()
+        gates = _by_name(payload)
+        self.assertEqual(gates["playback"]["status"], "pass")
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(gates["main_wake"]["reason"], "not_requested")
+
+    def test_unload_clears_last_admission(self) -> None:
+        client = _FakePolicyClient()
+        frame = _frame()
+        controller = _controller(
+            client_provider=lambda: client,
+            generation_provider=lambda: int(frame.generation),
+        )
+        controller._infer(
+            frame,
+            trigger_kind="silence.wake",
+            prompt_input={},
+            user_intent=False,
+            started_generation=int(frame.generation),
+            cancel=threading.Event(),
+            client=client,
+        )
+        self.assertIsNotNone(controller.last_admission)
+        controller.unload()
+        self.assertIsNone(controller.last_admission)
+        self.assertIsNone(controller.diagnostics()["last_admission"])
+
+
+class ArbiterStillDoesNotAuthorizeTests(unittest.TestCase):
+    def test_empty_speech_urge_stays_arbiter_missing_urge(self) -> None:
+        result = arbitrate_live_proposal(
+            LivePolicyProposal(
+                snapshot_generation=1,
+                selected_urge_id="",
+                intent="request_main_speech",
+                arguments={},
+                reason_code="want_to_talk",
+                context_refs=(),
+            ),
+            snapshot_generation=1,
+        )
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.reason, "missing_urge")
+        rec = build_admission_record(
+            frame=_frame(),
+            proposal=result.proposal,
+            arbiter=result,
+        )
+        self.assertEqual(rec.rejected_gate, "schema")
+        self.assertEqual(rec.reason, "missing_urge")
+
+
+if __name__ == "__main__":
+    unittest.main()
