@@ -8,6 +8,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(resolve(here, "useAssistantSocket.ts"), "utf-8");
 
 describe("sleep socket hydration", () => {
+  it("keeps text delivery bound to a visible message and the receiving connection", () => {
+    expect(source).toContain("data-delivery-message");
+    expect(source).toContain('document.visibilityState !== "visible"');
+    expect(source).toContain("entry.intersectionRatio >= 1");
+    expect(source).toContain("socketRef.current !== receivedOn");
+    expect(source).toContain('state: "text_presented"');
+    expect(source).toContain("setDeliveryListener(null)");
+  });
+
   it("hydrates sleep from hello before incremental events arrive", () => {
     expect(source).toMatch(/if \(evt\.sleep\)/);
     expect(source).toMatch(/store\.setSleep\(evt\.sleep\)/);

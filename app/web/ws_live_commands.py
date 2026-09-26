@@ -39,7 +39,19 @@ def handle_live_ws_command(
     hub: Any = None,
 ) -> bool:
     """Handle Live-related client frames. Return True if consumed."""
+    if msg_type == "delivery_receipt":
+        owner = str(getattr(hub, "audio_owner_id", None) or "")
+        try:
+            session.delivery_ledger().receipt(
+                str(msg.get("delivery_id") or ""), str(msg.get("state") or ""),
+                client_id, owner,
+            )
+        except Exception:
+            log.debug("delivery receipt failed", exc_info=True)
+        return True
     if msg_type == "playback_drained":
+        if hub is not None and client_id != str(getattr(hub, "audio_owner_id", None) or ""):
+            return True
         try:
             session.notify_playback_drained()
         except Exception:
@@ -109,3 +121,11 @@ def handle_live_ws_command(
             log.debug("session impulse failed", exc_info=True)
         return False
     return False
+
+
+def offer_text_delivery(session: Any, hub: Any, message_id: Any) -> str:
+    getter = getattr(session, "delivery_ledger", None)
+    if not callable(getter) or message_id is None:
+        return ""
+    token = getter().offer_text(int(message_id), str(getattr(hub, "audio_owner_id", None) or "*"))
+    return token if isinstance(token, str) else ""

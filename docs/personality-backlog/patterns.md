@@ -116,7 +116,7 @@ on top of already-shipped infrastructure. Where an entry is half shipped
 | K96 | In-turn deliberation / second thought | Partial; post-reply worker shipped, 27 Sep runtime failures need diagnosis below |
 | K97 | A small causal working set for the current thread | Implementation shipped; behavioral comparison open |
 | K98 | Continue an interest after a good answer | Implementation shipped; behavioral comparison open |
-| K99 | Common ground with delivery provenance | Open experiment; medium-to-large effort |
+| K99 | Common ground with delivery provenance | Implementation shipped; behavioral comparison open |
 
 ---
 
@@ -1019,7 +1019,10 @@ is the *successor*, not how often she insists on her old topic.
 
 ## K99. Common ground with delivery provenance
 
-**Open experiment; medium-to-large effort.** Knowing something internally,
+**Implementation shipped:** [recent delivery provenance](shipped/cognitive-continuity.md#k99-recent-delivery-provenance).
+Hardware audibility and the behavioral comparison below remain open.
+
+Knowing something internally,
 having mentioned it, and having reason to think the user knows it are
 different states. A research result that was never presented should not
 lead to "as we discussed"; a cancelled spoken sentence should not be

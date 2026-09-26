@@ -205,6 +205,7 @@ function MessageBubbleImpl({
   return (
     <div
       role="listitem"
+      data-delivery-message={!isUser && !streaming ? backendId : undefined}
       className={`group flex flex-col gap-1 ${
         isUser ? "items-end" : "items-start"
       }`}

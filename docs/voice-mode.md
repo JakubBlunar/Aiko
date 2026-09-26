@@ -65,8 +65,9 @@ a 1-byte type discriminator (see `app/web/audio_frames.py` and
 | 0x02 | client -> server  | `mic_start`    | `[u32 sample_rate][u8 channels][u8 dsp_flags]`   |
 | 0x10 | server -> client  | `tts_pcm`      | Int16 LE PCM samples                             |
 | 0x11 | server -> client  | `earcon_pcm`   | Int16 LE PCM samples                             |
-| 0x12 | server -> client  | `audio_start`  | `[u8 stream][u32 sample_rate][u8 channels]`      |
+| 0x12 | server -> client  | `audio_start`  | `[u8 stream][u32 sample_rate][u8 channels][optional 16-byte delivery token]` |
 | 0x13 | server -> client  | `audio_end`    | `[u8 stream]`                                    |
+| 0x14 | server -> client  | `audio_cancel` | `[u8 stream]`                                    |
 
 - All multi-byte integers are **big-endian** (network order).
 - `dsp_flags` is a bitset: bit 0 = echo cancellation, bit 1 = noise
@@ -79,6 +80,38 @@ a 1-byte type discriminator (see `app/web/audio_frames.py` and
 The wire format is intentionally trivial — there is no length prefix
 because WebSocket frames are message-framed already, and there is no
 sequence number because the underlying TCP stream preserves order.
+
+### Delivery evidence (K99)
+
+An identified TTS `audio_start` retains the legacy six-byte payload prefix
+and appends a 16-byte opaque token. Legacy clients can still play it; missing
+receipts remain unknown. The token links to the response captured when that
+text entered `TtsQueue`, not whichever response is generating when playback
+eventually starts. Silences and earcons cannot certify delivery of text.
+
+The client sends `{"type":"delivery_receipt","delivery_id":"<hex token>",
+"state":"played"}` only after `audio_end` and every buffer belonging to
+that clip has ended. Cancellation, scheduling failure or suspended-output
+drops produce `state:"interrupted"`. The server checks token, elected audio
+client, session and mode generation. Duplicates cannot promote interrupted
+audio to completed. The old `playback_drained` event remains a floor signal,
+is audio-owner gated, and never constitutes common-ground evidence.
+
+`turn_done.delivery_id` identifies the persisted assistant message. The
+browser may report `state:"text_presented"` when its completed bubble is
+fully in the visible viewport, on the original connection. The observation
+window is one second; hidden/off-screen/long bubbles stay unknown. The
+elected audio client is preferred for this receipt; when no audio owner
+exists, a current visible text client may report it. Existing explicit
+message reactions are recorded separately as acknowledgement, not agreement.
+
+The ledger is in memory only: four responses, at most 32 identified clips
+per response, bounded spoken-text excerpts, no PCM storage. Its T6 prompt
+block reports the last two responses and offers no speaking stance.
+Receipts do not prove hearing, reading, attention or comprehension. Unknown
+delivery is not a command to repeat material, and private research is not
+made shared merely by generation. Hardware audibility and human continuity
+benefit still require real-world evaluation.
 
 ## Voice ownership
 

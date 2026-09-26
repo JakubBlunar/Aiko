@@ -89,6 +89,11 @@ class ListenersMetricsMixin:
                 log.debug("metrics listener raised", exc_info=True)
 
     def _on_tts_state(self, event: str, payload: dict[str, Any]) -> None:
+        if event == "segment":
+            self.delivery_ledger().set_spoken_context(
+                str(payload.get("delivery_id") or ""), str(payload.get("text") or ""),
+            )
+            return
         # Carry the last assistant reaction over to the next turn so the
         # mood doesn't reset to "neutral" every time. Phase E mood-carryover.
         if event == "start":

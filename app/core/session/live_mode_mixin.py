@@ -84,6 +84,17 @@ def normalize_behavior_posture(raw: Any) -> str:
 class LiveModeMixin:
     """Two-axis Live posture + impulse publication + situation assembly."""
 
+    def delivery_ledger(self):
+        from app.core.conversation.delivery import DeliveryLedger
+
+        ledger = getattr(self, "_delivery_ledger", None)
+        if ledger is None:
+            ledger = DeliveryLedger(lambda: (
+                self.session_key, int(getattr(self, "_live_mode_generation", 0)),
+            ))
+            self._delivery_ledger = ledger
+        return ledger
+
     def _init_live_mode(self) -> None:
         self._live_mode_generation = 0
         self._live_user_intent_sequence = 0

@@ -209,12 +209,13 @@ async function flush(rounds = 24): Promise<void> {
 }
 
 /** Build an ``audio_start`` frame for the TTS stream at ``rate`` Hz. */
-function ttsStartFrame(rate: number): ArrayBuffer {
-  const start = new Uint8Array(7);
+function ttsStartFrame(rate: number, deliveryByte?: number): ArrayBuffer {
+  const start = new Uint8Array(deliveryByte === undefined ? 7 : 23);
   start[0] = FRAME_AUDIO_START;
   start[1] = FRAME_TTS_PCM;
   new DataView(start.buffer).setUint32(2, rate, false);
   start[6] = 1;
+  if (deliveryByte !== undefined) start.fill(deliveryByte, 7);
   return start.buffer;
 }
 
@@ -239,6 +240,43 @@ afterEach(() => {
 });
 
 describe("AudioOutputManager", () => {
+  it("reports a delivery only after audio_end and its own buffers finish", async () => {
+    const manager = new AudioOutputManager();
+    const receipts: string[] = [];
+    manager.setDeliveryListener((id, state) => receipts.push(`${id}:${state}`));
+    manager.handleFrame(ttsStartFrame(22050, 0x11));
+    manager.handleFrame(ttsPcmFrame(2205));
+    manager.handleFrame(new Uint8Array([FRAME_AUDIO_END, FRAME_TTS_PCM]).buffer);
+    manager.handleFrame(ttsStartFrame(22050, 0x22));
+    manager.handleFrame(ttsPcmFrame(2205));
+    manager.handleFrame(new Uint8Array([FRAME_AUDIO_END, FRAME_TTS_PCM]).buffer);
+    await flush();
+    expect(receipts).toEqual([]);
+    const sources = createdContexts[0].activeSources.filter((source) => !source.loop);
+    sources[0].onended?.();
+    expect(receipts).toEqual([`${"11".repeat(16)}:played`]);
+    manager.flush();
+    expect(receipts).toEqual([
+      `${"11".repeat(16)}:played`, `${"22".repeat(16)}:interrupted`,
+    ]);
+    sources[1].onended?.();
+    expect(receipts).toHaveLength(2);
+    await manager.dispose();
+  });
+
+  it("never calls a suspended drop completed", async () => {
+    (window as unknown as { AudioContext: unknown }).AudioContext = StuckSuspendedAudioContext;
+    const manager = new AudioOutputManager();
+    const receipts: string[] = [];
+    manager.setDeliveryListener((_id, state) => receipts.push(state));
+    manager.handleFrame(ttsStartFrame(22050, 0x33));
+    manager.handleFrame(ttsPcmFrame(2205));
+    manager.handleFrame(new Uint8Array([FRAME_AUDIO_END, FRAME_TTS_PCM]).buffer);
+    await flush();
+    expect(receipts).toEqual(["interrupted"]);
+    await manager.dispose();
+  });
+
   it("returns null for an empty frame", () => {
     const mgr = new AudioOutputManager();
     expect(mgr.handleFrame(new ArrayBuffer(0))).toBe(null);

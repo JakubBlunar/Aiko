@@ -48,6 +48,7 @@ from app.web.ws_live_commands import (
     client_owns_live_impulses,
     handle_live_ws_command,
     live_impulse_owner_id,
+    offer_text_delivery,
 )
 
 
@@ -715,6 +716,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
     # clip with ``audio_start`` / ``audio_end`` so the client knows
     # when to spin up / flush its scheduler.
     _stream_started: dict[str, bool] = {"tts": False, "earcon": False}
+    _audio_delivery_ids: dict[str, str] = {"tts": "", "earcon": ""}
 
     def _on_audio_frame(stream: str, sample_rate: int, channels: int, pcm: bytes) -> None:
         if not pcm:
@@ -723,8 +725,14 @@ def create_web_app(session: "SessionController") -> FastAPI:
         if stream_byte == 0:
             return
         if not _stream_started.get(stream, False):
+            delivery_id = ""
+            if stream == "tts":
+                delivery_id = session.delivery_ledger().offer_audio(str(hub.audio_owner_id or ""))
+            _audio_delivery_ids[stream] = delivery_id
             hub.send_audio_bytes(
-                _frames.build_audio_start(stream_byte, sample_rate, channels)
+                _frames.build_audio_start(
+                    stream_byte, sample_rate, channels, delivery_id=delivery_id,
+                )
             )
             _stream_started[stream] = True
         if stream_byte == _frames.FRAME_TTS_PCM:
@@ -737,6 +745,8 @@ def create_web_app(session: "SessionController") -> FastAPI:
         if stream_byte == 0:
             return
         if _stream_started.get(stream, False):
+            if stream == "tts":
+                session.delivery_ledger().end_audio(_audio_delivery_ids[stream])
             hub.send_audio_bytes(_frames.build_audio_end(stream_byte))
             _stream_started[stream] = False
 
@@ -751,6 +761,8 @@ def create_web_app(session: "SessionController") -> FastAPI:
         # next clip re-announce its format, which is what we want: the
         # client has thrown its schedule away and needs a fresh start.
         hub.send_audio_bytes(_frames.build_audio_cancel(stream_byte))
+        if stream == "tts":
+            session.delivery_ledger().cancel_audio()
         _stream_started[stream] = False
 
     try:
@@ -915,6 +927,8 @@ def create_web_app(session: "SessionController") -> FastAPI:
         stay in sync (a heart click in chat shows up in the
         persona action banner too).
         """
+        if payload.get("message_id") and any((payload.get("reactions") or {}).values()):
+            session.delivery_ledger().acknowledge(int(payload["message_id"]))
         hub.broadcast({"type": "message_reaction_updated", **payload})
 
     try:
@@ -983,6 +997,9 @@ def create_web_app(session: "SessionController") -> FastAPI:
                 # level so the client can stamp the live bubble's
                 # backendId and enable reactions immediately.
                 "assistant_message_id": _metrics.get("assistant_message_id"),
+                "delivery_id": offer_text_delivery(
+                    session, hub, _metrics.get("assistant_message_id"),
+                ),
             })
         elif name == "error":
             hub.broadcast({
@@ -1692,6 +1709,9 @@ def _spawn_chat_turn(
                 # can stamp the live bubble's backendId and enable the
                 # reaction tray without a history reload.
                 "assistant_message_id": _metrics.get("assistant_message_id"),
+                "delivery_id": offer_text_delivery(
+                    session, hub, _metrics.get("assistant_message_id"),
+                ),
             })
         except Exception as exc:
             log.exception("chat turn failed")

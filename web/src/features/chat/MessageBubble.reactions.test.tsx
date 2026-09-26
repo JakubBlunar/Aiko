@@ -35,6 +35,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const bubbleSource = readFileSync(resolve(here, "MessageBubble.tsx"), "utf-8");
 
 describe("MessageBubble — K31 / B7 gesture badge wiring", () => {
+  it("exposes delivery identity only for persisted, finished assistant messages", () => {
+    expect(bubbleSource).toContain(
+      "data-delivery-message={!isUser && !streaming ? backendId : undefined}",
+    );
+  });
+
   it("imports normalizeGesture from the shared types module", () => {
     expect(bubbleSource).toMatch(
       /import\s*\{[^}]*\bnormalizeGesture\b[^}]*\}\s*from\s*"@\/types"/s,

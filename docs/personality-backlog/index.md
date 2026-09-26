@@ -99,7 +99,7 @@ needed to repeat those aggregates.
 | Shipped | [Live L17](live-mode.md#l17-a-deferred-thought-can-meet-a-later-opening) | One bounded reconsideration after a missed opening; T5 behavior evaluation remains |
 | Shipped | [K97](patterns.md#k97-a-small-causal-working-set-for-the-current-thread) | Evidence-linked working understanding; behavioral comparison remains open |
 | Shipped | [K98](patterns.md#k98-continue-an-interest-after-a-good-answer) | One answer-earned continuation without retaining the ask; behavioral comparison remains open |
-| Later | [K99](patterns.md#k99-common-ground-with-delivery-provenance) | Distinguish internally known, delivered, and acknowledged material across interruptions |
+| Shipped | [K99](patterns.md#k99-common-ground-with-delivery-provenance) | Bounded generated/presented/played/acknowledged provenance; behavioral comparison remains open |
 | Across all | [T5 naturalness evaluation](testing.md#27-sep-2026-multi-turn-naturalness-track) | Measure continuity, appropriate silence, correction, and non-repetition with negative controls |
 
 **Existing polish to reuse, not duplicate:** Live L5/L9 cover delivery and

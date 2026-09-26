@@ -279,6 +279,30 @@ export function useAssistantSocket(): {
         // K32: stamp the just-finished bubble with its persisted id so
         // the reaction tray + "mark as moment" enable without a reload.
         store.stampAssistantBackendId(evt.assistant_message_id);
+        if (evt.delivery_id && Number.isInteger(evt.assistant_message_id)) {
+          const receivedOn = socketRef.current;
+          const deliveryId = evt.delivery_id;
+          const messageId = evt.assistant_message_id;
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (typeof IntersectionObserver === "undefined") return;
+            const element = document.querySelector(`[data-delivery-message="${messageId}"]`);
+            if (!element || document.visibilityState !== "visible") return;
+            const observer = new IntersectionObserver((entries) => {
+              if (socketRef.current !== receivedOn || receivedOn?.readyState !== WebSocket.OPEN) {
+                observer.disconnect();
+                return;
+              }
+              if (document.visibilityState !== "visible") return;
+              if (!entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 1)) return;
+              receivedOn.send(JSON.stringify({
+                type: "delivery_receipt", delivery_id: deliveryId, state: "text_presented",
+              }));
+              observer.disconnect();
+            }, { threshold: 1 });
+            observer.observe(element);
+            window.setTimeout(() => observer.disconnect(), 1000);
+          }));
+        }
         store.setMetrics(evt.metrics || {});
         if (evt.metrics?.context_window) {
           store.setContextInfo(
@@ -1020,8 +1044,12 @@ export function useAssistantSocket(): {
         playDone();
       }
     });
+    out.setDeliveryListener((delivery_id, state) => {
+      send({ type: "delivery_receipt", delivery_id, state });
+    });
     return () => {
       out.setPlaybackDrainedListener(null);
+      out.setDeliveryListener(null);
     };
   }, [send]);
 

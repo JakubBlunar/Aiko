@@ -29,6 +29,7 @@ import time
 import unittest
 
 from app.core.voice.tts_queue import TtsQueue
+from app.core.conversation.delivery import current_delivery_id
 from app.tts.clip_cache import ClipCache, SynthesisGate
 
 
@@ -125,6 +126,23 @@ def _drain(queue: TtsQueue, timeout: float = 10.0) -> None:
 
 
 class PrefetchAcrossPausesTests(unittest.TestCase):
+    def test_queued_sentence_retains_its_original_response_identity(self) -> None:
+        identities = []
+        queue = TtsQueue(
+            _RecordingEngine(),
+            state_listener=lambda event, payload: (
+                identities.append(payload["delivery_id"]) if event == "segment" else None
+            ),
+        )
+        context = current_delivery_id.set("original-response")
+        try:
+            queue.enqueue("First sentence.")
+            queue.enqueue("Second sentence.")
+        finally:
+            current_delivery_id.reset(context)
+        _drain(queue)
+        self.assertEqual(identities, ["original-response", "original-response"])
+
     def test_a_pause_between_sentences_does_not_block_the_prefetch(self) -> None:
         # The original bug, and the one that mattered most: with a pause
         # between two sentences, the prefetch looked at the pause, saw it

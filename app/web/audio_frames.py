@@ -67,19 +67,24 @@ _MIC_START_FORMAT = ">IBB"  # u32 sample_rate, u8 channels, u8 dsp_flags
 _AUDIO_START_FORMAT = ">BIB"  # u8 stream, u32 sample_rate, u8 channels
 
 
-def build_audio_start(stream: int, sample_rate: int, channels: int) -> bytes:
+def build_audio_start(
+    stream: int, sample_rate: int, channels: int, *, delivery_id: str = "",
+) -> bytes:
     """Build a ``0x12 audio_start`` frame.
 
     ``stream`` should be ``FRAME_TTS_PCM`` or ``FRAME_EARCON_PCM`` so
     the client knows which playback queue to spin up. Channels is
     1-byte so we clamp the inputs; today everything is mono.
     """
+    identity = bytes.fromhex(delivery_id) if delivery_id else b""
+    if identity and len(identity) != 16:
+        raise ValueError("delivery_id must encode 16 bytes")
     return bytes([FRAME_AUDIO_START]) + struct.pack(
         _AUDIO_START_FORMAT,
         int(stream) & 0xFF,
         max(0, int(sample_rate)) & 0xFFFFFFFF,
         max(1, int(channels)) & 0xFF,
-    )
+    ) + identity
 
 
 def build_audio_end(stream: int) -> bytes:

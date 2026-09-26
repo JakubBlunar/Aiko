@@ -28,6 +28,14 @@ import {
 
 type StreamTag = "tts" | "earcon";
 
+interface DeliveryClip {
+  id: string;
+  pending: number;
+  closed: boolean;
+  failed: boolean;
+  notified: boolean;
+}
+
 /**
  * Extra lead time (seconds) seeded ahead of the *first* clip of a turn —
  * i.e. when the previous schedule has already elapsed (the stream went
@@ -156,6 +164,26 @@ export class AudioOutputManager {
   // H7: fire once per TTS clip group when the speaker is actually quiet.
   private _onPlaybackDrained: (() => void) | null = null;
   private _drainNotified = true;
+  private _deliveryClip: DeliveryClip | null = null;
+  private _deliveryClips = new Set<DeliveryClip>();
+  private _onDelivery: ((id: string, state: "played" | "interrupted") => void) | null = null;
+
+  setDeliveryListener(
+    listener: ((id: string, state: "played" | "interrupted") => void) | null,
+  ): void {
+    this._onDelivery = listener;
+  }
+
+  private _notifyClip(clip: DeliveryClip): void {
+    if (clip.notified || (!clip.failed && (!clip.closed || clip.pending > 0))) return;
+    clip.notified = true;
+    this._deliveryClips.delete(clip);
+    try {
+      this._onDelivery?.(clip.id, clip.failed ? "interrupted" : "played");
+    } catch (error) {
+      this._reportError(error);
+    }
+  }
 
   constructor(options: AudioOutputOptions = {}) {
     this._sinkId = options.sinkId ?? "";
@@ -407,6 +435,16 @@ export class AudioOutputManager {
       if (!parsed) return null;
       const tag = streamName(parsed.stream);
       if (tag === "unknown") return null;
+      if (tag === "tts") {
+        if (this._deliveryClip && !this._deliveryClip.closed) {
+          this._deliveryClip.failed = true;
+          this._notifyClip(this._deliveryClip);
+        }
+        this._deliveryClip = parsed.deliveryId ? {
+          id: parsed.deliveryId, pending: 0, closed: false, failed: false, notified: false,
+        } : null;
+        if (this._deliveryClip) this._deliveryClips.add(this._deliveryClip);
+      }
       // Store the in-flight promise so the PCM that follows this
       // audio_start serializes behind it (resume + sample rate +
       // carry-over all applied before the first chunk schedules).
@@ -742,6 +780,10 @@ export class AudioOutputManager {
   }
 
   private _onAudioEnd(tag: StreamTag): void {
+    if (tag === "tts" && this._deliveryClip) {
+      this._deliveryClip.closed = true;
+      this._notifyClip(this._deliveryClip);
+    }
     // Nothing to flush here — the chained sources finish on their own.
     // We could prune the ``active`` list but it's bounded by the
     // clip length and the GC reclaims the buffers shortly after each
@@ -829,7 +871,20 @@ export class AudioOutputManager {
     // chain may run after handleFrame returns.
     const copy = body.slice();
     const epoch = this._epoch[tag];
-    const next = this._pcmTail[tag].then(() => this._enqueuePcm(tag, copy, epoch));
+    const clip = tag === "tts" ? this._deliveryClip : null;
+    if (clip) clip.pending += 1;
+    const next = this._pcmTail[tag].then(async () => {
+      let scheduled = false;
+      try {
+        scheduled = await this._enqueuePcm(tag, copy, epoch, clip);
+      } finally {
+        if (clip && !scheduled) {
+          clip.pending -= 1;
+          clip.failed = true;
+          this._notifyClip(clip);
+        }
+      }
+    });
     this._pcmTail[tag] = next.then(
       () => undefined,
       () => undefined,
@@ -841,9 +896,10 @@ export class AudioOutputManager {
     tag: StreamTag,
     body: Uint8Array,
     epoch: number,
-  ): Promise<void> {
-    if (body.byteLength < 2) return;
-    if (epoch !== this._epoch[tag]) return;
+    clip: DeliveryClip | null,
+  ): Promise<boolean> {
+    if (body.byteLength < 2) return false;
+    if (epoch !== this._epoch[tag]) return false;
     // Serialize behind the stream's ``audio_start`` so we never schedule
     // against a stale sample rate or a frozen clock. The promise
     // resolves once ``_onAudioStart`` has resumed the context and seeded
@@ -858,7 +914,7 @@ export class AudioOutputManager {
       }
     }
     const ctx = await this._ensureContext();
-    if (epoch !== this._epoch[tag]) return;
+    if (epoch !== this._epoch[tag]) return false;
     // TTS / earcon audio is real-time. If the context can't play *right
     // now* — iOS PWA before the unlocking gesture, or an OS audio-session
     // interruption while we're backgrounded (a YouTube video, a call) —
@@ -877,7 +933,7 @@ export class AudioOutputManager {
           payload: { tag, state: ctx.state },
         });
       }
-      return;
+      return false;
     }
     const state = this._streams[tag];
     // PCM is signed 16-bit little-endian; respect the body's byteOffset
@@ -885,7 +941,7 @@ export class AudioOutputManager {
     // include the type byte in the Int16 view.
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     const sampleCount = body.byteLength >> 1;
-    if (sampleCount === 0) return;
+    if (sampleCount === 0) return false;
     const buffer = ctx.createBuffer(1, sampleCount, state.sampleRate);
     const channel = buffer.getChannelData(0);
     for (let i = 0; i < sampleCount; i++) {
@@ -925,8 +981,13 @@ export class AudioOutputManager {
       });
     }
     source.onended = () => {
+      if ((source as unknown as { _stopped?: boolean })._stopped) return;
       (source as unknown as { _stopped: boolean })._stopped = true;
       state.active = state.active.filter((item) => item !== source);
+      if (clip) {
+        clip.pending -= 1;
+        this._notifyClip(clip);
+      }
       if (tag === "tts") this._maybeNotifyTtsDrained();
     };
     state.active.push(source);
@@ -934,13 +995,23 @@ export class AudioOutputManager {
     if (this._lipListener) this._startLipLoop();
     try {
       source.start(startAt);
+      return true;
     } catch (err) {
+      state.active = state.active.filter((item) => item !== source);
       this._reportError(err);
+      return false;
     }
   }
 
   private _stopStream(tag: StreamTag): void {
     this._epoch[tag] += 1;
+    if (tag === "tts") {
+      for (const clip of this._deliveryClips) {
+        clip.failed = true;
+        this._notifyClip(clip);
+      }
+      this._deliveryClip = null;
+    }
     const state = this._streams[tag];
     for (const src of state.active) {
       try {

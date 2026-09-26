@@ -2314,6 +2314,7 @@ export type WsServerEvent =
   | {
       type: "turn_done";
       metrics: MetricsSnapshot;
+      delivery_id?: string;
       /** K32: persisted SQLite ``messages.id`` of the assistant reply,
        * so the client can stamp the live bubble's ``backendId`` and
        * enable the reaction tray. Null on empty/aborted turns. */
@@ -2591,4 +2592,9 @@ export type WsClientCommand =
   /** Typing edge for Live. Never includes draft text. */
   | { type: "composing"; active: boolean; surface: "chat" | "persona" }
   /** H7: this client finished playing the last TTS buffer. */
-  | { type: "playback_drained" };
+  | { type: "playback_drained" }
+  | {
+      type: "delivery_receipt";
+      delivery_id: string;
+      state: "played" | "interrupted" | "text_presented";
+    };

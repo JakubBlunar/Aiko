@@ -40,6 +40,7 @@ export interface AudioStartFrame {
   stream: number;
   sampleRate: number;
   channels: number;
+  deliveryId?: string;
 }
 
 /**
@@ -88,11 +89,15 @@ export function parseAudioStart(body: Uint8Array): AudioStartFrame | null {
     body.byteOffset,
     body.byteLength,
   );
-  return {
+  const parsed: AudioStartFrame = {
     stream: view.getUint8(0),
     sampleRate: view.getUint32(1, false),
     channels: view.getUint8(5),
   };
+  if (body.byteLength === 22) {
+    parsed.deliveryId = Array.from(body.subarray(6), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return parsed;
 }
 
 /** Parse a `0x13 audio_end` frame body. Returns the stream byte. */

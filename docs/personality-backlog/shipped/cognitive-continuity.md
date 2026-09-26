@@ -87,3 +87,35 @@ consumption, persona hoisting, stance and prompt-cache ordering. Naturalness
 and semantic progress still need the paired K98/T5 behavior evaluation; the
 substance and decline checks are conservative English-language guards, not
 a general proof of understanding an answer.
+
+## K99. Recent delivery provenance
+
+`DeliveryLedger` keeps four recent responses, each with at most 32 identified
+audio clips. The turn runner supplies response identity, and the TTS queue
+captures it per text item before asynchronous playback. Optional binary
+audio-start tokens preserve legacy playback. Owner-, scope- and
+generation-checked receipts distinguish completed clips, interrupted clips
+and unknown delivery. Server send completion alone is never playback proof.
+
+Completed visible message bubbles may send a separately identified text
+presentation receipt. Existing explicit reactions count as acknowledgement,
+not comprehension or agreement. A non-steering T6 block exposes bounded
+recent evidence and cautions against treating unplayed/generated/private
+material as discussed. It deliberately has no stance offer. No raw audio or
+new persistent message archive is stored.
+
+See [voice-mode.md](../../voice-mode.md#delivery-evidence-k99) for wire format,
+limits and compatibility. Tests cover interrupted key clips, complete clips,
+wrong/stale owners and generations, duplicate receipts, queued identity,
+text-only delivery and missing telemetry. Browser audio accounting has
+behavior tests; visible-bubble wiring follows the repository's source-test
+convention. Actual hardware audibility and T5 continuity benefit remain open.
+
+## Verification
+
+All five implementation phases have focused regression coverage and passed
+`npm run lint`. Final backend run: 11,894 passed, 8 skipped, 1,269 subtests
+passed, with the unchanged pre-existing private-reach guard failure
+(471 MCP private accesses against budget 466). Frontend: 820 tests passed.
+No production messages, forced cues or live settings changes were used to
+establish these results. The original T5 behavior comparisons remain open.

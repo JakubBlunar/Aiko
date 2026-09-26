@@ -21,6 +21,7 @@ from app.core.conversation.conversation_situation_worker import (
     ConversationSituationWorker,
 )
 from app.core.infra.chat_database import ChatDatabase
+from app.core.conversation.delivery import DeliveryLedger
 from app.core.proactive.cue_producer import CueProducer
 from app.core.proactive.cue_store import CueStore
 from app.core.session.conversation_situation_mixin import ConversationSituationMixin
@@ -32,6 +33,7 @@ from app.core.world.idle_activity_worker import IdleAwayActivityWorker
 from app.core.world.world_mutation_guard import WorldMutationGuard
 from app.llm.chat_client import ChatUsage
 from app.mcp.server_tools import conversation_situation_tools
+from app.web.ws_live_commands import handle_live_ws_command
 
 
 def _replacement() -> SituationExtraction:
@@ -44,6 +46,89 @@ def _replacement() -> SituationExtraction:
         aiko_activity="talking with the user",
         evidence_message_ids=(11, 12),
     )
+
+
+def test_delivery_receipts_require_clip_owner_scope_and_send_completion() -> None:
+    scope = ["main", 1]
+    ledger = DeliveryLedger(lambda: tuple(scope))
+    response = ledger.begin("main")
+    ledger.set_spoken_context(response, "The first sentence.")
+    first = ledger.offer_audio("owner")
+    assert not ledger.receipt(first, "played", "owner", "owner")
+    ledger.end_audio(first)
+    assert not ledger.receipt(first, "played", "other", "owner")
+    assert ledger.receipt(first, "played", "owner", "owner")
+    assert not ledger.receipt(first, "played", "owner", "owner")
+    ledger.set_spoken_context(response, "The key second sentence.")
+    second = ledger.offer_audio("owner")
+    ledger.end_audio(second)
+    ledger.cancel_audio()
+    assert not ledger.receipt(second, "played", "owner", "owner")
+    ledger.finish(response, 10)
+    assert "audio clips completed 1/2" in ledger.render()
+    assert "interrupted=True" in ledger.render()
+    assert "not proof of hearing" in ledger.render()
+    scope[1] = 2
+    assert not ledger.receipt(second, "played", "owner", "owner")
+    assert ledger.render() == ""
+
+
+def test_text_delivery_and_explicit_acknowledgement_are_distinct() -> None:
+    ledger = DeliveryLedger(lambda: ("main", 1))
+    response = ledger.begin("main")
+    ledger.finish(response, 12)
+    assert "text presentation unknown" in ledger.render()
+    assert not ledger.receipt(response, "text_presented", "owner", "owner")
+    assert ledger.offer_text(12, "owner") == response
+    assert ledger.receipt(response, "text_presented", "owner", "owner")
+    assert "explicit acknowledgement=False" in ledger.render()
+    ledger.acknowledge(12)
+    assert "explicit acknowledgement=True" in ledger.render()
+    for message_id in range(20, 25):
+        ledger.finish(ledger.begin("main"), message_id)
+    assert not ledger.receipt(response, "text_presented", "owner", "owner")
+
+
+def test_delivery_websocket_rejects_old_owner_and_old_generation() -> None:
+    scope = ["main", 1]
+    ledger = DeliveryLedger(lambda: tuple(scope))
+    response = ledger.begin("main")
+    ledger.set_spoken_context(response, "An identified sentence.")
+    clip = ledger.offer_audio("first-window")
+    ledger.end_audio(clip)
+    ledger.finish(response, 24)
+    drains = []
+    session = SimpleNamespace(
+        delivery_ledger=lambda: ledger, notify_playback_drained=lambda: drains.append(True),
+    )
+    hub = SimpleNamespace(audio_owner_id="second-window")
+    message = {"delivery_id": clip, "state": "played"}
+    for client_id in ("first-window", "second-window"):
+        assert handle_live_ws_command(
+            session, "delivery_receipt", message, client_id=client_id, hub=hub,
+        )
+    assert "audio clips completed 0/1" in ledger.render()
+    handle_live_ws_command(
+        session, "playback_drained", {}, client_id="first-window", hub=hub,
+    )
+    assert drains == []
+    hub.audio_owner_id = "first-window"
+    scope[1] = 2
+    handle_live_ws_command(
+        session, "delivery_receipt", message, client_id="first-window", hub=hub,
+    )
+    scope[1] = 1
+    assert "audio clips completed 0/1" in ledger.render()
+
+
+def test_text_only_receipt_does_not_invent_audio_or_understanding() -> None:
+    ledger = DeliveryLedger(lambda: ("main", 1))
+    response = ledger.begin("main")
+    ledger.finish(response, 25)
+    ledger.offer_text(25, "*")
+    assert ledger.receipt(response, "text_presented", "text-window", "")
+    assert "audio delivery unknown" in ledger.render()
+    assert "explicit acknowledgement=False" in ledger.render()
 
 
 def test_parse_open_ended_replacement() -> None:

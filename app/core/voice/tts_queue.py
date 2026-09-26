@@ -20,6 +20,7 @@ import time
 from typing import Any, Callable
 
 from app.core.session.session_text_utils import prepare_tts_text
+from app.core.conversation.delivery import current_delivery_id
 
 
 StateListener = Callable[[str, dict[str, Any]], None]
@@ -67,7 +68,7 @@ class TtsQueue:
         # For "silence" ``content`` is the duration in milliseconds
         # (string) and the other slots are unused.
         self._pending: list[
-            tuple[str, str, str | None, float | None, float]
+            tuple[str, str, str | None, float | None, float, str]
         ] = []
         # Text of the sentence a prefetch was last started for, so the
         # several chunks dispatched while it is in flight don't each
@@ -122,7 +123,7 @@ class TtsQueue:
             gain_value = 0.0
         with self._lock:
             self._pending.append(
-                ("text", cleaned, reaction, speed, gain_value),
+                ("text", cleaned, reaction, speed, gain_value, current_delivery_id.get()),
             )
             busy = self._playing
             if not busy:
@@ -168,7 +169,7 @@ class TtsQueue:
         duration = min(self._SILENCE_MAX_MS, duration)
         with self._lock:
             self._pending.append(
-                ("silence", str(duration), None, None, 0.0),
+                ("silence", str(duration), None, None, 0.0, ""),
             )
             if self._playing:
                 return
@@ -192,7 +193,7 @@ class TtsQueue:
         cleaned_kind = (kind or "").strip().lower()
         with self._lock:
             self._pending.append(
-                ("earcon", cleaned_kind, None, None, 0.0),
+                ("earcon", cleaned_kind, None, None, 0.0, ""),
             )
             if self._playing:
                 return
@@ -228,7 +229,7 @@ class TtsQueue:
     # ── internal ──────────────────────────────────────────────────────────
 
     def _on_chunk_done(self) -> None:
-        next_chunk: tuple[str, str, str | None, float | None, float] | None = None
+        next_chunk: tuple[str, str, str | None, float | None, float, str] | None = None
         with self._lock:
             # ``stop()`` already cleared this, so a late callback from the
             # engine (it finished synthesising the chunk we abandoned) is
@@ -250,9 +251,12 @@ class TtsQueue:
 
     def _dispatch(
         self,
-        chunk: tuple[str, str, str | None, float | None, float],
+        chunk: tuple[str, str, str | None, float | None, float, str],
     ) -> None:
-        kind, content, reaction, speed, gain_db = chunk
+        kind, content, reaction, speed, gain_db, delivery_id = chunk
+        self._notify("segment", {
+            "delivery_id": delivery_id, "text": content if kind == "text" else "",
+        })
         # A pause or an earcon buys time for the next sentence just as
         # playback does, so the prefetch is spawned for every kind of
         # chunk -- not only from the text path as it once was.
@@ -311,7 +315,7 @@ class TtsQueue:
             )
             if target is None:
                 return
-            _, text, reaction, speed, _gain = target
+            _, text, reaction, speed, _gain, _delivery_id = target
             # One prefetch per sentence: a pause between two sentences
             # dispatches several chunks that all see the same target, and
             # duplicate threads would contend for the engine.

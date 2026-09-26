@@ -243,8 +243,10 @@ class TurnRunner:
         diary_allowed_provider: Callable[[], bool] | None = None,
         skill_router_enabled: bool = False,
         brain_core_families: "Iterable[str] | None" = None,
+        delivery_provider: Callable | None = None,
     ) -> None:
         self._ollama = ollama
+        self._delivery_provider = delivery_provider
         self._db = db
         self._prompt = prompt_assembler
         self._model = model
@@ -542,6 +544,12 @@ class TurnRunner:
         # the inner body exits (success, return, exception).
         turn_id = secrets.token_hex(4)
         token = set_turn_id(turn_id)
+        from app.core.conversation.delivery import current_delivery_id
+
+        ledger = self._delivery_provider() if self._delivery_provider is not None else None
+        delivery_id = ledger.begin(session_key) if ledger is not None else ""
+        delivery_context = current_delivery_id.set(delivery_id)
+        delivery_finished = False
         # P1 (perf backlog): start the per-turn embed counters on this
         # thread. ``_run_inner`` reads them via ``end_turn`` right
         # before the headline INFO log so the counters land both on
@@ -557,7 +565,7 @@ class TurnRunner:
             except Exception:
                 log.debug("embedder.begin_turn failed", exc_info=True)
         try:
-            return self._run_inner(
+            result = self._run_inner(
                 session_key=session_key,
                 user_text=user_text,
                 on_token=on_token,
@@ -571,7 +579,17 @@ class TurnRunner:
                 resume_user_message_id=resume_user_message_id,
                 allow_empty_user=allow_empty_user,
             )
+            if ledger is not None:
+                ledger.finish(
+                    delivery_id, result.assistant_message_id,
+                    aborted=bool(getattr(result, "aborted", False)),
+                )
+            delivery_finished = True
+            return result
         finally:
+            if ledger is not None and not delivery_finished:
+                ledger.finish(delivery_id, None, aborted=True)
+            current_delivery_id.reset(delivery_context)
             if self._embedder is not None:
                 try:
                     self._embedder.end_turn()
