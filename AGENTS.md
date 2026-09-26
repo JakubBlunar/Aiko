@@ -20,7 +20,7 @@ There is no desktop / Qt / LangChain code. The web UI is the only UI.
 
 ## Core rules (always apply)
 
-- **Run `npm run lint` before calling a change done.** `lint:py` is ruff (`F`, `E`, `W`, `B` at 100 columns) over `app/ tests/ scripts/`; `lint:web` is `tsc -b`. `npm run lint:py:fix` applies the autofixable subset. There is no CI and there are no git hooks, so this instruction is the enforcement path — the rule selection and what was deliberately left out are argued in [`pyproject.toml`](pyproject.toml).
+- **Run `npm run lint` before calling a change done if you touched the code.** `lint:py` is ruff (`F`, `E`, `W`, `B` at 100 columns) over `app/ tests/ scripts/`; `lint:web` is `tsc -b`. `npm run lint:py:fix` applies the autofixable subset. There is no CI and there are no git hooks, so this instruction is the enforcement path — the rule selection and what was deliberately left out are argued in [`pyproject.toml`](pyproject.toml).
 - **Every tracked text file is LF**, in the blob and in the working tree, enforced by [`.gitattributes`](.gitattributes). If a file you barely touched shows up as a whole-file rewrite, your editor wrote CRLF; convert it back rather than committing the flip.
 - **No LangChain / LangGraph anywhere in `app/`.** Every chat path is direct HTTP via `requests`: Ollama through `OllamaClient`, and remote providers through the hand-rolled [`OpenAICompatibleClient`](app/llm/openai_compatible_client.py) — no vendor SDK, deliberately (it explains why in its module docstring).
 - **No PySide6 / Qt.** The web UI is the only UI.
