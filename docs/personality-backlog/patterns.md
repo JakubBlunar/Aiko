@@ -114,7 +114,7 @@ on top of already-shipped infrastructure. Where an entry is half shipped
 | K94 | Sequencing — answer first, then add, and say where the addition goes | ✅ shipped 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k94-sequencing--answer-first-then-add-and-say-where-the-addition-goes) (a third stance axis, fired on evidence at 6.4% of turns) |
 | K95 | Interruption cost — a direct question is not an opening | ✅ shipped 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k95-interruption-cost--a-direct-question-is-not-an-opening) (reader landed inside K92 phase 1, enforcement in K53's gate walk) |
 | K96 | In-turn deliberation / second thought | Partial; post-reply worker shipped, 27 Sep runtime failures need diagnosis below |
-| K97 | A small causal working set for the current thread | Open experiment; medium effort |
+| K97 | A small causal working set for the current thread | Implementation shipped; behavioral comparison open |
 | K98 | Continue an interest after a good answer | Open experiment; medium effort |
 | K99 | Common ground with delivery provenance | Open experiment; medium-to-large effort |
 
@@ -941,7 +941,10 @@ path has no successful observed output.
 
 ## K97. A small causal working set for the current thread
 
-**Open experiment; medium effort.** Aiko can remember facts and still lose
+**Implementation shipped:** [evidence-linked working understanding](shipped/cognitive-continuity.md#k97-evidence-linked-working-understanding).
+The behavioral comparison below remains open.
+
+Aiko can remember facts and still lose
 what the conversation is trying to resolve. Give the current thread a
 small, revisable working understanding: the explicit question/goal,
 evidence IDs for what is established, one tentative interpretation, and

@@ -327,6 +327,9 @@ class SpeakingWorkersInitMixin:
                     store=self._conversation_situation_store,
                     model=self._effective_worker_model,
                     world_snapshot_provider=self.world_snapshot,
+                    context_token_provider=lambda: (
+                        self.session_key, int(getattr(self, "_live_mode_generation", 0)),
+                    ),
                     every_n_user_turns=int(
                         getattr(
                             settings.agent,

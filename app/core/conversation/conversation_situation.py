@@ -73,6 +73,55 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceNote:
+    text: str
+    evidence_message_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationWorkingSet:
+    question: EvidenceNote
+    facts: tuple[EvidenceNote, ...] = ()
+    interpretation: EvidenceNote | None = None
+    unresolved: EvidenceNote | None = None
+
+
+def _parse_working_set(
+    payload: Any, valid_ids: set[int],
+) -> ConversationWorkingSet | None:
+    if not isinstance(payload, dict):
+        return None
+
+    def note(value: Any) -> EvidenceNote:
+        if not isinstance(value, dict) or not isinstance(value.get("text"), str):
+            raise ValueError("invalid working-set note")
+        text = _clean_text(value["text"], limit=160)
+        ids = value.get("evidence_message_ids")
+        if (
+            not text or timephrase.has_relative_deictic(text)
+            or not isinstance(ids, list) or not 1 <= len(ids) <= 3
+            or any(type(message_id) is not int or message_id not in valid_ids for message_id in ids)
+        ):
+            raise ValueError("invalid working-set evidence")
+        return EvidenceNote(text, tuple(dict.fromkeys(ids)))
+
+    try:
+        facts = payload.get("facts", [])
+        if not isinstance(facts, list) or len(facts) > 3:
+            return None
+        return ConversationWorkingSet(
+            question=note(payload.get("question")),
+            facts=tuple(note(value) for value in facts),
+            interpretation=(
+                note(payload["interpretation"]) if payload.get("interpretation") else None
+            ),
+            unresolved=note(payload["unresolved"]) if payload.get("unresolved") else None,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True, slots=True)
 class SituationExtraction:
     """One untrusted worker proposal after structural validation."""
 
@@ -84,6 +133,7 @@ class SituationExtraction:
     aiko_activity: str = ""
     evidence_message_ids: tuple[int, ...] = ()
     explicit_end: bool = False
+    working_set: ConversationWorkingSet | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +152,7 @@ class ConversationSituationState:
     source_message_id: int
     miss_count: int
     updated_at: str
+    working_set: ConversationWorkingSet | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -160,6 +211,7 @@ def parse_extraction(
     raw: str,
     *,
     valid_message_ids: Iterable[int],
+    valid_user_message_ids: Iterable[int] | None = None,
 ) -> SituationExtraction | None:
     """Parse worker JSON without trusting model confidence or evidence ids."""
     payload = _extract_json_object(raw)
@@ -199,6 +251,13 @@ def parse_extraction(
     if operation == REPLACE and timephrase.has_relative_deictic(stored_text):
         return None
 
+    working_set = _parse_working_set(payload.get("working_set"), set(evidence))
+    if payload.get("working_set") is not None and working_set is None:
+        return None
+    if working_set is not None and valid_user_message_ids is not None:
+        if not set(working_set.question.evidence_message_ids).intersection(valid_user_message_ids):
+            return None
+
     return SituationExtraction(
         operation=operation,
         summary=summary,
@@ -208,6 +267,7 @@ def parse_extraction(
         aiko_activity=aiko_activity,
         evidence_message_ids=tuple(evidence),
         explicit_end=bool(payload.get("explicit_end", False)),
+        working_set=working_set,
     )
 
 
@@ -222,6 +282,11 @@ def reduce_situation(
     """Apply lifecycle hysteresis to one validated extraction."""
     timestamp = (now or timephrase.utcnow()).isoformat(timespec="seconds")
     generation = int(previous.generation if previous is not None else 0)
+    if previous is not None and (
+        previous.session_id != str(session_id)
+        or int(source_message_id) < previous.source_message_id
+    ):
+        return previous if previous.session_id == str(session_id) else None
 
     if extraction.operation == KEEP:
         if previous is None:
@@ -229,9 +294,11 @@ def reduce_situation(
         return replace(
             previous,
             status=ACTIVE,
+            evidence_message_ids=extraction.evidence_message_ids or previous.evidence_message_ids,
             source_message_id=max(previous.source_message_id, int(source_message_id)),
             miss_count=0,
             updated_at=timestamp,
+            working_set=extraction.working_set,
         )
 
     if extraction.operation == REPLACE:
@@ -248,6 +315,7 @@ def reduce_situation(
             source_message_id=int(source_message_id),
             miss_count=0,
             updated_at=timestamp,
+            working_set=extraction.working_set,
         )
 
     if previous is None:
@@ -260,6 +328,7 @@ def reduce_situation(
             source_message_id=max(previous.source_message_id, int(source_message_id)),
             miss_count=IMPLICIT_CLEAR_MISSES,
             updated_at=timestamp,
+            working_set=None,
         )
     misses = int(previous.miss_count) + 1
     return replace(
@@ -269,6 +338,7 @@ def reduce_situation(
         source_message_id=max(previous.source_message_id, int(source_message_id)),
         miss_count=misses,
         updated_at=timestamp,
+        working_set=None,
     )
 
 
@@ -314,6 +384,7 @@ class ConversationSituationStore:
                 source_message_id=max(0, int(row[4] or 0)),
                 miss_count=max(0, int(row[5] or 0)),
                 updated_at=str(row[6] or ""),
+                working_set=_parse_working_set(state.get("working_set"), set(evidence)),
             )
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
@@ -326,6 +397,7 @@ class ConversationSituationStore:
                 "shared_activity": state.shared_activity,
                 "place_ref": state.place_ref,
                 "aiko_activity": state.aiko_activity,
+                "working_set": asdict(state.working_set) if state.working_set else None,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -340,7 +412,8 @@ class ConversationSituationStore:
             "state_json=excluded.state_json, "
             "evidence_message_ids=excluded.evidence_message_ids, "
             "source_message_id=excluded.source_message_id, "
-            "miss_count=excluded.miss_count, updated_at=excluded.updated_at",
+            "miss_count=excluded.miss_count, updated_at=excluded.updated_at "
+            "WHERE excluded.source_message_id >= conversation_situation.source_message_id",
             (
                 state.session_id,
                 int(state.generation),

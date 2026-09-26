@@ -97,7 +97,7 @@ needed to repeat those aggregates.
 | First | [K92/K93](patterns.md#k92-conversational-stance--one-decision-per-turn-not-ten-permission-slips), [G6](workers.md), [H7/H44](health.md#h44-nothing-has-ever-graduated-and-at-this-calibration-nothing-can) | Finish candidate selection/attribution and close existing answer loops; these are not new features |
 | Shipped | [Live L18](live-mode.md#l18-preserve-why-a-cue-exists-before-choosing-how-to-say-it) | Purpose-aware admission and exact cue handoff; T5 behavior evaluation remains |
 | Shipped | [Live L17](live-mode.md#l17-a-deferred-thought-can-meet-a-later-opening) | One bounded reconsideration after a missed opening; T5 behavior evaluation remains |
-| Experiment | [K97](patterns.md#k97-a-small-causal-working-set-for-the-current-thread) | Carry an evidence-linked working understanding, separate from thoughts offered aloud |
+| Shipped | [K97](patterns.md#k97-a-small-causal-working-set-for-the-current-thread) | Evidence-linked working understanding; behavioral comparison remains open |
 | Experiment | [K98](patterns.md#k98-continue-an-interest-after-a-good-answer) | Let a real answer advance an interest rather than merely retire an ask |
 | Later | [K99](patterns.md#k99-common-ground-with-delivery-provenance) | Distinguish internally known, delivered, and acknowledged material across interruptions |
 | Across all | [T5 naturalness evaluation](testing.md#27-sep-2026-multi-turn-naturalness-track) | Measure continuity, appropriate silence, correction, and non-repetition with negative controls |

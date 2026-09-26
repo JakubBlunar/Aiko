@@ -42,7 +42,13 @@ Return ONE JSON object:
   "place_ref": "place named in the conversation or empty string",
   "aiko_activity": "what Aiko is doing in this situation or empty string",
   "evidence_message_ids": [integer ids from the supplied transcript],
-  "explicit_end": true|false
+    "explicit_end": true|false,
+    "working_set": null or {
+        "question": {"text": "open question/goal", "evidence_message_ids": [id]},
+        "facts": [{"text": "reported fact", "evidence_message_ids": [id]}],
+        "interpretation": {"text": "tentative conclusion", "evidence_message_ids": [id]},
+        "unresolved": {"text": "missing premise", "evidence_message_ids": [id]}
+    }
 }
 
 Use replace when recent evidence establishes or materially changes the present
@@ -50,6 +56,18 @@ situation. Use keep when the previous observation still fits and nothing
 material changed. Use clear when it no longer describes the present; set
 explicit_end=true only when the transcript or authoritative world state
 directly ends/contradicts it. Never include a confidence field.
+
+Maintain a working_set only for one explicit, still-open user/shared question.
+Its question must cite a user message. Every note must cite 1-3 supplied message
+IDs, all also included in the top-level evidence_message_ids (at most 8).
+Use at most three facts. Attribute reports to their speaker; an assistant's
+suggestion is not an established fact. Use at most one tentative interpretation
+and one unresolved premise, or null. Each note is at most 160 characters.
+Store concise conclusions, never a reasoning trace. Do not invent goals or
+resolve ambiguous references by guessing. Replace the whole set on each keep
+or replace: corrections invalidate dependent interpretations. Use null when
+resolved, declined, changed to an unrelated topic, or unsupported. This tracks
+understanding only; it grants no task, action, or permission to speak.
 """
 
 
@@ -64,15 +82,17 @@ class ConversationSituationWorker:
         store: ConversationSituationStore,
         model: str | None,
         world_snapshot_provider: Callable[[], dict[str, Any]],
+        context_token_provider: Callable[[], tuple[str, int]] | None = None,
         every_n_user_turns: int = 2,
         max_history_messages: int = 14,
-        max_tokens: int = 240,
+        max_tokens: int = 480,
     ) -> None:
         self._client = client
         self._chat_db = chat_db
         self._store = store
         self._model = model
         self._world_snapshot_provider = world_snapshot_provider
+        self._context_token_provider = context_token_provider
         self._every_n = max(1, int(every_n_user_turns))
         self._max_history = max(4, int(max_history_messages))
         self._max_tokens = max(100, int(max_tokens))
@@ -86,6 +106,7 @@ class ConversationSituationWorker:
             "completed": 0,
             "failed": 0,
             "invalid": 0,
+            "stale": 0,
             "kept": 0,
             "replaced": 0,
             "cleared": 0,
@@ -166,6 +187,10 @@ class ConversationSituationWorker:
     def run(self, session_id: str) -> ConversationSituationState | None:
         key = str(session_id)
         try:
+            token = self._context_token_provider() if self._context_token_provider else None
+            if token is not None and token[0] != key:
+                self._stats["stale"] += 1
+                return self._store.get(key)
             rows = self._chat_db.get_messages(key, limit=self._max_history)
             if not rows:
                 return self._store.get(key)
@@ -189,7 +214,20 @@ class ConversationSituationWorker:
                 surface="conversation_situation",
             )
             valid_ids = {int(row.id) for row in rows}
-            extraction = parse_extraction(raw, valid_message_ids=valid_ids)
+            latest_rows = self._chat_db.get_messages(key, limit=1)
+            current_token = self._context_token_provider() if self._context_token_provider else None
+            if (
+                current_token != token
+                or any(int(row.id) > max(valid_ids) for row in latest_rows)
+                or self._store.get(key) != previous
+            ):
+                self._stats["stale"] += 1
+                self._last_result[key] = {"result": "stale", "preserved_previous": True}
+                return self._store.get(key)
+            extraction = parse_extraction(
+                raw, valid_message_ids=valid_ids,
+                valid_user_message_ids={int(row.id) for row in rows if row.role == "user"},
+            )
             if extraction is None:
                 self._stats["invalid"] += 1
                 self._last_result[key] = {

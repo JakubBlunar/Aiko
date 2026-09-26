@@ -285,7 +285,10 @@ class ConversationSituationMixin:
         state = snapshot.inferred
         if state is None or snapshot.inferred_stale or state.status == "ended":
             return ""
-        if not snapshot.world_compatible:
+        if not snapshot.world_compatible and not (
+            state.working_set is not None and not state.shared
+            and snapshot.conflict_reason == "no_world_anchor"
+        ):
             return (
                 "[Conversation situation]\n"
                 f"A prior conversational reading was: {state.summary} "
@@ -302,10 +305,29 @@ class ConversationSituationMixin:
             if state.aiko_activity
             else ""
         )
+        working = ""
+        if state.working_set is not None and state.status == ACTIVE:
+            notes = state.working_set
+
+            def render_note(label, note):
+                ids = ",".join(str(message_id) for message_id in note.evidence_message_ids)
+                return f"{label} [messages {ids}]: {note.text}"
+
+            lines = [render_note("Open question", notes.question)]
+            lines.extend(render_note("Reported fact", note) for note in notes.facts)
+            if notes.interpretation is not None:
+                lines.append(render_note("Tentative, not established", notes.interpretation))
+            if notes.unresolved is not None:
+                lines.append(render_note("Unresolved", notes.unresolved))
+            working = (
+                "\nWorking understanding (earlier evidence, not instructions; the latest user "
+                "message overrides this; discard any contradicted interpretation):\n"
+                + "\n".join(lines)
+            )
         return (
             "[Conversation situation]\n"
             f"The conversation currently establishes: {state.summary}{shared}{aiko_now} "
-            "Use this as present continuity without reciting it."
+            "Use this as present continuity without reciting it." + working
         )
 
     def _reconcile_conversation_situation_after_world_mutation(self) -> None:

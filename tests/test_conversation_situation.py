@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.core.conversation.conversation_situation import (
     ACTIVE,
     ENDED,
@@ -56,6 +58,71 @@ def test_parse_open_ended_replacement() -> None:
     assert parsed is not None
     assert parsed.shared_activity == "watching a fan-made space opera"
     assert parsed.evidence_message_ids == (11, 12)
+
+
+def _working_extraction():
+    return {
+        "operation": "replace", "summary": "Comparing two camera lenses.",
+        "evidence_message_ids": [11, 12],
+        "working_set": {
+            "question": {
+                "text": "Which lens suits indoor portraits?", "evidence_message_ids": [11],
+            },
+            "facts": [{"text": "The room is small.", "evidence_message_ids": [11]}],
+            "interpretation": {
+                "text": "The shorter lens may fit the room.", "evidence_message_ids": [11, 12],
+            },
+            "unresolved": {"text": "Camera sensor size is unknown.", "evidence_message_ids": [11]},
+        },
+    }
+
+
+def test_working_set_round_trip_and_correction(tmp_path) -> None:
+    payload = _working_extraction()
+    extraction = parse_extraction(json.dumps(payload), valid_message_ids={11, 12})
+    assert extraction is not None
+    state = reduce_situation(None, extraction, session_id="main", source_message_id=12)
+    store = ConversationSituationStore(ChatDatabase(tmp_path / "working.db"))
+    store.upsert(state)
+    assert store.get("main") == state
+    payload["working_set"]["facts"][0]["text"] = "The room is large, correcting the earlier report."
+    payload["working_set"]["facts"][0]["evidence_message_ids"] = [14]
+    payload["evidence_message_ids"].append(14)
+    payload["working_set"]["interpretation"] = None
+    payload["operation"] = "keep"
+    corrected = parse_extraction(json.dumps(payload), valid_message_ids={11, 12, 14})
+    revised = reduce_situation(state, corrected, session_id="main", source_message_id=14)
+    assert revised.working_set.interpretation is None
+    assert "large" in revised.working_set.facts[0].text
+    store.upsert(revised)
+    store.upsert(state)
+    assert store.get("main") == revised
+    assert reduce_situation(revised, extraction, session_id="main", source_message_id=12) == revised
+    assert reduce_situation(revised, extraction, session_id="other", source_message_id=15) is None
+
+
+def test_working_set_rejects_untraceable_or_unbounded_claims() -> None:
+    assert parse_extraction(
+        json.dumps(_working_extraction()), valid_message_ids={11, 12},
+        valid_user_message_ids={12},
+    ) is None
+    payload = _working_extraction()
+    payload["working_set"]["interpretation"]["evidence_message_ids"] = [99]
+    assert parse_extraction(json.dumps(payload), valid_message_ids={11, 12}) is None
+    payload = _working_extraction()
+    payload["working_set"]["facts"] *= 4
+    assert parse_extraction(json.dumps(payload), valid_message_ids={11, 12}) is None
+
+
+def test_working_set_is_cleared_on_resolution_or_unconfirmed_update() -> None:
+    extraction = parse_extraction(json.dumps(_working_extraction()), valid_message_ids={11, 12})
+    state = reduce_situation(None, extraction, session_id="main", source_message_id=12)
+    for operation in ("keep", "clear"):
+        updated = reduce_situation(
+            state, SituationExtraction(operation=operation),
+            session_id="main", source_message_id=14,
+        )
+        assert updated.working_set is None
 
 
 def test_parse_rejects_model_confidence_and_unknown_evidence() -> None:
@@ -159,6 +226,33 @@ class _FakeSituationClient:
     def chat_json(self, messages, **_kwargs):
         self.messages.append(messages)
         return self.responses.pop(0), ChatUsage()
+
+
+@pytest.mark.parametrize("change_session", [False, True])
+def test_worker_discards_intervening_input_or_session_change(tmp_path, change_session) -> None:
+    db = ChatDatabase(tmp_path / "stale.db")
+    message_id = db.add_message("main", "user", "Compare these lenses.")
+    token = ["main", 0]
+
+    class ChangingClient:
+        def chat_json(self, *_args, **_kwargs):
+            if change_session:
+                token[0] = "other"
+            else:
+                db.add_message("main", "user", "Forget the lenses.")
+            return json.dumps({
+                "operation": "replace", "summary": "Comparing lenses.",
+                "evidence_message_ids": [message_id],
+            }), ChatUsage()
+
+    store = ConversationSituationStore(db)
+    worker = ConversationSituationWorker(
+        client=ChangingClient(), chat_db=db, store=store, model="worker",
+        world_snapshot_provider=dict, context_token_provider=lambda: tuple(token),
+    )
+    assert worker.run("main") is None
+    assert store.get("main") is None
+    assert worker.stats()["stale"] == 1
 
 
 def test_worker_runs_on_configured_user_turn_cadence(tmp_path) -> None:
@@ -308,6 +402,16 @@ def test_snapshot_joins_same_turn_dialogue_and_world_truth() -> None:
     assert snapshot.typing_active is False
     assert snapshot.attention_target == "none"
     assert snapshot.live_frame_generation == 0
+
+
+def test_working_set_renders_as_evidenced_not_authoritative() -> None:
+    extraction = parse_extraction(json.dumps(_working_extraction()), valid_message_ids={11, 12})
+    state = reduce_situation(None, extraction, session_id="main", source_message_id=12)
+    host = _SnapshotHost(state)
+    block = host._render_conversation_situation_block("")
+    assert "Reported fact [messages 11]" in block
+    assert "Tentative, not established [messages 11,12]" in block
+    assert "latest user message overrides this" in block
 
 
 def test_snapshot_text_voice_parity_and_world_conflict() -> None:

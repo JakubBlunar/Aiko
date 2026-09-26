@@ -42,3 +42,25 @@ Coverage: [test_live_mode_pass3.py](../../../tests/test_live_mode_pass3.py)
 and [test_live_mode_pass10.py](../../../tests/test_live_mode_pass10.py), plus
 the Live/cue regression slice. Real-world interruption and missed-opening
 rates remain a T5 evaluation task, not a claim established by these tests.
+
+## K97. Evidence-linked working understanding
+
+The existing conversation-situation observer now carries one open,
+user-evidenced question, up to three reported facts, one tentative
+interpretation and one unresolved premise. Notes are capped at 160
+characters and cite validated transcript IDs. Each refresh replaces the
+set; missing/cleared output removes it rather than preserving unsupported
+interpretations. SQLite stores it inside the existing situation JSON.
+
+The prompt distinguishes reports, hypotheses and unknowns, gives the latest
+user message precedence, and does not turn this understanding into an
+offer to speak. It uses the existing situation block/tier, not a new steer.
+Non-spatial questions need no room lease; actual world conflicts still
+suppress the reading. Old-source writes, intervening input and changed
+session/mode tokens cannot overwrite newer state. The observer retains its
+post-reply cadence; its output cap increases from 240 to 480 tokens.
+
+Coverage: [test_conversation_situation.py](../../../tests/test_conversation_situation.py)
+and the prompt-cache regression tests. The paired referent/correction/
+unknown-answer evaluation remains open: structural tests do not establish
+that an extra working set beats the existing summary and history.
