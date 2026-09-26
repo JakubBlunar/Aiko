@@ -166,8 +166,10 @@ def _working_extraction():
 
 def test_working_set_round_trip_and_correction(tmp_path) -> None:
     payload = _working_extraction()
+    payload["working_set"]["recall_needed"] = True
     extraction = parse_extraction(json.dumps(payload), valid_message_ids={11, 12})
     assert extraction is not None
+    assert extraction.working_set.recall_needed
     state = reduce_situation(None, extraction, session_id="main", source_message_id=12)
     store = ConversationSituationStore(ChatDatabase(tmp_path / "working.db"))
     store.upsert(state)
@@ -560,6 +562,21 @@ def test_working_set_renders_as_evidenced_not_authoritative() -> None:
     assert "Reported fact [messages 11]" in block
     assert "Tentative, not established [messages 11,12]" in block
     assert "latest user message overrides this" in block
+
+
+def test_recall_need_requires_a_fresh_open_goal_and_current_topic() -> None:
+    payload = _working_extraction()
+    payload["working_set"]["recall_needed"] = True
+    extraction = parse_extraction(json.dumps(payload), valid_message_ids={11, 12})
+    state = reduce_situation(None, extraction, session_id="main", source_message_id=12)
+    host = _SnapshotHost(state)
+    assert host.recall_information_need("Which lens?")["family"] == "recall"
+    assert not host.recall_information_need("Tell me about tomorrow's weather")
+    assert not host.recall_information_need("Forget about that lens")
+    assert not host.recall_information_need("That lens is intended for a full-frame camera")
+    stale = _SnapshotHost(replace(state, updated_at="2000-01-01T00:00:00+00:00"))
+    assert not stale.recall_information_need("Which lens?")
+
 
 
 def test_snapshot_text_voice_parity_and_world_conflict() -> None:

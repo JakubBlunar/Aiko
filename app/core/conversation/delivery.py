@@ -134,6 +134,25 @@ class DeliveryLedger:
                 if record.scope == self._scope() and record.message_id == message_id:
                     record.acknowledged = True
 
+    def evidence_for(self, message_id: int | None) -> dict:
+        with self._lock:
+            for record in self._responses.values():
+                if (
+                    message_id is None or record.message_id != message_id
+                    or record.scope != self._scope()
+                ):
+                    continue
+                return {
+                    "status": "reported" if record.text_presented or any(
+                        clip.status == "played" for clip in record.clips
+                    ) else "unknown",
+                    "text_presented": record.text_presented,
+                    "audio_played": sum(clip.status == "played" for clip in record.clips),
+                    "audio_offered": len(record.clips),
+                    "aborted": record.aborted,
+                }
+            return {"status": "unknown"}
+
     def render(self) -> str:
         with self._lock:
             records = [

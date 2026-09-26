@@ -111,7 +111,9 @@ class RegistryTests(unittest.TestCase):
 
     def test_every_hoisted_block_is_a_local_at_the_call_site(self) -> None:
         """``_render_handling_notes`` reads the assembly frame's locals."""
-        names = set(PromptAssembler.assemble_with_budget.__code__.co_varnames)
+        from inspect import unwrap
+
+        names = set(unwrap(PromptAssembler.assemble_with_budget).__code__.co_varnames)
         for block in self.registry:
             with self.subTest(block=block):
                 self.assertTrue(

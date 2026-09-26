@@ -16,6 +16,7 @@ Contracts pinned here:
 """
 from __future__ import annotations
 
+
 import unittest
 
 from app.core.session.tool_pass_gate import (
@@ -27,6 +28,19 @@ from app.core.session.tool_pass_gate import (
     select_active_tool_names,
     should_run_tool_pass,
 )
+
+
+def test_material_premise_can_only_expose_enabled_readonly_recall():
+    names = ["recall", "move_to", "start_workflow"]
+    shadow = should_run_tool_pass("Those lenses", names, context=GateContext())
+    actual = should_run_tool_pass("Those lenses", names, context=GateContext(recall_need=True))
+    assert not shadow.run
+    assert actual.reason == "premise_recall"
+    assert select_active_tool_names(actual, names, router_enabled=False) == {"recall"}
+    disabled = should_run_tool_pass(
+        "Those lenses", ["move_to"], context=GateContext(recall_need=True),
+    )
+    assert not disabled.run
 
 
 # Only brain-lane tools that actually register in the ToolRegistry. The

@@ -2069,11 +2069,21 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
                 take_decline_notes,
             )
 
+            reasons = take_decline_notes(self)
+            attempts = getattr(telemetry, "surfacing_trace", None) or []
+            if attempts:
+                reasons = {
+                    name.removesuffix("_block"): reason
+                    for name, reason in attempts[-1].get("declines", {}).items()
+                }
+            for name, outcome in (getattr(telemetry, "provider_outcomes", {}) or {}).items():
+                if outcome.get("state") == "error":
+                    reasons[name] = "provider_error:" + outcome.get("error", "unknown")
             decisions = decisions_from_block_chars(
                 armed,
                 block_chars,
                 question_balance_suppressed=suppressed,
-                provider_reasons=take_decline_notes(self),
+                provider_reasons=reasons,
             )
         except Exception:
             log.debug("cue decision derivation failed", exc_info=True)

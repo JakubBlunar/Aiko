@@ -1,5 +1,9 @@
 # Unified context budget (`relevant_context`)
 
+For the end-to-end path from source material to prompt guidance, actions and
+memory, see [prompt-surfacing.md](prompt-surfacing.md). This document covers
+the T3 selection region, not admission across every prompt block.
+
 One turn-relevance-scored selector decides what reaches Aiko's brain from her
 long-term stores each turn. It replaces three independent, mostly-not-turn-aware
 caps — memory `top_k`, the interest-map "top-N clusters by size" block, and the

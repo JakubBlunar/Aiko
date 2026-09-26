@@ -280,6 +280,40 @@ class ConversationSituationMixin:
             return False, "no_world_anchor"
         return True, ""
 
+    def recall_information_need(self, user_text: str) -> dict:
+        import re
+        from app.core.conversation.conversation_situation import declines_interest
+
+        snapshot = self.conversation_situation_snapshot(user_text=user_text)
+        state = snapshot.inferred
+        if state is None or snapshot.inferred_stale or state.status != ACTIVE:
+            return {}
+        if not snapshot.world_compatible and not (
+            not state.shared and snapshot.conflict_reason == "no_world_anchor"
+        ):
+            return {}
+        notes = state.working_set
+        if notes is None or not notes.recall_needed or notes.unresolved is None:
+            return {}
+        if declines_interest(user_text):
+            return {}
+        if "?" not in user_text and len(user_text.split()) > 6:
+            return {}
+        terms = set(re.findall(r"[a-z]{4,}", notes.question.text.casefold())) - {
+            "which", "what", "that", "this", "with", "have", "does", "would", "should",
+        }
+        current_terms = set(re.findall(r"[a-z]{4,}", user_text.casefold()))
+        if not terms.intersection(current_terms):
+            return {}
+        if any(note.text.casefold() == notes.unresolved.text.casefold() for note in notes.facts):
+            return {}
+        return {
+            "session_id": state.session_id, "generation": state.generation,
+            "evidence_message_ids": list(notes.unresolved.evidence_message_ids),
+            "goal_message_ids": list(notes.question.evidence_message_ids),
+            "family": "recall",
+        }
+
     def _render_conversation_situation_block(self, user_text: str) -> str:
         snapshot = self.conversation_situation_snapshot(user_text=user_text)
         state = snapshot.inferred

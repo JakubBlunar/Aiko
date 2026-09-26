@@ -966,6 +966,12 @@ class MemoryStore:
         cleaned = (content or "").strip()
         if not cleaned or len(cleaned) < 4:
             return None
+        admission_key = (metadata or {}).get("admission_key")
+        if admission_key and self._get_conn().execute(
+            "SELECT id FROM memories WHERE json_extract(metadata, '$.admission_key') = ? LIMIT 1",
+            (admission_key,),
+        ).fetchone() is not None:
+            return None
         kind = kind.strip().lower() or "fact"
         if kind not in VALID_KINDS:
             kind = "fact"
@@ -1078,6 +1084,21 @@ class MemoryStore:
                     mem = self._mirror.get(mid)
                     if mem is None:
                         continue
+                    opposition = classify_pair(cleaned, mem.content) if admission_key else None
+                    if opposition is not None and opposition.label != HEURISTIC_NO:
+                        intended = (metadata or {}).get("admission", {}).get("supersedes_memory_id")
+                        if (
+                            provenance_normalized == "stated" and intended == mem.id
+                            and opposition.label == "definite"
+                            and (kind == "self") == (mem.kind == "self")
+                        ):
+                            metadata = {
+                                **(metadata or {}),
+                                "supersedes_memory_ids": sorted({
+                                    *((metadata or {}).get("supersedes_memory_ids") or []), mem.id,
+                                }),
+                            }
+                        continue
                     if score >= self._dedupe_threshold or self._is_restatement(
                         mem,
                         score,
@@ -1089,7 +1110,8 @@ class MemoryStore:
                         dup_id = mem.id
                         break
         if dup_id is not None:
-            self._touch_existing(dup_id, salience_clipped)
+            if not admission_key:
+                self._touch_existing(dup_id, salience_clipped)
             return None
 
         # Real insert.

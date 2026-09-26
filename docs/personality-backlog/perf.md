@@ -1061,6 +1061,20 @@ with P31a's `get_prompt_block_costs` first.
 
 ## P43. 105 blocks, no arbitration -- replace the aggressive denylist
 
+**27 Sep 2026 scope update.** The registry now contains 125 names; the title
+below is the original audit label. K92 now stages pooled claims per assembly
+attempt and adds interest-drift/associative-wander admission to its curiosity-seed pilot,
+not general arbitration. The
+[prompt-surfacing map](../prompt-surfacing.md#implemented-pilots-and-remaining-scope)
+documents the current path. Extend the pilot with non-mutating candidates and
+final-assembly claims before applying a global allocator: an aggressive retry
+must not consume one-shot state or count an omitted cue as shown. Bundle
+essential handling with its admitted content, and keep owed repairs, current
+user requests, authoritative state and permission constraints protected.
+Evaluate with item-level evidence and explicit unknowns, not copied per-turn
+engagement labels as learned value. G6's remaining generic declines must stay
+distinguishable from healthy silence and provider errors.
+
 **Motivation.** `_PROMPT_BLOCK_TIERS` registers 105 blocks, and the assembly
 rule for all of them is `if block: system_parts.append(block)`. There is no
 competition: whatever a provider returns goes in, in tier order, and the only

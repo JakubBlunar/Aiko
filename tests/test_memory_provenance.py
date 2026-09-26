@@ -162,6 +162,26 @@ class TestCoerceProvenance(unittest.TestCase):
 
 
 class TestProvenanceRoundTrip(unittest.TestCase):
+    def test_admitted_correction_preserves_old_row_and_idempotent_lineage(self) -> None:
+        _, store = _store_factory()
+        embedding = _emb("same topic")
+        prior = store.add("The user likes coffee", "preference", embedding)
+        metadata = {
+            "admission_key": "test-correction",
+            "admission": {"subject": "user", "supersedes_memory_id": prior.id},
+        }
+        corrected = store.add(
+            "The user dislikes coffee", "preference", embedding,
+            provenance="stated", metadata=metadata,
+        )
+        self.assertIsNotNone(corrected)
+        self.assertEqual(corrected.metadata["supersedes_memory_ids"], [prior.id])
+        self.assertIsNotNone(store.get(prior.id))
+        self.assertIsNone(store.add(
+            "The user dislikes coffee", "preference", embedding,
+            provenance="stated", metadata=metadata,
+        ))
+
     def test_default_provenance_is_inferred(self) -> None:
         _, store = _store_factory()
         mem = store.add("a plain fact", "fact", _emb("plain fact"))
@@ -330,6 +350,10 @@ class TestFormatBlockInferredSuffix(unittest.TestCase):
     def test_self_kind_never_tagged(self) -> None:
         block = self._block([_mem_hit("I enjoy quiet mornings", "self", "inferred")])
         self.assertNotIn("(inferred)", block)
+
+    def test_plain_remember_inference_is_not_presented_as_testimony(self) -> None:
+        block = self._block([_mem_hit("The user enjoys tea", "self_tagged", "inferred")])
+        self.assertIn("(inferred)", block)
 
     def test_toggle_off_suppresses_suffix(self) -> None:
         block = self._block(

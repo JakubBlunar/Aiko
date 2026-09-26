@@ -3364,6 +3364,7 @@ class SpeakingWorkersInitMixin:
             self._prompt_assembler,
             model=self._effective_chat_model,
             delivery_provider=self.delivery_ledger,
+            information_need_provider=self.recall_information_need,
             context_window=self._context_window,
             max_tokens=self._max_tokens,
             temperature=self._temperature,

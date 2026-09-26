@@ -126,6 +126,33 @@ _KEY = "memory.extractor.watermark:s"
 
 
 class FirstRunTests(unittest.TestCase):
+    def test_admission_checks_literal_evidence_and_speaker(self) -> None:
+        from app.core.memory.memory_admission import admit_memory
+
+        db = _FakeDb()
+        user_row = db.append("user", "I prefer tea.")
+        assistant_row = db.append("assistant", "You prefer coffee.")
+        candidate = {
+            "content": "I prefer tea.", "kind": "preference",
+            "evidence": [{"message_id": user_row.id, "quote": "I prefer tea."}],
+        }
+        admitted = admit_memory(candidate, db.rows, session_key="s", writer="extractor")
+        self.assertEqual(admitted.provenance, "stated")
+        self.assertEqual(admitted.source_message_id, user_row.id)
+        candidate["content"] = "I prefer coffee."
+        self.assertEqual(
+            admit_memory(candidate, db.rows, session_key="s", writer="extractor").provenance,
+            "inferred",
+        )
+        candidate["evidence"] = [{"message_id": assistant_row.id, "quote": assistant_row.content}]
+        self.assertFalse(
+            admit_memory(candidate, db.rows, session_key="s", writer="extractor").accepted,
+        )
+        candidate["evidence"] = [{"message_id": user_row.id, "quote": user_row.content}]
+        self.assertFalse(
+            admit_memory(candidate, db.rows, session_key="other", writer="extractor").accepted,
+        )
+
     def test_a_first_run_seeds_from_the_trailing_window(self) -> None:
         # An install with existing history must not mine from message one.
         db = _FakeDb(count=100)
@@ -144,6 +171,30 @@ class FirstRunTests(unittest.TestCase):
 
 
 class WatermarkTests(unittest.TestCase):
+    def test_partial_apply_retries_saved_candidates_without_rerunning_model(self) -> None:
+        db = _FakeDb(count=6)
+        store = _FakeStore()
+        ollama = _FakeOllama([_memories("First useful fact", "Second useful fact")])
+        extractor = _build(db, ollama, store=store)
+
+        class FlakyEmbedder:
+            calls = 0
+
+            def embed(self, text):
+                self.calls += 1
+                if self.calls == 2:
+                    raise RuntimeError("temporary outage")
+                return [0.0, 1.0]
+
+        extractor._embedder = FlakyEmbedder()
+        self.assertEqual(extractor.extract_for_session("s"), 1)
+        self.assertNotIn(_KEY, db.kv)
+        self.assertEqual(extractor.extract_for_session("s"), 1)
+        self.assertEqual(len(ollama.prompts), 1)
+        self.assertEqual(len(store.added), 2)
+        self.assertEqual(db.kv[_KEY], "6")
+        self.assertEqual(db.kv["memory.extractor.pending:s"], "")
+
     def test_a_second_run_offers_only_the_new_turns(self) -> None:
         db = _FakeDb(count=20)
         db.kv[_KEY] = "20"

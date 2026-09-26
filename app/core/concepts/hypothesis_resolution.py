@@ -312,6 +312,7 @@ def apply_hypothesis_verdict(
     concept_store: "ConceptStore | None" = None,
     embed: "Callable[[str], object] | None" = None,
     correction_text: str = "",
+    observed_at: str | None = None,
 ) -> HypothesisResult | None:
     """Apply one adjudicated answer to an invented hypothesis.
 
@@ -344,13 +345,13 @@ def apply_hypothesis_verdict(
     restated = False
     try:
         if verdict == CONFIRM:
-            _support(store, row, memory_id, before, step)
+            _support(store, row, memory_id, before, step, observed_at=observed_at)
             _link(store, concept_store, row, memory_id)
         elif verdict == DENY:
-            _refute(store, row, before, step)
+            _refute(store, row, before, step, observed_at=observed_at)
         else:
             restated = _restate(
-                store, row, before, step, correction_text, embed
+                store, row, before, step, correction_text, embed, observed_at=observed_at,
             )
         result = _result(verdict, row, before, restated)
     except Exception:
@@ -381,13 +382,14 @@ def _support(
     memory_id: int | None,
     before: float,
     step: float,
+    *, observed_at: str | None = None,
 ) -> None:
     from app.core.concepts.hypothesis_store import STATUS_SUPPORTED
 
     row.support_count = int(row.support_count) + 1
     row.credence = _clamp(before + step)
     row.status = STATUS_SUPPORTED
-    row.last_tested_at = _now_iso()
+    row.last_tested_at = observed_at or _now_iso()
     if memory_id is not None and int(memory_id) not in row.answer_memory_ids:
         row.answer_memory_ids = [*row.answer_memory_ids, int(memory_id)]
     store.update(row)
@@ -395,12 +397,13 @@ def _support(
 
 def _refute(
     store: "HypothesisStore", row: "Hypothesis", before: float, step: float,
+    *, observed_at: str | None = None,
 ) -> None:
     from app.core.concepts.hypothesis_store import STATUS_REFUTED
 
     row.refute_count = int(row.refute_count) + 1
     row.credence = _clamp(before - step)
-    row.last_tested_at = _now_iso()
+    row.last_tested_at = observed_at or _now_iso()
     store.close(row, status=STATUS_REFUTED)
 
 
@@ -411,6 +414,7 @@ def _restate(
     step: float,
     correction_text: str,
     embed: "Callable[[str], object] | None",
+    *, observed_at: str | None = None,
 ) -> bool:
     """Take the user's better wording, at half the credence penalty.
 
@@ -429,7 +433,7 @@ def _restate(
             except Exception:
                 log.debug("restated hypothesis re-embed failed", exc_info=True)
     row.credence = _clamp(before - step / 2.0)
-    row.last_tested_at = _now_iso()
+    row.last_tested_at = observed_at or _now_iso()
     store.update(row)
     return restated
 

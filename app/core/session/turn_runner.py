@@ -244,9 +244,12 @@ class TurnRunner:
         skill_router_enabled: bool = False,
         brain_core_families: "Iterable[str] | None" = None,
         delivery_provider: Callable | None = None,
+        information_need_provider: Callable[[str], dict] | None = None,
     ) -> None:
         self._ollama = ollama
         self._delivery_provider = delivery_provider
+        self._information_need_provider = information_need_provider
+        self._information_need_seen: tuple | None = None
         self._db = db
         self._prompt = prompt_assembler
         self._model = model
@@ -734,6 +737,7 @@ class TurnRunner:
                 try:
                     tool_usage = self._maybe_run_tool_pass(
                         messages, stop_requested=stop_requested, allow=allow,
+                        strict_allow=gate_decision.reason == "premise_recall",
                         session_key=session_key,
                         on_tts_chunk=on_tts_chunk,
                     )
@@ -1351,6 +1355,17 @@ class TurnRunner:
                 log.debug("tasks_active_provider raised", exc_info=True)
         try:
             registry = self._tool_registry
+            need = {}
+            if self._information_need_provider is not None:
+                try:
+                    need = self._information_need_provider(user_text) or {}
+                except Exception:
+                    log.debug("information need provider failed", exc_info=True)
+            need_key = (
+                need.get("session_id"), need.get("generation"),
+                tuple(need.get("evidence_message_ids", ())),
+                tuple(need.get("goal_message_ids", ())),
+            )
             tool_names = (
                 list(registry.names()) if registry is not None else []
             )
@@ -1364,10 +1379,13 @@ class TurnRunner:
                     last_turn_dispatched_tool=self._last_turn_dispatched_tool,
                     tasks_active=tasks_active,
                     force=force,
+                    recall_need=bool(need) and need_key != self._information_need_seen,
                 ),
                 extra_families=self._plugin_tool_families,
                 extra_patterns=self._plugin_family_patterns,
             )
+            if decision.reason == "premise_recall":
+                self._information_need_seen = need_key
         except Exception:
             log.exception("tool-pass gate raised; defaulting to run")
             decision = GateDecision(run=True, reason="gate_error")
@@ -1418,6 +1436,7 @@ class TurnRunner:
         stop_requested: StopPredicate | None,
         max_rounds: int = 2,
         allow: "set[str] | None" = None,
+        strict_allow: bool = False,
         session_key: str = "",
         on_tts_chunk: TtsChunkCallback | None = None,
     ) -> OllamaUsage:
@@ -1448,7 +1467,7 @@ class TurnRunner:
         tool_schemas = registry.to_ollama_tools(allow=allow)
         # Safety fallback: narrowing must never strip every tool. If the
         # filtered subset is empty but the registry has tools, send all.
-        if not tool_schemas and allow is not None:
+        if not tool_schemas and allow is not None and not strict_allow:
             tool_schemas = registry.to_ollama_tools()
         if not tool_schemas:
             self._last_active_tools = []
@@ -1611,6 +1630,13 @@ class TurnRunner:
             messages.append(assistant_msg)
 
             for idx, call in enumerate(real_calls):
+                if strict_allow and call.name not in (allow or set()):
+                    messages.append({
+                        "role": "tool", "name": call.name,
+                        "tool_call_id": tool_call_ids[idx],
+                        "content": "Tool unavailable in this read-only recall pass.",
+                    })
+                    continue
                 if self._on_tool_call is not None:
                     try:
                         self._on_tool_call(call.name, dict(call.arguments))
@@ -1746,6 +1772,14 @@ class TurnRunner:
         ):
             return
         seen: set[tuple[str, str]] = set()
+        from app.core.memory.memory_admission import admit_memory
+
+        try:
+            evidence_rows = self._db.get_messages_before(
+                session_key, before_id=assistant_message_id, limit=4,
+            ) if assistant_message_id else []
+        except Exception:
+            evidence_rows = []
         for match in _REMEMBER_TAG_RE.finditer(raw_text):
             content = (match.group("body") or "").strip()
             if not content or len(content) < 4:
@@ -1755,6 +1789,13 @@ class TurnRunner:
             # surfaced separately in the prompt block. Plain ``[[remember:...]]``
             # remains a "self_tagged" user fact (Aiko's explicit annotation).
             kind = "self" if kind_marker == "self" else "self_tagged"
+            admission = admit_memory(
+                {"content": content, "kind": kind}, evidence_rows,
+                session_key=session_key, writer="inline",
+                proposal_message_id=assistant_message_id,
+            )
+            if not admission.accepted:
+                continue
             key = (kind, content.lower())
             if key in seen:
                 continue
@@ -1771,12 +1812,10 @@ class TurnRunner:
                     embedding=embedding,
                     salience=self._self_tagged_salience,
                     source_session=session_key,
-                    source_message_id=assistant_message_id,
-                    # Schema v8: ``[[remember:...]]`` and
-                    # ``[[remember:self:...]]`` tags are Aiko's own
-                    # explicit anchors. Long_term so they never decay
-                    # through the scratchpad's fast lane.
-                    tier="long_term",
+                    source_message_id=admission.source_message_id,
+                    metadata=admission.metadata,
+                    tier=admission.tier,
+                    confidence=0.85 if admission.provenance == "stated" or kind == "self" else 0.5,
                     # Schema v10: persona instructs Aiko to use these
                     # tags for *durable* facts and self-notes (one
                     # short sentence in third / first person). The
@@ -1787,14 +1826,7 @@ class TurnRunner:
                     # rare, and the LLM extractor catches the same
                     # turn anyway).
                     temporal_type="durable",
-                    # F16 (v30): an explicit ``[[remember:...]]`` tag is a
-                    # deliberate anchor, not a background inference -- Aiko
-                    # committed the claim on purpose, so it counts as stated
-                    # rather than something she pieced together. ``self``
-                    # notes about her own stance ride the same deliberate
-                    # path and never render the user-facing ``(inferred)``
-                    # hedge anyway.
-                    provenance="stated",
+                    provenance=admission.provenance,
                 )
             except Exception as exc:
                 log.debug("self-tagged memory insert failed: %s", exc)

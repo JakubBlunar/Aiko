@@ -103,6 +103,29 @@ def _build_runner(
 
 
 class ToolPassBudgetTests(unittest.TestCase):
+    def test_premise_pass_rejects_out_of_schema_action(self) -> None:
+        runner, _, registry = _build_runner(tool_calls=[_tool_call("move_to", call_id="bad")])
+        registry.to_ollama_tools.return_value = [{
+            "type": "function", "function": {"name": "recall", "parameters": {}},
+        }]
+        messages = [{"role": "user", "content": "Those lenses"}]
+        runner._maybe_run_tool_pass(
+            messages, stop_requested=None, allow={"recall"}, strict_allow=True, max_rounds=1,
+        )
+        registry.dispatch.assert_not_called()
+        self.assertEqual(messages[-1]["tool_call_id"], "bad")
+        self.assertIn("unavailable", messages[-1]["content"])
+
+    def test_premise_pass_never_widens_empty_subset(self) -> None:
+        runner, client, registry = _build_runner()
+        registry.to_ollama_tools.return_value = []
+        runner._maybe_run_tool_pass(
+            [{"role": "user", "content": "Those lenses"}],
+            stop_requested=None, allow=set(), strict_allow=True,
+        )
+        registry.to_ollama_tools.assert_called_once_with(allow=set())
+        client.chat_with_tools.assert_not_called()
+
     def test_tool_pass_num_predict_capped_at_512(self) -> None:
         # max_tokens=512 -> min(512, 512) == 512.
         runner, ollama, _ = _build_runner(max_tokens=512)

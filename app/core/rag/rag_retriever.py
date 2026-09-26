@@ -140,11 +140,11 @@ _MEMORY_PROVENANCE_PENALTY = 0.03
 # F16 (v30) — the memory kinds that carry the visible ``(inferred)``
 # suffix. Durable claims *about the user* only: a conclusion Aiko drew
 # about him should be voiced as an impression, not asserted as testimony.
-# ``self`` / ``self_tagged`` notes are her own stance (their own voice),
+# ``self`` notes are her own stance (their own voice),
 # and ``knowledge`` / ``curiosity_finding`` already carry ``(learned)`` /
 # ``(curiosity)`` hedges -- none of them ever render ``(inferred)``.
 _PROVENANCE_TAGGED_KINDS = frozenset(
-    {"fact", "preference", "relationship", "event"}
+    {"fact", "preference", "relationship", "event", "self_tagged"}
 )
 
 # H1 + K4 — per-hit boost for source rows that share the current

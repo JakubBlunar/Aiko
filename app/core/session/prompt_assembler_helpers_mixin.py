@@ -39,6 +39,16 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("app.prompt_assembler")
 
+_PROTECTED_HANDLING = {
+    "user_correction_block": "Honor the user's correction; do not repeat the superseded claim.",
+    "fact_reversal_block": "Own the correction and distinguish prior belief from new evidence.",
+    "rupture_block": "Address the immediate repair before adding an optional subject.",
+    "delivery_provenance_block": (
+        "Delivery receipts do not prove attention, understanding or agreement. "
+        "Unknown delivery is not permission to repeat everything."
+    ),
+}
+
 
 class PromptAssemblerHelpersMixin:
     """Config setters, persona loader, slice-cache machinery,
@@ -906,6 +916,7 @@ class PromptAssemblerHelpersMixin:
                 user_text,
                 context_window=context_window,
                 response_budget=response_budget,
+                preview=True,
             )
             system_parts = [
                 m
@@ -1112,6 +1123,35 @@ class PromptAssemblerHelpersMixin:
         self._persona_split_cache = (key, core, sections)
         return core, sections
 
+    def _essential_handling(self, local_vars: dict[str, Any]) -> dict[str, str]:
+        notes = dict(_PROTECTED_HANDLING)
+        notes.update({
+            policy.block: policy.essential_handling
+            for policy in CUE_POLICIES.values() if policy.essential_handling
+        })
+        return {name: text for name, text in notes.items() if local_vars.get(name)}
+
+    def _handling_bundle_omissions(self, local_vars: dict[str, Any]) -> set[str]:
+        from app.core.session.surfacing_attempt import current_attempt
+
+        budget = int(getattr(self, "_handling_notes_budget_chars", 5000))
+        if budget <= 0:
+            return set()
+        essential = self._essential_handling(local_vars)
+        used = sum(len(text) + 2 for name, text in essential.items() if name in _PROTECTED_HANDLING)
+        omitted = set()
+        for name, text in essential.items():
+            if name in _PROTECTED_HANDLING:
+                continue
+            if used + len(text) + 2 > budget:
+                omitted.add(name)
+                attempt = current_attempt.get()
+                if attempt is not None:
+                    attempt.declines[name] = "handling_budget"
+            else:
+                used += len(text) + 2
+        return omitted
+
     def _render_handling_notes(self, local_vars: dict[str, Any]) -> str:
         """Gather the handling notes for the blocks that rendered this turn.
 
@@ -1152,7 +1192,16 @@ class PromptAssemblerHelpersMixin:
             if note and note not in seen:
                 seen.add(note)
                 parts.append(note)
-        parts = self._fit_handling_notes(parts)
+        essential = list(dict.fromkeys(self._essential_handling(local_vars).values()))
+        if essential:
+            budget = int(getattr(self, "_handling_notes_budget_chars", 5000))
+            mandatory = "\n\n".join(essential)
+            if budget > 0:
+                while parts and len(mandatory) + 2 + len("\n\n".join(parts)) > budget:
+                    parts.remove(max(parts, key=len))
+            parts = [*essential, *parts]
+        else:
+            parts = self._fit_handling_notes(parts)
         if not parts:
             return ""
         # The lead-in does real work: these sections keep their persona

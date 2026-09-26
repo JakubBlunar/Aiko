@@ -61,6 +61,7 @@ class GateContext:
     last_turn_dispatched_tool: bool = False
     tasks_active: bool = False
     force: bool = False
+    recall_need: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +312,8 @@ def select_active_tool_names(
     registered tool whose family is in ``decision.matched ∪ core_families``
     (core always included).
     """
+    if decision.run and decision.reason == "premise_recall":
+        return {name for name in registered_tool_names if _TOOL_FAMILY.get(name) == "recall"}
     if not router_enabled or not decision.run:
         return None
     if not decision.reason.startswith("signal_"):
@@ -386,6 +389,8 @@ def should_run_tool_pass(
                     decision = GateDecision(
                         run=True, reason="generic_request",
                     )
+                elif context.recall_need and "recall" in families:
+                    decision = GateDecision(run=True, reason="premise_recall", matched=("recall",))
                 else:
                     decision = GateDecision(run=False, reason="no_signal")
 

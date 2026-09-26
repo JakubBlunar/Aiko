@@ -807,6 +807,16 @@ def _build_motion_grammar_addendum(motion_names: list[str]) -> str:
         "[[motion:X]] is a stage direction — never read the keyword aloud."
     )
 
+class ProviderTimings(dict[str, float]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.outcomes: dict[str, dict[str, str]] = {}
+
+    def record(self, name: str | None, state: str, error: str = "") -> None:
+        if name:
+            self.outcomes[name] = {"state": state, "error": error}
+
+
 def _safe_provider(
     provider: Callable[[], str] | None,
     *,
@@ -824,27 +834,26 @@ def _safe_provider(
     well-defined when the same name is somehow timed twice in a build,
     though that shouldn't happen with the current call sites.
     """
+    audit = timing_sink if isinstance(timing_sink, ProviderTimings) else None
     if provider is None:
+        if audit is not None:
+            audit.record(timing_name, "unwired")
         return ""
-    if timing_sink is not None and timing_name:
-        start = time.perf_counter()
-        try:
-            text = provider()
-        except Exception:
-            log.debug("inner-life provider raised", exc_info=True)
-            text = ""
-        finally:
-            elapsed_ms = (time.perf_counter() - start) * 1000.0
-            timing_sink[timing_name] = (
-                timing_sink.get(timing_name, 0.0) + elapsed_ms
-            )
-        return (text or "").strip()
+    start = time.perf_counter()
     try:
-        text = provider()
-    except Exception:
+        text = (provider() or "").strip()
+        if audit is not None:
+            audit.record(timing_name, "rendered" if text else "empty")
+        return text
+    except Exception as exc:
+        if audit is not None:
+            audit.record(timing_name, "error", type(exc).__name__)
         log.debug("inner-life provider raised", exc_info=True)
         return ""
-    return (text or "").strip()
+    finally:
+        if timing_sink is not None and timing_name:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            timing_sink[timing_name] = timing_sink.get(timing_name, 0.0) + elapsed_ms
 
 @contextmanager
 def _timed_phase(
@@ -970,6 +979,8 @@ class PromptTelemetry:
     # ``assemble_ms`` is the total wall time of ``assemble_with_budget``
     # so consumers can compute "everything else" by subtraction.
     provider_ms: dict[str, float] = field(default_factory=dict)
+    provider_outcomes: dict[str, dict[str, str]] = field(default_factory=dict)
+    surfacing_trace: list[dict[str, Any]] = field(default_factory=list)
     rag_lookup_ms: float = 0.0
     assemble_ms: float = 0.0
     # P31a: per-block *size* alongside per-block time, keyed by the same

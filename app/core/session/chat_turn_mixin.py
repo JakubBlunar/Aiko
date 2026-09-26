@@ -486,6 +486,7 @@ class ChatTurnMixin:
                 # describe, for the same reason the prompt itself is
                 # out-of-band -- too big for the per-turn WS broadcast.
                 "block_chars": dict(getattr(telemetry, "block_chars", {}) or {}),
+                "surfacing_trace": list(getattr(telemetry, "surfacing_trace", []) or []),
             }
         self._set_last_metrics(metrics)
 

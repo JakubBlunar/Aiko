@@ -90,6 +90,66 @@ class _Fixture(unittest.TestCase):
 
 
 class SurfacingTests(_Fixture):
+    def test_same_text_in_another_block_does_not_commit_omitted_cue(self) -> None:
+        from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
+
+        cue_id = self.store.add("interest_drift", "photography", "Shared wording")
+        attempt = SurfaceAttempt()
+        token = current_attempt.set(attempt)
+        try:
+            self.host.take_pool_cue("interest_drift")
+            attempt.finish("Shared wording", included_blocks={"persona": 14})
+        finally:
+            current_attempt.reset(token)
+        self.assertEqual(self._row(cue_id).surfaced_count, 0)
+
+    def test_feedback_binds_actual_expression_without_assuming_delivery(self) -> None:
+        cue_id = self._surface("knowledge_gap_notice", "photography")
+        self.host._settle_pool_cues(
+            user_text="hello", assistant_text="How does photography work?",
+            assistant_message_id=17,
+        )
+        row = self._row(cue_id)
+        self.assertEqual(row.payload["asked_message_id"], 17)
+        self.assertEqual(row.payload["asked_text"], "How does photography work?")
+        self.assertEqual(row.payload["feedback"][-1]["state"], "no_answer_yet")
+        self.host._settle_awaiting_cues(user_text="Photography uses light.", user_message_id=18)
+        row = self._row(cue_id)
+        self.assertEqual(row.payload["feedback"][-1]["state"], "answer_matched")
+        self.assertEqual(row.payload["feedback"][-1]["user_message_id"], 18)
+
+    def test_attempt_commits_only_final_inclusion_once(self) -> None:
+        from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
+
+        cue_id = self.store.add("interest_drift", "photography", "A new thought")
+        attempt = SurfaceAttempt()
+        token = current_attempt.set(attempt)
+        try:
+            self.host.take_pool_cue("interest_drift")
+            self.host.take_pool_cue("interest_drift")
+            self.assertEqual(self._row(cue_id).surfaced_count, 0)
+            attempt.finish("A new thought")
+            attempt.finish("A new thought")
+        finally:
+            current_attempt.reset(token)
+        self.assertEqual(self._row(cue_id).surfaced_count, 1)
+        self.assertEqual(len(self.host._surfaced_pool_cues), 1)
+
+    def test_retry_and_omission_leave_stock_unspent(self) -> None:
+        from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
+
+        cue_id = self.store.add("interest_drift", "photography", "A new thought")
+        for discarded in ("overflow_retry", "preview", ""):
+            attempt = SurfaceAttempt()
+            token = current_attempt.set(attempt)
+            try:
+                self.host.take_pool_cue("interest_drift")
+                attempt.finish("No selected cue", discarded=discarded)
+            finally:
+                current_attempt.reset(token)
+        self.assertEqual(self._row(cue_id).surfaced_count, 0)
+        self.assertEqual(self.host._surfaced_pool_cues, [])
+
     def test_quiet_mode_leaves_interest_successor_unclaimed(self) -> None:
         self.host.session_key = "main"
         self.host._settings = SimpleNamespace(agent=SimpleNamespace(live_quiet=True))

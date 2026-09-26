@@ -109,6 +109,7 @@ def build_report(session: "SessionController", *, top: int = 25) -> dict[str, An
         "by_tier": by_tier,
         "top_by_effective_cost": ranked,
         "silent_blocks": silent,
+        "surfacing_trace": snapshot.get("surfacing_trace", []),
         "reading_guide": (
             "effective_tokens = tokens x per-tier cache-miss weight, so a "
             "T6 block outranks an equally large T0 block. Trim the top of "

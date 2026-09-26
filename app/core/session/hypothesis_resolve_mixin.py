@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.infra import timephrase
+from app.core.session.answer_event import capture_answer_event, current_answer_event
 
 
 log = logging.getLogger("app.session")
@@ -62,6 +63,7 @@ def _hours_since(stamp: str | None) -> float | None:
 class HypothesisResolveMixin:
     """Ask-then-learn resolver plus the H44 ambient second confirm."""
 
+    @capture_answer_event
     def _resolve_concept_hypotheses(self, *, user_text: str) -> None:
         """L30c: settle every hunch Aiko asked about, before stage B runs.
 
@@ -119,6 +121,15 @@ class HypothesisResolveMixin:
         )
         question, question_vec = self._hypothesis_question_echo()
         for row in rows:
+            event = current_answer_event.get() or {}
+            asked_session = row.payload.get("asked_session_id")
+            if asked_session and asked_session != event.get("session_id"):
+                continue
+            delivery = {"status": "unknown"}
+            ledger_provider = getattr(self, "delivery_ledger", None)
+            if ledger_provider is not None:
+                delivery = ledger_provider().evidence_for(row.payload.get("asked_message_id"))
+            actual_question = str(row.payload.get("asked_text") or question)
             belief = str(row.payload.get("label") or "") or row.subject
             verdict = adjudicate(
                 belief=belief,
@@ -128,16 +139,31 @@ class HypothesisResolveMixin:
                 belief_vec=row.embedding,
                 reply_vec=reply_vec,
                 min_cosine=min_cosine,
-                question=question,
-                question_vec=question_vec,
+                question=actual_question,
+                question_vec=question_vec if actual_question == question else None,
                 cancel_event=getattr(self, "_fact_check_cancel", None),
             )
             if verdict.verdict == UNCLEAR:
+                stage = (
+                    "unrelated_answer" if verdict.reason == "off_subject"
+                    else "adjudicator_failure" if verdict.reason in {"no_client", "unparsed"}
+                    else "no_accepted_answer"
+                )
+                store.record_feedback(
+                    row.id, stage, **event, reason=verdict.reason[:80], delivery=delivery,
+                )
                 self._release_unanswered_hypothesis(
                     store, row, verdict.reason,
                 )
                 continue
-            self._write_hypothesis_answer(row, belief, verdict, body)
+            store.record_feedback(
+                row.id, "accepted_answer", **event, verdict=verdict.verdict, delivery=delivery,
+            )
+            applied = self._write_hypothesis_answer(row, belief, verdict, body)
+            store.record_feedback(
+                row.id, "update_applied" if applied else "update_not_applied", **event,
+                target_id=row.payload.get("target_id"), target_type=row.payload.get("target_type"),
+            )
             self._mark_cue_used(
                 store, row, evidence=f"adjudicated/{verdict.verdict}",
             )
@@ -235,6 +261,7 @@ class HypothesisResolveMixin:
             reason,
         )
 
+    @capture_answer_event
     def _listen_supported_hypotheses(self, *, user_text: str) -> None:
         """H44: a second confirmation that is not a second ask.
 
@@ -323,7 +350,7 @@ class HypothesisResolveMixin:
 
     def _write_hypothesis_answer(
         self, row: Any, belief: str, verdict: Any, user_text: str,
-    ) -> None:
+    ) -> bool:
         """Store the answer as a memory, then apply it to the target.
 
         ``target_type`` in the cue payload is what routes this: Phase A's
@@ -345,13 +372,12 @@ class HypothesisResolveMixin:
                 target_type,
                 target_id,
             )
-            return
+            return False
         memory_id = self._store_hypothesis_answer(
             belief, user_text, confirming=verdict.verdict == CONFIRM,
         )
         if target_type == "hypothesis":
-            self._apply_invented_answer(target, verdict, memory_id, user_text)
-            return
+            return self._apply_invented_answer(target, verdict, memory_id, user_text)
 
         concept_store = getattr(self, "_concept_store", None)
         apply_verdict(
@@ -369,6 +395,7 @@ class HypothesisResolveMixin:
             event_store=getattr(self, "_concept_event_store", None),
             reason=str(getattr(verdict, "reason", "") or ""),
         )
+        return True
 
     def _hypothesis_target(self, target_type: str, target_id: int) -> Any:
         """The concept or hypothesis row a cue points at, or ``None``."""
@@ -390,7 +417,7 @@ class HypothesisResolveMixin:
 
     def _apply_invented_answer(
         self, row: Any, verdict: Any, memory_id: int | None, user_text: str,
-    ) -> None:
+    ) -> bool:
         """The Phase B half: credence, then a graduation check."""
         from app.core.concepts.hypothesis_graduation import graduate, is_ready
         from app.core.concepts.hypothesis_resolution import (
@@ -399,7 +426,7 @@ class HypothesisResolveMixin:
 
         store = getattr(self, "_hypothesis_store", None)
         if store is None:
-            return
+            return False
         scored = getattr(self, "_hypothesis_scored_ids", None)
         if scored is None:
             scored = set()
@@ -411,7 +438,7 @@ class HypothesisResolveMixin:
         concept_store = getattr(self, "_concept_store", None)
         embedder = getattr(self, "_embedder", None)
         mem = self._memory_settings
-        apply_hypothesis_verdict(
+        result = apply_hypothesis_verdict(
             store=store,
             row=row,
             verdict=verdict.verdict,
@@ -422,9 +449,12 @@ class HypothesisResolveMixin:
             concept_store=concept_store,
             embed=(None if embedder is None else embedder.embed),
             correction_text=user_text,
+            observed_at=(current_answer_event.get() or {}).get("observed_at"),
         )
+        if result is None:
+            return False
         if concept_store is None:
-            return
+            return True
         if not is_ready(
             row,
             min_support=int(
@@ -434,7 +464,7 @@ class HypothesisResolveMixin:
                 getattr(mem, "hypothesis_graduate_min_credence", 0.7)
             ),
         ):
-            return
+            return True
         graduate(
             hypothesis_store=store,
             concept_store=concept_store,
@@ -443,6 +473,7 @@ class HypothesisResolveMixin:
             memory_writer=self._anchor_world_hypothesis,
             memory_exists=self._answer_memory_exists,
         )
+        return True
 
     def _answer_memory_exists(self, memory_id: int) -> bool:
         """Is a remembered answer still there to be cited as evidence?"""
@@ -494,6 +525,7 @@ class HypothesisResolveMixin:
             return None
         lead = "confirmed" if confirming else "responded to"
         content = f"Asked about \"{belief}\" -- they {lead}: {body}"[:1000]
+        event = current_answer_event.get() or {}
         try:
             memory = memory_store.add(
                 content=content,
@@ -502,7 +534,10 @@ class HypothesisResolveMixin:
                 salience=0.65,
                 confidence=0.85,
                 tier="long_term",
-                source_session=getattr(self, "session_key", None),
+                source_session=event.get("session_id", getattr(self, "session_key", None)),
+                source_message_id=event.get("user_message_id"),
+                metadata={"answer_event": event},
+                event_time=event.get("observed_at"),
             )
         except Exception:
             log.warning("hypothesis answer memory write failed", exc_info=True)

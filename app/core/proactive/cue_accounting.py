@@ -189,6 +189,11 @@ def note_decline(session: Any, cue: str, reason: str) -> None:
     an assembly.
     """
     try:
+        from app.core.session.surfacing_attempt import current_attempt
+
+        attempt = current_attempt.get()
+        if attempt is not None:
+            attempt.declines.setdefault(str(cue), str(reason))
         notes = getattr(session, _PROVIDER_REASONS, None)
         if notes is None:
             notes = {}
@@ -546,6 +551,7 @@ class CuePolicy:
     # silent near-miss here would drop the note without any error.
     handling_section: str = ""
     block: str = ""
+    essential_handling: str = ""
 
 
 CUE_POLICIES: dict[str, CuePolicy] = {
@@ -572,6 +578,10 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             ttl_hours=168.0,
             handling_section="When your interests shift over time:",
             block="interest_drift_block",
+            essential_handling=(
+                "Interest drift is an optional personal impression, not user testimony or "
+                "permission to change activities. Stay with an owed answer; silence is valid."
+            ),
         ),
         # ── off-topic by construction: a high cosine means she pivoted
         CuePolicy(
@@ -584,6 +594,10 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             ttl_hours=72.0,
             handling_section="When your mind wanders and connects two things:",
             block="associative_wander_block",
+            essential_handling=(
+                "An association is an optional connection, not an established fact or a task "
+                "request. Do not invent shared experience or displace an owed answer."
+            ),
         ),
         CuePolicy(
             "dormant_interest",

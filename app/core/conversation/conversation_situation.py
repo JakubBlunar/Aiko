@@ -102,6 +102,7 @@ class ConversationWorkingSet:
     facts: tuple[EvidenceNote, ...] = ()
     interpretation: EvidenceNote | None = None
     unresolved: EvidenceNote | None = None
+    recall_needed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +146,7 @@ def _parse_working_set(
                 note(payload["interpretation"]) if payload.get("interpretation") else None
             ),
             unresolved=note(payload["unresolved"]) if payload.get("unresolved") else None,
+            recall_needed=payload.get("recall_needed") is True and bool(payload.get("unresolved")),
         )
     except (TypeError, ValueError):
         return None

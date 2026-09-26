@@ -459,6 +459,19 @@ class CueStore:
             (STATE_EXPIRED, str(evidence or "")),
         )
 
+    def record_feedback(self, cue_id: int, state: str, **references: Any) -> bool:
+        row = self.get(cue_id)
+        if row is None:
+            return False
+        allowed = {
+            "session_id", "user_message_id", "assistant_message_id", "observed_at",
+            "verdict", "delivery", "reason", "target_id", "target_type",
+        }
+        entry = {key: value for key, value in references.items() if key in allowed}
+        entry.update(state=state, recorded_at=_stamp(None))
+        history = list(row.payload.get("feedback") or [])[-7:]
+        return self.patch_payload(cue_id, {"feedback": [*history, entry]})
+
     def patch_payload(self, cue_id: int, updates: dict[str, Any]) -> bool:
         """Merge ``updates`` into the row's JSON payload.
 

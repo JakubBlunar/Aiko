@@ -51,11 +51,13 @@ from app.core.session.prompt_support import (
     _safe_provider,
     _timed_phase,
     PromptTelemetry,
+    ProviderTimings,
     _StaticSlices,
 )
 from app.core.session.prompt_assembler_helpers_mixin import (
     PromptAssemblerHelpersMixin,
 )
+from app.core.session.surfacing_attempt import trace_assembly
 
 log = logging.getLogger("app.prompt_assembler")
 
@@ -1393,6 +1395,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         )
         return messages
 
+    @trace_assembly
     def assemble_with_budget(
         self,
         session_key: str,
@@ -1415,7 +1418,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # the end so MCP / get_last_response_detail can attribute "this
         # turn was slow because of <provider>" without a custom log
         # dive.
-        provider_ms: dict[str, float] = {}
+        provider_ms = ProviderTimings()
         rag_lookup_ms = 0.0
         assemble_started_at = time.perf_counter()
         # P22: new assembly -> invalidate the providers' shared
@@ -1771,16 +1774,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # dropped in aggressive mode.
         associative_wander_block = ""
         if not aggressive and self._associative_wander_provider is not None:
-            with _timed_phase(provider_ms, "associative_wander"):
-                try:
-                    associative_wander_block = (
-                        self._associative_wander_provider(user_text) or ""
-                    )
-                except Exception:
-                    log.debug(
-                        "associative wander provider raised", exc_info=True
-                    )
-                    associative_wander_block = ""
+            associative_wander_block = _safe_provider(
+                lambda: self._associative_wander_provider(user_text),
+                timing_sink=provider_ms, timing_name="associative_wander",
+            )
+        else:
+            provider_ms.record("associative_wander", "aggressive" if aggressive else "unwired")
 
         # K63: long-arc callback — surface a rare "weeks ago you said ..."
         # reach to an old topically-linked memory. Query-aware, dropped in
@@ -1803,16 +1802,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # on a drifting topic. Query-aware, dropped in aggressive mode.
         interest_drift_block = ""
         if not aggressive and self._interest_drift_provider is not None:
-            with _timed_phase(provider_ms, "interest_drift"):
-                try:
-                    interest_drift_block = (
-                        self._interest_drift_provider(user_text) or ""
-                    )
-                except Exception:
-                    log.debug(
-                        "interest drift provider raised", exc_info=True
-                    )
-                    interest_drift_block = ""
+            interest_drift_block = _safe_provider(
+                lambda: self._interest_drift_provider(user_text),
+                timing_sink=provider_ms, timing_name="interest_drift",
+            )
+        else:
+            provider_ms.record("interest_drift", "aggressive" if aggressive else "unwired")
 
         # K64c: curiosity gradient — surface a "I keep brushing past X, I'm
         # curious" cue when the live turn is on a familiar topic with an
@@ -3824,6 +3819,25 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # Present-tense steer, not a fake user line. Lands before
             # handling notes so K92 sees INITIATE already has a provider.
             system_parts.append(live_talk_about_block)
+        if self._stance_admission_provider is not None:
+            offered = frozenset(name for name, text in _resolve_blocks(locals()) if text)
+            for block_name, block_text in (
+                ("interest_drift_block", interest_drift_block),
+                ("associative_wander_block", associative_wander_block),
+            ):
+                if not block_text:
+                    continue
+                try:
+                    admitted = self._stance_admission_provider(offered, user_text or "", block_name)
+                except Exception:
+                    admitted = False
+                if not admitted:
+                    system_parts = ["" if part == block_text else part for part in system_parts]
+                    if block_name == "interest_drift_block":
+                        interest_drift_block = ""
+                    else:
+                        associative_wander_block = ""
+
         # K92 phase 3: check whether ASK can win before the seed provider
         # marks one or two pool rows surfaced. Keep its place in the prompt
         # by filling the slot reserved in the "things on Aiko's mind" cluster.
@@ -3849,6 +3863,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # registers -- the same resolution ``block_char_table`` uses, so
         # adding a hoisted block needs no edit here. Must stay below every
         # block that can claim a handling note.
+        handling_omissions = self._handling_bundle_omissions(locals())
+        if "interest_drift_block" in handling_omissions:
+            system_parts = [part for part in system_parts if part != interest_drift_block]
+            interest_drift_block = ""
+        if "associative_wander_block" in handling_omissions:
+            system_parts = [part for part in system_parts if part != associative_wander_block]
+            associative_wander_block = ""
         handling_notes_block = self._render_handling_notes(locals())
         if handling_notes_block:
             # The persona's handling notes for the blocks that actually
@@ -4093,6 +4114,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # log readability but the dict only contains entries for
             # providers that actually ran this build.
             provider_ms={k: round(v, 2) for k, v in provider_ms.items()},
+            provider_outcomes=dict(provider_ms.outcomes),
             # P31a: per-block character cost. Read off this frame's locals
             # by the names the tier ladder registers -- see
             # ``block_char_table``. One dict snapshot per assembly.

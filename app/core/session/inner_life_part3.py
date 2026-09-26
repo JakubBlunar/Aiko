@@ -1768,12 +1768,15 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
     ) -> bool:
         """Check a pool cue before its renderer spends a surfacing."""
         agent = self._settings.agent
+        cue_type = (
+            "curiosity_seed" if block == "curiosity_seeds_block" else block.removesuffix("_block")
+        )
         if not bool(getattr(agent, "stance_phase3_enabled", True)):
             return True
         if "wants_block" in offered and getattr(
             self, "_pending_want_imperative", None
         ) is not None:
-            note_decline(self, "curiosity_seed", f"{REASON_LOST_PRIORITY}:stance")
+            note_decline(self, cue_type, f"{REASON_LOST_PRIORITY}:stance")
             return False
         try:
             from app.core.conversation import stance as _stance
@@ -1785,7 +1788,7 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 ),
             )
             if not admitted:
-                note_decline(self, "curiosity_seed", f"{REASON_LOST_PRIORITY}:stance")
+                note_decline(self, cue_type, f"{REASON_LOST_PRIORITY}:stance")
             return admitted
         except Exception:
             log.debug("stance admission failed", exc_info=True)
@@ -1815,6 +1818,11 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 ),
             )
             self._last_stance_decision = decision
+            from app.core.session.surfacing_attempt import current_attempt
+
+            attempt = current_attempt.get()
+            if attempt is not None:
+                attempt.decision = {"stance": decision.stance, "reason": decision.reason}
             block = _stance.render_block(
                 decision, user_display_name=self.user_display_name,
             )

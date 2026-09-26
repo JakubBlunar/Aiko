@@ -223,10 +223,26 @@ class CuePoolMixin:
                 blocked,
             )
             return None
-        try:
-            store.mark_surfaced(row.id)
-        except Exception:
-            log.debug("cue mark_surfaced failed: id=%s", row.id, exc_info=True)
+        from app.core.session.surfacing_attempt import current_attempt
+
+        def commit_claim():
+            if store.available(row.id) is None:
+                raise ValueError("cue_unavailable")
+            if not store.mark_surfaced(row.id):
+                raise RuntimeError("cue_claim_failed")
+            self._register_surfaced_cue(row)
+
+        attempt = current_attempt.get()
+        if attempt is not None:
+            policy = self._policy_for(cue_type)
+            attempt.stage(
+                self, row, commit_claim,
+                block=(
+                    "live_talk_about_block" if cue_id is not None else getattr(policy, "block", "")
+                ),
+            )
+        else:
+            commit_claim()
         if pick.admitted > 1 or pick.arm == topic_match.ARM_COSINE:
             # Only when the choice was real. Logged because H43's whole
             # claim is that picking among nominal matches on relevance
@@ -242,7 +258,6 @@ class CuePoolMixin:
                 pick.considered,
                 row.subject[:60],
             )
-        self._register_surfaced_cue(row)
         # K-time10. The note goes on a copy: the registered row is what
         # post-turn accounting judges, and it should see the cue exactly
         # as its producer wrote it rather than with our parenthetical
@@ -396,6 +411,7 @@ class CuePoolMixin:
         assistant_text: str,
         reply_vec: Any = None,
         turn_vec: Any = None,
+        assistant_message_id: int | None = None,
     ) -> None:
         """Judge every cue that reached this turn's prompt.
 
@@ -434,6 +450,9 @@ class CuePoolMixin:
             evidence = self._verdict_evidence(verdict)
             if not verdict.echoed:
                 if was_surfaced:
+                    store.record_feedback(
+                        row.id, "not_expressed", assistant_message_id=assistant_message_id,
+                    )
                     self._retire_or_retry(
                         store, row, policy, evidence=evidence,
                     )
@@ -442,6 +461,15 @@ class CuePoolMixin:
                 # She raised it. Whether that was worth anything depends on
                 # what the user says next -- stage B.
                 store.mark_asked(row.id, now=now)
+                store.patch_payload(row.id, {
+                    "asked_message_id": assistant_message_id,
+                    "asked_session_id": getattr(self, "session_key", None),
+                    "asked_text": assistant_text[:1000],
+                })
+                store.record_feedback(
+                    row.id, "no_answer_yet", assistant_message_id=assistant_message_id,
+                    observed_at=now.isoformat(),
+                )
                 self._stamp_hypothesis_ask(row)
                 log.info(
                     "cue asked: type=%s subject=%r via=%s",
@@ -605,7 +633,7 @@ class CuePoolMixin:
 
     # ── consumption, stage B: did the user answer? ────────────────────
 
-    def _settle_awaiting_cues(self, *, user_text: str) -> None:
+    def _settle_awaiting_cues(self, *, user_text: str, user_message_id: int | None = None) -> None:
         """Settle questions Aiko asked on an earlier turn.
 
         The same two-clock shape
@@ -629,6 +657,9 @@ class CuePoolMixin:
         user_vec = self._user_vec_for(rows, user_text)
         now = timephrase.utcnow()
         for row in rows:
+            asked_session = row.payload.get("asked_session_id")
+            if asked_session and asked_session != getattr(self, "session_key", None):
+                continue
             if row.cue_type == "concept_hypothesis":
                 # H7: the hypothesis resolver owns this type for the whole
                 # awaiting life, including an off-subject hold. Stage B
@@ -639,6 +670,10 @@ class CuePoolMixin:
                 continue
             verdict = self._match_cue(
                 row, policy, tokens=user_tokens, text_vec=user_vec,
+            )
+            store.record_feedback(
+                row.id, "answer_matched" if verdict.echoed else "unrelated_answer",
+                user_message_id=user_message_id, observed_at=now.isoformat(),
             )
             if verdict.echoed:
                 self._mark_cue_used(

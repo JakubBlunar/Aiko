@@ -57,6 +57,7 @@ from app.llm.chat_client import content_looks_complete
 from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
 from app.core.infra import timephrase
+from app.core.memory.memory_admission import admit_memory
 
 
 log = logging.getLogger("app.memory_extractor")
@@ -192,6 +193,13 @@ def _build_system_prompt(
         "  'self' notes are always 'inferred'.\n"
         "\n"
         "Rules:\n"
+        "- Every candidate must include evidence: a list of at most four objects with "
+        "message_id and an exact quote from that source line. Cite only NEW turns. "
+        "User memories require user evidence; self notes require assistant evidence.\n"
+        "- Set destination to memory for durable retention or working for a temporary "
+        "question/premise. Working context is not a durable memory.\n"
+        "- For an explicit correction only, supersedes_memory_id may name the existing "
+        "memory being corrected. Otherwise leave it null; a difference is not a correction.\n"
         "- Skip throwaway chitchat, single-turn moods, weather, jokes that are "
         "  not recurring.\n"
         "- Skip anything already in the existing memory list.\n"
@@ -223,7 +231,8 @@ def _build_system_prompt(
         "\n"
         'Reply with JSON only, exactly: {"memories": [{"content": "...", '
         '"kind": "...", "salience": 0.5, "temporal_type": "...", '
-        '"provenance": "...", "event_time": "ISO-8601 or null"}]}'
+        '"provenance": "...", "event_time": "ISO-8601 or null", '
+        '"destination": "memory", "evidence": [{"message_id": 1, "quote": "..."}]}]}'
     )
 
 
@@ -440,14 +449,13 @@ class MemoryExtractor:
         except (TypeError, ValueError):
             return None
 
-    def _write_watermark(self, session_key: str, message_id: int) -> None:
+    def _write_watermark(self, session_key: str, message_id: int) -> bool:
         try:
             self._db.kv_set(self._watermark_key(session_key), str(int(message_id)))
+            return True
         except Exception:
-            # A lost write costs one duplicate batch on the next run, which
-            # the existing-memories block and the restatement gate absorb.
-            # Never worth failing an otherwise good extraction over.
             log.warning("extractor watermark write failed", exc_info=True)
+            return False
 
     def _select_window(
         self, session_key: str,
@@ -492,6 +500,10 @@ class MemoryExtractor:
     # ── work ──────────────────────────────────────────────────────────────
 
     def _do_extract(self, session_key: str) -> int:
+        pending_key = f"memory.extractor.pending:{session_key}"
+        pending = self._db.kv_get(pending_key)
+        if pending:
+            return self._apply_batch(session_key, json.loads(pending))
         window = self._select_window(session_key)
         if window is None:
             return 0
@@ -578,13 +590,9 @@ class MemoryExtractor:
         log.debug("extractor raw response: %r", (content or "")[:1000])
 
         candidates, understood = self._parse_answer(content)
-        if understood:
-            # The model read these turns and gave an answer we could act on,
-            # so they are mined -- including when the answer was "nothing
-            # here", which is a verdict and not a failure. An unparseable
-            # answer is the one case that leaves the watermark alone.
-            self._write_watermark(session_key, rows[-1].id)
         if not candidates:
+            if understood:
+                self._write_watermark(session_key, rows[-1].id)
             # Distinguish "model returned an empty array" (genuinely nothing
             # durable — common on casual/short transcripts) from "model
             # emitted output we couldn't turn into candidates" (wrong shape,
@@ -606,14 +614,36 @@ class MemoryExtractor:
         if len(candidates) > self._max_new_per_run:
             candidates = candidates[: self._max_new_per_run]
 
-        inserted = 0
+        admitted = []
         for cand in candidates:
+            admission = admit_memory(
+                cand, rows, session_key=session_key, writer="extractor",
+                proposal_message_id=rows[-1].id,
+            )
+            if not admission.accepted:
+                continue
+            admitted.append({
+                **cand, "provenance": admission.provenance,
+                "source_message_id": admission.source_message_id,
+                "metadata": admission.metadata,
+            })
+        batch = {"through": rows[-1].id, "created_at": now.isoformat(), "candidates": admitted}
+        self._db.kv_set(pending_key, json.dumps(batch))
+        return self._apply_batch(session_key, batch)
+
+    def _apply_batch(self, session_key: str, batch: dict) -> int:
+        pending_key = f"memory.extractor.pending:{session_key}"
+        now = _parse_iso(batch["created_at"]) or timephrase.utcnow()
+        inserted = 0
+        for cand in batch["candidates"]:
+            if cand.get("applied"):
+                continue
             content_text = cand["content"]
             try:
                 emb = self._embedder.embed(content_text)
             except Exception as exc:
                 log.debug("embed failed for memory candidate: %s", exc)
-                continue
+                return inserted
             # v10: derive ``relevance_until`` server-side from the
             # candidate's ``temporal_type``. The LLM only needs to
             # classify the memory; we own the freshness window so a
@@ -631,7 +661,8 @@ class MemoryExtractor:
                 embedding=emb,
                 salience=cand["salience"],
                 source_session=session_key,
-                source_message_id=None,
+                source_message_id=cand.get("source_message_id"),
+                metadata=cand.get("metadata"),
                 # Schema v8: LLM-distilled observations are speculative.
                 # Land them in scratchpad so the promotion worker can
                 # either confirm them via retrieval / revival or sweep
@@ -648,11 +679,11 @@ class MemoryExtractor:
             if memory is not None:
                 inserted += 1
                 self._notify(memory)
-
-        log.info(
-            "extractor: %d new memories inserted (%d candidates, %.0f ms)",
-            inserted, len(candidates), (time.monotonic() - t0) * 1000.0,
-        )
+            cand["applied"] = True
+            self._db.kv_set(pending_key, json.dumps(batch))
+        if self._write_watermark(session_key, batch["through"]):
+            self._db.kv_set(pending_key, "")
+        log.info("extractor: %d new memories inserted", inserted)
         return inserted
 
     def _format_transcript(self, rows: list[MessageRow]) -> str:
@@ -662,8 +693,11 @@ class MemoryExtractor:
         # values; without per-line stamps the model was being asked to do
         # that arithmetic with only one of the two operands.
         user_name = resolve_user_name(self._user_display_name_provider)
-        return timephrase.format_transcript(
-            rows, role_labels=speaker_labels(user_name),
+        return "\n".join(
+            f"[message_id={row.id}] " + timephrase.format_transcript(
+                [row], role_labels=speaker_labels(user_name),
+            )
+            for row in rows
         )
 
     def _format_existing(self) -> str:
@@ -801,6 +835,9 @@ class MemoryExtractor:
                     "temporal_type": temporal_type,
                     "provenance": provenance,
                     "event_time": event_time,
+                    "evidence": entry.get("evidence"),
+                    "destination": entry.get("destination", "memory"),
+                    "supersedes_memory_id": entry.get("supersedes_memory_id"),
                 }
             )
         return out

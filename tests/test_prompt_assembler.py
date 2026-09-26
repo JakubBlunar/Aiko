@@ -28,6 +28,92 @@ from app.core.session.prompt_assembler import (
 from app.core.session.prompt_support import _SPEECH_GRAMMAR_ADDENDUM
 
 
+class ProviderOutcomeTests(unittest.TestCase):
+    def test_pooled_share_choice_and_preview_are_not_consumption(self) -> None:
+        from app.core.proactive.cue_store import CueStore
+        from app.core.session.cue_pool_mixin import CuePoolMixin
+
+        with _TempDb() as db:
+            store = CueStore(db)
+
+            class Host(CuePoolMixin):
+                _cue_store = store
+
+            host = Host()
+            drift = store.add("interest_drift", "lenses", "Interest observation")
+            wander = store.add("associative_wander", "lenses", "Associative observation")
+            assembler = _make_assembler(db, persona_text="Persona.")
+            assembler.set_inner_life_providers(
+                interest_drift=lambda text: host.take_pool_cue("interest_drift").text,
+                associative_wander=lambda text: host.take_pool_cue("associative_wander").text,
+                stance_admission=lambda offered, text, block: block == "associative_wander_block",
+            )
+            for preview in (True, False):
+                _, telemetry = assembler.assemble_with_budget(
+                    "s1", "lenses", context_window=32000, response_budget=512, preview=preview,
+                )
+                self.assertNotIn("Interest observation", telemetry.system_prompt)
+                self.assertIn("Associative observation", telemetry.system_prompt)
+                self.assertEqual(store.get(drift).surfaced_count, 0)
+                self.assertEqual(store.get(wander).surfaced_count, 0 if preview else 1)
+
+    def test_essential_repair_survives_while_optional_bundle_drops(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="Persona.")
+            assembler._handling_notes_budget_chars = 100
+            assembler.set_inner_life_providers(
+                user_correction=lambda: "Corrected fact",
+                interest_drift=lambda text: "An optional thought",
+            )
+            _, telemetry = assembler.assemble_with_budget(
+                "s1", "hello", context_window=32000, response_budget=512,
+            )
+            self.assertIn("Corrected fact", telemetry.system_prompt)
+            self.assertIn("Honor the user's correction", telemetry.system_prompt)
+            self.assertNotIn("An optional thought", telemetry.system_prompt)
+            self.assertEqual(
+                telemetry.surfacing_trace[-1]["declines"]["interest_drift_block"],
+                "handling_budget",
+            )
+
+    def test_assembly_keeps_provider_error_category(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="Persona.")
+
+            def broken():
+                raise RuntimeError("private text")
+
+            assembler.set_inner_life_providers(vocal_tone=broken)
+            _, telemetry = assembler.assemble_with_budget(
+                "s1", "hello", context_window=32000, response_budget=512,
+            )
+            self.assertEqual(
+                telemetry.provider_outcomes["vocal_tone"],
+                {"state": "error", "error": "RuntimeError"},
+            )
+
+    def test_empty_error_and_unwired_are_distinct_without_content(self) -> None:
+        from app.core.session.prompt_support import ProviderTimings, _safe_provider
+
+        timings = ProviderTimings()
+
+        def broken():
+            raise ValueError("private source text")
+
+        self.assertEqual(_safe_provider(None, timing_sink=timings, timing_name="missing"), "")
+        self.assertEqual(_safe_provider(lambda: "  ", timing_sink=timings, timing_name="empty"), "")
+        self.assertEqual(_safe_provider(broken, timing_sink=timings, timing_name="broken"), "")
+        self.assertEqual(
+            _safe_provider(lambda: " cue ", timing_sink=timings, timing_name="good"), "cue",
+        )
+        self.assertEqual(timings.outcomes["missing"]["state"], "unwired")
+        self.assertEqual(timings.outcomes["empty"]["state"], "empty")
+        self.assertEqual(timings.outcomes["good"]["state"], "rendered")
+        self.assertEqual(timings.outcomes["broken"], {"state": "error", "error": "ValueError"})
+        self.assertNotIn("private", str(timings.outcomes))
+        self.assertGreaterEqual(timings["broken"], 0)
+
+
 class _TempDb:
     """Context manager that yields a fresh ChatDatabase under a tmpdir.
 

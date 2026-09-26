@@ -117,6 +117,8 @@ on top of already-shipped infrastructure. Where an entry is half shipped
 | K97 | A small causal working set for the current thread | Implementation shipped; behavioral comparison open |
 | K98 | Continue an interest after a good answer | Implementation shipped; behavioral comparison open |
 | K99 | Common ground with delivery provenance | Implementation shipped; behavioral comparison open |
+| K100 | Evidence-bound memory admission | Two-writer pilot implemented; broader entailment and behavioral evaluation open |
+| K101 | Route an unresolved premise to a bounded next step | Strict read-only recall pilot implemented; broader routing/evaluation open |
 
 ---
 
@@ -676,6 +678,15 @@ committing only the chosen provider. Historical stance replay only has block
 presence, so distinguishing soft from imperative wants also needs durable
 offer metadata before it can be made replayable.
 
+**27 Sep surfacing follow-up.** The complete
+[prompt-surfacing reference](../prompt-surfacing.md#s2-collect-choose-render-then-commit)
+pins the next step: a non-mutating candidate pass, final selection and budgeting,
+then a claim tied to the final assembly attempt. Test forced aggressive
+reassembly and aborted/preview assembly before converting more providers.
+The chosen optional move must replace competing imperatives without suppressing
+owed answers, repairs or task results. Stance telemetry alone is insufficient:
+current stance prose renders only for `FOLLOW`, brevity and sequencing.
+
 ---
 
 ## K93. The substance floor — what she takes to the floor, not whether she takes it
@@ -1056,3 +1067,115 @@ statement was discussed nor repeat a fully acknowledged explanation.
 Keep persistence bounded and local; never store raw audio for this.
 Establish a real continuity benefit before adding proposition-level common
 ground. Related: Live Pass 8, K17, K62, F16, and T5 multi-turn evaluation.
+
+## K100. Evidence-bound memory admission
+
+**Status: initial two-writer pilot implemented; expansion remains open.**
+Plain tags and batch extraction share evidence admission; explicit source IDs,
+speaker validation and conservative literal support separate testimony from
+provisional inference. Batch checkpoints and admission keys protect partial
+retries. RAG labels inferred plain tags; explicit supported corrections retain
+lineage without deleting old rows. No additional per-turn model call or legacy
+reclassification. Full paraphrase entailment and measured retention quality
+remain open. See [the current implementation map](../prompt-surfacing.md#what-to-memorize).
+
+Separate choosing to remember from
+claiming that the user stated something. F16 already stores `stated` versus
+`inferred`; this extends its write contract rather than creating a new memory
+system. K97 already provides a home for temporary working understanding.
+
+**Pre-implementation friction (historical).**
+[TurnRunner._extract_self_tagged_memories](../../app/core/session/turn_runner.py)
+writes plain remember tags as long-term, durable `self_tagged` memories with
+`provenance="stated"`, citing the assistant message. The model's deliberate
+annotation is not itself user testimony.
+[MemoryExtractor](../../app/core/memory/memory_extractor.py) distinguishes
+testimony from inference but inserts with `source_message_id=None`. Its
+watermark advances after readable parsing, before embedding/application.
+
+The [27 Sep audit](../prompt-surfacing.md#evidence-from-the-running-installation)
+found 12 scalar source-message links among 1,044 surviving memory rows created
+in the previous 14 days. All 9 plain self-tagged rows in that cohort were
+long-term `stated` rows citing assistant messages. This is lineage coverage,
+not a false-memory rate: metadata, task evidence and source sessions were not
+audited as complete provenance, and no personal memory content is reproduced.
+
+**Smallest experiment.** Start with these two writers. Represent a proposed
+memory with subject, candidate text, source speaker, cited message IDs,
+temporal scope and destination intent. Resolve IDs against the actual
+session/turn and reject invented or wrong-speaker evidence. Explicitly
+supported user claims can be `stated`; inferred claims remain inferred and
+provisional; temporary premises remain in K97; intentional self-notes remain
+self-notes. No memory is a valid result. A correction updates/supersedes the
+old claim with lineage instead of counting it as reinforcement.
+
+Keep `MemoryStore.add` as the write owner and reuse its dedupe, temporal and
+mirror behavior. Preserve the existing tag interface through an adapter rather
+than requiring a new always-on prompt manual. Exact quote matching alone is
+not a sufficient entailment test for paraphrases; test a narrow validator or
+off-turn adjudication against negation and speaker confusion. Never infer
+testimony from a missing link or mass-reclassify legacy rows automatically.
+
+**Acceptance.** Synthetic cases: user statement; assistant speculation about
+the user; self-disclosure; explicit correction; dated temporary plan; duplicate
+extraction; invented evidence ID; session switch; partial embed/write failure.
+Measure correct attribution, useful retention, false durable writes and
+correction lineage separately. Readable-empty extraction still advances;
+retrying a partly applied batch neither loses accepted candidates nor duplicates
+them. Replay against isolated state and compare with the current writers before
+expanding to other workers. No extra synchronous LLM call on every chat turn.
+
+**Priority:** high. **Effort:** medium. **Related:** F16, F13, H31, K97,
+K99 and [S3](../prompt-surfacing.md#s3-evidence-bound-remembering).
+
+## K101. Route an unresolved premise to a bounded next step
+
+**Status: bounded recall pilot implemented; broader routing remains open.**
+The existing observer can flag one material unresolved memory need. Freshness,
+current topic, world compatibility and one-attempt-per-evidence checks precede
+the existing tool pass. Premise-only passes expose and dispatch only enabled
+built-in recall tools, with no empty-subset widening. Synthetic shadow/active
+gate tests cover the keyword-free case; live benefit is not yet established.
+
+Connect current-thread understanding
+to a useful choice among answering, looking something up, asking a necessary
+clarification and leaving uncertainty unresolved. This is not another planner,
+another belief store, or permission to act on every curiosity.
+
+**Pre-implementation boundary, not a measured failure rate.** K97's
+[situation state](../../app/core/conversation/conversation_situation.py)
+can retain an evidence-linked unresolved premise.
+[tool_pass_gate.py](../../app/core/session/tool_pass_gate.py) instead admits
+the tool pass from user-text family patterns and task/tool continuity. The
+gate does not consume a structured K97 information need. The main model sees
+the premise when a pass runs, but an otherwise skipped pass cannot choose a
+tool. Existing generous patterns and unknown-family fallback remain valuable.
+
+**Smallest experiment.** Add at most one optional information-need projection
+to the existing situation observer, with source IDs, current goal, required
+fact, freshness and allowed capability family. At the next turn, revalidate
+against current user intent and authoritative state before it can expose an
+enabled read/recall capability to the existing tool decision. Begin with one
+read-only family, not a global semantic router. If evidence is already in the
+prompt, answer without a lookup; if the missing fact is immaterial, defer;
+ask the user only when their answer is needed. Use K92 for a discretionary
+question, not a second independent pressure slot.
+
+This hint grants no authorization. Disabled tools stay disabled; activity
+access, external changes, approvals, sleep/quiet rules and workflow budgets
+remain with their current owners. A private interest is not a user request,
+and a stale observer result cannot reopen a completed task. Preserve the
+existing no-tool path and do not add an LLM call merely to decide whether an
+LLM call should run.
+
+**Acceptance.** Compare synthetic multi-turn cases with identical budgets:
+missing referent, evidence already available, fresh unresolved fact with no
+keyword, explicit correction, changed subject, disabled capability, and a task
+already complete. Check grounded answers and correct capability availability,
+unnecessary calls/questions, latency and unauthorized actions. A quiet "not
+enough evidence" result can be correct. Start in shadow mode on isolated
+fixtures; require better decisions rather than a higher tool-call rate.
+
+**Priority:** after traceability and initial K92/K100 work. **Effort:** medium.
+**Related:** K17, K69, K97, K92, P14 and
+[S4](../prompt-surfacing.md#s4-use-uncertainty-to-choose-the-next-useful-step).

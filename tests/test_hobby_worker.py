@@ -701,6 +701,8 @@ class HobbyProviderTests(unittest.TestCase):
         self.assertIn("5 chapters in", out)
 
     def test_handling_section_is_registered(self) -> None:
+        from inspect import unwrap
+
         from app.core.session.prompt_assembler import PromptAssembler
         from app.core.session.prompt_support import HANDLING_SECTIONS
 
@@ -708,7 +710,7 @@ class HobbyProviderTests(unittest.TestCase):
             HANDLING_SECTIONS["hobby_block"],
             ("What you've been up to lately:",),
         )
-        names = set(PromptAssembler.assemble_with_budget.__code__.co_varnames)
+        names = set(unwrap(PromptAssembler.assemble_with_budget).__code__.co_varnames)
         self.assertIn("hobby_block", names)
 
     def test_hobby_block_is_not_a_steer(self) -> None:

@@ -199,6 +199,21 @@ class _Fixture(unittest.TestCase):
 
 
 class SettledVerdictTests(_Fixture):
+    def test_answer_feedback_preserves_original_event_with_unknown_delivery(self) -> None:
+        cue_id = self._awaiting_cue()
+        host = self._host("CONFIRM")
+        event = {
+            "session_id": "s1", "user_message_id": 41,
+            "observed_at": "2026-09-01T10:00:00+00:00",
+        }
+        host._resolve_concept_hypotheses(user_text="yes, definitely", answer_event=event)
+        feedback = self.cues.get(cue_id).payload["feedback"]
+        self.assertEqual(feedback[-2]["state"], "accepted_answer")
+        self.assertEqual(feedback[-2]["delivery"], {"status": "unknown"})
+        self.assertEqual(feedback[-1]["state"], "update_applied")
+        self.assertEqual(feedback[-1]["observed_at"], event["observed_at"])
+        self.assertEqual(feedback[-1]["user_message_id"], 41)
+
     def test_a_confirm_grounds_the_belief_and_retires_the_cue(self) -> None:
         cue_id = self._awaiting_cue()
         host = self._host("CONFIRM")

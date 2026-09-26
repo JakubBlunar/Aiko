@@ -51,6 +51,36 @@ the mechanical half of this — broken paths and, more usefully, heading anchors
 that stopped resolving when a heading was reworded on its way into `shipped/`.
 Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
 
+## 27 Sep 2026: prompt surfacing and brain decisions
+
+**Implementation update:** initial pilots now cover content-free assembly
+traces, staged pooled claims and topical-share admission, essential handling
+bundles, two-writer evidence admission with retry checkpoints, strict read-only
+premise recall, and answer/delivery feedback attribution. Broader provider
+coverage, paraphrase entailment and multi-turn naturalness evaluation remain
+open. [Current boundaries](../prompt-surfacing.md#implemented-pilots-and-remaining-scope).
+
+The new [prompt-surfacing reference](../prompt-surfacing.md) maps all **125
+registered blocks**, source/refresh ownership, gates, conditional handling,
+stance, tool routing, Live handoff, delivery and memory writes. It complements
+[context-budget.md](../context-budget.md), which covers T3 rather than every
+route into the brain. This follow-up is documentation and proposals only.
+
+**Priorities:** make omissions and final claims traceable (G6/P43); introduce
+[K100 evidence-bound memory admission](patterns.md#k100-evidence-bound-memory-admission);
+extend K92's collect/choose/commit pilot; then test
+[K101 premise-to-action routing](patterns.md#k101-route-an-unresolved-premise-to-a-bounded-next-step).
+P50 needs semantics-aware handling selection, not another cap. H7/H44 and K99
+remain the owners of answer/delivery follow-through.
+
+The [fresh evidence table](../prompt-surfacing.md#evidence-from-the-running-installation)
+uses 394 recorded turns and 3,900 cue decisions over 14 days, with 528 generic
+`provider` declines. Only 12 of 1,044 surviving memory rows created in that
+window carry the scalar source-message link; other provenance was not fully
+audited. The live process reports 123 blocks versus 125 in the checkout, so
+these measurements are not an evaluation of the latest rollout. Earlier
+rolling snapshots below are preserved with their original denominators.
+
 ## 27 Sep 2026: naturalness and cognitive continuity
 
 **Backlog only; no runtime behavior or settings changed.** This pass used

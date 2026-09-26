@@ -142,6 +142,11 @@ class PostTurnMixin(PostTurnHelpersMixin):
         More post-turn jobs (user-state estimator, promise regex, agenda
         regex) will hang off this method as the relevant phases land.
         """
+        answer_event = {
+            "session_id": self.session_key,
+            "user_message_id": user_message_id,
+            "observed_at": timephrase.utcnow().isoformat(),
+        }
         try:
             self._apply_sleep_decision(
                 raw_assistant_text=raw_assistant_text,
@@ -427,21 +432,22 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # the belief it was about learned nothing.
         try:
             self._hypothesis_scored_ids = set()
-            self._resolve_concept_hypotheses(user_text=user_text)
+            self._resolve_concept_hypotheses(user_text=user_text, answer_event=answer_event)
         except Exception:
             log.debug("concept hypothesis resolve failed", exc_info=True)
         try:
-            self._listen_supported_hypotheses(user_text=user_text)
+            self._listen_supported_hypotheses(user_text=user_text, answer_event=answer_event)
         except Exception:
             log.debug("hypothesis ambient listen failed", exc_info=True)
         try:
-            self._settle_awaiting_cues(user_text=user_text)
+            self._settle_awaiting_cues(user_text=user_text, user_message_id=user_message_id)
         except Exception:
             log.debug("awaiting cue settle failed", exc_info=True)
         try:
             self._settle_pool_cues(
                 user_text=user_text,
                 assistant_text=assistant_text,
+                assistant_message_id=assistant_message_id,
                 reply_vec=getattr(self, "_last_assistant_vec", None),
                 turn_vec=self._combined_turn_vec(
                     user_text=user_text, assistant_text=assistant_text,

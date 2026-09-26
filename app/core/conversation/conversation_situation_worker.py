@@ -55,7 +55,8 @@ Return ONE JSON object:
         "question": {"text": "open question/goal", "evidence_message_ids": [id]},
         "facts": [{"text": "reported fact", "evidence_message_ids": [id]}],
         "interpretation": {"text": "tentative conclusion", "evidence_message_ids": [id]},
-        "unresolved": {"text": "missing premise", "evidence_message_ids": [id]}
+        "unresolved": {"text": "missing premise", "evidence_message_ids": [id]},
+        "recall_needed": false
     }
 }
 
@@ -66,6 +67,10 @@ explicit_end=true only when the transcript or authoritative world state
 directly ends/contradicts it. Never include a confidence field.
 
 Maintain a working_set only for one explicit, still-open user/shared question.
+Set recall_needed true only when the unresolved premise is material to that
+question, is absent from the supplied facts, and could be answered by prior
+conversation or memory. Never use it for curiosity, an external search, an
+action, or a premise that the user has just supplied. Prefer false when unsure.
 Its question must cite a user message. Every note must cite 1-3 supplied message
 IDs, all also included in the top-level evidence_message_ids (at most 8).
 Use at most three facts. Attribute reports to their speaker; an assistant's
