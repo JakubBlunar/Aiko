@@ -12,6 +12,7 @@ machine under test is the store's.
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -89,6 +90,51 @@ class _Fixture(unittest.TestCase):
 
 
 class SurfacingTests(_Fixture):
+    def test_quiet_mode_leaves_interest_successor_unclaimed(self) -> None:
+        self.host.session_key = "main"
+        self.host._settings = SimpleNamespace(agent=SimpleNamespace(live_quiet=True))
+        cue_id = self.store.add(
+            "interest_continuation", "portrait lenses", "Answer-linked observation",
+            payload={"session_id": "main"},
+        )
+        self.assertIsNone(self.host.take_pool_cue(
+            "interest_continuation", user_text="Those portrait lenses", cue_id=cue_id,
+        ))
+        self.assertEqual(self._row(cue_id).state, STATE_PENDING)
+        self.assertEqual(self._row(cue_id).surfaced_count, 0)
+
+    def test_interest_continuation_honors_session_and_topic(self) -> None:
+        self.host.session_key = "main"
+        other = self.store.add(
+            "interest_continuation", "portrait lenses", "Other session",
+            payload={"session_id": "other"},
+        )
+        self.assertIsNone(self.host.take_pool_cue(
+            "interest_continuation", user_text="Those portrait lenses", cue_id=other,
+        ))
+        selected = self.store.add(
+            "interest_continuation", "shorter lens", "Answer-linked observation",
+            payload={"session_id": "main"},
+        )
+        row = self.host.take_pool_cue(
+            "interest_continuation", user_text="The shorter lens seems suitable", cue_id=selected,
+        )
+        self.assertEqual(row.id, selected)
+
+    def test_interest_pivot_or_refusal_withdraws_without_surfacing(self) -> None:
+        self.host.session_key = "main"
+        for text in ("Stop comparing portrait lenses", "Tell me about the weather"):
+            with self.subTest(text=text):
+                cue_id = self.store.add(
+                    "interest_continuation", "portrait lenses", "Answer-linked observation",
+                    payload={"session_id": "main"},
+                )
+                self.assertIsNone(self.host.take_pool_cue(
+                    "interest_continuation", user_text=text, cue_id=cue_id,
+                ))
+                self.assertEqual(self._row(cue_id).state, STATE_EXPIRED)
+                self.assertEqual(self._row(cue_id).surfaced_count, 0)
+
     def test_exact_cue_claim_does_not_take_a_sibling(self) -> None:
         selected = self.store.add("away_activities", "sketchbook", "Selected thought")
         sibling = self.store.add("away_activities", "music", "Other thought")

@@ -233,6 +233,7 @@ class PromptAssemblerHelpersMixin:
         growth_witness: Callable[[], str] | None = None,
         self_callback: Callable[[], str] | None = None,
         second_thought: Callable[[str], str] | None = None,
+        interest_continuation: Callable[[str], str] | None = None,
         aspiration_momentum: Callable[[], str] | None = None,
         tension: Callable[[], str] | None = None,
         wellbeing_concern: Callable[[], str] | None = None,
@@ -427,6 +428,8 @@ class PromptAssemblerHelpersMixin:
             self._self_callback_provider = self_callback
         if second_thought is not None:
             self._second_thought_provider = second_thought
+        if interest_continuation is not None:
+            self._interest_continuation_provider = interest_continuation
         if aspiration_momentum is not None:
             self._aspiration_momentum_provider = aspiration_momentum
         if tension is not None:

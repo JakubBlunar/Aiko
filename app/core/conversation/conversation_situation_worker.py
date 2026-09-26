@@ -12,11 +12,14 @@ from app.core.conversation.conversation_situation import (
     ConversationSituationStore,
     parse_extraction,
     reduce_situation,
+    substantive_interest_answer,
 )
 from app.core.infra import timephrase
+from app.core.proactive.topic_match import topical
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase, MessageRow
+    from app.core.proactive.cue_producer import CueProducer
     from app.llm.chat_client import ChatClient
 
 
@@ -43,6 +46,11 @@ Return ONE JSON object:
   "aiko_activity": "what Aiko is doing in this situation or empty string",
   "evidence_message_ids": [integer ids from the supplied transcript],
     "explicit_end": true|false,
+    "successor": null or {
+        "kind": "comparison|shared_project|aiko_pursuit",
+        "subject": "specific interest, 2-6 words",
+        "change": {"text": "what the answer changed", "evidence_message_ids": [id]}
+    },
     "working_set": null or {
         "question": {"text": "open question/goal", "evidence_message_ids": [id]},
         "facts": [{"text": "reported fact", "evidence_message_ids": [id]}],
@@ -68,6 +76,15 @@ resolve ambiguous references by guessing. Replace the whole set on each keep
 or replace: corrections invalidate dependent interpretations. Use null when
 resolved, declined, changed to an unrelated topic, or unsupported. This tracks
 understanding only; it grants no task, action, or permission to speak.
+
+Usually successor is null. Only when a previous working-set question about
+an explicitly shared project/comparison or Aiko-owned pursuit is answered
+with substantive new information, close that question and optionally name
+ONE new observation the answer earns. Cite the new USER answer and include
+its IDs in the top-level evidence list. Never repeat the old ask, draft a
+new question, treat agreement as new information, or claim an activity was
+performed. A pivot, refusal, acknowledgement or resolved routine request
+earns no successor. A successor is optional material, not an obligation.
 """
 
 
@@ -83,6 +100,7 @@ class ConversationSituationWorker:
         model: str | None,
         world_snapshot_provider: Callable[[], dict[str, Any]],
         context_token_provider: Callable[[], tuple[str, int]] | None = None,
+        successor_producer: "CueProducer | None" = None,
         every_n_user_turns: int = 2,
         max_history_messages: int = 14,
         max_tokens: int = 480,
@@ -93,6 +111,7 @@ class ConversationSituationWorker:
         self._model = model
         self._world_snapshot_provider = world_snapshot_provider
         self._context_token_provider = context_token_provider
+        self._successor_producer = successor_producer
         self._every_n = max(1, int(every_n_user_turns))
         self._max_history = max(4, int(max_history_messages))
         self._max_tokens = max(100, int(max_tokens))
@@ -107,6 +126,7 @@ class ConversationSituationWorker:
             "failed": 0,
             "invalid": 0,
             "stale": 0,
+            "successors_queued": 0,
             "kept": 0,
             "replaced": 0,
             "cleared": 0,
@@ -244,6 +264,7 @@ class ConversationSituationWorker:
             )
             if state is not None:
                 self._store.upsert(state)
+            self._sync_interest_successor(key, previous, extraction, rows)
             self._stats["completed"] += 1
             self._stats[
                 {
@@ -271,6 +292,49 @@ class ConversationSituationWorker:
             }
             log.debug("conversation situation worker failed", exc_info=True)
             return preserved
+
+    def _sync_interest_successor(self, key, previous, extraction, rows) -> None:
+        producer = self._successor_producer
+        if producer is None or producer.store() is None:
+            return
+        store = producer.store()
+        newest_user_id = max((int(row.id) for row in rows if row.role == "user"), default=0)
+        for row in producer.stock_rows():
+            if (
+                row.payload.get("session_id") == key
+                and newest_user_id > int(row.payload.get("answer_message_id", 0))
+            ):
+                store.expire(row.id, evidence="new_conversation_evidence")
+        successor = extraction.successor
+        if (
+            previous is None or previous.working_set is None or successor is None
+            or extraction.working_set is not None or producer.stock() >= 1
+        ):
+            return
+        answer_rows = [
+            row for row in rows if row.role == "user"
+            and int(row.id) in successor.change.evidence_message_ids
+            and int(row.id) > previous.source_message_id
+            and substantive_interest_answer(row.content)
+            and topical(successor.change.text, row.content)[0]
+        ]
+        if not answer_rows or max(int(row.id) for row in answer_rows) != newest_user_id:
+            return
+        question_ids = previous.working_set.question.evidence_message_ids
+        source_id = key + ":question:" + ",".join(map(str, sorted(question_ids)))
+        if store.has_source(producer.cue_type, source_id):
+            return
+        cue_id = producer.publish(
+            successor.subject,
+            "[Interest continued]\nAnswer-linked observation: " + successor.change.text,
+            payload={
+                "subject": successor.subject, "source_id": source_id, "session_id": key,
+                "kind": successor.kind,
+                "answer_message_id": newest_user_id,
+                "evidence_message_ids": list(successor.change.evidence_message_ids),
+            },
+        )
+        self._stats["successors_queued"] += bool(cue_id)
 
     def _build_user_prompt(
         self,

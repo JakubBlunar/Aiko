@@ -283,6 +283,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # (self_callback -> aspiration_momentum -> wellbeing_concern,
         # shared_ritual -> second_thought) stay intact.
         "companion_activity_block",
+        "interest_continuation_block",
         # P44 measurement moved these two down from T0/T1. Both looked
         # stable and neither is: ``anniversary_block`` stamps
         # ``last_anniversaried_at`` as a side effect of rendering, so it
@@ -1016,6 +1017,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # a loose end is only worth reopening if it still fits -- the same
         # relevance problem ``long_arc_callback`` has.
         self._second_thought_provider: Callable[[str], str] | None = None
+        self._interest_continuation_provider: Callable[[str], str] | None = None
         # L14 aspiration-momentum cue. Consumer of the
         # AspirationMomentumWorker ring; surfaces an occasional, private
         # "check in on where they're heading" nudge over an active
@@ -2373,6 +2375,16 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("second_thought provider raised", exc_info=True)
                     second_thought_block = ""
 
+        interest_continuation_block = ""
+        if getattr(self, "_interest_continuation_provider", None) is not None:
+            with _timed_phase(provider_ms, "interest_continuation"):
+                try:
+                    interest_continuation_block = (
+                        self._interest_continuation_provider(user_text) or ""
+                    )
+                except Exception:
+                    log.debug("interest_continuation provider raised", exc_info=True)
+
         # L14 aspiration momentum: occasional "check in on where they're
         # heading" cue. Built every turn (consumes a watermark) but almost
         # always empty. Watermark-gated, sibling of growth_witness.
@@ -3555,6 +3567,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # cue-producer surface; not in the gap mutex. After
             # second_thought so the pinned cue-family adjacencies stay.
             system_parts.append(companion_activity_block)
+        if interest_continuation_block:
+            system_parts.append(interest_continuation_block)
         # Relocated from T0/T1 by the P44 prefix-break measurements. Both
         # are volatile in practice despite reading as background: see the
         # note beside them in ``_PROMPT_BLOCK_TIERS``. The constant and

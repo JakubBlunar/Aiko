@@ -21,6 +21,8 @@ from app.core.conversation.conversation_situation_worker import (
     ConversationSituationWorker,
 )
 from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.cue_producer import CueProducer
+from app.core.proactive.cue_store import CueStore
 from app.core.session.conversation_situation_mixin import ConversationSituationMixin
 from app.core.session.prompt_assembler import PromptAssembler, _PROMPT_BLOCK_TIERS
 from app.core.conversation.stance import _OFFERS
@@ -125,6 +127,21 @@ def test_working_set_is_cleared_on_resolution_or_unconfirmed_update() -> None:
         assert updated.working_set is None
 
 
+def test_interest_successor_requires_bounded_answer_evidence() -> None:
+    payload = _working_extraction()
+    payload["successor"] = {
+        "kind": "comparison", "subject": "portrait lenses",
+        "change": {"text": "The room size favors the shorter lens.", "evidence_message_ids": [12]},
+    }
+    parsed = parse_extraction(json.dumps(payload), valid_message_ids={11, 12})
+    assert parsed.successor.change.evidence_message_ids == (12,)
+    payload["successor"]["change"]["text"] = "What lens would you choose for that room?"
+    assert parse_extraction(json.dumps(payload), valid_message_ids={11, 12}) is None
+    payload["successor"]["change"]["text"] = "The room size favors the shorter lens."
+    payload["successor"]["kind"] = "generic_chat"
+    assert parse_extraction(json.dumps(payload), valid_message_ids={11, 12}) is None
+
+
 def test_parse_rejects_model_confidence_and_unknown_evidence() -> None:
     with_confidence = (
         '{"operation":"replace","summary":"Together on the beanbag.",'
@@ -226,6 +243,52 @@ class _FakeSituationClient:
     def chat_json(self, messages, **_kwargs):
         self.messages.append(messages)
         return self.responses.pop(0), ChatUsage()
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("I prefer the shorter lens because the room is small and cramped.", 1),
+    ("That sounds good to me, thanks for asking.", 0),
+    ("No thanks, stop comparing those portrait lenses and change the topic.", 0),
+    ("The weather forecast predicts heavy rainfall across the mountain region next week.", 0),
+])
+def test_answer_can_earn_only_one_successor(tmp_path, answer, expected) -> None:
+    db = ChatDatabase(tmp_path / "successor.db")
+    question_id = db.add_message("main", "user", "Can we compare portrait lenses together?")
+    payload = _working_extraction()
+    payload["evidence_message_ids"] = [question_id]
+    payload["working_set"] = {
+        "question": {"text": "Compare portrait lenses", "evidence_message_ids": [question_id]},
+    }
+    previous = reduce_situation(
+        None, parse_extraction(json.dumps(payload), valid_message_ids={question_id}),
+        session_id="main", source_message_id=question_id,
+    )
+    answer_id = db.add_message("main", "user", answer)
+    output = {
+        "operation": "keep", "working_set": None, "evidence_message_ids": [answer_id],
+        "successor": {
+            "kind": "comparison", "subject": "portrait lenses",
+            "change": {
+                "text": "The small room favors the shorter portrait lens.",
+                "evidence_message_ids": [answer_id],
+            },
+        },
+    }
+    store = ConversationSituationStore(db)
+    store.upsert(previous)
+    cues = CueStore(db)
+    worker = ConversationSituationWorker(
+        client=_FakeSituationClient([json.dumps(output)] * 2), chat_db=db, store=store,
+        model="worker", world_snapshot_provider=dict,
+        successor_producer=CueProducer("interest_continuation", lambda: cues),
+    )
+    assert worker.run("main").working_set is None
+    worker.run("main")
+    assert cues.count_pending("interest_continuation") == expected
+    if expected:
+        cue = cues.pending("interest_continuation")[0]
+        assert cue.payload["evidence_message_ids"] == [answer_id]
+        assert cues.has_source("interest_continuation", cue.payload["source_id"])
 
 
 @pytest.mark.parametrize("change_session", [False, True])

@@ -646,6 +646,13 @@ class CueStore:
         )
         return rows[0] if rows else None
 
+    def has_source(self, cue_type: str, source_id: str) -> bool:
+        return self._db.execute_fetchone(
+            "SELECT 1 FROM cue_pool WHERE user_id = ? AND cue_type = ? "
+            "AND json_extract(payload, '$.source_id') = ? LIMIT 1",
+            (self._user_id, str(cue_type), str(source_id)),
+        ) is not None
+
     def count_pending(
         self, cue_type: str | None = None, *, now: datetime | None = None,
     ) -> int:

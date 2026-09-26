@@ -64,3 +64,26 @@ Coverage: [test_conversation_situation.py](../../../tests/test_conversation_situ
 and the prompt-cache regression tests. The paired referent/correction/
 unknown-answer evaluation remains open: structural tests do not establish
 that an extra working set beats the existing summary and history.
+
+## K98. Answer-earned interest continuation
+
+The situation observer may propose one observation after closing an explicit
+shared comparison/project or Aiko-pursuit question. The old owned-thread
+retirement is unchanged. Production requires new, substantive user-answer
+evidence and topical overlap with the proposed change; acknowledgements,
+common explicit declines and unsupported proposals do not earn a successor.
+An all-state source lookup prevents another successor from the same question.
+
+`CueProducer` owns publication as `interest_continuation`: one stocked cue,
+one surfacing, one-hour expiry and cadence. The cue owner enforces session,
+topic and quiet checks even for an exact Live claim. A pivot or explicit
+decline expires the offer; newer observer evidence withdraws an older offer.
+It has its own T6 block and CALLBACK stance entry. Conditional handling
+allows a new observation or silence, never a repeated ask or activity claim.
+No additional worker or ask-pressure budget was introduced.
+
+Coverage: conversation-situation and owned-thread tests, cue accounting and
+consumption, persona hoisting, stance and prompt-cache ordering. Naturalness
+and semantic progress still need the paired K98/T5 behavior evaluation; the
+substance and decline checks are conservative English-language guards, not
+a general proof of understanding an answer.

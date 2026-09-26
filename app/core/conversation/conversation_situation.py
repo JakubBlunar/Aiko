@@ -35,6 +35,24 @@ MAX_EVIDENCE_IDS = 8
 IMPLICIT_CLEAR_MISSES = 2
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
+_INTEREST_DECLINE_RE = re.compile(
+    r"\b(no thanks|not interested|forget (?:it|that|the|about)|drop (?:it|that|this|the)"
+    r"|move on|change (?:the )?(?:topic|subject)|stop (?:talking|asking|comparing)"
+    r"|don't|do not)\b", re.IGNORECASE,
+)
+_ACK_WORDS = frozenset(
+    "that sounds good to me thanks for asking yes yeah okay ok sure great fine right "
+    "agreed absolutely nice you thank very much it does seem perfect".split()
+)
+
+
+def declines_interest(text: str) -> bool:
+    return bool(_INTEREST_DECLINE_RE.search(text or ""))
+
+
+def substantive_interest_answer(text: str) -> bool:
+    words = re.findall(r"[a-z]+", (text or "").casefold())
+    return len(words) >= 8 and len(set(words) - _ACK_WORDS) >= 4 and not declines_interest(text)
 
 
 def _clean_text(value: Any, *, limit: int) -> str:
@@ -86,6 +104,27 @@ class ConversationWorkingSet:
     unresolved: EvidenceNote | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class InterestSuccessor:
+    subject: str
+    kind: str
+    change: EvidenceNote
+
+
+def _parse_evidence_note(value: Any, valid_ids: set[int]) -> EvidenceNote:
+    if not isinstance(value, dict) or not isinstance(value.get("text"), str):
+        raise ValueError("invalid working-set note")
+    text = _clean_text(value["text"], limit=160)
+    ids = value.get("evidence_message_ids")
+    if (
+        not text or timephrase.has_relative_deictic(text)
+        or not isinstance(ids, list) or not 1 <= len(ids) <= 3
+        or any(type(message_id) is not int or message_id not in valid_ids for message_id in ids)
+    ):
+        raise ValueError("invalid working-set evidence")
+    return EvidenceNote(text, tuple(dict.fromkeys(ids)))
+
+
 def _parse_working_set(
     payload: Any, valid_ids: set[int],
 ) -> ConversationWorkingSet | None:
@@ -93,17 +132,7 @@ def _parse_working_set(
         return None
 
     def note(value: Any) -> EvidenceNote:
-        if not isinstance(value, dict) or not isinstance(value.get("text"), str):
-            raise ValueError("invalid working-set note")
-        text = _clean_text(value["text"], limit=160)
-        ids = value.get("evidence_message_ids")
-        if (
-            not text or timephrase.has_relative_deictic(text)
-            or not isinstance(ids, list) or not 1 <= len(ids) <= 3
-            or any(type(message_id) is not int or message_id not in valid_ids for message_id in ids)
-        ):
-            raise ValueError("invalid working-set evidence")
-        return EvidenceNote(text, tuple(dict.fromkeys(ids)))
+        return _parse_evidence_note(value, valid_ids)
 
     try:
         facts = payload.get("facts", [])
@@ -134,6 +163,7 @@ class SituationExtraction:
     evidence_message_ids: tuple[int, ...] = ()
     explicit_end: bool = False
     working_set: ConversationWorkingSet | None = None
+    successor: InterestSuccessor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +288,23 @@ def parse_extraction(
         if not set(working_set.question.evidence_message_ids).intersection(valid_user_message_ids):
             return None
 
+    successor = None
+    proposed = payload.get("successor")
+    if proposed is not None:
+        if not isinstance(proposed, dict):
+            return None
+        kind = proposed.get("kind")
+        subject = _clean_text(proposed.get("subject"), limit=80)
+        if kind not in {"comparison", "shared_project", "aiko_pursuit"} or len(subject) < 6:
+            return None
+        try:
+            change = _parse_evidence_note(proposed.get("change"), set(evidence))
+        except (TypeError, ValueError):
+            return None
+        if len(change.text) < 24 or "?" in change.text:
+            return None
+        successor = InterestSuccessor(subject, kind, change)
+
     return SituationExtraction(
         operation=operation,
         summary=summary,
@@ -268,6 +315,7 @@ def parse_extraction(
         evidence_message_ids=tuple(evidence),
         explicit_end=bool(payload.get("explicit_end", False)),
         working_set=working_set,
+        successor=successor,
     )
 
 

@@ -21,6 +21,7 @@ _CUE_PURPOSES = {
     "turning_over": "share",
     "self_callback": "continue",
     "long_arc_callback": "continue",
+    "interest_continuation": "continue",
 }
 
 

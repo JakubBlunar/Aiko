@@ -330,6 +330,10 @@ class ConversationSituationMixin:
             "Use this as present continuity without reciting it." + working
         )
 
+    def _render_interest_continuation_block(self, user_text: str = "") -> str:
+        row = self.take_pool_cue("interest_continuation", user_text=user_text)
+        return row.text if row is not None else ""
+
     def _reconcile_conversation_situation_after_world_mutation(self) -> None:
         """Refresh a compatible lease or clear one a deliberate move ended."""
         store = getattr(self, "_conversation_situation_store", None)

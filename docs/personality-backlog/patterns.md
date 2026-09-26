@@ -115,7 +115,7 @@ on top of already-shipped infrastructure. Where an entry is half shipped
 | K95 | Interruption cost — a direct question is not an opening | ✅ shipped 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k95-interruption-cost--a-direct-question-is-not-an-opening) (reader landed inside K92 phase 1, enforcement in K53's gate walk) |
 | K96 | In-turn deliberation / second thought | Partial; post-reply worker shipped, 27 Sep runtime failures need diagnosis below |
 | K97 | A small causal working set for the current thread | Implementation shipped; behavioral comparison open |
-| K98 | Continue an interest after a good answer | Open experiment; medium effort |
+| K98 | Continue an interest after a good answer | Implementation shipped; behavioral comparison open |
 | K99 | Common ground with delivery provenance | Open experiment; medium-to-large effort |
 
 ---
@@ -985,7 +985,10 @@ from silence alone. Related: K17, K21, K69, K96, and P43's context budget.
 
 ## K98. Continue an interest after a good answer
 
-**Open experiment; medium effort.** A question being answered can be the
+**Implementation shipped:** [answer-earned interest continuation](shipped/cognitive-continuity.md#k98-answer-earned-interest-continuation).
+The behavioral comparison below remains open.
+
+A question being answered can be the
 beginning of a shared interest, not only the end of an outstanding ask.
 The current [`thread_ownership.py`](../../app/core/conversation/thread_ownership.py)
 returns `ThreadOutcome(None, False, RETIRE_SATISFIED)` for an engaged reply.

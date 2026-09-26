@@ -385,6 +385,7 @@ CUE_SPECS: dict[str, CueSpec] = {
         # so a queued row is the whole of the arming signal. Nothing about
         # it can be inspected before the pass has run.
         CueSpec("second_thought"),
+        CueSpec("interest_continuation"),
         CueSpec(
             "aspiration_momentum",
             journal_key="aiko.aspiration_momentum",
@@ -718,6 +719,13 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             surface_cooldown_hours=72.0,
             handling_section="Our things (shared rituals):",
             block="shared_ritual_block",
+        ),
+        CuePolicy(
+            "interest_continuation", inventory_target=1, ttl_hours=1.0,
+            max_surfacings=1, max_asks=1, fulfilment=FULFILMENT_SPOKEN,
+            min_overlap=2, surface_cooldown_hours=1.0,
+            handling_section="When an answer advances a shared interest:",
+            block="interest_continuation_block",
         ),
         CuePolicy(
             "second_thought",

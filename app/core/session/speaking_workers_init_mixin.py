@@ -317,6 +317,7 @@ class SpeakingWorkersInitMixin:
                 from app.core.conversation.conversation_situation_worker import (
                     ConversationSituationWorker,
                 )
+                from app.core.proactive.cue_producer import CueProducer
 
                 self._conversation_situation_store = ConversationSituationStore(
                     self._chat_db
@@ -329,6 +330,9 @@ class SpeakingWorkersInitMixin:
                     world_snapshot_provider=self.world_snapshot,
                     context_token_provider=lambda: (
                         self.session_key, int(getattr(self, "_live_mode_generation", 0)),
+                    ),
+                    successor_producer=CueProducer(
+                        "interest_continuation", lambda: getattr(self, "_cue_store", None),
                     ),
                     every_n_user_turns=int(
                         getattr(
@@ -777,6 +781,7 @@ class SpeakingWorkersInitMixin:
             growth_witness=self._render_growth_witness_block,
             self_callback=self._render_self_callback_block,
             second_thought=self._render_second_thought_block,
+            interest_continuation=self._render_interest_continuation_block,
             aspiration_momentum=self._render_aspiration_momentum_block,
             tension=self._render_tension_block,
             wellbeing_concern=self._render_wellbeing_concern_block,

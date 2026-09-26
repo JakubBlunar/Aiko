@@ -155,6 +155,34 @@ class CuePoolMixin:
         the strength of it.
         """
         store = self._cue_pool_store()
+        if cue_type == "interest_continuation" and store is not None:
+            from app.core.conversation.conversation_situation import declines_interest
+            from app.core.proactive.topic_match import topical
+
+            agent = getattr(getattr(self, "_settings", None), "agent", None)
+            if bool(getattr(agent, "live_quiet", False)):
+                return None
+            if not user_text:
+                frame = getattr(self, "_current_live_frame", None)
+                interaction = getattr(frame, "interaction", None)
+                user_text = str(getattr(interaction, "last_user_meaning", ""))
+            if not user_text:
+                return None
+            session_key = str(getattr(self, "session_key", ""))
+            for candidate in store.pending(cue_type, limit=8):
+                if candidate.payload.get("session_id") != session_key:
+                    continue
+                if declines_interest(user_text) or not topical(candidate.subject, user_text)[0]:
+                    store.expire(candidate.id, evidence="interest_declined_or_topic_changed")
+            base_relevant = relevant
+
+            def relevant(payload):
+                return (
+                    payload.get("session_id") == session_key
+                    and (base_relevant is None or base_relevant(payload))
+                )
+
+            force = False
         blocked = self._cadence_blocked(cue_type)
         user_vec, min_cosine = self._topic_rank_inputs(user_text)
         pick = pick_pool_cue(
