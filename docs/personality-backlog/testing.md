@@ -240,6 +240,46 @@ umbrella over K10 (persona regression, shipped/on-demand) and L22
 
 **Effort.** Medium (largely unlocked once DT4 + a pinned model exist).
 
+### 27 Sep 2026: multi-turn naturalness track
+
+Extend T5, not a second evaluation framework. Compare the current system
+with one candidate change at a time, using synthetic or explicitly
+consented, de-identified 6-12-turn scenarios. Keep private source traces
+local; never copy personal conversations into tracked goldens. Pin the
+model, settings, prompt-budget envelope, and scenario inputs; repeat runs
+and counterbalance A/B order for human review. Judge disagreement and
+small samples remain visible rather than becoming a single "human score."
+
+**Scenario families and observable outcomes:**
+
+- A relevant cue waits through composing, then meets a real opening:
+  continuity without interrupting or replaying the same thought.
+- A corrected premise changes the later conclusion: no stale inference
+  repeated as a fact, and no unnecessary narration of private reasoning.
+- A good answer to her own interest leads to a specific next step:
+  progression rather than another version of the same question.
+- An interrupted explanation or unseen task result: no false "we already
+  discussed this" and no automatic repeat of everything.
+- Ordinary quiet company, a brief acknowledgement, a direct question, and
+  an explicit topic change: silence/following can be the best response.
+
+Report these beside time-to-first-token p50/p95, interruption and duplicate
+rates, unsupported claims, prompt cost, and background calls per hour.
+Score factual grounding and useful uncertainty separately from style.
+K97-K99 and Live L17-L18 each supply a focused counterexample in their
+entries; run the cheap scripted contracts before the model evaluation.
+
+**Attribution warning from the data.** The 14-day read-only snapshot had
+23,965 `surfacing_outcomes` rows over only 397 distinct assistant turns;
+the following engagement label is shared by many items in one turn.
+Those are not 23,965 independent user reactions and cannot identify which
+item caused engagement. Group by turn/session, retain unset outcomes as
+unknown, and keep L37 echo, cue fulfilment, and user uptake distinct.
+This extends H34/H35 and the existing L43/P43 work rather than claiming
+to solve causal credit with another counter. Do not reward longer replies,
+more time in the app, more disclosure, or fewer goodbyes as "naturalness."
+Read representative successes and failures, including quiet controls.
+
 ---
 
 ## T6. Determinism seams for flake-free chain tests

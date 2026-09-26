@@ -113,6 +113,10 @@ on top of already-shipped infrastructure. Where an entry is half shipped
 | K93 | The substance floor — what she takes to the floor, not whether she takes it | 🟡 ledger half shipped 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k93-the-substance-floor--the-ledger-half); **cue-pool half open** below |
 | K94 | Sequencing — answer first, then add, and say where the addition goes | ✅ shipped 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k94-sequencing--answer-first-then-add-and-say-where-the-addition-goes) (a third stance axis, fired on evidence at 6.4% of turns) |
 | K95 | Interruption cost — a direct question is not an opening | ✅ shipped 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k95-interruption-cost--a-direct-question-is-not-an-opening) (reader landed inside K92 phase 1, enforcement in K53's gate walk) |
+| K96 | In-turn deliberation / second thought | Partial; post-reply worker shipped, 27 Sep runtime failures need diagnosis below |
+| K97 | A small causal working set for the current thread | Open experiment; medium effort |
+| K98 | Continue an interest after a good answer | Open experiment; medium effort |
+| K99 | Common ground with delivery provenance | Open experiment; medium-to-large effort |
 
 ---
 
@@ -773,6 +777,22 @@ cue against a seed. The phase-3 pilot ranks generic seeds after specific
 the candidate arbiter, after a side-effect-free admission check and before
 either cue is marked surfaced.
 
+**27 Sep 2026 follow-up, read-only measurement.**
+`python scripts/cue_reach_report.py --days 14` reports 3,934 decisions:
+`concept_hypothesis` reached the prompt on 10/396 eligible decisions,
+`interest_drift` on 38/397, and `associative_wander` on 45/397.
+Of 2,278 eligible declines, 1,682 are `topic_miss`, 530 are still the
+unattributed `provider` bucket, and 66 are `lost_priority`. These are
+**admission measurements, not conversational uptake or quality**. The
+generic bucket is present in this September window despite the report's
+historical note about it ending in August. Resolve that attribution before
+calling these cues starved or relaxing relevance. The next useful K93 check
+is a side-effect-free cross-type candidate replay: on actual openings, was
+there an admissible, specific alternative to the selected item? If not,
+ranking cannot fix that turn. Keep denominators per policy; `used` alone
+still cannot establish initiative. The older figures below are historical,
+not the current baseline.
+
 **H43 took the `pick_pool_cue` ordering seam and sharpened what remains.** That
 seam is no longer untouched: the pick now ranks admitted cues by cosine against
 the live message instead of taking the first in surfacings-then-recency order,
@@ -893,3 +913,137 @@ all before "raise effort on the turns they fire" can mean anything. The honest
 open question on what shipped is whether a thought drafted one turn late reads as
 continuity or as her being behind the conversation — which is a read on the
 output, not a measurement, and needs real use before it can be answered.
+
+**27 Sep 2026 operational follow-up: diagnose before expanding.** Read-only
+`get_second_thought_state` returned `enabled=true`, `scheduled=3`,
+`failed=3`, `queued=0`, `declined=0`, `unparsed=0`, and `last_ms=5.1`.
+These are process-local counters, not a lifetime failure rate. The separate
+14-day block report found 0 `second_thought_block` renders in 397 turns;
+it does not establish how long the feature was enabled. In
+[`second_thought_worker.py`](../../app/core/proactive/second_thought_worker.py),
+the model-call exception path increments `failed` but logs the exception
+only at DEBUG. Neither the available file-log search nor the in-memory
+module log returned a matching record, so the exception cause is unknown.
+Do not infer a model-quality or token-budget problem from this sample.
+
+**Next task, high priority, small diagnosis first:** reproduce the worker's
+actual chat-client contract on an isolated fixture; retain a bounded,
+content-free last-error category in the debug funnel and log operational
+failure at the repository's degraded-path level. Check route/client
+compatibility and cached request construction before changing the prompt.
+Acceptance is a deliberate `NONE` and one valid synthetic thought both
+passing through the real adapter and parser, plus an injected exception
+remaining distinguishable from a healthy decline. Then measure
+drafted -> admitted -> actually expressed -> answered, and next-turn
+interference as well as first-token latency. Do not force a thought merely
+to make the counters nonzero, and do not raise reasoning effort while this
+path has no successful observed output.
+
+## K97. A small causal working set for the current thread
+
+**Open experiment; medium effort.** Aiko can remember facts and still lose
+what the conversation is trying to resolve. Give the current thread a
+small, revisable working understanding: the explicit question/goal,
+evidence IDs for what is established, one tentative interpretation, and
+the unresolved premise or observation that would change it. This should
+help her answer an implication without requiring the user to repeat the
+whole setup. It is a behavioral approximation of working memory, not a
+claim to reproduce a particular person's brain or private reasoning.
+
+**Existing boundary.**
+[`conversation_situation.py`](../../app/core/conversation/conversation_situation.py)
+already owns session-scoped, evidence-validated situation state and
+staleness, but its structured extraction is about summary, shared activity,
+place, and Aiko's activity. Those fields can describe the scene without
+representing the premise currently at issue. K2 already tracks mood and
+opinion beliefs; the audit found 393 beliefs, 365 checked, so do not build
+another belief store. K96 drafts something to *say later*; this working
+state conditions understanding and normally produces no new subject to say.
+
+**Smallest experiment.** Extend the existing situation projection, not a
+new always-on worker or a second memory database. Start with one active
+thread and a strict small token cap, updated off the reply path when there
+is an unresolved dependency. Store evidence-linked conclusions, not hidden
+chain-of-thought. Keep stated and inferred fields separate; uncertainty
+cannot promote a guess into testimony. A correction invalidates dependent
+interpretations, a resolved goal clears its open premise, and session
+switch/staleness rules prevent a late job overwriting a newer thread.
+Reuse `timephrase` age tags and stored-text rules. Any specific subject
+offered aloud still goes through the cue pool and K92, not this state.
+
+**Discriminator.** Paired multi-turn fixtures: an ambiguous reference,
+a later premise correction, a brief interruption, and a genuinely new
+topic. Compare current situation + history + K96 against the added working
+fields with the same input budget. Score correct referents, revised
+conclusions, and unnecessary clarification; include cases where the right
+answer is "I don't know yet." If the summary/history already solve them,
+do not ship extra state. This is not permission to infer mood or intent
+from silence alone. Related: K17, K21, K69, K96, and P43's context budget.
+
+## K98. Continue an interest after a good answer
+
+**Open experiment; medium effort.** A question being answered can be the
+beginning of a shared interest, not only the end of an outstanding ask.
+The current [`thread_ownership.py`](../../app/core/conversation/thread_ownership.py)
+returns `ThreadOutcome(None, False, RETIRE_SATISFIED)` for an engaged reply.
+That is correct for K55/K89's anti-nag obligation, but that particular
+record cannot carry what she learned into a next step. Other memory/pursuit
+paths may already recover it; this is a targeted continuity experiment,
+not a finding that Aiko never follows up.
+
+**Smallest proposal.** Keep retirement of the ask exactly as it is.
+For an explicitly shared project, comparison, or Aiko-owned pursuit only,
+allow a compact successor containing the answer evidence and what changed
+about the interest. A natural next move can be a new observation, changed
+opinion, small approved activity, or silence; it need not be another
+question. Reuse the pursuit/goal and cue owners instead of extending
+`OwnedThread`'s return budget. One successor at most, earned by new content;
+an acknowledgement alone cannot sustain an endless loop. A user pivot or
+refusal withdraws the offer without pressure or guilt.
+
+**Acceptance.** Synthetic sequence: she offers a comparison, the user
+supplies a preference and a reason, and a later contribution uses that
+reason rather than asking the same thing again. Compare against current
+K89 + K85 + K96 before adding state. Track semantic progression and repeat
+questions over several turns, with quiet and subject-change controls.
+The recent 7-day report has no `thread_ownership_block` renders despite
+initiative firing on 8.1% of 223 turns; this is not evidence of failure
+because engaged answers should retire silently. The missing measurement
+is the *successor*, not how often she insists on her old topic.
+
+## K99. Common ground with delivery provenance
+
+**Open experiment; medium-to-large effort.** Knowing something internally,
+having mentioned it, and having reason to think the user knows it are
+different states. A research result that was never presented should not
+lead to "as we discussed"; a cancelled spoken sentence should not be
+treated as a completed explanation. K2's mood/opinion predictions and
+K66's topic familiarity do not encode this distinction.
+
+**Verified starting point, not a measured user-visible failure.**
+[`notify_playback_drained`](../../app/core/session/live_mode_mixin.py)
+currently receives no message/chunk identifier and sets a global event;
+[`ws_live_commands.py`](../../app/web/ws_live_commands.py) forwards the
+drain notification without one. This answers whether the audio queue is
+empty, not which proposition was played. Text in the persisted transcript
+also does not prove that a user read it. No audibility or misunderstanding
+rate was measured in this pass.
+
+**Smallest proposal.** First add delivery provenance for a bounded recent
+exchange: generated, text presented, audio played through an identified
+segment, interrupted/unknown, and explicitly acknowledged. Resolve receipts
+against the elected client, stream/message identity, and generation;
+an old window cannot certify a new response. Treat receipts as delivery
+evidence only, never proof of attention, hearing, agreement, or comprehension.
+Use that distinction to decide whether a brief recap is needed on return
+or repair, not to resend everything automatically. Never assume facts from
+private research were shared, and never convert Aiko's inference into a
+statement the user supposedly made.
+
+**Acceptance.** Replay interruption before the key sentence, normal full
+playback, reconnect, a duplicate/stale acknowledgement, text-only mode,
+and no delivery telemetry. The model must neither claim a never-delivered
+statement was discussed nor repeat a fully acknowledged explanation.
+Keep persistence bounded and local; never store raw audio for this.
+Establish a real continuity benefit before adding proposition-level common
+ground. Related: Live Pass 8, K17, K62, F16, and T5 multi-turn evaluation.

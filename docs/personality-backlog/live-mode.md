@@ -94,6 +94,7 @@ plus a clamp, not a second Aiko.
 | Wait horizon / wake-set | shipped Pass 29 (L8). Bands only; raw ms and invented wake names ignored |
 | Explicit keep hold | shipped Pass 30 (L16). `keep_attention` / `keep_style`; user intent and generation still win |
 | Future 4B expansions (L8+) | backlog. Floor manners, circadian quieting, glance menu, return beat, compact prompt. L8, L10, L12, L16 shipped |
+| Opportunity-aware cue deferral / cue purpose | open L17-L18; 27 Sep read-only audit below. No increase to speech permission or budgets |
 
 ### Pass 18 code audit — contract gaps still open
 
@@ -2270,6 +2271,78 @@ fidgeting. Conversation lock still outranks Live.
 **Tests:** keep + new target preserves the current one; user speech
 still cancels; generation change still drops the hold. **Seams:**
 `presence.py`, `proposal.py`, `controller.py`, `resolver.py`.
+
+#### L17. A deferred thought can meet a later opening
+
+**Open; high-priority experiment, medium effort.** Being interrupted should
+not mean forgetting, but remembering must not become repeated solicitation.
+The 27 Sep 2026 read-only MCP snapshot had 11 retained cue-pool urges, all
+`ask_about_result` and all expired; main-wake counters were 0 proposed,
+0 admitted, 0 rejected. Live presence, policy loading, heartbeat, and
+unprompted speech permission were on. This is a bounded in-memory sample,
+not an expiry rate or proof that any of those cues deserved speech.
+
+**Verified mechanism.**
+[`cue_adapter.py`](../../app/core/live/cue_adapter.py) projects a cue using
+its ID as the repetition/evidence key.
+[`urge_store.py`](../../app/core/live/urge_store.py) gives it 45 seconds,
+does not extend that deadline on merge, and blocks the same evidence after
+expiry. Parking does not stop expiry. This is appropriate for a fleeting
+gesture; a still-valid conversational subject has a different lifetime.
+It can remain available in the durable pool while disappearing from Live's
+choice set for the lifetime of this urge store.
+
+**Smallest proposal.** Distinguish `missed_opening` from `handled`,
+`explicitly_declined`, and `source_expired`. Keep the durable cue as owner;
+retain only a bounded reference plus the reason it waited. Reconsider it
+at most once at a genuinely new, server-derived opportunity, such as a
+focus boundary or a completed user turn, after rechecking pool state,
+relevance, cooldown, consent, and floor. A heartbeat, unchanged silence,
+or repeated projection is not a new opportunity. Handled/declined cues
+never rearm this way. No automatic greeting on reconnect, no mutation of
+cue fulfilment from Live, and no resurrection of an old action generation.
+
+**Discriminator before implementation.** Replay: a relevant cue arrives
+while composing lasts over 45 seconds, then the user finishes and a suitable
+opening appears. Compare with an off-topic cue, an explicit refusal, a
+consumed cue, and no opening at all. Count missed *eligible* openings, not
+expired urges. If the durable provider already recovers these cases in the
+real path, keep the current suppression and close this proposal.
+Reuse DT4/DT1 for replay; measure duplicate speech and policy calls per hour
+as guardrails. This extends L10's choice set lifecycle, not L7's action retry.
+
+#### L18. Preserve why a cue exists before choosing how to say it
+
+**Open; high priority, small-to-medium effort.** A shareable observation
+should not have to pass a question gate. Every pooled cue currently becomes
+`ask_about_result` in
+[`cue_adapter.py`](../../app/core/live/cue_adapter.py), regardless of source
+type. [`main_wake.py`](../../app/core/live/main_wake.py) rejects that kind
+when `questions_allowed` is false, before a proposed `share_observation`
+speech act can rescue it. L6's speech-act enum therefore does not solve
+source-purpose loss. The snapshot used for L17 confirms this uniform kind
+in retained cue urges; it does not establish a measured rejection rate
+(there were no main-wake proposals).
+
+**Smallest proposal.** Project deterministic, allowlisted cue purpose
+(`ask`, `share`, `continue`, `report`) and evidence freshness from existing
+cue policy/source metadata. Separate that purpose from the optional L6
+delivery act. Apply question limits to genuine asks, not every pool item;
+an unknown purpose must not gain permission. A question-bearing cue cannot
+be relabeled by the 4B to bypass question balance. Keep the numbered menu
+peek-only and title/body-free; when the subject scrub drops a label, do not
+infer its meaning from the fallback cue-type name. A main-model handoff
+must resolve and revalidate the selected cue ID through the existing owner
+before using its content. That lookup needs an explicit test, not an
+assumption that printing an ID makes the main model know its meaning.
+
+**Acceptance.** With question allowance exhausted, a valid share candidate
+remains selectable but an ask does not; neither may bypass sleep, DND,
+composing, generation, or speech budget. A stale/consumed ID is silent.
+Projection, menu rendering, and rejected proposals leave cue counters
+unchanged. Measure substantive, grounded contributions on eligible openings,
+not more main-wakes. Reuse L10/L6 and K93's cross-type selection work; do not
+give the small policy model a separate memory ranker or narrative voice.
 
 #### Later candidates (after L8–L16 have hours of evidence)
 

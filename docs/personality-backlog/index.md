@@ -51,6 +51,64 @@ the mechanical half of this — broken paths and, more usefully, heading anchors
 that stopped resolving when a heading was reworded on its way into `shipped/`.
 Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
 
+## 27 Sep 2026: naturalness and cognitive continuity
+
+**Backlog only; no runtime behavior or settings changed.** This pass used
+read-only SQLite reports and the running app's MCP diagnostics. The goal
+is an individual companion with coherent interests, revisable understanding,
+and good timing, not a gender stereotype or a claim to replicate a human
+brain. More animation, questions, or hidden reasoning are not automatic
+improvements. All examples below are synthetic; measurements are aggregate
+software behavior, not personal profiles or transcript excerpts.
+
+### Evidence snapshot
+
+The audit date is local 27 Sep; the report clock was still 26 Sep UTC.
+Rolling windows below are relative to execution, not frozen datasets.
+
+| Scope | Observation | What it does not prove |
+| --- | --- | --- |
+| 14-day lead/follow report, 397 assistant turns | Median 33 words; 2.8% end in a question; 13% anaphoric openers; 65% lexical own-material share | Lexical novelty is not initiative, reasoning, or enjoyment |
+| 14-day prompt telemetry | Mean 33.3 nonempty blocks and 76,181 summed block characters per turn | Volume alone does not prove harmful competition; compare K92/P43 candidates at equal budgets |
+| 14-day cue report, 3,934 decisions | Hypothesis cues surface on 10/396 eligible decisions; 530 declines still say only `provider` | Low reach is not evidence to lower relevance or cooldown gates |
+| Current second-thought runtime | Enabled; 3 scheduled, 3 failed, 0 queued | A small process-local failure sample cannot identify the exception or measure thought quality |
+| Current Live runtime | 90 executions (74 attend, 9 remain-present, 7 acknowledge); 0 main-wake proposals; 11 retained cue urges expired | This bounded sample is not a longitudinal silence/expiry rate; silence can be correct |
+| Lifetime hypothesis snapshot | 75 rows; 12 ever asked; 1 of those has a verdict; 0 graduated | An unscored ask does not prove the user answered; H7/H44 remain the existing repair lane |
+| Lifetime belief snapshot | 393 beliefs; 365 checked; 118 with a gap stamp | Belief tracking is present; these counts do not establish its accuracy |
+
+Reproduce the offline portion with
+[`lead_follow_report.py`](../../scripts/lead_follow_report.py)
+(`--windows 7,14`),
+[`cue_reach_report.py`](../../scripts/cue_reach_report.py) (`--days 14`),
+and [`block_firing_report.py`](../../scripts/block_firing_report.py)
+(`--window-days 14`). Read-only MCP calls were
+`get_live_situation_frame` and `get_second_thought_state`; do not replay
+messages into the live relationship to reproduce the counts. Additional
+SQL aggregates used `mode=ro` plus `PRAGMA query_only=ON` over `beliefs`,
+`hypotheses`, `turn_prompt_blocks`, and `surfacing_outcomes`, with distinct
+assistant-message denominators. No memory text or personal details are
+needed to repeat those aggregates.
+
+### Recommended order
+
+| Priority | Item | Why it comes here |
+| --- | --- | --- |
+| First | [K96 operational follow-up](patterns.md#k96-one-shot-per-thought--in-turn-deliberation) | Diagnose the enabled post-reply pass's failures before adding more thinking |
+| First | [K92/K93](patterns.md#k92-conversational-stance--one-decision-per-turn-not-ten-permission-slips), [G6](workers.md), [H7/H44](health.md#h44-nothing-has-ever-graduated-and-at-this-calibration-nothing-can) | Finish candidate selection/attribution and close existing answer loops; these are not new features |
+| Next | [Live L18](live-mode.md#l18-preserve-why-a-cue-exists-before-choosing-how-to-say-it) | Preserve share/ask/report purpose instead of treating all thoughts as questions |
+| Next | [Live L17](live-mode.md#l17-a-deferred-thought-can-meet-a-later-opening) | Test whether a still-valid thought can survive a missed opening without repeated pressure |
+| Experiment | [K97](patterns.md#k97-a-small-causal-working-set-for-the-current-thread) | Carry an evidence-linked working understanding, separate from thoughts offered aloud |
+| Experiment | [K98](patterns.md#k98-continue-an-interest-after-a-good-answer) | Let a real answer advance an interest rather than merely retire an ask |
+| Later | [K99](patterns.md#k99-common-ground-with-delivery-provenance) | Distinguish internally known, delivered, and acknowledged material across interruptions |
+| Across all | [T5 naturalness evaluation](testing.md#27-sep-2026-multi-turn-naturalness-track) | Measure continuity, appropriate silence, correction, and non-repetition with negative controls |
+
+**Existing polish to reuse, not duplicate:** Live L5/L9 cover delivery and
+listening manners; K42 covers texting bursts; K49 covers typed imperfection;
+K62 covers shared media. Test those against the same T5 scenarios after the
+content path works. Do not synthesize jealousy, random mistakes, or emotional
+dependency as a shortcut to feeling alive. Quiet companionship is a valid
+outcome, and a user ending a conversation is not a negative reward.
+
 ## The surfacing-outcome spine (L37 and what hangs off it)
 
 One cluster of open items is worth calling out because it shares a single

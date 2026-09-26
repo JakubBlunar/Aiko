@@ -1167,6 +1167,18 @@ Leave this entry **open** until `cue_reach_report.py` shows a real
 `graduated` (or `merged`) exit. The report already prints the funnel;
 the new cue expire-reason tally is the H7 half of the same page.
 
+**27 Sep 2026 read-only follow-up.** The same report now sees 75 lifetime
+hypotheses: 62 expired, 11 open, 1 supported, and 1 refuted; still no
+graduation. Twelve rows have ever been asked, two rows carry a verdict,
+but only **one of the twelve asked rows** carries one. Thus 11 asked rows
+are unscored; that does not establish whether an answer actually arrived.
+The never-asked supported row still has one support and must not be
+fast-tracked. The passive-listen implementation above is shipped, but its
+intended graduated exit is still unobserved. Keep H7/H44 open: sample the
+ask -> actual answer -> resolver reason chain before proposing more hunch
+generation or weakening the two-confirmation rule. These are lifetime
+funnel counts; the cue-reach section's 14-day window is a different cohort.
+
 ---
 
 ## H54. `topic_miss` at 95% of eligible declines is not, by itself, a starvation
