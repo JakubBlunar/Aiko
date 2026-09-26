@@ -2,7 +2,8 @@
 
 A tiny :class:`~app.core.proactive.idle_worker.IdleWorker` that periodically
 asks the :class:`~app.core.concepts.concept_edge_reconciler.ConceptEdgeReconciler`
-to garbage-collect concept edges whose memory endpoint no longer exists.
+to garbage-collect concept edges whose memory or cluster representative
+no longer exists.
 
 Most memory deletes are reconciled *synchronously* by the reconciler's
 delete-listener hook, but ``MemoryStore.prune`` batch-deletes rows without
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class ConceptEdgeIntegrityWorker:
-    """IdleWorker: garbage-collect orphaned concept<->memory edges and
+    """IdleWorker: garbage-collect orphaned memory/cluster evidence edges and
     reconcile the affected concepts' evidence counts (L25)."""
 
     name = "concept_edge_integrity"

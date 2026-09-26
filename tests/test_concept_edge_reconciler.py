@@ -83,6 +83,20 @@ class DeleteCascadeTests(unittest.TestCase):
         self.assertEqual(got.evidence_count, 0)
         self.assertEqual(got.distinct_source_count, 0)
 
+    def test_on_memory_deleted_drops_cluster_representative_evidence(self) -> None:
+        _, store, _ = _build()
+        cid = store.add(_c("c", evidence_count=2, distinct_source_count=2))
+        store.add_edge(ConceptEdge("cluster", "10", "concept", str(cid), "evidence"))
+        _evidence(store, 11, cid)
+
+        ConceptEdgeReconciler(store).on_memory_deleted(10)
+
+        self.assertEqual([e.src_id for e in store.evidence_of(cid)], ["11"])
+        got = store.get(cid)
+        assert got is not None
+        self.assertEqual(got.evidence_count, 1)
+        self.assertEqual(got.distinct_source_count, 1)
+
     def test_on_memory_deleted_no_edges_is_noop(self) -> None:
         _, store, _ = _build()
         cid = store.add(_c("c", evidence_count=5, distinct_source_count=5))
@@ -131,6 +145,21 @@ class SweepTests(unittest.TestCase):
         self.assertEqual(stats["orphans_dropped"], 0)
         self.assertEqual(stats["concepts_reconciled"], 0)
 
+    def test_sweep_drops_missing_cluster_representatives(self) -> None:
+        db, store, _ = _build()
+        _insert_memory(db, 100)
+        cid = store.add(_c("c", evidence_count=2, distinct_source_count=2))
+        store.add_edge(ConceptEdge("cluster", "100", "concept", str(cid), "evidence"))
+        store.add_edge(ConceptEdge("cluster", "200", "concept", str(cid), "evidence"))
+        rec = ConceptEdgeReconciler(store)
+
+        self.assertEqual(rec.orphan_backlog(), 1)
+        self.assertEqual(rec.sweep(50)["orphans_dropped"], 1)
+        self.assertEqual([e.src_id for e in store.evidence_of(cid)], ["100"])
+        got = store.get(cid)
+        assert got is not None
+        self.assertEqual(got.evidence_count, 1)
+
 
 class RepointTests(unittest.TestCase):
     def test_repoint_preserves_evidence_on_survivor(self) -> None:
@@ -164,6 +193,22 @@ class RepointTests(unittest.TestCase):
         assert got is not None
         self.assertEqual(got.evidence_count, 1)
         self.assertEqual(got.distinct_source_count, 1)
+
+    def test_repoint_preserves_cluster_evidence_on_survivor(self) -> None:
+        _, store, _ = _build()
+        cid = store.add(_c("c", evidence_count=1, distinct_source_count=1))
+        store.add_edge(ConceptEdge("cluster", "10", "concept", str(cid), "evidence"))
+
+        moved = ConceptEdgeReconciler(store).repoint(10, 20)
+
+        self.assertEqual(moved, 1)
+        self.assertEqual(
+            [(e.src_type, e.src_id) for e in store.evidence_of(cid)],
+            [("cluster", "20")],
+        )
+        got = store.get(cid)
+        assert got is not None
+        self.assertEqual(got.evidence_count, 1)
 
 
 class DeleteListenerIntegrationTests(unittest.TestCase):

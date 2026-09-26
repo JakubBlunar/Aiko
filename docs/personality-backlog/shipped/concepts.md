@@ -1551,6 +1551,18 @@ single writer of `confidence` / `plasticity` / `status`. Knobs:
 [`concept-lifecycle.md`](../../concept-lifecycle.md) and
 [`configuration.md`](../../configuration.md).
 
+**26 Sep 2026 follow-up.** `cluster` evidence stores a representative *memory*
+id, but the chosen representative changes with salience and use count. The
+live graph had 22,232 cluster evidence edges: about 14,203 referenced a
+member that was no longer its cluster's representative; 1,863 referenced a
+deleted memory. The concept snapshot now resolves any current cluster member
+to its summary; the debug view falls back to surviving memory text for an
+unassigned former representative. Prompt grounding remains theme-only.
+Delete, prune-sweep, and destructive memory-merge reconciliation now include
+cluster representative edges, with edge-derived concept counts recomputed.
+No live rows were deleted by this code change; the normal bounded integrity
+worker clears existing missing-memory edges after the updated app starts.
+
 **Motivation.** Concepts point at memories through `concept_edges`, but memories
 are not permanent: they're archived, consolidated/merged (K35), reclassified,
 and outright **deleted** (dead scratchpad in `MemoryPromotionWorker`). Nothing

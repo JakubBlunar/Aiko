@@ -27,6 +27,7 @@ from app.core.concepts.concept_consolidation_worker import (
 )
 from app.core.concepts.concept_dedupe import DEDUPE_COS
 from app.core.concepts.concept_event_store import ConceptEventStore
+from app.core.concepts.concept_meta_depth import meta_depth
 from app.core.concepts.concept_store import Concept, ConceptEdge, ConceptStore
 from app.core.infra.chat_database import ChatDatabase
 from app.core.infra.memory_settings import MemorySettings
@@ -87,6 +88,35 @@ def _evidence(store: ConceptStore, src_type: str, src_id: str, dst_id: int):
 
 
 class MergeIntoTests(unittest.TestCase):
+    def test_refuses_merge_between_different_meta_depths(self) -> None:
+        _db, store, _ev = _new_store()
+        base = _add(store, label="base")
+        first = _add(
+            store, label="first", kind="generalization", evidence_model="meta"
+        )
+        sibling = _add(
+            store, label="sibling", kind="generalization", evidence_model="meta"
+        )
+        deeper = _add(
+            store, label="deeper", kind="generalization", evidence_model="meta"
+        )
+        parent = _add(
+            store, label="parent", kind="generalization", evidence_model="meta"
+        )
+        _evidence(store, "concept", str(base.concept_id), first.concept_id)
+        _evidence(store, "concept", str(base.concept_id), sibling.concept_id)
+        _evidence(store, "concept", str(first.concept_id), deeper.concept_id)
+        _evidence(store, "concept", str(sibling.concept_id), deeper.concept_id)
+        _evidence(store, "concept", str(sibling.concept_id), parent.concept_id)
+        self.assertEqual(meta_depth(store, deeper.concept_id), 2)
+        self.assertEqual(meta_depth(store, parent.concept_id), 2)
+
+        self.assertFalse(store.merge_into(
+            canonical_id=deeper.concept_id, absorbed_id=sibling.concept_id,
+        ))
+        self.assertIsNotNone(store.get(sibling.concept_id))
+        self.assertEqual(meta_depth(store, parent.concept_id), 2)
+
     def test_repoints_and_dedupes_evidence(self) -> None:
         _db, store, _ev = _new_store()
         canonical = _add(store, label="A", confidence=0.9)

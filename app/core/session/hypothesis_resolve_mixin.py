@@ -175,7 +175,11 @@ class HypothesisResolveMixin:
 
         from app.core.proactive.cue_accounting import policy_for
 
-        why = str(reason or "unclear")
+        detail = str(reason or "")
+        why = (
+            detail if detail in _HOLD_REASONS or detail == "opposed_confirm"
+            else "model_unclear"
+        )
         if why in _HOLD_REASONS and not self._hypothesis_hold_timed_out(row):
             self._hold_unanswered_hypothesis(store, row, why)
             return
@@ -191,10 +195,11 @@ class HypothesisResolveMixin:
         if int(getattr(row, "ask_count", 0) or 0) >= max_asks:
             store.expire(row.id, evidence=evidence)
             log.info(
-                "hypothesis unanswered, retired: subject=%r asks=%d reason=%s",
+                "hypothesis unanswered, retired: subject=%r asks=%d reason=%s detail=%r",
                 row.subject[:60],
                 int(getattr(row, "ask_count", 0) or 0),
                 why,
+                detail[:120],
             )
             return
         store.release(

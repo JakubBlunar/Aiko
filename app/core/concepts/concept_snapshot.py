@@ -64,15 +64,23 @@ def _disabled() -> dict[str, Any]:
     }
 
 
-def _cluster_label_map(topic_graph: "TopicGraph | None") -> dict[str, str]:
-    """Map each cluster's stable representative-member id -> its summary,
-    so ``cluster`` evidence edges (keyed by rep id) resolve to a label."""
+def _cluster_label_map(
+    topic_graph: "TopicGraph | None", source_ids: set[str]
+) -> dict[str, str]:
+    """Resolve cluster evidence keyed by a member that was representative
+    when its edge was written, even if the representative later changes."""
     labels: dict[str, str] = {}
     if topic_graph is None:
         return labels
     try:
         for cluster in topic_graph.topic_clusters():
-            labels[str(cluster.representative_id)] = cluster.summary or ""
+            rep_id = str(cluster.representative_id)
+            if rep_id in source_ids:
+                labels[rep_id] = cluster.summary or ""
+            for member_id in getattr(cluster, "member_ids", ()):
+                key = str(member_id)
+                if key in source_ids:
+                    labels[key] = cluster.summary or ""
     except Exception:
         return labels
     return labels
@@ -83,6 +91,8 @@ def _resolve_label(
     memory_store: "MemoryStore | None",
     cluster_labels: dict[str, str],
     store: "ConceptStore",
+    *,
+    cluster_memory_fallback: bool = False,
 ) -> str:
     """Human-readable label for one evidence node (full text, untrimmed)."""
     try:
@@ -92,7 +102,11 @@ def _resolve_label(
             mem = memory_store.get(int(edge.src_id))
             return (getattr(mem, "content", "") or "") if mem else ""
         if edge.src_type == "cluster":
-            return cluster_labels.get(str(edge.src_id), "")
+            label = cluster_labels.get(str(edge.src_id), "")
+            if label or not cluster_memory_fallback or memory_store is None:
+                return label
+            mem = memory_store.get(int(edge.src_id))
+            return (getattr(mem, "content", "") or "") if mem else ""
         if edge.src_type == "concept":
             other = store.get(int(edge.src_id))
             return other.label if other else ""
@@ -126,9 +140,12 @@ def resolve_evidence_labels(
     for the prompt (notably ``subject=aiko`` self-concepts, whose evidence
     is memory-typed). ``None`` (default) keeps every node type.
     """
-    cluster_labels = _cluster_label_map(topic_graph)
+    edges = store.evidence_of(int(concept_id))
+    cluster_labels = _cluster_label_map(
+        topic_graph, {e.src_id for e in edges if e.src_type == "cluster"}
+    )
     out: list[str] = []
-    for edge in store.evidence_of(int(concept_id)):
+    for edge in edges:
         if src_types is not None and edge.src_type not in src_types:
             continue
         label = (
@@ -228,11 +245,17 @@ def build_concepts_snapshot(
 
     # Evidence resolution is the expensive half (a join per edge), so it
     # runs only for the rows actually being returned.
-    cluster_labels = _cluster_label_map(topic_graph)
+    page_edges = {c.concept_id: store.evidence_of(c.concept_id) for c in page}
+    cluster_labels = _cluster_label_map(
+        topic_graph,
+        {
+            e.src_id for edges in page_edges.values() for e in edges
+            if e.src_type == "cluster"
+        },
+    )
     # L32 importance rides along free: the edges it needs to find a
     # concept's grounding clusters are the same ones the loop below
     # resolves for display, so they are read once and used twice.
-    page_edges = {c.concept_id: store.evidence_of(c.concept_id) for c in page}
     importance = importance_context_for(
         {
             cid: memory_ids_from_edges(edges)
@@ -252,7 +275,10 @@ def build_concepts_snapshot(
                 "polarity": e.polarity,
                 "strength": e.strength,
                 "ordinal": e.ordinal,
-                "label": _resolve_label(e, memory_store, cluster_labels, store),
+                "label": _resolve_label(
+                    e, memory_store, cluster_labels, store,
+                    cluster_memory_fallback=True,
+                ),
             })
 
         embedding = getattr(c, "embedding", None)

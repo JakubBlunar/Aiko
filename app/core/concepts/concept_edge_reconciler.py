@@ -1,22 +1,24 @@
 """L25 concept<->memory edge referential integrity.
 
 Concepts point at memories through ``concept_edges`` (``evidence``:
-``memory -> concept``; ``contradicts``: ``concept -> memory``), but memories
-are not permanent -- they're deleted, pruned, merged, archived, and
-reclassified. This reconciler keeps the edge graph honest when a memory
-moves or vanishes, so a concept never silently keeps dangling support (or
-loses the support it was promoted on).
+``memory|cluster -> concept``; ``contradicts``: ``concept -> memory``).
+Cluster evidence uses the representative memory id, which may change as
+clusters evolve. Memories are not permanent -- they're deleted, pruned,
+merged, archived, and reclassified. This reconciler keeps the edge graph
+honest when a memory moves or vanishes, so a concept never silently keeps
+dangling support (or loses the support it was promoted on).
 
 Three entry points, all pure SQL / arithmetic (no LLM):
 
 - :meth:`on_memory_deleted` -- registered as a ``MemoryStore`` delete
-  listener. When a memory is hard-deleted, drop every edge touching it and
+    listener. When a memory is hard-deleted, drop its memory and cluster edges and
   recompute the affected concepts' evidence counts so L3 can weaken /
   demote them when its rolling sweep next reaches them.
 - :meth:`sweep` -- the defence-in-depth pass the L25 idle worker runs.
-  ``MemoryStore.prune`` batch-deletes rows *without* firing delete
-  listeners, so orphaned edges accumulate; the sweep garbage-collects any
-  edge whose memory endpoint no longer exists and reconciles counts.
+    ``MemoryStore.prune`` batch-deletes rows *without* firing delete
+    listeners, so orphaned edges accumulate; the sweep garbage-collects any
+    edge whose memory or cluster representative no longer exists and
+    reconciles counts.
 - :meth:`repoint` -- for a *destructive* merge (legacy Phase 4b
   consolidation hard-deletes the absorbed memory): move the victim's edges
   onto the surviving memory so a merged evidence memory keeps supporting
@@ -59,9 +61,8 @@ class ConceptEdgeReconciler:
     # ── delete cascade (registered as a MemoryStore delete listener) ────
 
     def on_memory_deleted(self, memory_id: int) -> None:
-        """Drop every edge touching a just-deleted memory and recompute the
-        affected concepts' evidence counts. Safe to call for a memory with
-        no edges (a cheap no-op)."""
+        """Drop edges touching a deleted memory or its cluster representative
+        and recount affected concepts. No-op when nothing references it."""
         try:
             mid = int(memory_id)
         except (TypeError, ValueError):
@@ -70,6 +71,7 @@ class ConceptEdgeReconciler:
         if not affected:
             return
         self._store.delete_edges_for_node("memory", mid)
+        self._store.delete_edges_for_node("cluster", mid)
         for cid in affected:
             self._recount(cid)
 

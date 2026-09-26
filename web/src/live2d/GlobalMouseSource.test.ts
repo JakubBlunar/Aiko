@@ -84,9 +84,10 @@ interface ManualScheduler {
   drain: () => Promise<number>;
 }
 
-function makeScheduler(): ManualScheduler {
+function makeScheduler(frameStepMs = 34): ManualScheduler {
   const pending = new Map<number, FrameRequestCallback>();
   let nextId = 1;
+  let frameTime = 0;
   return {
     schedule: (cb) => {
       const id = nextId++;
@@ -99,7 +100,8 @@ function makeScheduler(): ManualScheduler {
     drain: async () => {
       const callbacks = Array.from(pending.values());
       pending.clear();
-      callbacks.forEach((cb) => cb(performance.now()));
+      frameTime += frameStepMs;
+      callbacks.forEach((cb) => cb(frameTime));
       // Each callback's poll resolves on the microtask queue; flush
       // it so the source has actually written ``_x / _y`` before the
       // test's next assertion runs.
@@ -228,6 +230,58 @@ describe("GlobalMouseSource — lifecycle", () => {
   });
   afterEach(() => {
     clearFakeWindow();
+  });
+
+  it("limits cursor IPC to 30 Hz while frames keep rendering", async () => {
+    const { api } = makeCursorApi();
+    const getCursorPositionPhysical = vi.spyOn(api, "getCursorPositionPhysical");
+    const sched = makeScheduler(10);
+    const source = new GlobalMouseSource({
+      container: makeContainer(),
+      cursorApi: api,
+      scheduleFrame: sched.schedule,
+      cancelFrame: sched.cancel,
+    });
+    const teardown = source.subscribe();
+
+    for (let frame = 0; frame < 10; frame++) {
+      expect(await sched.drain()).toBe(1);
+    }
+    expect(getCursorPositionPhysical).toHaveBeenCalledTimes(3);
+    teardown();
+  });
+
+  it("does not start another poll until the previous cursor IPC resolves", async () => {
+    const { api } = makeCursorApi();
+    const pending: Array<(point: { x: number; y: number } | null) => void> = [];
+    const getCursorPositionPhysical = vi.fn(() =>
+      new Promise<{ x: number; y: number } | null>((resolve) => pending.push(resolve)),
+    );
+    api.getCursorPositionPhysical = getCursorPositionPhysical;
+    const sched = makeScheduler();
+    const source = new GlobalMouseSource({
+      container: makeContainer(),
+      cursorApi: api,
+      scheduleFrame: sched.schedule,
+      cancelFrame: sched.cancel,
+      now: () => 1000,
+    });
+    const teardown = source.subscribe();
+
+    for (let frame = 0; frame < 5; frame++) {
+      await sched.drain();
+    }
+    expect(getCursorPositionPhysical).toHaveBeenCalledTimes(1);
+    pending.shift()?.({ x: 800, y: 300 });
+    await Promise.resolve();
+    expect(source.snapshot().x).toBe(800);
+
+    await sched.drain();
+    expect(getCursorPositionPhysical).toHaveBeenCalledTimes(2);
+    pending.shift()?.({ x: 850, y: 320 });
+    await Promise.resolve();
+    expect(source.snapshot().x).toBe(850);
+    teardown();
   });
 
   it("only updates lastMoveAt when the cursor actually moves", async () => {

@@ -6,14 +6,14 @@
  * for the other on a single ``isTauri()`` branch. The difference is
  * the data path: instead of hooking DOM ``pointermove`` (which only
  * fires when the cursor is over our own webview), we poll Tauri's
- * ``cursorPosition()`` every frame and translate the result back into
+ * ``cursorPosition()`` at up to 30 Hz and translate the result back into
  * window-relative logical pixels — exactly the coordinate space
  * :class:`GazeChannel` already expects.
  *
  * Why polling and not events? Tauri 2 doesn't expose a global
  * mouse-move event; the OS-level cursor stream sits behind a
- * synchronous query. One IPC per RAF tick is cheap (microseconds) and
- * far simpler than maintaining a Rust-side global hook.
+ * synchronous query. A bounded, single-flight poll avoids piling up
+ * IPC calls when the webview or desktop bridge is busy.
  *
  * Cross-monitor behaviour: the OS cursor space is one continuous
  * virtual screen across every connected display, so the subtraction
@@ -77,6 +77,7 @@ const DEFAULT_GEOMETRY: CachedGeometry = {
   innerY: 0,
   scaleFactor: 1,
 };
+const CURSOR_POLL_INTERVAL_MS = 1000 / 30;
 
 export class GlobalMouseSource implements MouseSource {
   private readonly _container: HTMLElement;
@@ -102,6 +103,8 @@ export class GlobalMouseSource implements MouseSource {
    * geometry arrives. */
   private _geometryReady = false;
   private _rafHandle: number | null = null;
+  private _pollInFlight = false;
+  private _lastPollAt = -Infinity;
   private _disposed = false;
   /** When ``true`` the per-frame poll loop is parked (window hidden).
    * The cursor cache is left as-is so the gaze resumes from the last
@@ -212,8 +215,8 @@ export class GlobalMouseSource implements MouseSource {
     };
   }
 
-  /** Park the per-frame cursor poll while the window is hidden. The
-   * ~60 IPC-per-second cursor query is the source's whole cost, so
+  /** Park the cursor poll while the window is hidden. The
+   * cursor query is the source's whole cost, so
    * stopping it drops a tray-hidden webview's contribution to zero.
    * Idempotent and safe before ``subscribe`` / after dispose. */
   pause(): void {
@@ -244,11 +247,14 @@ export class GlobalMouseSource implements MouseSource {
     if (this._disposed || this._paused || this._rafHandle != null) {
       return;
     }
-    const tick = () => {
+    const tick = (frameTime: number) => {
       if (this._disposed || this._paused) {
         return;
       }
-      void this._pollOnce();
+      if (!this._pollInFlight && frameTime - this._lastPollAt >= CURSOR_POLL_INTERVAL_MS) {
+        this._lastPollAt = frameTime;
+        void this._pollOnce();
+      }
       this._rafHandle = this._scheduleFrame(tick);
     };
     this._rafHandle = this._scheduleFrame(tick);
@@ -264,26 +270,31 @@ export class GlobalMouseSource implements MouseSource {
   }
 
   private async _pollOnce(): Promise<void> {
-    const point = await this._cursorApi.getCursorPositionPhysical();
-    if (this._disposed || !point || !this._geometryReady) {
-      return;
+    this._pollInFlight = true;
+    try {
+      const point = await this._cursorApi.getCursorPositionPhysical();
+      if (this._disposed || !point || !this._geometryReady) {
+        return;
+      }
+      const scale = this._geometry.scaleFactor || 1;
+      // Convert physical → logical (CSS) pixels for both the cursor and
+      // the window's inner top-left, then subtract. ``getBoundingClientRect``
+      // is in CSS pixels so the resulting ``mouse.x / mouse.y`` lands in
+      // the same coord space :class:`GazeChannel` reads.
+      const nx = point.x / scale - this._geometry.innerX / scale;
+      const ny = point.y / scale - this._geometry.innerY / scale;
+      if (nx === this._x && ny === this._y) {
+        // Cursor stationary between two polls. Don't refresh
+        // ``lastMoveAt`` — it must reflect actual movement so the
+        // gaze idle-break still fires when the user steps away from
+        // the mouse.
+        return;
+      }
+      this._x = nx;
+      this._y = ny;
+      this._lastMoveAt = this._now();
+    } finally {
+      this._pollInFlight = false;
     }
-    const scale = this._geometry.scaleFactor || 1;
-    // Convert physical → logical (CSS) pixels for both the cursor and
-    // the window's inner top-left, then subtract. ``getBoundingClientRect``
-    // is in CSS pixels so the resulting ``mouse.x / mouse.y`` lands in
-    // the same coord space :class:`GazeChannel` reads.
-    const nx = point.x / scale - this._geometry.innerX / scale;
-    const ny = point.y / scale - this._geometry.innerY / scale;
-    if (nx === this._x && ny === this._y) {
-      // Cursor stationary between two polls. Don't refresh
-      // ``lastMoveAt`` — it must reflect actual movement so the
-      // gaze idle-break still fires when the user steps away from
-      // the mouse.
-      return;
-    }
-    this._x = nx;
-    this._y = ny;
-    this._lastMoveAt = this._now();
   }
 }

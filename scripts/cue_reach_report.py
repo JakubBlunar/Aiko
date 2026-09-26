@@ -535,8 +535,9 @@ def _collect_hypothesis_cues(conn: sqlite3.Connection) -> dict[str, Any]:
     """How the ask cues ended -- the H7 hold vs expire split.
 
     ``used_evidence`` on expired ``concept_hypothesis`` rows is
-    ``max_asks/<reason>``. Tallying those is what tells an unclassified
-    hypothesis row *why* nothing scored it, without a schema bump.
+    ``max_asks/<reason>``. Older rows can hold a model's free-text
+    explanation instead of a stable reason code; keep them visibly
+    unclassified rather than treating each sentence as a category.
     """
     empty: dict[str, Any] = {
         "by_state": {},
@@ -559,10 +560,21 @@ def _collect_hypothesis_cues(conn: sqlite3.Connection) -> dict[str, Any]:
         if state == "awaiting":
             awaiting += 1
         evidence = str(row["used_evidence"] or "")
-        if state == "expired" and evidence.startswith("max_asks/"):
-            expire_reasons[evidence.split("/", 1)[-1] or "unclear"] += 1
-        elif state == "expired" and evidence:
-            expire_reasons[evidence] += 1
+        if state == "expired":
+            if evidence.startswith("max_asks/"):
+                reason = evidence.split("/", 1)[-1]
+                if reason not in {
+                    "awaiting_timeout", "model_unclear", "opposed_confirm",
+                    "off_subject", "no_client", "unparsed", "unclear",
+                }:
+                    reason = "legacy_unclear"
+            elif evidence.startswith("max_surfacings/"):
+                reason = "max_surfacings"
+            elif evidence in {"ttl", "off_subject"}:
+                reason = evidence
+            else:
+                reason = "legacy_unclassified"
+            expire_reasons[reason] += 1
     return {
         "by_state": dict(sorted(by_state.items(), key=lambda kv: -kv[1])),
         "expire_reasons": dict(
@@ -626,7 +638,8 @@ def _render_hypotheses(data: dict[str, Any]) -> str:
     if asked and data["asked_with_verdict"] < asked:
         out.append(
             f"  VERDICT: {asked - data['asked_with_verdict']} asked rows carry "
-            "no verdict -- she asked, he answered, nothing scored it (H7)."
+            "no verdict -- check cue reasons; whether the user answered "
+            "is unknown (H7)."
         )
 
     for item in data["parked"]:

@@ -96,6 +96,40 @@ class ConceptSnapshotTests(unittest.TestCase):
         snap = build_concepts_snapshot(store, MemStub({}), GraphStub([]))
         self.assertEqual(snap["concepts"][0]["evidence"][0]["label"], "")
 
+    def test_old_cluster_representative_resolves_current_summary(self) -> None:
+        store = _store()
+        cid = store.add(_concept("changing cluster"))
+        store.add_edge(
+            ConceptEdge("cluster", "100", "concept", str(cid), "evidence")
+        )
+        graph = GraphStub([
+            types.SimpleNamespace(
+                representative_id=101,
+                member_ids=(100, 101),
+                summary="current theme",
+            )
+        ])
+
+        snap = build_concepts_snapshot(store, MemStub({}), graph)
+        self.assertEqual(snap["concepts"][0]["evidence"][0]["label"], "current theme")
+        self.assertEqual(
+            resolve_evidence_labels(store, None, graph, cid), ["current theme"]
+        )
+
+    def test_unassigned_cluster_evidence_uses_memory_only_in_debug_view(self) -> None:
+        store = _store()
+        cid = store.add(_concept("former cluster"))
+        store.add_edge(
+            ConceptEdge("cluster", "100", "concept", str(cid), "evidence")
+        )
+        mem = MemStub({100: types.SimpleNamespace(content="original observation")})
+
+        snap = build_concepts_snapshot(store, mem, GraphStub([]))
+        self.assertEqual(
+            snap["concepts"][0]["evidence"][0]["label"], "original observation"
+        )
+        self.assertEqual(resolve_evidence_labels(store, mem, GraphStub([]), cid), [])
+
 
 class PagingTests(unittest.TestCase):
     """The snapshot never truncates, so it has to page instead. A mature

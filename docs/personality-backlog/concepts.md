@@ -2335,6 +2335,14 @@ wider tension filter.
   cannot fill the cap. Tension pool is unchanged.
 - Master switch `agent.generalization_stacking_enabled`.
 
+**26 Sep 2026 depth audit.** The live graph has 85 depth-3 and seven depth-4
+meta rows despite the default depth-2 cap; two depth-3 rows are active.
+All 92 have a merged canonical concept in their evidence ancestry. Synthesis
+checked depth when writing edges, but `merge_into` could later replace a
+depth-1 base with a depth-2 canonical below an existing parent. Merges across
+different meta depths are now refused before edges move. Existing deep rows
+are left intact for a separate quality read, not silently rewritten.
+
 **Out of this pass.** Tension stacking, relationship-subject L2, L29b /
 `sequence` / L34, stored depth column, L48 consolidation rewrite.
 

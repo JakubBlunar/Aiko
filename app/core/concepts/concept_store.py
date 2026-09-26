@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
+from app.core.concepts.concept_meta_depth import meta_depth
 from app.core.infra import timephrase
 
 if TYPE_CHECKING:
@@ -707,6 +708,11 @@ class ConceptStore:
             or canonical.kind != absorbed.kind
         ):
             return False
+        if (
+            canonical.evidence_model == "meta"
+            or absorbed.evidence_model == "meta"
+        ) and meta_depth(self, can_id) != meta_depth(self, abs_id):
+            return False
         # Refuse to collapse two concepts held in explicit friction with each
         # other -- that is L12 tension territory, not a dup. Tension bases link
         # to their meta via a concept->concept ``evidence`` edge (not a direct
@@ -1009,16 +1015,17 @@ class ConceptStore:
 
     def affected_concepts_for_memory(self, memory_id: int) -> set[int]:
         """Concept ids with any edge touching this memory, on either side:
-        ``evidence`` edges (memory -> concept) and ``contradicts`` edges
-        (concept -> memory). Used to recompute evidence counts after the
-        memory's edges are dropped or repointed (L25)."""
+        ``evidence`` edges (memory/cluster -> concept) and ``contradicts``
+        edges (concept -> memory). Cluster evidence ids are representative
+        memory ids too. Used to recount after deletion or repointing (L25)."""
         out: set[int] = set()
-        for e in self.edges_from("memory", memory_id):
-            if e.dst_type == "concept":
-                try:
-                    out.add(int(e.dst_id))
-                except (TypeError, ValueError):
-                    continue
+        for node_type in ("memory", "cluster"):
+            for e in self.edges_from(node_type, memory_id):
+                if e.dst_type == "concept":
+                    try:
+                        out.add(int(e.dst_id))
+                    except (TypeError, ValueError):
+                        continue
         for e in self.edges_into("memory", memory_id):
             if e.src_type == "concept":
                 try:
@@ -1028,7 +1035,8 @@ class ConceptStore:
         return out
 
     def repoint_memory_edges(self, old_id: int, new_id: int) -> int:
-        """Move every edge touching ``memory:old_id`` onto ``memory:new_id``
+        """Move edges touching a memory id (including cluster evidence)
+        onto the surviving memory id
         (L25 rule (b): a destructively-merged evidence memory keeps
         supporting its concept via the survivor). Re-adds each edge at the
         new endpoint -- ``add_edge`` upserts on the unique key, so a
@@ -1041,11 +1049,12 @@ class ConceptStore:
             return 0
         new_s = str(new)
         moved = 0
-        for e in self.edges_from("memory", old):
-            e.src_id = new_s
-            e.edge_id = 0
-            self.add_edge(e)
-            moved += 1
+        for node_type in ("memory", "cluster"):
+            for e in self.edges_from(node_type, old):
+                e.src_id = new_s
+                e.edge_id = 0
+                self.add_edge(e)
+                moved += 1
         for e in self.edges_into("memory", old):
             e.dst_id = new_s
             e.edge_id = 0
@@ -1053,12 +1062,13 @@ class ConceptStore:
             moved += 1
         if moved:
             self.delete_edges_for_node("memory", old)
+            self.delete_edges_for_node("cluster", old)
         return moved
 
     def orphaned_memory_edges(self, limit: int = 200) -> list[ConceptEdge]:
-        """Edges whose ``memory`` endpoint no longer has a surviving row in
-        ``memories`` -- the defence-in-depth catch for deletes that skip the
-        delete-listener path (notably ``MemoryStore.prune`` batch deletes).
+        """Edges whose memory id (including a cluster representative) no
+        longer exists -- the defence-in-depth catch for deletes that skip
+        the delete-listener path (notably ``MemoryStore.prune``).
         Bounded by ``limit`` so the L25 integrity sweep stays a small,
         rolling job."""
         conn = self._db._get_conn()  # type: ignore[attr-defined]
@@ -1066,7 +1076,8 @@ class ConceptStore:
             rows = conn.execute(
                 "SELECT id, src_type, src_id, dst_type, dst_id, relation, "
                 "polarity, strength, ordinal, created_at FROM concept_edges "
-                "WHERE (src_type = 'memory' AND CAST(src_id AS INTEGER) "
+                "WHERE (src_type IN ('memory', 'cluster') "
+                "       AND CAST(src_id AS INTEGER) "
                 "       NOT IN (SELECT id FROM memories)) "
                 "   OR (dst_type = 'memory' AND CAST(dst_id AS INTEGER) "
                 "       NOT IN (SELECT id FROM memories)) "

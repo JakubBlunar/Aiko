@@ -14,6 +14,8 @@ and the belief would carry on unchallenged.
 """
 from __future__ import annotations
 
+import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,14 +36,15 @@ from app.core.proactive.cue_store import (
 )
 from app.core.session.cue_pool_mixin import CuePoolMixin
 from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
+from scripts.cue_reach_report import _collect_hypothesis_cues, _render_hypotheses
 
 
 _BELIEF_VEC = np.asarray([1.0, 0.0], dtype=np.float32)
 _ORTHOGONAL = np.asarray([0.0, 1.0], dtype=np.float32)
 
 
-def _json(verdict: str) -> str:
-    return f'{{"verdict": "{verdict}", "restated": "", "reason": "r"}}'
+def _json(verdict: str, reason: str = "r") -> str:
+    return json.dumps({"verdict": verdict, "restated": "", "reason": reason})
 
 
 class _FakeOllama:
@@ -156,12 +159,12 @@ class _Fixture(unittest.TestCase):
             )
         )
 
-    def _host(self, *verdicts: str, **kw: Any) -> _Host:
+    def _host(self, *verdicts: str, reason: str = "r", **kw: Any) -> _Host:
         return _Host(
             cue_store=self.cues,
             concept_store=self.concepts,
             event_store=self.events,
-            ollama=_FakeOllama(*[_json(v) for v in verdicts]),
+            ollama=_FakeOllama(*[_json(v, reason) for v in verdicts]),
             memory_store=self.memories,
             **kw,
         )
@@ -262,6 +265,16 @@ class UnclearTests(_Fixture):
         host._resolve_concept_hypotheses(user_text="anyway, never mind")
 
         self.assertEqual(self._state(cue_id), STATE_EXPIRED)
+        row = next(r for r in self.cues.list_for_user() if r.id == cue_id)
+        self.assertEqual(row.used_evidence, "max_asks/model_unclear")
+
+    def test_model_explanation_is_not_used_as_an_expire_category(self) -> None:
+        cue_id = self._awaiting_cue()
+        host = self._host("UNCLEAR", reason="reply changes topic")
+        host._resolve_concept_hypotheses(user_text="anyway, never mind")
+
+        row = next(r for r in self.cues.list_for_user() if r.id == cue_id)
+        self.assertEqual(row.used_evidence, "max_asks/model_unclear")
 
     def test_a_hunch_with_asks_to_spare_would_be_released(self) -> None:
         # Guards the shared shape rather than live behaviour: the release
@@ -371,6 +384,53 @@ class UnclearTests(_Fixture):
         host._effective_worker_model = "worker"
         host._resolve_concept_hypotheses(user_text="yeah, kind of")
         self.assertEqual(self._state(cue_id), STATE_AWAITING)
+
+
+class HypothesisReportTests(unittest.TestCase):
+    def test_legacy_explanations_do_not_fragment_expire_reasons(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE cue_pool (cue_type TEXT, state TEXT, used_evidence TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO cue_pool VALUES ('concept_hypothesis', 'expired', ?)",
+            [
+                ("max_asks/model_unclear",),
+                ("max_asks/Reply changes the subject",),
+                ("Reply does not address the guess",),
+                ("max_surfacings/none:0.42",),
+                ("ttl",),
+            ],
+        )
+
+        report = _collect_hypothesis_cues(conn)
+        self.assertEqual(
+            report["expire_reasons"],
+            {
+                "legacy_unclassified": 1,
+                "legacy_unclear": 1,
+                "max_surfacings": 1,
+                "model_unclear": 1,
+                "ttl": 1,
+            },
+        )
+
+    def test_unscored_ask_does_not_claim_the_user_answered(self) -> None:
+        report = _render_hypotheses({
+            "bars": {"min_support": 2, "min_credence": 0.7, "ttl_hours": 336},
+            "total": 1,
+            "by_status": {"open": 1},
+            "asked": 1,
+            "asked_with_verdict": 0,
+            "verdicts": 0,
+            "graduated": 0,
+            "cues": {},
+            "parked": [],
+            "asked_unclassified": [],
+        })
+        self.assertIn("whether the user answered is unknown", report)
 
 
 class OwnershipTests(_Fixture):

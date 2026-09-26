@@ -591,6 +591,17 @@ tallies `concept_hypothesis` cue states and expire reasons next to the
 funnel, so "asked and unscored" has a *why*. The H44 ambient listen is
 the second confirmation; this pass only stops throwing the first away.
 
+**Re-read 26 Sep 2026.** The live read-only cue report shows 75 hypotheses,
+12 ever asked, one asked row with a verdict, and zero graduations. Of 56
+expired ask cues, 29 reached TTL, 10 hit the surfacing limit, eight were
+off-subject, and nine carry legacy free-text unclear explanations. The
+report now groups those older explanations separately; future model-level
+`UNCLEAR` expiries record `max_asks/model_unclear` and keep the explanation
+in the resolver log. An unscored ask does not prove the user answered it.
+Do not stamp `last_tested_at` on `UNCLEAR`: `expire_stale` treats that stamp
+as an actual answer and exempts the row from TTL. Re-read the reason mix
+after new asks before changing the echo gate, classifier, or H44's bar.
+
 ---
 
 ## H8. Cold-start and supply — measured, and *not* bugs
