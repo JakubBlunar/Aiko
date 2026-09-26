@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import threading
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from app.core.live.arbiter import arbitrate_live_proposal
 from app.core.live.cue_adapter import CueUrgeAdapter
+from app.core.live.main_wake import admit_main_wake
 from app.core.live.prompt import LivePolicyPromptAssembler
 from app.core.live.urge import LiveUrge
 from app.core.live.urge_menu import build_urge_menu, render_urge_menu
@@ -36,6 +38,67 @@ def _urge(**kwargs: object) -> LiveUrge:
 
 
 class UrgeMenuTests(unittest.TestCase):
+    def test_cue_purpose_preserves_shares_without_bypassing_question_limit(self) -> None:
+        frame = _frame()
+        frame = replace(
+            frame, constraints=replace(frame.constraints, questions_allowed=False),
+        )
+        for cue_type, purpose, expected in (
+            ("away_activities", "share", ""),
+            ("curiosity_seed", "ask", "questions_blocked"),
+        ):
+            with self.subTest(cue_type=cue_type):
+                row = SimpleNamespace(
+                    id=4, cue_type=cue_type, subject="film photography",
+                    last_surfaced_at=None,
+                )
+                store = LiveUrgeStore()
+                urge = CueUrgeAdapter(pending_provider=lambda row=row: [row]).project(
+                    store, now_mono_ms=5_000.0,
+                )[0]
+                self.assertEqual(urge.purpose, purpose)
+                self.assertEqual(
+                    admit_main_wake(
+                        intent="request_main_speech", user_intent=False,
+                        selected_urge_id=urge.urge_id, urges=store.active(),
+                        frame=frame, decided_generation=None,
+                        now_mono_ms=5_001.0, budget_remaining=1,
+                    ),
+                    expected,
+                )
+                self.assertIsNone(row.last_surfaced_at)
+
+    def test_unknown_cue_purpose_cannot_gain_speech(self) -> None:
+        row = SimpleNamespace(
+            id=4, cue_type="unknown_type", subject="film photography",
+            last_surfaced_at=None,
+        )
+        store = LiveUrgeStore()
+        urge = CueUrgeAdapter(pending_provider=lambda: [row]).project(
+            store, now_mono_ms=5_000.0,
+        )[0]
+        self.assertEqual(
+            admit_main_wake(
+                intent="request_main_speech", user_intent=False,
+                selected_urge_id=urge.urge_id, urges=store.active(), frame=_frame(),
+                decided_generation=None, now_mono_ms=5_001.0, budget_remaining=1,
+            ),
+            "unknown_cue_purpose",
+        )
+
+    def test_cue_purpose_survives_park_and_expiry(self) -> None:
+        row = SimpleNamespace(
+            id=4, cue_type="away_activities", subject="film photography",
+            last_surfaced_at=None,
+        )
+        store = LiveUrgeStore()
+        adapter = CueUrgeAdapter(pending_provider=lambda: [row])
+        urge = adapter.project(store, now_mono_ms=5_000.0)[0]
+        store.park(urge.urge_id)
+        self.assertEqual(adapter.project(store, now_mono_ms=6_000.0)[0].purpose, "share")
+        store.expire_due(50_000.0)
+        self.assertEqual(store.all_urges()[0].purpose, "share")
+
     def test_numbers_ids_and_drops_unsafe_subjects(self) -> None:
         items = build_urge_menu((
             _urge(urge_id="safe", subject="film photography"),

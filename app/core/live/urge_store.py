@@ -21,6 +21,7 @@ DEFAULT_TTL_MS = {
     "remain_present": 30_000,
     "share_delight": 20_000,
     "ask_about_result": 45_000,
+    "share_observation": 45_000,
     "comfort": 20_000,
     "wait": 15_000,
 }
@@ -135,6 +136,7 @@ class LiveUrgeStore:
         now_mono_ms: float,
         cue_id: int | None = None,
         ttl_ms: int | None = None,
+        purpose: str = "",
     ) -> LiveUrge | None:
         return self._propose(
             kind=kind,
@@ -145,6 +147,7 @@ class LiveUrgeStore:
             now_mono_ms=now_mono_ms,
             cue_id=cue_id,
             ttl_ms=ttl_ms,
+            purpose=purpose,
         )
 
     def park(self, urge_id: str) -> LiveUrge | None:
@@ -166,6 +169,7 @@ class LiveUrgeStore:
         now_mono_ms: float,
         cue_id: int | None = None,
         ttl_ms: int | None = None,
+        purpose: str = "",
     ) -> LiveUrge | None:
         evidence = "|".join(str(item) for item in source_ids)
         blocked = self._blocked.get(repetition_key)
@@ -194,6 +198,7 @@ class LiveUrgeStore:
             state="candidate",
             repetition_key=repetition_key,
             cue_id=cue_id,
+            purpose=purpose,
             salience_inputs={"transition_strength": 0.6},
         )
         self._urges[urge.urge_id] = urge
@@ -221,6 +226,7 @@ class LiveUrgeStore:
             state=existing.state,
             repetition_key=existing.repetition_key,
             cue_id=existing.cue_id if cue_id is None else cue_id,
+            purpose=existing.purpose,
         )
         self._urges[merged.urge_id] = merged
         return merged
@@ -294,4 +300,5 @@ class LiveUrgeStore:
             state=state,
             repetition_key=urge.repetition_key,
             cue_id=urge.cue_id,
+            purpose=urge.purpose,
         )

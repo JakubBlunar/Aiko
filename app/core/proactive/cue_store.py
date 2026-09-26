@@ -638,6 +638,14 @@ class CueStore:
             with_embedding=with_embedding,
         )
 
+    def available(self, cue_id: int, *, with_embedding: bool = False) -> CueRow | None:
+        where, params = self._available_clause(_stamp(None))
+        rows = self._select(
+            where + " AND id = ?", [*params, int(cue_id)],
+            limit=1, with_embedding=with_embedding,
+        )
+        return rows[0] if rows else None
+
     def count_pending(
         self, cue_type: str | None = None, *, now: datetime | None = None,
     ) -> int:

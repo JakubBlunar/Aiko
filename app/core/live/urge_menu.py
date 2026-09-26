@@ -23,6 +23,7 @@ class UrgeMenuItem:
     kind: str
     subject: str = ""
     parked: bool = False
+    purpose: str = ""
 
 
 def build_urge_menu(
@@ -52,6 +53,7 @@ def build_urge_menu(
                 kind=str(urge.kind or ""),
                 subject=cap_live_subject(urge.subject),
                 parked=str(urge.state) == "parked",
+                purpose=urge.purpose,
             )
         )
     return tuple(items)
@@ -67,9 +69,10 @@ def render_urge_menu(urges: Sequence[LiveUrge]) -> str:
     for item in items:
         parked = " parked" if item.parked else ""
         subject_bit = f" subject={item.subject}" if item.subject else ""
+        purpose_bit = f" purpose={item.purpose}" if item.purpose else ""
         lines.append(
             f"{item.index}. id={item.urge_id} kind={item.kind}"
-            f"{parked}{subject_bit}"
+            f"{parked}{subject_bit}{purpose_bit}"
         )
     return "\n".join(lines)
 

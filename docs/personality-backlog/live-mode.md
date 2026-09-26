@@ -8,7 +8,9 @@ without replacing either: C6 supplies environmental evidence, H27 describes the
 quiet product posture, and this document defines the control system between
 perception and behavior.
 
-**Status:** Pass 30 ships L16: the 4B may set `keep_attention` /
+**Status:** Pass 31 ships L18 cue purpose and exact main-turn handoff; see
+[the shipped record](shipped/cognitive-continuity.md#live-l18-cue-purpose-and-exact-handoff).
+Pass 30 ships L16: the 4B may set `keep_attention` /
 `keep_style` (default false) so a new target or style is dropped and
 the current hold stands. Hold cannot extend a wait past `MAX_WAIT_MS`,
 cannot override user intent, and cannot keep a cancelled generation.
@@ -94,7 +96,7 @@ plus a clamp, not a second Aiko.
 | Wait horizon / wake-set | shipped Pass 29 (L8). Bands only; raw ms and invented wake names ignored |
 | Explicit keep hold | shipped Pass 30 (L16). `keep_attention` / `keep_style`; user intent and generation still win |
 | Future 4B expansions (L8+) | backlog. Floor manners, circadian quieting, glance menu, return beat, compact prompt. L8, L10, L12, L16 shipped |
-| Opportunity-aware cue deferral / cue purpose | open L17-L18; 27 Sep read-only audit below. No increase to speech permission or budgets |
+| Opportunity-aware cue deferral / cue purpose | L17 open; L18 shipped Pass 31. No increase to speech permission or budgets |
 
 ### Pass 18 code audit — contract gaps still open
 
@@ -2313,36 +2315,8 @@ as guardrails. This extends L10's choice set lifecycle, not L7's action retry.
 
 #### L18. Preserve why a cue exists before choosing how to say it
 
-**Open; high priority, small-to-medium effort.** A shareable observation
-should not have to pass a question gate. Every pooled cue currently becomes
-`ask_about_result` in
-[`cue_adapter.py`](../../app/core/live/cue_adapter.py), regardless of source
-type. [`main_wake.py`](../../app/core/live/main_wake.py) rejects that kind
-when `questions_allowed` is false, before a proposed `share_observation`
-speech act can rescue it. L6's speech-act enum therefore does not solve
-source-purpose loss. The snapshot used for L17 confirms this uniform kind
-in retained cue urges; it does not establish a measured rejection rate
-(there were no main-wake proposals).
-
-**Smallest proposal.** Project deterministic, allowlisted cue purpose
-(`ask`, `share`, `continue`, `report`) and evidence freshness from existing
-cue policy/source metadata. Separate that purpose from the optional L6
-delivery act. Apply question limits to genuine asks, not every pool item;
-an unknown purpose must not gain permission. A question-bearing cue cannot
-be relabeled by the 4B to bypass question balance. Keep the numbered menu
-peek-only and title/body-free; when the subject scrub drops a label, do not
-infer its meaning from the fallback cue-type name. A main-model handoff
-must resolve and revalidate the selected cue ID through the existing owner
-before using its content. That lookup needs an explicit test, not an
-assumption that printing an ID makes the main model know its meaning.
-
-**Acceptance.** With question allowance exhausted, a valid share candidate
-remains selectable but an ask does not; neither may bypass sleep, DND,
-composing, generation, or speech budget. A stale/consumed ID is silent.
-Projection, menu rendering, and rejected proposals leave cue counters
-unchanged. Measure substantive, grounded contributions on eligible openings,
-not more main-wakes. Reuse L10/L6 and K93's cross-type selection work; do not
-give the small policy model a separate memory ranker or narrative voice.
+**Shipped Pass 31:** [purpose-aware admission and exact cue handoff](shipped/cognitive-continuity.md#live-l18-cue-purpose-and-exact-handoff).
+The T5 naturalness comparison remains open.
 
 #### Later candidates (after L8–L16 have hours of evidence)
 

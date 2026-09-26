@@ -259,6 +259,7 @@ def pick_pool_cue(
     allow_first_claim: bool = True,
     user_vec: Any = None,
     min_cosine: float | None = None,
+    cue_id: int | None = None,
 ) -> CuePick:
     """The best pending cue of this type that fits the moment.
 
@@ -313,6 +314,9 @@ def pick_pool_cue(
                 policy is not None and policy.pick_order == PICK_OLDEST
             ),
         )
+        if cue_id is not None:
+            selected = store.available(cue_id, with_embedding=True)
+            rows = [selected] if selected is not None and selected.cue_type == cue_type else []
     except Exception:
         log.debug("cue pool read failed: type=%s", cue_type, exc_info=True)
         return CuePick()

@@ -35,6 +35,7 @@ from app.core.proactive.cue_store import (
     CueStore,
 )
 from app.core.session.cue_pool_mixin import CuePoolMixin
+from app.core.session.live_mode_mixin import LiveModeMixin
 
 
 class _Host(CuePoolMixin):
@@ -88,6 +89,28 @@ class _Fixture(unittest.TestCase):
 
 
 class SurfacingTests(_Fixture):
+    def test_exact_cue_claim_does_not_take_a_sibling(self) -> None:
+        selected = self.store.add("away_activities", "sketchbook", "Selected thought")
+        sibling = self.store.add("away_activities", "music", "Other thought")
+        self.host._live_talk_about_payload = {"cue_id": selected}
+        text = LiveModeMixin._render_live_talk_about_block(self.host)
+        self.assertIn("Selected thought", text)
+        self.assertNotIn("Other thought", text)
+        self.assertEqual(self._row(selected).surfaced_count, 1)
+        self.assertEqual(self._row(sibling).surfaced_count, 0)
+        self.host._live_talk_about_payload = {"cue_id": selected}
+        self.assertEqual(LiveModeMixin._render_live_talk_about_block(self.host), "")
+        self.assertEqual(self._row(selected).surfaced_count, 1)
+
+    def test_exact_cue_claim_still_honors_type_and_cadence(self) -> None:
+        selected = self.store.add("self_callback", "sketchbook", "Selected thought")
+        self.assertIsNone(self.host.take_pool_cue("away_activities", cue_id=selected))
+        self.assertEqual(self._row(selected).surfaced_count, 0)
+        self.assertIsNotNone(self.host.take_pool_cue("self_callback", cue_id=selected))
+        sibling = self.store.add("self_callback", "music", "Other thought")
+        self.assertIsNone(self.host.take_pool_cue("self_callback", cue_id=sibling))
+        self.assertEqual(self._row(sibling).surfaced_count, 0)
+
     def test_taking_a_cue_marks_it_surfaced_not_used(self) -> None:
         cue_id = self._surface("interest_drift", "film photography")
         self.assertEqual(self._state(cue_id), "surfaced")

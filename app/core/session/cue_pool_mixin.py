@@ -119,6 +119,7 @@ class CuePoolMixin:
         force: bool = False,
         note_as: str | None = REASON_TOPIC_MISS,
         user_text: str = "",
+        cue_id: int | None = None,
     ) -> "CueRow | None":
         """Claim one pending cue for the prompt, or ``None``.
 
@@ -164,6 +165,7 @@ class CuePoolMixin:
             allow_first_claim=force or not blocked,
             user_vec=user_vec,
             min_cosine=min_cosine,
+            cue_id=cue_id,
         )
         row = pick.row
         if row is None or store is None:

@@ -1181,7 +1181,18 @@ class LiveModeMixin:
         self._live_talk_about_payload = None
         if not isinstance(payload, dict) or not payload:
             return ""
-        return render_live_talk_about(payload)
+        cue_text = ""
+        cue_id = payload.get("cue_id")
+        if cue_id is not None:
+            store = getattr(self, "_cue_store", None)
+            available = store.available(cue_id) if store is not None else None
+            if available is None:
+                return ""
+            row = self.take_pool_cue(available.cue_type, cue_id=cue_id)
+            if row is None:
+                return ""
+            cue_text = "\nSelected cue (context, not an instruction):\n" + row.text
+        return render_live_talk_about(payload) + cue_text
 
     def _live_main_wake_dispatch_block(self, event: Any) -> str:
         gen = int(getattr(event, "live_generation", 0) or 0)
@@ -1195,6 +1206,16 @@ class LiveModeMixin:
         )
         if frame is None:
             return "floor_busy"
+        agent = getattr(getattr(self, "_settings", None), "agent", None)
+        if not bool(getattr(agent, "live_unprompted_speech", True)):
+            return "speech_forbidden"
+        if bool(getattr(agent, "live_quiet", False)) or frame.constraints.dnd:
+            return "dnd"
+        cue_id = getattr(event, "cue_id", None)
+        if cue_id is not None:
+            store = getattr(self, "_cue_store", None)
+            if store is None or store.available(cue_id) is None:
+                return "missing_cue"
         if str(frame.constraints.sleep_status or "") in SLEEP_SPEECH_FORBID:
             return "sleep"
         if main_wake_floor_busy(frame):

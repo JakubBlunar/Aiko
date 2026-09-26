@@ -14,6 +14,16 @@ from app.core.live.urge_store import LiveUrgeStore
 from app.core.proactive.cue_accounting import policy_for
 
 
+_CUE_PURPOSES = {
+    "away_activities": "share",
+    "caught_mid_activity": "share",
+    "sleep_return": "share",
+    "turning_over": "share",
+    "self_callback": "continue",
+    "long_arc_callback": "continue",
+}
+
+
 class CueUrgeAdapter:
     """Live's only projection of the cue pool / prepared-nudge shelf."""
 
@@ -41,19 +51,25 @@ class CueUrgeAdapter:
                 continue
             cue_id = int(getattr(row, "id", 0) or 0)
             cue_type = str(getattr(row, "cue_type", "") or "cue")
+            purpose = (
+                _CUE_PURPOSES.get(cue_type, "ask")
+                if policy_for(cue_type) is not None else "unknown"
+            )
             subject = (
                 cap_live_subject(getattr(row, "subject", "") or "")
                 or cap_live_subject(cue_type)
                 or "cue"
             )
             urge = store.propose(
-                kind="ask_about_result",
+                kind="ask_about_result" if purpose in {"ask", "unknown"}
+                else "share_observation",
                 subject=subject,
                 source="cue_pool",
                 source_ids=(f"cue:{cue_id}",),
                 repetition_key=f"cue:{cue_id}",
                 now_mono_ms=now_mono_ms,
                 cue_id=cue_id,
+                purpose=purpose,
             )
             if urge is not None:
                 created.append(urge)

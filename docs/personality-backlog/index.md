@@ -95,7 +95,7 @@ needed to repeat those aggregates.
 | --- | --- | --- |
 | First | [K96 operational follow-up](patterns.md#k96-one-shot-per-thought--in-turn-deliberation) | Diagnose the enabled post-reply pass's failures before adding more thinking |
 | First | [K92/K93](patterns.md#k92-conversational-stance--one-decision-per-turn-not-ten-permission-slips), [G6](workers.md), [H7/H44](health.md#h44-nothing-has-ever-graduated-and-at-this-calibration-nothing-can) | Finish candidate selection/attribution and close existing answer loops; these are not new features |
-| Next | [Live L18](live-mode.md#l18-preserve-why-a-cue-exists-before-choosing-how-to-say-it) | Preserve share/ask/report purpose instead of treating all thoughts as questions |
+| Shipped | [Live L18](live-mode.md#l18-preserve-why-a-cue-exists-before-choosing-how-to-say-it) | Purpose-aware admission and exact cue handoff; T5 behavior evaluation remains |
 | Next | [Live L17](live-mode.md#l17-a-deferred-thought-can-meet-a-later-opening) | Test whether a still-valid thought can survive a missed opening without repeated pressure |
 | Experiment | [K97](patterns.md#k97-a-small-causal-working-set-for-the-current-thread) | Carry an evidence-linked working understanding, separate from thoughts offered aloud |
 | Experiment | [K98](patterns.md#k98-continue-an-interest-after-a-good-answer) | Let a real answer advance an interest rather than merely retire an ask |

@@ -20,11 +20,13 @@ URGE_KINDS = frozenset({
     "ask_about_result",
     "remain_present",
     "share_delight",
+    "share_observation",
     "wait",
 })
 
 EXPRESSIVE_KINDS = frozenset({
     "share_delight",
+    "share_observation",
     "ask_about_result",
     "comfort",
 })
@@ -34,6 +36,7 @@ URGE_RANK = {
     "acknowledge_user": 80,
     "comfort": 70,
     "ask_about_result": 50,
+    "share_observation": 50,
     "remain_present": 40,
     "share_delight": 30,
     "wait": 10,
@@ -58,6 +61,7 @@ class LiveUrge:
     state: str = "candidate"
     repetition_key: str = ""
     cue_id: int | None = None
+    purpose: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)

@@ -114,8 +114,10 @@ def admit_main_wake(
         return "missing_urge"
     if urge.kind not in SUBSTANTIVE_URGE_KINDS:
         return "weak_urge"
+    if urge.source == "cue_pool" and urge.purpose not in {"ask", "share", "continue", "report"}:
+        return "unknown_cue_purpose"
     constraints = frame.constraints
-    if urge.kind == "ask_about_result" and not bool(
+    if (urge.purpose == "ask" or urge.kind == "ask_about_result") and not bool(
         getattr(constraints, "questions_allowed", True)
     ):
         return "questions_blocked"
