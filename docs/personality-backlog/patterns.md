@@ -651,6 +651,27 @@ and `hobby_block` on **100%**, so the two largest steers in the system are
 ambient by any definition, and the arbiter's 45.7% `FOLLOW_AND_ADD` share is
 mostly just reporting that fact back.
 
+**26 Sep 2026 follow-up (phase-3 pilot).** Over the latest 220 turns,
+`narrative_block` rendered on 175; it was the recorded reason for 81 of 114
+`SHARE` decisions despite being a reusable, non-consuming prepared nudge.
+It is no longer a static `SHARE` offer, so its mere presence cannot inflate
+that stance. Curiosity seeds now ask the arbiter whether `ASK` can win *before*
+their renderer marks pool rows surfaced; a direct question, a stronger offer,
+a more specific `ASK`, or a wants imperative leaves those rows unspent. The
+seed stays in its original prompt position when admitted, and
+`agent.stance_phase3_enabled` restores the earlier behavior if disabled.
+G4 now counts stocked, enabled seeds as armed and records arbiter refusals as
+`lost_priority:stance`; empty shelves and a disabled seed provider are not
+counted as opportunities. This measures admission, not whether the eventual
+reply actually used a surfaced seed.
+This is the first enforceable provider, **not** the full phase 3: soft wants
+still count as `FOLLOW_AND_ADD`, other providers still render independently,
+and some of them mutate one-shot state during rendering. Converting those
+requires collecting candidates without spending them, choosing once, then
+committing only the chosen provider. Historical stance replay only has block
+presence, so distinguishing soft from imperative wants also needs durable
+offer metadata before it can be made replayable.
+
 ---
 
 ## K93. The substance floor — what she takes to the floor, not whether she takes it
@@ -741,6 +762,16 @@ monopoly is unaddressed at source — what changed is which want reaches the flo
 once it is in the ledger, not which cue becomes a want. Re-read the conversion
 table before starting that half; H42 has just changed `concept_hypothesis`'s
 supply and this measurement is the baseline.
+
+**26 Sep 2026 correction.** Of 66 cues marked `used` in the last week, 55 were
+`curiosity_seed`, but 13 of those 55 had *never been surfaced*: `either_party`
+can spend a seed when the user raises its subject, so `used` is not a count of
+Aiko taking the lead. Also `pick_pool_cue` selects **within one cue type**;
+adding a substance weight to its per-row rank cannot order a shared-history
+cue against a seed. The phase-3 pilot ranks generic seeds after specific
+`ASK` offers when both exist, but cross-type substance selection belongs at
+the candidate arbiter, after a side-effect-free admission check and before
+either cue is marked surfaced.
 
 **H43 took the `pick_pool_cue` ordering seam and sharpened what remains.** That
 seam is no longer untouched: the pick now ranks admitted cues by cosine against

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from app.core.conversation.stance import StanceInputs
 from app.core.infra import timephrase
 from app.core.proactive.cue_accounting import (
     REASON_CADENCE_BLOCK,
+    REASON_LOST_PRIORITY,
     REASON_TOPIC_MISS,
     note_decline,
 )
@@ -1746,33 +1748,53 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             log.debug("wants block render failed", exc_info=True)
             return ""
 
+    def _current_stance_inputs(
+        self, offered: frozenset[str], user_text: str,
+    ) -> StanceInputs:
+        return StanceInputs(
+            blocks=frozenset(offered or ()),
+            user_text=user_text or "",
+            dialogue_act=getattr(self, "_last_user_dialogue_act", None),
+            arc=getattr(self, "_last_user_arc", None),
+            arc_age_turns=int(getattr(self, "_arc_age_turns", 0) or 0),
+            recent_reply_words=tuple(
+                getattr(self, "_recent_reply_words", ()) or ()
+            ),
+            last_reply_anaphoric=self._last_reply_was_anaphoric(),
+        )
+
+    def _admit_stance_offer(
+        self, offered: frozenset[str], user_text: str, block: str,
+    ) -> bool:
+        """Check a pool cue before its renderer spends a surfacing."""
+        agent = self._settings.agent
+        if not bool(getattr(agent, "stance_phase3_enabled", True)):
+            return True
+        if "wants_block" in offered and getattr(
+            self, "_pending_want_imperative", None
+        ) is not None:
+            note_decline(self, "curiosity_seed", f"{REASON_LOST_PRIORITY}:stance")
+            return False
+        try:
+            from app.core.conversation import stance as _stance
+
+            admitted = _stance.admits_offer(
+                self._current_stance_inputs(offered, user_text), block,
+                protected_arc_turns=int(
+                    getattr(agent, "stance_protected_arc_turns", 4)
+                ),
+            )
+            if not admitted:
+                note_decline(self, "curiosity_seed", f"{REASON_LOST_PRIORITY}:stance")
+            return admitted
+        except Exception:
+            log.debug("stance admission failed", exc_info=True)
+            return True
+
     def _render_stance_block(
         self, offered: frozenset[str], user_text: str,
     ) -> str:
-        """K92 phase 2: name the one stance this turn's steers add up to.
-
-        Runs last in the assembly and is handed what the other blocks
-        decided, so it is the only provider here that reports on its
-        siblings rather than adding a surface of its own. Renders only
-        for ``FOLLOW`` and for the brevity axis -- the two things the
-        family has never been able to ask for -- and returns ``""`` for
-        every rung that already has a provider speaking for it.
-
-        The decision is stashed for the post-turn recorder rather than
-        recomputed there. Post-turn, ``_recent_reply_words`` has already
-        grown by this turn's reply and the dialogue-act tagger has
-        re-run, so a recomputation would answer a slightly different
-        question and the ledger would stop describing the prompt it is
-        supposed to explain.
-
-        ``dialogue_act`` and ``arc`` lag by one turn here: both are
-        stamped post-turn, so at assembly they describe his *previous*
-        message. That is tolerable and deliberate. ``arc`` is a
-        conversation-level label that changes once every seventeen turns
-        on average, and the case where a stale act would matter -- he
-        asked something -- is caught independently by the question mark
-        on the live text.
-        """
+        """K92: name the turn's stance and stash its assembly-time decision."""
         agent = self._settings.agent
         if not bool(getattr(agent, "stance_block_enabled", True)):
             return ""
@@ -1780,26 +1802,7 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             from app.core.conversation import stance as _stance
 
             decision = _stance.decide(
-                _stance.StanceInputs(
-                    blocks=frozenset(offered or ()),
-                    user_text=user_text or "",
-                    dialogue_act=getattr(
-                        self, "_last_user_dialogue_act", None,
-                    ),
-                    arc=getattr(self, "_last_user_arc", None),
-                    arc_age_turns=int(
-                        getattr(self, "_arc_age_turns", 0) or 0
-                    ),
-                    recent_reply_words=tuple(
-                        getattr(self, "_recent_reply_words", ()) or ()
-                    ),
-                    # K94. Off K88's tracker rather than recomputed, so
-                    # the cue and the rate it is judged by read the same
-                    # stripped text. Missing tracker (feature disabled)
-                    # reads as False -- no cue rather than a cue on an
-                    # unknown.
-                    last_reply_anaphoric=self._last_reply_was_anaphoric(),
-                ),
+                self._current_stance_inputs(offered, user_text),
                 protected_arc_turns=int(
                     getattr(agent, "stance_protected_arc_turns", 4)
                 ),

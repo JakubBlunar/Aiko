@@ -1069,6 +1069,9 @@ class AgentSettings:
     # shadow behaviour, so this is a real off switch rather than a
     # measurement blackout.
     stance_block_enabled: bool = True
+    # K92 phase 3: admit curiosity seeds only when ASK can take the floor.
+    # Off restores the prior provider behavior without disabling stance logs.
+    stance_phase3_enabled: bool = True
     # How many of her turns a protected arc (support / reflection)
     # keeps its veto over floor-taking for. An arc is a
     # conversation-level label averaging 17 turns and reaching 110, so

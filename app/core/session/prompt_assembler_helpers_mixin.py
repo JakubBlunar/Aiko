@@ -156,6 +156,7 @@ class PromptAssemblerHelpersMixin:
         # user text -- it is handed the ladder names that rendered, since
         # it reports on them rather than adding a surface of its own.
         stance: Callable[[frozenset[str], str], str] | None = None,
+        stance_admission: Callable[[frozenset[str], str, str], bool] | None = None,
         circadian: Callable[[], str] | None = None,
         day_color: Callable[[], str] | None = None,
         profile: Callable[[], str] | None = None,
@@ -474,6 +475,8 @@ class PromptAssemblerHelpersMixin:
             self._topic_appetite_provider = topic_appetite
         if stance is not None:
             self._stance_provider = stance
+        if stance_admission is not None:
+            self._stance_admission_provider = stance_admission
         if taste_lean is not None:
             self._taste_lean_provider = taste_lean
         if pursuit_lean is not None:

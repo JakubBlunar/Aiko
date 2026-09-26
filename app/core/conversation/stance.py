@@ -90,7 +90,7 @@ cost of this phase.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.core.conversation import turn_shape
 
@@ -157,7 +157,6 @@ _OFFERS: dict[str, tuple[str, ...]] = {
         "caught_mid_activity_block",
         "away_activities_block",
         "idle_seeds_block",
-        "narrative_block",
         "pursuit_lean_block",
         "taste_lean_block",
         "opinion_injection_block",
@@ -494,11 +493,11 @@ def build_shortlist(blocks: frozenset[str]) -> tuple[tuple[str, str], ...]:
     One entry per *stance*, not per block: two curiosity cues both
     offering ASK is one option with two backers, and listing it twice
     would imply a weight the arbiter does not have. The block kept is
-    the alphabetically first, purely so the record is stable across
-    runs and diffs cleanly.
+    the alphabetically first, except that a free-associative curiosity
+    seed loses to a more specific ASK offer. The record stays stable.
     """
     best: dict[str, str] = {}
-    for block in sorted(blocks):
+    for block in sorted(blocks, key=lambda name: (name == "curiosity_seeds_block", name)):
         stance = _OFFER_OF.get(block)
         if stance is not None and stance not in best:
             best[stance] = block
@@ -568,6 +567,20 @@ def decide(
         sequencing=sequencing,
         sequencing_reason=sequencing_reason,
     )
+
+
+def admits_offer(
+    inputs: StanceInputs,
+    block: str,
+    *,
+    protected_arc_turns: int = PROTECTED_ARC_FRESH_TURNS,
+) -> bool:
+    """Decide before claiming a cue whether its block could win this turn."""
+    if block not in _OFFER_OF:
+        return False
+    proposed = replace(inputs, blocks=inputs.blocks | {block})
+    decision = decide(proposed, protected_arc_turns=protected_arc_turns)
+    return decision.stance == _OFFER_OF[block] and decision.reason == block
 
 
 def render_block(

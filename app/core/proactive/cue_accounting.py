@@ -409,6 +409,7 @@ CUE_SPECS: dict[str, CueSpec] = {
         # and over-counted. They are pooled now and ``armed_cues`` reads
         # their stock instead, which is exact; the journal keys stay for
         # the case where no store is wired.
+        CueSpec("curiosity_seed"),
         CueSpec("interest_drift", journal_key="aiko.interest_drifts"),
         CueSpec("associative_wander", journal_key="aiko.associative_wanders"),
         CueSpec("curiosity_gradient", journal_key="aiko.curiosity_gradients"),
@@ -1107,6 +1108,10 @@ def _pool_stock(session: Any, name: str) -> int | None:
     """
     if name not in POOLED_CUES:
         return None
+    if name == "curiosity_seed":
+        agent = getattr(getattr(session, "_settings", None), "agent", None)
+        if not bool(getattr(agent, "curiosity_seed_enabled", True)):
+            return 0
     store = getattr(session, "_cue_store", None)
     if store is None:
         return None
@@ -1276,8 +1281,9 @@ def decisions_from_block_chars(
 
     def _rendered(cue: str) -> bool:
         # Registered under either the bare name or the ``_block`` suffix,
-        # matching ``block_char_table``'s own resolution order.
-        for key in (cue, f"{cue}_block"):
+        # except for pooled cues whose block uses a different spelling.
+        policy = CUE_POLICIES.get(cue)
+        for key in (cue, f"{cue}_block", policy.block if policy else ""):
             if key in chars:
                 return int(chars.get(key) or 0) > 0
         return False

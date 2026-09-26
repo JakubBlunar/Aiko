@@ -797,6 +797,7 @@ class SpeakingWorkersInitMixin:
             thread_ownership=self._render_thread_ownership_block,
             topic_appetite=self._render_topic_appetite_block,
             stance=self._render_stance_block,
+            stance_admission=self._admit_stance_offer,
             taste_lean=self._render_taste_lean_block,
             pursuit_lean=self._render_pursuit_lean_block,
             conduct_notice=self._render_conduct_notice_block,

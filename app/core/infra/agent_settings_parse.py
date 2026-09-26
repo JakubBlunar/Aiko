@@ -701,6 +701,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             stance_block_enabled=bool(
                 agent_raw.get("stance_block_enabled", True),
             ),
+            stance_phase3_enabled=bool(
+                agent_raw.get("stance_phase3_enabled", True)
+            ),
             stance_protected_arc_turns=min(
                 20, max(0, int(agent_raw.get("stance_protected_arc_turns", 4))),
             ),

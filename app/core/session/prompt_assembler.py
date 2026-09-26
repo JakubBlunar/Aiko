@@ -1252,6 +1252,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         self._stance_provider: (
             Callable[[frozenset[str], str], str] | None
         ) = None
+        self._stance_admission_provider: (
+            Callable[[frozenset[str], str, str], bool] | None
+        ) = None
         # K81 taste lean. A rare, lull-gated permission slip to steer toward a
         # topic Aiko genuinely enjoys (an active ``taste`` concept). Reads the
         # K18 standing lull reading, so it must run after the stagnation
@@ -2764,21 +2767,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("style_signal provider raised", exc_info=True)
                     style_signal_block = ""
 
-        # K9: "Quiet curiosity" bullet — topics Aiko has been quietly
-        # wondering about that haven't come up yet. Sits between the
-        # stagnation cue and the knowledge-gap cue so the three
-        # inner-life surfaces ("we've been circling", "I'm wondering",
-        # "I'm curious about") cluster together. Empty on cold-start
-        # / when the seed worker hasn't written anything yet.
-        # Dropped in aggressive mode -- the budget should focus on
-        # the user's message, not on cued asides.
         curiosity_seeds_block = ""
-        if not aggressive and self._curiosity_seeds_provider is not None:
-            curiosity_seeds_block = _safe_provider(
-                self._curiosity_seeds_provider,
-                timing_sink=provider_ms,
-                timing_name="curiosity_seeds",
-            )
 
         # H17: a thought from Aiko's own idle life ("while I was reading
         # earlier I started wondering ..."). Same aggressive-mode posture
@@ -3743,14 +3732,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # Clusters with the wants/appetite "things on Aiko's
             # mind" family, just before the softer curiosity cues.
             system_parts.append(tease_ledger_block)
-        if curiosity_seeds_block:
-            # K9: "Quiet curiosity" — at-most-two topics Aiko has
-            # been wondering about that haven't come up yet. Sits
-            # right after the stagnation cue and before the
-            # knowledge-gap "wondering about" line so the three
-            # "things on Aiko's mind" surfaces cluster together.
-            # Empty until the seed worker has written something.
-            system_parts.append(curiosity_seeds_block)
+        curiosity_seeds_slot = len(system_parts)
+        system_parts.append(curiosity_seeds_block)
         if idle_seeds_block:
             # H17: a thought sparked by her own idle life. Clusters right
             # after the curiosity seeds — both are "things Aiko's been
@@ -3816,6 +3799,27 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # Present-tense steer, not a fake user line. Lands before
             # handling notes so K92 sees INITIATE already has a provider.
             system_parts.append(live_talk_about_block)
+        # K92 phase 3: check whether ASK can win before the seed provider
+        # marks one or two pool rows surfaced. Keep its place in the prompt
+        # by filling the slot reserved in the "things on Aiko's mind" cluster.
+        if not aggressive and self._curiosity_seeds_provider is not None:
+            admitted = True
+            if self._stance_admission_provider is not None:
+                offered = frozenset(
+                    name for name, text in _resolve_blocks(locals()) if text
+                )
+                try:
+                    admitted = self._stance_admission_provider(
+                        offered, user_text or "", "curiosity_seeds_block",
+                    )
+                except Exception:
+                    log.debug("stance admission raised", exc_info=True)
+            if admitted:
+                curiosity_seeds_block = _safe_provider(
+                    self._curiosity_seeds_provider,
+                    timing_sink=provider_ms, timing_name="curiosity_seeds",
+                )
+                system_parts[curiosity_seeds_slot] = curiosity_seeds_block
         # Read off this frame's locals by the names the tier ladder
         # registers -- the same resolution ``block_char_table`` uses, so
         # adding a hoisted block needs no edit here. Must stay below every

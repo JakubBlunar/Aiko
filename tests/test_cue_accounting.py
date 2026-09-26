@@ -40,6 +40,7 @@ from app.core.memory.surfacing_outcome_store import (
 )
 from app.core.proactive.cue_accounting import (
     COARSE_ARMING,
+    CUE_POLICIES,
     CUE_SPECS,
     GAP_CUE_ORDER,
     INELIGIBLE_REASONS,
@@ -113,6 +114,10 @@ class RegistryTests(unittest.TestCase):
             name for name in CUE_SPECS
             if name not in _BLOCK_TIER_OF
             and f"{name}_block" not in _BLOCK_TIER_OF
+            and (
+                name not in CUE_POLICIES
+                or CUE_POLICIES[name].block not in _BLOCK_TIER_OF
+            )
         )
         self.assertEqual(
             missing, [],
@@ -369,6 +374,19 @@ class ArmingTests(unittest.TestCase):
         host = _session({"aiko.interest_drifts": _journal("2026-01-01")})
         self.assertIn("interest_drift", armed_cues(host))
 
+    def test_curiosity_seed_needs_enabled_provider_and_pool_stock(self) -> None:
+        agent = SimpleNamespace(curiosity_seed_enabled=True)
+        stock = SimpleNamespace(count_pending=lambda name: 1 if name == "curiosity_seed" else 0)
+        host = _session(_settings=SimpleNamespace(agent=agent), _cue_store=stock)
+        self.assertIn("curiosity_seed", armed_cues(host))
+
+        stock.count_pending = lambda name: 0
+        self.assertNotIn("curiosity_seed", armed_cues(host))
+
+        stock.count_pending = lambda name: 1 if name == "curiosity_seed" else 0
+        agent.curiosity_seed_enabled = False
+        self.assertNotIn("curiosity_seed", armed_cues(host))
+
     def test_hybrid_cue_needs_both_slot_and_journal(self) -> None:
         # ``away_activities`` needs a gap AND journalled content, matching
         # what its provider requires -- arming on either alone would
@@ -406,6 +424,20 @@ class ArmingTests(unittest.TestCase):
 
 
 class AttributionTests(unittest.TestCase):
+    def test_curiosity_seed_uses_its_plural_block_and_arbiter_reason(self) -> None:
+        surfaced = decisions_from_block_chars(
+            {"curiosity_seed"}, {"curiosity_seeds_block": 40},
+        )
+        self.assertEqual(surfaced.surfaced, {"curiosity_seed"})
+
+        declined = decisions_from_block_chars(
+            {"curiosity_seed"}, {"curiosity_seeds_block": 0},
+            provider_reasons={"curiosity_seed": f"{REASON_LOST_PRIORITY}:stance"},
+        )
+        self.assertEqual(
+            declined.declined["curiosity_seed"], f"{REASON_LOST_PRIORITY}:stance",
+        )
+
     def test_non_empty_block_counts_as_surfaced(self) -> None:
         d = decisions_from_block_chars(
             {"turning_over"}, {"turning_over_block": 120},
@@ -1176,9 +1208,7 @@ class CuePolicyTests(unittest.TestCase):
         """A policy for a cue the arming model has never heard of is a typo."""
         from app.core.proactive.cue_accounting import CUE_SPECS, POOLED_CUES
 
-        # ``curiosity_seed`` is the one exception: it never used a journal
-        # ring, so it has no CueSpec and never needed one.
-        self.assertEqual(POOLED_CUES - set(CUE_SPECS), {"curiosity_seed"})
+        self.assertEqual(POOLED_CUES - set(CUE_SPECS), set())
 
     def test_handling_sections_exist_in_the_notes_file(self) -> None:
         """The hoist is silent when a header is wrong -- so check it here.

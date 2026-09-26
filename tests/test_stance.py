@@ -40,6 +40,7 @@ from app.core.conversation.stance import (
     SHARE,
     STANCE_LADDER,
     StanceInputs,
+    admits_offer,
     decide,
     render_block,
 )
@@ -212,12 +213,77 @@ class DesireTests(unittest.TestCase):
         self.assertEqual(d.reason, "no_offer")
         self.assertEqual(d.shortlist, ())
 
+    def test_prepared_nudge_is_context_not_a_new_share_offer(self) -> None:
+        d = decide(StanceInputs(
+            blocks=frozenset({"narrative_block", "hobby_block"}),
+            user_text="that makes sense, thanks for explaining it",
+        ))
+        self.assertEqual(d.stance, FOLLOW)
+        self.assertEqual(d.shortlist, ())
+
+    def test_a_seed_is_admitted_only_when_ask_can_win(self) -> None:
+        self.assertTrue(admits_offer(StanceInputs(user_text="hi"), "curiosity_seeds_block"))
+        for blocks, text in (
+            (frozenset(), "what did you think of it?"),
+            (frozenset({"initiative_block"}), "hi"),
+            (frozenset({"knowledge_gap_notice_block"}), "hi"),
+        ):
+            with self.subTest(blocks=blocks, text=text):
+                self.assertFalse(admits_offer(
+                    StanceInputs(blocks=blocks, user_text=text),
+                    "curiosity_seeds_block",
+                ))
+
     def test_redirect_is_reachable(self) -> None:
         d = decide(StanceInputs(
             blocks=frozenset({"topic_appetite_block"}),
             user_text="yeah",
         ))
         self.assertEqual(d.stance, REDIRECT)
+
+
+class AdmissionProviderTests(unittest.TestCase):
+    def _host(self):
+        from types import SimpleNamespace
+
+        from app.core.infra.agent_settings import AgentSettings
+        from app.core.session.inner_life_part3 import InnerLifePart3Mixin
+
+        class Host(InnerLifePart3Mixin):
+            def __init__(self) -> None:
+                self._settings = SimpleNamespace(agent=AgentSettings())
+                self._pending_want_imperative = None
+
+        return Host()
+
+    def test_live_ceiling_prevents_a_seed_claim(self) -> None:
+        from app.core.proactive.cue_accounting import take_decline_notes
+
+        host = self._host()
+        self.assertFalse(host._admit_stance_offer(
+            frozenset({"wants_block"}), "what happened?", "curiosity_seeds_block",
+        ))
+        self.assertEqual(
+            take_decline_notes(host), {"curiosity_seed": "lost_priority:stance"},
+        )
+
+    def test_wants_imperative_keeps_the_floor(self) -> None:
+        host = self._host()
+        host._pending_want_imperative = "want-id"
+        self.assertFalse(host._admit_stance_offer(
+            frozenset({"wants_block"}), "hello", "curiosity_seeds_block",
+        ))
+
+    def test_switch_restores_prior_seed_behavior(self) -> None:
+        from app.core.proactive.cue_accounting import take_decline_notes
+
+        host = self._host()
+        host._settings.agent.stance_phase3_enabled = False
+        self.assertTrue(host._admit_stance_offer(
+            frozenset({"initiative_block"}), "what happened?",
+            "curiosity_seeds_block",
+        ))
+        self.assertEqual(take_decline_notes(host), {})
 
 
 class ProtectedArcTests(unittest.TestCase):

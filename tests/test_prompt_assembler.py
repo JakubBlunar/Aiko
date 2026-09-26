@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 
 from app.core.infra.chat_database import ChatDatabase, MessageRow
+from app.core.conversation.stance import StanceInputs, admits_offer
 from app.core.session.prompt_assembler import (
     PromptAssembler,
     PromptTelemetry,
@@ -227,6 +228,67 @@ class PromptAssemblerBudgetTests(unittest.TestCase):
             self.assertGreater(telem_aggr.rag_tokens, 0)
             self.assertEqual(seen["degrade_level"], 2)
             self.assertIn("she likes sushi", msgs_aggr[0]["content"])
+
+
+class StanceAdmissionTests(unittest.TestCase):
+    def test_direct_question_does_not_claim_curiosity_seeds(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            claimed: list[str] = []
+            assembler.set_inner_life_providers(
+                curiosity_seeds=lambda: claimed.append("seed") or "Quiet curiosity: stars",
+                stance_admission=lambda offered, text, block: admits_offer(
+                    StanceInputs(blocks=offered, user_text=text), block,
+                ),
+            )
+
+            messages, _ = assembler.assemble_with_budget(
+                "s", "what happened?", context_window=4096, response_budget=256,
+            )
+
+            self.assertEqual(claimed, [])
+            self.assertNotIn("Quiet curiosity: stars", messages[0]["content"])
+
+    def test_a_stronger_offer_leaves_curiosity_unclaimed(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            claimed: list[str] = []
+            assembler.set_inner_life_providers(
+                initiative=lambda _: "This turn is yours.",
+                curiosity_seeds=lambda: claimed.append("seed") or "Quiet curiosity: stars",
+                stance_admission=lambda offered, text, block: admits_offer(
+                    StanceInputs(blocks=offered, user_text=text), block,
+                ),
+            )
+
+            messages, _ = assembler.assemble_with_budget(
+                "s", "hello", context_window=4096, response_budget=256,
+            )
+
+            self.assertEqual(claimed, [])
+            self.assertIn("This turn is yours.", messages[0]["content"])
+
+    def test_admitted_seed_keeps_its_prompt_position(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="P")
+            claimed: list[str] = []
+            assembler.set_inner_life_providers(
+                curiosity_seeds=lambda: claimed.append("seed") or "Quiet curiosity: stars",
+                knowledge_grounding=lambda _: "Known detail: light",
+                stance_admission=lambda offered, text, block: admits_offer(
+                    StanceInputs(blocks=offered, user_text=text), block,
+                ),
+            )
+
+            messages, telemetry = assembler.assemble_with_budget(
+                "s", "hello", context_window=4096, response_budget=256,
+            )
+
+            self.assertEqual(claimed, ["seed"])
+            prompt = messages[0]["content"]
+            self.assertLess(prompt.index("Quiet curiosity: stars"),
+                            prompt.index("Known detail: light"))
+            self.assertGreater(telemetry.block_chars["curiosity_seeds_block"], 0)
 
 
 class HardeningClipTests(unittest.TestCase):

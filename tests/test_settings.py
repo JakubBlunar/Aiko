@@ -221,6 +221,10 @@ class CuriositySeedSettingsTests(unittest.TestCase):
         self.assertEqual(result.agent.topic_graph_refit_pending_threshold, 25)
         self.assertEqual(result.memory.curiosity_seed_interval_seconds, 3600)
 
+    def test_stance_phase3_seed_admission_can_be_disabled(self) -> None:
+        path = self._write_config(agent_extra={"stance_phase3_enabled": False})
+        self.assertFalse(load_settings(config_path=path).agent.stance_phase3_enabled)
+
     def test_topic_graph_persistence_overrides_round_trip(self) -> None:
         path = self._write_config(
             agent_extra={

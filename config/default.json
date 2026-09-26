@@ -181,6 +181,7 @@
     "coactivation_block_enabled": true,
     "coactivation_block_max_modes": 4,
     "curiosity_seed_enabled": true,
+    "stance_phase3_enabled": true,
     "curiosity_seed_max_active": 10,
     "curiosity_seed_max_per_run": 2,
     "curiosity_seed_min_novelty": 0.85,

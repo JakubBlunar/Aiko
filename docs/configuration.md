@@ -385,6 +385,10 @@ The wider sibling of G4: one row per prompt block that actually *rendered*, per 
 
 - `agent.prompt_block_accounting_enabled` *(bool, `true`)* — master switch. Off → the `turn_prompt_blocks` table stops growing and the report's firing-rate section goes empty; the text metrics are unaffected, since those are computed from the message log.
 
+### K92 — conversational stance, phase-3 seed admission
+
+- `agent.stance_phase3_enabled` *(bool, `true`)* — check whether a curiosity-seed `ASK` can win before its provider claims up to two pool cues. A direct question, a stronger or more specific offer, or an active wants imperative keeps those seeds unspent. Off restores the old seed surfacing without disabling stance recording. This is only the first provider under arbitration; other steers still render independently.
+
 ### K5 — mood shell tilt
 
 Per-turn one-line emotional directive derived from the live [`AffectState`](../app/core/affect/affect_state.py) (valence + arousal) and [`RelationshipAxesState`](../app/core/relationship/relationship_axes.py) (closeness / humor / trust / comfort). Output reads like a stage direction — *"Lean affectionate and unhurried; let warmth show."* / *"Stay playful and quick; the room is laughing."* / *"Slow your tempo; let the words land before pushing forward."* — and colours Aiko's delivery (pacing, sentence length, warmth, word choice) **without** dictating content.
