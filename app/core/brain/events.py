@@ -252,6 +252,7 @@ class ProactiveEvent:
     ] = "typed_silence"
     parked_cue_ids: tuple[str, ...] = ()
     live_generation: int = 0
+    live_intent_sequence: int = 0
     urge_id: str = ""
     reason_code: str = ""
     situation_summary: str = ""

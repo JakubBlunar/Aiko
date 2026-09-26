@@ -42,6 +42,7 @@ class CueUrgeAdapter:
         *,
         now_mono_ms: float,
         suppress_expressive: bool = False,
+        reconsider: bool = False,
     ) -> tuple[LiveUrge, ...]:
         if suppress_expressive:
             return ()
@@ -50,6 +51,8 @@ class CueUrgeAdapter:
             if not self._eligible(row):
                 continue
             cue_id = int(getattr(row, "id", 0) or 0)
+            if reconsider:
+                store.reconsider(cue_id, now_mono_ms=now_mono_ms)
             cue_type = str(getattr(row, "cue_type", "") or "cue")
             purpose = (
                 _CUE_PURPOSES.get(cue_type, "ask")

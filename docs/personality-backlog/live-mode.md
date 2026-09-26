@@ -8,7 +8,8 @@ without replacing either: C6 supplies environmental evidence, H27 describes the
 quiet product posture, and this document defines the control system between
 perception and behavior.
 
-**Status:** Pass 31 ships L18 cue purpose and exact main-turn handoff; see
+**Status:** Pass 32 adds one-shot opportunity-aware deferral (L17), following
+Pass 31's L18 cue purpose and exact main-turn handoff; see
 [the shipped record](shipped/cognitive-continuity.md#live-l18-cue-purpose-and-exact-handoff).
 Pass 30 ships L16: the 4B may set `keep_attention` /
 `keep_style` (default false) so a new target or style is dropped and
@@ -96,7 +97,7 @@ plus a clamp, not a second Aiko.
 | Wait horizon / wake-set | shipped Pass 29 (L8). Bands only; raw ms and invented wake names ignored |
 | Explicit keep hold | shipped Pass 30 (L16). `keep_attention` / `keep_style`; user intent and generation still win |
 | Future 4B expansions (L8+) | backlog. Floor manners, circadian quieting, glance menu, return beat, compact prompt. L8, L10, L12, L16 shipped |
-| Opportunity-aware cue deferral / cue purpose | L17 open; L18 shipped Pass 31. No increase to speech permission or budgets |
+| Opportunity-aware cue deferral / cue purpose | L17 shipped Pass 32; L18 shipped Pass 31. No increase to speech permission or budgets |
 
 ### Pass 18 code audit — contract gaps still open
 
@@ -2276,7 +2277,10 @@ still cancels; generation change still drops the hold. **Seams:**
 
 #### L17. A deferred thought can meet a later opening
 
-**Open; high-priority experiment, medium effort.** Being interrupted should
+**Shipped Pass 32:** [one later opening](shipped/cognitive-continuity.md#live-l17-one-later-opening).
+The original proposal and evaluation rationale follow; T5 remains open.
+
+Being interrupted should
 not mean forgetting, but remembering must not become repeated solicitation.
 The 27 Sep 2026 read-only MCP snapshot had 11 retained cue-pool urges, all
 `ask_about_result` and all expired; main-wake counters were 0 proposed,

@@ -840,6 +840,8 @@ class LivePolicyController:
         extra["main_wake_enqueued"] = bool(enqueued)
         if enqueued:
             self.proactive_enqueued += 1
+            if runtime is not None and urge is not None:
+                runtime.urges.consume(urge.urge_id)
         live_log.info(
             "live main-wake admitted: reason_code=%s generation=%s "
             "enqueued=%s",

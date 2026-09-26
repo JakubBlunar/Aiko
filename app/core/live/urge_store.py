@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from typing import Iterable
 
 from app.core.infra import timephrase
@@ -73,13 +74,52 @@ class LiveUrgeStore:
     def expire_due(self, now_mono_ms: float) -> int:
         expired = 0
         for urge_id, urge in list(self._urges.items()):
+            if (
+                urge.state == "deferred"
+                and now_mono_ms - urge.created_monotonic_ms > 15 * 60_000
+            ):
+                self._urges[urge_id] = self._with_state(urge, "expired")
+                expired += 1
+                continue
             if urge.state not in ACTIVE_STATES:
                 continue
             if urge.is_expired(now_mono_ms):
-                self._urges[urge_id] = self._with_state(urge, "expired")
+                deferred = (
+                    urge.source == "cue_pool" and urge.cue_id is not None
+                    and not urge.opportunity_seen and not urge.reconsidered
+                )
+                self._urges[urge_id] = self._with_state(
+                    urge, "deferred" if deferred else "expired",
+                )
                 self._blocked[urge.repetition_key] = urge.evidence_key()
                 expired += 1
+            self._trim()
         return expired
+
+    def note_opportunity(self, urge_id: str) -> None:
+        urge = self._urges.get(urge_id)
+        if urge is not None and urge.state in ACTIVE_STATES:
+            self._urges[urge_id] = replace(urge, opportunity_seen=True)
+
+    def consume(self, urge_id: str) -> None:
+        urge = self._urges.get(urge_id)
+        if urge is not None:
+            self._urges[urge_id] = self._with_state(urge, "consumed")
+            self._blocked[urge.repetition_key] = urge.evidence_key()
+
+    def reconsider(self, cue_id: int, *, now_mono_ms: float) -> None:
+        for urge_id, urge in list(self._urges.items()):
+            if urge.cue_id != cue_id or urge.state != "deferred":
+                continue
+            if now_mono_ms - urge.created_monotonic_ms > 15 * 60_000:
+                self._urges[urge_id] = self._with_state(urge, "expired")
+                continue
+            self._urges[urge_id] = replace(
+                urge, state="candidate", reconsidered=True,
+                created_monotonic_ms=now_mono_ms,
+            )
+            self._blocked.pop(urge.repetition_key, None)
+            self._trim()
 
     def withdraw_expressive(self, *, reason: str = "constraint") -> int:
         withdrawn = 0
@@ -212,21 +252,9 @@ class LiveUrgeStore:
         now_mono_ms: float,
         cue_id: int | None,
     ) -> LiveUrge:
-        merged = LiveUrge(
-            urge_id=existing.urge_id,
-            kind=existing.kind,
-            subject=existing.subject,
-            created_at=existing.created_at,
-            created_monotonic_ms=existing.created_monotonic_ms,
-            expires_after_ms=existing.expires_after_ms,
-            source=existing.source,
-            source_ids=existing.source_ids,
-            concept_ids=existing.concept_ids,
-            salience_inputs=dict(existing.salience_inputs),
-            state=existing.state,
-            repetition_key=existing.repetition_key,
+        merged = replace(
+            existing,
             cue_id=existing.cue_id if cue_id is None else cue_id,
-            purpose=existing.purpose,
         )
         self._urges[merged.urge_id] = merged
         return merged
@@ -273,6 +301,12 @@ class LiveUrgeStore:
                 self._urges[loser.urge_id] = self._with_state(loser, "parked")
 
     def _trim(self) -> None:
+        deferred = sorted(
+            (urge for urge in self._urges.values() if urge.state == "deferred"),
+            key=lambda item: item.created_monotonic_ms,
+        )
+        for urge in deferred[:-self._max_active]:
+            self._urges[urge.urge_id] = self._with_state(urge, "withdrawn")
         active = list(self.active())
         extra = len(active) - self._max_active
         if extra <= 0:
@@ -286,19 +320,4 @@ class LiveUrgeStore:
 
     @staticmethod
     def _with_state(urge: LiveUrge, state: str) -> LiveUrge:
-        return LiveUrge(
-            urge_id=urge.urge_id,
-            kind=urge.kind,
-            subject=urge.subject,
-            created_at=urge.created_at,
-            created_monotonic_ms=urge.created_monotonic_ms,
-            expires_after_ms=urge.expires_after_ms,
-            source=urge.source,
-            source_ids=urge.source_ids,
-            concept_ids=urge.concept_ids,
-            salience_inputs=dict(urge.salience_inputs),
-            state=state,
-            repetition_key=urge.repetition_key,
-            cue_id=urge.cue_id,
-            purpose=urge.purpose,
-        )
+        return replace(urge, state=state)

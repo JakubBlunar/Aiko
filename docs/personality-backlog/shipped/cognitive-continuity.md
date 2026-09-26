@@ -21,3 +21,24 @@ Regression coverage: [test_live_mode_pass27.py](../../../tests/test_live_mode_pa
 and [test_cue_pool_consumption.py](../../../tests/test_cue_pool_consumption.py).
 Human evaluation of grounded contributions versus interruption remains T5;
 this is a tested delivery contract, not evidence of greater naturalness.
+
+## Live L17. One later opening
+
+Shipped Pass 32. A cue-pool urge that expires without a server-admissible
+speech opening becomes deferred, not immediately forgotten. Only a real
+busy-to-open typing/playback transition or focus-boundary notice can offer
+one reconsideration. Heartbeats and unchanged silence cannot. Deferred
+entries are capped at the active-store limit and age out after fifteen
+minutes. Reconsideration requires the source to remain in the available
+pool; exact handoff still checks relevance, cadence and source state.
+
+An urge that already had an opening, was enqueued, was withdrawn, or already
+used its reconsideration does not rearm. Enqueue consumes only the temporary
+urge, not the durable cue. Queue dispatch now compares mode generations in
+the same domain and rejects actions queued before intervening user intent.
+Speech permission, quiet, sleep, question limits and budgets remain gates.
+
+Coverage: [test_live_mode_pass3.py](../../../tests/test_live_mode_pass3.py)
+and [test_live_mode_pass10.py](../../../tests/test_live_mode_pass10.py), plus
+the Live/cue regression slice. Real-world interruption and missed-opening
+rates remain a T5 evaluation task, not a claim established by these tests.

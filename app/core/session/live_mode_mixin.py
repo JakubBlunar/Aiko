@@ -86,6 +86,7 @@ class LiveModeMixin:
 
     def _init_live_mode(self) -> None:
         self._live_mode_generation = 0
+        self._live_user_intent_sequence = 0
         self._live_impulse_bus = LiveImpulseBus()
         self._live_situation_assembler = LiveSituationAssembler()
         self._live_situation_overlay = None
@@ -494,6 +495,9 @@ class LiveModeMixin:
         cleaned = str(text or "").strip()
         if not cleaned:
             return
+        self._live_user_intent_sequence = (
+            int(getattr(self, "_live_user_intent_sequence", 0)) + 1
+        )
         kind = (
             "user.speech_final"
             if str(mode).strip().lower() in {"voice", "live"}
@@ -1161,7 +1165,8 @@ class LiveModeMixin:
                 ProactiveEvent(
                     session_key=str(getattr(self, "session_key", "") or ""),
                     source="live_main_wake",
-                    live_generation=int(payload.get("generation") or 0),
+                    live_generation=int(getattr(self, "_live_mode_generation", 0)),
+                    live_intent_sequence=int(getattr(self, "_live_user_intent_sequence", 0)),
                     urge_id=str(payload.get("urge_id") or ""),
                     reason_code=str(payload.get("reason_code") or ""),
                     situation_summary=str(payload.get("situation_summary") or ""),
@@ -1199,6 +1204,10 @@ class LiveModeMixin:
         current = int(getattr(self, "_live_mode_generation", 0) or 0)
         if gen and gen != current:
             return "stale"
+        if int(getattr(event, "live_intent_sequence", 0)) != int(
+            getattr(self, "_live_user_intent_sequence", 0)
+        ):
+            return "new_user_intent"
         if bool(getattr(self, "_turn_in_progress", False)):
             return "floor_busy"
         frame = getattr(

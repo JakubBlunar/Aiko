@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -93,6 +94,79 @@ class NoticeTests(unittest.TestCase):
 
 
 class UrgeStoreTests(unittest.TestCase):
+    def test_deferred_cues_have_a_count_and_age_bound(self) -> None:
+        store = LiveUrgeStore(max_active=2)
+        for cue_id in range(3):
+            now = 1_000 + cue_id * 50_000
+            store.propose(
+                kind="share_observation", subject=f"subject {cue_id}",
+                source="cue_pool", source_ids=(f"cue:{cue_id}",),
+                repetition_key=f"cue:{cue_id}", cue_id=cue_id,
+                now_mono_ms=now,
+            )
+            store.expire_due(now + 46_000)
+        self.assertEqual(sum(urge.state == "deferred" for urge in store.all_urges()), 2)
+        store.expire_due(1_100_000)
+        self.assertFalse(any(urge.state == "deferred" for urge in store.all_urges()))
+
+    def test_opportunity_or_consumption_prevents_reconsideration(self) -> None:
+        for consumed in (False, True):
+            with self.subTest(consumed=consumed):
+                store = LiveUrgeStore()
+                row = SimpleNamespace(
+                    id=9, cue_type="away_activities", subject="film photography",
+                    last_surfaced_at=None,
+                )
+                adapter = CueUrgeAdapter(pending_provider=lambda row=row: [row])
+                urge = adapter.project(store, now_mono_ms=1_000)[0]
+                if consumed:
+                    store.consume(urge.urge_id)
+                else:
+                    store.note_opportunity(urge.urge_id)
+                store.expire_due(50_000)
+                self.assertEqual(
+                    adapter.project(store, now_mono_ms=51_000, reconsider=True), (),
+                )
+
+    def test_busy_cue_reconsiders_once_at_a_real_opening(self) -> None:
+        row = SimpleNamespace(
+            id=9, cue_type="away_activities", subject="film photography",
+            last_surfaced_at=None,
+        )
+        runtime = LiveInclinationRuntime(
+            cue_adapter=CueUrgeAdapter(pending_provider=lambda: [row]),
+        )
+        frame = _frame()
+        busy = replace(
+            frame, interaction=replace(frame.interaction, typing_active=True),
+        )
+        runtime.apply(busy, trigger_kind="user.typing_started", now_mono_ms=1_000)
+        runtime.apply(busy, trigger_kind="heartbeat", now_mono_ms=50_000)
+        cue = next(urge for urge in runtime.urges.all_urges() if urge.cue_id == 9)
+        self.assertEqual(cue.state, "deferred")
+        runtime.apply(frame, trigger_kind="user.typing_stopped", now_mono_ms=51_000)
+        cue = next(urge for urge in runtime.urges.active() if urge.cue_id == 9)
+        self.assertTrue(cue.reconsidered)
+        runtime.apply(busy, trigger_kind="user.typing_started", now_mono_ms=52_000)
+        runtime.apply(busy, trigger_kind="heartbeat", now_mono_ms=100_000)
+        runtime.apply(frame, trigger_kind="user.typing_stopped", now_mono_ms=101_000)
+        self.assertFalse(any(urge.cue_id == 9 for urge in runtime.urges.active()))
+
+    def test_removed_or_too_old_cue_never_reconsiders(self) -> None:
+        row = SimpleNamespace(
+            id=9, cue_type="away_activities", subject="film photography",
+            last_surfaced_at=None,
+        )
+        rows = [row]
+        adapter = CueUrgeAdapter(pending_provider=lambda: rows)
+        store = LiveUrgeStore()
+        adapter.project(store, now_mono_ms=1_000)
+        store.expire_due(50_000)
+        rows.clear()
+        self.assertEqual(adapter.project(store, now_mono_ms=51_000, reconsider=True), ())
+        rows.append(row)
+        self.assertEqual(adapter.project(store, now_mono_ms=1_000_000, reconsider=True), ())
+
     def test_notice_creates_urge_without_action(self) -> None:
         store = LiveUrgeStore()
         notices = notices_from_trigger("user.typing_started", _frame())

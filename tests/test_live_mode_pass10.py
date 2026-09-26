@@ -365,10 +365,18 @@ class TranscriptFloorTests(unittest.TestCase):
 
 
 class MixinEnqueueTests(unittest.TestCase):
+    def test_new_user_input_invalidates_queued_speech(self) -> None:
+        host = LiveModeMixinHost()
+        host._enqueue_live_main_wake({"generation": 500, "urge_id": "u1"})
+        event = host.enqueued[0]
+        host.publish_live_user_meaning("A different question", mode="typed")
+        self.assertEqual(host._live_main_wake_dispatch_block(event), "new_user_intent")
+
     def test_enqueue_builds_live_main_wake_event(self) -> None:
         host = LiveModeMixinHost()
+        host._live_mode_generation = 7
         ok = host._enqueue_live_main_wake({
-            "generation": 7,
+            "generation": 500,
             "urge_id": "u1",
             "reason_code": "share_the_scene",
             "situation_summary": "inferred watching_anime",

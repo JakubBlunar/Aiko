@@ -11,6 +11,7 @@ UrgeState = Literal[
     "consumed",
     "expired",
     "withdrawn",
+    "deferred",
 ]
 
 URGE_KINDS = frozenset({
@@ -62,6 +63,8 @@ class LiveUrge:
     repetition_key: str = ""
     cue_id: int | None = None
     purpose: str = ""
+    opportunity_seen: bool = False
+    reconsidered: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
