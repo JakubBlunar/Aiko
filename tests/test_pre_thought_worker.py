@@ -49,6 +49,10 @@ class ParseQuestionsTests(unittest.TestCase):
         raw = '{"questions": ["", "  ", 5, null, "real one"]}'
         self.assertEqual(ptw.parse_questions(raw), ["real one"])
 
+    def test_skips_overlong_question_without_storing_partial_text(self) -> None:
+        raw = '{"questions": ["' + "x" * 201 + '", "real one"]}'
+        self.assertEqual(ptw.parse_questions(raw), ["real one"])
+
     def test_dedupes_case_insensitive(self) -> None:
         raw = '{"questions": ["Same Q", "same q", "other"]}'
         self.assertEqual(ptw.parse_questions(raw), ["Same Q", "other"])
@@ -67,9 +71,9 @@ class CleanThoughtTests(unittest.TestCase):
     def test_empty(self) -> None:
         self.assertEqual(ptw.clean_thought(""), "")
 
-    def test_trims_long(self) -> None:
+    def test_preserves_long_reply(self) -> None:
         out = ptw.clean_thought("x" * 1000)
-        self.assertLessEqual(len(out), 600)
+        self.assertEqual(out, "x" * 1000)
 
 
 class BuildContentTests(unittest.TestCase):

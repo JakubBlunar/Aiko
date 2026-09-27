@@ -138,13 +138,12 @@ class TestGoalStoreWrites(unittest.TestCase):
         self.assertIsNone(meta.get("last_reflected_at"))
         self.assertIsNone(meta.get("archived_at"))
 
-    def test_add_goal_truncates_long_summary(self) -> None:
+    def test_add_goal_preserves_long_summary(self) -> None:
         _, _, goals = _store_factory()
         body = "x" * (_MAX_SUMMARY_CHARS + 25)
         mem = goals.add_goal(summary=body)
-        self.assertIsNotNone(mem)
         assert mem is not None
-        self.assertLessEqual(len(mem.content), _MAX_SUMMARY_CHARS)
+        self.assertEqual(mem.content, body)
 
     def test_add_goal_rejects_short_body(self) -> None:
         _, _, goals = _store_factory()
@@ -217,17 +216,16 @@ class TestGoalStoreWrites(unittest.TestCase):
         self.assertLessEqual(len(mirror), 201)  # 200 body + ellipsis
         self.assertTrue(mirror.endswith("\u2026"))
 
-    def test_overlong_note_trims_on_word_boundary_with_ellipsis(self) -> None:
+    def test_overlong_note_is_stored_in_full(self) -> None:
         _, _, goals = _store_factory()
         goal = goals.add_goal(summary="practice listening to jazz harmonies")
         assert goal is not None
-        note = "word " * 200  # 1000 chars, far past the 500 note cap
+        note = "word " * 200
         progress = goals.add_progress(goal_id=int(goal.id), note=note.strip())
         assert progress is not None
-        self.assertLessEqual(len(progress.content), 500)
-        self.assertTrue(progress.content.endswith("\u2026"))
-        # Word-boundary trim: no partial "wor" fragment before the ellipsis.
-        self.assertFalse(progress.content[:-1].rstrip().endswith("wor"))
+        self.assertEqual(progress.content, note.strip())
+        mirror = (goals.list_active()[0].metadata or {})["last_progress_note"]
+        self.assertTrue(mirror.endswith("\u2026"))
 
     def test_archive_and_unarchive(self) -> None:
         _, mem_store, goals = _store_factory()

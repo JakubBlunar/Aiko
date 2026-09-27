@@ -256,14 +256,13 @@ class TestParseAnswer(unittest.TestCase):
         assert parsed is not None
         self.assertEqual(parsed.answer, "X")
 
-    def test_truncates_long_answer(self) -> None:
+    def test_preserves_long_answer(self) -> None:
         long_answer = "word " * 100  # ~500 chars
         parsed = IdleCuriosityWorker._parse_answer(
             json.dumps({"answer": long_answer, "confidence": 0.9}),
         )
         assert parsed is not None
-        self.assertLessEqual(len(parsed.answer), 240)
-        self.assertTrue(parsed.answer.endswith("…"))
+        self.assertEqual(parsed.answer, long_answer.strip())
 
     def test_clamps_confidence(self) -> None:
         parsed = IdleCuriosityWorker._parse_answer(

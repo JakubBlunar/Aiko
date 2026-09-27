@@ -77,12 +77,8 @@ log = logging.getLogger("app.goal_store")
 _MIN_SUMMARY_CHARS = 4
 _MAX_SUMMARY_CHARS = 200
 # Progress notes are full reflections, not the short ``[[goal:...]]``
-# summary tag, so they get their own (generous) budget: the stored
-# memory content + its embedding keep the whole note (word-boundary
-# trimmed with an ellipsis past this), while only the goal's
-# ``last_progress_note`` prompt mirror is clamped back to
-# ``_MAX_SUMMARY_CHARS`` for prompt economy.
-_MAX_NOTE_CHARS = 500
+# summary tag. Only the goal's ``last_progress_note`` prompt mirror
+# is clamped to ``_MAX_SUMMARY_CHARS`` for prompt economy.
 _DEFAULT_MAX_ACTIVE = 5
 _DEFAULT_MAX_PROGRESS_PER_GOAL = 12
 _DEFAULT_SIMILARITY_THRESHOLD = 0.5
@@ -108,24 +104,19 @@ def _clean_summary(summary: str) -> str | None:
     text = (summary or "").strip()
     if not text or len(text) < _MIN_SUMMARY_CHARS:
         return None
-    if len(text) > _MAX_SUMMARY_CHARS:
-        text = text[:_MAX_SUMMARY_CHARS].rstrip()
     return text
 
 
-def _clean_note(note: str | None, *, max_chars: int = _MAX_NOTE_CHARS) -> str | None:
+def _clean_note(note: str | None, *, max_chars: int | None) -> str | None:
     """Normalise a goal-progress note.
 
-    Like :func:`_clean_summary` this collapses whitespace and rejects
-    too-short bodies (returns ``None``), but it is meant for full
-    reflections rather than the short goal-tag summary: it keeps up to
-    ``max_chars`` and, when it must trim, backs up to the last word
-    boundary and appends an ellipsis instead of hard-cutting mid-word.
+    Store full reflections with ``max_chars=None``; shorten only the
+    prompt mirror at a word boundary when a limit is provided.
     """
     flat = " ".join((note or "").split())
     if len(flat) < _MIN_SUMMARY_CHARS:
         return None
-    if len(flat) <= max_chars:
+    if max_chars is None or len(flat) <= max_chars:
         return flat
     cut = flat[: max_chars - 1]
     boundary = cut.rfind(" ")
@@ -260,10 +251,8 @@ class GoalStore:
         goal = self._memory_store.get(int(goal_id))
         if goal is None or goal.kind != "goal":
             return None
-        # Full reflection: kept whole (up to _MAX_NOTE_CHARS, word-boundary
-        # trimmed) for the stored memory + its embedding. The prompt mirror
-        # on the goal row is clamped separately below.
-        cleaned = _clean_note(note)
+        # Keep the full reflection in storage; only its prompt mirror is short.
+        cleaned = _clean_note(note, max_chars=None)
         if cleaned is None:
             return None
         if self._embedder is None:

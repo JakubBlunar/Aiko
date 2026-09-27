@@ -164,6 +164,19 @@ class TestBootstrap(unittest.TestCase):
         result = worker.run()
         self.assertLessEqual(result["wrote"], goal_store.max_active)
 
+    def test_bootstrap_skips_overlong_goal_instead_of_cutting_it(self) -> None:
+        payload = json.dumps({"goals": [
+            {"summary": "word " * 40},
+            {"summary": "keep a slow saturday tea ritual alive each weekend"},
+        ]})
+        goal_store, worker, _, _, _ = _harness(payload=payload)
+        result = worker.run()
+        self.assertEqual(result["wrote"], 1)
+        self.assertEqual(
+            goal_store.list_active()[0].content,
+            "keep a slow saturday tea ritual alive each weekend",
+        )
+
     def test_bootstrap_empty_payload_returns_no_candidates(self) -> None:
         payload = "{}"
         goal_store, worker, _, _, _ = _harness(payload=payload)

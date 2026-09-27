@@ -225,10 +225,9 @@ class CleanOutputTests(unittest.TestCase):
         self.assertEqual(clean_reflection_output(""), "")
         self.assertEqual(clean_reflection_output("   "), "")
 
-    def test_truncates_long(self) -> None:
+    def test_preserves_long_reflection(self) -> None:
         out = clean_reflection_output("word " * 100)
-        self.assertLessEqual(len(out), 322)
-        self.assertTrue(out.endswith("\u2026"))
+        self.assertEqual(out, ("word " * 100).strip())
 
 
 # ── worker ──────────────────────────────────────────────────────────────

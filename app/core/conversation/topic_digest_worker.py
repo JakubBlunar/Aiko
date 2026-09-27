@@ -116,7 +116,6 @@ _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 
 _MAX_SNIPPETS = 16
 _MAX_SNIPPET_CHARS = 200
-_MAX_DIGEST_CHARS = 700
 _DIGEST_SALIENCE = 0.8
 # Relabel/redigest when the cluster size has changed by more than this
 # fraction since the cached digest was generated (membership drifted).
@@ -617,7 +616,7 @@ class TopicDigestWorker:
         digest = str(parsed.get("digest") or "").strip().strip("\"'")
         if len(digest) < 8:
             return ""
-        return _trim(digest, max_chars=_MAX_DIGEST_CHARS)
+        return digest
 
 
 __all__ = ["TopicDigestWorker"]

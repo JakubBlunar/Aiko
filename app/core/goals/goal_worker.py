@@ -362,11 +362,8 @@ class GoalWorker:
         for candidate in candidates:
             if len(wrote) >= max_active:
                 break
-            summary = _trim(
-                candidate.get("summary"),
-                max_chars=_MAX_SUMMARY_CHARS,
-            )
-            if not summary:
+            summary = " ".join(str(candidate.get("summary") or "").split())
+            if not summary or len(summary) > _MAX_SUMMARY_CHARS:
                 continue
             try:
                 mem = self._goal_store.add_goal(
@@ -435,10 +432,7 @@ class GoalWorker:
         llm_ms = (time.monotonic() - t0) * 1000.0
         if self._cancel_event.is_set():
             return {"cancelled": True, "branch": "reflection"}
-        # Collapse whitespace but DON'T truncate here: GoalStore.add_progress
-        # keeps the whole note (word-boundary trimmed with an ellipsis past
-        # its own cap), so pre-trimming would only cut the reflection short
-        # mid-word before it ever reaches storage.
+        # Collapse whitespace but keep the full note for GoalStore storage.
         cleaned = " ".join((note or "").split())
         if not cleaned:
             log.info(

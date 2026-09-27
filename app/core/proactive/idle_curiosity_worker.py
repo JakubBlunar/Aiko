@@ -610,8 +610,6 @@ class IdleCuriosityWorker:
         if not isinstance(parsed, dict):
             return None
         answer = str(parsed.get("answer", "")).strip()
-        if len(answer) > 240:
-            answer = answer[:237].rsplit(" ", 1)[0] + "…"
         try:
             conf = float(parsed.get("confidence", 0.0))
         except (TypeError, ValueError):

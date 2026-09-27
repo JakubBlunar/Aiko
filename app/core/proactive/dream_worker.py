@@ -441,12 +441,7 @@ def _clean_dream_output(raw: str) -> str:
                 text = body.strip()
     # Strip surrounding quotes / backticks.
     text = text.strip("\"'` \t\n")
-    # First sentence-ish chunk only.
-    if "\n" in text:
-        text = text.split("\n", 1)[0].strip()
-    if len(text) > 240:
-        text = text[:240].rsplit(" ", 1)[0].rstrip(",;:") + "…"
-    return text
+    return " ".join(text.split())
 
 
 __all__ = ["DreamWorker", "_DREAM_PREFIX", "_clean_dream_output"]

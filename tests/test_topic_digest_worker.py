@@ -477,6 +477,13 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(TopicDigestWorker._parse_digest("not json"), "")
         self.assertEqual(TopicDigestWorker._parse_digest('{"digest": "short"}'), "")
 
+    def test_parse_digest_preserves_long_text(self) -> None:
+        digest = "A complete sentence. " * 40
+        self.assertEqual(
+            TopicDigestWorker._parse_digest(json.dumps({"digest": digest})),
+            digest.strip(),
+        )
+
     def test_cached_memory_id(self) -> None:
         self.assertEqual(TopicDigestWorker._cached_memory_id({"memory_id": 7}), 7)
         self.assertIsNone(TopicDigestWorker._cached_memory_id({}))

@@ -85,7 +85,6 @@ _USER_TEMPLATE = (
 _MAX_TOKENS_QUESTIONS = 320
 _MAX_TOKENS_DRAFT = 320
 _MAX_QUESTION_CHARS = 200
-_MAX_THOUGHT_CHARS = 600
 _MAX_PERSONA_CHARS = 800
 _MAX_SUMMARY_CHARS = 900
 _MAX_ACTIVE_LIST = 8
@@ -110,7 +109,7 @@ def parse_questions(raw: str, *, max_questions: int = 5) -> list[str]:
     """Parse the stage-1 ``{"questions": [...]}`` JSON object.
 
     Tolerant: pulls the first ``{...}`` span out of the raw text, skips
-    non-string / blank entries, trims, dedupes case-insensitively, and
+    non-string / blank / overlong entries, dedupes case-insensitively, and
     caps at ``max_questions``. Returns ``[]`` on any parse failure.
     """
     text = (raw or "").strip()
@@ -131,8 +130,8 @@ def parse_questions(raw: str, *, max_questions: int = 5) -> list[str]:
     for entry in questions:
         if not isinstance(entry, str):
             continue
-        q = _trim(entry, max_chars=_MAX_QUESTION_CHARS)
-        if not q:
+        q = " ".join(entry.split())
+        if not q or len(q) > _MAX_QUESTION_CHARS:
             continue
         key = q.lower()
         if key in seen:
@@ -145,9 +144,9 @@ def parse_questions(raw: str, *, max_questions: int = 5) -> list[str]:
 
 
 def clean_thought(text: str) -> str:
-    """Strip meta tags from a drafted reply and trim it for storage."""
+    """Strip meta tags from a drafted reply before storage."""
     cleaned = strip_all_meta_tags(str(text or "")).strip()
-    return _trim(cleaned, max_chars=_MAX_THOUGHT_CHARS)
+    return " ".join(cleaned.split())
 
 
 def build_pre_thought_content(question: str, thought: str, user_name: str) -> str:

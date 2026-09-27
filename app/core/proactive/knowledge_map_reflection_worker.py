@@ -155,8 +155,6 @@ def clean_reflection_output(raw: str) -> str:
             if len(head) <= 12 and head.strip().isalpha():
                 text = body.strip()
     text = text.strip("\"'` \t\n")
-    if len(text) > 320:
-        text = text[:320].rsplit(" ", 1)[0].rstrip(",;:") + "…"
     return text
 
 

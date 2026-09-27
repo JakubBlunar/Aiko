@@ -207,14 +207,14 @@ class DreamWorkerTests(unittest.TestCase):
         finally:
             f.close()
 
-    def test_clean_output_strips_quotes_and_truncates(self) -> None:
+    def test_clean_output_strips_quotes(self) -> None:
         out = _clean_dream_output('  "A quiet thought about Jacob."  ')
         self.assertEqual(out, "A quiet thought about Jacob.")
 
-    def test_clean_output_truncates_long(self) -> None:
+    def test_clean_output_preserves_long_and_multiline_text(self) -> None:
         long = "Word " * 200
-        out = _clean_dream_output(long)
-        self.assertLess(len(out), 260)
+        out = _clean_dream_output(long + "\nFinal sentence.")
+        self.assertEqual(out, long + "Final sentence.")
 
 
 class HotClusterTests(unittest.TestCase):
