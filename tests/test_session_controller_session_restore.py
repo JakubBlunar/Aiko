@@ -32,6 +32,7 @@ keep their own per-test redirect because they assert on file contents.
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -40,6 +41,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 from app.core.infra import settings as settings_mod
+from app.core.infra.settings import USER_CONFIG_PATH as COLLECTION_USER_CONFIG_PATH
 from app.core.session.session_controller import SessionController
 
 
@@ -243,6 +245,34 @@ class LiveConfigIsolationTests(unittest.TestCase):
             "tests are pointed at the live user config; the autouse "
             "redirect in conftest.py is not in effect",
         )
+
+    def test_collection_time_import_uses_disposable_config(self) -> None:
+        self.assertEqual(
+            COLLECTION_USER_CONFIG_PATH.resolve(),
+            Path(os.environ["AIKO_USER_CONFIG"]).resolve(),
+        )
+
+    def test_each_test_starts_with_default_settings(self) -> None:
+        default = json.loads(settings_mod.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(settings_mod.read_user_overrides(), {})
+        self.assertEqual(settings_mod.load_settings().assistant.name, default["assistant"]["name"])
+
+    def test_guard_rejects_live_config_access_without_opening_it(self) -> None:
+        import conftest
+
+        live = (
+            Path(conftest._original_user_config_env).expanduser()
+            if conftest._original_user_config_env
+            else Path(__file__).resolve().parents[1] / "config" / "user.json"
+        )
+        with mock.patch.object(conftest, "_live_config_accesses", []) as attempts:
+            with self.assertRaisesRegex(AssertionError, "live user config"):
+                conftest._reject_live_user_config_access("open", (str(live), "r", 0))
+            with self.assertRaisesRegex(AssertionError, "live user config"):
+                conftest._reject_live_user_config_access(
+                    "os.rename", (str(live.with_suffix(".json.tmp")), str(live)),
+                )
+            self.assertEqual(attempts, ["open", "os.rename"])
 
     def test_the_by_value_importer_is_redirected_too(self) -> None:
         """``gate_tuning_store`` binds the path with ``from ... import``,

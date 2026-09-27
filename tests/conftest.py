@@ -26,24 +26,77 @@ puts me in an old chat". That was mis-diagnosed once already, as
 ``switch_session`` recording intent; the pointer logic was fine and the
 tests were writing over it.
 
-Both fixtures are autouse and session-scoped precisely so nobody has to
-remember them. A future test that logs a crash, or takes a turn, is
-covered without opting in.
+The redirects are autouse so nobody has to remember them. User overrides
+are cleared before each test, and attempts to access the live config
+from this process fail without reading it (or mistaking external edits
+for writes by the tests).
 """
 from __future__ import annotations
 
 import os
-from pathlib import Path
+import sys
 import tempfile
+from pathlib import Path
 
 import pytest
 
 
+_user_config_sandbox: tempfile.TemporaryDirectory[str] | None = None
+_original_user_config_env: str | None = None
+_protected_user_config_paths: set[str] = set()
+_live_config_accesses: list[str] = []
+_user_config_guard_active = False
+
+
+def _reject_live_user_config_access(event: str, args: tuple[object, ...]) -> None:
+    if not _user_config_guard_active:
+        return
+    if event == "open" or event in {"os.remove", "os.unlink"}:
+        paths = args[:1]
+    elif event == "os.rename":
+        paths = args[:2]
+    else:
+        return
+    for path in paths:
+        if not isinstance(path, (str, bytes, os.PathLike)):
+            continue
+        normalized = os.path.normcase(os.path.abspath(os.fsdecode(path)))
+        if normalized in _protected_user_config_paths:
+            _live_config_accesses.append(event)
+            raise AssertionError(f"tests must not access the live user config ({event})")
+
+
 def pytest_configure(config: pytest.Config) -> None:
+    global _user_config_sandbox, _original_user_config_env, _user_config_guard_active
+    _original_user_config_env = os.environ.get("AIKO_USER_CONFIG")
+    live = (
+        Path(_original_user_config_env).expanduser()
+        if _original_user_config_env
+        else Path(__file__).resolve().parents[1] / "config" / "user.json"
+    )
+    _protected_user_config_paths.update(
+        os.path.normcase(os.path.abspath(os.fspath(path)))
+        for path in (live, live.with_suffix(live.suffix + ".tmp"))
+    )
+    _user_config_sandbox = tempfile.TemporaryDirectory(prefix="aiko-tests-cfg-")
+    os.environ["AIKO_USER_CONFIG"] = str(Path(_user_config_sandbox.name) / "user.json")
+    _user_config_guard_active = True
+    sys.addaudithook(_reject_live_user_config_access)
     config.addinivalue_line(
         "markers",
         "timing: asserts a wall-clock budget; skipped when running under -n",
     )
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    global _user_config_guard_active
+    _user_config_guard_active = False
+    if _original_user_config_env is None:
+        os.environ.pop("AIKO_USER_CONFIG", None)
+    else:
+        os.environ["AIKO_USER_CONFIG"] = _original_user_config_env
+    if _user_config_sandbox is not None:
+        _user_config_sandbox.cleanup()
 
 
 def pytest_collection_modifyitems(
@@ -89,35 +142,29 @@ def _isolate_user_config() -> object:
     """
     from app.core.infra import gate_tuning_store, settings as settings_mod
 
-    real = settings_mod.USER_CONFIG_PATH
-    before = real.read_bytes() if real.is_file() else None
+    replacement = Path(os.environ["AIKO_USER_CONFIG"])
+    originals = (settings_mod.USER_CONFIG_PATH, gate_tuning_store.USER_CONFIG_PATH)
+    settings_mod.USER_CONFIG_PATH = replacement
+    gate_tuning_store.USER_CONFIG_PATH = replacement
+    try:
+        yield replacement
+    finally:
+        settings_mod.USER_CONFIG_PATH = originals[0]
+        gate_tuning_store.USER_CONFIG_PATH = originals[1]
+        settings_mod._config_cache.pop(str(replacement), None)
 
-    with tempfile.TemporaryDirectory(prefix="aiko-tests-cfg-") as tmp:
-        replacement = Path(tmp) / "user.json"
-        originals = (real, gate_tuning_store.USER_CONFIG_PATH)
-        settings_mod.USER_CONFIG_PATH = replacement
-        gate_tuning_store.USER_CONFIG_PATH = replacement
-        settings_mod._config_cache.pop(str(real), None)
-        try:
-            yield replacement
-        finally:
-            settings_mod.USER_CONFIG_PATH = originals[0]
-            gate_tuning_store.USER_CONFIG_PATH = originals[1]
-            settings_mod._config_cache.pop(str(replacement), None)
-
-    # Tripwire. Redirecting the two known globals covers the paths that
-    # exist today; this covers the ones that don't yet. Anything that
-    # reaches the live file by another route -- a third module copying the
-    # value, a hardcoded path, a subprocess -- turns into a loud teardown
-    # error here instead of quietly rewriting the developer's install and
-    # being discovered weeks later from the symptom.
-    after = real.read_bytes() if real.is_file() else None
-    if before is not None and after != before:
+    if _live_config_accesses:
         raise AssertionError(
-            f"the test run modified {real}. Something wrote the live user "
-            "config despite the redirect in this fixture; find it with a "
-            "Path.replace/write_text guard and give it the same treatment."
+            "tests accessed the live user config: " + ", ".join(_live_config_accesses)
         )
+
+
+@pytest.fixture(autouse=True)
+def _clear_test_user_config(_isolate_user_config: Path) -> None:
+    from app.core.infra import settings as settings_mod
+
+    _isolate_user_config.unlink(missing_ok=True)
+    settings_mod._config_cache.pop(str(_isolate_user_config), None)
 
 
 @pytest.fixture(scope="session", autouse=True)
