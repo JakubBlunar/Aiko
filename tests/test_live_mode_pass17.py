@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +21,8 @@ from app.core.activity.companion_cue_worker import (
 from app.core.activity.interpretation_worker import KV_INTERP
 from app.core.infra.chat_database import ChatDatabase
 from app.core.live.cue_adapter import CueUrgeAdapter
+from app.core.live.inclination import LiveInclinationRuntime
+from app.core.live.main_wake import admit_main_wake
 from app.core.live.urge_store import LiveUrgeStore
 from app.core.proactive.cue_accounting import (
     CUE_POLICIES,
@@ -30,6 +35,8 @@ from app.core.proactive.cue_store import CueStore
 from app.core.proactive.idle_worker import SLEEP_CONTINUE_WORKER_NAMES
 from app.core.session.debug_overrides import KNOWN_OVERRIDES
 from app.core.session.session_controller import SessionController
+from tests.test_live_mode_pass7 import _FakePolicyClient, _controller, _frame
+from tests.test_live_mode_pass13 import Pass13Host, _capture_spawns
 
 
 _NOW = datetime(2026, 9, 13, 20, 0, tzinfo=timezone.utc)
@@ -224,6 +231,68 @@ class CompanionActivityAccountingTests(unittest.TestCase):
 
 
 class CompanionActivityLiveTests(unittest.TestCase):
+    def test_policy_handoff_carries_cue_id_not_desktop_reading(self) -> None:
+        cues, tmp = _cue_store()
+        try:
+            self.assertEqual(_worker(kv=_kv(_interp()), cues=cues).run()["drafted"], 1)
+            row = cues.pending("companion_activity")[0]
+            runtime = LiveInclinationRuntime()
+            urge = CueUrgeAdapter(pending_provider=lambda: [row]).project(
+                runtime.urges, now_mono_ms=time.monotonic() * 1000.0,
+            )[0]
+            client = _FakePolicyClient({
+                "snapshot_generation": 1,
+                "selected_urge_id": urge.urge_id,
+                "intent": "request_main_speech",
+                "arguments": {"speech_act": "share_observation"},
+                "reason_code": "quiet_observation",
+                "context_refs": [],
+            })
+            enqueued: list[dict] = []
+            frame = _frame()
+            controller = _controller(
+                generation_provider=lambda: int(frame.generation),
+                inclination_provider=lambda: runtime,
+                on_main_wake=lambda payload: enqueued.append(payload) or True,
+            )
+            result = controller._infer(
+                frame, trigger_kind="idle.reconsider",
+                prompt_input={"known_urge_ids": (urge.urge_id,), "urges": (urge,)},
+                user_intent=False, started_generation=int(frame.generation),
+                cancel=threading.Event(), client=client,
+            )
+            assert result is not None
+            self.assertTrue(result.accepted)
+            self.assertEqual(len(enqueued), 1)
+            self.assertEqual(enqueued[0]["cue_id"], row.id)
+            self.assertEqual(enqueued[0]["speech_act"], "share_observation")
+            self.assertNotIn("working in the editor", str(enqueued))
+            self.assertIn("cursor coding", str(client.calls).lower())
+            self.assertNotIn("secret.md", str(enqueued) + str(client.calls))
+        finally:
+            tmp.cleanup()
+
+    def test_published_companion_cue_wakes_live_policy_once(self) -> None:
+        cues, tmp = _cue_store()
+        try:
+            result = _worker(kv=_kv(_interp()), cues=cues).run()
+            self.assertEqual(result["drafted"], 1)
+            host = Pass13Host()
+            host._cue_store = cues
+            spawned = _capture_spawns(host)
+            host._live_heartbeat_tick()
+            host._live_heartbeat_tick()
+            host._live_heartbeat_tick()
+            self.assertEqual(spawned, ["idle.reconsider"])
+            urge = next(
+                urge for urge in host._live_inclination.urges.active() if urge.cue_id
+            )
+            self.assertEqual(urge.purpose, "share")
+            self.assertNotIn("secret.md", urge.subject)
+            self.assertIsNotNone(cues.available(urge.cue_id))
+        finally:
+            tmp.cleanup()
+
     def test_peek_does_not_take_pool_cue(self) -> None:
         take = MagicMock()
         row = SimpleNamespace(
@@ -237,8 +306,25 @@ class CompanionActivityLiveTests(unittest.TestCase):
         created = adapter.project(store, now_mono_ms=5_000.0)
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0].cue_id, 11)
-        self.assertEqual(created[0].kind, "ask_about_result")
+        self.assertEqual(created[0].kind, "share_observation")
+        self.assertEqual(created[0].purpose, "share")
         take.assert_not_called()
+
+    def test_observation_can_be_shared_without_question_permission(self) -> None:
+        row = SimpleNamespace(
+            id=11, cue_type="companion_activity", subject="editor work",
+            last_surfaced_at=None,
+        )
+        urges = CueUrgeAdapter(pending_provider=lambda: [row]).project(
+            LiveUrgeStore(), now_mono_ms=5_000.0,
+        )
+        frame = _frame()
+        frame = replace(frame, constraints=replace(frame.constraints, questions_allowed=False))
+        self.assertEqual(admit_main_wake(
+            intent="request_main_speech", user_intent=False,
+            selected_urge_id=urges[0].urge_id, urges=urges, frame=frame,
+            decided_generation=None, now_mono_ms=5_001.0, budget_remaining=1,
+        ), "")
 
     def test_still_no_live_mode_enabled_flag(self) -> None:
         controller = SessionController.__new__(SessionController)

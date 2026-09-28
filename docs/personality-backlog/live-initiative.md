@@ -7,6 +7,18 @@ progress and its limitations are recorded below as separate phases.
 
 ## Implementation log
 
+### C6 pilot: companion-activity share (28 Sep 2026)
+
+The shipped C6 `companion_activity` pool cue now projects into Live as
+`share_observation`, not an `ask_about_result`. A worker-published cue
+can trigger one policy reconsideration; tests cover question-disabled
+admission and a bounded cue-ID handoff without the reading or title in
+the policy call or queue payload. The main turn still takes the cue
+under the existing L18 contract. This does not finish L19-L25 or add
+route-aware disclosure, reliable delivery, repeated-pattern memory or
+UIA. See [C6's Live pilot](proactive.md#live-pilot-and-later-impulses)
+for later grounded impulse ideas and the local/cloud routing decision.
+
 ### Phase 4: known-client reachability gate (28 Sep 2026)
 
 **Limited L20/L24 slice; both remain open.** A reported zero WebSocket client

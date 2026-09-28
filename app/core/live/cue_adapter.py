@@ -17,6 +17,7 @@ from app.core.proactive.cue_accounting import policy_for
 _CUE_PURPOSES = {
     "away_activities": "share",
     "caught_mid_activity": "share",
+    "companion_activity": "share",
     "sleep_return": "share",
     "turning_over": "share",
     "self_callback": "continue",

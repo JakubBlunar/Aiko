@@ -96,6 +96,10 @@ required; kv only). **Pass 17 ships phase 5 cue intake** (pool-only
 cue; no MemoryStore). Still open: memories only if a pattern repeats,
 phase 6 UIA. Live pull shipped Pass 18
 ([C7](#c7-live-activity-pull--get_activity-tool)).
+The Live C6 pilot now projects that pooled cue as an observational share,
+not a question. A new cue can wake Live policy once without taking it;
+the main-model handoff still owns the selected cue text. This is not a
+guarantee of speech or delivery.
 
 **Motivation.** Every signal Aiko has about Jacob arrives through the
 chat box. She knows what he *says* and when he says it, and past that
@@ -292,6 +296,31 @@ run and produced a list. **Defer, and expect that list to be short.**
    `surface_id + title + focus-entry`, TTL, re-read on refocus — **not**
    UIA event subscriptions. `IUIAutomation2` timeouts; hang = leak that
    thread. Do not stub snapshot APIs until this phase.
+
+### Live pilot and later impulses
+
+The first pilot uses the existing `companion_activity` row: a fresh,
+confident non-idle reading produces one pool cue; Live peeks at its
+bounded subject as a share, and the main turn retrieves the cue only
+after admission. The test covers publication, one-shot policy wake,
+question-disabled admission and a bounded queue payload. It does not
+infer that the recipient heard anything or bypass DND/floor gates.
+
+| Later impulse | Grounding and restraint |
+| --- | --- |
+| Return to an unfinished activity | A fresh Level-1 transition plus a still-open user-owned task or thread; one contextual continuation after an opening, never a claim based on window focus alone. |
+| Completed work worth sharing | A recorded task or research result with provenance, not an interpretation of a terminal title. Dedupe by result ID; do not turn every completion into speech. |
+| Noticed recurring pattern | Several corroborated Level-1 sessions and an explicit retention decision before writing memory. A single model reading remains ephemeral; do not duplicate K72's long-focus cue. |
+
+Richer permitted desktop detail may help a **local** Live model, but a
+local decision can still hand a cue to a cloud main model. Keep the
+collector's source permissions and pre-persist secret exclusions for
+every route. Provider-aware outbound disclosure should default to
+bounded context on cloud routes, with an explicit user opt-in for more
+detail; local routes can use richer ephemeral context. Verify the
+actual provider at the final outbound call, including fallbacks, before
+adding raw titles or UIA content to either prompt. This pilot changes
+no disclosure settings or existing title handling.
 
 **Cost.** Levels 0-1 are free in any meaningful sense — a title read
 and an idle query are microseconds, and the poll already runs. Level 2
