@@ -7,6 +7,20 @@ progress and its limitations are recorded below as separate phases.
 
 ## Implementation log
 
+### Phase 3: failed-enqueue reservation release (28 Sep 2026)
+
+**Limited L24 slice; L20/L24 remain open.** A Live main-wake now reserves its
+speech token before `BrainLoop.enqueue`, but a false return or exception refunds
+that token, keeps the urge active, and records `enqueue_failed` instead of an
+admission. Successful enqueues still spend the token and consume the urge.
+
+**Shortcut and follow-up:** a failed enqueue does not automatically reschedule
+the same cue; durable L21/L22 scheduling is still needed. A successful queue
+write is not generated speech or confirmed playback. Recipient availability,
+source revision, pre-dispatch cancellation, delivery acknowledgment and
+restart-safe caps remain L20/L24 work. This change does not enable a new speech
+channel or relax any existing speech gate.
+
 ### Phase 2: policy-worker failure visibility (28 Sep 2026)
 
 **Limited L19 slice; L19 remains open.** Live situation diagnostics now report

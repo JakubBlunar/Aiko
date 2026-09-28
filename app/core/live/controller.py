@@ -853,13 +853,19 @@ class LivePolicyController:
             except Exception:
                 log.debug("live main-wake enqueue failed", exc_info=True)
                 enqueued = False
+        if not enqueued:
+            if runtime is not None:
+                runtime.budget.refund("main_wake", now_mono_ms=now_ms)
+            extra["main_wake_reason"] = "enqueue_failed"
+            extra["main_wake_rejected"] = "enqueue_failed"
+            self.note_main_wake_reject("enqueue_failed", int(frame.generation))
+            return False, extra
         self._mark_main_wake_admitted(int(frame.generation))
         extra["main_wake_admitted"] = True
-        extra["main_wake_enqueued"] = bool(enqueued)
-        if enqueued:
-            self.proactive_enqueued += 1
-            if runtime is not None and urge is not None:
-                runtime.urges.consume(urge.urge_id)
+        extra["main_wake_enqueued"] = True
+        self.proactive_enqueued += 1
+        if runtime is not None and urge is not None:
+            runtime.urges.consume(urge.urge_id)
         live_log.info(
             "live main-wake admitted: reason_code=%s generation=%s "
             "enqueued=%s",

@@ -110,6 +110,13 @@ class LiveBehaviorBudget:
         self._tokens[name] -= 1
         return True
 
+    def refund(self, class_name: str, *, now_mono_ms: float) -> None:
+        name = str(class_name)
+        if name not in self._capacity:
+            return
+        self._replenish(now_mono_ms)
+        self._tokens[name] = min(self._capacity[name], self._tokens[name] + 1)
+
     def remaining(self, class_name: str, *, now_mono_ms: float) -> int:
         self._replenish(now_mono_ms)
         return int(self._tokens.get(class_name, 0))

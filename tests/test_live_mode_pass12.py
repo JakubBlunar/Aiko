@@ -45,7 +45,12 @@ class CadenceKnobTests(unittest.TestCase):
         self.assertEqual(budget.remaining("main_wake", now_mono_ms=now), 1)
         self.assertTrue(budget.consume("main_wake", now_mono_ms=now))
         self.assertEqual(budget.remaining("main_wake", now_mono_ms=now), 0)
+        budget.refund("main_wake", now_mono_ms=now)
+        budget.refund("main_wake", now_mono_ms=now)
+        self.assertEqual(budget.remaining("main_wake", now_mono_ms=now), 1)
         budget.configure_main_wake(0)
+        self.assertEqual(budget.remaining("main_wake", now_mono_ms=now), 0)
+        budget.refund("main_wake", now_mono_ms=now)
         self.assertEqual(budget.remaining("main_wake", now_mono_ms=now), 0)
         self.assertFalse(budget.consume("main_wake", now_mono_ms=now))
 

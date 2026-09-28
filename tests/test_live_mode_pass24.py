@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from dataclasses import replace
+from unittest.mock import Mock
 
 from app.core.conversation.stance import INITIATE, _OFFERS
 from app.core.live.inclination import LiveInclinationRuntime
@@ -16,7 +17,7 @@ from app.core.live.main_wake import (
 from app.core.live.proposal import sanitize_arguments
 from app.core.live.prompt import LivePolicyPromptAssembler
 from tests.test_live_mode_pass1 import LiveModeMixinHost
-from tests.test_live_mode_pass7 import _FakePolicyClient, _controller, _frame
+from tests.test_live_mode_pass7 import _FakePolicyClient, _controller, _frame, _proposal
 from tests.test_live_mode_pass22 import _shared_frame
 
 
@@ -102,6 +103,55 @@ class TalkAboutSpeechActTests(unittest.TestCase):
 
 
 class ControllerSpeechActTests(unittest.TestCase):
+    def test_enqueue_failure_refunds_budget_and_keeps_urge(self) -> None:
+        runtime, urge_id = _url_delight_runtime()
+        frame = _frame()
+        client = _FakePolicyClient({
+            "snapshot_generation": 1,
+            "selected_urge_id": urge_id,
+            "intent": "request_main_speech",
+            "arguments": {},
+            "reason_code": "share_the_scene",
+            "context_refs": [],
+        })
+        controller = _controller(
+            generation_provider=lambda: int(frame.generation),
+            inclination_provider=lambda: runtime,
+            on_main_wake=lambda payload: False,
+        )
+        result = controller._infer(
+            frame, trigger_kind="silence.wake", prompt_input={"known_urge_ids": (urge_id,)},
+            user_intent=False, started_generation=int(frame.generation),
+            cancel=threading.Event(), client=client,
+        )
+        assert result is not None
+        self.assertEqual(controller.diagnostics()["main_wake_reject_reasons"], {
+            "enqueue_failed": 1,
+        })
+        self.assertEqual(controller.diagnostics()["main_wake_admitted"], 0)
+        self.assertEqual(controller.diagnostics()["proactive_enqueued"], 0)
+        self.assertEqual(
+            runtime.budget.remaining("main_wake", now_mono_ms=time.monotonic() * 1000), 1,
+        )
+        self.assertIn(urge_id, {urge.urge_id for urge in runtime.urges.active()})
+
+    def test_enqueue_exception_refunds_budget(self) -> None:
+        runtime, urge_id = _url_delight_runtime()
+        frame = _frame()
+        controller = _controller(
+            inclination_provider=lambda: runtime,
+            on_main_wake=Mock(side_effect=RuntimeError("offline")),
+        )
+        executed, extra = controller._execute_main_wake(
+            _proposal(intent="request_main_speech", selected_urge_id=urge_id), frame,
+            extra={}, user_intent=False,
+        )
+        self.assertFalse(executed)
+        self.assertEqual(extra["main_wake_rejected"], "enqueue_failed")
+        self.assertEqual(
+            runtime.budget.remaining("main_wake", now_mono_ms=time.monotonic() * 1000), 1,
+        )
+
     def test_payload_keeps_act_and_drops_title_subject(self) -> None:
         runtime, urge_id = _url_delight_runtime()
         enqueued: list[dict] = []
@@ -136,6 +186,10 @@ class ControllerSpeechActTests(unittest.TestCase):
         self.assertEqual(enqueued[0]["cue_id"], 9)
         self.assertEqual(enqueued[0]["cue_subject"], "")
         self.assertNotIn("secret.md", str(enqueued[0]))
+        self.assertEqual(controller.diagnostics()["main_wake_admitted"], 1)
+        self.assertEqual(
+            runtime.budget.remaining("main_wake", now_mono_ms=time.monotonic() * 1000), 0,
+        )
 
     def test_k92_silence_is_success_not_fallback(self) -> None:
         controller = _controller()
