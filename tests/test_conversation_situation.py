@@ -326,10 +326,64 @@ class _FakeSituationClient:
     def __init__(self, responses: list[str]) -> None:
         self.responses = responses
         self.messages: list[list[dict[str, object]]] = []
+        self.calls: list[dict[str, object]] = []
 
     def chat_json(self, messages, **_kwargs):
         self.messages.append(messages)
+        self.calls.append(_kwargs)
         return self.responses.pop(0), ChatUsage()
+
+
+@pytest.mark.parametrize("max_tokens", [None, 2048])
+def test_worker_budget_covers_expanded_working_set(tmp_path, max_tokens) -> None:
+    db = ChatDatabase(tmp_path / "expanded.db")
+    user_id = db.add_message("main", "user", "Compare portrait lenses for a small room.")
+    payload = _working_extraction()
+    payload["evidence_message_ids"] = [user_id]
+    working = payload["working_set"]
+    working["facts"].extend([
+        {"text": "The user wants indoor portraits."},
+        {"text": "The user is comparing two lenses."},
+    ])
+    working["recall_needed"] = True
+    for note in [working["question"], *working["facts"],
+                 working["interpretation"], working["unresolved"]]:
+        note["evidence_message_ids"] = [user_id]
+    client = _FakeSituationClient([json.dumps(payload)])
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=ConversationSituationStore(db),
+        model="worker", world_snapshot_provider=dict,
+        **({"max_tokens": max_tokens} if max_tokens is not None else {}),
+    )
+    state = worker.run("main")
+    assert state is not None and state.working_set is not None
+    assert len(state.working_set.facts) == 3
+    assert state.working_set.recall_needed
+    assert client.calls[0]["options"]["num_predict"] == (max_tokens or 1536)
+    assert client.calls[0]["think"] is False
+    assert worker.stats()["output_limit_hits"] == 0
+
+
+def test_worker_records_output_limit_without_overwriting_valid_state(tmp_path) -> None:
+    db = ChatDatabase(tmp_path / "truncated.db")
+    db.add_message("main", "user", "Still comparing the lenses.")
+    previous = reduce_situation(None, _replacement(), session_id="main", source_message_id=12)
+    store = ConversationSituationStore(db)
+    store.upsert(previous)
+
+    class TruncatedClient:
+        def chat_json(self, *_args, **_kwargs):
+            return '{"operation":', ChatUsage(done_reason="length")
+
+    worker = ConversationSituationWorker(
+        client=TruncatedClient(), chat_db=db, store=store, model="worker",
+        world_snapshot_provider=dict,
+    )
+    assert worker.run("main") == previous
+    assert store.get("main") == previous
+    assert worker.stats()["output_limit_hits"] == 1
+    assert worker.stats()["invalid"] == 1
+    assert worker.stats("main")["last_result"]["output_limit_hit"] is True
 
 
 @pytest.mark.parametrize("answer,expected", [

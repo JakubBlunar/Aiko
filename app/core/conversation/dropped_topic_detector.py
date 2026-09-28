@@ -18,9 +18,9 @@ worse than occasionally missing a point. v1 therefore:
   * splits on ``.!?`` plus light ``also`` / ``and also`` / ``;`` breaks,
     then **merges** adjacent fragments that share content words so
     "it was long and tiring and I need tea" stays one ask;
-  * fires only when there are at least two separable asks **and** at
-    least one of them is question-like (ends with ``?``, or a short
-    request opener: ``can you`` / ``could you`` / ``what about``);
+    * fires only when there are at least two separable parts **and** the
+        selected miss itself is question-like (ends with ``?``, or a short
+        request opener: ``can you`` / ``could you`` / ``what about``);
   * scores coverage against the **whole** reply -- a later sentence that
     picks an ask up counts;
   * names **one** skipped thing (the most question-like uncovered ask),
@@ -70,6 +70,12 @@ _REQUEST_OPENER_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+_ACKNOWLEDGEMENT_RE = re.compile(
+    r"^(?:thanks|thank you)(?:\s+(?:a lot|so much|very much|again))?"
+    r"(?:[,\s]+[\w'-]+)?[.!]*$",
+    flags=re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class DroppedTopicHit:
@@ -100,7 +106,7 @@ def extract_asks(user_text: str) -> list[str]:
     """Split a user message into separable asks, merging related fragments.
 
     Empty / whitespace-only input returns ``[]``. Fragments that survive
-    splitting but have no content words are dropped.
+    splitting but have no content words, and short thanks, are dropped.
     """
     text = (user_text or "").strip()
     if not text:
@@ -120,7 +126,7 @@ def extract_asks(user_text: str) -> list[str]:
                     continue
                 for part in _COMMA_QUESTION_RE.split(also):
                     part = part.strip()
-                    if part:
+                    if part and not _ACKNOWLEDGEMENT_RE.fullmatch(part):
                         fragments.append(part)
     merged = _merge_related(fragments)
     return [frag for frag in merged if _content_words(_tokenize(frag))]
@@ -142,7 +148,7 @@ def detect_dropped_topic(
     reply to count as covered; short asks (1-2 content words after
     stopword stripping) need only one shared word so "how was your day?"
     is covered by "my day was quiet". ``require_question`` (default True)
-    is the "at least one ask is question-like" gate.
+    requires the selected missed fragment itself to be question-like.
     """
     asks = extract_asks(user_text)
     if len(asks) < max(2, int(min_asks)):
@@ -162,7 +168,11 @@ def detect_dropped_topic(
     if not uncovered:
         return None
 
-    skipped = _pick_skipped(uncovered)
+    candidates = (
+        [ask for ask in uncovered if is_question_like(ask)]
+        if require_question else uncovered
+    )
+    skipped = _pick_skipped(candidates)
     if not skipped:
         return None
     return DroppedTopicHit(
@@ -186,11 +196,18 @@ def render_cue(hit: DroppedTopicHit) -> str:
     snippet = _snippet(hit.skipped_ask)
     if not snippet:
         return ""
+    if not is_question_like(hit.skipped_ask):
+        return (
+            f'Heads-up: last turn they mentioned "{snippet}" and you may not '
+            "have acknowledged it. Pick it up only if it still fits naturally. "
+            "This was a statement, not a question or request; do not invent "
+            "one or claim they wanted an answer. Don't recap their points."
+        )
     return (
-        f'Heads-up: last turn they also asked about "{snippet}" and you '
-        "skipped it. Circle back once, lightly -- 'also -- you asked "
-        "about that' is enough. Don't recap the whole message or list "
-        "their points."
+        f'Heads-up: last turn they also asked about "{snippet}". You may have '
+        "missed it. Check the exchange: if it was already answered, let it go. "
+        "Otherwise address it once, lightly. Don't recap the whole message or "
+        "list their points."
     )
 
 

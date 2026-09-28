@@ -36,7 +36,7 @@ that Aiko and the user are participating together. A remembered ritual or a
 possible plan is not current evidence. The world snapshot wins: never claim
 that Aiko is already somewhere or doing something contradicted by it.
 
-Return ONE JSON object:
+Return ONE compact JSON object without indentation or commentary:
 {
   "operation": "keep|replace|clear",
   "summary": "short durable description with no relative time words",
@@ -108,7 +108,7 @@ class ConversationSituationWorker:
         successor_producer: "CueProducer | None" = None,
         every_n_user_turns: int = 2,
         max_history_messages: int = 14,
-        max_tokens: int = 480,
+        max_tokens: int = 1536,
     ) -> None:
         self._client = client
         self._chat_db = chat_db
@@ -130,6 +130,7 @@ class ConversationSituationWorker:
             "completed": 0,
             "failed": 0,
             "invalid": 0,
+            "output_limit_hits": 0,
             "stale": 0,
             "successors_queued": 0,
             "kept": 0,
@@ -221,7 +222,7 @@ class ConversationSituationWorker:
                 return self._store.get(key)
             previous = self._store.get(key)
             prompt = self._build_user_prompt(rows, previous)
-            raw, _usage = self._client.chat_json(
+            raw, usage = self._client.chat_json(
                 [
                     {
                         "role": "system",
@@ -238,6 +239,9 @@ class ConversationSituationWorker:
                 think=False,
                 surface="conversation_situation",
             )
+            output_limit_hit = getattr(usage, "done_reason", "") == "length"
+            if output_limit_hit:
+                self._stats["output_limit_hits"] += 1
             valid_ids = {int(row.id) for row in rows}
             latest_rows = self._chat_db.get_messages(key, limit=1)
             current_token = self._context_token_provider() if self._context_token_provider else None
@@ -258,6 +262,7 @@ class ConversationSituationWorker:
                 self._last_result[key] = {
                     "result": "invalid_output",
                     "preserved_previous": previous is not None,
+                    "output_limit_hit": output_limit_hit,
                 }
                 return previous
             source_message_id = max(valid_ids)

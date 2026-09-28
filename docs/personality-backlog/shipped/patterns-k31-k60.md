@@ -1210,8 +1210,9 @@ Pure, embedding-free. `extract_asks` splits on `.!?` plus light `also` /
 store and got milk, how was your day?"), then **merges** adjacent fragments
 that share content words so "it was long and tiring and I need tea" stays one
 ask. `detect_dropped_topic(user_text, assistant_text)` fires only when there
-are at least two asks **and** at least one is question-like (`?` or a short
-request opener: `can you` / `could you` / `what about`). Coverage is against
+are at least two separable parts **and** the selected miss itself is
+question-like (`?` or a short request opener: `can you` / `could you` /
+`what about`). Short thanks are excluded before merging. Coverage is against
 the **whole** reply via the F5 `_content_words` primitive (`min_overlap`
 default 2; short asks need one shared word so "how was your day?" is covered
 by "my day was quiet"). The cue names **one** skipped thing — the most
@@ -1219,6 +1220,12 @@ question-like uncovered ask — never a numbered list. K95's
 [`turn_shape.is_direct_question`](../../../app/core/conversation/turn_shape.py)
 stays a one-bool ceiling; `extract_asks` lives here so that reader is not
 grown into a multi-ask parser.
+
+**2026-09-28 precision fix.** A question elsewhere in the message no longer
+turns an uncovered statement into an unanswered ask. With `require_question`
+disabled, a statement can still surface, but is framed as something the user
+mentioned, never something they asked. The cue and conditional handling treat
+lexical misses as tentative and defer to the actual exchange.
 
 **Post-turn arming** ([`post_turn_helpers_mixin.py`](../../../app/core/session/post_turn_helpers_mixin.py)).
 `_maybe_arm_dropped_topic(user_text, assistant_text)` runs next to the K38
@@ -1249,8 +1256,9 @@ in the T6 detector cluster immediately after `self_correction_block` (same
 appended next to the self-correction cue.
 
 **Persona** ([`conditional_handling.txt`](../../../data/persona/conditional_handling.txt)).
-`When you skipped past something:` — circle back once, lightly ("also -- you
-asked about X"); never recap the whole message or list his points. Header
+`When you skipped past something:` — check whether the point remains open,
+preserve question versus statement intent, and circle back once, lightly;
+never invent a request, recap the whole message or list their points. Header
 matches the CuePolicy byte-for-byte.
 
 **Settings.** `agent.dropped_topic_enabled` (master, default **on** — the

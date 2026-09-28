@@ -359,7 +359,7 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
 
         Walks the ``shared_moment`` rows and picks the longest-window
         match for today (1mo/3mo/6mo/1yr/Nyr) within a ±1 day tolerance,
-        rate-limited per moment to once every 6h. Stamps the chosen row
+        rate-limited across all moments to once every 6h. Stamps the chosen row
         so it won't fire again on the next turn.
         """
         if not bool(getattr(self._settings.agent, "anniversary_surfacing_enabled", True)):
@@ -372,7 +372,7 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
             from app.core.relationship.anniversary import pick_anniversary, render_anniversary_block
 
             moments = store.iter_all()
-            match = pick_anniversary(moments, now=timephrase.utcnow())
+            match = pick_anniversary(moments, now=timephrase.utcnow(), limit_family=True)
             if match is None:
                 return ""
             # Stamp the row so we don't surface it again on the very next

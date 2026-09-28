@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.core.relationship.anniversary import (
     AnniversaryMatch,
@@ -14,6 +16,7 @@ from app.core.relationship.anniversary import (
     render_anniversary_block,
 )
 from app.core.relationship.shared_moments import SharedMomentRow
+from app.core.session.inner_life_part4 import InnerLifePart4Mixin
 
 
 def _row(
@@ -104,6 +107,55 @@ class TestPickAnniversary(unittest.TestCase):
         match = pick_anniversary([moment], now=self.now)
         self.assertIsNotNone(match)
         self.assertEqual(match.moment_id, 1)
+
+    def test_family_cooldown_blocks_a_different_moment(self) -> None:
+        shown = _row(
+            1, self.now - timedelta(days=30),
+            last_anniversaried_at=(self.now - timedelta(minutes=1)).isoformat(),
+        )
+        fresh = _row(2, self.now - timedelta(days=365))
+        self.assertIsNone(pick_anniversary(
+            iter([fresh, shown]), now=self.now, limit_family=True,
+        ))
+        self.assertEqual(pick_anniversary([shown, fresh], now=self.now).moment_id, 2)
+
+    def test_family_cooldown_expires_and_survives_calendar_rollover(self) -> None:
+        shown = _row(
+            1, self.now - timedelta(days=32),
+            last_anniversaried_at=(self.now - timedelta(hours=1)).isoformat(),
+        )
+        fresh = _row(2, self.now - timedelta(days=30))
+        self.assertIsNone(pick_anniversary(
+            [shown, fresh], now=self.now, limit_family=True,
+        ))
+        match = pick_anniversary(
+            [shown, fresh], now=self.now + timedelta(hours=6), limit_family=True,
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match.moment_id, 2)
+
+    def test_prompt_provider_reads_family_cooldown_from_stored_rows(self) -> None:
+        moments = [
+            _row(1, self.now - timedelta(days=30)),
+            _row(2, self.now - timedelta(days=365)),
+        ]
+
+        def stamp(moment_id):
+            for moment in moments:
+                if moment.id == moment_id:
+                    moment.last_anniversaried_at = self.now.isoformat()
+
+        store = SimpleNamespace(iter_all=lambda: moments, stamp_anniversary=stamp)
+        with patch("app.core.session.inner_life_part4.timephrase.utcnow", return_value=self.now):
+            for expected in (True, False):
+                host = SimpleNamespace(
+                    _settings=SimpleNamespace(agent=SimpleNamespace()),
+                    _shared_moments_store=store,
+                )
+                self.assertEqual(
+                    bool(InnerLifePart4Mixin._render_anniversary_block(host)), expected,
+                )
+        self.assertEqual(sum(moment.last_anniversaried_at is not None for moment in moments), 1)
 
     def test_future_moments_ignored(self) -> None:
         moment = _row(1, self.now + timedelta(days=30))

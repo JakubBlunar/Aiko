@@ -94,7 +94,11 @@ the list of `SharedMomentRow`s and matches against calendar windows
 4. **Higher salience**.
 
 A 6-hour `last_anniversaried_at` rate-limit prevents the same moment
-from firing the anniversary block on every turn during a long chat.
+from firing the anniversary block on every turn during a long chat. The
+prompt provider also enables `limit_family`: any recently stamped moment
+blocks another anniversary offer for that interval, even if a different
+moment matches. This reads the existing persisted stamps, so restarting
+does not re-arm the family. The Together view retains per-moment selection.
 
 `SessionController._render_anniversary_block` produces a terse prompt
 line — `"On your mind today — a month ago today: …"` — placed right

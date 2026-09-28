@@ -12,7 +12,8 @@ window wins so a moment from 1y3mo ago doesn't keep firing the
 
 Rate-limiting: a moment whose ``metadata.last_anniversaried_at`` is
 within the last 6 hours is skipped so the same anniversary doesn't fire
-on every turn during a conversation.
+on every turn during a conversation. Prompt providers also enable
+``limit_family`` so different moments cannot take consecutive turns.
 """
 from __future__ import annotations
 
@@ -84,6 +85,7 @@ def pick_anniversary(
     now: datetime,
     tolerance_days: float = _TOLERANCE_DAYS,
     rate_limit_seconds: float = _RATE_LIMIT_SECONDS,
+    limit_family: bool = False,
 ) -> AnniversaryMatch | None:
     """Pick the single best anniversary match for ``now``.
 
@@ -97,7 +99,12 @@ def pick_anniversary(
         checked first.
     """
     candidates_by_window: dict[int, list["SharedMomentRow"]] = {}
+    last_stamp_cutoff = now - timedelta(seconds=rate_limit_seconds)
     for moment in moments:
+        if limit_family and rate_limit_seconds > 0:
+            stamped = _parse_iso(moment.last_anniversaried_at)
+            if stamped is not None and stamped >= last_stamp_cutoff:
+                return None
         if str(getattr(moment, "vibe", "")) in _ANNIVERSARY_EXCLUDED_VIBES:
             continue
         when = _parse_iso(moment.when)
@@ -113,8 +120,6 @@ def pick_anniversary(
 
     if not candidates_by_window:
         return None
-
-    last_stamp_cutoff = now - timedelta(seconds=rate_limit_seconds)
 
     for window, label in _WINDOW_DAYS_DESC:
         bucket = candidates_by_window.get(window) or []

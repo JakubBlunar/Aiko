@@ -103,6 +103,15 @@ class CooldownTests(_Fixture):
 
 
 class ArmingTests(_Fixture):
+    def test_thanks_before_an_answered_question_never_queues(self) -> None:
+        host = self._host()
+        host._maybe_arm_dropped_topic(
+            "Thanks a lot friend. I saw chapter 7 last :| did we read it? :o",
+            "We read chapter 7, so we can continue with the next one.",
+        )
+        self.assertEqual(self._queued(), [])
+        self.assertEqual(host._dropped_topic_cooldown_remaining, 0)
+
     def test_hit_queues_a_cue_and_resets_cooldown(self) -> None:
         host = self._host()
         host._maybe_arm_dropped_topic(_TWO_ASKS, _MISS_REPLY)

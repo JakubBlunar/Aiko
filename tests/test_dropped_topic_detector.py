@@ -52,6 +52,33 @@ class TwoAsksOneMissedTests(unittest.TestCase):
 
 
 class ConservativeGateTests(unittest.TestCase):
+    def test_acknowledgement_is_not_an_unanswered_topic(self) -> None:
+        for require_question in (True, False):
+            with self.subTest(require_question=require_question):
+                self.assertIsNone(detect_dropped_topic(
+                    "Thanks a lot, friend. Did we finish chapter seven?",
+                    "We did finish chapter seven; chapter eight is next.",
+                    require_question=require_question,
+                ))
+
+    def test_answered_question_does_not_turn_a_statement_into_an_ask(self) -> None:
+        self.assertIsNone(detect_dropped_topic(
+            "The garden looks lovely. Can you find my notebook?",
+            "I can find your notebook on the desk.",
+        ))
+
+    def test_opted_in_statement_callback_is_not_framed_as_a_question(self) -> None:
+        hit = detect_dropped_topic(
+            "The garden looks lovely. Can you find my notebook?",
+            "I can find your notebook on the desk.",
+            require_question=False,
+        )
+        self.assertIsNotNone(hit)
+        assert hit is not None
+        cue = render_cue(hit)
+        self.assertNotIn("asked", cue)
+        self.assertIn("mentioned", cue)
+
     def test_one_intent_two_clauses_no_question(self) -> None:
         user = "it was long and tiring and I need tea"
         reply = "yeah that sounds exhausting, sit down"

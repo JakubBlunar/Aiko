@@ -457,6 +457,22 @@ remain the evaluation and expansion contract, not a claim that every provider,
 writer, or feedback consumer is covered. Prefer replacing competing guidance
 over adding more always-on text or another planning pass.
 
+**2026-09-28 follow-up fixes:**
+
+- K82 now requires the selected missed fragment itself to be question-like by
+  default. Short thanks are excluded; opted-in statement callbacks retain their
+  statement framing. Conditional handling no longer invents an unanswered ask.
+- Anniversary prompt offers share the existing six-hour cooldown across all
+  moments, using persisted stamps. A queue of eligible anniversaries cannot
+  occupy successive turns simply by selecting a different memory each time.
+- The current-situation worker requests compact JSON with a 1,536-token default
+  output budget (previously 480, before the working-set schema expanded).
+  `output_limit_hits` and invalid-output details expose cap hits through the
+  existing worker diagnostics. Invalid output still preserves prior state.
+
+These fixes have deterministic regression coverage; their effect on natural
+conversation still requires post-restart observation.
+
 | Order | Work | Existing home | Cheapest discriminating check |
 | --- | --- | --- | --- |
 | 1 | Explain every stop in the surfacing path | G6 and P43 | Inject disabled, empty, stale, cadence, topic, exception and lost-priority cases; each must remain distinguishable after final assembly |
