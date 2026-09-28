@@ -8,6 +8,30 @@ without replacing either: C6 supplies environmental evidence, H27 describes the
 quiet product posture, and this document defines the control system between
 perception and behavior.
 
+## 28 Sep 2026: initiative architecture follow-up
+
+**Planning only; no runtime behavior, permissions, or settings changed.** The
+product requirement is occasional, grounded initiative during ongoing
+co-presence, with a small local policy model deciding when to act and the main
+brain owning substantive conversation. Quiet companionship remains valid;
+unbounded silence despite usable opportunities is a different outcome.
+
+The detailed [Live initiative follow-up](live-initiative.md) owns **L19-L31**:
+diagnostics, availability, durable candidate lifetimes, opportunity scheduling,
+compact 4B decisions, transactional brain handoff, curiosity and other sources,
+co-presence worker scheduling, plugin contracts, learning, cross-device delivery,
+replay/rollout, and a later email pilot. It includes current source findings,
+aggregate runtime evidence, dependencies and acceptance tests for each item.
+
+**Start with L19 and one L21/L22 vertical slice.** The running snapshot recorded
+74 attention/acknowledgement executions but no main-wake execution attempts,
+with no active candidates or scheduled wait. That is not a historical expiry
+rate or a diagnosis of every gate; the follow-up separates confirmed mechanisms
+from hypotheses. L17/L18 remain shipped, but their end-to-end lifecycle needs
+this additional work. L5/DT4 are not the only remaining barriers to initiative.
+
+## Shipped baseline
+
 **Status:** Pass 32 adds one-shot opportunity-aware deferral (L17), following
 Pass 31's L18 cue purpose and exact main-turn handoff; see
 [the shipped record](shipped/cognitive-continuity.md#live-l18-cue-purpose-and-exact-handoff).
@@ -231,12 +255,14 @@ the expensive foundations:
 - role-based LLM routing plus an existing worker-side `LlmPriorityGate` that can
   be generalized around actual inference contention.
 
-That missing control layer is now shipped. The remaining architecture debt is
-the concrete Pass 18 audit above: Pass 19–28 closed the frame/clock/wake,
+That missing control layer is now shipped. Pass 19–28 closed the frame/clock/wake,
 action-result, activity-notice, presence-style, reaction, speech-act,
-fallback, admission-record, urge-menu, and affect/vitality slices; L5
-`delivery_style` and DT4 replay remain before broadening autonomy. The
-shipped invariants remain:
+fallback, admission-record, urge-menu, and affect/vitality slices. The
+[28 Sep initiative evaluation](live-initiative.md) identifies additional
+end-to-end gaps in scheduling, candidate lifetime, availability and delivery
+accounting. Those are the next autonomy priorities; L5 `delivery_style` remains
+presentation work and DT4 remains the shared replay owner. The shipped
+invariants remain:
 silence timers become impulses under Live, JSON Schema plus client validation
 guard the proposer, composing reaches the backend without draft text,
 `IdleLifeChannel` owns deterministic embodiment, and LLM gate membership

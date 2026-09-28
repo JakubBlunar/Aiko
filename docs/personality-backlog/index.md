@@ -51,6 +51,26 @@ the mechanical half of this — broken paths and, more usefully, heading anchors
 that stopped resolving when a heading was reworded on its way into `shipped/`.
 Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
 
+## 28 Sep 2026: Live initiative architecture
+
+**Backlog only; no runtime or settings changes.** The
+[Live initiative evaluation and plan](live-initiative.md) adds **Live L19-L31**
+with verified source findings, a read-only runtime snapshot, concrete ownership
+contracts, implementation steps, dependencies and acceptance tests.
+
+The snapshot recorded 74 attention/acknowledgement executions, no main-wake
+execution attempts, no active candidate urges and no scheduled wait, despite
+Live and unprompted speech being enabled. These bounded counters locate an
+investigation, not a lifetime failure rate or proof of one root cause.
+
+**Recommended start:** L19 diagnostics plus one L21/L22 candidate-lifecycle and
+wake path, then L20 availability and L24 delivery protection before real speech.
+Build toward a small-model decision loop over grounded, durable candidates;
+reuse the brain, cue pool, curiosity, tasks, concepts and memory. Later items
+cover extensible worker/plugin impulses, bounded learning, desktop/mobile
+delivery and a deliberately deferred email integration pilot. Shipped L17/L18
+remain foundations; this is not a second implementation of those passes.
+
 ## 27 Sep 2026: prompt surfacing and brain decisions
 
 **Implementation update:** initial pilots now cover content-free assembly
