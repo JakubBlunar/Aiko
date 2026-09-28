@@ -36,6 +36,7 @@ from app.core.live.inclination import LiveInclinationRuntime
 from app.core.live.journal import JOURNAL_KINDS, LiveExperienceJournal
 from app.core.live.main_wake import (
     TRANSCRIPT_MAX_ROWS,
+    admit_main_wake,
     main_wake_floor_busy,
     render_live_talk_about,
 )
@@ -114,6 +115,7 @@ class LiveModeMixin:
         self._live_last_vitality_band = ""
         self._live_last_memory_extract = 0.0
         self._live_last_idle_reconsider = 0.0
+        self._live_candidate_woken_ids: set[str] = set()
         self._live_last_sleep_status = ""
         self._live_last_shared = False
         self._live_inclination = LiveInclinationRuntime(
@@ -219,6 +221,9 @@ class LiveModeMixin:
     def bump_live_mode_generation(self, reason: str = "") -> int:
         current = int(getattr(self, "_live_mode_generation", 0) or 0) + 1
         self._live_mode_generation = current
+        woken = getattr(self, "_live_candidate_woken_ids", None)
+        if woken is not None:
+            woken.clear()
         bus = getattr(self, "_live_impulse_bus", None)
         if bus is not None:
             try:
@@ -853,9 +858,35 @@ class LiveModeMixin:
         runtime = getattr(self, "_live_inclination", None)
         wait = getattr(getattr(runtime, "wait", None), "current", None)
         if wait is None:
-            return False
+            if frame is None or not self._live_unprompted_speech_enabled():
+                return False
+            return bool(self._live_ready_candidate_ids(frame, now_mono * 1000.0))
         deadline = float(getattr(wait, "deadline_monotonic_ms", 0.0) or 0.0)
         return now_mono * 1000.0 >= deadline
+
+    def _live_ready_candidate_ids(
+        self, frame: LiveSituationFrame, now_mono_ms: float,
+    ) -> set[str]:
+        runtime = getattr(self, "_live_inclination", None)
+        if runtime is None:
+            return set()
+        active = tuple(runtime.urges.active())
+        self._live_candidate_woken_ids.intersection_update(
+            urge.urge_id for urge in active if urge.cue_id is not None
+        )
+        remaining = runtime.budget.remaining("main_wake", now_mono_ms=now_mono_ms)
+        return {
+            urge.urge_id for urge in active
+            if urge.cue_id is not None
+            and urge.urge_id not in self._live_candidate_woken_ids
+            and not admit_main_wake(
+                intent="request_main_speech", user_intent=False,
+                selected_urge_id=urge.urge_id, urges=(urge,), frame=frame,
+                decided_generation=None, now_mono_ms=now_mono_ms,
+                budget_remaining=remaining,
+                unprompted_speech=self._live_unprompted_speech_enabled(),
+            )
+        }
 
     def _note_idle_reconsider_impulse(self) -> None:
         if not self.live_impulse_bus_enabled():
@@ -896,6 +927,13 @@ class LiveModeMixin:
         if self._live_idle_reconsider_due(now_mono):
             trigger = "idle.reconsider"
             self._live_last_idle_reconsider = now_mono
+            runtime = getattr(self, "_live_inclination", None)
+            if runtime is not None and runtime.wait.current is None:
+                frame = getattr(self._live_situation_assembler, "last_frame", None)
+                if frame is not None:
+                    self._live_candidate_woken_ids.update(
+                        self._live_ready_candidate_ids(frame, now_mono * 1000.0)
+                    )
             self._note_idle_reconsider_impulse()
         self.refresh_live_situation(trigger_kind=trigger)
         self._maybe_schedule_live_situation_worker()

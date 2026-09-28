@@ -22,6 +22,7 @@ compact 4B decisions, transactional brain handoff, curiosity and other sources,
 co-presence worker scheduling, plugin contracts, learning, cross-device delivery,
 replay/rollout, and a later email pilot. It includes current source findings,
 aggregate runtime evidence, dependencies and acceptance tests for each item.
+Its implementation log tracks partial phases and their unshipped remainder.
 
 **Start with L19 and one L21/L22 vertical slice.** The running snapshot recorded
 74 attention/acknowledgement executions but no main-wake execution attempts,

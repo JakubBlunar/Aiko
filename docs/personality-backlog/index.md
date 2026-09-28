@@ -53,7 +53,7 @@ Run it after any migration. It cannot catch a stale *claim*; only re-reading can
 
 ## 28 Sep 2026: Live initiative architecture
 
-**Backlog only; no runtime or settings changes.** The
+**Architecture evaluation followed by a limited Phase 1 code change.** The
 [Live initiative evaluation and plan](live-initiative.md) adds **Live L19-L31**
 with verified source findings, a read-only runtime snapshot, concrete ownership
 contracts, implementation steps, dependencies and acceptance tests.
@@ -65,6 +65,10 @@ investigation, not a lifetime failure rate or proof of one root cause.
 
 **Recommended start:** L19 diagnostics plus one L21/L22 candidate-lifecycle and
 wake path, then L20 availability and L24 delivery protection before real speech.
+Phase 1 has shipped a one-shot eligible-cue wake and removed the premature
+heartbeat opportunity mark; the broader candidate lifecycle, funnel diagnostics
+and delivery protection are still open. The plan's implementation log records
+the shortcut and validation.
 Build toward a small-model decision loop over grounded, durable candidates;
 reuse the brain, cue pool, curiosity, tasks, concepts and memory. Later items
 cover extensible worker/plugin impulses, bounded learning, desktop/mobile

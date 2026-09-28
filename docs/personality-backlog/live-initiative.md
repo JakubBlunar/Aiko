@@ -1,8 +1,34 @@
 # Live initiative: from presence to independent behavior
 
 **28 Sep 2026. Architecture evaluation and implementation backlog only.** All
-L19-L31 entries below are **open**. No runtime code, settings, model routes,
-permissions, or live relationship state were changed for this review.
+L19-L31 entries below remain **open unless a phase note explicitly says
+otherwise**. The initial evaluation changed no runtime behavior; implementation
+progress and its limitations are recorded below as separate phases.
+
+## Implementation log
+
+### Phase 1: one-shot cue-backed policy wake (28 Sep 2026)
+
+**Shipped slice of L21/L22; L19-L31 remain open.** A pooled cue projected during
+a `data_only` heartbeat no longer receives `opportunity_seen` before policy
+evaluation. If a subsequent heartbeat finds a fresh cue with a legal
+`request_main_speech` admission and there is no scheduled wait, it promotes
+one `idle.reconsider` decision. The cue ID is marked woken in process memory to
+avoid a policy call each second. User intent, wait expiry, sleep, quiet mode,
+speech permission, floor state, question allowance and main-wake budget keep
+their existing deterministic gates. Generation change clears the wake set.
+
+**Shortcut and follow-up:** this is a one-shot opportunity for each active urge,
+not a durable candidate scheduler. An available source that appears after the
+first eight pending rows, or a cue expiring before a suitable opening, still
+needs L21. A model choosing a nonverbal action may leave an unresolved cue
+without another scheduled decision; L22 needs a bounded defer/deadline contract.
+No delivery result or explicit recipient availability was added; L19/L20/L24
+must precede a wider rollout. A read-only MCP snapshot from before this change
+must not be presented as proof that the new path speaks proactively.
+
+**Checks:** 11 targeted heartbeat tests and 51 neighboring Live tests passed.
+This phase touched only Live behavior, its existing test file, and backlog docs.
 
 This continues [Live mode](live-mode.md), including shipped L17 deferral and
 L18 exact cue handoff. It does not propose another companion model, another

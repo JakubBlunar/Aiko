@@ -185,6 +185,43 @@ class WaitExpiryNoticeTests(unittest.TestCase):
 
 
 class IdleReconsiderTickTests(unittest.TestCase):
+    def test_heartbeat_projection_does_not_consume_cue_opportunity(self) -> None:
+        host = Pass13Host()
+        host._cue_store.pending = lambda limit=8: [SimpleNamespace(
+            id=9, cue_type="curiosity_seed", subject="film photography",
+            last_surfaced_at=None,
+        )]
+        host._live_heartbeat_tick()
+        cue_urges = [urge for urge in host._live_inclination.urges.active() if urge.cue_id]
+        self.assertEqual(len(cue_urges), 1)
+        self.assertFalse(cue_urges[0].opportunity_seen)
+
+    def test_new_cue_wakes_policy_once_without_existing_wait(self) -> None:
+        host = Pass13Host()
+        host._cue_store.pending = lambda limit=8: [SimpleNamespace(
+            id=9, cue_type="curiosity_seed", subject="film photography",
+            last_surfaced_at=None,
+        )]
+        spawned = _capture_spawns(host)
+        host._live_heartbeat_tick()
+        host._live_heartbeat_tick()
+        host._live_heartbeat_tick()
+        self.assertEqual(spawned, ["idle.reconsider"])
+        self.assertIsNone(host._live_inclination.wait.current)
+
+    def test_cue_does_not_wake_when_unprompted_speech_is_off(self) -> None:
+        host = Pass13Host()
+        host._settings.agent.live_unprompted_speech = False
+        host._cue_store.pending = lambda limit=8: [SimpleNamespace(
+            id=9, cue_type="curiosity_seed", subject="film photography",
+            last_surfaced_at=None,
+        )]
+        spawned = _capture_spawns(host)
+        host._live_heartbeat_tick()
+        host._live_heartbeat_tick()
+        self.assertEqual(spawned, [])
+        self.assertFalse(host._live_candidate_woken_ids)
+
     def test_heartbeat_without_wait_does_not_spawn(self) -> None:
         host = Pass13Host()
         spawned = _capture_spawns(host)
