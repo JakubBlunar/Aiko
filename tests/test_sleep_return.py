@@ -19,6 +19,9 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.core.session.cue_pool_mixin import CuePoolMixin
+from app.core.proactive.cue_accounting import (
+    REASON_CADENCE_BLOCK, REASON_NO_OPENING, take_decline_notes,
+)
 from app.core.session.inner_life_part2 import InnerLifePart2Mixin
 from app.core.world import sleep_return as sr
 
@@ -246,6 +249,7 @@ class ProviderTests(unittest.TestCase):
         # False either way, so the away / forward cues still proceed.
         self.assertEqual(host._pending_sleep_return_seconds, 5.5 * 3600.0)
         self.assertFalse(host._gap_cue_surfaced)
+        self.assertEqual(take_decline_notes(host)["sleep_return"], REASON_CADENCE_BLOCK)
 
     def test_legacy_force_cannot_invent_sleep(self) -> None:
         host = _Host(pending_seconds=None, force_next=True)
@@ -319,6 +323,7 @@ class C8OsIdleQualifierTests(unittest.TestCase):
         self.assertEqual(host._render_sleep_return_block(), "")
         self.assertEqual(host._pending_sleep_return_seconds, 10 * 3600.0)
         self.assertFalse(host._gap_cue_surfaced)
+        self.assertEqual(take_decline_notes(host)["sleep_return"], REASON_NO_OPENING)
 
     def test_os_idle_can_fire_gap_cue(self) -> None:
         host = _Host(

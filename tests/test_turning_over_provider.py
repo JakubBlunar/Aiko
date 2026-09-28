@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import unittest
+from unittest.mock import patch
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -204,6 +205,14 @@ class PendingSlotTests(unittest.TestCase):
         self.assertEqual(host._render_turning_over_block(), "")
         self.assertIn("turning_over", take_decline_notes(host))
 
+    def test_no_slot_preserves_pool_cadence_reason(self) -> None:
+        from app.core.proactive.cue_accounting import REASON_CADENCE_BLOCK, take_decline_notes
+
+        host = _Host(pending_seconds=None)
+        with patch.object(host, "_cadence_blocked", return_value=True):
+            self.assertEqual(host._render_turning_over_block(), "")
+        self.assertEqual(take_decline_notes(host)["turning_over"], REASON_CADENCE_BLOCK)
+
     def test_one_shot_clears_slot_on_fire(self) -> None:
         host = _Host(
             reflections=[_make_reflection()],
@@ -232,6 +241,20 @@ class PendingSlotTests(unittest.TestCase):
         )
         self.assertEqual(host._render_turning_over_block(), "")
         self.assertEqual(host._pending_turning_over_seconds, 120 * 60.0)
+        from app.core.proactive.cue_accounting import REASON_TOPIC_MISS, take_decline_notes
+
+        self.assertEqual(take_decline_notes(host)["turning_over"], REASON_TOPIC_MISS)
+
+    def test_empty_reflection_corpus_is_not_a_pool_stock_miss(self) -> None:
+        from app.core.proactive.cue_accounting import (
+            REASON_NO_CANDIDATES, take_decline_notes,
+        )
+
+        host = _Host(pending_seconds=120 * 60.0)
+        self.assertEqual(host._render_turning_over_block(), "")
+        self.assertEqual(
+            take_decline_notes(host)["turning_over"], REASON_NO_CANDIDATES,
+        )
 
     def test_the_retry_is_bounded(self) -> None:
         """A welcome-back goes stale, and the picker is not free."""
@@ -336,6 +359,9 @@ class ThresholdDoubleCheckTests(unittest.TestCase):
         # given the same slot value, so the retries cost one float
         # compare each and then it clears.
         self.assertEqual(host._pending_turning_over_seconds, 10 * 60.0)
+        from app.core.proactive.cue_accounting import REASON_CADENCE_BLOCK, take_decline_notes
+
+        self.assertEqual(take_decline_notes(host)["turning_over"], REASON_CADENCE_BLOCK)
 
     def test_threshold_at_boundary_passes(self) -> None:
         host = _Host(
@@ -359,6 +385,40 @@ class PickerIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(host._render_turning_over_block(), "")
         self.assertIsNone(host._last_turning_over)
+
+    def test_out_of_window_reflections_report_the_age_gate(self) -> None:
+        from app.core.proactive.cue_accounting import REASON_AGE_WINDOW, take_decline_notes
+
+        host = _Host(
+            reflections=[_make_reflection(hours_ago=2.0)],
+            goal_vecs=[_VEC_ALIGNED],
+            pending_seconds=120 * 60.0,
+        )
+        self.assertEqual(host._render_turning_over_block(), "")
+        self.assertEqual(take_decline_notes(host)["turning_over"], REASON_AGE_WINDOW)
+
+    def test_no_topic_reference_is_missing_candidates(self) -> None:
+        from app.core.proactive.cue_accounting import REASON_NO_CANDIDATES, take_decline_notes
+
+        host = _Host(
+            reflections=[_make_reflection()],
+            pending_seconds=120 * 60.0,
+        )
+        self.assertEqual(host._render_turning_over_block(), "")
+        self.assertEqual(take_decline_notes(host)["turning_over"], REASON_NO_CANDIDATES)
+
+    def test_undated_reflection_is_unusable_not_outside_age_window(self) -> None:
+        from app.core.proactive.cue_accounting import REASON_NO_CANDIDATES, take_decline_notes
+
+        reflection = _make_reflection()
+        reflection.created_at = "invalid"
+        host = _Host(
+            reflections=[reflection],
+            goal_vecs=[_VEC_ALIGNED],
+            pending_seconds=120 * 60.0,
+        )
+        self.assertEqual(host._render_turning_over_block(), "")
+        self.assertEqual(take_decline_notes(host)["turning_over"], REASON_NO_CANDIDATES)
 
     def test_uses_user_id_for_rag(self) -> None:
         host = _Host(

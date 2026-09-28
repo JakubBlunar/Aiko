@@ -77,11 +77,10 @@ risk of switching off something that was about to matter.
 
 **Motivation.** G4 attributes the two *structural* declines precisely — a
 gap cue that lost the priority mutex names its winner, and the K47
-question-balance veto is named — but everything a cue's own gates refuse is
-bucketed as `provider`. That covers the interesting middle: a topic gate that
-never matches, a cooldown that is too long, a picker where no candidate ever
-clears the thresholds. Those are different problems with the same label
-today.
+question-balance veto is named. Some provider gates now report their own
+reasons, but uninstrumented bail points still fall into `provider`. A topic
+gate that never matches, a cooldown that is too long, and a picker whose
+candidates never clear the thresholds need different fixes.
 
 **Why it was deferred rather than finished.** The four `inner_life_part*.py`
 files hold 94 render providers and **491** `return ""` sites between them;
@@ -92,20 +91,28 @@ large mechanical change with real regression risk, spent before any data
 says which cues need it — and G4's `reach_rate` plus `never_armed` already
 identify *which* cues are failing, just not why.
 
-**Sketched approach.** Do it per cue, worst `reach_rate` first, rather than
-as a sweep. Each decline site gains a one-line
-`self._note_cue_decline("topic_gate")` before its `return ""`; the recorder
-already accepts an arbitrary reason string, so no schema or read-path change
-is needed — `decline_reasons` picks up the new values automatically. Prefer
+**Sketched approach.** Do it per cue, worst `eligible_rate` with a substantial
+`provider` bucket first, rather than as a sweep. Use
+`note_decline(self, cue, reason)` at the deciding bail point; the existing
+vocabulary includes `topic_miss`, `importance_floor`, `cadence_block`,
+`age_window`, `no_opening`, `no_stock`, `no_candidates`, and `cross_lane`. The recorder and
+`decline_reasons` already carry these without a schema change. Prefer
 splitting a cue provider into a helper when its gate cascade is long enough
-that the instrumentation makes it unreadable; several are already candidates
-for that on size grounds alone.
+that the instrumentation makes it unreadable.
 
-**Open question.** Should `provider` decline reasons distinguish "gate did
-not match" from "gate matched but the picker found nothing"? The second is a
-corpus problem (not enough reflections, no active goals) and the first is a
-tuning problem, and conflating them is most of what makes the current
-bucket unhelpful.
+**Decision: distinguish gate misses from candidate supply.** Keep
+`topic_miss` for stocked material that does not match the turn; use
+`importance_floor` when topical candidates exist but their score or weight
+does not clear the picker, and `age_window` when reflections exist but fall
+outside the configured age range. Those are gates or weights to tune. Reserve
+`no_stock` for a shelf that was armed but empty by claim time; it is a
+supply-timing problem, not evidence that a threshold is too strict. Use
+`no_candidates` when an armed gap slot has no usable source rows or topic
+references. A truly empty corpus normally never arms a pool-backed cue,
+so it belongs in the existing `never_armed` / pool-inventory view instead.
+Read these separately before changing weights: more weight cannot create
+missing candidates, and adding candidates will not fix a gate that never
+matches.
 
 **Effort.** Small per cue, Medium for all of them.
 **Depends on.** G4 (shipped).

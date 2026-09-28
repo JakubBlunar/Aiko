@@ -356,5 +356,32 @@ class ContradictionTests(unittest.TestCase):
         self.assertEqual(away, "", "she can't be finished and still at it")
 
 
+class AwayActivitiesDeclineTests(unittest.TestCase):
+    def test_armed_slot_with_empty_journal_reports_missing_candidates(self) -> None:
+        from app.core.proactive.cue_accounting import (
+            REASON_NO_CANDIDATES, take_decline_notes,
+        )
+
+        host = _Host(chat_db=_FakeChatDb(), pending_away_seconds=6 * 3600.0)
+        host._memory_settings = SimpleNamespace(away_activities_min_gap_hours=4.0)
+        self.assertEqual(host._render_away_activities_block(), "")
+        self.assertEqual(take_decline_notes(host)["away_activities"], REASON_NO_CANDIDATES)
+
+    def test_already_surfaced_beat_reports_cadence(self) -> None:
+        from app.core.proactive.cue_accounting import (
+            REASON_CADENCE_BLOCK, take_decline_notes,
+        )
+
+        at = datetime.now(timezone.utc).isoformat()
+        db = _FakeChatDb({
+            "aiko.away_activities": json.dumps([{"at": at, "summary": "watered basil"}]),
+            "away_activity.last_surfaced_at": at,
+        })
+        host = _Host(chat_db=db, pending_away_seconds=6 * 3600.0)
+        host._memory_settings = SimpleNamespace(away_activities_min_gap_hours=4.0)
+        self.assertEqual(host._render_away_activities_block(), "")
+        self.assertEqual(take_decline_notes(host)["away_activities"], REASON_CADENCE_BLOCK)
+
+
 if __name__ == "__main__":
     unittest.main()

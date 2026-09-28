@@ -100,6 +100,8 @@ REASON_PROVIDER = "provider"
 # Nothing in stock cleared the *topical* gate: the cue had material, but
 # not about anything the live message is about.
 REASON_TOPIC_MISS = "topic_miss"
+# Reflections exist but none fall inside the picker's configured age window.
+REASON_AGE_WINDOW = "age_window"
 # Stock existed and was topical enough, but nothing cleared the weight
 # bar the provider applies before spending a slot.
 REASON_IMPORTANCE_FLOOR = "importance_floor"
@@ -110,6 +112,8 @@ REASON_CADENCE_BLOCK = "cadence_block"
 # unarmed: the snapshot saw stock and it was gone or unusable by
 # assembly, which is a supply-timing finding rather than a gate.
 REASON_NO_STOCK = "no_stock"
+# The slot was armed, but the source corpus had no candidates to pick.
+REASON_NO_CANDIDATES = "no_candidates"
 # Another lane already claimed this material in the same assembly, so the
 # cue stood down to avoid saying the same thing twice.
 REASON_CROSS_LANE = "cross_lane"
@@ -156,6 +160,7 @@ INELIGIBLE_REASONS: frozenset[str] = frozenset({
     REASON_CADENCE_BLOCK,
     REASON_NO_OPENING,
     REASON_NO_STOCK,
+    REASON_NO_CANDIDATES,
     REASON_QUESTION_BALANCE,
 })
 
@@ -1371,9 +1376,11 @@ __all__ = [
     "OUTCOME_SURFACED",
     "POOLED_CUES",
     "REASON_CADENCE_BLOCK",
+    "REASON_AGE_WINDOW",
     "REASON_CROSS_LANE",
     "REASON_IMPORTANCE_FLOOR",
     "REASON_LOST_PRIORITY",
+    "REASON_NO_CANDIDATES",
     "REASON_NO_OPENING",
     "REASON_NO_STOCK",
     "REASON_PROVIDER",

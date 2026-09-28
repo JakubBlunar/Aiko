@@ -54,6 +54,7 @@ moment Jacob's bringing in.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Iterable
@@ -61,6 +62,9 @@ from typing import TYPE_CHECKING, Iterable
 import numpy as np
 
 from app.llm.embedder import cosine_similarity
+from app.core.proactive.cue_accounting import (
+    REASON_AGE_WINDOW, REASON_NO_CANDIDATES, REASON_TOPIC_MISS,
+)
 
 
 if TYPE_CHECKING:
@@ -173,6 +177,7 @@ def pick_turning_over(
     min_age_hours: float = DEFAULT_MIN_AGE_HOURS,
     max_age_hours: float = DEFAULT_MAX_AGE_HOURS,
     min_topical_similarity: float = DEFAULT_MIN_TOPICAL_SIMILARITY,
+    on_decline: Callable[[str], None] | None = None,
 ) -> TurningOverResult | None:
     """Pick the best ``reflection`` to surface as a turning-over cue.
 
@@ -193,14 +198,19 @@ def pick_turning_over(
     threshold = max(0.0, min(1.0, float(min_topical_similarity)))
 
     best: TurningOverResult | None = None
+    had_dated_reflection = False
+    had_age_eligible_reflection = False
+    had_eligible_reflection = False
     for mem in reflections:
         if mem is None:
             continue
         age = _parse_age_hours(getattr(mem, "created_at", None), now=now)
         if age is None:
             continue
+        had_dated_reflection = True
         if age < min_age or age > max_age:
             continue
+        had_age_eligible_reflection = True
         embedding = getattr(mem, "embedding", None)
         if embedding is None:
             continue
@@ -209,6 +219,7 @@ def pick_turning_over(
                 continue
         except AttributeError:
             continue
+        had_eligible_reflection = True
         goal_score = _best_cosine(embedding, goal_vecs)
         thread_score = _best_cosine(embedding, user_vecs)
         topical = max(goal_score, thread_score)
@@ -242,6 +253,14 @@ def pick_turning_over(
             )
         ):
             best = candidate
+    if best is None and on_decline is not None:
+        if had_eligible_reflection and (goal_vecs or user_vecs):
+            reason = REASON_TOPIC_MISS
+        elif had_dated_reflection and not had_age_eligible_reflection:
+            reason = REASON_AGE_WINDOW
+        else:
+            reason = REASON_NO_CANDIDATES
+        on_decline(reason)
     return best
 
 

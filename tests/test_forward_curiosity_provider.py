@@ -19,6 +19,9 @@ from typing import Any
 from app.core.proactive.forward_curiosity_worker import (
     FORWARD_CURIOSITY_JOURNAL_KEY,
 )
+from app.core.proactive.cue_accounting import (
+    REASON_CADENCE_BLOCK, REASON_NO_CANDIDATES, take_decline_notes,
+)
 from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
 
 
@@ -114,10 +117,12 @@ class PendingSlotTests(unittest.TestCase):
     def test_below_threshold_silent(self) -> None:
         host = _Host(questions=[_q()], pending_seconds=2 * 3600.0)  # < 4h
         self.assertEqual(host._render_forward_curiosity_block(), "")
+        self.assertEqual(take_decline_notes(host)["forward_curiosity"], REASON_CADENCE_BLOCK)
 
     def test_empty_ring_silent(self) -> None:
         host = _Host(questions=[], pending_seconds=5 * 3600.0)
         self.assertEqual(host._render_forward_curiosity_block(), "")
+        self.assertEqual(take_decline_notes(host)["forward_curiosity"], REASON_NO_CANDIDATES)
 
 
 class OneOfGuardTests(unittest.TestCase):
@@ -152,6 +157,7 @@ class WatermarkTests(unittest.TestCase):
         host = _Host(questions=[_q()], pending_seconds=5 * 3600.0)
         host._chat_db.store["forward_curiosity.last_surfaced_at"] = _q()["at"]
         self.assertEqual(host._render_forward_curiosity_block(), "")
+        self.assertEqual(take_decline_notes(host)["forward_curiosity"], REASON_CADENCE_BLOCK)
 
 
 if __name__ == "__main__":

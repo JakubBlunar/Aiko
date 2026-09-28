@@ -46,10 +46,12 @@ from app.core.proactive.cue_accounting import (
     INELIGIBLE_REASONS,
     OUTCOME_DECLINED,
     OUTCOME_SURFACED,
+    REASON_AGE_WINDOW,
     REASON_CADENCE_BLOCK,
     REASON_CROSS_LANE,
     REASON_IMPORTANCE_FLOOR,
     REASON_LOST_PRIORITY,
+    REASON_NO_CANDIDATES,
     REASON_NO_OPENING,
     REASON_NO_STOCK,
     REASON_PROVIDER,
@@ -685,9 +687,10 @@ class EligibilityTests(unittest.TestCase):
     def test_the_reasons_that_mean_never_in_play(self) -> None:
         for reason in (
             REASON_CADENCE_BLOCK, REASON_NO_OPENING, REASON_QUESTION_BALANCE,
-            REASON_NO_STOCK,
+            REASON_NO_STOCK, REASON_NO_CANDIDATES,
         ):
             self.assertFalse(is_eligible_decline(reason), reason)
+        self.assertTrue(is_eligible_decline(REASON_AGE_WINDOW))
 
     def test_a_clock_and_a_missing_lull_are_recorded_apart(self) -> None:
         """Both mean "not in play", and they resolve differently: waiting
@@ -717,12 +720,13 @@ class EligibilityTests(unittest.TestCase):
         choice on both sides of this line rather than a silent default
         into the eligible bucket."""
         known = {
+            REASON_AGE_WINDOW,
             REASON_CADENCE_BLOCK, REASON_CROSS_LANE, REASON_IMPORTANCE_FLOOR,
-            REASON_LOST_PRIORITY, REASON_NO_OPENING, REASON_NO_STOCK,
+            REASON_LOST_PRIORITY, REASON_NO_CANDIDATES, REASON_NO_OPENING, REASON_NO_STOCK,
             REASON_PROVIDER, REASON_QUESTION_BALANCE, REASON_TOPIC_MISS,
         }
         self.assertTrue(INELIGIBLE_REASONS <= known)
-        self.assertEqual(len(INELIGIBLE_REASONS), 4)
+        self.assertEqual(len(INELIGIBLE_REASONS), 5)
 
 
 # ── 4. the store ──────────────────────────────────────────────────────
@@ -1039,6 +1043,17 @@ class WiringTests(unittest.TestCase):
             self.fx.store.decline_reasons()[0]["reason"],
             REASON_QUESTION_BALANCE,
         )
+
+    def test_no_candidates_reaches_the_report_but_not_eligible_rate(self) -> None:
+        host = _Host(self.fx, _pending_turning_over_seconds=60.0)
+        host._snapshot_armed_cues()
+        note_decline(host, "turning_over", REASON_NO_CANDIDATES)
+        host._record_cue_decisions(
+            assistant_message_id=11,
+            telemetry=SimpleNamespace(block_chars={"turning_over_block": 0}),
+        )
+        self.assertEqual(self.fx.store.decline_reasons()[0]["reason"], REASON_NO_CANDIDATES)
+        self.assertEqual(self.fx.store.reach()[0]["eligible_rate"], None)
 
     def test_the_snapshot_is_consumed(self) -> None:
         # A stale snapshot would credit the next turn with this turn's

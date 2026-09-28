@@ -9,6 +9,7 @@ from app.core.proactive.cue_accounting import (
     REASON_CADENCE_BLOCK,
     REASON_CROSS_LANE,
     REASON_IMPORTANCE_FLOOR,
+    REASON_NO_CANDIDATES,
     REASON_NO_OPENING,
     REASON_NO_STOCK,
     REASON_TOPIC_MISS,
@@ -702,20 +703,18 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         # before a fresh one is chosen -- it was worth sharing a turn ago
         # and still is. The pool decides how many chances it gets, so
         # this cannot loop.
-        row = self.take_pool_cue("turning_over")
+        seconds = getattr(self, "_pending_turning_over_seconds", None)
+        row = self.take_pool_cue(
+            "turning_over",
+            note_as=None if force_next or seconds is not None else REASON_TOPIC_MISS,
+        )
         if row is not None:
             self._pending_turning_over_seconds = None
             self._gap_cue_surfaced = True
             log.info("turning-over retry: cue=%d", row.id)
             return row.text
 
-        seconds = getattr(self, "_pending_turning_over_seconds", None)
         if not force_next and seconds is None:
-            # Deliberately unreported: ``take_pool_cue`` above has already
-            # recorded a reason on every path that reaches here, and
-            # ``note_decline`` is first-writer-wins. Reaching this bail at
-            # all means the slot is empty, and an empty slot can only be
-            # armed by pool stock -- which is what that call just judged.
             return ""
 
         block = self._turning_over_from_reflections(
@@ -740,6 +739,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             try:
                 seconds_f = float(seconds)
             except (TypeError, ValueError):
+                note_decline(self, "turning_over", REASON_CADENCE_BLOCK)
                 return ""
             min_gap_s = (
                 float(
@@ -752,6 +752,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 * 60.0
             )
             if seconds_f < min_gap_s:
+                note_decline(self, "turning_over", REASON_CADENCE_BLOCK)
                 return ""
 
         memory_store = getattr(self, "_memory_store", None)
@@ -767,6 +768,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             return ""
         if not reflections:
             log.debug("turning-over silent: no reflection rows")
+            note_decline(self, "turning_over", REASON_NO_CANDIDATES)
             return ""
 
         # Active-goal vectors. Empty when no GoalStore is wired or no
@@ -842,6 +844,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                         _to.DEFAULT_MIN_TOPICAL_SIMILARITY,
                     )
                 ),
+                on_decline=lambda reason: note_decline(self, "turning_over", reason),
             )
         except Exception:
             log.debug("turning-over picker raised", exc_info=True)
@@ -1070,6 +1073,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             try:
                 gap_hours = float(seconds) / 3600.0
             except (TypeError, ValueError):
+                note_decline(self, "sleep_return", REASON_CADENCE_BLOCK)
                 return ""
             if not _sr.looks_like_overnight(
                 gap_hours,
@@ -1077,6 +1081,10 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 min_gap_hours=min_gap_h,
                 overnight_hours=overnight_h,
             ):
+                note_decline(
+                    self, "sleep_return",
+                    REASON_CADENCE_BLOCK if gap_hours < min_gap_h else REASON_NO_OPENING,
+                )
                 log.debug(
                     "sleep-return silent: gap=%.1fh hour=%d not overnight",
                     gap_hours, now_local.hour,
@@ -1084,6 +1092,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 return ""
             os_idle = self._sleep_return_os_idle()
             if not _sr.os_idle_allows_sleep_return(os_idle):
+                note_decline(self, "sleep_return", REASON_NO_OPENING)
                 log.debug(
                     "sleep-return silent: gap=%.1fh os_idle=%s",
                     gap_hours, os_idle,
@@ -1436,16 +1445,18 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if not force_next and getattr(self, "_gap_cue_surfaced", False):
             return ""
 
-        row = self.take_pool_cue("away_activities")
+        seconds = getattr(self, "_pending_away_activities_seconds", None)
+        row = self.take_pool_cue(
+            "away_activities",
+            note_as=None if force_next or seconds is not None else REASON_TOPIC_MISS,
+        )
         if row is not None:
             self._pending_away_activities_seconds = None
             self._gap_cue_surfaced = True
             log.info("away-activities retry: cue=%d", row.id)
             return row.text
 
-        seconds = getattr(self, "_pending_away_activities_seconds", None)
         if not force_next and seconds is None:
-            # Already reported by ``take_pool_cue``; see ``turning_over``.
             return ""
 
         block = self._away_activities_from_journal(
@@ -1469,6 +1480,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             try:
                 seconds_f = float(seconds)
             except (TypeError, ValueError):
+                note_decline(self, "away_activities", REASON_CADENCE_BLOCK)
                 return ""
             min_gap_s = (
                 float(
@@ -1481,6 +1493,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 * 3600.0
             )
             if seconds_f < min_gap_s:
+                note_decline(self, "away_activities", REASON_CADENCE_BLOCK)
                 return ""
 
         chat_db = getattr(self, "_chat_db", None)
@@ -1496,12 +1509,14 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         journal = load_journal(chat_db.kv_get)
         if not journal:
             log.debug("away_activities silent: empty journal")
+            note_decline(self, "away_activities", REASON_NO_CANDIDATES)
             return ""
 
         newest = journal[-1]
         at = str(newest.get("at") or "")
         summary = str(newest.get("summary") or "").strip()
         if not summary:
+            note_decline(self, "away_activities", REASON_NO_CANDIDATES)
             return ""
 
         watermark_key = "away_activity.last_surfaced_at"
@@ -1511,6 +1526,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             except Exception:
                 last_surfaced = None
             if last_surfaced and str(last_surfaced) == at:
+                note_decline(self, "away_activities", REASON_CADENCE_BLOCK)
                 log.debug("away_activities silent: already surfaced %s", at)
                 return ""
 
@@ -1590,6 +1606,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             try:
                 seconds_f = float(seconds)
             except (TypeError, ValueError):
+                note_decline(self, "forward_curiosity", REASON_CADENCE_BLOCK)
                 return ""
             min_gap_s = (
                 float(
@@ -1602,6 +1619,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 * 3600.0
             )
             if seconds_f < min_gap_s:
+                note_decline(self, "forward_curiosity", REASON_CADENCE_BLOCK)
                 return ""
 
         chat_db = getattr(self, "_chat_db", None)
@@ -1635,12 +1653,14 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         ring = load_questions(chat_db.kv_get)
         if not ring:
             log.debug("forward_curiosity silent: empty ring")
+            note_decline(self, "forward_curiosity", REASON_NO_CANDIDATES)
             return ""
 
         newest = ring[-1]
         at = str(newest.get("at") or "")
         question = str(newest.get("question") or "").strip()
         if not question:
+            note_decline(self, "forward_curiosity", REASON_NO_CANDIDATES)
             return ""
 
         watermark_key = "forward_curiosity.last_surfaced_at"
@@ -1650,6 +1670,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             except Exception:
                 last_surfaced = None
             if last_surfaced and str(last_surfaced) == at:
+                note_decline(self, "forward_curiosity", REASON_CADENCE_BLOCK)
                 log.debug(
                     "forward_curiosity silent: already surfaced %s", at,
                 )
