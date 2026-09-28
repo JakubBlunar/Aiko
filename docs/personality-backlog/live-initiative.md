@@ -7,6 +7,20 @@ progress and its limitations are recorded below as separate phases.
 
 ## Implementation log
 
+### Phase 2: policy-worker failure visibility (28 Sep 2026)
+
+**Limited L19 slice; L19 remains open.** Live situation diagnostics now report
+a redacted `policy_failure_count` and `last_policy_failure` with a reason,
+session generation and trigger. Worker exceptions are `model_failure`; a
+missing policy client is `no_client`. Neither is counted as successful quiet.
+The existing Live situation MCP snapshot includes these additive fields.
+
+**Shortcut and follow-up:** this is in-process, last-failure visibility, not a
+joinable or persistent funnel. It does not yet report no candidate, in-flight
+coalescing, declined cues, unavailable recipients, or brain delivery outcomes.
+The exception message is deliberately absent because it can contain prompt
+content. L19's bounded `why_silent` view and transition history remain open.
+
 ### Phase 1: one-shot cue-backed policy wake (28 Sep 2026)
 
 **Shipped slice of L21/L22; L19-L31 remain open.** A pooled cue projected during

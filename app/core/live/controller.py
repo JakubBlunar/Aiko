@@ -156,6 +156,8 @@ class LivePolicyController:
         self._main_wake_last_reject_generation: int | None = None
         self._pending_fallback: dict[str, Any] | None = None
         self._attempted_fallback_ids: set[str] = set()
+        self._policy_failure_count = 0
+        self._last_policy_failure: dict[str, Any] | None = None
 
     def consider(
         self,
@@ -241,6 +243,10 @@ class LivePolicyController:
             "pending_fallback": (
                 dict(self._pending_fallback) if self._pending_fallback else None
             ),
+            "policy_failure_count": self._policy_failure_count,
+            "last_policy_failure": (
+                dict(self._last_policy_failure) if self._last_policy_failure else None
+            ),
         }
 
     def _admit_critical(self, frame: LiveSituationFrame) -> None:
@@ -302,7 +308,7 @@ class LivePolicyController:
             try:
                 if cancel.is_set():
                     return
-                self._infer(
+                result = self._infer(
                     frame,
                     trigger_kind=trigger_kind,
                     prompt_input=captured,
@@ -310,7 +316,10 @@ class LivePolicyController:
                     started_generation=gen,
                     cancel=cancel,
                 )
+                if result is not None and result.reason == "no_client":
+                    self._record_policy_failure("no_client", gen, trigger_kind)
             except Exception:
+                self._record_policy_failure("model_failure", gen, trigger_kind)
                 log.debug("live policy inference failed", exc_info=True)
             finally:
                 with self._lock:
@@ -331,6 +340,15 @@ class LivePolicyController:
             inferred or "-",
             int(frame.generation),
         )
+
+    def _record_policy_failure(self, reason: str, generation: int, trigger_kind: str) -> None:
+        with self._lock:
+            self._policy_failure_count += 1
+            self._last_policy_failure = {
+                "reason": reason,
+                "generation": generation,
+                "trigger_kind": trigger_kind,
+            }
 
     def _infer(
         self,

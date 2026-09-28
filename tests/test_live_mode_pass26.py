@@ -5,6 +5,7 @@ import json
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from app.core.live.admission import (
     ADMISSION_GATES,
@@ -37,6 +38,43 @@ def _by_name(payload: dict) -> dict[str, dict]:
 
 
 class AdmissionRecordShapeTests(unittest.TestCase):
+    def test_worker_failure_is_distinct_from_silence(self) -> None:
+        frame = _frame()
+        controller = _controller(generation_provider=lambda: int(frame.generation))
+        with (
+            patch.object(controller, "_infer", side_effect=RuntimeError("private prompt")),
+            patch("app.core.live.controller.threading.Thread") as thread,
+        ):
+            controller._spawn(
+                frame, trigger_kind="idle.reconsider", prompt_input={}, user_intent=False,
+            )
+            thread.call_args.kwargs["target"]()
+        details = controller.diagnostics()
+        self.assertEqual(details["policy_failure_count"], 1)
+        self.assertEqual(details["last_policy_failure"], {
+            "reason": "model_failure",
+            "generation": int(frame.generation),
+            "trigger_kind": "idle.reconsider",
+        })
+        self.assertNotIn("private prompt", str(details))
+        self.assertFalse(details["live_policy_inflight"])
+
+    def test_missing_client_is_recorded_without_a_proposal(self) -> None:
+        frame = _frame()
+        controller = _controller(
+            client_provider=lambda: None,
+            generation_provider=lambda: int(frame.generation),
+        )
+        with patch("app.core.live.controller.threading.Thread") as thread:
+            controller._spawn(
+                frame, trigger_kind="idle.reconsider", prompt_input={}, user_intent=False,
+            )
+            thread.call_args.kwargs["target"]()
+        details = controller.diagnostics()
+        self.assertEqual(details["policy_failure_count"], 1)
+        self.assertEqual(details["last_policy_failure"]["reason"], "no_client")
+        self.assertFalse(details["last_policy_proposal"])
+
     def test_wait_lists_twelve_gates_in_order(self) -> None:
         client = _FakePolicyClient()
         frame = _frame()
