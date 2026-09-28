@@ -2515,6 +2515,7 @@ class AgentSettings:
     # A user who wants the grounded loop without the speculation is
     # asking for something coherent.
     hypothesis_invention_enabled: bool = True
+    concept_introspection_enabled: bool = False
 
     # FollowUpWorker master switch. When a user-mentioned future_plan's
     # event time passes, the worker drafts a private "you can ask how it

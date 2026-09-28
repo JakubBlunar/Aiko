@@ -856,6 +856,34 @@ class IdleWorkersInitMixin:
                     "HypothesisProposerWorker init failed", exc_info=True
                 )
 
+        self._concept_introspection_worker = None
+        if (
+            self._idle_scheduler is not None
+            and getattr(self, "_hypothesis_store", None) is not None
+            and getattr(self, "_belief_store", None) is not None
+            and getattr(self, "_embedder", None) is not None
+        ):
+            from app.core.proactive.introspection_worker import IntrospectionWorker
+
+            self._concept_introspection_worker = IntrospectionWorker(
+                chat_db=self._chat_db, belief_store=self._belief_store,
+                user_id_provider=lambda: self._user_id,
+                hypothesis_store_provider=lambda: self._hypothesis_store,
+                concept_store_provider=lambda: getattr(self, "_concept_store", None),
+                embedder=self._embedder, ollama=self._maintenance_client,
+                chat_model=self._effective_worker_model, cancel_event=self._fact_check_cancel,
+                enabled_provider=lambda: (
+                    self._settings.agent.concept_introspection_enabled
+                    and self._settings.agent.belief_tracking_enabled
+                ),
+                interval_seconds=3600,
+                max_open=self._memory_settings.hypothesis_max_open,
+                min_novelty=self._memory_settings.hypothesis_min_novelty,
+                concept_novelty=self._memory_settings.hypothesis_concept_novelty,
+                ttl_hours=self._memory_settings.hypothesis_ttl_hours,
+            )
+            self._idle_scheduler.register(self._concept_introspection_worker)
+
         # K64a AssociativeWanderWorker — drifts across the topic graph during
         # quiet windows, picks two *distant* clusters, and asks the worker
         # LLM for a genuine connection ("both reward following a faint trail

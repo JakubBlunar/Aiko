@@ -142,6 +142,7 @@ class BeliefGapDetector:
         user_id: str,
         affect: "AffectState | None" = None,
         recent_user_message: str | None = None,
+        evidence_message_id: int | None = None,
     ) -> list[BeliefGap]:
         """Run both detector passes and return the surfaced gaps.
 
@@ -163,6 +164,7 @@ class BeliefGapDetector:
             gaps.extend(
                 self._detect_mood_gaps(
                     user_id=user_id, affect=affect, user_message=text,
+                    evidence_message_id=evidence_message_id,
                 )
             )
 
@@ -171,6 +173,7 @@ class BeliefGapDetector:
             gaps.extend(
                 self._detect_opinion_gaps(
                     user_id=user_id, user_message=text,
+                    evidence_message_id=evidence_message_id,
                 )
             )
 
@@ -195,6 +198,7 @@ class BeliefGapDetector:
         user_id: str,
         affect: "AffectState",
         user_message: str = "",
+        evidence_message_id: int | None = None,
     ) -> list[BeliefGap]:
         recent_hours = float(
             getattr(
@@ -259,7 +263,15 @@ class BeliefGapDetector:
                     val_diff=val_diff, aro_diff=aro_diff,
                     band_flip=band_flip,
                 )
-                self._belief_store.mark_contradicted(b.id, stamp_gap=True)
+                self._belief_store.mark_contradicted(
+                    b.id, stamp_gap=True, method="mood_comparison",
+                    evidence_message_id=evidence_message_id,
+                    evidence={
+                        "valence": float(affect.valence), "arousal": float(affect.arousal),
+                        "mood_label": str(affect.mood_label), "reason": reason,
+                        "user_message": user_message,
+                    },
+                )
                 gaps.append(
                     BeliefGap(
                         belief_id=b.id,
@@ -339,6 +351,7 @@ class BeliefGapDetector:
         *,
         user_id: str,
         user_message: str,
+        evidence_message_id: int | None = None,
     ) -> list[BeliefGap]:
         # Opinions have no time window: an old belief can still be
         # contradicted by a fresh statement. We still bound the list
@@ -358,7 +371,11 @@ class BeliefGapDetector:
                 reason = "user message contradicts prediction (" + ", ".join(
                     result.signals
                 ) + ")"
-                self._belief_store.mark_contradicted(b.id, stamp_gap=True)
+                self._belief_store.mark_contradicted(
+                    b.id, stamp_gap=True, method="opinion_heuristic",
+                    evidence_message_id=evidence_message_id,
+                    evidence={"signals": list(result.signals), "user_message": user_message},
+                )
                 gaps.append(
                     BeliefGap(
                         belief_id=b.id,
@@ -383,7 +400,10 @@ class BeliefGapDetector:
             # strong overlap with the belief text and there's no
             # contradiction signal, nudge toward ``confirmed``.
             if self._strong_overlap(user_message, belief_text):
-                self._belief_store.mark_confirmed(b.id)
+                self._belief_store.mark_confirmed(
+                    b.id, method="lexical_overlap", evidence_message_id=evidence_message_id,
+                    evidence={"user_message": user_message},
+                )
                 log.info(
                     "belief-gap OPINION confirmed: id=%s topic=%r",
                     b.id,

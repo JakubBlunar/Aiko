@@ -416,6 +416,89 @@ class BelievedAndTrustedTests(unittest.TestCase):
         self.assertEqual(ids, [confirmed.id])
 
 
+class OutcomeTests(unittest.TestCase):
+    def test_manual_confirmation_is_not_hidden_by_auto_confirmation(self) -> None:
+        _, store, _ = _build_db()
+        claim = dict(user_id="u1", kind=KIND_OPINION, topic="testing", predicted_state="useful")
+        belief = store.upsert(**claim)
+        store.upsert(**claim)
+        store.update(belief.id, status="confirmed")
+        store.update(belief.id, status="confirmed")
+        self.assertEqual(
+            [row["method"] for row in store.list_outcomes(user_id="u1")],
+            ["auto_confirm", "manual"],
+        )
+
+    def test_upgrade_does_not_invent_historic_outcomes(self) -> None:
+        db, store, path = _build_db()
+        belief = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="testing", predicted_state="useful",
+        )
+        db.execute_commit("UPDATE beliefs SET status = 'confirmed' WHERE id = ?", (belief.id,))
+        db.execute_commit("DROP TABLE belief_outcomes")
+        db.execute_commit("UPDATE schema_version SET version = 44")
+        reopened = BeliefStore(ChatDatabase(path))
+        self.assertEqual(reopened.get(belief.id).status, "confirmed")
+        self.assertEqual(reopened.list_outcomes(user_id="u1"), [])
+
+    def test_manual_edit_resolution_snapshots_the_edited_claim(self) -> None:
+        _, store, _ = _build_db()
+        belief = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="testing", predicted_state="useful",
+        )
+        store.update(belief.id, status="CONFIRMED")
+        store.update(belief.id, predicted_state="very useful", status="confirmed")
+        rows = store.list_outcomes(user_id="u1")
+        self.assertEqual([row["claim"]["predicted_state"] for row in rows],
+                         ["useful", "very useful"])
+
+    def test_outcomes_preserve_claim_and_separate_methods(self) -> None:
+        _, store, _ = _build_db()
+        claim = dict(user_id="u1", kind=KIND_OPINION, topic="testing", predicted_state="useful")
+        belief = store.upsert(**claim)
+        store.upsert(**claim)
+        store.mark_contradicted(
+            belief.id, method="opinion_heuristic", evidence_message_id=42,
+            evidence={"signals": ["negation"]},
+        )
+        store.mark_contradicted(
+            belief.id, method="opinion_heuristic", evidence_message_id=42,
+        )
+        store.upsert(**{**claim, "predicted_state": "sometimes useful"})
+        rows = store.list_outcomes(user_id="u1")
+        self.assertEqual([row["method"] for row in rows], ["auto_confirm", "opinion_heuristic"])
+        self.assertEqual(rows[1]["claim"]["predicted_state"], "useful")
+        self.assertEqual(rows[1]["evidence_message_id"], 42)
+        self.assertEqual(rows[1]["evidence"], {"signals": ["negation"]})
+        self.assertEqual(store.list_outcomes(user_id="other"), [])
+        self.assertEqual(store.list_outcomes(user_id="u1", after_id=rows[0]["id"]), rows[1:])
+
+    def test_manual_resolution_and_revival_are_separate_events(self) -> None:
+        _, store, _ = _build_db()
+        belief = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="testing", predicted_state="useful",
+        )
+        store.update(belief.id, status="contradicted")
+        store.update(belief.id, status="contradicted")
+        store.update(belief.id, status="active")
+        store.update(belief.id, status="contradicted")
+        rows = store.list_outcomes(user_id="u1")
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["method"] == "manual" for row in rows))
+        store.delete(belief.id)
+        self.assertEqual(store.list_outcomes(user_id="u1"), [])
+
+    def test_failed_ledger_write_rolls_back_status(self) -> None:
+        db, store, _ = _build_db()
+        belief = store.upsert(
+            user_id="u1", kind=KIND_OPINION, topic="testing", predicted_state="useful",
+        )
+        db.execute_commit("DROP TABLE belief_outcomes")
+        with self.assertRaises(sqlite3.OperationalError):
+            store.mark_confirmed(belief.id)
+        self.assertEqual(store.get(belief.id).status, "active")
+
+
 class MaintenanceTests(unittest.TestCase):
     def test_mark_stale_older_than(self) -> None:
         _, store, _ = _build_db()

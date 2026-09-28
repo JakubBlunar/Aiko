@@ -596,8 +596,10 @@ class BeliefInferenceWorker:
             return {"skipped": True, "reason": "lookback_zero"}
 
         now = self._clock()
+        source_ids: list[int] = []
         transcript = self._snapshot_transcript(
             session_key=session_key, lookback_turns=lookback_turns,
+            source_ids=source_ids,
         )
         if not transcript:
             # An empty window is normal; a session key that matches *no*
@@ -781,6 +783,8 @@ class BeliefInferenceWorker:
                 valence=t.valence,
                 arousal=t.arousal,
                 source=SOURCE_WORKER,
+                source_message_id=max(source_ids) if source_ids else None,
+                metadata={"source_window_message_ids": source_ids},
                 topic_embedding=embedding,
                 observed_at=now.isoformat(),
             )
@@ -1000,6 +1004,7 @@ class BeliefInferenceWorker:
         *,
         session_key: str,
         lookback_turns: int,
+        source_ids: list[int] | None = None,
     ) -> str:
         """Join the last N user messages into one speaker-attributed block.
 
@@ -1026,6 +1031,8 @@ class BeliefInferenceWorker:
             text = " ".join((row.content or "").splitlines()).strip()
             if not text:
                 continue
+            if source_ids is not None and getattr(row, "id", None) is not None:
+                source_ids.append(int(row.id))
             if len(text) > 600:
                 text = text[:597] + "\u2026"
             age = timephrase.age_prefix(getattr(row, "created_at", None), now)

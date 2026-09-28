@@ -101,8 +101,9 @@ ORIGIN_EXTRAPOLATION = "extrapolation"
 ORIGIN_MEMORY = "memory"
 ORIGIN_CONCEPT = "concept"
 ORIGIN_FREE = "free"
+ORIGIN_BELIEF_OUTCOME = "belief_outcome"
 ORIGINS: frozenset[str] = frozenset(
-    {ORIGIN_EXTRAPOLATION, ORIGIN_MEMORY, ORIGIN_CONCEPT, ORIGIN_FREE}
+    {ORIGIN_EXTRAPOLATION, ORIGIN_MEMORY, ORIGIN_CONCEPT, ORIGIN_FREE, ORIGIN_BELIEF_OUTCOME}
 )
 
 #: The concept subjects, plus one of our own. A guess about how something

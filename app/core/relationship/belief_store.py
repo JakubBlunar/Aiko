@@ -46,6 +46,7 @@ separate audit surface).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -402,6 +403,13 @@ class BeliefStore:
                     row_id,
                 ),
             )
+            if next_status == STATUS_CONFIRMED and existing[12] != STATUS_CONFIRMED:
+                self._append_outcome(
+                    _row_to_belief(existing), outcome=next_status,
+                    method="auto_confirm", resolved_at=when,
+                    evidence_message_id=source_message_id,
+                    evidence={"observations": merged_meta.get("observations")},
+                )
             conn.commit()
             return self.get(row_id)
 
@@ -481,6 +489,7 @@ class BeliefStore:
         if state_changed:
             merged["observations"] = 1
             merged["first_observed_at"] = observed_at
+            merged.pop("auto_confirmed_at", None)
             return STATUS_ACTIVE, merged
 
         try:
@@ -516,10 +525,13 @@ class BeliefStore:
         confidence: float | None = None,
         status: str | None = None,
         metadata: dict[str, Any] | None = None,
+        resolution_method: str = "manual",
     ) -> Belief | None:
         """Apply a partial REST/UI edit to a row."""
+        prior = self.get(belief_id)
         sets: list[str] = []
         args: list[Any] = []
+        status_norm = None
         if predicted_state is not None:
             cleaned = str(predicted_state).strip()
             if not cleaned:
@@ -548,16 +560,37 @@ class BeliefStore:
             f"UPDATE beliefs SET {', '.join(sets)} WHERE id = ?",
             tuple(args),
         )
+        if prior is not None and status_norm in (STATUS_CONFIRMED, STATUS_CONTRADICTED):
+            changed = predicted_state is not None and prior.predicted_state != cleaned
+            if predicted_state is not None:
+                prior.predicted_state = cleaned
+            self._append_outcome(
+                prior, outcome=status_norm, method=resolution_method, resolved_at=_now_iso(),
+                evidence={"edited_claim": predicted_state is not None},
+                force=changed,
+            )
         conn.commit()
         if not cursor.rowcount:
             return None
         return self.get(int(belief_id))
 
-    def mark_confirmed(self, belief_id: int) -> bool:
-        return self._set_status(belief_id, STATUS_CONFIRMED, stamp_gap=False)
+    def mark_confirmed(
+        self, belief_id: int, *, method: str = "unspecified",
+        evidence_message_id: int | None = None, evidence: dict[str, Any] | None = None,
+    ) -> bool:
+        return self._set_status(
+            belief_id, STATUS_CONFIRMED, stamp_gap=False, method=method,
+            evidence_message_id=evidence_message_id, evidence=evidence,
+        )
 
-    def mark_contradicted(self, belief_id: int, *, stamp_gap: bool = True) -> bool:
-        return self._set_status(belief_id, STATUS_CONTRADICTED, stamp_gap=stamp_gap)
+    def mark_contradicted(
+        self, belief_id: int, *, stamp_gap: bool = True, method: str = "unspecified",
+        evidence_message_id: int | None = None, evidence: dict[str, Any] | None = None,
+    ) -> bool:
+        return self._set_status(
+            belief_id, STATUS_CONTRADICTED, stamp_gap=stamp_gap, method=method,
+            evidence_message_id=evidence_message_id, evidence=evidence,
+        )
 
     def mark_stale(self, belief_id: int) -> bool:
         return self._set_status(belief_id, STATUS_STALE, stamp_gap=False)
@@ -599,9 +632,13 @@ class BeliefStore:
         status: str,
         *,
         stamp_gap: bool,
+        method: str = "unspecified",
+        evidence_message_id: int | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> bool:
         when = _now_iso()
         conn = self._db._get_conn()  # type: ignore[attr-defined]
+        prior = self.get(belief_id)
         if stamp_gap:
             cursor = conn.execute(
                 "UPDATE beliefs SET status = ?, last_checked_at = ?, "
@@ -614,8 +651,93 @@ class BeliefStore:
                 "WHERE id = ?",
                 (status, when, int(belief_id)),
             )
+        if prior is not None and status in (STATUS_CONFIRMED, STATUS_CONTRADICTED):
+            self._append_outcome(
+                prior, outcome=status, method=method, resolved_at=when,
+                evidence_message_id=evidence_message_id, evidence=evidence,
+            )
         conn.commit()
         return bool(cursor.rowcount)
+
+    def _append_outcome(
+        self, claim: Belief, *, outcome: str, method: str, resolved_at: str,
+        evidence_message_id: int | None = None, evidence: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> None:
+        """Append within the caller's status transaction; never infer historic outcomes."""
+        conn = self._db._get_conn()  # type: ignore[attr-defined]
+        if claim.status == outcome and evidence_message_id is None and not force:
+            latest = conn.execute(
+                "SELECT method, outcome, claim_json FROM belief_outcomes "
+                "WHERE belief_id = ? ORDER BY id DESC LIMIT 1", (claim.id,),
+            ).fetchone()
+            if latest is not None and latest[0] == method and latest[1] == outcome:
+                previous = json.loads(latest[2])
+                if previous["topic"] == claim.topic and previous["predicted_state"] == (
+                    claim.predicted_state
+                ):
+                    return
+        dedupe_key = None
+        if evidence_message_id is not None:
+            identity = [
+                claim.id, claim.topic, claim.predicted_state,
+                claim.metadata.get("first_observed_at", claim.observed_at),
+                outcome, method, evidence_message_id,
+            ]
+            dedupe_key = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+        try:
+            conn.execute(
+                "INSERT INTO belief_outcomes "
+                "(belief_id, user_id, outcome, method, resolved_at, prior_status, "
+                "claim_json, evidence_message_id, evidence_json, dedupe_key) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(dedupe_key) DO NOTHING",
+                (
+                    claim.id, claim.user_id, outcome, method, resolved_at, claim.status,
+                    json.dumps(claim.to_payload()), evidence_message_id,
+                    json.dumps(evidence or {}), dedupe_key,
+                ),
+            )
+        except Exception:
+            conn.rollback()
+            raise
+
+    def list_outcomes(
+        self, *, user_id: str, after_id: int = 0, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Read immutable, forward-only evidence in cursor order, scoped to one user."""
+        rows = self._db.execute_fetchall(
+            "SELECT id, belief_id, outcome, method, resolved_at, prior_status, "
+            "claim_json, evidence_message_id, evidence_json FROM belief_outcomes "
+            "WHERE user_id = ? AND id > ? ORDER BY id LIMIT ?",
+            (user_id, int(after_id), max(1, min(int(limit), 1000))),
+        )
+        return [
+            {
+                "id": row[0], "belief_id": row[1], "outcome": row[2],
+                "method": row[3], "resolved_at": row[4], "prior_status": row[5],
+                "claim": json.loads(row[6]), "evidence_message_id": row[7],
+                "evidence": json.loads(row[8]),
+            }
+            for row in rows
+        ]
+
+    def outcome_counts(self, *, user_id: str) -> dict[str, Any]:
+        """Method counts are coverage diagnostics, deliberately not accuracy rates."""
+        methods = self._db.execute_fetchall(
+            "SELECT method, outcome, COUNT(*) FROM belief_outcomes "
+            "WHERE user_id = ? GROUP BY method, outcome", (user_id,),
+        )
+        sources = self._db.execute_fetchall(
+            "SELECT source, COUNT(*) FROM beliefs WHERE user_id = ? GROUP BY source", (user_id,),
+        )
+        return {
+            "total": sum(row[2] for row in methods),
+            "by_method": [
+                {"method": row[0], "outcome": row[1], "count": row[2]} for row in methods
+            ],
+            "belief_sources": dict(sources),
+        }
 
     # ── reads ─────────────────────────────────────────────────────────
 

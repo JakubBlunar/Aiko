@@ -2940,6 +2940,19 @@ def register(mcp, session: "SessionController") -> None:
             return f"get_hypothesis_state raised: {exc}"
 
     @mcp.tool()
+    def get_belief_learning(
+        after_id: int = 0, limit: int = 25, include_rows: bool = False,
+    ) -> str:
+        """L47/L33 outcome methods and introspection progress, not an accuracy score.
+
+        Rows include personal claims and evidence; request them explicitly.
+        The default response contains only aggregate coverage and worker state.
+        """
+        return json.dumps(session.belief_learning_snapshot(
+            after_id=after_id, limit=limit, include_rows=include_rows,
+        ), indent=2, default=str)
+
+    @mcp.tool()
     def force_hypothesis_invention() -> str:
         """L30 Phase B — invent one batch of hypotheses now.
 

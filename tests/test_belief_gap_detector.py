@@ -54,12 +54,17 @@ class MoodGapTests(unittest.TestCase):
         gaps = detector.detect(
             user_id="u1", affect=affect,
             recent_user_message="thinking about the tokyo trip again",
+            evidence_message_id=42,
         )
         self.assertEqual(len(gaps), 1)
         self.assertEqual(gaps[0].kind, KIND_MOOD)
         self.assertEqual(gaps[0].topic, "tokyo trip")
         self.assertEqual(gaps[0].observed, "melancholy")
         self.assertEqual(store.get(b.id).status, STATUS_CONTRADICTED)
+        outcome = store.list_outcomes(user_id="u1")[0]
+        self.assertEqual(outcome["method"], "mood_comparison")
+        self.assertEqual(outcome["evidence_message_id"], 42)
+        self.assertEqual(outcome["evidence"]["valence"], -0.4)
 
     def test_small_drift_does_not_flag(self) -> None:
         store, detector = _build()
@@ -158,10 +163,14 @@ class OpinionGapTests(unittest.TestCase):
         gaps = detector.detect(
             user_id="u1", affect=None,
             recent_user_message="honestly i hate spicy food deeply",
+            evidence_message_id=43,
         )
         self.assertEqual(len(gaps), 1)
         self.assertEqual(gaps[0].kind, KIND_OPINION)
         self.assertEqual(store.get(b.id).status, STATUS_CONTRADICTED)
+        outcome = store.list_outcomes(user_id="u1")[0]
+        self.assertEqual(outcome["method"], "opinion_heuristic")
+        self.assertEqual(outcome["evidence_message_id"], 43)
 
     def test_opinion_confirmed_by_strong_overlap(self) -> None:
         store, detector = _build()
@@ -177,6 +186,7 @@ class OpinionGapTests(unittest.TestCase):
         )
         self.assertEqual(gaps, [])
         self.assertEqual(store.get(b.id).status, STATUS_CONFIRMED)
+        self.assertEqual(store.list_outcomes(user_id="u1")[0]["method"], "lexical_overlap")
 
     def test_no_signal_keeps_active(self) -> None:
         store, detector = _build()

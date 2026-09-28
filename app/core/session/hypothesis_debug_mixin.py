@@ -40,6 +40,22 @@ FORCEABLE_VERDICTS: tuple[str, ...] = ("confirm", "correct", "deny")
 class HypothesisDebugMixin:
     """L30 reads for Aiko and for whoever is debugging her."""
 
+    def belief_learning_snapshot(
+        self, *, after_id: int = 0, limit: int = 25, include_rows: bool = False,
+    ) -> dict[str, Any]:
+        """L47/L33 diagnostics; personal claim text requires explicit opt-in."""
+        store = getattr(self, "_belief_store", None)
+        worker = getattr(self, "_concept_introspection_worker", None)
+        result: dict[str, Any] = {"available": store is not None}
+        if store is not None:
+            result.update(store.outcome_counts(user_id=self._user_id))
+            if include_rows:
+                result["outcomes"] = store.list_outcomes(
+                    user_id=self._user_id, after_id=after_id, limit=limit,
+                )
+        result["introspection"] = worker.snapshot() if worker is not None else {"available": False}
+        return result
+
     # ── L30 Phase B: the open guesses ────────────────────────────────────
 
     def open_hypotheses(

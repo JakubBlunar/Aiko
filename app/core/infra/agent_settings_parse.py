@@ -1874,6 +1874,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             hypothesis_invention_enabled=bool(
                 agent_raw.get("hypothesis_invention_enabled", True),
             ),
+            concept_introspection_enabled=bool(
+                agent_raw.get("concept_introspection_enabled", False),
+            ),
             follow_up_enabled=bool(
                 agent_raw.get("follow_up_enabled", True),
             ),

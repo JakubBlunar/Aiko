@@ -15,6 +15,7 @@ graduation — and the boundary is deliberately narrow.
 | --- | --- |
 | Storage (`hypotheses` table + cosine mirror) | [`hypothesis_store.py`](../app/core/concepts/hypothesis_store.py) |
 | Invention (L30c) | [`hypothesis_proposer_worker.py`](../app/core/proactive/hypothesis_proposer_worker.py) |
+| Outcome-led introspection (L33, opt-in) | [`introspection_worker.py`](../app/core/proactive/introspection_worker.py) |
 | Choosing what to ask (L30b) | [`concept_hypothesis_worker.py`](../app/core/proactive/concept_hypothesis_worker.py) |
 | Reading the reply | [`answer_adjudicator.py`](../app/core/concepts/answer_adjudicator.py) |
 | Applying the verdict | [`hypothesis_resolution.py`](../app/core/concepts/hypothesis_resolution.py) |
@@ -76,6 +77,37 @@ guess has no evidence, so it cannot live in `concepts` — see
   confirmed twice is not a promoted belief.
 
 ## Credence is not confidence
+
+### Outcome-led hypotheses (L47 / L33)
+
+`agent.concept_introspection_enabled` defaults to `false`. When enabled after
+restart, the `concept_introspection` idle worker can investigate a recent manual
+rejection or a later, attributable opinion-heuristic contradiction from the
+schema-v45 `belief_outcomes` ledger. It excludes auto-confirmation, mood
+comparisons, missing provenance and same-turn evidence. A heuristic mismatch
+is a reason to investigate, not proof that the earlier belief was wrong.
+
+It writes at most one `open` hypothesis per pass, with `origin="belief_outcome"`,
+the outcome ID in `origin_refs`, zero support, and provisional credence `0.35`.
+An alternative explanation and disconfirming observation are retained in the
+rationale. These origin references are **not** answer memories and never count
+toward graduation. The ordinary proposer cannot assign this reserved origin.
+
+It shares existing novelty gates and `hypothesis_max_open`, never evicts to make
+room, and adds no question or speaking path. The regular ask/answer machinery
+owns any downstream interaction. Budgets are two model attempts per UTC day,
+one-hour scheduler cadence and seven days between reviews of the same belief.
+Malformed/cancelled attempts preserve the event cursor for retry; completed
+abstentions and duplicate rejections consume that review opportunity.
+
+MCP `get_belief_learning` reports aggregate resolution methods, source coverage
+and the worker cursor/budget/last result. `include_rows=true` opts into personal
+claim snapshots and evidence; `after_id` and `limit` page them. Historical belief
+statuses are not backfilled into resolutions and these counts are not accuracy
+scores. No automatic L44 calibration is enabled. Live quality evaluation and
+additional reflection probes remain in the [L33 backlog](personality-backlog/concepts.md#l33-introspective-reflection----structured-self-questioning-that-feeds-concepts).
+
+### The two measures
 
 These are two different numbers and conflating them is the easiest way to
 break the layer. The distinction:

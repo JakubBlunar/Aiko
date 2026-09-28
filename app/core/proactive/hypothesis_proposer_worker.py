@@ -72,6 +72,7 @@ import numpy as np
 from app.core.concepts.hypothesis_store import (
     Hypothesis,
     ORIGINS,
+    ORIGIN_BELIEF_OUTCOME,
     ORIGIN_FREE,
     SUBJECT_WORLD,
 )
@@ -652,7 +653,7 @@ class HypothesisProposerWorker:
         if subject not in _SUBJECTS:
             subject = "user"
         origin = str(candidate.get("origin") or ORIGIN_FREE)
-        if origin not in ORIGINS:
+        if origin not in ORIGINS or origin == ORIGIN_BELIEF_OUTCOME:
             origin = ORIGIN_FREE
         row = Hypothesis(
             statement=statement,

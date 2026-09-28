@@ -1673,6 +1673,45 @@ moves when its inputs move.*
 
 ## L33. Introspective reflection -- structured self-questioning that feeds concepts
 
+**28 Sep 2026: phases 1 and 2 implemented; live evaluation pending.**
+The narrow first probe is **an attributable contradiction worth investigating**,
+not a general invitation to write reflective prose. Implementation:
+[`introspection_worker.py`](../../app/core/proactive/introspection_worker.py).
+
+1. **Phase 1, implemented: evidence eligibility.** Reads the forward-only L47
+  ledger. Accepts an explicit manual rejection of an unchanged claim, or an
+  opinion-heuristic contradiction whose evidence message comes after the
+  source window. Excludes other users, repeated extraction, mood comparisons,
+  unknown provenance, same-turn checks, previously unheld claims, oversized
+  payloads, and events outside a 30-day window. Eligibility means worth
+  investigating, never that the detector was right.
+2. **Phase 2, implemented: bounded hypothesis intake.** The idle worker
+  `concept_introspection` reuses the L30 novelty gates, refuted-guess protection,
+  shared shelf cap and downstream answer/graduation path. One proposal per run,
+  at most two model attempts per UTC day, seven-day per-belief cooldown,
+  one-hour scheduler interval, no eviction to make room. It requires an
+  alternative explanation and a disconfirming observation, permits abstention,
+  and writes only an `open` hypothesis at provisional credence 0.35. Origin
+  `belief_outcome` references the ledger event, **not supporting evidence**.
+  Cursor and budgets survive restart; malformed output and cancelled generation
+  leave the selected outcome retryable. No new prompt block, cue producer,
+  direct memory write, concept mutation, or unsolicited-speech path was added.
+3. **Phase 3, pending: live quality evaluation.** Default off via
+  `agent.concept_introspection_enabled`. After restart, inspect
+  `get_belief_learning` before enabling it. Sample eligible events, abstentions,
+  rejected duplicates, and accepted hypotheses; judge whether the alternative
+  and disconfirming observation actually discriminate explanations. Evaluate
+  downstream answers separately from model acceptance. Do not relax evidence
+  gates merely because the eligible stream is small.
+4. **Phase 4, deferred: additional probes.** Add drift, surprise and recurrent
+  counter-evidence one at a time after phase 3. Each needs its own attribution
+  contract, dedupe identity and benchmark. Broader orchestration is not shipped.
+
+**Limits.** Free-text alternatives are not executable tests. A prompt can ask
+for causal discipline but cannot guarantee it. The existing question budget and
+hypothesis shelf still constrain throughput; this is not a reason to increase
+either. L49-L55 below describe the missing reasoning contracts.
+
 **Motivation.** The existing `ReflectionWorker` mostly emits *memories*
 (`open_question` / `reflection`). A richer periodic **introspection** pass would
 ask the human questions — "What changed recently? What surprised me? What did I
@@ -1903,6 +1942,12 @@ K77 (candor gate). Renders through L41 / F16's tentative voice.
 ---
 
 ## L44. Knowing where she's usually wrong -- per-domain self-calibration
+
+**28 Sep 2026 update.** L47's provenance ledger is implemented, forward-only.
+This removes the storage blocker, not the need for an independent, sufficiently
+large outcome stream. The historic counts below are not present-day measurements
+and must not be backfilled into accuracy statistics. Keep L44 blocked on live
+coverage and adjudicator quality; L33 eligibility is not an accuracy label.
 
 **Status: blocked on supply, not on design.** The aggregation this describes is
 buildable and the reasoning below is sound. It has nothing to aggregate. Every
@@ -2368,6 +2413,40 @@ name a *view*, not a restatement of one child.
 
 ## L47. Belief outcomes are unattributable -- the ledger L44 has been waiting for
 
+**28 Sep 2026: attribution implemented (schema v45); live accumulation pending.**
+
+- `belief_outcomes` is an append-only resolution history with the held claim
+  snapshot, prior status, method, resolution time, evidence message ID and
+  method-specific evidence. Status mutation and ledger insertion share a
+  transaction. Deleting a belief also deletes its outcome history.
+- Methods distinguish `auto_confirm`, `manual`, `opinion_heuristic`,
+  `lexical_overlap`, `mood_comparison`, and `unspecified`. Repeated checks of the
+  same claim against the same message are idempotent. Manual confirmation after
+  auto-confirmation is retained as a separate, stronger event. No method is
+  silently relabelled as objective truth.
+- Inline predictions record the assistant message ID. Worker extraction records
+  its input-window IDs and final source message ID. These are input boundaries,
+  not a claim that every message entails the extracted belief.
+- Fresh and upgraded databases begin with **no invented historical outcomes**.
+  No backfill, live database rewrite, automatic threshold change or L44 accuracy
+  aggregation was performed. Unknown old provenance remains unknown.
+- `get_belief_learning` exposes method/source counts and L33 worker state through
+  a public session facade. Personal claim/evidence rows require
+  `include_rows=true`; paginate with `after_id` and `limit`.
+
+**Corrections to the historical diagnosis below.** Auto-confirmation already
+stored `metadata.auto_confirmed_at`; the missing piece was a complete immutable
+resolution history across methods and claim edits. Inline predictions use
+`source="self_tag"`, not `source="predict"`, so the quoted zero for `predict`
+does not demonstrate a broken tag path. The historical table is retained as a
+dated investigation, not a current audit. Numeric mood coordinates alone cannot
+establish prediction accuracy; L33 deliberately excludes mood comparisons.
+
+**Remaining.** Observe forward coverage after restart; evaluate heuristic false
+positives before L44; distinguish genuinely independent episodes from repeated
+extraction over overlapping windows (L49). The ledger records attribution, not
+an automatic answer to whether the belief was correct.
+
 **Motivation.** L44 (per-domain self-calibration) is marked *blocked on supply*,
 and the counted reason was that the incident streams were empty: `1` belief row,
 0 corrections, 0 fact-check verdicts, 2 hypothesis adjudications. **That is no
@@ -2471,13 +2550,13 @@ ceiling:
 
 | Family | Rows | Sources each |
 | --- | --- | --- |
-| beanbag / anime / chips `ritual` | **4** (#3422, #3246, #2919, #2991) | 27-32 |
-| pre-sleep hand-lacing `ritual` | **7** (#2992, #3247, #4135, #4311, #3227, #3423, #1059) | 13-24 |
-| "Jacob frames his evening wind-down as deliberate" `tension` | **~13** (#3924, #3986, #4009, #4098, #4172, #4466, #4510, #4732, …) | 2-10 |
-| any label mentioning "wind-down" | **44** | — |
+| anonymized ritual family A | **4** (#3422, #3246, #2919, #2991) | 27-32 |
+| anonymized ritual family B | **7** (#2992, #3247, #4135, #4311, #3227, #3423, #1059) | 13-24 |
+| anonymized two-clause tension family | **~13** (#3924, #3986, #4009, #4098, #4172, #4466, #4510, #4732, …) | 2-10 |
+| labels matching that family's shared phrase | **44** | — |
 
-Four separate rituals for one beanbag and seven for holding hands is not a
-richer model of the evening; it is the same belief paying rent four and seven
+Four separate concepts for one ritual and seven for another is not a
+richer model; it is the same belief paying rent four and seven
 times, in the T3 concept lane, every turn.
 
 **So the answer to the original question is: the minting works, the roll-up is
@@ -2535,4 +2614,187 @@ twin); Medium for the consolidation drain; L46 separately.
 and **P52's volume half** (duplicate families are why the lane is expensive).
 
 ---
+
+## Reasoning follow-up: from associations to revisable explanations
+
+**Planning only, 28 Sep 2026.** The goal is person-like competence: carry a
+problem across turns, distinguish observation from interpretation, consider
+alternatives, notice when a premise fails, and change a conclusion for a reason.
+This is not a claim of human-equivalent cognition or a biological brain model.
+More concepts, deeper graphs, longer hidden deliberation, and introspective prose
+are not evidence of better reasoning by themselves.
+
+**What the current architecture establishes.** L3 confidence is a saturating
+function of distinct source count plus lifecycle dynamics
+([`concept_lifecycle.py`](../../app/core/concepts/concept_lifecycle.py)), not a
+calibrated probability. L30 isolates guesses until they are answered. L47 now
+records how transient beliefs resolve; narrow L33 can investigate those events.
+The missing contracts below concern evidence independence, applicability,
+dependencies and tests of explanations, not another persona layer.
+
+**Recommended sequence:** start L55's small evaluation corpus alongside L49;
+then L50 and a bounded L51 pilot; use those findings to introduce L52/L34
+dependencies; finally L53 and L54. Keep live initiative changes independently
+measurable. Do not enable several new cognition loops together.
+
+## L49. Independent evidence and protection against self-confirmation
+
+**Status: open; first substrate priority.** Different memory or concept IDs do
+not necessarily mean different observations. One episode can be extracted into
+several memories, summarized into a cluster, generalized into a concept, and
+then appear to corroborate itself. L47's source-window IDs make this visible
+for one lane, but do not yet prevent it throughout the graph.
+
+**First slice.** Carry originating user-message/episode IDs through extraction,
+summary and concept evidence. Compute independent support groups alongside the
+existing distinct-source count, initially in shadow mode. Distinguish testimony,
+external observation, model inference and model-generated reflection. A new
+summary or paraphrase must not create an independent vote. A causal parent and
+its derived child must not mutually certify each other.
+
+**Acceptance.** Re-extract one transcript ten times: effective support does not
+increase. Add a genuinely separate episode: it can increase. Two meta-concepts
+sharing the same underlying sources do not double their parent's support.
+Imported rows with unknown lineage remain explicitly unknown. Explicit user
+boundaries still work after one statement; independence must not weaken them.
+
+**Build on:** L47 provenance, L25 edge integrity and the L3 single writer.
+**Effort:** Medium-Large. No change to promotion until shadow evidence is read.
+
+## L50. Context-scoped claims and temporal validity
+
+**Status: open.** A durable belief should say not only *what*, but *when it
+applies*. "Prefers brief troubleshooting" and "enjoys detailed explanations
+while learning" can both be true. Embedding proximity alone cannot decide
+whether two claims conflict, complement each other, or describe a change.
+
+**First slice.** Pilot explicit applicability on `communication_style`: context,
+exceptions, observed time and validity time, plus the source of each qualifier.
+Use the existing situation frame as current evidence, never let an old concept
+invent the present situation. Preserve multiple scoped readings when evidence
+does not justify choosing. A changed preference should supersede a time-scoped
+claim rather than rewrite the historical record as a reasoning failure.
+
+**Acceptance.** Contrastive fixtures activate the appropriate style in learning
+versus troubleshooting; unspecified context does not choose a narrow rule with
+certainty. A correction to one context leaves the other intact. Quoted,
+hypothetical and role-play statements do not become personal traits.
+
+**Build on:** L23 context-scoped style, L9 contradiction, L31's measured refusal
+to split everything, and narrative time helpers. **Effort:** Medium.
+
+## L51. A bounded working model for the current problem
+
+**Status: open.** Retrieval supplies relevant material; it does not explicitly
+maintain which question is being solved or which premises a conclusion needs.
+The main model can reason from its prompt already. The proposal is to make the
+small amount of task state worth carrying explicit and testable, not to add a
+second conversational agent or demand private chain-of-thought transcripts.
+
+**First slice.** For one problem-solving workflow, retain a compact typed record:
+question, goal/constraints, grounded observations, competing hypotheses,
+unresolved assumptions, selected next check and its result. Claims cite stable
+evidence IDs. Speculation stays local until separately admitted; switching
+topics suspends or clears the workspace rather than contaminating another task.
+Only concise conclusions, citations and uncertainty need to be user-visible.
+
+**Acceptance.** An interrupted task resumes its constraints. New disconfirming
+evidence changes the chosen explanation. The worker cannot persist a speculative
+premise as a memory merely because it appeared in its workspace. An ordinary
+greeting incurs no additional reasoning call. Bound calls, tokens and wall time.
+
+**Build on:** the current situation and task stores, ConceptView, L30 and L50.
+**Effort:** Medium-Large; demonstrate one vertical slice before generalizing.
+
+## L52. Dependency-aware revision and retraction
+
+**Status: open; the useful first application of L34.** Knowing that a concept
+is contradicted is different from knowing which downstream conclusions cease
+to be justified. Existing evidence edges and lifecycle propagation are the
+starting point, not something to replace with a second truth store.
+
+**First slice.** Give one `depends_on` relation a precise meaning and retain
+minimal support sets for derived claims. Invalidation marks affected conclusions
+for re-evaluation; it must not blindly invert them. Independent remaining
+support keeps a conclusion viable. Propagate through L3 under bounded traversal,
+cycle/depth guards and an inspectable explanation of what changed.
+
+**Acceptance.** Retract a parent: dependent claims are no longer asserted from
+that parent alone. A child with another valid support set survives. Alias merges
+preserve dependencies without cycles or depth inflation. Deleting source data
+has an explicit policy for derived hypotheses, cached prompts and provenance;
+the new L47 cascade alone does not solve downstream deletion.
+
+**Build on:** L15, L25, L34, L46 and L49. **Effort:** Large.
+
+## L53. Causal explanations and counterfactual checks
+
+**Status: open; bounded experiment, not a claim that association is causation.**
+L33 now asks for an alternative and a disconfirming observation. Those fields
+are still prose; their existence does not establish a causal model.
+
+**First slice.** In a low-risk troubleshooting domain, compare two plausible
+explanations. Each names the mechanism it proposes, conditions it assumes,
+predicted observation, plausible confounder and a safe discriminating check.
+Counterfactual simulation stays hypothetical, never autobiographical memory or
+evidence. Separate predictions made before a check from explanations written
+after its result. Prefer approved deterministic tools for executable checks.
+
+**Acceptance.** Matched scenarios with the same correlation but a different
+mechanism lead to different predictions. A failed prediction revises the
+explanation rather than producing a post-hoc excuse. No irreversible tool
+action, personal experiment or intervention occurs without normal permissions.
+
+**Build on:** L33 phase 3, L51, L52 and existing task approvals. **Effort:** Large.
+
+## L54. Choose evidence by how much it can change a decision
+
+**Status: open.** A good next question is not merely the most uncertain concept.
+It is a question whose answer distinguishes live alternatives and matters to
+the current goal. Sometimes the right choice is retrieval, a tool check,
+waiting for a natural observation, or doing nothing.
+
+**First slice.** Rank a bounded set of existing possible checks by which
+alternatives they separate, decision relevance and evidence quality, against
+latency, privacy and conversational cost. Treat model estimates as ordinal
+heuristics until calibrated, not numerical expected information gain presented
+as fact. Reuse the cue pool and question allowance; do not add another producer
+solely to manufacture supply.
+
+**Acceptance.** Ask a discriminating question over a redundant one; retrieve an
+already-known answer rather than ask again; decline a low-value personal
+question; choose silence when no answer would change the decision. Replay must
+hold conversation and latency budgets constant when comparing policies.
+
+**Build on:** L30d, L32, L51/L53 and live initiative's existing admission path.
+**Effort:** Medium after the working-model pilot.
+
+## L55. Evaluate reasoning independently of eloquence
+
+**Status: open; begin with L49, before expanding generative loops.** A response
+that says "I reconsidered" has not necessarily reconsidered anything. L22's
+concept-quality evaluation should be complemented by behavioral tests of
+reasoning, without recording personal conversation in the repository.
+
+**First slice.** A small synthetic, versioned episode corpus with observable
+expected outcomes: independent versus duplicated evidence; competing contextual
+preferences; quotation versus testimony; changed state versus mistaken belief;
+an interrupted task; a retracted premise; an unanswerable question; and a
+counterfactual whose correct answer differs from the observed case. Keep model
+evaluation opt-in and separate from deterministic unit tests.
+
+**Measure.** Unsupported assertions, appropriate abstention, contradiction
+resolution, correction retention, transfer to a new instance, source attribution,
+and decision accuracy. Log inference calls, tokens and latency. Compare baseline
+retrieval, retrieval plus the new mechanism, and ablations with each signal
+removed, using held-out variants and multiple runs. Engagement and verbosity
+are not correctness labels; L3 confidence is not a calibrated probability.
+
+**Acceptance.** A mechanism must improve its target behavior without an
+unacceptable latency, repetition or privacy regression. Freeze the evaluation
+criteria before tuning on its results. Keep support small when sample sizes are
+small; do not claim human-level cognition from selected successful dialogues.
+
+**Build on:** L22, L47, DT4 replay and existing synthetic tests.
+**Effort:** Small for the first corpus, Medium for a reproducible model harness.
 

@@ -53,6 +53,7 @@
     }
   },
   "agent": {
+    "concept_introspection_enabled": false,
     "proactive_silence_seconds": 45,
     "proactive_cooldown_seconds": 120,
     "proactive_typed_enabled": true,

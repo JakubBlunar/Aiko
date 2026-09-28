@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 44
+_SCHEMA_VERSION = 45
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -909,6 +909,22 @@ CREATE TABLE IF NOT EXISTS beliefs (
 CREATE INDEX IF NOT EXISTS idx_beliefs_status ON beliefs(status);
 CREATE INDEX IF NOT EXISTS idx_beliefs_topic ON beliefs(topic);
 CREATE INDEX IF NOT EXISTS idx_beliefs_user_kind ON beliefs(user_id, kind);
+
+CREATE TABLE IF NOT EXISTS belief_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    belief_id INTEGER NOT NULL REFERENCES beliefs(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK(outcome IN ('confirmed', 'contradicted')),
+    method TEXT NOT NULL,
+    resolved_at TEXT NOT NULL,
+    prior_status TEXT NOT NULL,
+    claim_json TEXT NOT NULL,
+    evidence_message_id INTEGER,
+    evidence_json TEXT NOT NULL,
+    dedupe_key TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_belief_outcomes_user_id
+    ON belief_outcomes(user_id, id);
 
 -- K13 stylometric mirror: a single JSON blob per user holding the
 -- rolling-window style features (terseness, formality, emoji density,

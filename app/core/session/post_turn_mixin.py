@@ -1526,6 +1526,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                                     tag_arousal if t.kind == "mood" else None
                                 ),
                                 source="self_tag",
+                                source_message_id=assistant_message_id,
                                 topic_embedding=embedding,
                             )
                             if belief is not None:
@@ -1629,6 +1630,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     user_id=self._user_id,
                     affect=affect,
                     recent_user_message=user_text,
+                    evidence_message_id=user_message_id,
                 )
                 if gaps:
                     self._pending_belief_gaps = list(gaps)
