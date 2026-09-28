@@ -1734,10 +1734,10 @@ counterpart to the live DT-series debug tooling.
 
 ## Related docs
 
-- [`plugin-system.md`](plugin-system.md) — full plugin-system vision
-  (P1 declarative MCP + skills shipped; P2 code entrypoint / `PluginApi`,
-  P3 `hooks`, P4 provider contracts deferred).
-- [`docs/plugins.md`](../plugins.md) — the shipped P1 plugin-bundle format.
+- [plugin-system.md](plugin-system.md) - detailed capability-platform and durable
+  agent-job guide: scoped hooks, workers, LLM lanes, storage, bounded tool
+  discovery, restart-safe MCP jobs, email/source-code pilots and P3-P8 milestones.
+- [docs/plugins.md](../plugins.md) - the shipped SDK-primary plugin format.
 - [`docs/memory-tiers.md`](../memory-tiers.md) — schema v8 memory
   tiers + `IdleWorkerScheduler`.
 - [`docs/aiko-room.md`](../aiko-room.md) — world / room / garden.

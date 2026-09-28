@@ -45,7 +45,7 @@ import random
 import re
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import Any
 
 import requests
@@ -850,10 +850,20 @@ class OpenAICompatibleClient:
         # the field exists and its server-side default is ``true``. See
         # ``_build_responses_payload``.
         self._store = bool(store)
+        self._model_preflight: Callable[[str], None] | None = None
 
     @property
     def base_url(self) -> str:
         return self._base_url
+
+    def set_model_preflight(self, callback: Callable[[str], None] | None) -> None:
+        """Install a provider lifecycle check run before inference calls."""
+        self._model_preflight = callback
+
+    def _run_model_preflight(self, model: str) -> None:
+        callback = self._model_preflight
+        if callback is not None:
+            callback(model)
 
     def _should_use_responses(self, model: str) -> bool:
         """Decide whether ``model`` is driven via ``POST /v1/responses``.
@@ -1646,6 +1656,7 @@ class OpenAICompatibleClient:
     ) -> ChatResponse:
         del keep_alive  # Ollama-only knob; see __init__ docstring
         use_model = (model or "").strip() or self._default_model
+        self._run_model_preflight(use_model)
         if self._should_use_responses(use_model):
             content, tool_calls, usage, response_output_items = (
                 self._responses_complete(
@@ -1762,6 +1773,7 @@ class OpenAICompatibleClient:
         del keep_alive
         del think  # OpenAI-compat doesn't expose a thinking-trace toggle
         use_model = (model or "").strip() or self._default_model
+        self._run_model_preflight(use_model)
         if self._should_use_responses(use_model):
             yield from self._responses_stream(
                 messages=messages,
@@ -1891,6 +1903,7 @@ class OpenAICompatibleClient:
         if options:
             merged_options.update(options)
         use_model = (model or "").strip() or self._default_model
+        self._run_model_preflight(use_model)
         effective_timeout = (
             timeout_seconds
             if timeout_seconds is not None

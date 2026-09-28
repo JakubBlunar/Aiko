@@ -1401,10 +1401,10 @@ Priority applies only among calls that contend for the same inference resource.
 Pass 6 shipped resource-key matching for `live_policy` versus
 `worker_default`: the distinct 4B uses `gate=None`, a matching key joins the
 worker gate at `LIVE_POLICY`, and `contention_group` can deliberately collide
-models. The broader topology below remains the target. In particular,
-`workflow` still shares the worker gate whenever it resolves to local Ollama,
-even when it uses a different model; it is not yet selected by the same
-resource-key rule.
+models. `workflow` now follows the same resource-key rule: a matching resource
+shares the worker gate at `TASK`, while a different endpoint/model bypasses it.
+This matters when workers run on LM Studio on another machine while workflows
+remain on local Ollama.
 
 For local Ollama, the default contention key should include:
 

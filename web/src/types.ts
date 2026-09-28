@@ -195,6 +195,10 @@ export interface LlmProvider {
   extra_headers: Record<string, string>;
   timeout_seconds: number;
   keep_alive: string;
+  /** Optional native lifecycle dialect. Generic OpenAI-compatible
+   * providers leave this blank. */
+  dialect: "" | "lm_studio";
+  prewarm: LmStudioPrewarmSettings;
   /** Reasoning-effort hint for OpenAI Responses-API models (GPT-5 /
    * o-series). Empty = "auto" (client default). A route can override. */
   reasoning_effort: string;
@@ -208,6 +212,36 @@ export interface LlmProvider {
    * prompts carry the persona, memories, document chunks and transcript.
    * Turn it on per provider only while debugging. */
   store: boolean;
+}
+
+export interface LmStudioPrewarmSettings {
+  enabled: boolean;
+  roles: string[];
+  connect_timeout_seconds: number;
+  load_timeout_seconds: number;
+  required: boolean;
+  /** Reserved for future hosts; LM Studio currently clamps this to one. */
+  max_parallel_loads: number;
+}
+
+export interface LmStudioModelStatus {
+  provider_id: string;
+  model: string;
+  context_length: number | null;
+  roles: string[];
+  required: boolean;
+  status: "queued" | "checking" | "loading" | "ready" | "degraded" | "unreachable" | "failed";
+  attempt: number;
+  error: string;
+  instance_id: string;
+  effective_context_length: number | null;
+  load_time_seconds: number | null;
+}
+
+export interface LmStudioLifecycleStatus {
+  running?: boolean;
+  status?: "disabled" | "loading" | "ready" | "degraded" | "unreachable" | "failed";
+  models: LmStudioModelStatus[];
 }
 
 /** One row in the role-assignment table. */

@@ -58,6 +58,20 @@ describe("LlmProvidersListSection — list operations", () => {
   });
 });
 
+describe("LlmProvidersListSection — LM Studio lifecycle", () => {
+  it("exposes explicit dialect and prewarm controls", () => {
+    expect(sectionSource).toContain('value="lm_studio"');
+    expect(sectionSource).toContain("prewarm_enabled");
+    expect(sectionSource).toContain("connect_timeout_seconds");
+    expect(sectionSource).toContain("load_timeout_seconds");
+  });
+
+  it("fetches readiness and schedules manual prewarm", () => {
+    expect(sectionSource).toContain("getLlmLifecycle");
+    expect(sectionSource).toContain("prewarmLlmProvider");
+  });
+});
+
 describe("LlmProvidersListSection — store consumption", () => {
   it("reads llmProviders off the Zustand store", () => {
     expect(sectionSource).toMatch(/useAssistantStore[\s\S]*?llmProviders/);

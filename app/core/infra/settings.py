@@ -93,6 +93,20 @@ class LlmEmbedding:
 
 
 @dataclass(slots=True)
+class LmStudioPrewarmSettings:
+    """Opt-in native model lifecycle for an LM Studio provider."""
+
+    enabled: bool = False
+    roles: list[str] = field(
+        default_factory=lambda: ["worker_default", "live_policy"]
+    )
+    connect_timeout_seconds: float = 5.0
+    load_timeout_seconds: float = 900.0
+    required: bool = False
+    max_parallel_loads: int = 1
+
+
+@dataclass(slots=True)
 class LlmProvider:
     """One entry in the provider catalogue.
 
@@ -116,6 +130,10 @@ class LlmProvider:
     extra_headers: dict[str, str] = field(default_factory=dict)
     timeout_seconds: int = 300
     keep_alive: str = "30m"  # Ollama-only; ignored by openai_compatible
+    # Optional provider dialect. Empty keeps generic OpenAI-compatible
+    # behaviour; ``lm_studio`` enables its native model-state/load lifecycle.
+    dialect: str = ""
+    prewarm: LmStudioPrewarmSettings = field(default_factory=LmStudioPrewarmSettings)
     # Provider-level reasoning-effort default: free-text because
     # providers disagree on the vocabulary (``minimal`` / ``none`` /
     # ``low`` / ``medium`` / ``high`` / ``xhigh``). Empty = let the
@@ -1707,6 +1725,28 @@ def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
         timeout_seconds = max(1, int(timeout_raw))
     except (TypeError, ValueError):
         timeout_seconds = 300
+    prewarm_raw = payload.get("prewarm") or {}
+    if not isinstance(prewarm_raw, dict):
+        prewarm_raw = {}
+    roles_raw = prewarm_raw.get("roles")
+    if isinstance(roles_raw, list):
+        prewarm_roles = [
+            str(role).strip() for role in roles_raw if str(role).strip()
+        ]
+    else:
+        prewarm_roles = [LLM_ROLE_WORKER_DEFAULT, LLM_ROLE_LIVE_POLICY]
+    try:
+        connect_timeout = max(
+            1.0, min(60.0, float(prewarm_raw.get("connect_timeout_seconds", 5.0)))
+        )
+    except (TypeError, ValueError):
+        connect_timeout = 5.0
+    try:
+        load_timeout = max(
+            30.0, min(3600.0, float(prewarm_raw.get("load_timeout_seconds", 900.0)))
+        )
+    except (TypeError, ValueError):
+        load_timeout = 900.0
     return LlmProvider(
         id=provider_id,
         name=name,
@@ -1717,6 +1757,21 @@ def _parse_llm_provider(payload: dict[str, Any]) -> LlmProvider | None:
         extra_headers=extra_headers,
         timeout_seconds=timeout_seconds,
         keep_alive=str(payload.get("keep_alive", "30m") or "30m").strip() or "30m",
+        dialect=(
+            "lm_studio"
+            if str(payload.get("dialect", "") or "").strip().lower()
+            == "lm_studio"
+            else ""
+        ),
+        prewarm=LmStudioPrewarmSettings(
+            enabled=bool(prewarm_raw.get("enabled", False)),
+            roles=prewarm_roles,
+            connect_timeout_seconds=connect_timeout,
+            load_timeout_seconds=load_timeout,
+            required=bool(prewarm_raw.get("required", False)),
+            # Loading models on one unified-memory host stays sequential.
+            max_parallel_loads=1,
+        ),
         reasoning_effort=_norm_reasoning_effort(
             payload.get("reasoning_effort")
         ),
@@ -2201,6 +2256,17 @@ def llm_provider_to_dict(
         "extra_headers": dict(provider.extra_headers or {}),
         "timeout_seconds": int(provider.timeout_seconds or 300),
         "keep_alive": provider.keep_alive,
+        "dialect": provider.dialect,
+        "prewarm": {
+            "enabled": bool(provider.prewarm.enabled),
+            "roles": list(provider.prewarm.roles),
+            "connect_timeout_seconds": float(
+                provider.prewarm.connect_timeout_seconds
+            ),
+            "load_timeout_seconds": float(provider.prewarm.load_timeout_seconds),
+            "required": bool(provider.prewarm.required),
+            "max_parallel_loads": 1,
+        },
         "reasoning_effort": provider.reasoning_effort,
         "api_style": provider.api_style,
         "store": bool(provider.store),

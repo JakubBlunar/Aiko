@@ -1303,6 +1303,27 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(404, str(exc))
         return JSONResponse(result)
 
+    @app.get("/api/llm/lifecycle")
+    def get_llm_lifecycle() -> JSONResponse:
+        """Return non-secret LM Studio model readiness diagnostics."""
+        return JSONResponse(session.lm_studio_status())
+
+    @app.get("/api/llm/providers/{provider_id}/lifecycle")
+    def get_llm_provider_lifecycle(provider_id: str) -> JSONResponse:
+        """Return readiness for one provider's configured model routes."""
+        return JSONResponse(session.lm_studio_status(provider_id))
+
+    @app.post("/api/llm/providers/{provider_id}/prewarm", status_code=202)
+    async def post_llm_provider_prewarm(provider_id: str) -> JSONResponse:
+        """Schedule an LM Studio state check/load without waiting for it."""
+        try:
+            result = session.prewarm_lm_studio(provider_id)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        return JSONResponse(result, status_code=202)
+
     @app.get("/api/llm/routes")
     def get_llm_routes() -> JSONResponse:
         """List all role assignments."""

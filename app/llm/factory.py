@@ -76,7 +76,7 @@ def _resolve_env_var(*, base_url: str, explicit: str) -> str:
     return ""
 
 
-def _resolve_api_key(provider: LlmProvider) -> str:
+def resolve_provider_api_key(provider: LlmProvider) -> str:
     """Return the API key for ``provider`` — explicit first, env fallback."""
     explicit = (provider.api_key or "").strip()
     if explicit:
@@ -133,7 +133,7 @@ class ClientCache:
         return _CacheKey(
             kind=(provider.kind or "").strip().lower(),
             base_url=(provider.base_url or "").strip().rstrip("/").lower(),
-            api_key=_resolve_api_key(provider),
+            api_key=resolve_provider_api_key(provider),
         )
 
     def get(self, provider: LlmProvider, *, model: str = "") -> ChatClient:
@@ -171,7 +171,7 @@ class ClientCache:
         # from the cache-wide template — otherwise every client would
         # inherit the main-chat route's context window.
         transport = transport_for_provider(provider)
-        api_key = _resolve_api_key(provider)
+        api_key = resolve_provider_api_key(provider)
         extra_headers = {
             str(k).strip(): str(v).strip()
             for k, v in dict(provider.extra_headers or {}).items()

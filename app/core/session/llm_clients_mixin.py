@@ -121,9 +121,24 @@ class LlmClientsMixin:
         """
         if route is not None:
             try:
-                return build_client_for_route(
+                client = build_client_for_route(
                     self._client_cache, route=route, settings=self._settings.llm,
                 )
+                provider = self._find_llm_provider(route.provider_id)
+                lifecycle = getattr(self, "_lm_studio_lifecycle", None)
+                setter = getattr(client, "set_model_preflight", None)
+                if (
+                    provider is not None
+                    and getattr(provider, "dialect", "") == "lm_studio"
+                    and lifecycle is not None
+                    and callable(setter)
+                ):
+                    setter(
+                        lambda model, provider_id=provider.id: (
+                            lifecycle.before_inference(provider_id, model)
+                        )
+                    )
+                return client
             except Exception:
                 log.warning(
                     "route %s: could not resolve provider %r; falling back to "
@@ -283,10 +298,10 @@ class LlmClientsMixin:
         gate at ``TASK`` priority (one Ollama instance, no extra VRAM).
 
         Divergent case: the user repointed ``workflow`` at a different
-        provider. Resolve a dedicated client via the cache; a *remote*
-        provider has its own compute so it gets NO gate (it must not
-        inherit the local model's concurrency=1), while a divergent
-        *local* Ollama route still shares the worker gate.
+        resource. Resolve a dedicated client via the cache and share the
+        worker gate only when the two route resource keys still collide.
+        A second machine must not inherit the first machine's gate merely
+        because its provider kind is ``ollama``.
         """
         try:
             route = self._settings.llm.routes.get(LLM_ROLE_WORKFLOW)
@@ -311,17 +326,19 @@ class LlmClientsMixin:
             client = build_client_for_route(
                 self._client_cache, route=route, settings=self._settings.llm
             )
-            provider = self._find_llm_provider(route.provider_id)
-            is_local = (
-                provider is not None
-                and (provider.kind or "").strip().lower() == "ollama"
+            workflow_key = self._route_resource_key(route)
+            worker_key = self._route_resource_key(worker_route)
+            shares_resource = (
+                workflow_key is not None
+                and workflow_key == worker_key
             )
-            gate = worker_gate if is_local else None
+            gate = worker_gate if shares_resource else None
             log.info(
-                "workflow client: divergent route provider=%s model=%s local=%s",
+                "workflow client: divergent route provider=%s model=%s "
+                "share_gate=%s",
                 route.provider_id,
                 route.model,
-                is_local,
+                "1" if shares_resource else "0",
             )
             return GatedChatClient(client, gate, task_priority, name="task")
         except Exception:
@@ -333,7 +350,7 @@ class LlmClientsMixin:
                 self._worker_client_inner, worker_gate, task_priority, name="task"
             )
 
-    def _live_policy_resource_key(
+    def _route_resource_key(
         self, route: LlmRoute | None,
     ) -> tuple[str, str, str] | None:
         if route is None:
@@ -379,8 +396,8 @@ class LlmClientsMixin:
             return
         live_route = self._route_or_none(LLM_ROLE_LIVE_POLICY)
         worker_route = self._route_or_none(LLM_ROLE_WORKER_DEFAULT)
-        live_key = self._live_policy_resource_key(live_route)
-        worker_key = self._live_policy_resource_key(worker_route)
+        live_key = self._route_resource_key(live_route)
+        worker_key = self._route_resource_key(worker_route)
         gate_enabled = bool(
             getattr(self._settings.agent, "worker_llm_gate_enabled", True)
         )

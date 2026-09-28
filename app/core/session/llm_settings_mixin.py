@@ -29,6 +29,7 @@ from app.core.infra.settings import LLM_ROLE_MAIN_CHAT
 from app.core.infra.settings import LLM_ROLE_WORKER_DEFAULT
 from app.core.infra.settings import LLM_ROLE_WORKFLOW
 from app.core.infra.settings import LlmProvider
+from app.core.infra.settings import LmStudioPrewarmSettings
 from app.core.infra.settings import LlmRoute
 from app.core.infra.settings import llm_provider_to_dict
 from app.core.infra.settings import llm_route_to_dict
@@ -36,6 +37,8 @@ from app.core.infra.settings import _norm_api_style
 from app.core.infra.settings import persist_user_overrides
 from app.core.infra import secret_store
 from app.llm.factory import build_probe_client
+from app.llm.factory import resolve_provider_api_key
+from app.llm.lm_studio_lifecycle import LmStudioModelSpec
 import time
 import uuid
 from app.core.session.llm_presets import _PROVIDER_PRESETS
@@ -60,6 +63,8 @@ class LlmSettingsMixin:
             "extra_headers": dict(provider.extra_headers or {}),
             "timeout_seconds": int(provider.timeout_seconds or 300),
             "keep_alive": provider.keep_alive,
+            "dialect": getattr(provider, "dialect", "") or "",
+            "prewarm": self._prewarm_to_dict(provider.prewarm),
             "reasoning_effort": getattr(provider, "reasoning_effort", "") or "",
             "api_style": getattr(provider, "api_style", "auto") or "auto",
             "store": bool(getattr(provider, "store", False)),
@@ -68,6 +73,62 @@ class LlmSettingsMixin:
     def list_providers(self) -> list[dict[str, Any]]:
         """Return the catalogue with credentials masked."""
         return [self._mask_provider(p) for p in self._settings.llm.providers]
+
+    @staticmethod
+    def _prewarm_to_dict(settings: LmStudioPrewarmSettings) -> dict[str, Any]:
+        return {
+            "enabled": bool(settings.enabled),
+            "roles": list(settings.roles),
+            "connect_timeout_seconds": float(settings.connect_timeout_seconds),
+            "load_timeout_seconds": float(settings.load_timeout_seconds),
+            "required": bool(settings.required),
+            "max_parallel_loads": 1,
+        }
+
+    @staticmethod
+    def _parse_prewarm(
+        raw: Any, current: LmStudioPrewarmSettings | None = None,
+    ) -> LmStudioPrewarmSettings:
+        base = current or LmStudioPrewarmSettings()
+        payload = raw if isinstance(raw, dict) else {}
+        roles_raw = payload.get("roles", base.roles)
+        roles = (
+            [str(role).strip() for role in roles_raw if str(role).strip()]
+            if isinstance(roles_raw, list)
+            else list(base.roles)
+        )
+        try:
+            connect_timeout = max(
+                1.0,
+                min(
+                    60.0,
+                    float(payload.get(
+                        "connect_timeout_seconds", base.connect_timeout_seconds,
+                    )),
+                ),
+            )
+        except (TypeError, ValueError):
+            connect_timeout = base.connect_timeout_seconds
+        try:
+            load_timeout = max(
+                30.0,
+                min(
+                    3600.0,
+                    float(payload.get(
+                        "load_timeout_seconds", base.load_timeout_seconds,
+                    )),
+                ),
+            )
+        except (TypeError, ValueError):
+            load_timeout = base.load_timeout_seconds
+        return LmStudioPrewarmSettings(
+            enabled=bool(payload.get("enabled", base.enabled)),
+            roles=roles,
+            connect_timeout_seconds=connect_timeout,
+            load_timeout_seconds=load_timeout,
+            required=bool(payload.get("required", base.required)),
+            max_parallel_loads=1,
+        )
 
     def list_routes(self) -> dict[str, dict[str, Any]]:
         """Return the role-assignment table."""
@@ -133,6 +194,8 @@ class LlmSettingsMixin:
                         "reasoning_effort": preset.get(
                             "default_reasoning_effort", "",
                         ),
+                        "dialect": preset.get("default_dialect", ""),
+                        "prewarm": preset.get("default_prewarm", {}),
                     }
                     break
         payload = dict(draft or {})
@@ -171,6 +234,12 @@ class LlmSettingsMixin:
             payload.get("reasoning_effort", "") or ""
         ).strip().lower()
         api_style = _norm_api_style(payload.get("api_style"))
+        dialect = (
+            "lm_studio"
+            if str(payload.get("dialect", "") or "").strip().lower()
+            == "lm_studio"
+            else ""
+        )
         new_provider = LlmProvider(
             id=provider_id,
             name=name,
@@ -181,6 +250,8 @@ class LlmSettingsMixin:
             extra_headers=extra_headers,
             timeout_seconds=timeout,
             keep_alive=keep_alive,
+            dialect=dialect,
+            prewarm=self._parse_prewarm(payload.get("prewarm")),
             reasoning_effort=reasoning_effort,
             api_style=api_style,
             store=bool(payload.get("store", False)),
@@ -238,6 +309,16 @@ class LlmSettingsMixin:
             provider.keep_alive = (
                 str(draft["keep_alive"] or "").strip() or "30m"
             )
+        if "dialect" in draft:
+            provider.dialect = (
+                "lm_studio"
+                if str(draft["dialect"] or "").strip().lower() == "lm_studio"
+                else ""
+            )
+        if "prewarm" in draft:
+            provider.prewarm = self._parse_prewarm(
+                draft.get("prewarm"), provider.prewarm,
+            )
         if "reasoning_effort" in draft:
             provider.reasoning_effort = str(
                 draft["reasoning_effort"] or ""
@@ -254,6 +335,7 @@ class LlmSettingsMixin:
         # up the new base_url / headers / timeout immediately.
         if self._provider_is_live(provider_id):
             self._rebuild_llm_clients()
+        self.reconcile_lm_studio()
         log.info("llm: updated provider id=%s", provider_id)
         return self._mask_provider(provider)
 
@@ -276,6 +358,7 @@ class LlmSettingsMixin:
         self._persist_llm_settings()
         if self._provider_is_live(provider_id):
             self._rebuild_llm_clients()
+        self.reconcile_lm_studio()
         log.info(
             "llm: updated credentials provider=%s has_api_key=%s",
             provider_id,
@@ -305,6 +388,7 @@ class LlmSettingsMixin:
         ]
         self._client_cache.invalidate(provider_id)
         self._persist_llm_settings()
+        self.reconcile_lm_studio()
         log.info("llm: removed provider id=%s", provider_id)
 
     def update_route(
@@ -379,6 +463,7 @@ class LlmSettingsMixin:
             LLM_ROLE_LIVE_POLICY,
         }:
             self._rebuild_llm_clients()
+        self.reconcile_lm_studio()
         log.info(
             "llm: updated route %s -> provider=%s model=%s context=%s",
             role_name,
@@ -553,6 +638,68 @@ class LlmSettingsMixin:
     def client_cache_stats(self) -> dict[str, Any]:
         """Diagnostic snapshot of the shared client cache."""
         return self._client_cache.stats()
+
+    def _lm_studio_specs(
+        self, provider_id: str | None = None,
+    ) -> list[LmStudioModelSpec]:
+        specs: list[LmStudioModelSpec] = []
+        for provider in self._settings.llm.providers:
+            prewarm = getattr(provider, "prewarm", LmStudioPrewarmSettings())
+            if (
+                getattr(provider, "dialect", "") != "lm_studio"
+                or not prewarm.enabled
+                or (provider_id is not None and provider.id != provider_id)
+            ):
+                continue
+            selected: dict[tuple[str, int | None], list[str]] = {}
+            allowed_roles = set(prewarm.roles)
+            for role, route in self._settings.llm.routes.items():
+                if route.provider_id != provider.id or role not in allowed_roles:
+                    continue
+                model = (route.model or "").strip()
+                if not model:
+                    continue
+                selected.setdefault((model, route.context_window), []).append(role)
+            for (model, context_length), roles in selected.items():
+                specs.append(LmStudioModelSpec(
+                    provider_id=provider.id,
+                    base_url=provider.base_url,
+                    api_key=resolve_provider_api_key(provider),
+                    model=model,
+                    context_length=context_length,
+                    roles=tuple(sorted(roles)),
+                    connect_timeout_seconds=prewarm.connect_timeout_seconds,
+                    load_timeout_seconds=prewarm.load_timeout_seconds,
+                    required=prewarm.required,
+                ))
+        return specs
+
+    def reconcile_lm_studio(self) -> dict[str, Any]:
+        lifecycle = getattr(self, "_lm_studio_lifecycle", None)
+        if lifecycle is None:
+            return {"running": False, "models": []}
+        lifecycle.reconcile(self._lm_studio_specs())
+        return lifecycle.status()
+
+    def prewarm_lm_studio(self, provider_id: str) -> dict[str, Any]:
+        provider = self._find_llm_provider(provider_id)
+        if provider is None:
+            raise KeyError(f"unknown provider id={provider_id!r}")
+        if getattr(provider, "dialect", "") != "lm_studio":
+            raise ValueError(f"provider id={provider_id!r} is not LM Studio")
+        lifecycle = getattr(self, "_lm_studio_lifecycle", None)
+        if lifecycle is None:
+            return {"status": "disabled", "models": []}
+        lifecycle.reconcile(self._lm_studio_specs(provider_id), force=True)
+        return lifecycle.provider_status(provider_id)
+
+    def lm_studio_status(self, provider_id: str | None = None) -> dict[str, Any]:
+        lifecycle = getattr(self, "_lm_studio_lifecycle", None)
+        if lifecycle is None:
+            return {"running": False, "models": []}
+        if provider_id is not None:
+            return lifecycle.provider_status(provider_id)
+        return lifecycle.status()
 
     def _init_secret_storage(self) -> None:
         """Hydrate keys from the keychain + migrate plaintext off disk.

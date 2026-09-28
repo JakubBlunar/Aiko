@@ -182,6 +182,7 @@ def _build_client() -> tuple[TestClient, MagicMock]:
     }
     session.list_providers.return_value = list(_SAMPLE_PROVIDERS)
     session.list_routes.return_value = dict(_SAMPLE_ROUTES)
+    session.lm_studio_status.return_value = {"running": False, "models": []}
     session.provider_presets.return_value = []
     return TestClient(create_web_app(session)), session
 
@@ -314,6 +315,33 @@ class TestProviderTests(unittest.TestCase):
         session.test_provider.side_effect = KeyError("unknown")
         resp = client.post("/api/llm/providers/missing/test", json={})
         self.assertEqual(resp.status_code, 404)
+
+
+class LmStudioLifecycleRouteTests(unittest.TestCase):
+    def test_status_returns_session_snapshot(self) -> None:
+        client, session = _build_client()
+        session.lm_studio_status.return_value = {
+            "running": True,
+            "models": [{"provider_id": "mac", "status": "loading"}],
+        }
+        resp = client.get("/api/llm/lifecycle")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["running"])
+
+    def test_prewarm_is_accepted_without_waiting(self) -> None:
+        client, session = _build_client()
+        session.prewarm_lm_studio.return_value = {
+            "status": "loading", "models": [],
+        }
+        resp = client.post("/api/llm/providers/mac/prewarm")
+        self.assertEqual(resp.status_code, 202)
+        session.prewarm_lm_studio.assert_called_once_with("mac")
+
+    def test_prewarm_rejects_non_lm_studio_provider(self) -> None:
+        client, session = _build_client()
+        session.prewarm_lm_studio.side_effect = ValueError("not LM Studio")
+        resp = client.post("/api/llm/providers/openai/prewarm")
+        self.assertEqual(resp.status_code, 409)
 
 
 class GetRoutesTests(unittest.TestCase):

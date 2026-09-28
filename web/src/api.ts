@@ -318,6 +318,17 @@ export const api = {
         body: JSON.stringify(overrides ?? {}),
       },
     ),
+  /** Snapshot of asynchronous LM Studio state checks and model loads. */
+  getLlmLifecycle: () =>
+    jsonFetch<import("./types").LmStudioLifecycleStatus>(
+      "/api/llm/lifecycle",
+    ),
+  /** Explicitly re-check and prewarm one LM Studio provider. */
+  prewarmLlmProvider: (providerId: string) =>
+    jsonFetch<import("./types").LmStudioLifecycleStatus>(
+      `/api/llm/providers/${encodeURIComponent(providerId)}/prewarm`,
+      { method: "POST" },
+    ),
   /** List role -> provider assignments. */
   listLlmRoutes: () =>
     jsonFetch<{ routes: Record<string, LlmRoute> }>("/api/llm/routes"),

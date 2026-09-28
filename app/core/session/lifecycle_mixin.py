@@ -853,6 +853,11 @@ class LifecycleMixin(DebugOverridesHostMixin):
                 )
             except Exception:
                 log.debug("listening window executor shutdown failed", exc_info=True)
+        if getattr(self, "_lm_studio_lifecycle", None) is not None:
+            try:
+                self._lm_studio_lifecycle.stop()
+            except Exception:
+                log.debug("LM Studio lifecycle shutdown failed", exc_info=True)
         try:
             self._tts.stop()
         except Exception:

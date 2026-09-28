@@ -66,6 +66,221 @@ free-tier daily budget in well under an hour. Point them at Gemini too
 if you'd rather not run a local model at all — the remote provider's
 quota is on you in that case.
 
+## LM Studio on another machine
+
+This is a good fit for Aiko's role-based routing. A Mac can serve one or more
+worker models over the LAN while the Windows GPU remains available for
+`main_chat` and the larger `workflow` model. LM Studio exposes an
+OpenAI-compatible endpoint, so the basic arrangement works with the existing
+`openai_compatible` client; no vendor SDK or LangChain integration is needed.
+
+The recommended split for a 32 GB Apple Silicon Mac is:
+
+| Role | Host | Suggested purpose |
+| --- | --- | --- |
+| `main_chat` | Existing Windows Ollama/provider | Conversation |
+| `workflow` | Existing Windows Ollama/provider | Larger goal-planning model and agent jobs |
+| `worker_default` | LM Studio on the Mac | Extraction, summarisation and maintenance workers |
+| `live_policy` | LM Studio on the Mac, optional second model | Small, low-latency Live policy decisions |
+
+Whether two particular models fit at once depends on their quantisation, context
+length, KV cache and LM Studio runtime. "32 GB RAM" is not by itself a guarantee.
+Start with conservative context windows, load both, and inspect macOS memory
+pressure before increasing either. On Apple Silicon an MLX build is often the
+natural first model variant, but Aiko only sees the server API and does not
+depend on GGUF versus MLX.
+
+### LM Studio setup
+
+1. Install/load the desired models on the Mac. Record the exact identifiers LM
+  Studio reports; Aiko must send those identifiers verbatim.
+2. In LM Studio's server settings, enable **Serve on Local Network**, choose a
+  stable port (default `1234`) and enable **Require Authentication**. The CLI
+  equivalent for the network bind is `lms server start --bind 0.0.0.0`.
+3. Give the Mac a DHCP reservation or stable hostname. Prefer a trusted private
+  LAN; the endpoint is plain HTTP unless a reverse proxy/VPN adds TLS. Do not
+  expose port 1234 to the internet.
+4. Permit inbound TCP 1234 in the Mac firewall only from the trusted subnet or
+  Aiko host. From Windows, verify `http://<mac-address>:1234/v1/models` before
+  editing Aiko.
+5. Add one Aiko provider with kind `openai_compatible`, base URL
+  `http://<mac-address>:1234/v1`, API style `chat_completions`, the LM Studio
+  token, and a generous inference timeout. Assign the Mac model ids to the
+  worker routes.
+
+Illustrative `config/user.json` fragment (merge with the existing catalogue and
+route rows; do not replace unrelated settings):
+
+```json
+{
+  "llm": {
+   "providers": [
+    {
+      "id": "mac_lmstudio",
+      "name": "Mac LM Studio",
+      "kind": "openai_compatible",
+      "base_url": "http://aiko-mac.local:1234/v1",
+      "api_key_env": "LM_STUDIO_API_TOKEN",
+      "timeout_seconds": 600,
+      "api_style": "chat_completions"
+    }
+   ],
+   "routes": {
+    "worker_default": {
+      "provider_id": "mac_lmstudio",
+      "model": "<worker-model-id>",
+      "context_window": 32768,
+      "max_tokens": 1024,
+      "contention_group": "mac-lmstudio"
+    },
+    "live_policy": {
+      "provider_id": "mac_lmstudio",
+      "model": "<small-live-model-id>",
+      "context_window": 16384,
+      "max_tokens": 512,
+      "temperature": 0,
+      "contention_group": "mac-lmstudio"
+    }
+   }
+  }
+}
+```
+
+Keep the existing `main_chat` and `workflow` rows in the real file. The example
+uses an environment-backed token so it does not put a credential in JSON; using
+the Settings drawer stores a write-only credential through Aiko's normal secret
+path instead.
+
+Use the same `contention_group` on both Mac routes. Aiko otherwise treats two
+model ids as independent resources and may ask them to infer concurrently. They
+share one Mac and its unified memory bandwidth, so serial admission is the safe
+starting point even when both sets of weights remain loaded. `live_policy` keeps
+its higher priority within that shared gate. Raise concurrency only after
+measuring memory pressure, throughput and Live latency.
+
+### Cold loads and timeouts today
+
+LM Studio supports just-in-time loading and defaults JIT-loaded models to a
+60-minute idle TTL. It also exposes native model management endpoints:
+`POST /api/v1/models/load`, `POST /api/v1/models/unload`, and model state from
+`GET /api/v0/models`. Loading can specify context length and returns the load
+time and effective configuration.
+
+Aiko does **not currently call those native endpoints**. The provider's
+`keep_alive` field is Ollama-only and is deliberately ignored by
+`OpenAICompatibleClient`; setting it to `-1` will not keep an LM Studio model
+loaded. Aiko's provider connection test sends a tiny real completion, so testing
+each model will trigger a cold JIT load, but it is a manual warm-up rather than a
+startup contract.
+
+`timeout_seconds` is currently one provider-wide HTTP timeout for connection,
+model load and generation. Setting it to `600` is a reasonable first cold-load
+allowance, but it also means an unreachable Mac can take too long to fail. Once
+both models are already loaded, reduce it based on observed worst-case worker
+latency (often back toward the shipped `300`). A long timeout does not keep the
+model resident and does not make a dead LAN connection healthy.
+
+For the first deployment, prefer one of these operational approaches:
+
+- Load both models in LM Studio before starting Aiko and set LM Studio's idle
+  TTL long enough for the expected quiet periods.
+- Run explicit load calls on the Mac after its server starts, using the same
+  context lengths as Aiko's route budgets, then start Aiko.
+- Allow JIT loading and accept the first worker call's cold-start delay, with a
+  600-second Aiko provider timeout. This is the least predictable option.
+
+Do not use periodic dummy prompts as the final keep-warm mechanism. They spend
+compute, distort usage telemetry and can contend with actual worker requests.
+An explicit load/TTL lifecycle is cheaper and observable.
+
+### Aiko-managed prewarm
+
+Native prewarm is an opt-in provider lifecycle feature, not a special case
+hidden inside the generic OpenAI client and not hostname sniffing for `1234`.
+Select the **LM Studio** provider dialect in Settings, or configure it directly:
+
+```json
+{
+  "dialect": "lm_studio",
+  "prewarm": {
+   "enabled": true,
+   "roles": ["worker_default", "live_policy"],
+  "connect_timeout_seconds": 5,
+   "load_timeout_seconds": 900,
+   "required": false,
+   "max_parallel_loads": 1
+  }
+}
+```
+
+The settings drawer shows per-model readiness and provides an explicit
+**Prewarm** action. The same non-blocking diagnostics are available from
+`GET /api/llm/lifecycle`; `POST /api/llm/providers/{id}/prewarm` schedules a
+fresh state check/load and returns `202` without waiting. The implementation:
+
+1. Start prewarm asynchronously after settings and routes load; app startup and
+  chat remain usable while the Mac is offline or loading.
+2. Deduplicates `(provider, model, context)` requests, queries LM Studio's native
+  `/api/v1/models` state (with `/api/v0/models` fallback for older servers), and
+  loads missing models sequentially. Concurrently loading two large models is
+  avoidable memory pressure.
+3. Applies a short prewarm connect timeout, a separate long model-load timeout,
+  and the provider's normal `timeout_seconds` to inference.
+4. Pass the route's explicit context length to the load request and compare the
+  echoed effective configuration. A loaded instance at the wrong context is not
+  silently "warm enough".
+5. Record per-role states such as unreachable, loading, ready, degraded and
+  failed, including load time, instance id and effective context. Never log the
+  token.
+6. Retries network/server failures with bounded exponential backoff and checks
+  failed hosts again after one minute. A model that does not fit is a persistent
+  failure requiring configuration, not an endless retry target.
+7. Reconciles immediately after route/model/context/provider changes, checks
+  healthy hosts every five minutes for LM Studio restarts, and detects network
+  reconnects through the failed-host retry. It never unloads a model.
+8. Warm only configured enabled roles. A disabled plugin cannot cause its
+  preferred model to load merely by registering a worker.
+
+The first inference can still race prewarm. It waits on the same per-model load
+state within the configured load deadline and never starts a second explicit
+load. During network backoff it fails fast with the lifecycle reason rather than
+spending the provider's full inference timeout repeatedly.
+
+### Failure and fallback policy
+
+Do not silently send private worker prompts to a cloud provider when the Mac is
+offline. Default to queue/backoff for maintenance work and surface degraded
+health. Conversation-critical workers may skip their optional contribution;
+goal workflows stay on their separately configured Windows route. Any fallback
+must be explicit per role and re-run data-egress policy before sending content.
+
+The Mac must never be considered a second independent lane merely because it is
+remote. The two LM Studio models contend with each other, while the Mac lane and
+Windows workflow GPU can genuinely execute in parallel. Aiko's gate telemetry
+should be used to verify that this arrangement lowers Windows GPU contention
+without building an ever-growing worker backlog.
+
+Suggested acceptance test before relying on it:
+
+1. Cold boot LM Studio and time sequential loading of both configured models.
+2. Confirm both show loaded with the intended context lengths and fit without
+  swap/memory-pressure warnings.
+3. Run a worker and Live-policy request together; verify Aiko serializes them and
+  Live gets the next slot.
+4. Run a Windows workflow concurrently; verify it is not queued behind the Mac
+  worker gate.
+5. Let the LM Studio TTL expire, then verify one cold reload completes within the
+  configured allowance and does not trigger a retry storm.
+6. Stop LM Studio and disconnect the LAN; verify chat stays healthy, maintenance
+  backs off, no cloud fallback occurs and diagnostics explain the outage.
+7. Restart LM Studio with one model missing or too large; verify partial readiness
+  is visible and the healthy model remains usable.
+
+LM Studio references reviewed for this design: [OpenAI-compatible API](https://lmstudio.ai/docs/developer/openai-compat),
+[LAN serving](https://lmstudio.ai/docs/developer/core/server/serve-on-network),
+[idle TTL](https://lmstudio.ai/docs/developer/core/ttl-and-auto-evict), and
+[model loading](https://lmstudio.ai/docs/developer/rest/load).
+
 ### Which Gemini model
 
 Aiko's spend is lopsided: a large, mostly stable prompt against a
@@ -132,6 +347,8 @@ class LlmProvider:
     extra_headers: dict[str, str] = field(default_factory=dict)
     timeout_seconds: int = 300
     keep_alive: str = "30m"
+    dialect: str = ""             # "" | "lm_studio"
+    prewarm: LmStudioPrewarmSettings = field(default_factory=...)
     reasoning_effort: str = ""    # GPT-5 / o-series / Grok
     api_style: str = "auto"       # auto | responses | chat_completions
     think_num_predict_headroom: int = 2048

@@ -287,6 +287,10 @@ class SessionController(
         # is present (the plaintext-config path is preserved verbatim).
         self._init_secret_storage()
 
+        from app.llm.lm_studio_lifecycle import LmStudioLifecycle
+
+        self._lm_studio_lifecycle = LmStudioLifecycle()
+
         # ── Chat LLM clients (route-driven) ──────────────────────────────
         # Everything comes from ``settings.llm``: the provider catalogue
         # says which endpoints exist, the routes say which model + budget
@@ -325,6 +329,7 @@ class SessionController(
         # self._workflow_client, self._worker_llm_gate.
         self._worker_client: ChatClient
         self._install_worker_clients(raw_worker_client)
+        self.reconcile_lm_studio()
         chat_provider = (
             find_provider(settings.llm, chat_route.provider_id)
             if chat_route is not None

@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api } from "../../api";
 import { useAssistantStore } from "../../store";
-import type { LlmProvider, LlmProviderPreset } from "../../types";
+import type {
+  LlmProvider,
+  LlmProviderPreset,
+  LmStudioModelStatus,
+} from "../../types";
 import { Section } from "./SettingsSection";
 
 /**
@@ -30,6 +34,12 @@ interface ProviderDraft {
   api_key_env: string;
   keep_alive: string;
   timeout_seconds: number;
+  dialect: "" | "lm_studio";
+  prewarm_enabled: boolean;
+  prewarm_roles: string[];
+  connect_timeout_seconds: number;
+  load_timeout_seconds: number;
+  prewarm_required: boolean;
   /** Reasoning-effort hint for OpenAI Responses-API models. Empty =
    *  "auto" (client default). A route can override per-role. */
   reasoning_effort: string;
@@ -50,6 +60,12 @@ function providerToDraft(provider: LlmProvider): ProviderDraft {
     api_key_env: provider.api_key_env,
     keep_alive: provider.keep_alive,
     timeout_seconds: provider.timeout_seconds,
+    dialect: provider.dialect || "",
+    prewarm_enabled: provider.prewarm?.enabled ?? false,
+    prewarm_roles: provider.prewarm?.roles ?? ["worker_default", "live_policy"],
+    connect_timeout_seconds: provider.prewarm?.connect_timeout_seconds ?? 5,
+    load_timeout_seconds: provider.prewarm?.load_timeout_seconds ?? 900,
+    prewarm_required: provider.prewarm?.required ?? false,
     reasoning_effort: provider.reasoning_effort || "",
     api_style: provider.api_style || "auto",
     extra_headers_json:
@@ -87,6 +103,14 @@ export function LlmProvidersListSection() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  const [lifecycleRows, setLifecycleRows] = useState<LmStudioModelStatus[]>([]);
+
+  const refreshLifecycle = useCallback(() => {
+    void api
+      .getLlmLifecycle()
+      .then((result) => setLifecycleRows(result.models))
+      .catch(() => undefined);
+  }, []);
 
   // Load the catalogue if the store doesn't have it yet. Other panels
   // (LlmRoutesSection) already fetch it; this is a safety net.
@@ -104,6 +128,16 @@ export function LlmProvidersListSection() {
       .then((r) => setPresets(r.presets))
       .catch(() => setPresets([]));
   }, []);
+
+  useEffect(() => {
+    if (!providers?.some((provider) => provider.dialect === "lm_studio")) {
+      setLifecycleRows([]);
+      return;
+    }
+    refreshLifecycle();
+    const timer = window.setInterval(refreshLifecycle, 5000);
+    return () => window.clearInterval(timer);
+  }, [providers, refreshLifecycle]);
 
   // Seed drafts when providers change; preserve in-progress edits.
   useEffect(() => {
@@ -163,6 +197,15 @@ export function LlmProvidersListSection() {
           extra_headers: headers,
           keep_alive: draft.keep_alive,
           timeout_seconds: draft.timeout_seconds,
+          dialect: draft.dialect,
+          prewarm: {
+            enabled: draft.prewarm_enabled,
+            roles: draft.prewarm_roles,
+            connect_timeout_seconds: draft.connect_timeout_seconds,
+            load_timeout_seconds: draft.load_timeout_seconds,
+            required: draft.prewarm_required,
+            max_parallel_loads: 1,
+          },
           reasoning_effort: draft.reasoning_effort,
           api_style: draft.api_style,
         });
@@ -207,6 +250,29 @@ export function LlmProvidersListSection() {
       }
     },
     [removeProviderLocally, pushToast],
+  );
+
+  const prewarmProvider = useCallback(
+    async (providerId: string) => {
+      setBusyProvider(providerId);
+      try {
+        const result = await api.prewarmLlmProvider(providerId);
+        setLifecycleRows((current) => [
+          ...current.filter((row) => row.provider_id !== providerId),
+          ...result.models,
+        ]);
+        pushToast("info", `Prewarm scheduled for '${providerId}'.`);
+        window.setTimeout(refreshLifecycle, 1000);
+      } catch (exc) {
+        pushToast(
+          "error",
+          exc instanceof Error ? exc.message : "Prewarm failed",
+        );
+      } finally {
+        setBusyProvider(null);
+      }
+    },
+    [pushToast, refreshLifecycle],
   );
 
   const testProvider = useCallback(
@@ -288,6 +354,20 @@ export function LlmProvidersListSection() {
         {providers.map((p) => {
           const draft = drafts[p.id];
           const isOpen = !!expanded[p.id];
+          const providerLifecycle = lifecycleRows.filter(
+            (row) => row.provider_id === p.id,
+          );
+          const lifecycleState = providerLifecycle.some(
+            (row) => row.status === "failed" || row.status === "unreachable",
+          )
+            ? providerLifecycle.some((row) => row.status === "ready")
+              ? "degraded"
+              : providerLifecycle[0]?.status
+            : providerLifecycle.some((row) => row.status !== "ready")
+            ? "loading"
+            : providerLifecycle.length > 0
+            ? "ready"
+            : "idle";
           return (
             <div
               key={p.id}
@@ -304,9 +384,20 @@ export function LlmProvidersListSection() {
                   <div className="text-[10px] text-ink-100/40">
                     {p.base_url || "(no URL)"} ·{" "}
                     {p.has_api_key ? "API key set" : "no API key"}
+                    {p.dialect === "lm_studio" ? ` · ${lifecycleState}` : ""}
                   </div>
                 </div>
                 <div className="flex items-center gap-1">
+                  {p.dialect === "lm_studio" && p.prewarm?.enabled ? (
+                    <button
+                      type="button"
+                      disabled={busyProvider === p.id}
+                      onClick={() => void prewarmProvider(p.id)}
+                      className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2 py-1 text-[11px] text-sky-100 hover:bg-sky-500/20 disabled:opacity-50"
+                    >
+                      Prewarm
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     disabled={busyProvider === p.id}
@@ -347,6 +438,127 @@ export function LlmProvidersListSection() {
                       className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
                     />
                   </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-ink-100/60">
+                      Provider dialect
+                    </span>
+                    <select
+                      value={draft.dialect}
+                      onChange={(e) =>
+                        editDraft(p.id, {
+                          dialect: e.target.value as ProviderDraft["dialect"],
+                        })
+                      }
+                      className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+                    >
+                      <option value="">Generic</option>
+                      <option value="lm_studio">LM Studio</option>
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="block text-[11px] text-ink-100/60">
+                      Inference timeout (seconds)
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={draft.timeout_seconds}
+                      onChange={(e) =>
+                        editDraft(p.id, { timeout_seconds: Number(e.target.value) })
+                      }
+                      className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+                    />
+                  </label>
+                  {draft.dialect === "lm_studio" ? (
+                    <div className="space-y-2 border-l-2 border-sky-400/30 pl-3">
+                      <label className="flex items-center gap-2 text-xs text-ink-100/70">
+                        <input
+                          type="checkbox"
+                          checked={draft.prewarm_enabled}
+                          onChange={(e) =>
+                            editDraft(p.id, { prewarm_enabled: e.target.checked })
+                          }
+                        />
+                        Prewarm assigned models
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {["worker_default", "live_policy"].map((role) => (
+                          <label
+                            key={role}
+                            className="flex items-center gap-2 text-[11px] text-ink-100/60"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.prewarm_roles.includes(role)}
+                              onChange={(e) =>
+                                editDraft(p.id, {
+                                  prewarm_roles: e.target.checked
+                                    ? [...new Set([...draft.prewarm_roles, role])]
+                                    : draft.prewarm_roles.filter((item) => item !== role),
+                                })
+                              }
+                            />
+                            {role}
+                          </label>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="block">
+                          <span className="block text-[11px] text-ink-100/60">
+                            Connect timeout
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={60}
+                            value={draft.connect_timeout_seconds}
+                            onChange={(e) =>
+                              editDraft(p.id, {
+                                connect_timeout_seconds: Number(e.target.value),
+                              })
+                            }
+                            className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+                          />
+                        </label>
+                        <label className="block">
+                          <span className="block text-[11px] text-ink-100/60">
+                            Load timeout
+                          </span>
+                          <input
+                            type="number"
+                            min={30}
+                            max={3600}
+                            value={draft.load_timeout_seconds}
+                            onChange={(e) =>
+                              editDraft(p.id, {
+                                load_timeout_seconds: Number(e.target.value),
+                              })
+                            }
+                            className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-sm text-ink-100"
+                          />
+                        </label>
+                      </div>
+                      <label className="flex items-center gap-2 text-xs text-ink-100/70">
+                        <input
+                          type="checkbox"
+                          checked={draft.prewarm_required}
+                          onChange={(e) =>
+                            editDraft(p.id, { prewarm_required: e.target.checked })
+                          }
+                        />
+                        Treat prewarm failure as route unavailable
+                      </label>
+                      {providerLifecycle.map((row) => (
+                        <div
+                          key={`${row.model}:${row.context_length ?? "auto"}`}
+                          className="text-[10px] text-ink-100/50"
+                        >
+                          {row.roles.join(", ")} · {row.model} · {row.status}
+                          {row.error ? ` · ${row.error}` : ""}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                   <label className="block">
                     <span className="block text-[11px] text-ink-100/60">
                       Endpoint URL

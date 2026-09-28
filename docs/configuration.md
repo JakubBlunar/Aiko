@@ -34,7 +34,7 @@ exists to keep them in lock-step.
 | Set / change your name | `assistant.user_display_name` | `""` (forces first-run onboarding) |
 | Cap reply length (stop rambling) | `llm.routes.main_chat.max_tokens` | `512` |
 | Shrink the KV cache to fit VRAM | `llm.routes.<role>.context_window` | `65536` |
-| Keep model warm in VRAM longer | `llm.providers[].keep_alive` | `"30m"` |
+| Keep an Ollama model warm in VRAM longer | `llm.providers[].keep_alive` | `"30m"` |
 | Aiko proactively speaks in **voice** chat after N s silence | `agent.proactive_silence_seconds` | `45` |
 | Aiko proactively speaks in **typed** chat after N s silence | `agent.proactive_silence_seconds_typed` | `240` (4 min) |
 | Enable typed-mode proactive at all | `agent.proactive_typed_enabled` | `true` |
@@ -121,8 +121,15 @@ Each entry is a slotted `LlmProvider`:
 - `llm.providers[].api_key` *(string, `""`)* — bearer token (written via `PUT /api/llm/providers/{id}/credentials`; never round-trips through GET). Stashed in the OS keychain when one is available, leaving `""` on disk.
 - `llm.providers[].api_key_env` *(string, `""`)* — env-var fallback (e.g. `"OPENAI_API_KEY"`). Inferred from the host when blank.
 - `llm.providers[].extra_headers` *(object, `{}`)* — vendor-specific headers (OpenRouter wants `HTTP-Referer` + `X-Title`).
-- `llm.providers[].timeout_seconds` *(int, `300`)* — HTTP timeout, shared by chat + embeddings on this endpoint. Bump if a slow model occasionally times out mid-generation.
-- `llm.providers[].keep_alive` *(string, `"30m"`)* — Ollama-only model-resident-in-VRAM duration; silently ignored by remote providers. Accepts any Ollama duration (`"30m"`, `"1h"`, `"-1"` for "forever").
+- `llm.providers[].timeout_seconds` *(int, `300`)* — normal inference HTTP timeout for this endpoint. Bump if a slow model occasionally times out mid-generation or an OpenAI-compatible server relies on just-in-time loading.
+- `llm.providers[].keep_alive` *(string, `"30m"`)* — Ollama-only model-resident-in-VRAM duration; silently ignored by all `openai_compatible` providers, including LM Studio. Accepts any Ollama duration (`"30m"`, `"1h"`, `"-1"` for "forever"). Use the other server's own TTL/load controls instead; see [LM Studio on another machine](llm-providers.md#lm-studio-on-another-machine).
+- `llm.providers[].dialect` *(string, `""`)* — set to `"lm_studio"` to enable explicit native readiness/load support. It is never inferred from the endpoint hostname or port.
+- `llm.providers[].prewarm.enabled` *(bool, `false`)* — asynchronously inspect and load models assigned to the selected roles. Does not block app startup.
+- `llm.providers[].prewarm.roles` *(list, `["worker_default", "live_policy"]`)* — only routes in this allowlist are loaded.
+- `llm.providers[].prewarm.connect_timeout_seconds` *(float, `5`, clamped `[1, 60]`)* — short timeout for reaching LM Studio's native API.
+- `llm.providers[].prewarm.load_timeout_seconds` *(float, `900`, clamped `[30, 3600]`)* — read timeout for a native model load; independent from inference timeout.
+- `llm.providers[].prewarm.required` *(bool, `false`)* — keep a route unavailable after a lifecycle outage instead of allowing a later request to fall through to LM Studio JIT loading.
+- `llm.providers[].prewarm.max_parallel_loads` *(int, `1`)* — reserved lifecycle limit. Currently clamped to `1` so models load sequentially on one unified-memory host.
 - `llm.providers[].reasoning_effort` *(string, `""`)* — default effort for Responses-API models (GPT-5 / o-series / Grok). Empty = the client's own default; a route can override it.
 - `llm.providers[].api_style` *(string, `"auto"` | `"responses"` | `"chat_completions"`)* — OpenAI-compatible surface selector. xAI Grok needs `"responses"` for reasoning + prompt caching.
 - `llm.providers[].store` *(bool, `false`)* — whether the provider may keep the request + response as application state. `POST /v1/responses` **defaults to `true`** server-side, which retains the full body for 30 days and renders it in the vendor's dashboard Logs tab — and our bodies carry the persona, retrieved memories, chunks of uploaded documents and the recent transcript, so we send `false` explicitly instead of inheriting that. Set it `true` per provider when you want the Logs tab while debugging. Two details worth knowing: opting out means the reasoning items a tool round has to replay have no server-side copy, so the client also asks for `include: ["reasoning.encrypted_content"]` on tool passes (handled for you); and this flag has no bearing on abuse-monitoring retention, which is also 30 days and which no request parameter controls. On `/v1/chat/completions` the field is only sent when the host is `api.openai.com`, because the compatible clones we route to don't all define it and a strict one 400s on an unknown key. Prompt caching is unaffected.

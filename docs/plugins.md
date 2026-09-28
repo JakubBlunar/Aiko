@@ -1,5 +1,10 @@
 # ToolPlugins (SDK-primary MCP plugins)
 
+For the proposed next-generation platform, see the
+[plugin platform and durable agent-job guide](personality-backlog/plugin-system.md).
+It covers workers, hooks, storage, model access, bounded tool discovery and long
+jobs; those additions are design work, not part of the current SDK below.
+
 A **plugin** is a self-contained folder that teaches Aiko's background worker
 lane a new capability with **no core code change**. A plugin is a small Python
 package whose `entry.py` registers, in code:

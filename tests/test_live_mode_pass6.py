@@ -34,10 +34,12 @@ from app.llm.llm_gate import (
     CONVERSATION_WORKER,
     LIVE_POLICY,
     MAINTENANCE_WORKER,
+    TASK,
     GatedChatClient,
     LlmPriorityGate,
     llm_resource_key,
 )
+from app.llm.factory import ClientCache
 
 
 def _now() -> datetime:
@@ -440,6 +442,80 @@ class LivePolicyClientInstallTests(unittest.TestCase):
         assert isinstance(client, GatedChatClient)
         self.assertIs(client._gate, host._worker_llm_gate)
         self.assertEqual(client._priority, LIVE_POLICY)
+
+
+class WorkflowClientInstallTests(unittest.TestCase):
+    @staticmethod
+    def _host(
+        *,
+        workflow_group: str = "",
+        worker_group: str = "",
+        workflow_on_mac: bool = False,
+    ):
+        host = LlmClientsMixin()
+        mac = LlmProvider(
+            id="mac_lmstudio",
+            name="Mac LM Studio",
+            kind="openai_compatible",
+            base_url="http://aiko-mac.local:1234/v1",
+        )
+        windows = LlmProvider(
+            id="windows_ollama",
+            name="Windows Ollama",
+            kind="ollama",
+            base_url="http://127.0.0.1:11434",
+        )
+        host._settings = SimpleNamespace(
+            llm=SimpleNamespace(
+                providers=[mac, windows],
+                routes={
+                    "worker_default": LlmRoute(
+                        provider_id="mac_lmstudio",
+                        model="worker-model",
+                        context_window=32768,
+                        contention_group=worker_group,
+                    ),
+                    "workflow": LlmRoute(
+                        provider_id=(
+                            "mac_lmstudio" if workflow_on_mac
+                            else "windows_ollama"
+                        ),
+                        model="workflow-model",
+                        context_window=65536,
+                        contention_group=workflow_group,
+                    ),
+                },
+            ),
+        )
+        host._client_cache = ClientCache()
+        host._worker_client_inner = _FakePolicyClient()
+        host._find_llm_provider = lambda provider_id: next(
+            (
+                provider
+                for provider in host._settings.llm.providers
+                if provider.id == provider_id
+            ),
+            None,
+        )
+        return host
+
+    def test_workflow_on_second_machine_bypasses_worker_gate(self) -> None:
+        host = self._host()
+        worker_gate = LlmPriorityGate(name="worker")
+        client = host._build_workflow_client(worker_gate, TASK)
+        self.assertIsInstance(client, GatedChatClient)
+        self.assertIsNone(client._gate)
+
+    def test_explicit_contention_group_shares_worker_gate(self) -> None:
+        host = self._host(
+            workflow_group="shared-host",
+            worker_group="shared-host",
+            workflow_on_mac=True,
+        )
+        worker_gate = LlmPriorityGate(name="worker")
+        client = host._build_workflow_client(worker_gate, TASK)
+        self.assertIsInstance(client, GatedChatClient)
+        self.assertIs(client._gate, worker_gate)
 
 
 class ControllerTests(unittest.TestCase):
