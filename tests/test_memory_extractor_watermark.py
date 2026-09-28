@@ -171,6 +171,42 @@ class FirstRunTests(unittest.TestCase):
 
 
 class WatermarkTests(unittest.TestCase):
+    def test_budget_sheds_old_context_before_new_turns(self) -> None:
+        db = _FakeDb()
+        for _ in range(8):
+            db.append(content="old context " + "detail " * 200)
+        db.kv[_KEY] = "8"
+        for index in range(6):
+            db.append(content=f"fresh {index}")
+        ollama = _FakeOllama(['{"memories": []}'])
+        extractor = _build(
+            db, ollama, context_messages=8, think=False,
+            max_tokens=256, context_window=lambda: 3200,
+        )
+        extractor.extract_for_session("s")
+        self.assertIn("fresh 0", ollama.prompts[0])
+        self.assertIn("fresh 5", ollama.prompts[0])
+        self.assertEqual(db.kv[_KEY], "14")
+
+    def test_budgeted_backlog_advances_only_through_included_turns(self) -> None:
+        db = _FakeDb()
+        for index in range(8):
+            db.append(content=f"unique {index}: " + "detail " * 80)
+        ollama = _FakeOllama(['{"memories": []}', '{"memories": []}'])
+        extractor = _build(
+            db, ollama, context_messages=0, think=False,
+            max_tokens=256, context_window=lambda: 3200,
+        )
+        extractor.extract_for_session("s")
+        first = int(db.kv[_KEY])
+        self.assertGreater(first, 0)
+        self.assertLess(first, 8)
+        self.assertIn("unique 0:", ollama.prompts[0])
+        self.assertNotIn("unique 7:", ollama.prompts[0])
+        extractor.extract_for_session("s")
+        self.assertGreater(int(db.kv[_KEY]), first)
+        self.assertIn(f"unique {first}:", ollama.prompts[1])
+
     def test_partial_apply_retries_saved_candidates_without_rerunning_model(self) -> None:
         db = _FakeDb(count=6)
         store = _FakeStore()

@@ -350,6 +350,7 @@ class DetectorsInitMixin:
                     if self.user_display_name
                     else [],
                     assistant_name_provider=lambda: "Aiko",
+                    context_window=lambda: self._worker_route_model_ctx()[1],
                     notify_belief_added=self._notify_belief_added,
                     notify_belief_updated=self._notify_belief_updated,
                     # K65b: feed the K9 interest map so extraction biases

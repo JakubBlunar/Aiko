@@ -76,6 +76,9 @@ from app.core.relationship.belief_store import (
 from app.core.memory.fact_check_privacy import scrub_claim_for_search
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
+from app.core.proactive.worker_prompt_budget import (
+    pack_worker_prompt, report_worker_prompt,
+)
 from app.llm.json_answers import parse_json_array_answer
 
 if TYPE_CHECKING:
@@ -441,6 +444,7 @@ class BeliefInferenceWorker:
         interest_map_provider: Callable[[], Any] | None = None,
         view_provider: Callable[[], "ConceptView | None"] | None = None,
         clock: Callable[[], datetime] | None = None,
+        context_window: Callable[[], int | None] | None = None,
     ) -> None:
         self._belief_store = belief_store
         self._chat_db = chat_db
@@ -466,6 +470,7 @@ class BeliefInferenceWorker:
         # prior. ``None`` leaves the prompt exactly as K65b built it.
         self._view_provider = view_provider
         self._clock = clock or _utcnow
+        self._context_window = context_window or (lambda: None)
 
     # ── IdleWorker protocol ──────────────────────────────────────────
 
@@ -1018,7 +1023,7 @@ class BeliefInferenceWorker:
         now = self._clock()
         chunks: list[str] = []
         for row in user_msgs:
-            text = (row.content or "").strip()
+            text = " ".join((row.content or "").splitlines()).strip()
             if not text:
                 continue
             if len(text) > 600:
@@ -1039,26 +1044,6 @@ class BeliefInferenceWorker:
         concept_hint: str = "",
         dropped: list[str] | None = None,
     ) -> list[_BeliefTuple] | None:
-        sections = [_USER_TEMPLATE.format(transcript=scrubbed_transcript)]
-        if interest_hint:
-            sections.append(
-                "Topics this user keeps returning to (prioritise beliefs "
-                f"about these when the transcript supports it): {interest_hint}."
-            )
-        if concept_hint:
-            sections.append(
-                "What you durably hold about this user (a prior on what to "
-                "look for, not evidence -- the transcript decides, and it "
-                "may well contradict one of these): "
-                f"{concept_hint}."
-            )
-        if reconsider_block:
-            sections.append(
-                "Also re-check whether these earlier beliefs still hold: if a "
-                "transcript turn speaks to one, return an updated belief for "
-                f"that topic; otherwise ignore it: {reconsider_block}."
-            )
-        user_content = "\n\n".join(sections)
         # Two time instructions doing opposite jobs, deliberately.
         #
         # K-time8: the anchor is for *reading* — it lets the model resolve
@@ -1078,10 +1063,81 @@ class BeliefInferenceWorker:
             f"{_build_system_prompt(self._resolve_user_name())}\n\n"
             f"{timephrase.LIVE_STATE_TIME_RULE}"
         )
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_content},
-        ]
+        lines = scrubbed_transcript.splitlines()
+        newest_first = list(reversed(lines))
+        optional_hints = sum(bool(hint) for hint in (
+            interest_hint, reconsider_block, concept_hint,
+        ))
+
+        def render(selected) -> list[dict[str, str]]:
+            sections = [_USER_TEMPLATE.format(transcript="\n".join(reversed(selected)))]
+            if interest_hint:
+                sections.append(
+                    "Topics this user keeps returning to (prioritise beliefs "
+                    f"about these when the transcript supports it): {interest_hint}."
+                )
+            if concept_hint:
+                sections.append(
+                    "What you durably hold about this user (a prior on what to "
+                    "look for, not evidence -- the transcript decides, and it "
+                    "may well contradict one of these): "
+                    f"{concept_hint}."
+                )
+            if reconsider_block:
+                sections.append(
+                    "Also re-check whether these earlier beliefs still hold: if a "
+                    "transcript turn speaks to one, return an updated belief for "
+                    f"that topic; otherwise ignore it: {reconsider_block}."
+                )
+            return [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": "\n\n".join(sections)},
+            ]
+
+        try:
+            context_window = self._context_window()
+        except Exception:
+            log.warning("belief_worker: context window lookup failed", exc_info=True)
+            context_window = None
+        if not context_window or context_window <= 0:
+            log.warning("belief_worker: unknown context window; using 4096")
+        output_tokens = _EXTRACT_MAX_TOKENS + max(
+            0, int(getattr(self._ollama, "_think_headroom", 0)),
+        )
+        packed = None
+        selected_optional = optional_hints
+        for optional_count in range(3, -1, -1):
+            candidate = pack_worker_prompt(
+                newest_first, render, context_window=context_window,
+                output_tokens=output_tokens, surface="belief_worker", log=log,
+                report=False,
+            )
+            if candidate is not None and (
+                packed is None or candidate.item_count > packed.item_count
+            ):
+                packed = candidate
+                selected_optional = sum(bool(hint) for hint in (
+                    interest_hint, reconsider_block, concept_hint,
+                ))
+            if packed is not None and packed.item_count == len(newest_first):
+                break
+            if optional_count == 3:
+                concept_hint = ""
+            elif optional_count == 2:
+                reconsider_block = ""
+            elif optional_count == 1:
+                interest_hint = ""
+        if packed is None:
+            log.warning("belief_worker: no transcript line fits the prompt budget")
+            return None
+        report_worker_prompt(packed, len(newest_first), surface="belief_worker", log=log)
+        if selected_optional < optional_hints:
+            log.warning(
+                "belief_worker: omitted %d optional hints",
+                optional_hints - selected_optional,
+            )
+        messages = packed.messages
+        user_content = messages[1]["content"]
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
                 "belief-worker extract prompt: model=%s prompt_chars=%d "

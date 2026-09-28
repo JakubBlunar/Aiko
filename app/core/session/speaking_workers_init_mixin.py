@@ -116,6 +116,7 @@ class SpeakingWorkersInitMixin:
                         ),
                     ),
                     user_display_name_provider=lambda: self.user_display_name,
+                    context_window=lambda: self._worker_route_model_ctx()[1],
                     sleep_store=getattr(self, "_sleep_store", None),
                     context_provider=lambda: {
                         "recent_callbacks": self._top_inner_life_contents(
@@ -1131,6 +1132,7 @@ class SpeakingWorkersInitMixin:
             min_unsummarized_messages=settings.agent.summary_min_unsummarized_messages,
             target_tokens=settings.agent.summary_target_tokens,
             memory_extractor=self._memory_extractor,
+            context_window=lambda: self._worker_route_model_ctx()[1],
         )
         self._summary_worker.start()
         # Schema v8 — background workers run through a single shared

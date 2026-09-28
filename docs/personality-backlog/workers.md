@@ -148,35 +148,52 @@ long unsummarized run (a crash before a summary landed, a long voice session, a
 rather than an error. A summary that silently drops its oldest beats also feeds
 compaction, so the loss propagates into the chat prompt.
 
-**Sketched approach.** Two steps, and the first is worth doing on its own.
-(1) **Measure before capping.** Log the rendered input size per worker run
-(chars and estimated tokens) against that worker's route context window, so the
-question "which worker prompts are actually near their window?" has an answer
-before anyone picks a limit. The route + window resolution already exists
-(`_worker_route_model_ctx`, used by the diet budget). (2) Cap the packers that
-the data says need it, using the diet shape — a fraction of the worker window
-with an absolute cap beside it, because the fraction is what protects a small
-local route and the cap is what actually binds on a large one. For
-`SummaryWorker` specifically the natural cap is a message count with the
-*oldest* rows dropped and the prior summary retained, since the prior summary is
-what already covers them.
+**Decision: one shared budget helper, worker-owned reduction.** The helper
+receives the *actual call's* route context window, output-token cap, fixed
+system/user instructions, and rendered candidate items. It estimates the
+whole request (including message framing), reserves the output cap plus a
+margin for tokenizer error / reasoning headroom, and returns the input
+allowance. Do not infer the window from the loaded client: routes can share a
+provider while having different windows, and a worker such as `SummaryWorker`
+sets its own `num_predict` (`summary_target_tokens`) rather than using the
+route's default `max_tokens`. Resolve the window from the route used for that
+call (`_worker_route_model_ctx` for `worker_default`, the explicit route for
+others) and the output reserve from the call's actual limit. Unknown window
+or an oversized fixed prompt must be reported, not treated as unlimited space.
 
-**Open questions.** (1) Is a shared helper right, or per-worker caps? A helper
-that takes "here are my candidate rows, here is my share of the window" would
-serve the transcript packers (`SummaryWorker`, the belief and extraction workers)
-but the units differ per worker — messages, memories, concepts — so it may only
-be worth a common *estimator*. (2) Should an over-budget pack be logged at
-`warning`? A worker quietly dropping half its input is the kind of thing that
-should be visible in the log stream rather than in a metric nobody reads.
-(3) Whether the estimate needs to be tokenizer-accurate: the concept diet uses
-`estimate_tokens`, which is good enough to size a section and cheap, and the
-same trade-off probably holds here.
+**Measure and reduce.** Record rendered chars, estimated input tokens,
+context window, reserved output tokens, and items dropped per run. If the
+request exceeds its allowance, let the worker choose which items to omit and
+re-render until it fits; the shared helper does the arithmetic, not a generic
+"drop the first N" policy. Warn when items are omitted or the non-droppable
+instructions alone cannot fit. Never send a known over-budget prompt and
+silently hope the model truncates it. Use `estimate_tokens` plus message
+framing initially; the estimator is approximate, so keep a safety margin and
+compare estimates with actual usage before tightening it.
+
+**Summary cursor invariant.** The previous sketch said to drop the oldest
+transcript rows and keep the prior summary. That only works if those rows
+are *already* covered by that summary. `SummaryWorker` currently advances
+`messages_summarized` to `total` after a successful call: dropping unsummarized
+rows while doing so would permanently skip them. Pack the earliest
+unsummarized rows that fit (plus bounded already-summarized overlap), advance
+the cursor only through the last included row, and leave the rest for the next
+pass. Other workers choose their own reduction order (messages, memories,
+concepts) without sharing this cursor policy.
 
 **Effort.** Small (measurement) / Small-Medium (caps, per worker).
 
 **Depends on.** Nothing. Related to P31a (`block_chars`, which did the same
 thing for *prompt-block* sizes) and to L28's diet budget, which is the pattern to
 copy.
+
+**Implementation status: partial rollout.** The shared helper now accounts for
+whole-message input and reserved output against the worker route's context
+window. Summary and memory extraction pack oldest-first and advance their
+cursors only through included messages; belief inference keeps newest evidence
+and sheds optional hints first. All three report sizes and omissions. Other
+worker prompt builders still need to adopt the helper with their own reduction
+rules; this is not yet a global cap on every background call.
 
 ---
 

@@ -57,6 +57,9 @@ from app.llm.chat_client import content_looks_complete
 from app.llm.embedder import Embedder
 from app.llm.ollama_client import OllamaClient
 from app.core.infra import timephrase
+from app.core.proactive.worker_prompt_budget import (
+    pack_worker_prompt, report_worker_prompt,
+)
 from app.core.memory.memory_admission import admit_memory
 
 
@@ -357,6 +360,7 @@ class MemoryExtractor:
         think: bool = True,
         timeout_seconds: float = 120.0,
         user_display_name_provider: "Callable[[], str] | None" = None,
+        context_window: "Callable[[], int | None] | None" = None,
     ) -> None:
         self._db = db
         self._store = store
@@ -392,6 +396,7 @@ class MemoryExtractor:
         # Identity: optional callable evaluated at each run so renames
         # propagate without re-creating the worker.
         self._user_display_name_provider = user_display_name_provider
+        self._context_window = context_window or (lambda: None)
 
     def _resolve_user_name(self) -> str:
         return resolve_user_name(self._user_display_name_provider)
@@ -429,6 +434,16 @@ class MemoryExtractor:
     @staticmethod
     def _watermark_key(session_key: str) -> str:
         return f"memory.extractor.watermark:{session_key}"
+
+    @staticmethod
+    def _budget_backlog_key(session_key: str) -> str:
+        return f"memory.extractor.budget_backlog:{session_key}"
+
+    def _set_budget_backlog(self, session_key: str, has_more: bool) -> None:
+        try:
+            self._db.kv_set(self._budget_backlog_key(session_key), "1" if has_more else "")
+        except Exception:
+            log.warning("extractor budget backlog write failed", exc_info=True)
 
     def _read_watermark(self, session_key: str) -> int | None:
         """Highest message id already offered for extraction, or ``None``.
@@ -482,7 +497,13 @@ class MemoryExtractor:
         fresh = self._db.get_messages_after(
             session_key, after_id=watermark, limit=self._max_window,
         )
-        if len(fresh) < self._min_window:
+        if not fresh:
+            return None
+        try:
+            budget_backlog = bool(self._db.kv_get(self._budget_backlog_key(session_key)))
+        except Exception:
+            budget_backlog = False
+        if len(fresh) < self._min_window and not budget_backlog:
             log.debug(
                 "extract skipped: %d unmined messages past id %d (need %d)",
                 len(fresh), watermark, self._min_window,
@@ -510,41 +531,85 @@ class MemoryExtractor:
         context_rows, rows = window
 
         existing = self._format_existing()
-        parts: list[str] = []
-        if existing:
-            parts.append(existing)
-        if context_rows:
-            parts.append(
-                "Earlier turns, ALREADY mined on a previous pass. They are "
-                "here only so references in the new turns resolve. Do NOT "
-                "extract memories from these lines:\n"
-                + self._format_transcript(context_rows)
-            )
-        parts.append(
-            "New turns since the last pass (most recent last). Extract ONLY "
-            "from these lines:\n"
-            + self._format_transcript(rows)
-        )
-        parts.append("Return the JSON now.")
-        user_prompt = "\n\n".join(parts)
-
         now = timephrase.utcnow().astimezone()
-        messages = [
-            {
-                "role": "system",
-                "content": _build_system_prompt(
-                    self._resolve_user_name(),
-                    today=now,
-                    max_memories=self._max_new_per_run,
-                ),
-            },
-            {"role": "user", "content": user_prompt},
-        ]
+        system_content = _build_system_prompt(
+            self._resolve_user_name(), today=now,
+            max_memories=self._max_new_per_run,
+        )
+        try:
+            context_window = self._context_window()
+        except Exception:
+            log.warning("memory_extractor: context window lookup failed", exc_info=True)
+            context_window = None
+        if not context_window or context_window <= 0:
+            log.warning("memory_extractor: unknown context window; using 4096")
+        output_tokens = self._max_tokens
+        if self._think:
+            output_tokens += max(0, int(getattr(self._ollama, "_think_headroom", 0)))
+        packed = None
+        selected_context: list[MessageRow] = []
+        selected_existing = False
+        for include_existing in ((True, False) if existing else (False,)):
+            for context_count in range(len(context_rows), -1, -1):
+                context = context_rows[-context_count:] if context_count else []
+
+                def render(
+                    selected, *, keep_existing=include_existing, old_context=context,
+                ) -> list[dict[str, str]]:
+                    parts: list[str] = []
+                    if keep_existing:
+                        parts.append(existing)
+                    if old_context:
+                        parts.append(
+                            "Earlier turns, ALREADY mined on a previous pass. They are "
+                            "here only so references in the new turns resolve. Do NOT "
+                            "extract memories from these lines:\n"
+                            + self._format_transcript(old_context)
+                        )
+                    parts.append(
+                        "New turns since the last pass (most recent last). Extract ONLY "
+                        "from these lines:\n" + self._format_transcript(selected)
+                    )
+                    parts.append("Return the JSON now.")
+                    return [
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": "\n\n".join(parts)},
+                    ]
+
+                candidate = pack_worker_prompt(
+                    rows, render, context_window=context_window,
+                    output_tokens=output_tokens, surface="memory_extractor",
+                    log=log, report=False,
+                )
+                if candidate is not None and (
+                    packed is None or candidate.item_count > packed.item_count
+                ):
+                    packed = candidate
+                    selected_context = context
+                    selected_existing = include_existing
+                if packed is not None and packed.item_count == len(rows):
+                    break
+            if packed is not None and packed.item_count == len(rows):
+                break
+        if packed is None:
+            log.warning("memory_extractor: no new turn fits the prompt budget")
+            return 0
+        report_worker_prompt(packed, len(rows), surface="memory_extractor", log=log)
+        if (bool(existing) and not selected_existing) or len(selected_context) < len(context_rows):
+            log.warning(
+                "memory_extractor: omitted existing=%s context=%d of %d",
+                bool(existing) and not selected_existing,
+                len(context_rows) - len(selected_context),
+                len(context_rows),
+            )
+        context_rows = selected_context
+        has_more = packed.item_count < len(rows) or len(rows) == self._max_window
+        rows = rows[:packed.item_count]
 
         t0 = time.monotonic()
         try:
             content, usage = self._ollama.chat_json(
-                messages,
+                packed.messages,
                 model=self._model,
                 timeout_seconds=self._timeout,
                 options={"temperature": 0.2, "num_predict": self._max_tokens},
@@ -592,7 +657,8 @@ class MemoryExtractor:
         candidates, understood = self._parse_answer(content)
         if not candidates:
             if understood:
-                self._write_watermark(session_key, rows[-1].id)
+                if self._write_watermark(session_key, rows[-1].id):
+                    self._set_budget_backlog(session_key, has_more)
             # Distinguish "model returned an empty array" (genuinely nothing
             # durable — common on casual/short transcripts) from "model
             # emitted output we couldn't turn into candidates" (wrong shape,
@@ -627,7 +693,10 @@ class MemoryExtractor:
                 "source_message_id": admission.source_message_id,
                 "metadata": admission.metadata,
             })
-        batch = {"through": rows[-1].id, "created_at": now.isoformat(), "candidates": admitted}
+        batch = {
+            "through": rows[-1].id, "created_at": now.isoformat(),
+            "candidates": admitted, "budget_backlog": has_more,
+        }
         self._db.kv_set(pending_key, json.dumps(batch))
         return self._apply_batch(session_key, batch)
 
@@ -682,6 +751,7 @@ class MemoryExtractor:
             cand["applied"] = True
             self._db.kv_set(pending_key, json.dumps(batch))
         if self._write_watermark(session_key, batch["through"]):
+            self._set_budget_backlog(session_key, bool(batch.get("budget_backlog")))
             self._db.kv_set(pending_key, "")
         log.info("extractor: %d new memories inserted", inserted)
         return inserted

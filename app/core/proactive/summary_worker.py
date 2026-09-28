@@ -24,6 +24,9 @@ from typing import Callable, TYPE_CHECKING
 
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
+from app.core.proactive.worker_prompt_budget import (
+    pack_worker_prompt, report_worker_prompt,
+)
 from app.llm.ollama_client import OllamaClient
 from app.llm.token_utils import estimate_tokens
 
@@ -55,6 +58,7 @@ class SummaryWorker:
         target_tokens: int = 600,
         timeout_seconds: float = 90.0,
         memory_extractor: "MemoryExtractor | None" = None,
+        context_window: Callable[[], int | None] | None = None,
     ) -> None:
         self._db = db
         self._ollama = ollama
@@ -65,6 +69,7 @@ class SummaryWorker:
         self._target_tokens = max(120, int(target_tokens))
         self._timeout = float(timeout_seconds)
         self._memory_extractor = memory_extractor
+        self._context_window = context_window or (lambda: None)
 
         self._cond = threading.Condition()
         self._deadline_ms: dict[str, float] = {}
@@ -177,6 +182,12 @@ class SummaryWorker:
         self, session_key: str, *, min_msgs_override: int | None = None,
     ) -> bool:
         threshold = self._min_msgs if min_msgs_override is None else int(min_msgs_override)
+        backlog_key = f"summary.budget_backlog:{session_key}"
+        try:
+            if self._db.kv_get(backlog_key):
+                threshold = 1
+        except Exception:
+            log.warning("summary budget backlog read failed", exc_info=True)
         latest = self._db.get_latest_summary(session_key)
         already_summarized = int(latest.messages_summarized) if latest else 0
         total = self._db.get_message_count(session_key)
@@ -191,7 +202,7 @@ class SummaryWorker:
         # Pull the unsummarized window plus a small overlap from before so the
         # model can see continuity.
         offset = max(0, already_summarized - 4)
-        rows = self._db.get_messages(session_key, offset=offset)
+        rows = self._db.get_messages(session_key, offset=offset, limit=256)
         if not rows:
             return False
 
@@ -199,14 +210,8 @@ class SummaryWorker:
         # prompt already asks for relative phrases to be rewritten as
         # concrete dates -- which is unanswerable unless each line says
         # when it was said.
-        transcript = timephrase.format_transcript(rows, now_dt=timephrase.utcnow())
-
+        now_dt = timephrase.utcnow()
         prior = (latest.summary if latest else "").strip()
-        user_prompt_parts: list[str] = []
-        if prior:
-            user_prompt_parts.append(f"Existing summary:\n{prior}")
-        user_prompt_parts.append(f"New transcript:\n{transcript}")
-        user_prompt_parts.append("Write the updated combined summary.")
 
         # K-time8: anchor "now" and ask the model to resolve relative dates,
         # so a summary re-read days later doesn't carry a stale "yesterday".
@@ -220,15 +225,51 @@ class SummaryWorker:
             "as a concrete date, so the summary stays accurate when it is "
             "re-read days later."
         )
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": "\n\n".join(user_prompt_parts)},
-        ]
+        overlap = already_summarized - offset
+
+        def render(selected) -> list[dict[str, str]]:
+            user_prompt_parts: list[str] = []
+            if prior:
+                user_prompt_parts.append(f"Existing summary:\n{prior}")
+            transcript = timephrase.format_transcript(selected, now_dt=now_dt)
+            user_prompt_parts.append(f"New transcript:\n{transcript}")
+            user_prompt_parts.append("Write the updated combined summary.")
+            return [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": "\n\n".join(user_prompt_parts)},
+            ]
+
+        try:
+            context_window = self._context_window()
+        except Exception:
+            log.warning("summary: context window lookup failed", exc_info=True)
+            context_window = None
+        if not context_window or context_window <= 0:
+            log.warning("summary_worker: unknown context window; using 4096")
+        packed = None
+        for retained_overlap in range(overlap, -1, -1):
+            candidate_rows = rows[overlap - retained_overlap:]
+            packed = pack_worker_prompt(
+                candidate_rows, render, context_window=context_window,
+                output_tokens=self._target_tokens, surface="summary_worker",
+                log=log, min_items=retained_overlap + 1, report=False,
+            )
+            if packed is not None:
+                break
+        if packed is None:
+            log.warning("summary_worker: no new message fits the prompt budget")
+            return False
+        report_worker_prompt(
+            packed, len(candidate_rows), surface="summary_worker", log=log,
+        )
+        if retained_overlap < overlap:
+            log.warning("summary_worker: omitted %d overlap messages", overlap - retained_overlap)
+        messages_summarized = already_summarized + packed.item_count - retained_overlap
 
         t0 = time.monotonic()
         try:
             content, usage = self._ollama.chat_json(
-                messages,
+                packed.messages,
                 model=self._model,
                 timeout_seconds=self._timeout,
                 options={"temperature": 0.3, "num_predict": self._target_tokens},
@@ -251,8 +292,12 @@ class SummaryWorker:
             session_id=session_key,
             summary=text,
             summary_tokens=estimate_tokens(text),
-            messages_summarized=total,
+            messages_summarized=messages_summarized,
         )
+        try:
+            self._db.kv_set(backlog_key, "1" if messages_summarized < total else "")
+        except Exception:
+            log.warning("summary budget backlog write failed", exc_info=True)
         # Count every successful compaction here so the counter reflects
         # background (idle-loop) runs too — the synchronous ``compact_now``
         # path is no longer on the hot path (see TurnRunner P20 note), so
@@ -261,13 +306,16 @@ class SummaryWorker:
         self._compactions_total += 1
         self._last_compaction_at = time.monotonic()
         log.info(
-            "summary saved (%d msgs, %d tokens, %.0f ms; usage %d/%d)",
-            total,
+            "summary saved (%d/%d msgs, %d tokens, %.0f ms; usage %d/%d)",
+            messages_summarized, total,
             estimate_tokens(text),
             (time.monotonic() - t0) * 1000.0,
             usage.prompt_tokens,
             usage.completion_tokens,
         )
+
+        if messages_summarized < total:
+            self.notify_turn_done(session_key)
 
         if self._memory_extractor is not None:
             try:

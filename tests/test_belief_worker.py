@@ -585,6 +585,34 @@ class InterestBiasTests(unittest.TestCase):
     def _prompt(self, ollama: _StubOllama) -> str:
         return ollama.chat_calls[0]["messages"][-1]["content"]
 
+    def test_budget_sheds_optional_hints_before_recent_evidence(self) -> None:
+        worker, _, ollama, _ = _build_world(responses=["[]"])
+        worker._context_window = lambda: 1700
+        lines = [
+            "oldest: " + "old " * 100,
+            "middle: " + "mid " * 100,
+            "newest: " + "new " * 100,
+        ]
+        worker._extract_with_llm(
+            "\n".join(lines),
+            interest_hint="interest " * 80,
+            reconsider_block="reconsider " * 80,
+            concept_hint="concept " * 80,
+        )
+        prompt = self._prompt(ollama)
+        self.assertIn("newest:", prompt)
+        self.assertIn("oldest:", prompt)
+        self.assertNotIn("concept concept", prompt)
+        self.assertNotIn("reconsider reconsider", prompt)
+
+    def test_multiline_message_stays_attributed_to_one_speaker(self) -> None:
+        worker, _, _, _ = _build_world(user_messages=["I like tea.\nI also like coffee."])
+        transcript = worker._snapshot_transcript(
+            session_key="u1:session-1", lookback_turns=12,
+        )
+        self.assertIn("Jacob: I like tea. I also like coffee.", transcript)
+        self.assertEqual(len(transcript.splitlines()), 1)
+
     def test_interest_hint_lands_in_prompt(self) -> None:
         worker, _, ollama, _ = _build_world(
             responses=["[]"],

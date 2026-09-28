@@ -2583,7 +2583,7 @@ class ChatDatabase:
         *limit* — return at most this many rows (taken from the end, i.e. most recent).
         *offset* — skip the first *offset* rows (oldest), then return the rest (or *limit* of them).
         When both are given, *offset* rows are skipped first, then *limit* rows are taken
-        from the end of the remaining set.
+        from the beginning of the remaining set.
         """
         conn = self._get_conn()
         select = (
@@ -2591,7 +2591,7 @@ class ChatDatabase:
             "       arc, dialogue_act, gestures, reactions, attachments "
             "FROM messages WHERE session_id = ?"
         )
-        if offset and limit:
+        if offset is not None and limit:
             rows = conn.execute(
                 f"{select} ORDER BY id LIMIT ? OFFSET ?",
                 (session_id, limit, offset),
