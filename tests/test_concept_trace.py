@@ -366,6 +366,9 @@ class _FakeSession:
             "enabled": self._enabled, "watermark": 12, "latest_event_id": 30,
         }
 
+    def concept_evidence_independence(self, concept_id: int) -> dict:
+        return {"mode": "shadow", "concept_id": concept_id, "known_support_groups": 1}
+
     def run_concept_drift(self) -> dict:
         return {"enabled": self._enabled, "stats": {"recorded": 1}}
 
@@ -425,6 +428,15 @@ class ConceptMcpToolTests(unittest.TestCase):
         out = json.loads(tools["get_concept_provenance"](7))
         self.assertEqual(out["concept_id"], 7)
         self.assertEqual(len(out["prior_labels"]), 2)
+        self.assertNotIn("evidence_independence", out)
+
+    def test_get_concept_provenance_with_shadow_counts(self) -> None:
+        session = _FakeSession()
+        session.concept_provenance = lambda concept_id: {"resolved_id": 12}
+        tools = _register_tools(session)
+        out = json.loads(tools["get_concept_provenance"](7, include_independence=True))
+        self.assertEqual(out["evidence_independence"]["concept_id"], 12)
+        self.assertEqual(out["evidence_independence"]["mode"], "shadow")
 
     def test_drift_state_and_forced_run(self) -> None:
         tools = _register_tools(_FakeSession())

@@ -76,6 +76,7 @@ def admit_memory(
         "admission": {
             "version": 1, "writer": writer, "subject": subject,
             "source_message_ids": source_ids, "evidence": validated,
+            "input_message_ids": sorted(source_rows),
             "proposal_message_id": proposal_message_id,
             "temporal_scope": candidate.get("temporal_type", "durable"),
             "destination": destination, "reason": reason,

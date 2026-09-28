@@ -2793,7 +2793,7 @@ def register(mcp, session: "SessionController") -> None:
             return f"get_concept_learning raised: {exc}"
 
     @mcp.tool()
-    def get_concept_provenance(concept_id: int) -> str:
+    def get_concept_provenance(concept_id: int, include_independence: bool = False) -> str:
         """L17e — the history-of-thought drill-down for ONE belief.
 
         Answers "how did she come to think this", which is a different
@@ -2807,10 +2807,19 @@ def register(mcp, session: "SessionController") -> None:
         the id to whatever is still live, and the label snapshots in the
         learning events stay readable even when nothing is left in
         ``concepts`` to point at.
+
+        ``include_independence`` adds L49's bounded, read-only shadow support
+        counts for the resolved concept. These are not calibrated confidence
+        or a promotion gate; missing lineage and cycles remain explicit.
         """
         try:
+            report = session.concept_provenance(int(concept_id))
+            if include_independence:
+                report["evidence_independence"] = session.concept_evidence_independence(
+                    int(report.get("resolved_id", concept_id)),
+                )
             return json.dumps(
-                session.concept_provenance(int(concept_id)),
+                report,
                 indent=2,
                 default=str,
             )

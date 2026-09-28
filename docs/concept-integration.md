@@ -34,11 +34,69 @@ construct it directly.
 | `for_consumer(consumer, subject=)` | "the concepts *I* get to think with" — the declared diet, budgeted and kind-balanced (the worker seam) |
 | `for_cluster(rep_id, kinds=)` | "the concepts spanning this topic cluster" (interest-map annotation seam) |
 | `evidence_labels(concept_id, limit=)` | "the human-readable grounding behind this concept" |
+| `evidence_independence(concept_id, max_nodes=256)` | "how many recorded source groups support it, in shadow mode?" |
 
-Everything degrades to `[]` when the store is missing, and evidence /
+Selection methods degrade to `[]` when the store is missing, and evidence /
 cluster resolution returns only what it can when `topic_graph` /
 `memory_store` are absent — a consumer that only needs concept lookup can
 construct the view with the store alone.
+
+## Shadow evidence independence (L49 / L55)
+
+`evidence_independence` is an on-demand diagnostic, not a new confidence model.
+It never changes promotion, retrieval, diets, explicit boundary handling or
+`distinct_source_count`. The existing MCP `get_concept_provenance` accepts
+`include_independence=true` to include it for the resolved concept ID. Ordinary
+calls do not compute it. Missing stores produce an incomplete report, not zero
+support presented as a complete assessment. No raw text or roots are added to
+the shadow report; the surrounding provenance response still contains labels.
+
+The resolver follows positive `evidence` edges through concepts, current topic
+cluster members and topic digests' existing `source_ids`. Only terminal memory
+lineage supplies roots. Duplicate and transitively overlapping root sets form
+one conservative support group. A derivation never contributes its own vote;
+negative and zero-strength edges are not support. Cycles, missing nodes and
+traversal limits remain visible in `issues`, with `complete=false`. Resolution
+visits at most 256 nodes and 12 graph levels by default and never warms or
+rebuilds the topic graph.
+
+Memory admission already validates citations against the input transcript. New
+inline/extractor admissions also retain `admission.input_message_ids`, restricted
+to the admitted subject's messages in that session. With at least one validated
+citation, this window records possible correlation between repeated or
+overlapping extractions. A window alone cannot ground a claim. Existing rows
+use their available source-message pointers; no historical provenance is invented.
+
+The report contains `known_support_groups`, `root_count`, `unknown_sources`,
+`by_category`, `excluded_reflections`, the stored distinct-source count and the
+direct positive source-node count. Categories distinguish testimony, model
+inference, model reflection and externally cited observations. The latter uses
+knowledge rows' HTTP(S) source URLs (fragments removed): it describes their
+external origin, not a guarantee that the model's summary follows from the page.
+Self notes, reflections, diaries, pre-thoughts and goal-progress notes add no
+independent corroboration. Unknown lineage adds no vote, but is not discarded
+from the completeness diagnostic.
+
+**Limits.** Disjoint messages can still describe one episode; distinct URLs can
+copy one source. Conversely, overlapping input windows can conservatively merge
+genuinely separate observations. Cluster membership and referenced memory rows
+are current, not frozen historical manifests. Old admissions without window IDs
+cannot recover correlation, and deduplicated writes that never persisted a new
+source cannot be reconstructed. Recorded message IDs are not revalidated against
+the current transcript on every read. Consequently `complete` means the recorded
+lineage resolved within budget, not that causal independence or entailment was
+proved. Do not tune promotion from these counts before a shadow audit.
+
+L55's initial versioned synthetic corpus is
+[`tests/fixtures/reasoning_l55.json`](../tests/fixtures/reasoning_l55.json), run by
+[`test_concept_evidence_lineage.py`](../tests/test_concept_evidence_lineage.py).
+Its ten cases pin duplicate extraction, independent episodes, overlapping windows,
+unknown imports, external sources and reflection feedback. Additional integration
+tests cover shared meta-concept ancestry, summaries, clusters, cycles, deleted
+memories, budgets and one-statement boundary compatibility. All run without model
+calls or personal conversation. This is a deterministic accounting baseline, not
+a model reasoning benchmark. Contextual reasoning, revision, counterfactuals,
+held-out model trials, ablations and token/latency scoring remain later L55 work.
 
 ## The role axis: `anchor` / `guide` / `generative`
 

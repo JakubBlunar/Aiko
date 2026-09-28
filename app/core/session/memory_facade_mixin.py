@@ -1183,6 +1183,13 @@ class MemoryFacadeMixin:
             log.debug("concept learning feed failed", exc_info=True)
             return {"enabled": False, "total": 0, "counts": {}, "events": []}
 
+    def concept_evidence_independence(self, concept_id: int) -> dict[str, Any]:
+        """On-demand L49 counts; no raw text, model calls or lifecycle writes."""
+        from app.core.concepts.concept_view import ConceptView, concept_view_from
+
+        view = concept_view_from(self) or ConceptView(None)
+        return view.evidence_independence(int(concept_id))
+
     def concept_provenance(self, concept_id: int) -> dict[str, Any]:
         """Everything known about how one belief got to where it is.
 

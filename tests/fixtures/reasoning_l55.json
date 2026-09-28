@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "scope": "Synthetic evidence-independence contracts, not a model reasoning benchmark",
+  "cases": [
+    {
+      "id": "one_observation",
+      "sources": [{"roots": ["message:1"], "category": "testimony"}],
+      "expected": {"known_support_groups": 1, "unknown_sources": 0}
+    },
+    {
+      "id": "ten_representations_of_one_observation",
+      "sources": [{"roots": ["message:1"], "category": "model_inference", "repeat": 10}],
+      "expected": {"known_support_groups": 1, "unknown_sources": 0}
+    },
+    {
+      "id": "separate_observation",
+      "sources": [
+        {"roots": ["episode:1"], "category": "testimony"},
+        {"roots": ["episode:2"], "category": "testimony"}
+      ],
+      "expected": {"known_support_groups": 2, "unknown_sources": 0}
+    },
+    {
+      "id": "overlapping_extraction_windows",
+      "sources": [
+        {"roots": ["message:1", "message:2"], "category": "model_inference"},
+        {"roots": ["message:2", "message:3"], "category": "model_inference"}
+      ],
+      "expected": {"known_support_groups": 1, "unknown_sources": 0}
+    },
+    {
+      "id": "bridge_connects_windows",
+      "sources": [
+        {"roots": ["message:1"], "category": "testimony"},
+        {"roots": ["message:3"], "category": "testimony"},
+        {"roots": ["message:1", "message:3"], "category": "model_inference"}
+      ],
+      "expected": {"known_support_groups": 1, "unknown_sources": 0}
+    },
+    {
+      "id": "unknown_import_is_not_an_observation",
+      "sources": [{"roots": [], "category": "unknown", "complete": false}],
+      "expected": {"known_support_groups": 0, "unknown_sources": 1}
+    },
+    {
+      "id": "reflection_cannot_confirm_itself",
+      "sources": [{"roots": ["message:1"], "category": "model_reflection"}],
+      "expected": {"known_support_groups": 0, "excluded_reflections": 1}
+    },
+    {
+      "id": "reflection_does_not_add_support",
+      "sources": [
+        {"roots": ["message:1"], "category": "testimony"},
+        {"roots": ["message:1"], "category": "model_reflection"}
+      ],
+      "expected": {"known_support_groups": 1, "excluded_reflections": 1}
+    },
+    {
+      "id": "unknown_does_not_hide_known_evidence",
+      "sources": [
+        {"roots": ["message:1"], "category": "testimony"},
+        {"roots": [], "category": "unknown", "complete": false}
+      ],
+      "expected": {"known_support_groups": 1, "unknown_sources": 1}
+    },
+    {
+      "id": "external_observation_is_distinct_from_inference",
+      "sources": [
+        {"roots": ["observation:1"], "category": "external_observation"},
+        {"roots": ["observation:1"], "category": "model_inference"}
+      ],
+      "expected": {"known_support_groups": 1, "unknown_sources": 0}
+    }
+  ]
+}

@@ -2639,7 +2639,8 @@ measurable. Do not enable several new cognition loops together.
 
 ## L49. Independent evidence and protection against self-confirmation
 
-**Status: open; first substrate priority.** Different memory or concept IDs do
+**Status: first shadow slice implemented (2026-09-29); live audit pending.**
+Different memory or concept IDs do
 not necessarily mean different observations. One episode can be extracted into
 several memories, summarized into a cluster, generalized into a concept, and
 then appear to corroborate itself. L47's source-window IDs make this visible
@@ -2660,6 +2661,23 @@ boundaries still work after one statement; independence must not weaken them.
 
 **Build on:** L47 provenance, L25 edge integrity and the L3 single writer.
 **Effort:** Medium-Large. No change to promotion until shadow evidence is read.
+
+**Implemented.** `ConceptView.evidence_independence()` resolves positive evidence
+through concepts, clusters and topic digests to recorded message/URL roots.
+Overlapping source windows collapse conservatively; generated reflections add
+no corroboration. Admissions preserve server-selected input message IDs alongside
+validated citations. Unknown lineage, cycles and traversal limits are explicit.
+The existing MCP `get_concept_provenance(include_independence=true)` exposes the
+bounded report on demand. No new model calls, promotion changes or historical
+backfill. See [the contract and limitations](../concept-integration.md#shadow-evidence-independence-l49--l55)
+and the small L55 corpus below.
+
+**Remaining.** Audit real shadow reports before any gate change. Separate
+messages are not proven separate episodes; external pages may share upstream
+sources. Freeze source manifests for mutable summaries/clusters, preserve source
+observations lost to deduplication, and cover other derivation writers before
+claiming complete graph-wide independence accounting. Missing historic lineage
+must stay unknown rather than be guessed.
 
 ## L50. Context-scoped claims and temporal validity
 
@@ -2771,7 +2789,7 @@ hold conversation and latency budgets constant when comparing policies.
 
 ## L55. Evaluate reasoning independently of eloquence
 
-**Status: open; begin with L49, before expanding generative loops.** A response
+**Status: initial L49 accounting corpus implemented (2026-09-29); model harness open.** A response
 that says "I reconsidered" has not necessarily reconsidered anything. L22's
 concept-quality evaluation should be complemented by behavioral tests of
 reasoning, without recording personal conversation in the repository.
@@ -2797,4 +2815,17 @@ small; do not claim human-level cognition from selected successful dialogues.
 
 **Build on:** L22, L47, DT4 replay and existing synthetic tests.
 **Effort:** Small for the first corpus, Medium for a reproducible model harness.
+
+**Initial slice.** Version 1 of
+[`reasoning_l55.json`](../../tests/fixtures/reasoning_l55.json) has ten synthetic
+cases with fixed expected counts. The associated
+[`tests`](../../tests/test_concept_evidence_lineage.py) exercise accounting plus
+real admission metadata, summary/meta-concept ancestry, unknown/deleted inputs,
+cycles, bounded traversal and unchanged one-statement boundary admission.
+Ten representations of one observation count as one group, while two recorded
+independent episodes count as two. These deterministic tests make no model calls
+and contain no personal conversation. They establish an accounting contract, not
+improved reasoning performance. The broader episode families, opt-in model runs,
+held-out variants, baseline/ablation comparisons and cost metrics above remain
+unimplemented; freeze their criteria before tuning on results.
 

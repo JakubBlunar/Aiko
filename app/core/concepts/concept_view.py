@@ -967,6 +967,15 @@ class ConceptView:
 
     # ── grounding resolution ──────────────────────────────────────────
 
+    def evidence_independence(self, concept_id: int, *, max_nodes: int = 256) -> dict:
+        """L49 shadow counts only; does not alter confidence, diets or promotion."""
+        from app.core.concepts.concept_evidence_lineage import resolve_support
+
+        return resolve_support(
+            self._store, self._memory_store, self._topic_graph, concept_id,
+            max_nodes=max_nodes,
+        )
+
     def evidence_labels(
         self, concept_id: int, *, limit: int | None = 2,
     ) -> list[str]:
