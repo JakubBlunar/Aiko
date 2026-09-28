@@ -365,6 +365,23 @@ class TranscriptFloorTests(unittest.TestCase):
 
 
 class MixinEnqueueTests(unittest.TestCase):
+    def test_known_disconnection_prevents_live_enqueue(self) -> None:
+        host = LiveModeMixinHost()
+        host._connected_clients = 0
+        self.assertFalse(host._enqueue_live_main_wake({"urge_id": "u1"}))
+        self.assertEqual(host.enqueued, [])
+
+    def test_disconnected_client_blocks_queued_live_speech(self) -> None:
+        host = LiveModeMixinHost()
+        host._live_situation_assembler._last_frame = _frame()
+        host._enqueue_live_main_wake({"urge_id": "u1"})
+        event = host.enqueued[0]
+        host._connected_clients = 0
+        self.assertEqual(host._live_main_wake_dispatch_block(event), "unreachable")
+        host._connected_clients = 1
+        host._user_present = False
+        self.assertNotEqual(host._live_main_wake_dispatch_block(event), "unreachable")
+
     def test_new_user_input_invalidates_queued_speech(self) -> None:
         host = LiveModeMixinHost()
         host._enqueue_live_main_wake({"generation": 500, "urge_id": "u1"})

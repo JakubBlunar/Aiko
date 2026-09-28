@@ -7,6 +7,20 @@ progress and its limitations are recorded below as separate phases.
 
 ## Implementation log
 
+### Phase 4: known-client reachability gate (28 Sep 2026)
+
+**Limited L20/L24 slice; both remain open.** A reported zero WebSocket client
+count blocks a new Live main-wake enqueue and drops an already queued wake
+before starting the main turn. A pre-enqueue rejection uses Phase 3's token
+refund. A connected but blurred window is not treated as absent.
+
+**Shortcut and follow-up:** connection means only that an output channel is
+reachable, not that the user is present, listening, or interruptible. Hosts
+without a client count retain their existing behavior. A cue already consumed
+when its queued wake is later dropped is not automatically restored; durable
+L21/L22 candidate ownership and L24 dispatch settlement are still required.
+L20 still needs explicit away/DND state, per-device evidence and expiry.
+
 ### Phase 3: failed-enqueue reservation release (28 Sep 2026)
 
 **Limited L24 slice; L20/L24 remain open.** A Live main-wake now reserves its

@@ -1197,6 +1197,8 @@ class LiveModeMixin:
 
     def _enqueue_live_main_wake(self, payload: dict[str, Any]) -> bool:
         """Park an admitted main-wake on BrainLoop. Do not call TurnRunner."""
+        if getattr(self, "_connected_clients", None) == 0:
+            return False
         loop = getattr(self, "_brain_loop", None)
         if loop is None or not callable(getattr(loop, "enqueue", None)):
             return False
@@ -1257,6 +1259,8 @@ class LiveModeMixin:
             getattr(self, "_live_user_intent_sequence", 0)
         ):
             return "new_user_intent"
+        if getattr(self, "_connected_clients", None) == 0:
+            return "unreachable"
         if bool(getattr(self, "_turn_in_progress", False)):
             return "floor_busy"
         frame = getattr(
