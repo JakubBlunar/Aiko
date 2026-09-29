@@ -574,6 +574,18 @@ The single most common companion failure is answering the *literal* message inst
 
 ---
 
+### K69 judgment follow-up (29 Sep 2026)
+
+Explicit help/listening requests now take precedence over inferred mood;
+the last supported request wins when the user revises it within a turn.
+Quoted speech/code and locally negated lexical cues are excluded. A
+celebration with an explicit contrast stays neutral rather than imposing
+unqualified enthusiasm. Reassurance no longer instructs unsupported certainty.
+This is a bounded English heuristic, not general semantic understanding.
+Synthetic regressions cover refusal of advice, distressed help-seeking,
+quoted feelings, resolved worry and withdrawn good news. No extra model call,
+settings change or measured claim about live reply quality.
+
 ## K70. Longitudinal growth witness — "you've changed since we met"
 
 One of the strongest "she really knows me" beats is being *seen across time* — a partner who notices you're steadier than you were, lighter than a few weeks back, finally more at ease. Aiko carried plenty of longitudinal signal but never reflected the **user's own durable change** back to him. K70 is the rare, slow beat that does, and its whole value is that it's **rare and earned**: a flattery loop or a false positive on noise would be worse than silence.

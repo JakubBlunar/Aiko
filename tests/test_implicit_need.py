@@ -118,6 +118,37 @@ class MinConfidenceTests(unittest.TestCase):
         self.assertEqual(r.mode, n.MODE_REASSURE)
 
 
+class ContextJudgmentTests(unittest.TestCase):
+    def test_explicit_intent_overrides_emotion(self) -> None:
+        for text, expected in (
+            ("I don't need any advice, just listen.", n.MODE_WITNESS),
+            ("I'm so frustrated and overwhelmed. Can you help me choose a next step?",
+             n.MODE_PROBLEM_SOLVE),
+            ("I'm anxious. What should I do?", n.MODE_PROBLEM_SOLVE),
+            ("Any advice? Actually, just listen for now.", n.MODE_WITNESS),
+            ("I need to vent. Actually, can you help me?", n.MODE_PROBLEM_SOLVE),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(n.classify(text, perceived_mood="low").mode, expected)
+
+    def test_nonasserted_and_mixed_evidence_abstains(self) -> None:
+        for text in (
+            "The character says 'I feel like a failure'; what does the scene mean?",
+            'She said "can you help me" in the scene.',
+            "I'm no longer overthinking this.",
+            "I'm not overwhelmed.",
+            "I got the job, but the offer was withdrawn.",
+            "`help me` is the example string.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(n.classify(text).mode, n.MODE_NEUTRAL)
+
+    def test_nonnegated_control_still_fires(self) -> None:
+        self.assertEqual(n.classify("I'm overwhelmed.").mode, n.MODE_WITNESS)
+        self.assertEqual(n.classify("I got the job!").mode, n.MODE_CELEBRATE)
+        self.assertEqual(n.classify("I feel like a failure.").mode, n.MODE_REASSURE)
+
+
 class RenderTests(unittest.TestCase):
     def test_neutral_renders_empty(self) -> None:
         r = n.NeedResult(n.MODE_NEUTRAL, 0.0, {}, ())

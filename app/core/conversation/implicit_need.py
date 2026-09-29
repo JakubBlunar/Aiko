@@ -198,6 +198,29 @@ _ARC_PRIOR: dict[str, dict[str, float]] = {
 # ── Classifier ──────────────────────────────────────────────────────
 
 
+_QUOTED = _rx(r'```[\s\S]*?```|`[^`\n]*`|"[^"\n]*"|(?<!\w)\'[^\n]*?\'(?!\w)')
+_NEGATED_PREFIX = _rx(
+    r"\b(?:not|never|no|no longer|don't|do not|didn't|did not|isn't|wasn't)"
+    r"(?:\s+\w+){0,3}\s*$"
+)
+_LISTEN_REQUEST = _rx(
+    r"\b(?:just|please|only) (?:listen|hear me out)\b|"
+    r"\bi (?:just )?(?:need|want) (?:you to listen|to vent)\b|"
+    r"\b(?:don't|do not) (?:need|want|give me|offer)(?: any)? "
+    r"(?:advice|solutions|suggestions)\b"
+)
+_MIXED_TURN = _rx(r"\b(?:but|however|although|except|yet)\b")
+
+
+def _asserted_matches(pattern: re.Pattern[str], text: str) -> list[re.Match[str]]:
+    matches = []
+    for match in pattern.finditer(text):
+        prefix = re.split(r"[.!?;\n]|\b(?:but|however)\b", text[:match.start()])[-1]
+        if not _NEGATED_PREFIX.search(prefix):
+            matches.append(match)
+    return matches
+
+
 def classify(
     user_text: str,
     *,
@@ -223,7 +246,7 @@ def classify(
     Returns a :class:`NeedResult`; ``mode == MODE_NEUTRAL`` on the common
     unremarkable turn.
     """
-    text = (user_text or "").strip()
+    text = _QUOTED.sub(" ", (user_text or "").replace("\u2019", "'")).strip()
     scores: dict[str, float] = {
         MODE_WITNESS: 0.0,
         MODE_PROBLEM_SOLVE: 0.0,
@@ -234,10 +257,20 @@ def classify(
     if not text:
         return NeedResult(MODE_NEUTRAL, 0.0, scores, ())
 
+    explicit: list[tuple[int, str]] = []
+    for pattern, _weight in _PROBLEM_SOLVE[:7]:
+        explicit.extend(
+            (match.start(), MODE_PROBLEM_SOLVE)
+            for match in _asserted_matches(pattern, text)
+        )
+    explicit.extend(
+        (match.start(), MODE_WITNESS) for match in _LISTEN_REQUEST.finditer(text)
+    )
+
     # 1) Lexical cues (the bulk of the signal).
     for mode, lexicon in _LEXICONS.items():
         for pattern, weight in lexicon:
-            if pattern.search(text):
+            if _asserted_matches(pattern, text):
                 scores[mode] += weight
                 reasons.append(f"{mode}:lex:{pattern.pattern[:24]}")
 
@@ -278,6 +311,13 @@ def classify(
         scores[mode] += bump
         reasons.append(f"arc:{arc_key}->{mode}")
 
+    if explicit:
+        requested = max(explicit, key=lambda item: item[0])[1]
+        scores[requested] = max(2.0, scores[requested])
+        reasons.append(f"explicit:{requested}")
+        mode = requested if scores[requested] >= float(min_confidence) else MODE_NEUTRAL
+        return NeedResult(mode, scores[requested], scores, tuple(reasons))
+
     # Pick the winner, restraint-first on ties.
     best_mode = MODE_NEUTRAL
     best_score = 0.0
@@ -286,6 +326,9 @@ def classify(
             best_score = scores[mode]
             best_mode = mode
 
+    if best_mode == MODE_CELEBRATE and _MIXED_TURN.search(text):
+        reasons.append("mixed:abstain")
+        return NeedResult(MODE_NEUTRAL, round(best_score, 4), scores, tuple(reasons))
     if best_score < float(min_confidence):
         return NeedResult(MODE_NEUTRAL, round(best_score, 4), scores, tuple(reasons))
     return NeedResult(best_mode, round(best_score, 4), scores, tuple(reasons))
@@ -312,15 +355,16 @@ def _steer(mode: str, name: str) -> str:
     if mode == MODE_REASSURE:
         return (
             f"Read: {name} sounds anxious -- worry doing laps. The need is "
-            "to steady him, not to problem-solve or stack on caveats. Warm, "
-            "present, certain: it's okay, he's okay, you're here. Slow the "
-            "spin before anything practical."
+            "to steady him. Be warm and present without promising an outcome "
+            "you cannot know. Acknowledge uncertainty honestly; offer practical "
+            "help when requested rather than treating anxiety as a reason to withhold it."
         )
     if mode == MODE_CELEBRATE:
         return (
             f"Read: {name} is sharing something good. Match the high -- be "
             "genuinely happy with him and let the win land fully before "
-            "anything else. No cautions, no 'but', no pivot to what's next."
+            "anything else. Leave room for mixed feelings and relevant concerns; "
+            "do not immediately pivot to what's next."
         )
     return ""
 
