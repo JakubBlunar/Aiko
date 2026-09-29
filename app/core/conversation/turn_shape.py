@@ -40,6 +40,7 @@ this returns a bool and its callers branch on it.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # The K4 dialogue-act label meaning "he asked something".
@@ -70,4 +71,42 @@ def is_direct_question(
     return (user_text or "").rstrip().endswith("?")
 
 
-__all__ = ["is_direct_question"]
+_COMPLETION = re.compile(
+    r"(?:thanks[,!]?\s+)?(?:that (?:fixed|solved|answers|answered) it|"
+    r"(?:that|this|it) (?:works(?: perfectly)?|makes sense)|"
+    r"(?:that'?s|that is) (?:all|enough|what i needed)|"
+    r"(?:we'?re|we are|i'?m|i am) (?:done|all set))"
+    r"(?:[,!]?\s+(?:thanks|thank you))?[.!]*",
+    re.IGNORECASE,
+)
+_ACKNOWLEDGEMENT = re.compile(
+    r"(?:thanks(?: so much)?|thank you(?: so much)?|got it|understood|"
+    r"sounds good|perfect|great|haha|lol|hehe)[.!]*", re.IGNORECASE,
+)
+_CLOSED_QUESTION = re.compile(
+    r"(?:^|[.!?]\s+)(?:is|are|was|were|do|does|did|can|could|would|will|should|"
+    r"have|has)\b[^.!?]*\?\s*$", re.IGNORECASE,
+)
+
+
+def brief_reply_kind(user_text: str, previous_assistant_text: str = "") -> str:
+    """Recognize bounded positive evidence, never infer withdrawal from its absence."""
+    text = (user_text or "").replace("\u2019", "'").strip()
+    if not text or len(text.split()) > 12:
+        return ""
+    if _COMPLETION.fullmatch(text):
+        return "completion"
+    if _ACKNOWLEDGEMENT.fullmatch(text):
+        return "acknowledgement"
+    if (
+        _CLOSED_QUESTION.search(previous_assistant_text or "")
+        and re.match(r"^(?:yes|no|yep|nope|sure|absolutely)\b", text, re.IGNORECASE)
+        and not re.search(
+            r"[?]|\b(?:but|except|actually|wrong|misunderstood|stop)\b", text, re.IGNORECASE,
+        )
+    ):
+        return "answer"
+    return ""
+
+
+__all__ = ["is_direct_question", "brief_reply_kind"]

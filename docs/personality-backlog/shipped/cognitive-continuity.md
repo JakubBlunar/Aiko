@@ -1,5 +1,22 @@
 # Cognitive continuity implementation
 
+## K14/K23. Answer-aware brevity (29 Sep 2026)
+
+The shared turn-shape reader recognizes bounded completion, acknowledgement,
+playful backchannels and yes/no answers to a preceding closed question.
+K23 does not interpret those as withdrawal. K14 keeps negative typed-length
+deviations diagnostic-only: a short typed reply cannot reduce closeness or
+be labelled abandoned from length alone. Supported brief replies also protect
+voice engagement from negative timing/length scores without awarding closeness.
+Absence accounting and baseline updates remain intact.
+
+Post-turn context reads messages strictly before the current user-message ID,
+not the assistant reply just generated. Missing context falls back safely.
+Ambiguous brevity is not proof of success or distress; K23's fallback cue asks
+for proportional length without inventing a relationship problem. Coverage:
+engagement, misattunement detector and provider regressions. No live quality
+or false-positive rate is claimed from these synthetic cases.
+
 ## Live L18. Cue purpose and exact handoff
 
 Shipped 27 Sep 2026. Live projection assigns server-owned purpose to known

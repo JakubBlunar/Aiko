@@ -190,7 +190,7 @@ class TypedModeTests(unittest.TestCase):
         # latency_z is never computed in typed mode.
         self.assertIsNone(result.latency_z)
 
-    def test_typed_short_message_below_baseline_is_disengaged(
+    def test_typed_short_message_below_baseline_is_neutral(
         self,
     ) -> None:
         baseline = [5] * 8
@@ -201,9 +201,40 @@ class TypedModeTests(unittest.TestCase):
         # Length z ≈ -(curr - mean)/stdev for a 1-word reply vs 5-word
         # baseline. Should at least nudge the label off neutral.
         self.assertTrue(result.warmed)
-        self.assertIn(result.label, ("disengaged", "abandoned", "neutral"))
+        self.assertEqual(result.label, "neutral")
+        self.assertEqual(result.closeness_delta, 0.0)
         # No latency in typed mode.
         self.assertIsNone(result.latency_z)
+
+
+class AnswerContextTests(unittest.TestCase):
+    def test_successful_brief_replies_do_not_reduce_closeness(self) -> None:
+        for mode in ("typed", "live"):
+            for text, prior in (
+                ("Yes, Saturday works perfectly.", "Would Saturday work for you?"),
+                ("No.", "Do you want tea?"),
+                ("That fixed it, thanks!", "Try restarting the process."),
+                ("Thank you!", "Here is the result."),
+                ("haha", "A playful reply."),
+            ):
+                with self.subTest(mode=mode, text=text):
+                    tracker = _make_tracker(word_counts=[20] * 8 + [len(text.split())])
+                    result = tracker.record_turn(
+                        mode=mode, latency_seconds=3600, user_word_count=len(text.split()),
+                        user_text=text, previous_assistant_text=prior,
+                    )
+                    self.assertEqual(result.closeness_delta, 0)
+                    self.assertEqual(result.label, "neutral")
+                    self.assertTrue(result.reply_kind)
+                    self.assertEqual(result.absence_seconds, 3600)
+
+    def test_ambiguous_or_unresolved_replies_are_not_success(self) -> None:
+        from app.core.conversation.turn_shape import brief_reply_kind
+
+        for text in ("fine", "No, you misunderstood", "That fixed it, but why?", '"thanks"'):
+            with self.subTest(text=text):
+                self.assertEqual(brief_reply_kind(text, "Would that help?"), "")
+        self.assertEqual(brief_reply_kind("Yes", "Tell me more."), "")
 
 
 class AbsenceCuriosityTests(unittest.TestCase):

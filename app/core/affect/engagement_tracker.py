@@ -12,7 +12,8 @@ mode the turn ran in:
     so the reaction / moment / milestone channels still dominate.
   - **typed mode**: latency is NOT consumed as engagement (per Jacob's
     feedback: typing latency is thinking time, not disengagement). Only
-    length contributes to ``closeness_delta``. Long typed gaps go to a
+    above-baseline length can contribute positively to ``closeness_delta``;
+    brevity alone is neutral. Long typed gaps go to a
     separate consumer instead -- ``absence_seconds`` is set when the
     gap lands in ``[absence_curiosity_min, resume_opener_min_hours)``
     so the next prompt can render a curiosity cue (Aiko notices Jacob
@@ -43,6 +44,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
+from app.core.conversation.turn_shape import brief_reply_kind
 
 log = logging.getLogger("app.engagement")
 
@@ -99,6 +101,7 @@ class EngagementResult:
     latency_z: float | None
     mode: str
     warmed: bool
+    reply_kind: str = ""
 
 
 class EngagementTracker:
@@ -154,6 +157,8 @@ class EngagementTracker:
         mode: str,
         latency_seconds: float | None,
         user_word_count: int,
+        user_text: str = "",
+        previous_assistant_text: str = "",
     ) -> EngagementResult:
         """Score one turn and return the per-turn engagement result.
 
@@ -234,6 +239,10 @@ class EngagementTracker:
         # Phase 2: the absence-curiosity band. Mode-independent — see
         # :meth:`_absence_band`.
         absence_seconds = self._absence_band(latency_seconds=latency_seconds)
+        reply_kind = brief_reply_kind(user_text, previous_assistant_text)
+        if (reply_kind or mode_norm == "typed") and closeness_delta < 0:
+            closeness_delta = 0.0
+            label = "neutral"
 
         result = EngagementResult(
             closeness_delta=float(closeness_delta),
@@ -246,6 +255,7 @@ class EngagementTracker:
             latency_z=(float(latency_z) if latency_z is not None else None),
             mode=mode_norm,
             warmed=bool(warmed),
+            reply_kind=reply_kind,
         )
         self._last_result = result
         return result

@@ -1673,10 +1673,25 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     user_message_id=user_message_id,
                 )
                 word_count = len((user_text or "").split()) or 0
+                previous_assistant_text = ""
+                if user_message_id is not None:
+                    try:
+                        previous_rows = self._chat_db.get_messages_before(
+                            self.session_key, before_id=user_message_id, limit=6,
+                        )
+                        previous_assistant_text = next(
+                            (row.content for row in reversed(previous_rows)
+                             if row.role == "assistant"),
+                            "",
+                        )
+                    except Exception:
+                        log.debug("engagement reply context unavailable", exc_info=True)
                 engagement = engagement_tracker.record_turn(
                     mode=getattr(self, "_last_turn_mode", "typed"),
                     latency_seconds=latency_seconds,
                     user_word_count=word_count,
+                    user_text=user_text,
+                    previous_assistant_text=previous_assistant_text,
                 )
                 engagement_delta = float(engagement.closeness_delta)
                 engagement_label = engagement.label

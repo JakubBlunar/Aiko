@@ -41,6 +41,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from app.core.conversation.turn_shape import brief_reply_kind
 
 log = logging.getLogger("app.misattunement_detector")
 
@@ -89,6 +90,8 @@ def detect(
     shrink_max_user_words: int = DEFAULT_SHRINK_MAX_USER_WORDS,
     pivot_band: str = DEFAULT_PIVOT_BAND,
     pivot_max_user_words: int = DEFAULT_PIVOT_MAX_USER_WORDS,
+    user_text: str = "",
+    previous_assistant_text: str = "",
 ) -> MisattunementResult | None:
     """Classify the current turn and return a :class:`MisattunementResult`
     when it fits one of the two trigger paths, or ``None`` otherwise.
@@ -113,6 +116,8 @@ def detect(
         return None
     user_words = int(this_user_words or 0)
     if user_words <= 0:
+        return None
+    if brief_reply_kind(user_text, previous_assistant_text):
         return None
 
     # Shrink trigger -- substantial prior Aiko reply + very short user reply.
@@ -174,10 +179,10 @@ def render_inner_life_block(
         "your last full answer"
     )
     body = (
-        "He may be drifting or just busy -- either way, pull back this "
-        "turn. Shorter reply, lighter weight, drop the agenda. One "
-        "focused observation or one small offer is plenty. Don't ask "
-        "\"are you ok?\", don't apologise, don't camp on it -- just "
-        "lighten the load and let him come back to you."
+        "Brevity alone does not establish disengagement or a hurt feeling. "
+        "Pull back on length this turn, not on attention: answer any actual "
+        "question before adding an agenda. Lighten the load; a short, focused reply is enough. "
+        "Don't ask \"are you ok?\", don't apologise, and don't invent a "
+        "relationship problem from a short answer."
     )
     return f"{head}.\n{body}"

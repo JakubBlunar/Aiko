@@ -4202,11 +4202,13 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         # turn (cold-start session) so the shrink trigger no-ops; the
         # pivot trigger can still fire on K6 alone.
         prev_aiko_words: int | None = None
+        previous_assistant_text = ""
         try:
             recent = self._inner_life_recent_messages(6)
             for row in reversed(recent):
                 if row.role == "assistant" and (row.content or "").strip():
                     prev_aiko_words = len(row.content.split())
+                    previous_assistant_text = row.content
                     break
         except Exception:
             log.debug("misattunement: chat_db read failed", exc_info=True)
@@ -4227,6 +4229,8 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             result = misattunement_detector.detect(
                 prev_aiko_words=prev_aiko_words,
                 this_user_words=user_words,
+                user_text=user_text,
+                previous_assistant_text=previous_assistant_text,
                 novelty_band=novelty_band,
                 novelty_distance=novelty_distance,
                 cooldown_remaining=cooldown_for_detect,

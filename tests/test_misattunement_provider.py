@@ -95,6 +95,14 @@ def _long_aiko_reply() -> _FakeMessageRow:
 
 
 class ShrinkPathTests(unittest.TestCase):
+    def test_complete_answer_and_success_do_not_trigger_withdrawal(self) -> None:
+        prior = _long_aiko_reply().content + ". Would Saturday work for you?"
+        for text in ("Yes, Saturday works perfectly.", "That fixed it, thanks!", "haha"):
+            with self.subTest(text=text):
+                host = _Host(history=[_FakeMessageRow("assistant", prior)])
+                self.assertEqual(host._render_misattunement_block(text), "")
+                self.assertEqual(host._misattunement_cooldown, 0)
+
     def test_fires_on_short_reply_after_long_aiko(self) -> None:
         host = _Host(history=[_long_aiko_reply()], message_count=2)
         block = host._render_misattunement_block("ok")
