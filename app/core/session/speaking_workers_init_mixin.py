@@ -729,6 +729,7 @@ class SpeakingWorkersInitMixin:
             motion_names=self._avatar_motion_names,
             world=self._render_world_block,
             conversation_situation=self._render_conversation_situation_block,
+            media_context=self._render_media_context_block,
             activity=self._render_activity_block,
             weather=self._render_weather_block,
             hobby=self._render_hobby_block,

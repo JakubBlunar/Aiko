@@ -287,6 +287,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "companion_activity_block",
         "interest_continuation_block",
         "delivery_provenance_block",
+        "media_context_block",
         # P44 measurement moved these two down from T0/T1. Both looked
         # stable and neither is: ``anniversary_block`` stamps
         # ``last_anniversaried_at`` as a side effect of rendering, so it
@@ -1021,6 +1022,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # relevance problem ``long_arc_callback`` has.
         self._second_thought_provider: Callable[[str], str] | None = None
         self._interest_continuation_provider: Callable[[str], str] | None = None
+        self._media_context_provider: Callable[[str], str] | None = None
         self._delivery_provenance_provider: Callable[[], str] | None = None
         # L14 aspiration-momentum cue. Consumer of the
         # AspirationMomentumWorker ring; surfaces an occasional, private
@@ -2379,6 +2381,14 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             except Exception:
                 log.debug("delivery_provenance provider raised", exc_info=True)
 
+        media_context_block = ""
+        if self._media_context_provider is not None:
+            with _timed_phase(provider_ms, "media_context"):
+                try:
+                    media_context_block = self._media_context_provider(user_text) or ""
+                except Exception:
+                    log.debug("media context provider raised", exc_info=True)
+
         interest_continuation_block = ""
         if getattr(self, "_interest_continuation_provider", None) is not None:
             with _timed_phase(provider_ms, "interest_continuation"):
@@ -3575,6 +3585,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts.append(interest_continuation_block)
         if delivery_provenance_block:
             system_parts.append(delivery_provenance_block)
+        if media_context_block:
+            system_parts.append(media_context_block)
         # Relocated from T0/T1 by the P44 prefix-break measurements. Both
         # are volatile in practice despite reading as background: see the
         # note beside them in ``_PROMPT_BLOCK_TIERS``. The constant and

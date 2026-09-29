@@ -188,6 +188,7 @@ class PromptAssemblerHelpersMixin:
         motion_names: Callable[[], list[str]] | None = None,
         world: Callable[[], str] | None = None,
         conversation_situation: Callable[[str], str] | None = None,
+        media_context: Callable[[str], str] | None = None,
         activity: Callable[[], str] | None = None,
         weather: Callable[[], str] | None = None,
         hobby: Callable[[], str] | None = None,
@@ -289,6 +290,8 @@ class PromptAssemblerHelpersMixin:
         """
         if affect is not None:
             self._affect_provider = affect
+        if media_context is not None:
+            self._media_context_provider = media_context
         if vitality is not None:
             self._vitality_provider = vitality
         if circadian is not None:

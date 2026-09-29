@@ -57,7 +57,7 @@ on top of already-shipped infrastructure. Where an entry is half shipped
 | K37 | Emotional contagion | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k37-emotional-contagion--jacobs-affect-tilts-aikos-affect) |
 | K38 | Self-correction "actually…" (next-turn) | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k38-self-correction-cue--next-turn-contradiction-catch) |
 | K39 | Energy / spoons model | ➖ closed — same mechanic as, and absorbed by, [K68](shipped/patterns-k31-k60.md#k68-embodied-vitality--a-body-that-livens-up-when-the-conversation-is-interesting) |
-| K40 | Comfortable silence | ❌ open |
+| K40 | Comfortable silence | Explicit-completion slice shipped; inferred silence open |
 | K41 | Same-reply mid-stream self-correction | ❌ open |
 | K42 | Multi-bubble reply bursts | ❌ open |
 | K43 | Promise follow-through | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md) |
@@ -79,7 +79,7 @@ on top of already-shipped infrastructure. Where an entry is half shipped
 | K59 | Tease economy | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k59-tease-economy--youll-pay-for-that-one) |
 | K60 | Tsundere mask | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k60-tsundere-mask--warmth-expressed-through-denial) |
 | K61 | Specifics over generalities (knowledge grounding) | ✅ shipped — [awareness.md](shipped/awareness.md#k61-knowledge_grounding-inner-life-block-commit-to-specifics) |
-| K62 | Co-experience companion (follow a show/album) | ❌ open |
+| K62 | Co-experience companion (follow a show/album) | Explicit episode/chapter pilot shipped; broader media and behavioral evaluation open |
 | K63 | Long-arc callbacks — "weeks ago you said…" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k63-long-arc-callbacks--weeks-ago-you-said) |
 | K64 | Freedom of thought (a–d: wandering / drift / curiosity gradient / map self-reflection) | ✅ shipped — [awareness.md](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of) |
 | K65 | Worker modernization for the topic-cluster era | ✅ shipped (a–e) — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k65-worker-modernization-for-the-topic-cluster-era-audit) |
@@ -372,6 +372,15 @@ files: [`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py
 ---
 
 ## K62. Co-experience companion — follow a show/album/book with the user
+
+**29 Sep 2026: explicit-progress pilot shipped.** One session-local book/show
+thread carries a conservative completion boundary and evidence-linked recent
+discussion, allowing interpretations to evolve without an extra model call.
+Read-only prompt projection, lower corrections, stop-tracking and source/session
+validation are covered by synthetic tests. See
+[the implementation and usage limits](shipped/cognitive-continuity.md#k62-explicit-shared-media-pilot-29-sep-2026).
+Spoiler-free generated replies and behavioral benefit are not yet established;
+canonical retrieval, albums, implicit progress and the UI proposal remain open.
 
 **Motivation.** A huge relationship multiplier that the world/room work
 hints at but never delivers: Aiko *follows along* with media the user is

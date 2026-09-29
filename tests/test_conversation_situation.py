@@ -48,6 +48,87 @@ def _replacement() -> SituationExtraction:
     )
 
 
+def test_media_thread_progress_correction_and_start_are_bounded() -> None:
+    from app.core.conversation.media_thread import project_thread
+
+    thread = project_thread(None, 'I finished chapter 4 of "Glass Harbor".', 10)
+    assert thread is not None and thread.completed_through == 4
+    started = project_thread(thread, 'I started "Glass Harbor" chapter 5.', 11)
+    assert started.completed_through == 4
+    corrected = project_thread(started, 'Actually, I only finished chapter 2.', 12)
+    assert corrected.completed_through == 2
+    assert project_thread(corrected, 'I finished chapter 8.', 9) == corrected
+    assert project_thread(None, "I want to read chapter 4 of Glass Harbor.", 10) is None
+    assert project_thread(None, "I have not finished chapter 4 of Glass Harbor.", 10) is None
+    assert project_thread(None, 'She said "I finished chapter 4 of Glass Harbor".', 10) is None
+    tonight = project_thread(None, "I started North Station ep 4 tonight", 10)
+    assert tonight.title == "North Station" and tonight.completed_through == 3
+    switched = project_thread(thread, "I finished episode 1 of North Station.", 13)
+    assert switched.title == "North Station" and switched.exchanges == ()
+
+
+def test_media_store_is_read_only_during_render_and_survives_restart(tmp_path) -> None:
+    from app.core.conversation.media_thread import MediaThreadStore
+
+    db = ChatDatabase(tmp_path / "media.db")
+    store = MediaThreadStore(db, "media")
+    user = db.add_message("media", "user", "I finished chapter 4 of Glass Harbor.")
+    assistant = db.add_message(
+        "media", "assistant", "My reading is that the narrator is unreliable.",
+    )
+    store.record(user, assistant)
+    before = db.kv_get(store.key)
+    block = store.render("I started Glass Harbor chapter 5.")
+    assert "completed through chapter 4" in block
+    assert "Aiko previously proposed" in block
+    assert db.kv_get(store.key) == before
+    assert store.render("Let's discuss coffee.") == ""
+    assert store.render("Please stop tracking this book.") == ""
+    assert MediaThreadStore(db, "other").render("What about Glass Harbor?") == ""
+    restored = MediaThreadStore(db, "media")
+    assert restored.load() == store.load()
+    store.record(user, assistant)
+    assert db.kv_get(store.key) == before
+    correction = db.add_message("media", "user", "Actually, I only finished chapter 2.")
+    store.record(correction)
+    corrected = store.render("What do you think about Glass Harbor?")
+    assert "completed through chapter 2" in corrected
+    assert "unreliable" not in corrected
+    stop = db.add_message("media", "user", "Stop tracking this book.")
+    store.record(stop)
+    store.record(correction)
+    assert store.render("Glass Harbor") == ""
+
+
+def test_media_discussion_retains_changed_interpretations_without_wrong_speakers(tmp_path) -> None:
+    from app.core.conversation.media_thread import MediaThreadStore
+
+    db = ChatDatabase(tmp_path / "media-evidence.db")
+    host = ConversationSituationMixin()
+    host._chat_db = db
+    host.session_key = "media"
+    user = db.add_message("media", "user", "I finished chapter 2 of Glass Harbor.")
+    first = db.add_message("media", "assistant", "My initial interpretation is a deliberate lie.")
+    host._record_media_exchange(user, first)
+    answer = db.add_message("media", "user", "Glass Harbor shows the narrator lacks the letter.")
+    revision = db.add_message(
+        "media", "assistant", "That changes my reading to a misunderstanding.",
+    )
+    host._record_media_exchange(answer, revision)
+    block = host._render_media_context_block("What is your reading of Glass Harbor?")
+    assert "deliberate lie" in block and "misunderstanding" in block
+    assert "User said" in block and "Aiko previously proposed" in block
+    foreign = db.add_message("other", "user", "I finished chapter 9 of Glass Harbor.")
+    store = MediaThreadStore(db, "media")
+    store.record(foreign)
+    store.record(revision)
+    assert store.load().completed_through == 2
+    short = db.add_message("media", "user", 'I finished chapter 1 of "It".')
+    store.record(short)
+    assert store.render("It was a good lunch.") == ""
+    assert "completed through chapter 1" in store.render('What about "It"?')
+
+
 def test_delivery_receipts_require_clip_owner_scope_and_send_completion() -> None:
     scope = ["main", 1]
     ledger = DeliveryLedger(lambda: tuple(scope))

@@ -368,6 +368,21 @@ class ConversationSituationMixin:
         row = self.take_pool_cue("interest_continuation", user_text=user_text)
         return row.text if row is not None else ""
 
+    def _render_media_context_block(self, user_text: str) -> str:
+        from app.core.conversation.media_thread import MediaThreadStore
+
+        db = getattr(self, "_chat_db", None)
+        return MediaThreadStore(db, self.session_key).render(user_text) if db is not None else ""
+
+    def _record_media_exchange(
+        self, user_message_id: int | None, assistant_message_id: int | None,
+    ) -> None:
+        from app.core.conversation.media_thread import MediaThreadStore
+
+        db = getattr(self, "_chat_db", None)
+        if db is not None and user_message_id is not None:
+            MediaThreadStore(db, self.session_key).record(user_message_id, assistant_message_id)
+
     def _reconcile_conversation_situation_after_world_mutation(self) -> None:
         """Refresh a compatible lease or clear one a deliberate move ended."""
         store = getattr(self, "_conversation_situation_store", None)

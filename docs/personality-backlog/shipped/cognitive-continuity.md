@@ -1,5 +1,44 @@
 # Cognitive continuity implementation
 
+## K62. Explicit shared-media pilot (29 Sep 2026)
+
+One session-local media thread retains a title, episode/chapter completion
+boundary and up to four discussion exchanges by message ID. The main reply
+can revisit an earlier interpretation in light of new user evidence without
+another worker or model call. This is contextual continuity, not a proactive
+offer: it adds no stance candidate, cue type or new pressure to speak.
+
+Progress comes from bounded explicit English declarations, for example
+`I finished chapter 4 of Glass Harbor` or `I started North Station ep 4 tonight`.
+Finished/watched/read sets the completed boundary; started/watching/reading
+keeps it at the preceding part. A bare numbered update can refer to the one
+active thread. A lower correction discards later discussion references;
+switching works clears the old references. `Stop tracking this book` (or
+`this show`) clears the references and retains a stop watermark against old
+updates. No implicit viewing, season mapping, canonical plot lookup, album
+tracking or automatic progress detection is included.
+
+Post-turn persistence validates message speaker, session and ordering in
+SQLite. The T6 `media_context_block` reads that state and projects the live
+declaration without writing, including in preview/aggressive assembly.
+On later turns it requires the title to be raised explicitly, with stricter
+matching for short ambiguous titles. Transcript excerpts are bounded and
+age-tagged, distinguish user evidence from Aiko's revisable proposals, and
+do not certify viewing, attention or comprehension. No separate copies of
+raw conversation are stored in the thread metadata.
+
+The prompt restricts discussion to user-supplied details within the progress
+boundary, with no later hints or outside summaries. This is **not a proven
+spoiler guarantee**: the main model still has its own knowledge and ordinary
+history/retrieval. Model-level spoiler/adversarial tests and measured opinion
+continuity remain prerequisites to broader media retrieval or promotion.
+
+Owners: [media_thread.py](../../../app/core/conversation/media_thread.py),
+[conversation_situation_mixin.py](../../../app/core/session/conversation_situation_mixin.py)
+and the existing post-turn/prompt pipeline. Tests use isolated SQLite and
+cover source/session validation, correction, stop/retry, work switches,
+discussion lineage and non-mutating assembly.
+
 ## K14/K23. Answer-aware brevity (29 Sep 2026)
 
 The shared turn-shape reader recognizes bounded completion, acknowledgement,
@@ -158,3 +197,9 @@ passed, with the unchanged pre-existing private-reach guard failure
 (471 MCP private accesses against budget 466). Frontend: 820 tests passed.
 No production messages, forced cues or live settings changes were used to
 establish these results. The original T5 behavior comparisons remain open.
+
+**29 Sep 2026 judgment/media follow-up verification:** final backend suite
+12,041 passed, 8 skipped, 1,304 subtests passed; the sole failure remains the
+unchanged MCP private-reach guard (471 against 466). Python lint, frontend
+typecheck and backlog links pass. Validation used synthetic/isolated state,
+not live conversations; no runtime settings, model routes or live data changed.

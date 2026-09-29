@@ -29,6 +29,25 @@ from app.core.session.prompt_support import _SPEECH_GRAMMAR_ADDENDUM
 
 
 class ProviderOutcomeTests(unittest.TestCase):
+    def test_media_context_is_nonsteering_and_survives_aggressive_assembly(self) -> None:
+        from app.core.conversation.media_thread import MediaThreadStore
+        from app.core.conversation.stance import OPTIONAL_OFFER_BLOCKS
+
+        with _TempDb() as db:
+            store = MediaThreadStore(db, "s1")
+            assembler = _make_assembler(db, persona_text="Persona.")
+            assembler.set_inner_life_providers(media_context=store.render)
+            for aggressive in (False, True):
+                _, telemetry = assembler.assemble_with_budget(
+                    "s1", "I started Glass Harbor chapter 4.", context_window=32000,
+                    response_budget=512, aggressive=aggressive, preview=True,
+                )
+                self.assertIn("completed through chapter 3", telemetry.system_prompt)
+                self.assertGreater(telemetry.block_chars["media_context_block"], 0)
+                self.assertIsNone(store.load())
+            self.assertEqual(_BLOCK_TIER_OF["media_context_block"], "T6_detectors")
+            self.assertNotIn("media_context_block", OPTIONAL_OFFER_BLOCKS)
+
     def test_completion_defers_optional_providers_before_consumption(self) -> None:
         with _TempDb() as db:
             calls = []

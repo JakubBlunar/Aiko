@@ -148,6 +148,10 @@ class PostTurnMixin(PostTurnHelpersMixin):
             "observed_at": timephrase.utcnow().isoformat(),
         }
         try:
+            self._record_media_exchange(user_message_id, assistant_message_id)
+        except Exception:
+            log.debug("media thread update failed", exc_info=True)
+        try:
             self._apply_sleep_decision(
                 raw_assistant_text=raw_assistant_text,
                 assistant_text=assistant_text,
