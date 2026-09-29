@@ -16,6 +16,12 @@ on top of already-shipped infrastructure. Where an entry is half shipped
 
 ## Status at a glance
 
+**30 Sep 2026: contextual judgment shadow implemented.** The existing situation
+worker samples answer coverage, progress, response mode, attunement, explanation
+depth and completion without applying its judgments. Collection and inspection
+details: [conversation judgment shadow](shipped/cognitive-continuity.md#conversation-judgment-shadow-30-sep-2026).
+Behavioral activation and model-quality evaluation remain open.
+
 | ID | Item | Status |
 |----|------|--------|
 | K1 | Long-term goals tracker | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |

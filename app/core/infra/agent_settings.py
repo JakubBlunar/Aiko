@@ -2412,6 +2412,7 @@ class AgentSettings:
     # are doing together. It runs in the speaking window, never on TTFT.
     conversation_situation_enabled: bool = True
     conversation_situation_every_n_user_turns: int = 2
+    conversation_judgment_shadow_enabled: bool = True
     # Hard persistence ceiling. Ordinary cadence refreshes an active situation;
     # a row older than this cannot constrain the world after a restart/gap.
     conversation_situation_stale_seconds: float = 21600.0

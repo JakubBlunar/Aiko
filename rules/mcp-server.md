@@ -42,6 +42,7 @@ Add to your MCP settings (`.vscode/mcp.json` or user settings):
 | `get_status` | — | JSON: model name, context window, TTS engine, agent tool count, recent metrics. |
 | `list_agent_tools` | — | JSON array of `{name, description}` for every agent tool currently registered. |
 | `get_last_response_detail` | — | JSON timing breakdown for the last turn (`llm_ms`, `tts_ms`, etc.). |
+| `get_conversation_judgment_shadow` | `include_rows: bool = false`, `include_evidence: bool = false`, `limit: int = 20` | Read-only shadow judgment counts for the current session. Rows opt-in; evidence additionally reveals private dialogue excerpts. Disagreements are candidates, not verified errors. See [collection notes](../docs/personality-backlog/shipped/cognitive-continuity.md#conversation-judgment-shadow-30-sep-2026). |
 | `clear_history` | — | Clears the active session in `chat_sessions.db`. |
 | `list_debug_overrides` | `armed_only: bool = false` | JSON: every one-shot override, whether it is armed, its payload, and what it does. |
 | `clear_debug_overrides` | — | Disarms everything pending. Same call a session switch makes. |

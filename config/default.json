@@ -157,6 +157,7 @@
     "promise_worker_per_day_cap": 80,
     "novelty_detection_enabled": true,
     "topic_stagnation_enabled": true,
+    "conversation_judgment_shadow_enabled": true,
     "topic_graph_enabled": true,
     "topic_graph_persistent_enabled": true,
     "topic_graph_rebuild_interval_seconds": 86400,

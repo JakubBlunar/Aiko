@@ -1,5 +1,91 @@
 # Cognitive continuity implementation
 
+## Conversation judgment shadow (30 Sep 2026)
+
+The existing situation worker now collects six evidence-linked observations in
+the **same** structured model call: answer coverage (K82), thread progress
+(K18/K97), response mode (K69), request/reply attunement (K23), explanation
+depth (K75), and explicit completion (K40). This is a diagnostic experiment,
+not an active replacement for any detector. Nothing reads these observations
+into the main prompt, cues, memory, relationship axes, cooldowns or tasks.
+
+`agent.conversation_judgment_shadow_enabled` defaults to `true`; setting it to
+`false` disables collection. Configuration is read when workers initialize,
+so restart the backend after changing it. The situation worker and remembered
+history must also be enabled. No separate job or model call is added. The
+existing cadence is normally two user turns; each run samples the most recent
+completed user/assistant exchange in its 14-message window. A pending later
+user turn cannot supply evidence for that review. This does not review every
+exchange or retrospectively repair the reply already sent.
+
+The model receives no heuristic scores or earlier shadow judgments. It returns
+bounded enum fields, each with 1-3 exact source excerpts, or null to abstain.
+Code validates IDs, speaker, session, target exchange and quote membership;
+coverage/attunement/depth require both target speakers. Unknown values,
+invented quotes and later evidence are rejected. Structural citation validity
+does **not** prove that the interpretation follows from the evidence.
+Stale sessions, intervening messages, edited sources, failed calls and output
+limits are counted without admitting their judgments. Bad shadow fields or
+diagnostic-storage errors do not invalidate otherwise valid situation state.
+
+The local SQLite `kv_meta` namespace `judgment_shadow:<session_id>` retains at
+most 200 diagnostic runs per session. It stores message references, character
+spans, hashes and enum observations, not copied dialogue or generated prose.
+Each completed exchange gets one recorded attempt per observer version,
+including failed attempts; repeated windows do not inflate evidence counts.
+Deleted target messages are excluded when reading the ledger. Source excerpts
+are resolved only on explicit diagnostic request, checked against their stored
+hash, and reported unavailable if the source was edited or removed.
+
+Four dimensions compare against pure text-only replays: implicit need, the
+explicit-progress reader, dropped-ask detection and explicit completion.
+These are **not captured live decisions**: affect, embedding distance, timing,
+cooldowns and contextual priors are not reconstructed. Attunement and depth
+remain unpaired observations; the lexical expertise signal is recorded but is
+not equated with whether an explanation was appropriate. Coverage can flag a
+single missed request outside K82's multi-ask scope. A disagreement is a review
+candidate, never a verified false positive/negative or a calibrated accuracy.
+
+Inspect through the read-only MCP tool `get_conversation_judgment_shadow`.
+Its default is aggregate-only; `include_rows=true` returns bounded references
+and decisions, and `include_evidence=true` additionally resolves **private
+dialogue excerpts**. `limit` defaults to 20 and is capped at 100. Example:
+
+```powershell
+python scripts/mcp_call.py get_conversation_judgment_shadow
+python scripts/mcp_call.py get_conversation_judgment_shadow --json '{"include_evidence":true,"limit":10}'
+```
+
+Reports distinguish agreements, disagreements, abstentions, omitted fields,
+invalid fields and discarded runs. Records include the model/backend label,
+input IDs/hash, observer version, output limit, token usage and shared-call
+duration. These costs cover the whole situation call, not an isolated shadow
+cost. The worker's normal stats also expose shadow storage/preparation failures.
+The additional output allowance is capped at 1,024 tokens. Sharing a call is
+not bit-for-bit behavioral isolation: the larger prompt/output budget may
+affect latency or ordinary situation extraction even though no shadow result
+is consumed. Watch truncation and situation failures alongside disagreements.
+
+Before behavioral activation, review ordinary agreements as well as disagreements and
+abstentions against human labels. Do not treat the same model's second reading
+as independent ground truth. Synthetic tests cover parser/ledger invariants,
+all six facets, stale/edited evidence, opt-out, storage failure and unchanged
+live consumers; no real-model judgment quality or live benefit is claimed.
+Automatic repair, emotion/closeness updates and inferred media-progress or
+spoiler-boundary changes remain excluded.
+
+Owners: [judgment_shadow.py](../../../app/core/conversation/judgment_shadow.py),
+[conversation_situation_worker.py](../../../app/core/conversation/conversation_situation_worker.py),
+and [conversation_situation_tools.py](../../../app/mcp/server_tools/conversation_situation_tools.py).
+Tests extend [test_conversation_situation.py](../../../tests/test_conversation_situation.py).
+
+Validation: 70 focused situation tests pass; lint, frontend typecheck and backlog
+links pass. Full backend run: 12,069 passed, 8 skipped, 1,304 subtests passed.
+The existing MCP private-reach guard remains 471 against its 466 budget. A TTS
+subprocess test also failed with a Windows invalid-handle error in the parallel
+run and passed on isolated rerun. No live model calls, restart or conversation
+data changes were used for validation.
+
 ## K62. Explicit shared-media pilot (29 Sep 2026)
 
 One session-local media thread retains a title, episode/chapter completion

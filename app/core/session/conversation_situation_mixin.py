@@ -441,5 +441,22 @@ class ConversationSituationMixin:
             ),
         }
 
+    def conversation_judgment_shadow_diagnostics(
+        self, *, include_rows: bool = False, include_evidence: bool = False, limit: int = 20,
+    ) -> dict[str, Any]:
+        from app.core.conversation.judgment_shadow import JudgmentShadowStore
+
+        report = JudgmentShadowStore(self._chat_db).report(
+            self.session_key, include_rows=include_rows, include_evidence=include_evidence,
+            limit=limit,
+        )
+        report["enabled"] = bool(
+            getattr(self._settings.agent, "conversation_judgment_shadow_enabled", True)
+        )
+        report["worker_available"] = (
+            getattr(self, "_conversation_situation_worker", None) is not None
+        )
+        return report
+
 
 __all__ = ["ConversationSituationMixin"]

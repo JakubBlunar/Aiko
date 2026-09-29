@@ -329,6 +329,9 @@ class SpeakingWorkersInitMixin:
                     store=self._conversation_situation_store,
                     model=self._effective_worker_model,
                     world_snapshot_provider=self.world_snapshot,
+                    judgment_shadow_enabled=bool(
+                        getattr(settings.agent, "conversation_judgment_shadow_enabled", True)
+                    ),
                     context_token_provider=lambda: (
                         self.session_key, int(getattr(self, "_live_mode_generation", 0)),
                     ),

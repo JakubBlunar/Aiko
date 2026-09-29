@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import time
 from collections import defaultdict
@@ -14,6 +15,7 @@ from app.core.conversation.conversation_situation import (
     reduce_situation,
     substantive_interest_answer,
 )
+from app.core.conversation import judgment_shadow
 from app.core.infra import timephrase
 from app.core.proactive.topic_match import topical
 
@@ -109,6 +111,7 @@ class ConversationSituationWorker:
         every_n_user_turns: int = 2,
         max_history_messages: int = 14,
         max_tokens: int = 1536,
+        judgment_shadow_enabled: bool = True,
     ) -> None:
         self._client = client
         self._chat_db = chat_db
@@ -120,6 +123,8 @@ class ConversationSituationWorker:
         self._every_n = max(1, int(every_n_user_turns))
         self._max_history = max(4, int(max_history_messages))
         self._max_tokens = max(100, int(max_tokens))
+        self._judgment_shadow_enabled = judgment_shadow_enabled
+        self._judgment_shadow = judgment_shadow.JudgmentShadowStore(chat_db)
         self._turns_seen: dict[str, int] = defaultdict(int)
         self._turns_at_last_run: dict[str, int] = defaultdict(int)
         self._last_user_message_id: dict[str, int] = {}
@@ -136,6 +141,8 @@ class ConversationSituationWorker:
             "kept": 0,
             "replaced": 0,
             "cleared": 0,
+            "shadow_recorded": 0,
+            "shadow_failed": 0,
         }
 
     def update_runtime(self, *, model: str | None = None) -> None:
@@ -196,6 +203,7 @@ class ConversationSituationWorker:
         report: dict[str, Any] = {
             **self._stats,
             "every_n_user_turns": self._every_n,
+            "judgment_shadow_enabled": self._judgment_shadow_enabled,
         }
         if session_id is not None:
             key = str(session_id)
@@ -210,8 +218,22 @@ class ConversationSituationWorker:
             )
         return report
 
+    def judgment_shadow_report(
+        self, session_id: str, *, include_rows=False, include_evidence=False, limit=20,
+    ):
+        return {
+            **self._judgment_shadow.report(
+                session_id, include_rows=include_rows,
+                include_evidence=include_evidence, limit=limit,
+            ),
+            "enabled": self._judgment_shadow_enabled,
+        }
+
     def run(self, session_id: str) -> ConversationSituationState | None:
         key = str(session_id)
+        rows = []
+        target = None
+        started = time.monotonic()
         try:
             token = self._context_token_provider() if self._context_token_provider else None
             if token is not None and token[0] != key:
@@ -222,6 +244,21 @@ class ConversationSituationWorker:
                 return self._store.get(key)
             previous = self._store.get(key)
             prompt = self._build_user_prompt(rows, previous)
+            target = None
+            try:
+                if self._judgment_shadow_enabled:
+                    target = judgment_shadow.target_exchange(rows)
+                    if target and self._judgment_shadow.has_review(key, target[1].id):
+                        target = None
+            except Exception:
+                self._stats["shadow_failed"] += 1
+                target = None
+            shadow_prompt = judgment_shadow.PROMPT if target else ""
+            if target:
+                prompt += "\n\nSHADOW TARGET:\n" + json.dumps({
+                    "user_message_id": target[0].id, "assistant_message_id": target[1].id,
+                })
+            started = time.monotonic()
             raw, usage = self._client.chat_json(
                 [
                     {
@@ -230,15 +267,22 @@ class ConversationSituationWorker:
                             f"{timephrase.today_anchor()}\n\n"
                             f"{_SYSTEM_PROMPT}\n\n"
                             f"{timephrase.STORED_TEXT_TIME_RULE}"
+                            + ("\n\n" + shadow_prompt if shadow_prompt else "")
                         ),
                     },
                     {"role": "user", "content": prompt},
                 ],
                 model=self._model,
-                options={"temperature": 0, "num_predict": self._max_tokens},
+                options={
+                    "temperature": 0,
+                    "num_predict": self._max_tokens + (
+                        judgment_shadow.OUTPUT_BUDGET if target else 0
+                    ),
+                },
                 think=False,
                 surface="conversation_situation",
             )
+            call_ms = round((time.monotonic() - started) * 1000)
             output_limit_hit = getattr(usage, "done_reason", "") == "length"
             if output_limit_hit:
                 self._stats["output_limit_hits"] += 1
@@ -252,6 +296,9 @@ class ConversationSituationWorker:
             ):
                 self._stats["stale"] += 1
                 self._last_result[key] = {"result": "stale", "preserved_previous": True}
+                self._record_shadow(
+                    key, rows, target, raw, "stale", call_ms, output_limit_hit, usage,
+                )
                 return self._store.get(key)
             extraction = parse_extraction(
                 raw, valid_message_ids=valid_ids,
@@ -264,6 +311,9 @@ class ConversationSituationWorker:
                     "preserved_previous": previous is not None,
                     "output_limit_hit": output_limit_hit,
                 }
+                self._record_shadow(
+                    key, rows, target, raw, "invalid_situation", call_ms, output_limit_hit, usage,
+                )
                 return previous
             source_message_id = max(valid_ids)
             state = reduce_situation(
@@ -289,9 +339,14 @@ class ConversationSituationWorker:
                 "generation": state.generation if state is not None else 0,
                 "source_message_id": source_message_id,
             }
+            self._record_shadow(key, rows, target, raw, "fresh", call_ms, output_limit_hit, usage)
             return state
         except Exception:
             self._stats["failed"] += 1
+            self._record_shadow(
+                key, rows, target, "", "call_failed",
+                round((time.monotonic() - started) * 1000), False,
+            )
             try:
                 preserved = self._store.get(key)
             except Exception:
@@ -302,6 +357,47 @@ class ConversationSituationWorker:
             }
             log.debug("conversation situation worker failed", exc_info=True)
             return preserved
+
+    def _record_shadow(
+        self, key, rows, target, raw, outcome, call_ms, output_limit_hit, usage=None,
+    ):
+        if target is None:
+            return
+        try:
+            if outcome == "fresh":
+                for source in rows:
+                    current = self._chat_db.get_message_row(source.id)
+                    if current is None or (
+                        current.session_id, current.role, current.content
+                    ) != (source.session_id, source.role, source.content):
+                        outcome = "changed_evidence"
+                        break
+            replay = judgment_shadow.heuristic_replay(rows, target)
+            review = (
+                judgment_shadow.parse_review(raw, rows, target)
+                if outcome == "fresh" and not output_limit_hit
+                else {"status": "discarded", "observations": {}, "invalid_fields": []}
+            )
+            recorded = self._judgment_shadow.record(key, {
+                **review, "user_message_id": target[0].id,
+                "assistant_message_id": target[1].id,
+                "input_message_ids": [row.id for row in rows],
+                "input_hash": hashlib.sha256(json.dumps(
+                    [(row.id, row.role, row.content) for row in rows],
+                    ensure_ascii=False, separators=(",", ":"),
+                ).encode()).hexdigest(),
+                "model": self._model, "call_ms": call_ms,
+                "backend_type": type(self._client).__name__,
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(usage, "completion_tokens", 0),
+                "max_output_tokens": self._max_tokens + judgment_shadow.OUTPUT_BUDGET,
+                "situation_outcome": outcome, "output_limit_hit": output_limit_hit,
+                "heuristic": replay, "comparisons": judgment_shadow.comparisons(review, replay),
+            })
+            self._stats["shadow_recorded"] += int(recorded)
+        except Exception:
+            self._stats["shadow_failed"] += 1
+            log.debug("judgment shadow recording failed", exc_info=True)
 
     def _sync_interest_successor(self, key, previous, extraction, rows) -> None:
         producer = self._successor_producer

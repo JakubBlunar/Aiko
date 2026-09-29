@@ -1836,6 +1836,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             conversation_situation_enabled=bool(
                 agent_raw.get("conversation_situation_enabled", True),
             ),
+            conversation_judgment_shadow_enabled=bool(
+                agent_raw.get("conversation_judgment_shadow_enabled", True),
+            ),
             conversation_situation_every_n_user_turns=max(
                 1,
                 int(agent_raw.get("conversation_situation_every_n_user_turns", 2)),

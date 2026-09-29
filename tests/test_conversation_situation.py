@@ -415,6 +415,49 @@ class _FakeSituationClient:
         return self.responses.pop(0), ChatUsage()
 
 
+def test_judgment_shadow_validates_evidence_and_retains_only_references(tmp_path) -> None:
+    from app.core.conversation.judgment_shadow import (
+        JudgmentShadowStore, comparisons, heuristic_replay, parse_review, target_exchange,
+    )
+
+    db = ChatDatabase(tmp_path / "shadow.db")
+    user_id = db.add_message("main", "user", "That rules out the database.")
+    assistant_id = db.add_message("main", "assistant", "Then inspect the request handler.")
+    rows = db.get_messages("main", limit=14)
+    target = target_exchange(rows)
+    raw = json.dumps({"judgment_shadow": {
+        "progress": {"value": "progressing", "evidence": [
+            {"message_id": user_id, "quote": "rules out the database"},
+        ]},
+        "coverage": {"value": "answered", "evidence": [
+            {"message_id": user_id, "quote": "That rules out"},
+            {"message_id": assistant_id, "quote": "inspect the request handler"},
+        ]},
+        "need": {"value": "witness", "evidence": [
+            {"message_id": user_id, "quote": "invented quote"},
+        ]},
+    }})
+    review = parse_review(raw, rows, target)
+    assert review["status"] == "partial"
+    assert review["invalid_fields"] == ["need"]
+    assert review["observations"]["progress"]["evidence"][0]["start"] == 5
+    replay = heuristic_replay(rows, target)
+    assert comparisons(review, replay)["progress"] == "disagree"
+    store = JudgmentShadowStore(db)
+    record = {**review, "user_message_id": user_id, "assistant_message_id": assistant_id,
+              "comparisons": comparisons(review, replay), "heuristic": replay}
+    assert store.record("main", record)
+    assert not store.record("main", record)
+    report = JudgmentShadowStore(db).report("main", include_rows=True)
+    assert report["retained_runs"] == 1
+    assert "database" not in json.dumps(report)
+    assert "rows" not in store.report("main")
+    assert store.report("other")["retained_runs"] == 0
+    expanded = store.report("main", include_evidence=True)["rows"][0]
+    assert expanded["observations"]["progress"]["evidence"][0]["quote"] == "rules out the database"
+    assert "database" not in db.kv_get("judgment_shadow:main")
+
+
 @pytest.mark.parametrize("max_tokens", [None, 2048])
 def test_worker_budget_covers_expanded_working_set(tmp_path, max_tokens) -> None:
     db = ChatDatabase(tmp_path / "expanded.db")
@@ -445,6 +488,35 @@ def test_worker_budget_covers_expanded_working_set(tmp_path, max_tokens) -> None
     assert worker.stats()["output_limit_hits"] == 0
 
 
+@pytest.mark.parametrize("shadow", [None, {}, {"need": "invalid"}])
+def test_shadow_is_one_call_and_never_enters_situation_state(tmp_path, shadow) -> None:
+    db = ChatDatabase(tmp_path / "shadow_worker.db")
+    user_id = db.add_message("main", "user", "That rules out the database.")
+    assistant_id = db.add_message("main", "assistant", "Inspect the request handler.")
+    payload = {"operation": "replace", "summary": "Investigating a request failure.",
+               "evidence_message_ids": [user_id, assistant_id]}
+    if shadow is not None:
+        payload["judgment_shadow"] = shadow
+    client = _FakeSituationClient([json.dumps(payload)] * 2)
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=ConversationSituationStore(db),
+        model="worker", world_snapshot_provider=dict,
+    )
+    state = worker.run("main")
+    assert state is not None and state.summary == payload["summary"]
+    assert "judgment_shadow" not in json.dumps(state.to_payload())
+    assert len(client.calls) == 1
+    assert client.calls[0]["options"]["num_predict"] == 1536 + 1024
+    assert "SHADOW TARGET" in client.messages[0][1]["content"]
+    assert "text_only_replay" not in client.messages[0][1]["content"]
+    report = worker.judgment_shadow_report("main", include_rows=True)
+    assert report["retained_runs"] == 1
+    assert report["rows"][0]["assistant_message_id"] == assistant_id
+    worker.run("main")
+    assert "SHADOW TARGET" not in client.messages[1][1]["content"]
+    assert worker.judgment_shadow_report("main")["retained_runs"] == 1
+
+
 def test_worker_records_output_limit_without_overwriting_valid_state(tmp_path) -> None:
     db = ChatDatabase(tmp_path / "truncated.db")
     db.add_message("main", "user", "Still comparing the lenses.")
@@ -465,6 +537,159 @@ def test_worker_records_output_limit_without_overwriting_valid_state(tmp_path) -
     assert worker.stats()["output_limit_hits"] == 1
     assert worker.stats()["invalid"] == 1
     assert worker.stats("main")["last_result"]["output_limit_hit"] is True
+
+
+@pytest.mark.parametrize("field,value", [
+    ("coverage", "answered"), ("progress", "progressing"), ("need", "problem_solve"),
+    ("attunement", "matched"), ("depth", "appropriate"), ("completion", "open"),
+])
+def test_shadow_all_facets_require_valid_target_evidence(tmp_path, field, value) -> None:
+    from app.core.conversation.judgment_shadow import parse_review, target_exchange
+
+    db = ChatDatabase(tmp_path / "facets.db")
+    user_id = db.add_message("main", "user", "Can you help me find the cause?")
+    assistant_id = db.add_message("main", "assistant", "Check the error log first.")
+    rows = db.get_messages("main", limit=14)
+    target = target_exchange(rows)
+    evidence = [{"message_id": user_id, "quote": "help me find the cause"},
+                {"message_id": assistant_id, "quote": "Check the error log"}]
+    review = parse_review(json.dumps({"judgment_shadow": {
+        field: {"value": value, "evidence": evidence},
+    }}), rows, target)
+    assert review["observations"][field]["value"] == value
+    assert not review["invalid_fields"]
+
+
+@pytest.mark.parametrize("bad_evidence", [
+    [{"message_id": True, "quote": "help"}],
+    [{"message_id": 999, "quote": "help"}],
+    [{"message_id": 1, "quote": "invented"}],
+    [{"message_id": 2, "quote": "reply"}],
+    [{"message_id": 3, "quote": "future"}],
+    [{"message_id": 4, "quote": "foreign"}],
+    [{"message_id": 1, "quote": " "}],
+    [],
+])
+def test_shadow_rejects_wrong_speaker_window_session_and_quotes(tmp_path, bad_evidence) -> None:
+    from app.core.conversation.judgment_shadow import parse_review, target_exchange
+
+    db = ChatDatabase(tmp_path / "bad_evidence.db")
+    db.add_message("main", "user", "help")
+    db.add_message("main", "assistant", "reply")
+    target = target_exchange(db.get_messages("main", limit=14))
+    db.add_message("main", "user", "future")
+    foreign = db.add_message("other", "user", "foreign")
+    rows = db.get_messages("main", limit=14) + [db.get_message_row(foreign)]
+    review = parse_review(json.dumps({"judgment_shadow": {
+        "need": {"value": "witness", "evidence": bad_evidence},
+    }}), rows, target)
+    assert review["invalid_fields"] == ["need"]
+    assert review["observations"] == {}
+
+
+@pytest.mark.parametrize("failure", [
+    "stale", "session", "edited", "truncated", "call", "storage", "disabled",
+])
+def test_shadow_failures_do_not_write_live_judgments(tmp_path, monkeypatch, failure) -> None:
+    db = ChatDatabase(tmp_path / "shadow_failures.db")
+    user_id = db.add_message("main", "user", "Can we compare lenses?")
+    assistant_id = db.add_message("main", "assistant", "Start with focal length.")
+    payload = {"operation": "replace", "summary": "Comparing lenses.",
+               "evidence_message_ids": [user_id, assistant_id], "judgment_shadow": {}}
+    token = ["main", 0]
+
+    class Client:
+        calls = 0
+
+        def chat_json(self, messages, **kwargs):
+            self.calls += 1
+            if failure == "disabled":
+                assert "judgment_shadow" not in messages[0]["content"]
+                assert kwargs["options"]["num_predict"] == 1536
+            if failure == "call":
+                raise RuntimeError("test failure")
+            if failure == "stale":
+                db.add_message("main", "user", "Change the subject.")
+            if failure == "session":
+                token[0] = "other"
+            if failure == "edited":
+                db.update_message_content(user_id, "Never mind.")
+            return json.dumps(payload), ChatUsage(
+                done_reason="length" if failure == "truncated" else "stop",
+                prompt_tokens=100, completion_tokens=80,
+            )
+
+    client = Client()
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=ConversationSituationStore(db),
+        model="worker", world_snapshot_provider=dict, judgment_shadow_enabled=failure != "disabled",
+        context_token_provider=lambda: tuple(token),
+    )
+    if failure == "storage":
+        def fail_write(*_args):
+            raise RuntimeError("test storage failure")
+        monkeypatch.setattr(db, "kv_set", fail_write)
+    state = worker.run("main")
+    assert client.calls == 1
+    report = worker.judgment_shadow_report("main", include_rows=True)
+    if failure in {"storage", "disabled"}:
+        assert state is not None
+        assert report["retained_runs"] == 0
+    else:
+        assert report["retained_runs"] == 1
+        assert report["rows"][0]["status"] == "discarded"
+        assert report["rows"][0]["observations"] == {}
+    if failure in {"stale", "session", "call"}:
+        assert state is None
+    if failure == "truncated":
+        assert report["output_limit_hits"] == 1
+        assert report["rows"][0]["completion_tokens"] == 80
+
+
+def test_shadow_retention_abstentions_and_deleted_evidence(tmp_path, monkeypatch) -> None:
+    from app.core.conversation import judgment_shadow
+
+    monkeypatch.setattr(judgment_shadow, "MAX_RUNS", 2)
+    db = ChatDatabase(tmp_path / "retention.db")
+    store = judgment_shadow.JudgmentShadowStore(db)
+    for index in range(3):
+        user_id = db.add_message("main", "user", "Thanks.")
+        assistant_id = db.add_message("main", "assistant", "Welcome.")
+        rows = db.get_messages("main", limit=14)
+        review = judgment_shadow.parse_review(
+            json.dumps({"judgment_shadow": {"need": None, "progress": {
+                "value": "unclear", "evidence": [{"message_id": user_id, "quote": "Thanks"}],
+            }}}), rows, judgment_shadow.target_exchange(rows),
+        )
+        assert store.record("main", {
+            **review, "user_message_id": user_id, "assistant_message_id": assistant_id,
+            "comparisons": judgment_shadow.comparisons(review, {}), "call_ms": index,
+        })
+    report = store.report("main", include_rows=True, limit=1)
+    assert report["retained_runs"] == 2
+    assert len(report["rows"]) == 1
+    assert report["comparisons"]["need:abstained"] == 2
+    assert report["comparisons"]["coverage:not_reported"] == 2
+    db.update_message_content(user_id, "Edited.")
+    evidence = store.report("main", include_evidence=True)["rows"][-1]
+    assert evidence["observations"]["progress"]["evidence"][0]["quote"] is None
+    db.clear_messages("main")
+    assert store.report("main")["retained_runs"] == 0
+
+
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_judgment_shadow_setting_round_trips(tmp_path, enabled) -> None:
+    from pathlib import Path
+    from app.core.infra.settings import load_settings
+
+    defaults = Path(__file__).resolve().parents[1] / "config" / "default.json"
+    payload = json.loads(defaults.read_text(encoding="utf-8"))
+    payload["agent"].pop("conversation_judgment_shadow_enabled", None)
+    if enabled is not None:
+        payload["agent"]["conversation_judgment_shadow_enabled"] = enabled
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_settings(path).agent.conversation_judgment_shadow_enabled is (enabled is not False)
 
 
 @pytest.mark.parametrize("answer,expected", [
@@ -888,8 +1113,21 @@ def test_mcp_diagnostic_uses_public_situation_facade() -> None:
             return decorator
 
     expected = {"snapshot": {"generation": 4}, "worker": {"completed": 2}}
+    shadow_calls = []
+
+    def shadow_report(**kwargs):
+        shadow_calls.append(kwargs)
+        return {"mode": "shadow", "retained_runs": 2}
+
     session = SimpleNamespace(
-        conversation_situation_diagnostics=lambda: expected
+        conversation_situation_diagnostics=lambda: expected,
+        conversation_judgment_shadow_diagnostics=shadow_report,
     )
     conversation_situation_tools.register(_Mcp(), session)
     assert json.loads(tools["get_conversation_situation"]()) == expected
+    report = json.loads(tools["get_conversation_judgment_shadow"]())
+    assert report == {"mode": "shadow", "retained_runs": 2}
+    assert shadow_calls[-1] == {"include_rows": False, "include_evidence": False, "limit": 20}
+    tools["get_conversation_judgment_shadow"](include_evidence=True, limit=3)
+    assert shadow_calls[-1]["include_evidence"] is True
+    assert shadow_calls[-1]["limit"] == 3
