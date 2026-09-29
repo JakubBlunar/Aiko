@@ -29,6 +29,38 @@ from app.core.session.prompt_support import _SPEECH_GRAMMAR_ADDENDUM
 
 
 class ProviderOutcomeTests(unittest.TestCase):
+    def test_completion_defers_optional_providers_before_consumption(self) -> None:
+        with _TempDb() as db:
+            calls = []
+
+            def optional(*_args):
+                calls.append("offered")
+                return "Optional subject"
+
+            assembler = _make_assembler(db, persona_text="Persona.")
+            assembler.set_inner_life_providers(
+                initiative=optional, curiosity_seeds=optional, second_thought=optional,
+                user_correction=lambda: "An owed repair",
+                task_cues=lambda: "An owed task result",
+            )
+            for options in ({}, {"preview": True}, {"aggressive": True}):
+                _, telemetry = assembler.assemble_with_budget(
+                    "s1", "That fixed it, thanks!", context_window=32000,
+                    response_budget=512, **options,
+                )
+                self.assertEqual(calls, [])
+                self.assertNotIn("Optional subject", telemetry.system_prompt)
+                self.assertIn("An owed repair", telemetry.system_prompt)
+                self.assertIn("An owed task result", telemetry.system_prompt)
+                self.assertEqual(
+                    telemetry.surfacing_trace[-1]["declines"]["initiative_block"],
+                    "completed_exchange",
+                )
+            assembler.assemble_with_budget(
+                "s1", "A new topic", context_window=32000, response_budget=512,
+            )
+            self.assertTrue(calls)
+
     def test_pooled_share_choice_and_preview_are_not_consumption(self) -> None:
         from app.core.proactive.cue_store import CueStore
         from app.core.session.cue_pool_mixin import CuePoolMixin

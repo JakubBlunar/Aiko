@@ -184,6 +184,13 @@ the voice toggle in `ChatView.tsx`.
 
 ## K40. Comfortable silence — don't always fill space
 
+**29 Sep 2026: explicit-completion slice shipped.** K92 can acknowledge
+an explicitly finished exchange in a few words, with optional providers
+deferred before consumption and owed repairs/results preserved. See
+[the implementation notes](shipped/cognitive-continuity.md#k18k40-progress-and-explicit-endings-29-sep-2026).
+The inferred-silence proposal below remains open; short replies or silence
+alone are not evidence that a conversation is complete or unwanted.
+
 Detector that catches the moment to *not* fill space. When all of (axes
 high, Jacob's last 2 messages short, Aiko's last 2 replies short, no
 live affect spike), allow a one-token reply ("mm", "ya", soft

@@ -980,6 +980,7 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             result = detector.detect(
                 distance,
                 novelty_just_fired=novelty_just_fired,
+                user_text=user_text,
             )
         except Exception:
             log.debug("topic stagnation detector raised", exc_info=True)
@@ -2152,6 +2153,8 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
 
             detector = getattr(self, "_topic_stagnation_detector", None)
             lull_mean = getattr(detector, "last_mean", None)
+            if getattr(detector, "progressing", False):
+                lull_mean = None
 
             short_share = None
             window = max(2, int(getattr(agent, "appetite_window", 6)))

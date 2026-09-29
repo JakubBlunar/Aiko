@@ -47,6 +47,32 @@ from app.core.conversation.stance import (
 from app.core.conversation import stance as stance_mod
 
 
+class NaturalEndingTests(unittest.TestCase):
+    def test_completion_holds_even_when_an_optional_offer_exists(self) -> None:
+        result = decide(StanceInputs(
+            user_text="That fixed it, thanks!",
+            blocks=frozenset({"initiative_block", "curiosity_seeds_block"}),
+        ))
+        self.assertEqual(result.stance, FOLLOW)
+        self.assertEqual(result.reason, "completed_exchange")
+        self.assertTrue(result.brevity)
+        self.assertIn("Let it end", render_block(result))
+        self.assertNotIn("run long", render_block(result))
+
+    def test_completion_is_not_guessed_from_brevity_or_silence(self) -> None:
+        for text in ("", "fine", "ok", "That fixed it, but why?", "That fixed it. Help me next."):
+            with self.subTest(text=text):
+                result = decide(StanceInputs(user_text=text))
+                self.assertFalse(result.brevity)
+
+    def test_owed_repair_is_not_minimized(self) -> None:
+        result = decide(StanceInputs(
+            user_text="That answers it.", blocks=frozenset({"user_correction_block"}),
+        ))
+        self.assertFalse(result.brevity)
+        self.assertEqual(result.ceiling, FOLLOW)
+
+
 class BlockNameTests(unittest.TestCase):
     def test_every_offer_names_a_registered_block(self) -> None:
         from app.core.session.prompt_assembler import _PROMPT_BLOCK_TIERS

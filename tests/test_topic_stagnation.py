@@ -408,5 +408,33 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("Context", block)
 
 
+def test_progress_suppresses_lull_without_corrupting_the_baseline() -> None:
+    from app.core.conversation.topic_stagnation import (
+        TopicStagnationDetector, in_standing_lull,
+    )
+
+    detector = TopicStagnationDetector()
+    for _ in range(6):
+        assert detector.detect(0.01, user_text="I found the failing condition.") is None
+    assert detector.last_mean == 0.01
+    assert detector.baseline_snapshot()["samples"] == 1
+    assert not in_standing_lull(detector)
+    assert detector.detect(0.01, user_text="We are repeating the same explanation.") is not None
+    assert in_standing_lull(detector)
+
+
+def test_progress_is_turn_local_even_without_an_embedding() -> None:
+    from app.core.conversation.topic_stagnation import TopicStagnationDetector
+    from app.core.conversation.turn_shape import has_progress_evidence
+
+    detector = TopicStagnationDetector()
+    detector.detect(None, user_text="We narrowed down the options.")
+    assert detector.progressing
+    detector.detect(None, user_text="Still stuck.")
+    assert not detector.progressing
+    for text in ("I found nothing new.", '"I found the cause" is what she said.', "Now what?"):
+        assert not has_progress_evidence(text)
+
+
 if __name__ == "__main__":
     unittest.main()

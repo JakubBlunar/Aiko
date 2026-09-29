@@ -7,6 +7,7 @@ from functools import wraps
 from typing import Callable
 from uuid import uuid4
 
+from app.core.conversation.turn_shape import brief_reply_kind
 
 @dataclass
 class SurfaceClaim:
@@ -22,6 +23,7 @@ class SurfaceClaim:
 @dataclass
 class SurfaceAttempt:
     identity: str = field(default_factory=lambda: uuid4().hex)
+    completed_exchange: bool = False
     claims: dict[tuple[int, int], SurfaceClaim] = field(default_factory=dict)
     declines: dict[str, str] = field(default_factory=dict)
     decision: dict[str, str] = field(default_factory=dict)
@@ -74,11 +76,30 @@ current_attempt: ContextVar[SurfaceAttempt | None] = ContextVar(
 )
 
 
+def guard_optional_provider(provider, block: str):
+    if getattr(provider, "_completion_guarded", False) is True:
+        return provider
+
+    @wraps(provider)
+    def guarded(*args, **kwargs):
+        attempt = current_attempt.get()
+        if attempt is not None and attempt.completed_exchange:
+            attempt.declines[block] = "completed_exchange"
+            return ""
+        return provider(*args, **kwargs)
+
+    guarded._completion_guarded = True
+    return guarded
+
+
 def trace_assembly(assemble):
     @wraps(assemble)
     def wrapped(self, *args, **kwargs):
         preview = bool(kwargs.pop("preview", False))
-        attempt = SurfaceAttempt()
+        user_text = kwargs.get("user_text", args[1] if len(args) > 1 else "")
+        attempt = SurfaceAttempt(
+            completed_exchange=brief_reply_kind(user_text) == "completion",
+        )
         token = current_attempt.set(attempt)
         try:
             messages, telemetry = assemble(self, *args, **kwargs)

@@ -215,6 +215,7 @@ _OFFER_OF: dict[str, str] = {
     for stance, blocks in _OFFERS.items()
     for block in blocks
 }
+OPTIONAL_OFFER_BLOCKS = frozenset(_OFFER_OF)
 
 
 # ── demand: what the user's turn permits ─────────────────────────────
@@ -405,6 +406,8 @@ def compute_ceiling(
     act = (inputs.dialogue_act or "").strip().lower()
     caps: list[tuple[str, str]] = []
 
+    if turn_shape.brief_reply_kind(inputs.user_text) == "completion":
+        caps.append((FOLLOW, "completed_exchange"))
     if act == "vent":
         # He is not looking for a contribution. K69's read, applied to
         # turn-taking rather than to tone.
@@ -449,6 +452,15 @@ def compute_brevity(
     something and answering it in six words is not restraint, it is a
     non-answer, and the brake must not be able to produce one.
     """
+    if turn_shape.brief_reply_kind(inputs.user_text) == "completion":
+        owed = {
+            "clarification_block", "user_correction_block", "self_correction_block",
+            "promise_followthrough_block", "fact_reversal_block",
+            "task_cues_block", "running_tasks_block", "attachments_block",
+        }
+        if not owed.intersection(inputs.blocks):
+            return True, "completed_exchange"
+        return False, ""
     if _is_direct_question(inputs):
         return False, ""
     span = max(1, int(run))
@@ -634,7 +646,14 @@ def render_block(
             f"up if he wants. Same reply, different order; this is not a "
             f"licence to say less about what he raised."
         )
-    if decision.brevity:
+    if decision.brevity and decision.brevity_reason == "completed_exchange":
+        parts.append(
+            "The user explicitly says this exchange is complete. A brief warm "
+            "acknowledgement, even a few words, is enough. Let it end without "
+            "a new question, recap or unrelated subject. Still deliver any owed "
+            "repair or task result. Completion is not disengagement."
+        )
+    elif decision.brevity:
         parts.append(
             "You have run long several replies in a row. Make this one "
             "noticeably shorter -- a couple of sentences. Cut the "

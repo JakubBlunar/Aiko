@@ -17,6 +17,28 @@ for proportional length without inventing a relationship problem. Coverage:
 engagement, misattunement detector and provider regressions. No live quality
 or false-positive rate is claimed from these synthetic cases.
 
+## K18/K40. Progress and explicit endings (29 Sep 2026)
+
+K18 now distinguishes explicit progress reports from low topical distance.
+Reported findings, narrowed options and working results suppress that turn's
+lull without discarding its baseline sample or spending a new cooldown.
+The shared standing-lull reader and K54 agree; the progress flag resets even
+when the next turn has no embedding. This is a bounded lexical pilot, not a
+general semantic progress measure or a new K97 observer field.
+
+Explicit completion selects FOLLOW plus K92's existing HOLD axis, with a
+few-word acknowledgement permitted. Optional stance providers are guarded
+at registration against attempt-local completion, before one-shot state or
+pooled cues can be consumed. Preview and aggressive reassembly share that
+rule; later turns retain their offers. Repairs, task results, attachments
+and delivery evidence remain available. A fresh question or mixed request
+does not match the strict completion reader. Silence is not completion.
+
+Tests cover same-topic progress/repetition, turn-local freshness, stance,
+and real prompt assembly with non-consumption and owed-content controls.
+This ships K40's explicit-completion slice only; inferred comfortable silence,
+co-presence and measured conversational naturalness remain open.
+
 ## Live L18. Cue purpose and exact handoff
 
 Shipped 27 Sep 2026. Live projection assigns server-owned purpose to known

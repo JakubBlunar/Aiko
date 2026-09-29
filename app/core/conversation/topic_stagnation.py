@@ -55,6 +55,7 @@ import statistics
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from app.core.conversation.turn_shape import has_progress_evidence
 
 log = logging.getLogger("app.topic_stagnation")
 
@@ -153,6 +154,7 @@ class TopicStagnationDetector:
         # that's exactly the turn K54 needs the standing lull reading
         # for. ``None`` until the window first fills.
         self.last_mean: float | None = None
+        self.progressing = False
         # The bands actually in force. Consumers that gate on "is this a
         # lull" (K67's dormant-interest re-opener) must read these rather
         # than the configured constant, or they are testing against a bar
@@ -261,6 +263,7 @@ class TopicStagnationDetector:
         distance: float | None,
         *,
         novelty_just_fired: bool = False,
+        user_text: str = "",
     ) -> StagnationResult | None:
         """Score the rolling distance window for a stagnation hit.
 
@@ -278,6 +281,7 @@ class TopicStagnationDetector:
         # Step 1: arm post-novelty suppression *before* we touch the
         # history. We still record this turn's distance so the window
         # keeps moving; we just won't fire while suppression is hot.
+        self.progressing = has_progress_evidence(user_text)
         if novelty_just_fired:
             suppression = max(
                 0,
@@ -344,6 +348,9 @@ class TopicStagnationDetector:
                 len(self._distance_history),
                 self._distance_history.maxlen,
             )
+            return None
+
+        if self.progressing:
             return None
 
         mean_distance = float(statistics.fmean(self._distance_history))
@@ -439,7 +446,7 @@ def in_standing_lull(
     signal must block rather than pass.
     """
     mean = getattr(detector, "last_mean", None)
-    if mean is None:
+    if mean is None or getattr(detector, "progressing", False):
         return False
     return float(mean) <= lull_band(detector, memory_settings)
 

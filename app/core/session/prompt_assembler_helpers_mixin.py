@@ -518,6 +518,15 @@ class PromptAssemblerHelpersMixin:
         if running_tasks is not None:
             self._running_tasks_provider = running_tasks
 
+        from app.core.conversation.stance import OPTIONAL_OFFER_BLOCKS
+        from app.core.session.surfacing_attempt import guard_optional_provider
+
+        for block in OPTIONAL_OFFER_BLOCKS:
+            attribute = "_" + block.removesuffix("_block") + "_provider"
+            provider = getattr(self, attribute, None)
+            if provider is not None:
+                setattr(self, attribute, guard_optional_provider(provider, block))
+
     def set_last_reaction(self, reaction: str | None) -> None:
         if not reaction:
             self._last_reaction = None

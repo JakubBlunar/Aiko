@@ -109,4 +109,18 @@ def brief_reply_kind(user_text: str, previous_assistant_text: str = "") -> str:
     return ""
 
 
-__all__ = ["is_direct_question", "brief_reply_kind"]
+def has_progress_evidence(user_text: str) -> bool:
+    """Read explicit progress reports; topical similarity alone says nothing about progress."""
+    text = (user_text or "").strip()
+    if brief_reply_kind(text) == "completion":
+        return True
+    return bool(re.search(
+        r"(?:^|[.!]\s+)(?:i|we) (?:just )?"
+        r"(?:found|fixed|solved|ruled out|narrowed down|learned|confirmed)\b"
+        r"(?!\s+(?:nothing|nothing new|no more)\b)|"
+        r"(?:^|[.!]\s+)now (?:it|the \w+|all \w+) (?:works|passes|runs|makes sense)\b",
+        text, re.IGNORECASE,
+    ))
+
+
+__all__ = ["is_direct_question", "brief_reply_kind", "has_progress_evidence"]
