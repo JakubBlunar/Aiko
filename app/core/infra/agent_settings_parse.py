@@ -1808,6 +1808,7 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             opinion_injection_require_definite=bool(
                 agent_raw.get("opinion_injection_require_definite", False),
             ),
+            candor_gate_enabled=bool(agent_raw.get("candor_gate_enabled", False)),
             boundary_clash_enabled=bool(
                 agent_raw.get("boundary_clash_enabled", True),
             ),

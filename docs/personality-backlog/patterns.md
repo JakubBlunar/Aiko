@@ -100,7 +100,7 @@ Behavioral activation and model-quality evaluation remain open.
 | K74 | Humor-style calibration — what kind of funny lands | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k74-humor-style-calibration--what-kind-of-funny-lands) |
 | K75 | User-expertise calibration — match explanation depth | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k75-user-expertise-calibration--match-explanation-depth) |
 | K76 | Affective memory salience — flashbulb encoding | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k76-affective-memory-salience--flashbulb-encoding) |
-| K77 | Candor gate — "can I be real with you?" | ❌ open |
+| K77 | Candor gate — "can I be real with you?" | Partial: opt-in taste-only pilot |
 | K78 | Vocal-affect read — hear *how* he said it (prosody-in) | ❌ open |
 | K79 | Hesitation tell — typing latency as a signal | ❌ open |
 | K80 | Inside-joke birth — bless the moment a bit becomes "ours" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours) |
@@ -409,6 +409,19 @@ the user's stated progress; default to cautious when unsure.
 ---
 
 ## K77. Candor gate — "can I be real with you?"
+
+**30 Sep 2026: initial opt-in pilot implemented.** Set
+`agent.candor_gate_enabled=true` to extend K29's existing T6 opinion cue.
+Only a definite clash with an active, Aiko-owned `taste` concept (confidence
+at least 0.75), trust at least 0.65 and 30 days of tenure qualifies. A persisted
+per-user 14-day offer cooldown survives session changes and restarts. The cue
+permits asking for the floor and waiting for agreement, not inventing criticism.
+It shares K29's stance arbitration; it is not a separate topic or pooled cue.
+Cooldown counts provider offers conservatively, including offers later dropped
+from the prompt, not proven delivery. Tests cover admission and provider wiring;
+model-level consent handling is not yet verified. Broader concerns, relationship
+observations and L44 calibration remain open. Default is **off**; no live settings
+are changed by this implementation.
 
 **Motivation.** K29 lets Aiko push back on a stance and K46 keeps her from
 caving on taste, but there's no model of **earned bluntness** — the moment a

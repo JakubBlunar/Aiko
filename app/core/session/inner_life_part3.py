@@ -276,6 +276,11 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         except Exception:
             log.debug("opinion-injection render failed", exc_info=True)
             return ""
+        from app.core.relationship.candor_gate import offer_for_stance
+
+        permission = offer_for_stance(self, result)
+        if permission:
+            block = f"{block}\n{permission}"
         self._opinion_injection_cue_emitted = True  # K46
         return block
 

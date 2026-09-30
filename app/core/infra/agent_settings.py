@@ -2323,6 +2323,7 @@ class AgentSettings:
     # behaviour.
     opinion_injection_enabled: bool = True
     opinion_injection_require_definite: bool = False
+    candor_gate_enabled: bool = False
 
     # ── L18c: boundary-vs-conversation clash cue ──────────────────────
     # Master switch for the per-turn "this turn is heading toward one of

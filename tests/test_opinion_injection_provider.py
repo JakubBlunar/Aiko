@@ -139,6 +139,40 @@ def _contradicting_stance(memory_id: int = 1) -> _StubMemory:
 CONTRADICTING_USER_MSG = "I like horror movies a lot"
 
 
+def test_candor_extends_only_grounded_taste_once(monkeypatch):
+    from app.core.concepts import concept_view
+    from app.core.affect.opinion_injection_detector import StanceConcept
+
+    source = SimpleNamespace(
+        concept_id=12, label="I don't like horror movies", kind="taste",
+        subject="aiko", confidence=0.9,
+    )
+    view = SimpleNamespace(enabled=True, for_consumer=lambda _name: [source])
+    monkeypatch.setattr(concept_view, "concept_view_from", lambda _host: view)
+    host = _Host(agent_settings=_make_agent_settings(candor_gate_enabled=True))
+    host._stance_concept_candidates = lambda: [
+        StanceConcept(id=-12, content=source.label, embedding=_VEC_ALIGNED),
+    ]
+    host._user_id = "test-user"
+    host._relationship_tenure_days = lambda: 90
+    host._relationship_axes_store = SimpleNamespace(get=lambda _uid: SimpleNamespace(trust=0.8))
+    stored = {}
+    host._chat_db = SimpleNamespace(kv_get=stored.get, kv_set=stored.__setitem__)
+    block = host._render_opinion_injection_block(CONTRADICTING_USER_MSG)
+    assert "Candor permission" in block
+    assert len(stored) == 1
+    host._opinion_injection_cooldown = 0
+    assert "Candor permission" not in host._render_opinion_injection_block(CONTRADICTING_USER_MSG)
+
+
+def test_candor_does_not_promote_raw_memories():
+    host = _Host(
+        memories=[_contradicting_stance()],
+        agent_settings=_make_agent_settings(candor_gate_enabled=True),
+    )
+    assert "Candor permission" not in host._render_opinion_injection_block(CONTRADICTING_USER_MSG)
+
+
 # A user message that does NOT contradict any opinion stance (just
 # a neutral observation). Used for cooldown-decrement tests so the
 # decrement is the only observable change.
