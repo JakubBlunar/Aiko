@@ -19,6 +19,7 @@ while every test still passed.
 from __future__ import annotations
 
 import unittest
+import pytest
 from types import SimpleNamespace
 
 from app.core.proactive.second_thought_worker import (
@@ -29,6 +30,23 @@ from app.core.proactive.second_thought_worker import (
 )
 from app.core.session.second_thought_debug_mixin import SecondThoughtDebugMixin
 from app.llm.chat_client import CACHE_BREAKPOINT_KEY
+
+
+def test_failure_category_is_private_and_clears_after_healthy_decline(caplog):
+    from unittest.mock import Mock
+
+    client = _FakeClient()
+    client.chat = Mock(side_effect=TypeError("private prompt or credential"))
+    worker = _worker(client)
+    inputs = dict(system_prompt="P", user_text=_LONG_USER, assistant_text=_LONG_REPLY)
+    assert worker.maybe_run(**inputs) is None
+    assert worker.stats()["last_error_category"] == "client_contract"
+    assert "private prompt or credential" not in caplog.text
+    client.chat = Mock(return_value="NONE")
+    assert worker.maybe_run(**inputs) is None
+    assert worker.stats()["last_error_category"] == ""
+    assert worker.stats()["declined"] == 1
+    assert worker.stats()["failed"] == 1
 
 
 class _FakeClient:
@@ -97,6 +115,31 @@ _LONG_REPLY = (
     "That sounds draining. Did you get any sense of whether the deadline "
     "is actually going to move, or is it just being restated at you?"
 )
+
+
+@pytest.mark.parametrize("adapter", ["ollama", "openai"])
+@pytest.mark.parametrize("response", ["NONE", _GOOD])
+def test_concrete_chat_wrapper_contract(adapter, response):
+    from unittest.mock import Mock
+    from app.llm.chat_client import ChatResponse
+    from app.llm.ollama_client import OllamaClient
+    from app.llm.openai_compatible_client import OpenAICompatibleClient
+
+    client_type = OllamaClient if adapter == "ollama" else OpenAICompatibleClient
+    client = object.__new__(client_type)
+    client.chat_with_tools = Mock(return_value=ChatResponse(content=response))
+    worker = _worker(client)
+    result = worker.maybe_run(
+        system_prompt="unchanged cached prefix", user_text=_LONG_USER,
+        assistant_text=_LONG_REPLY, cache_breakpoints=(8,), session_key="test:session",
+    )
+    assert (result is None) == (response == "NONE")
+    assert worker.stats()["failed"] == 0
+    call = client.chat_with_tools.call_args
+    assert call.args[0][0]["content"] == "unchanged cached prefix"
+    assert call.args[0][0][CACHE_BREAKPOINT_KEY] == (8,)
+    assert call.kwargs["options"]["prompt_cache_key"] == "test:session"
+    assert call.kwargs["surface"] == "second_thought"
 
 
 # ── 1. parsing ────────────────────────────────────────────────────────

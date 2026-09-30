@@ -225,6 +225,7 @@ class SecondThoughtWorker:
         }
         self._last_thought: SecondThought | None = None
         self._last_ms = 0.0
+        self._last_error_category = ""
 
     # ── public ──────────────────────────────────────────────────────────
 
@@ -234,6 +235,7 @@ class SecondThoughtWorker:
         out["last_subject"] = last.subject if last is not None else ""
         out["last_thought"] = last.thought if last is not None else ""
         out["last_ms"] = round(self._last_ms, 1)
+        out["last_error_category"] = self._last_error_category
         return out
 
     def update_runtime(self, *, model: str | None = None) -> None:
@@ -385,6 +387,7 @@ class SecondThoughtWorker:
         agent = self._agent_settings()
         max_tokens = max(32, int(getattr(agent, "second_thought_max_tokens", 160)))
         started = time.monotonic()
+        self._last_error_category = ""
         try:
             raw = self._ollama.chat(
                 self._messages(
@@ -403,9 +406,13 @@ class SecondThoughtWorker:
                 model=self._model,
                 surface="second_thought",
             )
-        except Exception:
+        except Exception as error:
             self._stats["failed"] += 1
-            log.debug("second-thought call failed", exc_info=True)
+            self._last_error_category = (
+                "client_contract"
+                if isinstance(error, (TypeError, AttributeError)) else "model_call"
+            )
+            log.warning("second-thought failed: category=%s", self._last_error_category)
             return None
         finally:
             self._last_ms = (time.monotonic() - started) * 1000.0
@@ -420,7 +427,7 @@ class SecondThoughtWorker:
                 self._stats["declined"] += 1
             else:
                 self._stats["unparsed"] += 1
-                log.debug("second-thought unparsed: %r", (raw or "")[:200])
+                self._last_error_category = "unparsed"
             return None
 
         self._last_thought = thought
@@ -438,10 +445,13 @@ class SecondThoughtWorker:
             )
         except Exception:
             self._stats["failed"] += 1
-            log.debug("second-thought queue failed", exc_info=True)
+            self._last_error_category = "queue_exception"
+            log.warning("second-thought failed: category=%s", self._last_error_category)
             return None
         if not queued:
             self._stats["failed"] += 1
+            self._last_error_category = "queue_rejected"
+            log.warning("second-thought failed: category=%s", self._last_error_category)
             return None
         self._stats["queued"] += 1
         log.info(

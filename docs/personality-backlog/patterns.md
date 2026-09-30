@@ -902,6 +902,16 @@ measurement rather than an intuition, and it is the next piece of work.
 
 ## K96. One shot per thought — in-turn deliberation
 
+**30 Sep 2026 diagnostic follow-up.** The current Ollama and OpenAI-compatible
+`chat()` wrappers accept the worker contract; isolated tests pass both `NONE`
+and a valid thought through those concrete wrappers, with the transport boundary
+stubbed. The original live failure is not reproduced or claimed fixed. The
+worker now exposes a content-free `last_error_category` and logs operational
+failures at WARNING, distinguishing client-contract, model-call and queue
+failures from a healthy decline. System bytes, breakpoints and cache affinity
+are unchanged. A healthy subsequent call clears the error category. Live route
+and model-quality evaluation remain open.
+
 **Motivation.** Every reply Aiko gives is a single forward pass at
 `reasoning_effort: 'low'` (the live `main_chat` route, gpt-5.6-luna), and whatever
 deliberation the model does do is discarded: `strip_thinking_blocks_with_signal`
