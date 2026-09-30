@@ -22,6 +22,7 @@ from app.core.live.urge_menu import render_urge_menu
 from app.core.session.prompt_support import clip_text_to_tokens
 from app.llm.token_utils import chars_per_token, estimate_tokens
 
+LIVE_POLICY_PROMPT_VERSION = 1
 _SAFETY_TOKENS = 256
 _INSTRUCTIONS = """You are a Live behavior policy, not a companion.
 Choose exactly one intent for this moment. Output a complete JSON object.

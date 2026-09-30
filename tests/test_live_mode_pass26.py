@@ -38,6 +38,94 @@ def _by_name(payload: dict) -> dict[str, dict]:
 
 
 class AdmissionRecordShapeTests(unittest.TestCase):
+    def test_decision_trace_records_menu_without_content(self) -> None:
+        frame = _frame()
+        runtime = LiveInclinationRuntime()
+        urge = runtime.urges.propose(
+            kind="share_observation", subject="private subject", source="cue_pool",
+            source_ids=("cue:123",), repetition_key="cue:123", cue_id=123,
+            purpose="share", now_mono_ms=time.monotonic() * 1000.0,
+        )
+        assert urge is not None
+        client = _FakePolicyClient({
+            "snapshot_generation": frame.generation,
+            "selected_urge_id": urge.urge_id,
+            "intent": "attend", "arguments": {"reasoning": "private reasoning"},
+            "reason_code": "private_reason", "context_refs": [],
+        })
+        controller = _controller(generation_provider=lambda: int(frame.generation))
+        with self.assertLogs("app.live", level="INFO") as logs:
+            controller._infer(
+                frame, trigger_kind="idle.reconsider",
+                prompt_input={"urges": (urge,), "known_urge_ids": (urge.urge_id,)},
+                user_intent=False, started_generation=int(frame.generation),
+                cancel=threading.Event(), client=client,
+            )
+        trace = controller.diagnostics()["decision_trace"]
+        row = trace["decisions"][0]
+        self.assertTrue(row["inference_submitted"])
+        self.assertTrue(row["inference_completed"])
+        self.assertEqual(row["menu"], [{
+            "urge_id": urge.urge_id, "kind": "share_observation", "purpose": "share",
+            "cue_id": 123,
+        }])
+        self.assertEqual(row["selected_urge_id"], urge.urge_id)
+        self.assertEqual(row["intent"], "attend")
+        self.assertEqual(row["reason"], "ok")
+        self.assertEqual(len(trace["identity"]["decision_code_sha256"]), 64)
+        self.assertFalse(controller.diagnostics()["live_policy_warm_requested"])
+        blob = json.dumps(trace) + " ".join(logs.output)
+        for forbidden in ("private subject", "private reasoning", "private_reason"):
+            self.assertNotIn(forbidden, blob)
+
+    def test_decision_trace_retains_failure_and_bounds_history(self) -> None:
+        frame = _frame()
+        controller = _controller(generation_provider=lambda: int(frame.generation))
+        for _ in range(70):
+            controller._infer(
+                frame, trigger_kind="idle.reconsider", prompt_input={},
+                user_intent=False, started_generation=int(frame.generation),
+                cancel=threading.Event(),
+            )
+        rows = controller.diagnostics()["decision_trace"]["decisions"]
+        self.assertEqual(len(rows), 64)
+        self.assertEqual(rows[-1]["reason"], "no_client")
+        self.assertFalse(rows[-1]["inference_submitted"])
+        self.assertEqual(len({row["decision_id"] for row in rows}), 64)
+
+    def test_trace_distinguishes_model_failure_from_completed_cancellation(self) -> None:
+        frame = _frame()
+        controller = _controller(generation_provider=lambda: int(frame.generation))
+        client = _FakePolicyClient()
+        with patch.object(client, "chat_json", side_effect=RuntimeError("private failure")):
+            with self.assertRaises(RuntimeError):
+                controller._infer(
+                    frame, trigger_kind="idle.reconsider", prompt_input={},
+                    user_intent=False, started_generation=int(frame.generation),
+                    cancel=threading.Event(), client=client,
+                )
+        failed = controller.diagnostics()["decision_trace"]["decisions"][-1]
+        self.assertEqual(failed["reason"], "model_failure")
+        self.assertTrue(failed["inference_submitted"])
+        self.assertFalse(failed["inference_completed"])
+        self.assertNotIn("private failure", json.dumps(failed))
+        cancel = threading.Event()
+
+        def finish_cancelled(*args, **kwargs):
+            cancel.set()
+            return json.dumps(client.payload), _Usage()
+
+        with patch.object(client, "chat_json", side_effect=finish_cancelled):
+            controller._infer(
+                frame, trigger_kind="idle.reconsider", prompt_input={},
+                user_intent=False, started_generation=int(frame.generation),
+                cancel=cancel, client=client,
+            )
+        cancelled = controller.diagnostics()["decision_trace"]["decisions"][-1]
+        self.assertEqual(cancelled["reason"], "cancelled")
+        self.assertTrue(cancelled["inference_completed"])
+        self.assertFalse(cancelled["executed"])
+
     def test_worker_failure_is_distinct_from_silence(self) -> None:
         frame = _frame()
         controller = _controller(generation_provider=lambda: int(frame.generation))
@@ -143,6 +231,10 @@ class AdmissionRecordShapeTests(unittest.TestCase):
         )
         assert result is not None
         self.assertEqual(result.reason, "invalid_json")
+        row = controller.diagnostics()["decision_trace"]["decisions"][-1]
+        self.assertEqual(row["reason"], "invalid_json")
+        self.assertTrue(row["inference_completed"])
+        self.assertNotIn("The user has", json.dumps(row))
         rec = controller.last_admission
         assert rec is not None
         payload = rec.to_payload()

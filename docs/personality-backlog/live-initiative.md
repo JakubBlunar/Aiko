@@ -7,6 +7,37 @@ progress and its limitations are recorded below as separate phases.
 
 ## Implementation log
 
+### Phase 5: joinable decision traces (30 Sep 2026)
+
+**L19/L30 partial implementation.** The existing Live MCP snapshot now adds
+`decision_trace`: a 64-record content-free tail with process/controller IDs,
+decision IDs, loaded decision-code digest, prompt version, generation,
+trigger, floor/typing/turn state, speech budget, actual standard-builder menu
+IDs and durable cue IDs. Submission, completion, parsing/cancellation/failure,
+chosen intent, execution and main-wake rejection are separate fields. Each
+completed attempt also emits one structured `live decision` record into the
+existing rotating app log, so retained logs can join attempts across restarts.
+Custom prompt builders report an unknown menu rather than a fabricated one.
+
+The additive `live_policy_warm_requested` names what the old loaded flag
+actually measures; it does not assert model health. The digest fingerprints
+the loaded decision and prompt functions plus instructions, **not the whole
+checkout or a verified git revision**. No private subjects, dialogue, model
+reasoning, generated reason tags or invalid-output previews are written into
+the new trace; existing policy log lines also stop printing the latter two.
+Other legacy diagnostic fields are not a content-free export.
+
+**Still open:** a bounded SQLite/report surface beyond rotating-log retention,
+pre-policy gate/selection omissions, full build/route identity, candidate
+outcome ownership and delivery settlement. A completed inference is not an
+eligible opportunity or delivery. No prompt behavior, cadence or permissions
+changed in this slice.
+
+**Validation:** 392 Live tests; full parallel suite 12,073 passed, eight skipped,
+with only the existing MCP private-reach budget failure (471 > 466).
+`npm run lint` passed. Tests cover menu privacy, source joins, bounded history,
+invalid JSON, missing client, model failure and completed-but-cancelled calls.
+
 ### C6 pilot: companion-activity share (28 Sep 2026)
 
 The shipped C6 `companion_activity` pool cue now projects into Live as
@@ -112,6 +143,91 @@ that exceeds the policy model's remit.
 
 ## Evidence and limits
 
+### Field review: 30 Sep 2026
+
+**Read-only runtime review; no settings or behavior changes.** Retained
+`data/app.log` plus `.1` through `.5` span 27 Sep 01:24:31 through
+30 Sep 15:40:36 in local log time (UTC+02:00). This review selects
+28 Sep 00:00:00 through 30 Sep 15:40:36, not 48 measured hours of Live use.
+The first policy result in that window is at 28 Sep 17:43:26. Logs can span
+restarts and periods outside Live; retention coverage is not continuous
+availability. The main MCP snapshot was sampled at 30 Sep 13:40:32 UTC;
+worker and C6 snapshots and read-only SQLite queries followed separately.
+Only aggregate software evidence is recorded here, without conversation
+text, cue subjects, titles, device addresses or personal interpretations.
+
+**Rollout boundary.** The five phase/pilot commits above landed on 28 Sep
+between 21:07 and 21:44 local time. Of the results below, 252 occur after
+the final commit; all remain nonverbal. Commit time is not deployment time:
+the running import/build revision is unverified. In particular, the runtime's
+last prompt-region report lacks `transcript`, which the checkout emits even
+when empty. This repeats the earlier diagnostic mismatch; it does not prove
+that any particular prompt or phase was loaded. Do not call this a clean
+before/after trial of all five commits.
+
+| Observation | Measured result | What it establishes |
+| --- | --- | --- |
+| Retained policy funnel | 384 `live consider` and 384 canonical policy-result lines: 214 `attend`, 146 `acknowledge_user`, 23 successful `remain_present`, one `remain_present` rejected as `unknown_urge` | Zero recorded `request_main_speech`, `wait` or `noop` results. The main-speech deficit is upstream of delivery in this recorded path. |
+| Trigger mix | 207 activity-session changes, 85 user messages, 28 idle reconsiderations, 21 sleep changes, 20 activity-idle events, 12 session changes, eight silence wakes, three shared-commitment changes | Most decisions are reactive; total calls are not autonomous opportunities. |
+| Speech constraints | 193 decisions with `rare`, 168 with `normal`, 23 with `forbidden` | Restrictions matter, but cannot alone explain the absence of speech proposals. A normal budget is not proof of candidate eligibility or interruptibility. |
+| Autonomous candidate wake | All 28 `idle.reconsider` results are on 30 Sep with `normal` budget: 13 attend, 13 acknowledge, two remain-present | The new wake path is observable; waking alone did not produce substantive proposals. No candidate-level history proves which choices were available to each call. |
+| Policy elapsed time | Median 1,554 ms, nearest-rank p95 2,759 ms, maximum 11,129 ms, across 384 results | No evidence here that a wholesale policy timeout explains silence. This is reported policy elapsed time, not end-to-end speech latency. |
+| Current-process counters | 80 nonverbal executions; zero main-wake proposals, admissions, rejections, silence outcomes and proactive enqueues; zero recorded policy failures | This is not a two-day counter. `main_wake_proposed` increments after arbitration; the separate log scan is what checks pre-execution speech proposals. |
+| Candidate/source mismatch | Retained urge tail: 12 expired records, 11 cue-backed, all with `opportunity_seen=false`; no wait, main-wake token available. Later SQLite lookup: eight of those source cues still pending, unexpired and never surfaced; three already used | A durable cue can outlive its transient Live attempt. Current state is not a reconstruction of every historical opening; `opportunity_seen=false` also does not prove no model ever saw the cue. |
+| Candidate composition | Nine of the 11 retained pooled urges refer to curiosity seeds, two to knowledge-gap notices; all are `ask_about_result` | The sampled menu supply is narrow and question-shaped, not evidence of a diverse share/continue inventory. This tail is not the full trial's candidate distribution. |
+| C6 supply/freshness | One C6 draft log and one SQLite C6 row created in the window; two `companion_activity_block` inclusions, no Live handoff. At inspection all five returned historical C6 rows are expired; latest interpretation computed 28 Sep 22:47:07 UTC, about 39 hours old | C6 did supply ordinary-turn context, but not a sustained fresh Live source in this sample. Surfaced/inserted is not spoken or heard. |
+| C6 worker health | Enabled and registered; companion/activity-interpretation workers each report 551 process-local runs, zero errors and latest admission `idle` with zero pressure | Repeated worker invocations do not mean new observations or drafted cues. Current frame independently marks `c6` and `os_idle` stale. |
+| Connectivity | 30 connects, 30 disconnects, 51 owner-election lines; 11 disconnects leave zero clients. Latest preceding client-count record is zero for 12 idle reconsiderations and positive for 16 | Disconnection is relevant, but not sufficient to explain all 28 choices. These are log correlations, not synchronized availability snapshots or identified mobile/desktop cohorts. |
+
+**Confirmed mechanisms versus hypotheses.** The current
+[urge store](../../app/core/live/urge_store.py) keeps a source-evidence block
+after attempt expiry; its one deferred rescue is opening-dependent and
+bounded to 15 minutes. The one-shot wake does not establish durable decline,
+defer or retry ownership. The source-row mismatch makes **L21/L22 the
+strongest implementation follow-up**, without promising every pending cue a
+spoken turn. The adapter also pages eight rows before eligibility filtering,
+so the next review must trace selection omissions rather than infer them
+from a global pending count.
+
+The [compact situation renderer](../../app/core/live/prompt.py) shows
+commitment and recent event names but does not explicitly render the current
+trigger, user-intent age, source staleness or the turn/typing/floor fields.
+The retained impulse tail can include old user events without their age.
+**Hypothesis:** an idle candidate decision is being treated like continued
+acknowledgement of the last user interaction. The 13 idle acknowledgements
+make this worth a discriminating replay, but missing historical menus and an
+unverified deployed prompt prevent a causal verdict. More tokens or a
+stronger model alone are not an evidence-backed fix.
+
+C6's [producer](../../app/core/activity/companion_cue_worker.py) deduplicates
+by activity kind plus app, not by episode or cue expiry. A repeated signature
+does not redraft. That is a useful anti-repetition rule, but not a complete
+renewal policy for a later genuinely new episode. The old interpretation and
+expired stock do **not** justify periodically recycling stale desktop facts,
+especially when the active client provides no desktop activity feed.
+
+#### Ranked follow-up from this trial
+
+| Order / existing owner | Bounded next change | Discriminating acceptance check |
+| --- | --- | --- |
+| 1. [L19](#l19-explain-silence-across-the-entire-funnel) + [L30](#l30-replay-and-rollout-are-part-of-the-architecture) | Add process/build and prompt-schema identity; persist content-free opportunity, candidate/menu, trigger, gate and result IDs. Record actual menu inclusion and completed evaluation separately from wake scheduling. Use server-owned reason enums; model-generated reason strings are not safe categorical telemetry. Clarify that `live_policy_loaded` reflects `warm()`/`unload()`, not inference success. | Read-only report explains an empty menu, expired attempt, legitimate defer, worker failure and nonverbal choice separately across a restart. No dialogue/title/subject or raw reasoning is required. |
+| 2. [L21](#l21-durable-intentions-short-lived-action-attempts) + [L22](#l22-event-and-deadline-scheduling-with-a-liveness-guarantee) | Keep unresolved source intent separate from a 45-second action attempt. Give each declined/deferred or never-evaluated candidate a bounded next event/deadline or terminal reason. Apply eligibility/fairness before the menu page; do not reset all TTLs on heartbeat. | A cue arriving during more than 45 seconds of typing remains resolvable at a later opening; a nonverbal decision cannot orphan it. Consumed/expired source rows never resurrect; no periodic inference storm. |
+| 3. [L23](#l23-a-compact-4b-deliberator-with-useful-choices) | Explicitly render trigger, user-intent age, floor/turn state, candidate freshness and stale evidence. Offer distinct bounded share/continue/ask actions and a reasoned defer, while keeping a genuine fresh user message on the acknowledgement path. | Paired replay: identical grounded candidate with a fresh message versus a long quiet opening. Compare current and revised prompts with the real routed model; report speech/defer/nonverbal choices and false interruptions, not only valid JSON. Also test empty stock and forbidden speech. |
+| 4. [L20](#l20-availability-is-not-window-focus) + [L29](#l29-desktop-and-mobile-delivery-are-different-capabilities) | Feed known reachability and capability freshness into candidate scheduling. Park speech-only opportunities while no recipient is reachable, retain a bounded reconnect wake, and revalidate at dispatch. Preserve the existing enqueue/dispatch guard. | Zero-client intervals do not spend speech-only policy calls; reconnect schedules at most one fresh reconsideration. Two devices do not duplicate delivery. Unknown reachability stays unknown, not confidently present. |
+| 5. [L25](#l25-grounded-impulses-and-a-connected-curiosity-ledger) / C6 + [L27](#l27-an-extension-contract-for-producers-and-behaviors) | Diagnose source supply with observation age and explicit skip reasons. Preserve source purpose rather than defaulting everything to ask. Renew C6 only on fresh evidence of a new episode; add one verified completed-work result source after lifecycle/measurement works. | Same unchanged observation never regenerates a cue; a supported new episode can. Desktop-sensor absence on mobile does not become a current desktop assertion. Questions-disabled still admits a grounded share, never a disguised personal question. |
+| 6. [L24](#l24-transactional-brain-handoff-and-honest-completion) before enabling more speech | Finish attempt-to-delivery settlement, including post-enqueue disconnect and main-generation failure. | Queue acceptance, generated text, presented text and confirmed playback have distinct outcomes; retry cannot double-speak. This trial has no main-wake delivery samples, so it cannot certify that path. |
+
+**Next observation gate.** First verify the running revision and prompt schema,
+then replay synthetic positive/negative cases without altering live history.
+For the next opt-in field window, record available connected time and eligible
+candidate opportunities, split by capability cohort and source. Every
+unresolved candidate needs a next owner/deadline or an explicit terminal
+reason; every speech attempt needs a delivery outcome or `unknown`. Compare
+the 16 connected idle decisions only as this trial's bounded reference, not a
+target rate. Do not raise cadence, disable privacy/quiet gates or add a speech
+quota to make counters move. Richer context disclosure remains separately
+permissioned design work, not a change made by this review.
+
 ### Running snapshot
 
 A read-only `get_live_situation_frame` snapshot observed at
@@ -145,6 +261,13 @@ No private conversation, cue subjects, personal concepts, or activity titles
 are needed in the backlog or future reproduction fixtures.
 
 ### Source findings
+
+**Historical baseline from the initial 28 Sep review, before the phase commits
+above.** In particular, Phase 1 supersedes the wait-only heartbeat and
+premature opportunity-marking rows; Phase 3 supersedes false admission after
+enqueue failure. Their broader lifecycle/delivery concerns remain open. The
+dated field review above describes the newer observations, not a claim that
+those fixed mechanisms are still present.
 
 | Priority | Verified mechanism | Consequence and owner |
 | --- | --- | --- |

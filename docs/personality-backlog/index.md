@@ -51,6 +51,23 @@ the mechanical half of this — broken paths and, more usefully, heading anchors
 that stopped resolving when a heading was reworded on its way into `shipped/`.
 Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
 
+## 30 Sep 2026: Live field review
+
+**Analysis and backlog only.** The [dated field review](live-initiative.md#field-review-30-sep-2026)
+finds 384 retained policy results with no main-speech proposal, including 28
+idle reconsiderations that all choose nonverbal actions. Eight source cues
+behind the expired runtime urge tail remain pending and unexpired; C6 has
+only one newly drafted cue in the review window. Twelve idle decisions follow
+a zero-client record, but sixteen follow a connected-client record, so
+disconnection alone does not explain the sample.
+
+Prioritize joinable opportunity diagnostics and verified rollout identity
+(L19/L30), durable candidate resolution (L21/L22), and a temporally explicit
+policy menu (L23), then source freshness and capability-aware scheduling.
+The review preserves measurement limits, separates hypotheses from confirmed
+mechanisms, and gives bounded acceptance checks under the existing L19-L30
+owners. No runtime behavior, permissions or cadence were changed.
+
 ## 28 Sep 2026: Live initiative architecture
 
 **Architecture evaluation followed by a limited Phase 1 code change.** The

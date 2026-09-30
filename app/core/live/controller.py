@@ -28,6 +28,7 @@ from app.core.live.arbiter import (
     arbitrate_live_proposal,
 )
 from app.core.live.epochs import classify_epoch
+from app.core.live.diagnostics import LiveDecisionTrace, code_digest
 from app.core.live.fallback import (
     classify_execute_failure,
     legal_fallbacks,
@@ -59,8 +60,14 @@ from app.core.live.micro_utterance import (
     proposed_micro_text,
     validate_micro_utterance,
 )
-from app.core.live.prompt import LivePolicyPrompt, LivePolicyPromptAssembler
+from app.core.live.prompt import (
+    LIVE_POLICY_PROMPT_VERSION,
+    _INSTRUCTIONS,
+    LivePolicyPrompt,
+    LivePolicyPromptAssembler,
+)
 from app.core.live.proposal import LIVE_POLICY_JSON_SCHEMA, LivePolicyProposal
+from app.core.live.urge_menu import build_urge_menu
 from app.core.live.wait import (
     DEFAULT_WAIT_MS,
     MAX_WAIT_MS,
@@ -158,6 +165,15 @@ class LivePolicyController:
         self._attempted_fallback_ids: set[str] = set()
         self._policy_failure_count = 0
         self._last_policy_failure: dict[str, Any] | None = None
+        self._decision_trace = LiveDecisionTrace(
+            code_sha256=code_digest(
+                type(self)._infer_once, type(self)._maybe_execute,
+                LivePolicyPromptAssembler.assemble,
+                LivePolicyPromptAssembler._render_situation,
+                LivePolicyPromptAssembler._render_tail, _INSTRUCTIONS,
+            ),
+            prompt_version=LIVE_POLICY_PROMPT_VERSION,
+        )
 
     def consider(
         self,
@@ -215,6 +231,8 @@ class LivePolicyController:
 
     def diagnostics(self) -> dict[str, Any]:
         return {
+            "decision_trace": self._decision_trace.snapshot(),
+            "live_policy_warm_requested": bool(self._loaded),
             "last_policy_proposal": dict(self.last_proposal),
             "last_user_intent_admit": dict(self.last_user_intent_admit),
             "last_accepted_nonverbal": dict(self.last_accepted_nonverbal),
@@ -362,6 +380,38 @@ class LivePolicyController:
         client: Any | None = None,
     ) -> LiveArbiterResult | None:
         """Run one inference. Tests may call this on the calling thread."""
+        trace = self._decision_trace.begin(
+            generation=int(frame.generation), trigger=trigger_kind,
+        )
+        trace["speech_budget"] = frame.constraints.speech_budget
+        trace["floor_owner"] = frame.interaction.floor_owner
+        trace["turn_active"] = frame.interaction.turn_active
+        trace["typing_active"] = frame.interaction.typing_active
+        started = time.monotonic()
+        try:
+            result = self._infer_once(
+                frame, trigger_kind=trigger_kind, prompt_input=prompt_input,
+                user_intent=user_intent, started_generation=started_generation,
+                cancel=cancel, client=client, trace=trace,
+            )
+            trace["reason"] = result.reason if result is not None else "no_result"
+            return result
+        finally:
+            trace["elapsed_ms"] = round((time.monotonic() - started) * 1000.0, 1)
+            self._decision_trace.finish(trace)
+
+    def _infer_once(
+        self,
+        frame: LiveSituationFrame,
+        *,
+        trigger_kind: str,
+        prompt_input: dict[str, Any],
+        user_intent: bool,
+        started_generation: int,
+        cancel: threading.Event,
+        client: Any | None,
+        trace: dict[str, Any],
+    ) -> LiveArbiterResult | None:
         if cancel.is_set() or started_generation != self._current_generation():
             return LiveArbiterResult(False, "cancelled")
         client = client if client is not None else self._client()
@@ -412,6 +462,18 @@ class LivePolicyController:
                 prompt_ceiling=ceiling,
                 **assemble_kwargs,
             )
+        cue_ids = {
+            urge.urge_id: urge.cue_id for urge in prompt_input.get("urges") or ()
+        }
+        trace["menu"] = None if callable(self._prompt_builder) else [
+            {
+                "urge_id": item.urge_id, "kind": item.kind, "purpose": item.purpose,
+                "cue_id": cue_ids.get(item.urge_id),
+            }
+            for item in build_urge_menu(prompt_input.get("urges") or ())
+        ]
+        trace["prompt_regions"] = dict(prompt.region_tokens)
+        trace["inference_submitted"] = True
         model = self._model()
         options: dict[str, object] = {
             "temperature": float(temperature),
@@ -430,6 +492,7 @@ class LivePolicyController:
             surface="live_policy",
         )
         elapsed_ms = (time.monotonic() - t0) * 1000.0
+        trace["inference_completed"] = True
         prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
         if cancel.is_set() or started_generation != self._current_generation():
             result = LiveArbiterResult(False, "cancelled")
@@ -448,11 +511,9 @@ class LivePolicyController:
             preview = str(raw or "").replace("\n", " ")[:240]
             log.info(
                 "live policy proposal invalid: elapsed_ms=%.0f "
-                "prompt_tokens=%s preview=%s err=%s",
+                "prompt_tokens=%s",
                 elapsed_ms,
                 prompt_tokens,
-                preview,
-                exc,
             )
             extra = self._attach_admission(
                 frame, None, result,
@@ -464,6 +525,11 @@ class LivePolicyController:
             )
             return result
         proposal = replace(proposal, snapshot_generation=int(frame.generation))
+        trace["intent"] = proposal.intent
+        trace["reason"] = "execution_failure"
+        menu_ids = {item["urge_id"] for item in trace["menu"] or ()}
+        if proposal.selected_urge_id in menu_ids:
+            trace["selected_urge_id"] = proposal.selected_urge_id
         action = start_action(
             intent=proposal.intent,
             generation=int(frame.generation),
@@ -524,12 +590,11 @@ class LivePolicyController:
             ),
         )
         live_log.info(
-            "live policy proposal: intent=%s reason_code=%s "
+            "live policy proposal: intent=%s reason_code=policy_choice "
             "arbiter_reason=%s accepted=%s executed=%s talk_about=%s "
             "elapsed_ms=%.0f prompt_tokens=%s generation=%s trigger=%s "
             "speech_budget=%s",
             proposal.intent,
-            proposal.reason_code,
             result.reason,
             result.accepted,
             executed,
@@ -542,6 +607,9 @@ class LivePolicyController:
         )
         spoken = bool(extra.get("micro_spoken"))
         admitted = bool(extra.get("main_wake_admitted"))
+        trace["executed"] = bool(executed)
+        trace["main_wake_admitted"] = admitted
+        trace["main_wake_reject_reason"] = str(extra.get("main_wake_rejected") or "")
         self._store_result(
             proposal, result, elapsed_ms, prompt_tokens, prompt.region_tokens,
             shadow=(
