@@ -27,6 +27,7 @@ class SurfaceAttempt:
     claims: dict[tuple[int, int], SurfaceClaim] = field(default_factory=dict)
     declines: dict[str, str] = field(default_factory=dict)
     decision: dict[str, str] = field(default_factory=dict)
+    optional_choice: dict = field(default_factory=dict)
 
     def stage(self, owner: object, row, commit: Callable[[], None], *, block: str = "") -> None:
         claim = self.claims.setdefault(
@@ -61,6 +62,7 @@ class SurfaceAttempt:
             "attempt_id": self.identity,
             "declines": dict(self.declines),
             "decision": dict(self.decision),
+            "optional_choice": dict(self.optional_choice),
             "claims": [
                 {
                     "cue_id": claim.cue_id, "cue_type": claim.cue_type, "state": claim.state,

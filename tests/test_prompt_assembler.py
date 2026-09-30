@@ -29,6 +29,48 @@ from app.core.session.prompt_support import _SPEECH_GRAMMAR_ADDENDUM
 
 
 class ProviderOutcomeTests(unittest.TestCase):
+    def test_cross_type_choice_preserves_cached_prefix_and_unspent_losers(self) -> None:
+        from app.core.proactive.cue_store import CueStore
+        from app.core.session.cue_pool_mixin import CuePoolMixin
+
+        with _TempDb() as db:
+            store = CueStore(db)
+
+            class Host(CuePoolMixin):
+                _cue_store = store
+
+            host = Host()
+            drift = store.add("interest_drift", "lenses", "Drift candidate")
+            thought = store.add("second_thought", "lenses", "Specific unfinished thought")
+            assembler = _make_assembler(db, persona_text="Stable persona.")
+            assembler.set_inner_life_providers(
+                interest_drift=lambda text: host.take_pool_cue("interest_drift").text,
+                second_thought=lambda text: host.take_pool_cue("second_thought").text,
+                stance_admission=lambda offered, text, block: admits_offer(
+                    StanceInputs(blocks=offered, user_text=text), block,
+                ),
+                user_correction=lambda: "An owed repair",
+                task_cues=lambda: "An owed task result",
+                vocal_tone=lambda: "Stable affect sentinel",
+            )
+            prefixes = []
+            for text, preview in (("lenses", True), ("What are lenses?", True), ("lenses", False)):
+                _, telemetry = assembler.assemble_with_budget(
+                    "s1", text, context_window=32000, response_budget=512, preview=preview,
+                )
+                prefixes.append(telemetry.system_prompt.split("Stable affect sentinel")[0])
+                self.assertIn("An owed repair", telemetry.system_prompt)
+                self.assertIn("An owed task result", telemetry.system_prompt)
+                self.assertNotIn("Drift candidate", telemetry.system_prompt)
+                self.assertEqual(
+                    "Specific unfinished thought" in telemetry.system_prompt, "?" not in text,
+                )
+                self.assertEqual(store.get(drift).surfaced_count, 0)
+                self.assertEqual(store.get(thought).surfaced_count, 0 if preview else 1)
+            self.assertEqual(prefixes[0], prefixes[1])
+            self.assertEqual(prefixes[1], prefixes[2])
+            self.assertTrue(all("Stable persona." in prefix for prefix in prefixes))
+
     def test_media_context_is_nonsteering_and_survives_aggressive_assembly(self) -> None:
         from app.core.conversation.media_thread import MediaThreadStore
         from app.core.conversation.stance import OPTIONAL_OFFER_BLOCKS

@@ -268,6 +268,23 @@ class DesireTests(unittest.TestCase):
         self.assertEqual(d.stance, REDIRECT)
 
 
+def test_cross_type_substance_is_ranked_after_interruption_ceiling():
+    from app.core.conversation.stance import choose_pooled_offer, POOLED_CHOICE_BLOCKS
+
+    offered = frozenset(POOLED_CHOICE_BLOCKS)
+    assert choose_pooled_offer(StanceInputs(blocks=offered, user_text="lenses")) == (
+        "second_thought_block"
+    )
+    for text in ("What does that mean?", "That fixed it, thanks!"):
+        assert choose_pooled_offer(StanceInputs(blocks=offered, user_text=text)) == ""
+    assert choose_pooled_offer(StanceInputs(
+        blocks=offered | {"initiative_block"}, user_text="lenses",
+    )) == ""
+    assert choose_pooled_offer(StanceInputs(
+        blocks=offered, user_text="lenses", dialogue_act="vent",
+    )) == ""
+
+
 class AdmissionProviderTests(unittest.TestCase):
     def _host(self):
         from types import SimpleNamespace
@@ -310,6 +327,21 @@ class AdmissionProviderTests(unittest.TestCase):
             "curiosity_seeds_block",
         ))
         self.assertEqual(take_decline_notes(host), {})
+
+    def test_selection_trace_is_content_free(self) -> None:
+        from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
+
+        host = self._host()
+        attempt = SurfaceAttempt()
+        token = current_attempt.set(attempt)
+        try:
+            self.assertTrue(host._admit_stance_offer(
+                frozenset({"interest_drift_block"}), "private user words", "second_thought_block",
+            ))
+        finally:
+            current_attempt.reset(token)
+        self.assertEqual(attempt.optional_choice["winner"], "second_thought_block")
+        self.assertNotIn("private user words", str(attempt.snapshot()))
 
 
 class ProtectedArcTests(unittest.TestCase):

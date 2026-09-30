@@ -3836,6 +3836,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             for block_name, block_text in (
                 ("interest_drift_block", interest_drift_block),
                 ("associative_wander_block", associative_wander_block),
+                ("second_thought_block", second_thought_block),
+                ("interest_continuation_block", interest_continuation_block),
             ):
                 if not block_text:
                     continue
@@ -3847,6 +3849,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     system_parts = ["" if part == block_text else part for part in system_parts]
                     if block_name == "interest_drift_block":
                         interest_drift_block = ""
+                    elif block_name == "second_thought_block":
+                        second_thought_block = ""
+                    elif block_name == "interest_continuation_block":
+                        interest_continuation_block = ""
                     else:
                         associative_wander_block = ""
 
@@ -3882,6 +3888,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if "associative_wander_block" in handling_omissions:
             system_parts = [part for part in system_parts if part != associative_wander_block]
             associative_wander_block = ""
+        if "second_thought_block" in handling_omissions:
+            system_parts = [part for part in system_parts if part != second_thought_block]
+            second_thought_block = ""
         handling_notes_block = self._render_handling_notes(locals())
         if handling_notes_block:
             # The persona's handling notes for the blocks that actually

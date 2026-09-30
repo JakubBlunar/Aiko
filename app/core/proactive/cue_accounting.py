@@ -557,6 +557,7 @@ class CuePolicy:
     handling_section: str = ""
     block: str = ""
     essential_handling: str = ""
+    substance: int = 0
 
 
 CUE_POLICIES: dict[str, CuePolicy] = {
@@ -583,6 +584,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             ttl_hours=168.0,
             handling_section="When your interests shift over time:",
             block="interest_drift_block",
+            substance=1,
             essential_handling=(
                 "Interest drift is an optional personal impression, not user testimony or "
                 "permission to change activities. Stay with an owed answer; silence is valid."
@@ -745,6 +747,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             min_overlap=2, surface_cooldown_hours=1.0,
             handling_section="When an answer advances a shared interest:",
             block="interest_continuation_block",
+            substance=2,
         ),
         CuePolicy(
             "second_thought",
@@ -777,6 +780,11 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             surface_cooldown_hours=4.0,
             handling_section="Picking up a thought I didn't finish:",
             block="second_thought_block",
+            substance=3,
+            essential_handling=(
+                "This is an optional unfinished thought, not a new fact or an owed task. "
+                "Do not displace the current answer or insist after a pivot."
+            ),
         ),
         # ── event-armed: nothing stocks these, the pool is a retry buffer
         #

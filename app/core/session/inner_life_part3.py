@@ -1800,6 +1800,19 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         try:
             from app.core.conversation import stance as _stance
 
+            from app.core.session.surfacing_attempt import current_attempt
+
+            attempt = current_attempt.get()
+            if attempt is not None and block in _stance.POOLED_CHOICE_BLOCKS:
+                proposed = self._current_stance_inputs(offered | {block}, user_text)
+                attempt.optional_choice = {
+                    "candidates": sorted(proposed.blocks & _stance.POOLED_CHOICE_BLOCKS),
+                    "winner": _stance.choose_pooled_offer(
+                        proposed, protected_arc_turns=int(
+                            getattr(agent, "stance_protected_arc_turns", 4)
+                        ),
+                    ),
+                }
             admitted = _stance.admits_offer(
                 self._current_stance_inputs(offered, user_text), block,
                 protected_arc_turns=int(

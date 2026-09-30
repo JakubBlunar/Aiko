@@ -643,6 +643,19 @@ the picks want to be shared before it starts.
 
 ## K92. Conversational stance — one decision per turn, not ten permission slips
 
+**30 Sep 2026: cross-type staged selection extended.** The existing phase-3
+switch now arbitrates second thoughts, answer-earned interest continuations,
+interest drift, associative wandering and curiosity seeds. Admitted pool offers
+are compared without marking them surfaced; only final included claims commit.
+Interruption ceilings, competing initiative and imperative wants still win.
+Owed repairs, task results and nonsteering conversation context are retained.
+Selection and handling changes stay in T6; no earlier-tier block is moved or
+rewritten. Tests compare earlier prefix bytes, preview/non-consumption and
+existing retry semantics. The trace records candidate block names and winner,
+not cue text. Eager legacy providers remain outside this conversion; this is
+not a claim of global single-offer arbitration. Judgment-shadow output is not
+activated by this change. Existing turn/arc/explicit-completion signals apply.
+
 > **Open here: phase 3 only.** Phases 1–2 shipped; the motivation, design and
 > phasing below are kept because phase 3 is built on them, and the phase-1/2
 > findings are summarised at the end of this entry.
@@ -773,6 +786,15 @@ current stance prose renders only for `FOLLOW`, brevity and sequencing.
 ---
 
 ## K93. The substance floor — what she takes to the floor, not whether she takes it
+
+**30 Sep 2026: initial cross-type pool ranking implemented.** `CuePolicy.substance`
+is now read by K92's staged candidate selector, after the hard interruption
+filter: unfinished thought (3), answer-earned continuation (2), interest drift
+(1), association/seed (0). Equal tiers have deterministic ordering. These are
+coarse type priors, not semantic quality scores. A seed still wins when it is
+the only admissible choice. Relevance/cadence gates are not relaxed, the prompt
+gets no scores, and no historical `used` row is reinterpreted as initiative.
+Broader provider conversion and live comparative quality remain open.
 
 > **Open here: the cue-pool half only.** The ledger half shipped. The
 > measurements below are the ones that half was designed from and the cue-pool

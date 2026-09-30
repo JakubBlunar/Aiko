@@ -216,6 +216,11 @@ _OFFER_OF: dict[str, str] = {
     for block in blocks
 }
 OPTIONAL_OFFER_BLOCKS = frozenset(_OFFER_OF)
+POOLED_CHOICE_BLOCKS = frozenset({
+    "second_thought_block", "interest_drift_block", "associative_wander_block",
+    "curiosity_seeds_block",
+    "interest_continuation_block",
+})
 
 
 # ── demand: what the user's turn permits ─────────────────────────────
@@ -592,8 +597,34 @@ def admits_offer(
     if block not in _OFFER_OF:
         return False
     proposed = replace(inputs, blocks=inputs.blocks | {block})
+    if block in POOLED_CHOICE_BLOCKS:
+        return choose_pooled_offer(proposed, protected_arc_turns=protected_arc_turns) == block
     decision = decide(proposed, protected_arc_turns=protected_arc_turns)
     return decision.stance == _OFFER_OF[block] and decision.reason == block
+
+
+def choose_pooled_offer(
+    inputs: StanceInputs, *, protected_arc_turns: int = PROTECTED_ARC_FRESH_TURNS,
+) -> str:
+    """Compare admitted cross-type offers, without consuming or rewriting them."""
+    from app.core.proactive.cue_accounting import CUE_POLICIES
+
+    ceiling, _reason = compute_ceiling(inputs, protected_arc_turns=protected_arc_turns)
+    candidates = inputs.blocks & POOLED_CHOICE_BLOCKS
+    candidates = {name for name in candidates if _RANK[_OFFER_OF[name]] <= _RANK[ceiling]}
+    if not candidates:
+        return ""
+    tiers = {policy.block: policy.substance for policy in CUE_POLICIES.values()}
+    winner = min(candidates, key=lambda name: (
+        -tiers.get(name, 0), name == "curiosity_seeds_block", name,
+    ))
+    other = decide(
+        replace(inputs, blocks=inputs.blocks - POOLED_CHOICE_BLOCKS),
+        protected_arc_turns=protected_arc_turns,
+    )
+    if _RANK[other.desire] >= _RANK[_OFFER_OF[winner]]:
+        return ""
+    return winner
 
 
 def render_block(

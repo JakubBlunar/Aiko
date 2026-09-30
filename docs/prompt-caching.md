@@ -59,6 +59,13 @@ The full assignment lives in `_PROMPT_BLOCK_TIERS` near the top of
 `PromptAssembler.assemble_with_budget`. The cross-tier invariants are
 locked in by `tests/test_prompt_assembler.py::PromptCachePrefixOrderingTests`.
 
+The K92/K93 staged pooled selector changes only T6 optional blocks and their
+T6 handling notes. Candidate metadata and substance ranks stay in diagnostics,
+not earlier tiers or the model prompt. Regression tests hold T0-T5 bytes fixed
+while changing the selected offer. This does not promise a provider cache hit:
+normal retrieval/history changes, expiry and context-budget pressure can still
+change the effective prefix, especially T3 near the context limit.
+
 ### Hoisting conditional instructions out of T0 (the handling-notes split)
 
 The persona is the biggest T0 block and the cheapest cache anchor we
