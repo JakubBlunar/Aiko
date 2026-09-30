@@ -359,6 +359,7 @@ class AgentSettings:
     # Off → the provider stays empty. Window / cap / cooldown live under
     # MemorySettings.
     upcoming_horizon_enabled: bool = True
+    calendar_anticipation_enabled: bool = False
     # ── K61 personality backlog: knowledge-grounding steer ────────────
     # Master switch for the ``knowledge_grounding`` inner-life block
     # (:meth:`InnerLifeProvidersMixin._render_knowledge_grounding_block`).

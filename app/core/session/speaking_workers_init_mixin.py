@@ -787,6 +787,7 @@ class SpeakingWorkersInitMixin:
             self_callback=self._render_self_callback_block,
             second_thought=self._render_second_thought_block,
             interest_continuation=self._render_interest_continuation_block,
+            calendar_anticipation=self._render_calendar_anticipation_block,
             delivery_provenance=lambda: self.delivery_ledger().render(),
             aspiration_momentum=self._render_aspiration_momentum_block,
             tension=self._render_tension_block,

@@ -120,6 +120,7 @@ class CuePoolMixin:
         note_as: str | None = REASON_TOPIC_MISS,
         user_text: str = "",
         cue_id: int | None = None,
+        still_valid: Callable[[dict[str, Any]], bool] | None = None,
     ) -> "CueRow | None":
         """Claim one pending cue for the prompt, or ``None``.
 
@@ -228,6 +229,8 @@ class CuePoolMixin:
         def commit_claim():
             if store.available(row.id) is None:
                 raise ValueError("cue_unavailable")
+            if still_valid is not None and not still_valid(row.payload):
+                raise ValueError("cue_source_changed")
             if not store.mark_surfaced(row.id):
                 raise RuntimeError("cue_claim_failed")
             self._register_surfaced_cue(row)

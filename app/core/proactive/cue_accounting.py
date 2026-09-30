@@ -396,6 +396,7 @@ CUE_SPECS: dict[str, CueSpec] = {
         # it can be inspected before the pass has run.
         CueSpec("second_thought"),
         CueSpec("interest_continuation"),
+        CueSpec("calendar_anticipation"),
         CueSpec(
             "aspiration_momentum",
             journal_key="aiko.aspiration_momentum",
@@ -748,6 +749,18 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             handling_section="When an answer advances a shared interest:",
             block="interest_continuation_block",
             substance=2,
+        ),
+        CuePolicy(
+            "calendar_anticipation", inventory_target=2, ttl_hours=48.0,
+            max_surfacings=1, max_asks=1, fulfilment=FULFILMENT_SPOKEN,
+            min_overlap=2, surface_cooldown_hours=24.0,
+            handling_section="When a confirmed calendar event approaches:",
+            block="calendar_anticipation_block", substance=4,
+            essential_handling=(
+                "An optional brief acknowledgment of a confirmed local event, not an alarm "
+                "or an owed task. Answer the user first. Do not invent feelings, outcomes, "
+                "preparation duties or an external booking; stop after a pivot."
+            ),
         ),
         CuePolicy(
             "second_thought",

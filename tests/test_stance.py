@@ -273,6 +273,11 @@ def test_cross_type_substance_is_ranked_after_interruption_ceiling():
 
     offered = frozenset(POOLED_CHOICE_BLOCKS)
     assert choose_pooled_offer(StanceInputs(blocks=offered, user_text="lenses")) == (
+        "calendar_anticipation_block"
+    )
+    assert choose_pooled_offer(StanceInputs(
+        blocks=offered - {"calendar_anticipation_block"}, user_text="lenses",
+    )) == (
         "second_thought_block"
     )
     for text in ("What does that mean?", "That fixed it, thanks!"):

@@ -35,7 +35,7 @@ Behavioral activation and model-quality evaluation remain open.
 | K9 | Topic-graph browser + clustering | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface) + [awareness.md → F10](shipped/awareness.md#f10-topic-graph-utilisation-rag--prompt--knowledge-integration) (multi-hop retrieval deferred as **F10c**) |
 | K10 | Persona regression tests | ✅ shipped (incl. the background auto-eval worker) — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped) |
 | K11 | Counterfactual / pre-thought cache | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k11-counterfactual--pre-thought-cache--shipped) |
-| K12 | Calendar-linked anticipation | ❌ open |
+| K12 | Calendar-linked anticipation | Opt-in local calendar and approaching-event pilot shipped; UI/sync/evaluation open |
 | K13 | Stylometric mirror | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
 | K14 | Implicit engagement signals | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
 | K15 | Self-disclosure / vulnerability budget | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k15-self-disclosure--vulnerability-budget) |
@@ -130,8 +130,30 @@ Behavioral activation and model-quality evaluation remain open.
 
 ## K12. Calendar-linked anticipation
 
-Combine H2 (time context) + D1 (reminders) + the temporal-memory
-`future_plan` kind: if Aiko knows "Jacob has an interview Friday",
+**30 Sep 2026: local calendar and anticipation pilot implemented.** SQLite schema
+v46 adds user-scoped one-off events with validated absolute start/end times,
+idempotent creation, revisioned updates and cancellation. The opt-in `calendar`
+tool exposes list/get/create/update/cancel through the existing tool registry;
+no plugin or external credentials are required. A non-LLM idle worker publishes
+at most two upcoming events inside 48 hours through the cue pool, one cue per
+event revision. The T6 provider checks status, revision and the time window,
+suppresses correction/cancellation turns, and stages consumption until inclusion.
+K92 applies the interruption ceiling before K93 gives these confirmed near-term
+plans a type prior of 4. One showing per revision and a 24-hour type cadence
+bound repetition. Failed claim-time revalidation does not spend the cue; prompt
+assembly is still a snapshot, not an atomic lock over subsequent calendar edits.
+
+Both `tools.calendar` and `agent.calendar_anticipation_enabled` default false.
+See [setup and limits](../tools.md#local-calendar-k12). No per-turn countdown,
+candidate rank or event content is added to T0-T5. These are deterministic
+storage/routing tests, not evidence of natural generated anticipation. UI,
+recurrence, all-day events, restoration of cancelled events, external sync,
+alarms, automatic extraction and real-model evaluation remain open. The old
+memory-based upcoming-horizon path is unchanged; no implicit calendar/memory
+merging or backfill is attempted.
+
+**Original proposal.** Combine H2 (time context) + D1 (reminders) + the temporal-memory
+`future_plan` kind: if Aiko knows "the user has an interview Friday",
 weight it higher as Friday approaches (e.g. score `+= 0.05` when
 `event_time - now < 48h`). Mostly a retrieval-side change once the
 temporal scaffolding is in. Key files:
@@ -802,7 +824,8 @@ current stance prose renders only for `FOLLOW`, brevity and sequencing.
 
 **30 Sep 2026: initial cross-type pool ranking implemented.** `CuePolicy.substance`
 is now read by K92's staged candidate selector, after the hard interruption
-filter: unfinished thought (3), answer-earned continuation (2), interest drift
+filter: confirmed near-term calendar event (4), unfinished thought (3),
+answer-earned continuation (2), interest drift
 (1), association/seed (0). Equal tiers have deterministic ordering. These are
 coarse type priors, not semantic quality scores. A seed still wins when it is
 the only admissible choice. Relevance/cadence gates are not relaxed, the prompt

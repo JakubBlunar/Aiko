@@ -1677,6 +1677,15 @@ Live2D (Alexia) rendering knobs. The avatar files live at `avatar.root_dir` (git
 
 Agent tool registry switches. Each toggles a single tool; `tools.enabled = false` disables the whole registry.
 
+- `tools.calendar` *(bool, `false`)* - local one-off calendar CRUD, independent
+  from the anticipation switch. No external booking, sync or alarms. See
+  [local calendar](tools.md#local-calendar-k12).
+- `agent.calendar_anticipation_enabled` *(bool, `false`)* - no-LLM idle producer
+  for confirmed calendar events starting within 48 hours. At most two stocked
+  cues, one showing per revision, 24-hour cadence, source-revision checks and
+  T6-only K92/K93 arbitration. Requires the idle scheduler and cue store. This
+  switch belongs in the `agent` block, not `tools`.
+
 - `tools.enabled` *(bool, `true`)* — master switch for **all** agent tools. Off → Aiko has no tool-calling capability at all (no time lookups, no recall, no web search, no world manipulation).
 - `tools.get_time` *(bool, `true`)* — time/date lookup tool.
 - `tools.recall` *(bool, `true`)* — explicit memory-recall tool (in addition to automatic RAG).

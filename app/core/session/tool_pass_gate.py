@@ -87,6 +87,7 @@ class GateDecision:
 # tools supply their own name→family at runtime via
 # ``TurnRunner.set_plugin_tool_gate``.
 _TOOL_FAMILY: dict[str, str] = {
+    "calendar": "calendar",
     # builtins
     "get_time": "time",
     "recall": "recall",
@@ -141,6 +142,11 @@ def _compile(words: Iterable[str]) -> re.Pattern[str]:
 # one compiled alternation; ``matched`` on the decision records which
 # families fired for observability.
 _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
+    "calendar": _compile([
+        r"calendar", r"appointment", r"appointments", r"schedule", r"scheduled",
+        r"reschedule", r"meeting", r"event", r"events", r"cancel", r"plans",
+        r"coming up", r"what(?:'s| is) next",
+    ]),
     "time": _compile([
         r"what time", r"the time", r"time is it", r"current time",
         r"what day", r"which day", r"what date", r"the date",

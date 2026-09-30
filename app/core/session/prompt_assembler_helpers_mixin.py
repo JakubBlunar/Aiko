@@ -245,6 +245,7 @@ class PromptAssemblerHelpersMixin:
         self_callback: Callable[[], str] | None = None,
         second_thought: Callable[[str], str] | None = None,
         interest_continuation: Callable[[str], str] | None = None,
+        calendar_anticipation: Callable[[str], str] | None = None,
         delivery_provenance: Callable[[], str] | None = None,
         aspiration_momentum: Callable[[], str] | None = None,
         tension: Callable[[], str] | None = None,
@@ -444,6 +445,8 @@ class PromptAssemblerHelpersMixin:
             self._second_thought_provider = second_thought
         if interest_continuation is not None:
             self._interest_continuation_provider = interest_continuation
+        if calendar_anticipation is not None:
+            self._calendar_anticipation_provider = calendar_anticipation
         if delivery_provenance is not None:
             self._delivery_provenance_provider = delivery_provenance
         if aspiration_momentum is not None:

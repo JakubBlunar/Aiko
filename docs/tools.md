@@ -78,6 +78,45 @@ Switches: `tools.web_search` (the family, shared with the background
 workflow skill) and `search.brain_tool_enabled` (this lane alone — turn
 it off to get the latency back and keep the background lanes).
 
+## Local calendar (K12)
+
+The `calendar` tool manages local, one-off appointments in SQLite, separately
+from goals and reminders. It supports `list`, `get`, `create`, `update` and
+`cancel`. Mutations require an explicit user request; the tool schema tells
+the model to ask about ambiguous dates, offsets, durations or event matches.
+This is a model instruction, not an independent approval dialog. Start and end
+must be ISO-8601 timestamps with timezone offsets; results are returned in UTC.
+List/get supply the IDs required to change or cancel an event. Listing defaults
+to the next 30 days, capped at 100 entries; narrow the interval for crowded
+calendars. Cancellation is persistent and idempotent.
+
+Enable by merging these keys into `config/user.json`, then restarting the app:
+
+```json
+{
+  "tools": {"calendar": true},
+  "agent": {"calendar_anticipation_enabled": true}
+}
+```
+
+The flags are independent and both default false. `tools.enabled` must also be
+true to expose CRUD. Anticipation requires the existing idle scheduler and cue
+store; it makes no chat-generation call and creates no alarm. During idle time it queues
+at most two confirmed events starting within 48 hours, with one showing per
+event revision and a 24-hour cadence. T6 arbitration may withhold the cue for a
+question, support conversation, completed exchange or stronger existing move.
+Preview/retry/omitted candidates do not consume a showing. Calendar status and
+revision are rechecked before rendering and before claiming; edits after a
+prompt snapshot can still race that snapshot. Turn-specific event content and
+ranking do not enter earlier cached tiers. The existing tool router still
+controls which static schemas are exposed on a given turn.
+
+Example request: "Add a portfolio review on October 1, 2026, from 10:00 to 11:00
+at UTC+02:00 to my local calendar." Use list/get to inspect the saved result.
+There is no external booking, invitation, sync, alarm, recurrence, all-day event,
+calendar UI or reopening of cancelled events in this pilot. Existing dated
+memories are not imported, and the separate upcoming-memory cue is unchanged.
+
 ## Weather tools
 
 Real-world weather (`config.weather`; independent of the passive ambient

@@ -29,6 +29,65 @@ from app.core.session.prompt_support import _SPEECH_GRAMMAR_ADDENDUM
 
 
 class ProviderOutcomeTests(unittest.TestCase):
+    def test_calendar_anticipation_is_t6_staged_and_prefix_stable(self) -> None:
+        from datetime import datetime, timezone
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from app.core.goals.calendar import CalendarStore
+        from app.core.proactive.calendar_anticipation import CalendarAnticipationWorker
+        from app.core.proactive.cue_store import CueStore
+        from app.core.session.conversation_situation_mixin import ConversationSituationMixin
+        from app.core.session.cue_pool_mixin import CuePoolMixin
+
+        with _TempDb() as db, patch(
+            "app.core.infra.timephrase.utcnow",
+            return_value=datetime(2026, 9, 30, tzinfo=timezone.utc),
+        ):
+            class Host(ConversationSituationMixin, CuePoolMixin):
+                pass
+
+            host = Host()
+            host._chat_db, host._user_id = db, "owner"
+            host._settings = SimpleNamespace(agent=SimpleNamespace(
+                calendar_anticipation_enabled=True,
+            ))
+            host._cue_store = CueStore(db, user_id="owner")
+            calendar = CalendarStore(db, "owner")
+            event = calendar.create(
+                title="Portfolio review", starts_at="2026-10-01T08:00:00Z",
+                ends_at="2026-10-01T09:00:00Z",
+            )
+            worker = CalendarAnticipationWorker(
+                calendar_provider=lambda: calendar, pool_provider=lambda: host._cue_store,
+                enabled_provider=lambda: True,
+            )
+            worker.run()
+            row = host._cue_store.pending(worker.name)[0]
+            assembler = _make_assembler(db, persona_text="Stable persona.")
+            assembler.set_inner_life_providers(
+                calendar_anticipation=host._render_calendar_anticipation_block,
+                stance_admission=lambda offered, text, block: admits_offer(
+                    StanceInputs(blocks=offered, user_text=text), block,
+                ),
+                vocal_tone=lambda: "Stable affect sentinel",
+            )
+            prefixes = []
+            for text, preview in (
+                ("A quiet afternoon", True), ("How does this work?", True),
+                ("Cancel my review", True), ("That fixed it, thanks!", True),
+                ("A quiet afternoon", False),
+            ):
+                _, telemetry = assembler.assemble_with_budget(
+                    "chat", text, context_window=32000, response_budget=512, preview=preview,
+                )
+                prefixes.append(telemetry.system_prompt.split("Stable affect sentinel")[0])
+                self.assertEqual("Portfolio review" in telemetry.system_prompt, "quiet" in text)
+                self.assertEqual(host._cue_store.get(row.id).surfaced_count, 0 if preview else 1)
+            self.assertEqual(len(set(prefixes)), 1)
+            self.assertEqual(_BLOCK_TIER_OF["calendar_anticipation_block"], "T6_detectors")
+            calendar.update(event["id"], cancel=True)
+            self.assertEqual(host._render_calendar_anticipation_block("A quiet afternoon"), "")
+
     def test_cross_type_choice_preserves_cached_prefix_and_unspent_losers(self) -> None:
         from app.core.proactive.cue_store import CueStore
         from app.core.session.cue_pool_mixin import CuePoolMixin
@@ -41,7 +100,7 @@ class ProviderOutcomeTests(unittest.TestCase):
 
             host = Host()
             drift = store.add("interest_drift", "lenses", "Drift candidate")
-            thought = store.add("second_thought", "lenses", "Specific unfinished thought")
+            thought = store.add("second_thought", "camera framing", "Specific unfinished thought")
             assembler = _make_assembler(db, persona_text="Stable persona.")
             assembler.set_inner_life_providers(
                 interest_drift=lambda text: host.take_pool_cue("interest_drift").text,

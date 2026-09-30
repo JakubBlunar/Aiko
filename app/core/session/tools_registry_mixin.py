@@ -54,6 +54,13 @@ class ToolsRegistryMixin:
 
         registry = ToolRegistry()
         try:
+            if (
+                getattr(tools_cfg, "calendar", False)
+                and getattr(self, "_chat_db", None) is not None
+            ):
+                from app.llm.tools.calendar import CalendarTool
+
+                registry.register(CalendarTool(self._chat_db, self._user_id, self.session_key))
             from app.llm.tools.builtins import (
                 GetTimeTool,
                 RecallConceptTool,

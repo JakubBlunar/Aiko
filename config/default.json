@@ -520,6 +520,7 @@
     "topic_mood_origin_enabled": true,
     "topic_confidence_enabled": true,
     "upcoming_horizon_enabled": true,
+    "calendar_anticipation_enabled": false,
     "cluster_scoped_memory_hygiene_enabled": true,
     "topic_tracking_enabled": true,
     "knowledge_topic_extraction_enabled ": false,
@@ -545,6 +546,7 @@
     "web_search": true,
     "world": true,
     "goals": true,
+    "calendar": false,
     "weather": true,
     "activity": true
   },

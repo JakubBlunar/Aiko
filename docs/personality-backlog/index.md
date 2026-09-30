@@ -575,7 +575,15 @@ see [`shipped/moments.md`](shipped/moments.md).
 
 ### K. Patterns to explore — [`patterns.md`](patterns.md)
 
-Still open: K12 calendar-linked anticipation ·
+**30 Sep 2026 update:** K12 now has an opt-in local calendar and approaching-event
+pilot; K62 retains explicit media progress across sessions per user. K92/K93
+now select among six staged pooled cue types with content-free diagnostics and
+T6-only changes, rather than globally converting eager providers. K96 records
+content-free failure categories and has concrete client-wrapper tests; its old
+live failure was not reproduced. Setup, safeguards and remaining limits are in
+[patterns](patterns.md).
+
+Still open: broader K12 calendar UI/sync and evaluation ·
 K19 cold-start companion onboarding ·
 K33 cozy mode ·
 K40 comfortable silence · K41 mid-stream self-correction ·

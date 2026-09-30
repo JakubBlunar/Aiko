@@ -247,6 +247,9 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             upcoming_horizon_enabled=bool(
                 agent_raw.get("upcoming_horizon_enabled", True),
             ),
+            calendar_anticipation_enabled=bool(
+                agent_raw.get("calendar_anticipation_enabled", False),
+            ),
             cluster_scoped_memory_hygiene_enabled=bool(
                 agent_raw.get("cluster_scoped_memory_hygiene_enabled", True),
             ),

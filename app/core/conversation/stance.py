@@ -174,6 +174,7 @@ _OFFERS: dict[str, tuple[str, ...]] = {
         # move is the same one and it spends the floor the same way.
         "second_thought_block",
         "interest_continuation_block",
+        "calendar_anticipation_block",
         "long_arc_callback_block",
         "follow_up_block",
         "inside_joke_block",
@@ -220,6 +221,7 @@ POOLED_CHOICE_BLOCKS = frozenset({
     "second_thought_block", "interest_drift_block", "associative_wander_block",
     "curiosity_seeds_block",
     "interest_continuation_block",
+    "calendar_anticipation_block",
 })
 
 

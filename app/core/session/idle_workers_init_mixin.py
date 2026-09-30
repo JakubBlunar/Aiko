@@ -51,6 +51,17 @@ class IdleWorkersInitMixin:
         return self._pursuit_notes
 
     def _init_idle_workers(self, settings: AppSettings) -> None:
+        if self._idle_scheduler is not None and getattr(self, "_chat_db", None) is not None:
+            from app.core.goals.calendar import CalendarStore
+            from app.core.proactive.calendar_anticipation import CalendarAnticipationWorker
+
+            self._idle_scheduler.register(CalendarAnticipationWorker(
+                calendar_provider=lambda: CalendarStore(self._chat_db, self._user_id),
+                pool_provider=lambda: getattr(self, "_cue_store", None),
+                enabled_provider=lambda: bool(
+                    getattr(self._settings.agent, "calendar_anticipation_enabled", False)
+                ),
+            ))
         if (
             self._idle_scheduler is not None
             and self._memory_store is not None

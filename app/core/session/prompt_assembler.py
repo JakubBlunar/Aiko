@@ -286,6 +286,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # shared_ritual -> second_thought) stay intact.
         "companion_activity_block",
         "interest_continuation_block",
+        "calendar_anticipation_block",
         "delivery_provenance_block",
         "media_context_block",
         # P44 measurement moved these two down from T0/T1. Both looked
@@ -1022,6 +1023,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # relevance problem ``long_arc_callback`` has.
         self._second_thought_provider: Callable[[str], str] | None = None
         self._interest_continuation_provider: Callable[[str], str] | None = None
+        self._calendar_anticipation_provider: Callable[[str], str] | None = None
         self._media_context_provider: Callable[[str], str] | None = None
         self._delivery_provenance_provider: Callable[[], str] | None = None
         # L14 aspiration-momentum cue. Consumer of the
@@ -2390,6 +2392,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     log.debug("media context provider raised", exc_info=True)
 
         interest_continuation_block = ""
+        calendar_anticipation_block = ""
+        if self._calendar_anticipation_provider is not None:
+            calendar_anticipation_block = _safe_provider(
+                lambda: self._calendar_anticipation_provider(user_text),
+                timing_sink=provider_ms, timing_name="calendar_anticipation",
+            )
         if getattr(self, "_interest_continuation_provider", None) is not None:
             with _timed_phase(provider_ms, "interest_continuation"):
                 try:
@@ -3583,6 +3591,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts.append(companion_activity_block)
         if interest_continuation_block:
             system_parts.append(interest_continuation_block)
+        if calendar_anticipation_block:
+            system_parts.append(calendar_anticipation_block)
         if delivery_provenance_block:
             system_parts.append(delivery_provenance_block)
         if media_context_block:
@@ -3838,6 +3848,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 ("associative_wander_block", associative_wander_block),
                 ("second_thought_block", second_thought_block),
                 ("interest_continuation_block", interest_continuation_block),
+                ("calendar_anticipation_block", calendar_anticipation_block),
             ):
                 if not block_text:
                     continue
@@ -3853,6 +3864,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                         second_thought_block = ""
                     elif block_name == "interest_continuation_block":
                         interest_continuation_block = ""
+                    elif block_name == "calendar_anticipation_block":
+                        calendar_anticipation_block = ""
                     else:
                         associative_wander_block = ""
 
@@ -3891,6 +3904,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if "second_thought_block" in handling_omissions:
             system_parts = [part for part in system_parts if part != second_thought_block]
             second_thought_block = ""
+        if "calendar_anticipation_block" in handling_omissions:
+            system_parts = [part for part in system_parts if part != calendar_anticipation_block]
+            calendar_anticipation_block = ""
         handling_notes_block = self._render_handling_notes(locals())
         if handling_notes_block:
             # The persona's handling notes for the blocks that actually

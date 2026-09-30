@@ -368,6 +368,35 @@ class ConversationSituationMixin:
         row = self.take_pool_cue("interest_continuation", user_text=user_text)
         return row.text if row is not None else ""
 
+    def _render_calendar_anticipation_block(self, user_text: str = "") -> str:
+        import re
+
+        from app.core.goals.calendar import CalendarStore
+        from app.core.proactive.calendar_anticipation import still_upcoming
+
+        agent = getattr(getattr(self, "_settings", None), "agent", None)
+        db = getattr(self, "_chat_db", None)
+        if (
+            db is None or not getattr(agent, "calendar_anticipation_enabled", False)
+            or getattr(agent, "live_quiet", False)
+            or re.search(
+                r"\b(cancel\w*|reschedul\w*|postpon\w*|move|change|delete|remove|stop|"
+                r"don't|do not|not going|called off|can't|cannot)\b", user_text, re.IGNORECASE,
+            )
+        ):
+            return ""
+        calendar = CalendarStore(db, self._user_id)
+
+        def valid(payload):
+            return still_upcoming(calendar, payload)
+
+        row = self.take_pool_cue(
+            "calendar_anticipation", relevant=valid, still_valid=valid, user_text=user_text,
+        )
+        if row is None:
+            return ""
+        return row.text
+
     def _render_media_context_block(self, user_text: str) -> str:
         from app.core.conversation.media_thread import MediaThreadStore
 
