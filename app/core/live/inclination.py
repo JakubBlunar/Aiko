@@ -7,7 +7,7 @@ from dataclasses import replace
 from app.core.live.budget import LiveBehaviorBudget
 from app.core.live.cue_adapter import CueUrgeAdapter
 from app.core.live.frame import LiveSituationFrame, SLEEP_SPEECH_FORBID
-from app.core.live.main_wake import main_wake_floor_busy
+from app.core.live.main_wake import admit_main_wake, main_wake_floor_busy
 from app.core.live.notice import notices_from_trigger
 from app.core.live.urge_store import LiveUrgeStore
 from app.core.live.wait import LiveWaitScheduler
@@ -114,6 +114,22 @@ class LiveInclinationRuntime:
         self._previous_frame = stamped
         return stamped
 
+    def eligible_policy_urges(
+        self, frame: LiveSituationFrame, *, menu_ids: set[str], now_mono_ms: float,
+        unprompted_speech: bool, user_intent: bool,
+    ) -> tuple[str, ...]:
+        remaining = self.budget.remaining("main_wake", now_mono_ms=now_mono_ms)
+        return tuple(
+            urge.urge_id for urge in self.urges.active()
+            if urge.cue_id is not None and urge.urge_id in menu_ids
+            and not admit_main_wake(
+                intent="request_main_speech", user_intent=user_intent,
+                selected_urge_id=urge.urge_id, urges=(urge,), frame=frame,
+                decided_generation=None, now_mono_ms=now_mono_ms,
+                budget_remaining=remaining, unprompted_speech=unprompted_speech,
+            )
+        )
+
     def _stamp(
         self,
         frame: LiveSituationFrame,
@@ -141,6 +157,13 @@ class LiveInclinationRuntime:
             next_ms = max(0, int(wait.deadline_monotonic_ms - now_mono_ms))
         elif budget.next_replenish_ms:
             next_ms = budget.next_replenish_ms
+        else:
+            deadlines = [
+                urge.next_reconsideration_ms for urge in self.urges.all_urges()
+                if urge.state == "deferred" and urge.next_reconsideration_ms > 0
+            ]
+            if deadlines:
+                next_ms = max(0, int(min(deadlines) - now_mono_ms))
         aiko = replace(
             frame.aiko,
             candidate_urges=tuple(urge.urge_id for urge in active),

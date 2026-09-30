@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.core.conversation.conversation_situation import (
     ConversationSituationSnapshot,
@@ -94,6 +94,76 @@ class NoticeTests(unittest.TestCase):
 
 
 class UrgeStoreTests(unittest.TestCase):
+    def test_valid_source_outlives_short_attempt_and_long_busy_period(self) -> None:
+        row = SimpleNamespace(
+            id=9, cue_type="away_activities", subject="a finished project",
+            last_surfaced_at=None, expires_at=(_now() + timedelta(hours=2)).isoformat(),
+        )
+        rows = [row]
+        store = LiveUrgeStore()
+        adapter = CueUrgeAdapter(pending_provider=lambda: rows)
+        with patch("app.core.live.cue_adapter.timephrase.utcnow", return_value=_now()):
+            first = adapter.project(store, now_mono_ms=1_000)[0]
+            store.expire_due(1_100_000)
+            self.assertEqual(store.all_urges()[0].state, "deferred")
+            self.assertEqual(adapter.project(store, now_mono_ms=1_101_000), ())
+            rows.clear()
+            self.assertEqual(adapter.project(store, now_mono_ms=1_200_000), ())
+            rows.append(row)
+            revived = adapter.project(store, now_mono_ms=1_201_000, reconsider=True)[0]
+            self.assertEqual(revived.urge_id, first.urge_id)
+            self.assertEqual(revived.source_deadline_ms, first.source_deadline_ms)
+            store.consume(revived.urge_id)
+            self.assertEqual(adapter.project(store, now_mono_ms=1_300_000), ())
+
+    def test_two_completed_opportunities_end_source_attempt_with_reason(self) -> None:
+        store = LiveUrgeStore()
+        urge = store.propose(
+            kind="share_observation", subject="finished result", source="cue_pool",
+            source_ids=("cue:9",), repetition_key="cue:9", cue_id=9,
+            now_mono_ms=1_000, source_deadline_ms=7_200_000,
+        )
+        assert urge is not None
+        store.note_opportunity(urge.urge_id)
+        store.expire_due(50_000)
+        store.reconsider(9, now_mono_ms=51_000, opening=False)
+        self.assertFalse(store.active())
+        store.reconsider(9, now_mono_ms=110_000, opening=False)
+        self.assertEqual(len(store.active()), 1)
+        store.note_opportunity(urge.urge_id)
+        store.expire_due(160_000)
+        final = store.all_urges()[0]
+        self.assertEqual(final.state, "expired")
+        self.assertEqual(final.resolution_reason, "evaluation_limit")
+        store.reconsider(9, now_mono_ms=200_000)
+        self.assertFalse(store.active())
+
+    def test_source_expiry_is_terminal_even_when_never_evaluated(self) -> None:
+        store = LiveUrgeStore()
+        store.propose(
+            kind="share_observation", subject="result", source="cue_pool",
+            source_ids=("cue:9",), repetition_key="cue:9", cue_id=9,
+            now_mono_ms=1_000, source_deadline_ms=120_000,
+        )
+        store.expire_due(50_000)
+        store.expire_due(120_000)
+        self.assertEqual(store.all_urges()[0].resolution_reason, "source_expired")
+        store.reconsider(9, now_mono_ms=150_000)
+        self.assertFalse(store.active())
+
+    def test_filtering_happens_before_eight_item_menu_limit(self) -> None:
+        rows = [
+            SimpleNamespace(
+                id=cue_id, cue_type="companion_activity", subject=f"result {cue_id}",
+                last_surfaced_at=_now().isoformat() if cue_id <= 8 else None,
+            ) for cue_id in range(1, 10)
+        ]
+        with patch("app.core.live.cue_adapter.timephrase.utcnow", return_value=_now()):
+            urges = CueUrgeAdapter(pending_provider=lambda: rows).project(
+                LiveUrgeStore(), now_mono_ms=1_000,
+            )
+        self.assertEqual([urge.cue_id for urge in urges], [9])
+
     def test_deferred_cues_have_a_count_and_age_bound(self) -> None:
         store = LiveUrgeStore(max_active=2)
         for cue_id in range(3):

@@ -7,6 +7,40 @@ progress and its limitations are recorded below as separate phases.
 
 ## Implementation log
 
+### Phase 6: source-bounded candidate reconsideration (30 Sep 2026)
+
+**L21/L22 partial implementation.** A pooled row with a parseable expiry now
+gives its Live projection a separate source deadline. Expiry of the 45-second
+action attempt defers it rather than blocking it forever; a current pending
+row must be returned again before a real opening or a 60-second deadline can
+reactivate it. The original source deadline never renews on merge. Source
+expiry and consumption remain terminal. Rows without source-expiry evidence
+retain the previous conservative 15-minute/one-opening fallback.
+
+The controller records `eligible_urge_ids` at submission and
+`evaluated_urge_ids` only after a valid, accepted, current-generation decision.
+Only those menu members spend an evaluation; busy/user turns, invalid JSON,
+missing clients and cancellations do not. An unresolved eligible choice
+immediately defers with `policy_deferred`; a second completed evaluation ends
+the local attempt with `evaluation_limit`. This is an explicit bounded stop,
+not a claim the cue was spoken or resolved in the pool. Deferred deadlines
+are visible in the frame. Existing eight-item menu limits remain; intake
+examines at most 128 pending rows and applies cooldown/duplicate filtering
+before filling that menu, rather than taking the first eight blindly.
+
+**Still open:** persisted evaluation/retry ownership across process or session
+reset, fair pagination beyond the bounded scan, richer source-purpose mapping,
+quiet/withdrawal lifecycle and transactional delivery outcomes. No cue-pool
+state is mutated by peeking or by this evaluation accounting. This slice is
+not a guarantee that every unresolved source deserves repeated speech.
+
+**Validation:** 397 Live tests plus nine subtests; full parallel suite 12,078
+passed, eight skipped, with only the existing MCP private-reach budget failure
+(471 > 466). `npm run lint` passed. Regressions cover long busy intervals,
+removed/consumed/expired sources, the retry deadline and evaluation limit,
+cooldown-before-pagination, and completed-eligible versus invalid/busy/user
+or omitted-menu cases.
+
 ### Phase 5: joinable decision traces (30 Sep 2026)
 
 **L19/L30 partial implementation.** The existing Live MCP snapshot now adds

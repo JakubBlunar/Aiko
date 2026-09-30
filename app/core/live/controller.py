@@ -473,6 +473,14 @@ class LivePolicyController:
             for item in build_urge_menu(prompt_input.get("urges") or ())
         ]
         trace["prompt_regions"] = dict(prompt.region_tokens)
+        runtime = self._inclination()
+        eligible_ids = runtime.eligible_policy_urges(
+            frame, menu_ids={item["urge_id"] for item in trace["menu"] or ()},
+            now_mono_ms=time.monotonic() * 1000.0,
+            unprompted_speech=self._unprompted_speech_enabled(), user_intent=user_intent,
+        ) if runtime is not None else ()
+        trace["eligible_urge_ids"] = list(eligible_ids)
+        trace["evaluated_urge_ids"] = []
         trace["inference_submitted"] = True
         model = self._model()
         options: dict[str, object] = {
@@ -558,6 +566,11 @@ class LivePolicyController:
                 trigger_kind=trigger_kind,
                 user_intent=user_intent,
             )
+            trace["evaluated_urge_ids"] = list(eligible_ids)
+            for urge_id in eligible_ids:
+                runtime.urges.note_opportunity(
+                    urge_id, defer=True, now_mono_ms=time.monotonic() * 1000.0,
+                )
         action_record = self._finish_action(
             result,
             executed=executed,

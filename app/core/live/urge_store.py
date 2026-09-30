@@ -74,8 +74,17 @@ class LiveUrgeStore:
     def expire_due(self, now_mono_ms: float) -> int:
         expired = 0
         for urge_id, urge in list(self._urges.items()):
+            source_bounded = urge.source_deadline_ms > 0
+            if source_bounded and urge.state in ACTIVE_STATES | {"deferred"}:
+                if now_mono_ms >= urge.source_deadline_ms:
+                    self._urges[urge_id] = replace(
+                        urge, state="expired", resolution_reason="source_expired",
+                    )
+                    expired += 1
+                    continue
             if (
                 urge.state == "deferred"
+                and not source_bounded
                 and now_mono_ms - urge.created_monotonic_ms > 15 * 60_000
             ):
                 self._urges[urge_id] = self._with_state(urge, "expired")
@@ -86,20 +95,41 @@ class LiveUrgeStore:
             if urge.is_expired(now_mono_ms):
                 deferred = (
                     urge.source == "cue_pool" and urge.cue_id is not None
-                    and not urge.opportunity_seen and not urge.reconsidered
+                    and (
+                        urge.evaluation_count < 2 if source_bounded
+                        else not urge.opportunity_seen and not urge.reconsidered
+                    )
                 )
-                self._urges[urge_id] = self._with_state(
-                    urge, "deferred" if deferred else "expired",
+                self._urges[urge_id] = replace(
+                    urge, state="deferred" if deferred else "expired",
+                    next_reconsideration_ms=now_mono_ms + 60_000 if deferred else 0.0,
+                    resolution_reason=(
+                        "awaiting_opening" if deferred else "evaluation_limit"
+                        if source_bounded and urge.evaluation_count >= 2 else "attempt_expired"
+                    ),
                 )
                 self._blocked[urge.repetition_key] = urge.evidence_key()
                 expired += 1
             self._trim()
         return expired
 
-    def note_opportunity(self, urge_id: str) -> None:
+    def note_opportunity(
+        self, urge_id: str, *, defer: bool = False, now_mono_ms: float = 0.0,
+    ) -> None:
         urge = self._urges.get(urge_id)
         if urge is not None and urge.state in ACTIVE_STATES:
-            self._urges[urge_id] = replace(urge, opportunity_seen=True)
+            updated = replace(
+                urge, opportunity_seen=True, evaluation_count=urge.evaluation_count + 1,
+            )
+            if defer and urge.source_deadline_ms > 0:
+                exhausted = updated.evaluation_count >= 2
+                updated = replace(
+                    updated, state="expired" if exhausted else "deferred",
+                    next_reconsideration_ms=0.0 if exhausted else now_mono_ms + 60_000,
+                    resolution_reason="evaluation_limit" if exhausted else "policy_deferred",
+                )
+                self._blocked[urge.repetition_key] = urge.evidence_key()
+            self._urges[urge_id] = updated
 
     def consume(self, urge_id: str) -> None:
         urge = self._urges.get(urge_id)
@@ -107,16 +137,26 @@ class LiveUrgeStore:
             self._urges[urge_id] = self._with_state(urge, "consumed")
             self._blocked[urge.repetition_key] = urge.evidence_key()
 
-    def reconsider(self, cue_id: int, *, now_mono_ms: float) -> None:
+    def reconsider(
+        self, cue_id: int, *, now_mono_ms: float, opening: bool = True,
+    ) -> None:
         for urge_id, urge in list(self._urges.items()):
             if urge.cue_id != cue_id or urge.state != "deferred":
                 continue
-            if now_mono_ms - urge.created_monotonic_ms > 15 * 60_000:
+            if urge.source_deadline_ms > 0:
+                if now_mono_ms >= urge.source_deadline_ms or urge.evaluation_count >= 2:
+                    continue
+                if not opening and now_mono_ms < urge.next_reconsideration_ms:
+                    continue
+            elif not opening:
+                continue
+            elif now_mono_ms - urge.created_monotonic_ms > 15 * 60_000:
                 self._urges[urge_id] = self._with_state(urge, "expired")
                 continue
             self._urges[urge_id] = replace(
                 urge, state="candidate", reconsidered=True,
-                created_monotonic_ms=now_mono_ms,
+                created_monotonic_ms=now_mono_ms, next_reconsideration_ms=0.0,
+                resolution_reason="",
             )
             self._blocked.pop(urge.repetition_key, None)
             self._trim()
@@ -177,6 +217,7 @@ class LiveUrgeStore:
         cue_id: int | None = None,
         ttl_ms: int | None = None,
         purpose: str = "",
+        source_deadline_ms: float = 0.0,
     ) -> LiveUrge | None:
         return self._propose(
             kind=kind,
@@ -188,6 +229,7 @@ class LiveUrgeStore:
             cue_id=cue_id,
             ttl_ms=ttl_ms,
             purpose=purpose,
+            source_deadline_ms=source_deadline_ms,
         )
 
     def park(self, urge_id: str) -> LiveUrge | None:
@@ -210,6 +252,7 @@ class LiveUrgeStore:
         cue_id: int | None = None,
         ttl_ms: int | None = None,
         purpose: str = "",
+        source_deadline_ms: float = 0.0,
     ) -> LiveUrge | None:
         evidence = "|".join(str(item) for item in source_ids)
         blocked = self._blocked.get(repetition_key)
@@ -239,6 +282,7 @@ class LiveUrgeStore:
             repetition_key=repetition_key,
             cue_id=cue_id,
             purpose=purpose,
+            source_deadline_ms=source_deadline_ms,
             salience_inputs={"transition_strength": 0.6},
         )
         self._urges[urge.urge_id] = urge

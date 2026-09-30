@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from dataclasses import replace
 
 from app.core.live.admission import (
     ADMISSION_GATES,
@@ -38,6 +39,50 @@ def _by_name(payload: dict) -> dict[str, dict]:
 
 
 class AdmissionRecordShapeTests(unittest.TestCase):
+    def test_only_completed_eligible_menu_choice_defers_a_source(self) -> None:
+        for case in ("normal", "busy", "user_turn", "not_in_menu", "invalid"):
+            with self.subTest(case=case):
+                frame = _frame()
+                if case == "busy":
+                    frame = replace(
+                        frame, interaction=replace(frame.interaction, typing_active=True),
+                    )
+                runtime = LiveInclinationRuntime()
+                now_ms = time.monotonic() * 1000.0
+                urge = runtime.urges.propose(
+                    kind="share_observation", subject="finished work", source="cue_pool",
+                    source_ids=("cue:9",), repetition_key="cue:9", cue_id=9, purpose="share",
+                    now_mono_ms=now_ms, source_deadline_ms=now_ms + 7_200_000,
+                )
+                assert urge is not None
+                client = _FakePolicyClient({
+                    "snapshot_generation": frame.generation, "selected_urge_id": None,
+                    "intent": "attend", "arguments": {}, "reason_code": "idle",
+                    "context_refs": [],
+                })
+                if case == "invalid":
+                    client.payload = {"invalid": True}
+                controller = _controller(
+                    generation_provider=lambda frame=frame: int(frame.generation),
+                    inclination_provider=lambda runtime=runtime: runtime,
+                )
+                controller._infer(
+                    frame, trigger_kind="idle.reconsider",
+                    prompt_input={"urges": () if case == "not_in_menu" else (urge,)},
+                    user_intent=case == "user_turn", started_generation=int(frame.generation),
+                    cancel=threading.Event(), client=client,
+                )
+                current = runtime.urges.all_urges()[0]
+                row = controller.diagnostics()["decision_trace"]["decisions"][-1]
+                expected = case == "normal"
+                self.assertEqual(current.opportunity_seen, expected)
+                self.assertEqual(current.evaluation_count, int(expected))
+                self.assertEqual(row["evaluated_urge_ids"], [urge.urge_id] if expected else [])
+                if expected:
+                    self.assertEqual(current.state, "deferred")
+                    self.assertEqual(current.resolution_reason, "policy_deferred")
+                    self.assertGreater(current.next_reconsideration_ms, now_ms)
+
     def test_decision_trace_records_menu_without_content(self) -> None:
         frame = _frame()
         runtime = LiveInclinationRuntime()

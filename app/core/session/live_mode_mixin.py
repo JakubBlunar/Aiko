@@ -1111,7 +1111,7 @@ class LiveModeMixin:
         if store is None or not hasattr(store, "pending"):
             return []
         try:
-            return list(store.pending(limit=8) or [])
+            return list(store.pending(limit=128) or [])
         except Exception:
             log.debug("live cue pending peek failed", exc_info=True)
             return []

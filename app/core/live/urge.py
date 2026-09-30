@@ -65,6 +65,10 @@ class LiveUrge:
     purpose: str = ""
     opportunity_seen: bool = False
     reconsidered: bool = False
+    source_deadline_ms: float = 0.0
+    evaluation_count: int = 0
+    next_reconsideration_ms: float = 0.0
+    resolution_reason: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)

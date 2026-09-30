@@ -53,8 +53,10 @@ class CueUrgeAdapter:
             if not self._eligible(row):
                 continue
             cue_id = int(getattr(row, "id", 0) or 0)
-            if reconsider:
-                store.reconsider(cue_id, now_mono_ms=now_mono_ms)
+            source_deadline_ms = self._source_deadline(row, now_mono_ms)
+            if source_deadline_ms and source_deadline_ms <= now_mono_ms:
+                continue
+            store.reconsider(cue_id, now_mono_ms=now_mono_ms, opening=reconsider)
             cue_type = str(getattr(row, "cue_type", "") or "cue")
             purpose = (
                 _CUE_PURPOSES.get(cue_type, "ask")
@@ -75,9 +77,12 @@ class CueUrgeAdapter:
                 now_mono_ms=now_mono_ms,
                 cue_id=cue_id,
                 purpose=purpose,
+                source_deadline_ms=source_deadline_ms,
             )
             if urge is not None:
                 created.append(urge)
+                if len(created) >= 8:
+                    break
         nudge = self._nudge()
         if nudge is not None:
             source_id = str(getattr(nudge, "source_id", "") or "nudge")
@@ -103,7 +108,20 @@ class CueUrgeAdapter:
             rows = list(provider() or ())
         except Exception:
             return []
-        return rows[:8]
+        return rows[:128]
+
+    @staticmethod
+    def _source_deadline(row: Any, now_mono_ms: float) -> float:
+        stamp = getattr(row, "expires_at", None)
+        if not stamp:
+            return 0.0
+        try:
+            expires = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            return max(0.001, now_mono_ms + (expires - timephrase.utcnow()).total_seconds() * 1000)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _nudge(self) -> Any | None:
         provider = self._nudge_provider
