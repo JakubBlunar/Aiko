@@ -68,6 +68,13 @@ The review preserves measurement limits, separates hypotheses from confirmed
 mechanisms, and gives bounded acceptance checks under the existing L19-L30
 owners. No runtime behavior, permissions or cadence were changed.
 
+**Implementation follow-up:** [phases 5-7](live-initiative.md#implementation-log)
+now add content-free decision traces, source-bounded candidate retries,
+eligibility-before-menu filtering, explicit quiet-opening prompt context and
+zero-client idle-wake suppression. These are partial implementations, not
+closure of L19-L30; restart-safe outcomes, real-model replay, source renewal
+and delivery settlement remain open. The running app was not restarted.
+
 ## 28 Sep 2026: Live initiative architecture
 
 **Architecture evaluation followed by a limited Phase 1 code change.** The

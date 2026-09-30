@@ -185,6 +185,31 @@ class WaitExpiryNoticeTests(unittest.TestCase):
 
 
 class IdleReconsiderTickTests(unittest.TestCase):
+    def test_zero_clients_park_candidate_wake_until_reconnect(self) -> None:
+        host = Pass13Host()
+        host._connected_clients = 0
+        host._cue_store.pending = lambda limit=8: [SimpleNamespace(
+            id=9, cue_type="curiosity_seed", subject="a project result",
+            last_surfaced_at=None,
+        )]
+        spawned = _capture_spawns(host)
+        host._live_heartbeat_tick()
+        host._live_heartbeat_tick()
+        self.assertEqual(spawned, [])
+        self.assertFalse(host._live_candidate_woken_ids)
+        host._connected_clients = 1
+        host._live_heartbeat_tick()
+        host._live_heartbeat_tick()
+        self.assertEqual(spawned, ["idle.reconsider"])
+
+    def test_zero_clients_do_not_promote_expired_wait(self) -> None:
+        host = Pass13Host()
+        host._connected_clients = 0
+        spawned = _capture_spawns(host)
+        _expired_wait(host)
+        host._live_heartbeat_tick()
+        self.assertEqual(spawned, [])
+
     def test_heartbeat_projection_does_not_consume_cue_opportunity(self) -> None:
         host = Pass13Host()
         host._cue_store.pending = lambda limit=8: [SimpleNamespace(

@@ -59,20 +59,33 @@ def build_urge_menu(
     return tuple(items)
 
 
-def render_urge_menu(urges: Sequence[LiveUrge]) -> str:
+def render_urge_menu(
+    urges: Sequence[LiveUrge], *, now_mono_ms: float | None = None,
+) -> str:
     items = build_urge_menu(urges)
     if not items:
         return "CANDIDATE URGES: none"
     lines = [
         "CANDIDATE URGES (pick selected_urge_id or omit for wait/noop):",
     ]
+    by_id = {urge.urge_id: urge for urge in urges}
     for item in items:
         parked = " parked" if item.parked else ""
         subject_bit = f" subject={item.subject}" if item.subject else ""
         purpose_bit = f" purpose={item.purpose}" if item.purpose else ""
+        lifetime = ""
+        if now_mono_ms is not None:
+            urge = by_id[item.urge_id]
+            remaining = max(0, int(
+                urge.created_monotonic_ms + urge.expires_after_ms - now_mono_ms
+            ))
+            lifetime = f" attempt_remaining_ms={remaining} evaluations={urge.evaluation_count}"
+            if urge.source_deadline_ms > 0:
+                source_remaining = max(0, int(urge.source_deadline_ms - now_mono_ms))
+                lifetime += f" source_remaining_ms={source_remaining}"
         lines.append(
             f"{item.index}. id={item.urge_id} kind={item.kind}"
-            f"{parked}{subject_bit}{purpose_bit}"
+            f"{parked}{subject_bit}{purpose_bit}{lifetime}"
         )
     return "\n".join(lines)
 

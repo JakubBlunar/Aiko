@@ -22,7 +22,7 @@ from app.core.live.urge_menu import render_urge_menu
 from app.core.session.prompt_support import clip_text_to_tokens
 from app.llm.token_utils import chars_per_token, estimate_tokens
 
-LIVE_POLICY_PROMPT_VERSION = 1
+LIVE_POLICY_PROMPT_VERSION = 2
 _SAFETY_TOKENS = 256
 _INSTRUCTIONS = """You are a Live behavior policy, not a companion.
 Choose exactly one intent for this moment. Output a complete JSON object.
@@ -36,6 +36,13 @@ Never emit Live2D Param IDs, .exp3, .motion3, or motion_group names.
 Prefer wait or noop when nothing new has happened.
 When the user just sent a message or the turn is active, prefer
 attend or acknowledge_user; wait and noop are for idle.
+Use trigger and interaction_now to distinguish a new message from an idle
+opening. A past user event in history is not a new message. A held attend
+commitment does not mean the user is still speaking. On idle.reconsider,
+judge the offered share, continuation or question; do not acknowledge an
+old message again. If no contribution fits, choose wait or noop.
+Stale or missing observations are not current activity evidence. A candidate
+deadline bounds permission to consider it, not the freshness of its content.
 A micro_utterance is a permitted delivery for acknowledge_user,
 react_affectively, or backchannel_user only. Put the spoken line in
 arguments.text (at most eight words, no question, no facts, no names)
@@ -116,6 +123,7 @@ class LivePolicyPromptAssembler:
         self,
         *,
         frame: LiveSituationFrame,
+        trigger_kind: str = "",
         concepts: Sequence[Any] = (),
         transcript_rows: Sequence[Any] = (),
         impulses: Sequence[LiveImpulse] = (),
@@ -136,11 +144,11 @@ class LivePolicyPromptAssembler:
             max(0, window - output_cap - _SAFETY_TOKENS),
         )
         instructions = _INSTRUCTIONS.strip()
-        situation = self._render_situation(frame)
+        situation = self._render_situation(frame, trigger_kind=trigger_kind)
         fallback_text = render_fallback_prompt(fallback)
         if fallback_text:
             situation = situation + "\n" + fallback_text
-        urge_menu = render_urge_menu(urges)
+        urge_menu = render_urge_menu(urges, now_mono_ms=frame.monotonic_ms)
         instr_tokens = estimate_tokens(instructions)
         sit_tokens = estimate_tokens(situation)
         menu_tokens = estimate_tokens(urge_menu)
@@ -170,6 +178,7 @@ class LivePolicyPromptAssembler:
             journal_entries=journal_entries,
             ledger=ledger,
             budget=remain_work,
+            now_mono_ms=frame.monotonic_ms,
         )
         tail_tokens = estimate_tokens(tail) if tail else 0
 
@@ -205,7 +214,9 @@ class LivePolicyPromptAssembler:
             available_tokens=available,
         )
 
-    def _render_situation(self, frame: LiveSituationFrame) -> str:
+    def _render_situation(
+        self, frame: LiveSituationFrame, *, trigger_kind: str = "",
+    ) -> str:
         inferred = str(frame.shared.inferred.label or "unknown")
         sharing = str(frame.shared.sharing or "unknown")
         app = str(frame.shared.user_active_app or "none")
@@ -222,8 +233,20 @@ class LivePolicyPromptAssembler:
         vitality = str(frame.aiko.vitality_band or "unknown")
         speech_ok = "yes" if speech_menu_open(frame) else "no"
         playback = "1" if frame.interaction.playback_active else "0"
+        interaction = frame.interaction
+        stale = ",".join(frame.constraints.stale_sources) or "none"
         return (
-            f"generation={frame.generation} epoch={epoch}\n"
+            f"generation={frame.generation} epoch={epoch} "
+            f"trigger={trigger_kind or frame.epoch.reason}\n"
+            f"interaction_now floor={interaction.floor_owner} "
+            f"turn_active={int(interaction.turn_active)} "
+            f"typing_active={int(interaction.typing_active)} "
+            f"speech_active={int(interaction.speech_active)} "
+            f"tts_active={int(interaction.tts_active)} "
+            f"since_user_intent_ms={interaction.silence_since_user_intent_ms} "
+            f"since_aiko_speech_ms={interaction.silence_since_aiko_speech_ms}\n"
+            f"evidence inferred_stale={int(frame.shared.inferred_stale)} "
+            f"stale_sources={stale} situation_age_ms={frame.temporal.situation_age_ms}\n"
             f"world_truth inferred={inferred} sharing={sharing} "
             f"app={app} os_idle={os_idle} session_s={session_s} "
             f"sessions={int(frame.shared.session_count or 0)} "
@@ -275,13 +298,16 @@ class LivePolicyPromptAssembler:
         journal_entries: Sequence[Any],
         ledger: Sequence[Any],
         budget: int,
+        now_mono_ms: float = 0.0,
     ) -> str:
         if budget <= 0:
             return ""
         lines: list[str] = []
         for impulse in list(impulses)[-8:]:
+            stamp = getattr(impulse, "monotonic_ms", None)
+            age = "unknown" if stamp is None else str(max(0, int(now_mono_ms - stamp)))
             lines.append(
-                f"impulse {impulse.kind} gen={impulse.mode_generation}"
+                f"impulse {impulse.kind} gen={impulse.mode_generation} age_ms={age}"
             )
         for entry in list(journal_entries)[-6:]:
             kind = str(getattr(entry, "kind", "") or "")

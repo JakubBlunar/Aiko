@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -188,6 +189,38 @@ class ArbiterTests(unittest.TestCase):
 
 
 class PromptAssemblerTests(unittest.TestCase):
+    def test_fresh_message_and_idle_opening_have_distinct_authoritative_state(self) -> None:
+        assembler = LivePolicyPromptAssembler()
+        base = _frame()
+        idle = replace(
+            base, monotonic_ms=610_000,
+            interaction=replace(base.interaction, silence_since_user_intent_ms=600_000),
+            constraints=replace(base.constraints, stale_sources=("c6", "os_idle")),
+        )
+        fresh = replace(
+            idle, interaction=replace(
+                idle.interaction, floor_owner="user", turn_active=True,
+                silence_since_user_intent_ms=0,
+            ),
+        )
+        impulse = SimpleNamespace(kind="user.message_sent", mode_generation=1, monotonic_ms=10_000)
+        texts = [
+            assembler.assemble(
+                frame=frame, trigger_kind=trigger, impulses=(impulse,),
+                context_window=40960, max_tokens=512, prompt_ceiling=2000,
+            ).messages[0]["content"]
+            for frame, trigger in ((idle, "idle.reconsider"), (fresh, "user.message_sent"))
+        ]
+        self.assertIn("trigger=idle.reconsider", texts[0])
+        self.assertIn("floor=neither turn_active=0", texts[0])
+        self.assertIn("since_user_intent_ms=600000", texts[0])
+        self.assertIn("stale_sources=c6,os_idle", texts[0])
+        self.assertIn("age_ms=600000", texts[0])
+        self.assertIn("trigger=user.message_sent", texts[1])
+        self.assertIn("floor=user turn_active=1", texts[1])
+        self.assertIn("since_user_intent_ms=0", texts[1])
+        self.assertIn("wait or noop", texts[0])
+
     def test_instructions_allow_brief_reasoning(self) -> None:
         prompt = LivePolicyPromptAssembler().assemble(
             frame=_frame(),

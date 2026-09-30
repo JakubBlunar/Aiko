@@ -457,6 +457,7 @@ class LivePolicyController:
         else:
             prompt = self._assembler.assemble(
                 frame=frame,
+                trigger_kind=trigger_kind,
                 context_window=context_window,
                 max_tokens=max_tokens,
                 prompt_ceiling=ceiling,

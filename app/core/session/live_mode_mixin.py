@@ -832,6 +832,8 @@ class LiveModeMixin:
         Heartbeat itself stays data_only. This is the semantic timer the
         spec allows, not a 1 Hz poll.
         """
+        if getattr(self, "_connected_clients", None) == 0:
+            return False
         agent = getattr(getattr(self, "_settings", None), "agent", None)
         if bool(getattr(agent, "live_quiet", False)):
             return False

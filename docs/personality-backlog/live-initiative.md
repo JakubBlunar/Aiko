@@ -7,6 +7,38 @@ progress and its limitations are recorded below as separate phases.
 
 ## Implementation log
 
+### Phase 7: quiet-opening context and reachable idle wakes (30 Sep 2026)
+
+**L23 plus a bounded L20/L29 follow-up.** Prompt version 2 explicitly supplies
+the current trigger, floor/turn/typing/speech state, elapsed user-intent and
+Aiko-speech times, stale-source flags and situation age. Recent impulses carry
+their age, or `unknown` if unavailable. Candidate menus show remaining attempt
+and source lifetime plus completed evaluation count, explicitly not a claim
+that the underlying content is fresh. Instructions distinguish a fresh user
+message from an idle opening and prohibit re-acknowledging an old message as
+if it just arrived; wait/noop and all existing speech gates remain available.
+
+Known zero connected clients now suppress heartbeat-promoted idle
+reconsiderations, including expired waits, without spending the candidate's
+one-shot wake. Reconnection permits the next otherwise-eligible wake; unknown
+client counts keep their previous behavior. This is not physical-presence
+inference and does not change activity-driven decisions or enqueue/dispatch
+reachability checks. No cadence or disclosure permissions were loosened.
+
+**Validation:** 51 focused prompt/heartbeat tests, 400 Live tests plus nine
+subtests, and full parallel suite 12,081 passed, eight skipped, with only the
+existing MCP private-reach budget failure (471 > 466). `npm run lint` passed.
+Tests distinguish synthetic fresh-message/quiet-opening inputs, preserve the
+prompt budget, and cover disconnected candidate/wait suppression and a single
+reconnect wake. **No real routed-model bake-off was run:** these are input and
+runtime-contract checks, not evidence of an improved speech-choice rate.
+
+**Next:** synthetic paired replay on the actual route, full build/route and
+pre-policy diagnostics, persistent candidate outcomes, fresh C6/result supply,
+and L24 delivery settlement before expanding unsolicited speech. Phases 5-7
+require a backend restart to load; this work did not restart or reconfigure
+the running app or write test conversations into its history.
+
 ### Phase 6: source-bounded candidate reconsideration (30 Sep 2026)
 
 **L21/L22 partial implementation.** A pooled row with a parseable expiry now
