@@ -51,6 +51,21 @@ the mechanical half of this — broken paths and, more usefully, heading anchors
 that stopped resolving when a heading was reworded on its way into `shipped/`.
 Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
 
+## 30 Sep 2026: immersion without changing models or Live2D
+
+**Backlog only; all eight proposals remain open.**
+[IM1-IM8](immersion.md#30-sep-2026-immersion-without-a-new-rig-or-model) add shared
+quiet sessions, explicit pointing/selection, a bounded shared reader,
+inspectable Aiko-made artifacts, joint creation, source-linked keepsakes,
+a small rules-driven game and opt-in ambient audio. Each has a first slice,
+current-model budget, existing owner and acceptance checks.
+
+**Start with IM1 and IM2:** shared presence and a concrete common referent,
+without extra inference. IM3 extends K62; IM4 extends H19/H28; IM6 builds on
+Together/H12/J2; IM8 scopes H27's audio idea. These do not replace Live
+L19-L24 delivery work or reopen shipped rituals/backchannels. No new model,
+fine-tuning, continuous audiovisual inference or rig changes are proposed.
+
 ## 30 Sep 2026: Live field review
 
 **Analysis and backlog only.** The [dated field review](live-initiative.md#field-review-30-sep-2026)
@@ -528,6 +543,11 @@ and I3, I6, I7, I8, I10 in
 [`shipped/integration.md`](shipped/integration.md).
 
 ### H. Immersion polish — [`immersion.md`](immersion.md)
+
+**New non-rig batch:** [IM1-IM8](immersion.md#recommended-order) cover shared
+quiet sessions, pointing, reading, inspectable creations, co-creation,
+keepsakes, games and ambience on the existing models. All are open proposals;
+the detail entries distinguish new work from extensions of shipped features.
 
 - **H2.** Calendar / time context block. *Partly superseded* — circadian
   and K3 cover most of it; holiday proximity + user birthday remain.
@@ -1617,8 +1637,12 @@ compound across every K-series entry:
 - **P16.** Post-turn inner-life blocks the brain loop — now
   **measurable** (`post_turn_ms`); collect numbers before attempting
   the Large fast/slow-lane split.
-- **P24.** Voice latency batch: reaction-tag TTS gate, double STT
-  pass, first-chunk threshold.
+- **P24.** [Speech-pipeline latency audit](perf.md#p24-voice-latency-batch-reaction-tag-tts-gate-double-stt-pass-first-chunk-threshold)
+  (2026-09-30): repair blocking STT partial reads / recorder teardown first;
+  measure end-of-speech to useful audio, then endpointing, single finalization,
+  first-chunk release, incremental synthesis and interrupt recovery. Source
+  findings and benchmark proposals; the initial STT adapter repair is in
+  code, without a measured live latency result.
 - **P26.** Lip-sync rides the server clock, not the playback clock —
   **partly shipped**: the client-side analyser path exists but is
   wired for mobile audio-owners only; extend it to desktop.

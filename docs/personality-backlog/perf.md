@@ -216,46 +216,328 @@ splitting — a wrong call here makes cues silently miss a turn.
 
 ## P24. Voice latency batch: reaction-tag TTS gate, double STT pass, first-chunk threshold
 
-**Motivation.** Three independent, individually-small voice-path
-delays that compound into "she takes a beat too long to start
-talking":
+**Status: initial STT repair implemented locally; remainder open (2026-09-30).** The cascade can be
+made more conversational without replacing it with a native speech model.
+The main opportunity is removing serial barriers and repairing the STT
+integration, not simply choosing faster models. This audit inspected source
+and installed RealtimeSTT 1.0.2, not a live microphone trace. Timings below
+are configured/code-enforced waits, not measured end-to-end savings. Defaults
+are not proof of the running route or user overrides. The initial repair
+followed the audit; no measured end-to-end saving is claimed.
 
-1. **Reaction-tag gate** — the stream loop only dispatches TTS
-   chunks once `mood is not None`
-   ([`turn_runner.py`](../../app/core/session/turn_runner.py)
-   ~797-804). If the model leads with prose before
-   `[[reaction:...]]`, *all* speech waits; the fallback
-   (`mood = "neutral"`, ~860-871) only fires at stream end,
-   flushing everything at once.
-2. **Double STT pass** — `process_live_capture` re-transcribes
-   the full WAV via `transcribe()` even when partial endpointing
-   already produced a stable final text during capture. The
-   stable partial *is* read back — but only to fire one last RAG
-   prefetch (`feed_stt_partial(final=True)`), after which
-   `transcribe(wav_path)` runs unconditionally
-   ([`voice_capture_mixin.py`](../../app/core/session/voice_capture_mixin.py)
-   ~366-396 — the entry previously pointed at `session_controller.py`,
-   before the voice split;
-   [`realtime_stt_service.py`](../../app/stt/realtime_stt_service.py)
-   `transcribe`). 100–500 ms of pure re-work between "user
-   stopped talking" and LLM start.
-3. **First-chunk threshold** — `drain_tts_stream_chunks` holds a
-   sentence until ≥24 chars **or** ≥4 spaces **or** a newline
-   ([`session_text_utils.py`](../../app/core/session/session_text_utils.py)
-   ~246), so short openers ("Sure.", "Okay!") wait for more
-   tokens before any audio.
+**Correction to the earlier entry.** There is no verified "stable final"
+transcript available for free in the current capture path. The earlier
+100-500 ms saving was not a benchmark, and "trust two identical partials"
+is not a sufficient finalization contract. The work is also larger than
+three small independent tweaks: the recorder's API/lifetime comes first.
 
-**Sketched approach.** (1) Start TTS with a provisional
-`neutral` mood immediately and upgrade when the tag arrives
-(reaction-to-speed already tolerates a mid-stream change, the
-expression channel just lands a few hundred ms later); (2) trust
-the partial-endpointing final when its text is stable across the
-last two partials, keep the WAV re-pass as a fallback for
-low-confidence captures; (3) voice-specific first-chunk floor
-(~8 chars or first clause boundary) — sentence two onward keeps
-the current threshold.
+### P24a. Repair the STT partial-read and recorder-lifetime contracts
 
-**Effort.** Small each; ship as one voice-latency pass.
+**Priority: highest; correctness before optimization.**
+**Initial implementation:** `partial_text()` now reads a callback-fed,
+nonblocking snapshot; realtime updates reuse the main model rather than
+loading a second large model. Phrase boundaries reset that snapshot but
+do not call RealtimeSTT's shutdown-on-exit context manager; `shutdown()`
+owns actual teardown. `record_until_silence` polls the interim snapshot.
+Contract-faithful fake tests cover nonblocking reads and two phrase cycles.
+These are code/tests only, not an observed live voice result.
+
+[`RealtimeSttService.text`](../../app/stt/realtime_stt_service.py) calls
+`recorder.text()` synchronously. In installed RealtimeSTT 1.0.2, that calls
+`wait_audio()` and then final transcription; it is not a partial snapshot.
+Before the fix, the constructor set `realtime_model_type=model` but did not
+enable or subscribe to realtime transcription (its upstream default is false).
+
+Previously [`capture_live_phrase`](../../app/core/session/voice_capture_mixin.py)
+called this method in `_on_speech_start` **before** the captured pre-roll
+was fed, and again in `_on_chunk` / `_endpoint_check`. Those callbacks
+run on the same thread that feeds the recorder. Waiting for recording
+completion could therefore stall the very audio feed needed to complete
+it. This was a source-backed contract mismatch; its frequency and exact
+live symptoms were not measured before the repair.
+
+The second original mismatch was `stop_context()` calling
+`recorder.__exit__`, which calls `shutdown()` in the installed package.
+`capture_live_phrase` did this after each partial-enabled capture, then
+`process_live_capture` tried to transcribe on the same cached recorder.
+`__enter__` only returns that object; it does not restart it. The old
+standalone `transcribe` path also exited its owned context. Both phrase
+reuse and repeated WAV finalization now have fake coverage, but still
+need a real-recorder check.
+
+**Remaining direction.** Exercise the real recorder with synthetic audio
+and a live mic before claiming functional endpointing; measure resource
+contention from sharing the main model. Give partial updates phrase/generation
+ID, revision and audio coverage to reject late updates. Bound finalization
+and provide a cancellation path that unblocks it; direct transcription
+still waits for model inference and has no per-request timeout today.
+
+**Discriminating checks.** [`test_stt_lazy_load.py`](../../tests/test_stt_lazy_load.py)
+now uses a fake whose context exit invalidates it, and asserts that interim
+reads do not call final `text()` and two successive WAV decodes do not
+re-feed audio. The fake still returns final text immediately. Follow with
+an opt-in real-recorder test on synthetic audio, isolated from the running
+app, microphone, configuration and database; verify cancellation unblocks
+and two consecutive phrases finalize correctly.
+
+**External contract references:** upstream
+[external audio](https://github.com/koljab/RealtimeSTT/blob/master/docs/external-audio.md),
+[API compatibility](https://github.com/koljab/RealtimeSTT/blob/master/docs/api-compatibility.md),
+and [configuration](https://github.com/koljab/RealtimeSTT/blob/master/docs/configuration.md).
+These agree with the installed source: realtime callbacks supply interim
+text; `text()` supplies final text; context exit owns shutdown.
+
+### P24b. Measure end of user speech to useful audio, not just TTFT
+
+**Priority: alongside P24a.** The latency users experience is the critical
+path through endpoint wait, final STT, queue admission, prompt/RAG work,
+optional tool pass, first speakable text, TTS queue/synthesis/shaping, and
+client scheduling. Some work already overlaps; do not sum overlapping spans
+or add the duration of the user's own utterance to response latency.
+
+[`TurnRunner`](../../app/core/session/turn_runner.py) starts `first_token_ms`
+at the reply stream, **after** prompt construction and the optional tool
+pass. Its first delta can be metadata rather than a speakable clause.
+`capture_ms` covers the whole recording window; `stt_ms` covers the final
+transcribe call. None of those alone answers "how long after I stopped did
+the answer start?" Existing client `clipStart` / `firstPcm` debug events in
+[`AudioOutputManager`](../../web/src/audio/AudioOutputManager.ts) provide
+scheduling evidence, while K99 receipts establish clip completion, not
+physical audibility or answer onset.
+
+**Add a bounded, content-free turn timeline:** last voiced input sample,
+endpoint commit/reason, final transcript ready, brain admission/start,
+prompt ready, tool-pass start/end, first delta, first speakable chunk,
+synthesis queued/start/first PCM/end, shaping end, PCM send/receive and
+client scheduled onset. Use turn/phrase/clip IDs, model/provider/device,
+cold/warm state, cache-hit flags and queue depths. Keep raw audio and
+transcripts out of routine telemetry. Distinguish filler, earcon, silence
+and substantive answer audio; otherwise a quick "Hmm" falsely wins.
+
+Compute client-side input-end to scheduled-output onset on a consistent
+client clock when input/output share an owner. Use explicit clock mapping
+and uncertainty across devices; never subtract unrelated browser/server
+monotonic clocks. Scheduling remains a proxy: use consented loopback or an
+external recording for true audible onset. Report p50/p95, cancellations,
+timeouts, underruns and sample count, split by warm/cold, engine, device,
+short/long utterance and tool/no-tool turns. A stalled turn is not a missing
+sample to discard. Establish a baseline before promising a millisecond win.
+
+### P24c. Make endpointing responsive without cutting off thinking pauses
+
+**Priority: high after P24a.** Defaults in
+[`config/default.json`](../../config/default.json) are 0.6 s fast close,
+1.0 s phrase and 3.0 s turn silence. However, `capture_live_phrase` passes
+`min_speech_seconds_before_stop=1.5` and a 0.8 s grace period to
+[`ClientMicSource.capture_phrase`](../../app/audio/client_mic_source.py).
+The loop checks both endpoint commits and its ordinary silence stop only
+after 15 post-start 100 ms chunks. Despite its name, this counter includes
+silence. A short "yes" can therefore wait until roughly 1.5 s after detected
+speech start before endpointing may act. This is not an extra 1.5 s added
+to every turn, nor a measured 1.5 s response-time saving.
+
+Separate minimum *voiced evidence* from minimum elapsed capture duration.
+Allow a confidently complete short utterance to close at the fast tier;
+retain a longer window for incomplete clauses, uncertain ASR and deliberate
+pauses. Test a bounded semantic endpoint classifier off the feed thread only
+if VAD plus reliable partials remain inadequate. Do not use ASR punctuation
+alone as ground truth that someone has finished thinking. Keep PTT as an
+explicit endpoint and compare it with hands-free timing on the same fixture.
+
+The browser's
+[`mic-pcm-worklet.js`](../../web/public/mic-pcm-worklet.js) sends ~50 ms
+frames; `ClientMicSource` repacks into 100 ms capture blocks. A 20-40 ms
+experimental capture cadence could improve endpoint/barge-in resolution,
+but changing `_CHUNK_SECONDS` alone is wrong: several counters hard-code
+0.1 s. Derive thresholds from actual frame duration/sample counts and
+measure CPU, message rate and jitter. Packetization waits overlap; do not
+claim an automatic 50 + 100 ms saving.
+
+**Checks:** extend
+[`test_mic_capture_endpointing.py`](../../tests/test_mic_capture_endpointing.py)
+and [`test_endpointing.py`](../../tests/test_endpointing.py) with short
+answers, names/numbers, hesitations, mid-sentence pauses, trailing negation,
+noise and resumed speech. Compare endpoint lag *and* premature cuts / repair
+turns on replayed audio. A faster threshold that increases interruptions is
+not a successful optimization.
+
+### P24d. Finalize the already-fed audio once; keep speculation reversible
+
+**Priority: validate initial change, then consider memory-only finalization.**
+`process_live_capture` still calls `transcribe(wav_path)` after partial
+capture, but `RealtimeSttService.transcribe` now reads the 16 kHz mono Int16
+WAV once and calls RealtimeSTT's explicit `perform_final_transcription` on
+its float32 samples. It does not re-feed audio through VAD or call blocking
+`text()` for this path. The saved `_last_live_partial` remains only a RAG
+prefetch hint; `final=True` labels prefetch timing, not ASR finality.
+
+Next validate the direct final API against a real recorder, including
+concurrent interim work, cancellation, two consecutive phrases and PTT.
+Then consider passing the phrase buffer in memory rather than writing/
+reading a WAV. The prospective saving is avoiding redundant work, not an
+assumed expensive local WAV write. Partial equality does not establish
+coverage of the final word, negation, number or correction. Persist and
+dispatch only the phrase's confirmed final transcript; measure finalization
+cost and semantic transcription errors together.
+
+[`feed_stt_partial`](../../app/core/session/voice_mixin.py) already schedules
+RAG prefetch, prompt prebuild and background-worker preemption. Verify these
+actually fire after P24a, and instrument final-query hit/staleness rather
+than introducing a second speculative retrieval system. Consider sending
+the existing scheduler speech-start notification on reliable VAD onset so
+short turns need not wait for a >=12-character partial and its polling /
+debounce interval. Keep retrieval text-driven and validate caches against
+the final phrase and current session.
+
+Only later experiment with drafting a reply during likely-final silence.
+An ASR revision/resumed phrase must invalidate the draft. Speculation must
+not execute tools, write memories, consume cues, persist a reply or emit
+answer audio before commitment, and must yield compute to final STT/TTS.
+Use the existing partial-prefetch path first; speculative LLM work can make
+latency worse on shared hardware. Check two-phrase revisions, stale results,
+session switches and exactly-once final dispatch.
+
+### P24e. Release a useful first speech chunk before the whole answer
+
+**Priority: high; comparatively contained.** The reply stream in
+[`turn_runner.py`](../../app/core/session/turn_runner.py) still requires
+`mood is not None` before dispatching TTS. Missing/late reaction tags can
+hold all speech until stream end. Decouple speech readiness from mood
+parsing: use a provisional neutral reaction once a safe text prefix exists,
+then apply a later reaction to subsequent, not already-synthesized, chunks.
+Preserve streaming tag suppression and one set of text offsets so a late
+tag cannot leak, duplicate or erase spoken content.
+
+[`drain_tts_stream_chunks`](../../app/core/session/session_text_utils.py)
+requires a sentence/newline boundary plus >=24 characters or >=4 spaces
+(newline bypasses the size floor). It also waits for the character after
+`.!?` to distinguish a terminator from a decimal or filename. There is no
+elapsed-time or length-only flush for a long unpunctuated first sentence.
+
+Add a first-chunk policy that accepts short *complete* sentences, and a
+bounded wait that can release a safe clause when punctuation is delayed.
+Do not blindly stream every word: tiny clips worsen prosody, add synthesis
+overhead and can starve the next sentence. Retain larger later chunks,
+avoid splitting numbers/abbreviations/tags, and track time to useful content
+as well as time to an acknowledgement. A real timeout needs a timer or
+independent scheduler, not a check that only runs when another token arrives.
+Measure intentional leading pauses in
+[`cadence.py`](../../app/core/voice/cadence.py) separately from stalls;
+do not delete expressive timing globally to improve a benchmark.
+
+**Checks:** missing/split/late reaction tags; "Yes." then a delayed next
+delta; a long clause without a full stop; decimals/filenames; cancellation
+mid-tag; no duplicated/missing words or meta-tag speech. Compare first-chunk
+delay, synthesis time, boundary gaps and listening quality on both engines.
+
+### P24f. Stream synthesis, not merely a completed waveform
+
+**Priority: high potential, larger engineering task.**
+[`PocketTtsService`](../../app/tts/pocket_tts_service.py) generates a complete
+array through `_warm_clip` before `_play_clip` emits it.
+[`ChatterboxService`](../../app/tts/chatterbox_service.py) likewise waits for
+a sidecar `synth` request to finish writing a WAV, then reads and plays it.
+Both stream *transport* in small PCM frames, not incremental synthesis.
+[`TtsQueue`](../../app/core/voice/tts_queue.py) already prefetches the next
+sentence through `ClipCache` / `SynthesisGate`; that helps later sentences
+but cannot hide the first sentence's full synthesis time.
+
+Benchmark short initial text chunks first. Then capability-gate a genuine
+incremental PCM interface where the selected engine/version supports it.
+Do not assume a model's "streaming" label means the current adapter can
+yield usable PCM early. Chatterbox also needs an incremental sidecar
+protocol; swapping WAV I/O for bytes alone does not remove model latency.
+
+[`PcmPlaybackMixin`](../../app/tts/pcm_playback.py) currently calls
+`shape_clip` over the full clip before emission. Loudness, brightness,
+tempo matching and pitch-preserving speed need a shared bounded-lookahead /
+stateful design before early PCM is useful; do not bypass character/quality
+processing in just one engine. Preserve rate, gain, continuity, prefetch
+priority, cancellation and K99 delivery-token ownership. Keep a full-clip
+fallback for engines that cannot stream.
+
+**Checks:** first PCM arrives before synthesis finishes; uninterrupted
+sample/rate ordering and no boundary clicks; abort during synthesis and
+playback; no stale audio after a new turn; interrupted clips never count as
+delivered; no double synthesis; sustained production faster than playback
+on target hardware. Extend
+[`test_tts_queue_prefetch.py`](../../tests/test_tts_queue_prefetch.py) and
+[`test_tts_pacing_parity.py`](../../tests/test_tts_pacing_parity.py), and
+measure first-PCM latency separately from total generation / real-time factor.
+
+### P24g. Tune client buffering only with underrun evidence
+
+**Priority: secondary.** `FIRST_CLIP_IDLE_MARGIN_SEC` in
+[`AudioOutputManager`](../../web/src/audio/AudioOutputManager.ts) is now
+**0.15 s**, not the historical 0.1 s mentioned elsewhere in this backlog.
+It seeds scheduling after idle, not on every seamlessly chained sentence.
+Test a smaller/adaptive lead for stable local playback, retaining the
+current margin when device jitter/underruns demand it. Web Audio output
+and Bluetooth/device latency remain separate from application scheduling.
+
+The server's default `pcm_pre_roll_ms=600` is an immediate burst of queued
+PCM, **not a 600 ms startup sleep**. Reducing it is not an equivalent latency
+win and can reintroduce mobile/network underruns. Preserve the single audio
+owner, ordered frame delivery, cancellation flush, no-overlap chaining and
+foreground context recovery in [`voice-mode.md`](../voice-mode.md).
+Use a small browser replay to compare onset, gap/underrun counts and abort
+behavior on desktop, mobile and a jittered connection before changing defaults.
+
+### P24h. Reduce recovery time after interruption, not just reply onset
+
+**Priority: after STT correctness; coordinates with H7c.**
+[`LiveSession`](../../app/core/session/live_session.py) skips normal capture
+while `_processing` is set and samples mic energy every 50 ms for barge-in.
+The configured sustained-energy threshold defaults to 0.7 s; the idle ring
+retains about 1.5 s. Full transcript capture is not continuous throughout
+STT/LLM processing. A slow abort/finalization can outlast that retained audio.
+After processing clears, capture can resume while the consumer waits for
+client playback drain, so this is not a claim that all overlap is discarded.
+
+Keep one continuous bounded input/finalization owner and explicit floor
+state. Separate a quick, reversible local duck from a confirmed cancellation;
+distinguish acknowledgements from attempts to take the floor. Browser AEC
+already exists, but does not establish echo-safe full duplex on every device.
+Use output-aware VAD/echo tests before lowering the barge threshold. Stamp
+phrase/turn/audio generations so cancelled inference and late callbacks
+cannot revive old speech, and ensure a blocked recognizer releases promptly.
+
+**Checks:** headset and speaker playback; echo/noise versus genuine overlap;
+speech starting during final STT, LLM prefill and TTS synthesis; first-word
+retention; time from interruption onset to speaker silence and to the next
+answer. Preserve P25 audio flush and K99 interrupted-delivery semantics.
+Do not replace confirmed client drain with the server send clock.
+
+### P24i. Benchmark model/prompt cost after exposing the actual waits
+
+**Priority: measurement-driven.** P14 already skips unnecessary tool passes;
+do not describe every turn as two LLM calls. When the pass runs, it is still
+a serial non-streaming round trip before the reply. Compare tool/no-tool
+turns and inspect gate reasons before widening the bypass. Necessary lookup
+and approval behavior must survive; speculative speech cannot state a tool
+result before it arrives.
+
+Measure prompt assembly versus prefill, reasoning before visible output,
+prefix-cache reuse, model residency and worker contention separately. Use
+the existing route/prewarm/cache machinery and P31/P36/P43 rather than a
+parallel voice-only implementation of memory or personality. Benchmark a
+smaller/non-reasoning reply route and a lighter ASR configuration only on
+the same tasks with transcription/answer-quality criteria. The current STT
+constructor uses the same configured model for main and realtime work;
+a smaller partial model may help once callbacks work, but extra model
+residency can also make things worse on a shared GPU. No particular model
+or sub-second target is justified by this source audit alone.
+
+**Recommended sequence:** P24a plus P24b baseline; then P24c/P24d/P24e;
+then P24f if synthesis dominates; P24g only if client lead is material;
+P24h for interruption quality, and P24i guided by measured remaining cost.
+First benchmark corpus: warm/cold short answer, long reflective utterance,
+mid-sentence hesitation, corrected number/negation, tool lookup, long reply,
+and interruption during each major stage. Evaluate p50/p95 useful-answer
+onset, cut-off/error rates, audible gaps and cancel recovery together.
+A native speech model remains a separate experiment: the cascade can mimic
+low-latency turn-taking, but text plus the existing vocal-tone summary does
+not preserve all acoustic information or provide native full-duplex reasoning.
 
 ---
 

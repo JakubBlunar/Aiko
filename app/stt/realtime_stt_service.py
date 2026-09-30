@@ -91,6 +91,8 @@ class RealtimeSttService:
         self._loaded_language: str = ""
         self._loaded_device: str = ""
         self._context_active: bool = False
+        self._partial_lock = threading.Lock()
+        self._partial_text = ""
         # P27: construction no longer loads the model. Whisper large-v1 plus
         # RealtimeSTT's transcription child process is the single largest
         # resident cost in the app (~0.9 GB), and a text-only session paid it
@@ -210,6 +212,9 @@ class RealtimeSttService:
             on_recording_stop=self._on_recording_stop or (lambda: None),
             spinner=False,
             realtime_model_type=model,
+            enable_realtime_transcription=True,
+            use_main_model_for_realtime=True,
+            on_realtime_transcription_update=self._on_realtime_update,
             # Use the local Silero backend from the ``silero-onnx-cpu`` extra
             # rather than a torch.hub download, which otherwise prompts
             # "snakers4/silero-vad ... not in the list of trusted repositories
@@ -256,11 +261,19 @@ class RealtimeSttService:
         except Exception as exc:
             self._last_error = str(exc)
 
+    def _on_realtime_update(self, text: str) -> None:
+        with self._partial_lock:
+            self._partial_text = (text or "").strip()
+
+    def partial_text(self) -> str:
+        """Return the latest interim transcript without waiting for finalization."""
+        with self._partial_lock:
+            return self._partial_text
+
     def text(self) -> str:
-        """Return current/final transcript."""
-        # Deliberately does *not* trigger a load: a transcript read with no
-        # recorder means nothing was fed, and loading Whisper to return ""
-        # would stall the caller for seconds.
+        """Wait for the recorder's final transcript."""
+        # Do not load a recorder just to wait for a transcript. Capture-loop
+        # reads use partial_text() instead; this can block until VAD stops.
         recorder = self._recorder
         if recorder is None:
             return ""
@@ -273,31 +286,18 @@ class RealtimeSttService:
             return ""
 
     def start_context(self) -> None:
-        """Enter recorder context (idempotent). Use with feed_audio then text()."""
+        """Begin a phrase without changing the recorder's lifetime."""
         recorder = self._ensure_recorder()
-        if recorder is None or not hasattr(recorder, "__enter__"):
+        if recorder is None:
             return
-        if getattr(self, "_context_active", False):
+        if self._context_active:
             return
-        try:
-            recorder.__enter__()
-            self._context_active = True
-        except Exception as exc:
-            self._last_error = f"start_context failed: {exc}"
-            log.warning("STT start_context failed: exc=%r", exc)
+        with self._partial_lock:
+            self._partial_text = ""
+        self._context_active = True
 
     def stop_context(self) -> None:
-        """Exit recorder context (idempotent)."""
-        if self._recorder is None or not hasattr(self._recorder, "__exit__"):
-            return
-        if not getattr(self, "_context_active", False):
-            return
-        try:
-            self._recorder.__exit__(None, None, None)
-        except (BrokenPipeError, OSError, EOFError):
-            pass
-        except Exception as exc:
-            log.debug("STT stop_context raised: exc=%r", exc)
+        """End a phrase; only shutdown() tears down RealtimeSTT."""
         self._context_active = False
 
     def record_until_silence(
@@ -333,9 +333,7 @@ class RealtimeSttService:
             "STT capture start: client-fed sample_rate=%d max_s=%.1f silence_s=%.1f",
             sample_rate, max_seconds, silence_seconds,
         )
-        # Avoid double-managing the recorder context: LiveSession keeps
-        # it open across phrases, in which case ``record_until_silence``
-        # just feeds audio.
+        # A phrase boundary clears the interim snapshot, not the recorder.
         owns_context = not self._context_active
         result = ""
         try:
@@ -348,7 +346,7 @@ class RealtimeSttService:
                 while (time.perf_counter() - start) < max_seconds:
                     chunk, _ = stream.read(chunk_frames)
                     self.feed_audio(chunk)
-                    current = self.text()
+                    current = self.partial_text()
                     if current:
                         if len(current) > last_text_len:
                             last_text_len = len(current)
@@ -417,7 +415,7 @@ class RealtimeSttService:
             log.debug("STT recorder shutdown raised: exc=%r", exc)
 
     def transcribe(self, audio_path: str | Path) -> str:
-        """Transcribe a WAV file by feeding its contents to the recorder."""
+        """Transcribe captured WAV samples without waiting for a second VAD pass."""
         if wave is None or np is None:
             return ""
         path = Path(audio_path)
@@ -426,26 +424,19 @@ class RealtimeSttService:
         recorder = self._ensure_recorder()
         if recorder is None:
             return ""
-        # Don't fight a context that's already managed elsewhere. When the
-        # caller (e.g. LiveSession) holds the context open we still feed
-        # the WAV bytes; we just let them manage start/stop.
-        owns_context = not self._context_active
         try:
             with wave.open(str(path), "rb") as wav:
-                # 200 ms per feed. ``readframes`` counts frames, not bytes, so
-                # channel count and sample width don't enter into it.
-                chunk_frames = wav.getframerate() // 5
-                if owns_context:
-                    self.start_context()
-                try:
-                    while True:
-                        data = wav.readframes(chunk_frames)
-                        if not data:
-                            break
-                        recorder.feed_audio(data)
-                    return self.text()
-                finally:
-                    if owns_context:
-                        self.stop_context()
-        except Exception:
+                capture_format = (
+                    wav.getnchannels(), wav.getsampwidth(), wav.getframerate(),
+                )
+                if capture_format != (1, 2, 16000):
+                    log.warning("STT unsupported capture format: %s", path)
+                    return ""
+                data = wav.readframes(wav.getnframes())
+            samples = np.frombuffer(data, dtype="<i2").astype(np.float32) / 32768.0
+            if samples.size == 0:
+                return ""
+            return (recorder.perform_final_transcription(samples) or "").strip()
+        except Exception as exc:
+            log.warning("STT file transcription failed: %r", exc)
             return ""

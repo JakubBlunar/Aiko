@@ -17,6 +17,11 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 from unittest import mock
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import wave
+
+import numpy as np
 
 from app.core.infra.settings import SttSettings
 import app.stt.realtime_stt_service as stt_mod
@@ -47,9 +52,19 @@ class _FakeRecorder:
         _FakeRecorder.instances.append(self)
 
     def feed_audio(self, data) -> None:
+        if self.shut_down:
+            raise AssertionError("fed a shut-down recorder")
         self.fed.append(data)
 
     def text(self) -> str:
+        if self.shut_down:
+            raise AssertionError("read a shut-down recorder")
+        return "hello there"
+
+    def perform_final_transcription(self, samples) -> str:
+        if self.shut_down:
+            raise AssertionError("transcribed with a shut-down recorder")
+        self.final_samples = samples.copy()
         return "hello there"
 
     def __enter__(self):
@@ -58,6 +73,7 @@ class _FakeRecorder:
 
     def __exit__(self, *_exc) -> None:
         self.exited += 1
+        self.shutdown()
 
     def shutdown(self) -> None:
         self.shut_down += 1
@@ -102,7 +118,7 @@ class LazyConstructionTests(_Base):
         svc = self.service()
         svc.start_context()
         self.assertEqual(len(_FakeRecorder.instances), 1)
-        self.assertEqual(_FakeRecorder.instances[0].entered, 1)
+        self.assertEqual(_FakeRecorder.instances[0].entered, 0)
 
     def test_prewarm_triggers_the_load(self) -> None:
         svc = self.service()
@@ -122,6 +138,33 @@ class LazyConstructionTests(_Base):
         svc = self.service()
         svc.feed_audio(b"\x00\x00" * 160)
         self.assertEqual(svc.text(), "hello there")
+
+    def test_partial_snapshot_never_calls_final_text(self) -> None:
+        svc = self.service()
+        svc.start_context()
+        recorder = _FakeRecorder.instances[0]
+        self.assertTrue(recorder.kwargs["enable_realtime_transcription"])
+        self.assertTrue(recorder.kwargs["use_main_model_for_realtime"])
+        recorder.kwargs["on_realtime_transcription_update"]("hello there")
+        with mock.patch.object(recorder, "text", side_effect=AssertionError("blocking final text")):
+            self.assertEqual(svc.partial_text(), "hello there")
+            svc.start_context()
+            self.assertEqual(svc.partial_text(), "hello there")
+
+    def test_phrase_boundaries_reuse_a_live_recorder(self) -> None:
+        svc = self.service()
+        for _ in range(2):
+            svc.start_context()
+            svc.feed_audio(b"\x01\x00" * 160)
+            self.assertEqual(svc.text(), "hello there")
+            svc.stop_context()
+        recorder = _FakeRecorder.instances[0]
+        self.assertEqual(len(_FakeRecorder.instances), 1)
+        self.assertEqual(len(recorder.fed), 2)
+        self.assertEqual(recorder.exited, 0)
+        self.assertEqual(recorder.shut_down, 0)
+        svc.shutdown()
+        self.assertEqual(recorder.shut_down, 1)
 
     def test_settings_reach_the_recorder(self) -> None:
         svc = self.service(model="small", compute_type="int8")
@@ -256,6 +299,25 @@ class TranscribeTests(_Base):
         svc = self.service()
         self.assertEqual(svc.transcribe("does-not-exist.wav"), "")
         self.assertEqual(_FakeRecorder.instances, [])
+
+    def test_captured_audio_finalizes_without_refeeding_or_waiting_for_vad(self) -> None:
+        svc = self.service()
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.wav"
+            with wave.open(str(path), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(16000)
+                wav.writeframes(np.array([0, 16384, -16384], dtype="<i2").tobytes())
+            svc.start_context()
+            svc.stop_context()
+            recorder = _FakeRecorder.instances[0]
+            with mock.patch.object(recorder, "text", side_effect=AssertionError("VAD wait")):
+                self.assertEqual(svc.transcribe(path), "hello there")
+                self.assertEqual(svc.transcribe(path), "hello there")
+            np.testing.assert_allclose(recorder.final_samples, [0, 0.5, -0.5])
+            self.assertEqual(recorder.fed, [])
+            self.assertEqual(recorder.shut_down, 0)
 
 
 class SettingsRoundTripTests(unittest.TestCase):

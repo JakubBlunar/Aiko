@@ -149,13 +149,13 @@ class VoiceCaptureMixin:
         last_fed_at = [0.0]
         # The most recent partial we observed in this phrase, stashed so
         # ``process_live_capture`` can fire a final prefetch right before
-        # ``transcribe(wav)``.
+        # the captured WAV's explicit final transcription.
         last_seen_partial = [""]
 
         def _on_speech_start() -> None:
             if endpointing_cfg.enabled and endpointing_cfg.use_partial_transcript:
                 try:
-                    partial_baseline[0] = self._realtime_stt.text() or ""
+                    partial_baseline[0] = self._realtime_stt.partial_text() or ""
                 except Exception:
                     partial_baseline[0] = ""
             # Reset listening-window state for this phrase.
@@ -187,7 +187,7 @@ class VoiceCaptureMixin:
                 log.debug("feed_stt_partial from capture loop raised", exc_info=True)
 
         # Throttle the periodic partial read inside _on_chunk so we don't
-        # call ``stt.text()`` on every chunk. ``feed_stt_partial`` itself
+        # read the STT partial on every chunk. ``feed_stt_partial`` itself
         # is also debounced in ``_maybe_feed_partial``; this just bounds
         # how often we *try*.
         last_chunk_partial_check = [0.0]
@@ -214,7 +214,7 @@ class VoiceCaptureMixin:
 
         def _read_partial() -> str:
             try:
-                full = self._realtime_stt.text() or ""
+                full = self._realtime_stt.partial_text() or ""
             except Exception:
                 return ""
             base = partial_baseline[0]
@@ -265,11 +265,8 @@ class VoiceCaptureMixin:
         if on_generation_status:
             on_generation_status("listening")
         capture_started = time.perf_counter()
-        # Hold the STT recorder context open just for the duration of the
-        # capture so feed_audio + text() work for partial-driven endpointing.
-        # We close it before returning so the subsequent transcribe(wav)
-        # call in process_live_capture gets a fresh context and doesn't
-        # double-feed the same audio.
+        # Reset the interim snapshot for this capture; stop_context does
+        # not shut down the recorder, which is reused by final transcription.
         wants_partial = (
             endpointing_cfg.enabled and endpointing_cfg.use_partial_transcript
         )
@@ -368,9 +365,9 @@ class VoiceCaptureMixin:
             pass
         # Listening-window prefetch (Phase 2): fire one final RAG prefetch
         # using the most recent partial we observed during capture, right
-        # before Whisper blocks the thread. The prefetcher runs on its own
-        # background executor so this is non-blocking; by the time
-        # transcribe(wav) returns, retrieval is usually cached.
+        # before final transcription blocks the thread. The prefetcher
+        # runs on its own executor so this is non-blocking; by the time
+        # transcription returns, retrieval is usually cached.
         last_partial = self._last_live_partial.pop(self.session_key, "")
         if last_partial:
             try:
