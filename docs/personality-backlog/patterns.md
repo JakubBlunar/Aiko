@@ -85,7 +85,7 @@ Behavioral activation and model-quality evaluation remain open.
 | K59 | Tease economy | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k59-tease-economy--youll-pay-for-that-one) |
 | K60 | Tsundere mask | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k60-tsundere-mask--warmth-expressed-through-denial) |
 | K61 | Specifics over generalities (knowledge grounding) | ✅ shipped — [awareness.md](shipped/awareness.md#k61-knowledge_grounding-inner-life-block-commit-to-specifics) |
-| K62 | Co-experience companion (follow a show/album) | Explicit episode/chapter pilot shipped; broader media and behavioral evaluation open |
+| K62 | Co-experience companion (follow a show/album) | Durable per-user episode/chapter progress shipped; broader media and evaluation open |
 | K63 | Long-arc callbacks — "weeks ago you said…" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k63-long-arc-callbacks--weeks-ago-you-said) |
 | K64 | Freedom of thought (a–d: wandering / drift / curiosity gradient / map self-reflection) | ✅ shipped — [awareness.md](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of) |
 | K65 | Worker modernization for the topic-cluster era | ✅ shipped (a–e) — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k65-worker-modernization-for-the-topic-cluster-era-audit) |
@@ -378,6 +378,19 @@ files: [`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py
 ---
 
 ## K62. Co-experience companion — follow a show/album/book with the user
+
+**30 Sep 2026: durable explicit progress.** Runtime tracking now retains one
+active title per user across sessions and restarts. Each of the last four
+discussion exchanges keeps its own source session; deleted or mismatched source
+rows do not become context. Corrections can lower progress and prune later
+discussion, stop-tracking persists across sessions, and older writes cannot
+undo it. A new session requires a named title before a bare chapter/episode
+update can inherit that thread. Rendering remains read-only and T6-only, with
+no added model call. The session-only constructor remains supported; old
+session-local records are not migrated or deleted automatically. A fresh
+explicit progress statement seeds the durable runtime record. Canonical media
+retrieval, multiple concurrent titles, albums, UI and real-model spoiler
+evaluation remain open.
 
 **29 Sep 2026: explicit-progress pilot shipped.** One session-local book/show
 thread carries a conservative completion boundary and evidence-linked recent

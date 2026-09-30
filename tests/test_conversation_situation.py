@@ -100,6 +100,35 @@ def test_media_store_is_read_only_during_render_and_survives_restart(tmp_path) -
     assert store.render("Glass Harbor") == ""
 
 
+def test_media_cross_session_progress_is_user_scoped_and_correctable(tmp_path) -> None:
+    from app.core.conversation.media_thread import MediaThreadStore
+
+    db = ChatDatabase(tmp_path / "cross-media.db")
+    first = MediaThreadStore(db, "first", user_id="reader")
+    source = db.add_message("first", "user", "I finished chapter 4 of Glass Harbor.")
+    reply = db.add_message("first", "assistant", "My reading is that the narrator is unreliable.")
+    first.record(source, reply)
+    second = MediaThreadStore(db, "second", user_id="reader")
+    before = db.kv_get(second.key)
+    assert "unreliable" in second.render("What about Glass Harbor?")
+    assert db.kv_get(second.key) == before
+    assert MediaThreadStore(db, "second", user_id="someone-else").load() is None
+    ambiguous = db.add_message("second", "user", "I finished chapter 9.")
+    second.record(ambiguous)
+    assert second.load().completed_through == 4
+    correction = db.add_message("second", "user", "I only finished chapter 2 of Glass Harbor.")
+    second.record(correction)
+    assert second.load().completed_through == 2
+    assert "unreliable" not in second.render("Glass Harbor")
+    first.record(source, reply)
+    assert first.load().completed_through == 2
+    stop = db.add_message("second", "user", "Stop tracking this book.")
+    second.record(stop)
+    assert first.render("Glass Harbor") == ""
+    first.record(source, reply)
+    assert first.load().active is False
+
+
 def test_media_discussion_retains_changed_interpretations_without_wrong_speakers(tmp_path) -> None:
     from app.core.conversation.media_thread import MediaThreadStore
 
@@ -127,6 +156,23 @@ def test_media_discussion_retains_changed_interpretations_without_wrong_speakers
     store.record(short)
     assert store.render("It was a good lunch.") == ""
     assert "completed through chapter 1" in store.render('What about "It"?')
+
+
+def test_durable_media_rejects_missing_or_wrong_session_source(tmp_path) -> None:
+    from app.core.conversation.media_thread import MediaThreadStore
+
+    db = ChatDatabase(tmp_path / "media-source.db")
+    store = MediaThreadStore(db, "original", user_id="reader")
+    source = db.add_message("original", "user", "I finished episode 3 of North Station.")
+    store.record(source)
+    valid = db.kv_get(store.key)
+    payload = json.loads(valid)
+    payload["source_session_id"] = "wrong-session"
+    db.kv_set(store.key, json.dumps(payload))
+    assert store.load() is None
+    db.kv_set(store.key, valid)
+    db.delete_session("original")
+    assert MediaThreadStore(db, "new", user_id="reader").load() is None
 
 
 def test_delivery_receipts_require_clip_owner_scope_and_send_completion() -> None:

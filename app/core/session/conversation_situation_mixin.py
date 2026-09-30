@@ -372,7 +372,9 @@ class ConversationSituationMixin:
         from app.core.conversation.media_thread import MediaThreadStore
 
         db = getattr(self, "_chat_db", None)
-        return MediaThreadStore(db, self.session_key).render(user_text) if db is not None else ""
+        return MediaThreadStore(
+            db, self.session_key, user_id=getattr(self, "_user_id", None),
+        ).render(user_text) if db is not None else ""
 
     def _record_media_exchange(
         self, user_message_id: int | None, assistant_message_id: int | None,
@@ -381,7 +383,9 @@ class ConversationSituationMixin:
 
         db = getattr(self, "_chat_db", None)
         if db is not None and user_message_id is not None:
-            MediaThreadStore(db, self.session_key).record(user_message_id, assistant_message_id)
+            MediaThreadStore(
+                db, self.session_key, user_id=getattr(self, "_user_id", None),
+            ).record(user_message_id, assistant_message_id)
 
     def _reconcile_conversation_situation_after_world_mutation(self) -> None:
         """Refresh a compatible lease or clear one a deliberate move ended."""

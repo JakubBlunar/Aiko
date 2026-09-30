@@ -1,11 +1,14 @@
-"""K62: one explicit media thread, with bounded discussion provenance per session."""
+"""K62: one explicit media thread, with bounded cross-session discussion provenance."""
 from __future__ import annotations
 
 import json
 import re
+import threading
 from dataclasses import asdict, dataclass, replace
 
 from app.core.infra import timephrase
+
+_WRITE_LOCK = threading.RLock()
 
 
 _PROGRESS = re.compile(
@@ -32,6 +35,7 @@ class MediaExchange:
     user_id: int
     assistant_id: int | None
     ceiling: int
+    source_session_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -42,10 +46,12 @@ class MediaThread:
     source_message_id: int
     active: bool = True
     exchanges: tuple[MediaExchange, ...] = ()
+    source_session_id: str = ""
 
 
 def project_thread(
     previous: MediaThread | None, user_text: str, source_message_id: int,
+    *, allow_implicit: bool = True,
 ) -> MediaThread | None:
     text = (user_text or "").replace("\u2019", "'").strip()
     if previous is not None and source_message_id < previous.source_message_id:
@@ -64,7 +70,7 @@ def project_thread(
     unit = "chapter" if progress["unit"].lower() == "chapter" else "episode"
     title = (progress["title"] or "").strip(' "\'')
     if not title:
-        if previous is None or not previous.active or previous.unit != unit:
+        if not allow_implicit or previous is None or not previous.active or previous.unit != unit:
             return previous
         title = previous.title
     if not 2 <= len(title) <= 80 or re.search(r"\b(?:season|but|except)\b", title, re.I):
@@ -93,10 +99,14 @@ def relevant(thread: MediaThread | None, user_text: str) -> bool:
 
 
 class MediaThreadStore:
-    def __init__(self, db, session_id: str) -> None:
+    def __init__(self, db, session_id: str, *, user_id: str | None = None) -> None:
         self.db = db
         self.session_id = session_id
-        self.key = "media_thread:" + session_id
+        self.user_id = user_id
+        self.key = (
+            "media_thread:user:" + json.dumps(user_id)
+            if user_id is not None else "media_thread:" + session_id
+        )
 
     def load(self) -> MediaThread | None:
         try:
@@ -112,29 +122,39 @@ class MediaThreadStore:
                 or not 0 <= thread.completed_through < 10001
                 or type(thread.source_message_id) is not int
                 or type(thread.active) is not bool
+                or not isinstance(thread.source_session_id, str)
                 or any(
                     type(item.user_id) is not int or item.user_id <= 0
                     or (item.assistant_id is not None and type(item.assistant_id) is not int)
                     or type(item.ceiling) is not int or not 0 <= item.ceiling <= 10000
+                    or not isinstance(item.source_session_id, str)
                     for item in exchanges
                 )
             ):
                 return None
             source = self.db.get_message_row(thread.source_message_id)
-            if source is None or source.session_id != self.session_id or source.role != "user":
+            source_session = thread.source_session_id or self.session_id
+            if source is None or source.session_id != source_session or source.role != "user":
                 return None
             return thread
         except (TypeError, ValueError, KeyError, AttributeError):
             return None
 
     def record(self, user_message_id: int, assistant_message_id: int | None = None) -> None:
+        with _WRITE_LOCK:
+            self._record(user_message_id, assistant_message_id)
+
+    def _record(self, user_message_id: int, assistant_message_id: int | None) -> None:
         user = self.db.get_message_row(user_message_id)
         if user is None or user.session_id != self.session_id or user.role != "user":
             return
         previous = self.load()
         if previous is not None and user_message_id <= previous.source_message_id:
             return
-        thread = project_thread(previous, user.content, user_message_id)
+        thread = project_thread(
+            previous, user.content, user_message_id,
+            allow_implicit=previous is None or previous.source_session_id in ("", self.session_id),
+        )
         if thread is None:
             return
         changed = thread != previous
@@ -154,17 +174,23 @@ class MediaThreadStore:
                 )
                 if preceding and preceding[-1].id == user_message_id:
                     assistant_id = assistant.id
-            exchange = MediaExchange(user_message_id, assistant_id, thread.completed_through)
+            exchange = MediaExchange(
+                user_message_id, assistant_id, thread.completed_through, self.session_id,
+            )
             thread = replace(
                 thread, source_message_id=user_message_id,
                 exchanges=(*thread.exchanges, exchange)[-4:],
             )
+        thread = replace(thread, source_session_id=self.session_id)
         self.db.kv_set(self.key, json.dumps(asdict(thread)))
 
     def render(self, user_text: str) -> str:
         previous = self.load()
         next_id = previous.source_message_id + 1 if previous is not None else 0
-        thread = project_thread(previous, user_text, next_id)
+        thread = project_thread(
+            previous, user_text, next_id,
+            allow_implicit=previous is None or previous.source_session_id in ("", self.session_id),
+        )
         if thread is None or not thread.active:
             return ""
         if thread == previous and not relevant(thread, user_text):
@@ -176,7 +202,8 @@ class MediaThreadStore:
             sources = ((exchange.user_id, "user"), (exchange.assistant_id, "assistant"))
             for message_id, role in sources:
                 row = self.db.get_message_row(message_id) if message_id else None
-                if row is not None and row.session_id == self.session_id and row.role == role:
+                source_session = exchange.source_session_id or self.session_id
+                if row is not None and row.session_id == source_session and row.role == role:
                     rows.append({
                         "role": role, "content": row.content[:300], "created_at": row.created_at,
                     })
