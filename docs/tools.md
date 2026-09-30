@@ -78,6 +78,25 @@ Switches: `tools.web_search` (the family, shared with the background
 workflow skill) and `search.brain_tool_enabled` (this lane alone — turn
 it off to get the latency back and keep the background lanes).
 
+## Local reminders (D1)
+
+The `reminders` tool sets, lists and cancels one-shot, user-requested alarms.
+It is separate from calendar appointments: adding an event does not set a
+reminder. The tool requires an explicit time with timezone offset; it may call
+`get_time` to resolve a relative date and should ask when the request is
+ambiguous. Use Settings → Tools → Reminders to see pending alarms, enter a
+local date/time, or cancel one. `GET/POST /api/reminders` and
+`DELETE /api/reminders/{id}` use the same user-scoped SQLite rows. Set
+`tools.reminders` to false to hide the agent tool (the manual panel and
+delivery of already-set reminders remain available).
+
+While Aiko runs, due reminders become persistent chat messages within about
+30 seconds, even if no browser is connected. In Live voice mode she also
+speaks the notification when no turn is in progress. If Aiko is stopped at
+the due time, she records the overdue reminder on the next start. A closed
+tab sees it when the chat history reloads; this is not a browser push or
+system notification. There is no recurrence or external sync.
+
 ## Local calendar (K12)
 
 The `calendar` tool manages local, one-off appointments in SQLite, separately

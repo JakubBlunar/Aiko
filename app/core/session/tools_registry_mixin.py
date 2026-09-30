@@ -61,6 +61,13 @@ class ToolsRegistryMixin:
                 from app.llm.tools.calendar import CalendarTool
 
                 registry.register(CalendarTool(self._chat_db, self._user_id, self.session_key))
+            if (
+                getattr(tools_cfg, "reminders", True)
+                and getattr(self, "_chat_db", None) is not None
+            ):
+                from app.llm.tools.reminders import RemindersTool
+
+                registry.register(RemindersTool(self._chat_db, self._user_id, self.session_key))
             from app.llm.tools.builtins import (
                 GetTimeTool,
                 RecallConceptTool,

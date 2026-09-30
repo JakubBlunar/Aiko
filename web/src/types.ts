@@ -415,6 +415,14 @@ export interface TtsProviderInfo {
   notes: string;
 }
 
+export interface Reminder {
+  id: number;
+  text: string;
+  due_at: string;
+  fired_at: string | null;
+  cancelled_at: string | null;
+}
+
 export interface AssistantSettings {
   chat: {
     model: string;
@@ -518,6 +526,7 @@ export interface AssistantSettings {
     get_time: boolean;
     recall: boolean;
     web_search: boolean;
+    reminders: boolean;
     available: string[];
   };
   /** Debug-log bridge knobs. When ``ui_log_enabled`` is on, the browser

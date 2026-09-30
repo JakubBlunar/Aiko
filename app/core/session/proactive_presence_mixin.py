@@ -26,6 +26,15 @@ log = logging.getLogger("app.session")
 class ProactivePresenceMixin:
     """Proactive messages + typed-silence timer + presence/activity."""
 
+    @property
+    def reminder_store(self):
+        return self._reminder_dispatcher.store
+
+    def _on_reminder_delivered(self, message) -> None:
+        self._notify_message("Assistant (proactive)", message.content, message.id)
+        if self._live_voice_session_active and not self._turn_in_progress:
+            self.speak_text(message.content)
+
     def build_startup_greeting(self) -> str:
         return "Welcome back. Audio is ready."
 

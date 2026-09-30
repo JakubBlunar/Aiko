@@ -1680,6 +1680,9 @@ Agent tool registry switches. Each toggles a single tool; `tools.enabled = false
 - `tools.calendar` *(bool, `false`)* - local one-off calendar CRUD, independent
   from the anticipation switch. No external booking, sync or alarms. See
   [local calendar](tools.md#local-calendar-k12).
+- `tools.reminders` *(bool, `true`)* - agent tool for explicit one-shot
+  reminders. Already-set alarms keep firing if the tool is disabled; see
+  [local reminders](tools.md#local-reminders-d1).
 - `agent.calendar_anticipation_enabled` *(bool, `false`)* - no-LLM idle producer
   for confirmed calendar events starting within 48 hours. At most two stocked
   cues, one showing per revision, 24-hour cadence, source-revision checks and

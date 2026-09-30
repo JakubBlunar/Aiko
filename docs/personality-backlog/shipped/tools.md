@@ -8,6 +8,28 @@ Open items still live in [`tools.md`](../tools.md).
 
 ---
 
+## D1. Local one-shot reminders — SHIPPED
+
+User-requested reminders live in a separate SQLite table from K12's
+appointments. The `reminders` brain tool sets, lists, and cancels them, with
+the same explicit-offset ISO time contract as the local calendar. A dedicated
+wall-clock dispatcher checks every 30 seconds, including immediately after
+startup, independently of the idle scheduler and proactive director. One
+transaction inserts a deterministic "Reminder: ..." assistant message and
+marks the reminder fired, so failed writes retry and restarts cannot duplicate
+delivered notifications. The normal message listener broadcasts it to open
+clients, and live voice speaks it when no chat turn is in progress. A closed
+tab catches up through persisted chat history on reconnect; with the app
+stopped, an overdue reminder is delivered after next startup. The Tools tab
+lists pending rows and supports local date/time entry and cancellation via
+`/api/reminders`.
+
+There is no recurrence, external calendar sync, browser push, or OS-level
+notification when Aiko is stopped. See [setup](../../tools.md#local-reminders-d1).
+Tests: [`test_reminders.py`](../../../tests/test_reminders.py).
+
+---
+
 ## D3. Fast synchronous web-search brain tool (+ knowledge write-back) — SHIPPED
 
 **Motivation.** `web_search` existed but had been **deliberately pulled

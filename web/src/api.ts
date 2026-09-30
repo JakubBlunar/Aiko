@@ -40,6 +40,7 @@ import type {
   LastSystemPromptResponse,
   PersonaRegressionSnapshot,
   RagDocument,
+  Reminder,
   RequiredModels,
   SessionRow,
   SharedMoment,
@@ -176,6 +177,15 @@ async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> 
 }
 
 export const api = {
+  getReminders: () => jsonFetch<{ reminders: Reminder[] }>("/api/reminders"),
+  setReminder: (text: string, due_at: string) =>
+    jsonFetch<{ reminder: Reminder }>("/api/reminders", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, due_at }),
+    }),
+  cancelReminder: (id: number) =>
+    jsonFetch<{ reminder: Reminder }>(`/api/reminders/${id}`, { method: "DELETE" }),
   listSessions: () => jsonFetch<SessionListResponse>("/api/sessions"),
   newSession: () =>
     jsonFetch<{ session_id: string; session_key: string }>(

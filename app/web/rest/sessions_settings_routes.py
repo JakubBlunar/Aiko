@@ -396,6 +396,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 "recall": bool(getattr(s.tools, "recall", True)),
                 "web_search": bool(getattr(s.tools, "web_search", True)),
                 "world": bool(getattr(s.tools, "world", True)),
+                "reminders": bool(getattr(s.tools, "reminders", True)),
                 "available": list(session.available_tool_names()),
             },
             # Web-search backend. The raw ``api_key`` is never echoed —
@@ -603,7 +604,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         tools = payload.get("tools") or {}
         if tools:
             tcfg = session.settings.tools
-            for key in ("enabled", "get_time", "recall", "web_search", "world"):
+            for key in ("enabled", "get_time", "recall", "web_search", "world", "reminders"):
                 if key in tools:
                     setattr(tcfg, key, bool(tools[key]))
             try:

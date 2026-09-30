@@ -801,6 +801,9 @@ class LifecycleMixin(DebugOverridesHostMixin):
         return elapsed >= threshold
 
     def shutdown(self) -> None:
+        dispatcher = getattr(self, "_reminder_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.stop()
         # Clear the voice merge buffer first so a tail-end partial that
         # races shutdown can't try to call ``request_stop()`` on a
         # half-torn-down ``TurnRunner``.

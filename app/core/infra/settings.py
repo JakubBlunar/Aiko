@@ -939,6 +939,7 @@ class ToolsSettings:
     # See :mod:`app.llm.tools.goals`.
     goals: bool = True
     calendar: bool = False
+    reminders: bool = True
     # Nested goal workflows (``start_workflow`` / ``check_my_work`` /
     # ``cancel_work``). The brain-facing control surface for the
     # background ``GoalWorkflowHandler``. Gated independently from
@@ -2592,6 +2593,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             world=bool(tools_raw.get("world", True)),
             goals=bool(tools_raw.get("goals", True)),
             calendar=bool(tools_raw.get("calendar", False)),
+            reminders=bool(tools_raw.get("reminders", True)),
             workflow=bool(tools_raw.get("workflow", True)),
             weather=bool(tools_raw.get("weather", True)),
             activity=bool(tools_raw.get("activity", True)),

@@ -547,6 +547,7 @@
     "world": true,
     "goals": true,
     "calendar": true,
+    "reminders": true,
     "weather": true,
     "activity": true
   },

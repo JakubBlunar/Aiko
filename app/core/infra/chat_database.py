@@ -14,7 +14,7 @@ from app.core.infra import timephrase
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 46
+_SCHEMA_VERSION = 47
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -42,6 +42,21 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 CREATE INDEX IF NOT EXISTS idx_calendar_user_start ON calendar_events(user_id, status, starts_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_active_identity
     ON calendar_events(user_id, lower(title), starts_at) WHERE status='scheduled';
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    fired_at TEXT,
+    cancelled_at TEXT,
+    source_session TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_due
+    ON reminders(user_id, due_at) WHERE fired_at IS NULL AND cancelled_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_reminders_pending_identity
+    ON reminders(user_id, text, due_at) WHERE fired_at IS NULL AND cancelled_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2347,25 +2362,55 @@ class ChatDatabase:
         )
         conn.commit()
         msg_id = int(cursor.lastrowid or 0)
-        if self._add_listeners:
-            row = MessageRow(
-                id=msg_id,
-                session_id=session_id,
-                role=role,
-                content=content,
-                token_count=token_count,
-                created_at=created_at,
-                arc=arc,
-                dialogue_act=dialogue_act,
-                attachments=attachments,
-            )
-            for listener in list(self._add_listeners):
-                try:
-                    listener(row)
-                except Exception:
-                    # Listeners must not break the write path.
-                    pass
+        self._notify_added_message(MessageRow(
+            id=msg_id, session_id=session_id, role=role, content=content,
+            token_count=token_count, created_at=created_at, arc=arc,
+            dialogue_act=dialogue_act, attachments=attachments,
+        ))
         return msg_id
+
+    def _notify_added_message(self, row: MessageRow) -> None:
+        for listener in list(self._add_listeners):
+            try:
+                listener(row)
+            except Exception:
+                pass
+
+    def deliver_due_reminder(
+        self, user_id: str, session_id: str, now_iso: str,
+    ) -> MessageRow | None:
+        """Persist one due notification and its fired state as a single transaction."""
+        conn = self._get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            due = conn.execute(
+                "SELECT id, text FROM reminders WHERE user_id=? AND due_at<=? "
+                "AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY due_at, id LIMIT 1",
+                (user_id, now_iso),
+            ).fetchone()
+            if due is None:
+                conn.commit()
+                return None
+            content = f"Reminder: {due[1]}"
+            cursor = conn.execute(
+                "INSERT INTO messages (session_id, role, content, token_count, created_at) "
+                "VALUES (?, 'assistant', ?, 0, ?)",
+                (session_id, content, now_iso),
+            )
+            conn.execute(
+                "UPDATE reminders SET fired_at=? WHERE id=? AND user_id=?",
+                (now_iso, due[0], user_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        row = MessageRow(
+            id=int(cursor.lastrowid), session_id=session_id, role="assistant",
+            content=content, token_count=0, created_at=now_iso,
+        )
+        self._notify_added_message(row)
+        return row
 
     def update_message_gestures(
         self, message_id: int, gestures_json: str | None,

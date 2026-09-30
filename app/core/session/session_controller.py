@@ -1104,6 +1104,15 @@ class SessionController(
         self._init_detectors_and_state(settings)
 
         self._init_runtime_and_hooks(settings)
+        from app.core.goals.reminder_dispatcher import ReminderDispatcher
+        from app.core.goals.reminders import ReminderStore
+
+        self._reminder_dispatcher = ReminderDispatcher(
+            ReminderStore(self._chat_db, self._user_id),
+            session_id=lambda: self.session_key,
+            notify=self._on_reminder_delivered,
+        )
+        self._reminder_dispatcher.start()
 
     # ── State ─────────────────────────────────────────────────────────
 

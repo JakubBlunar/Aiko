@@ -1015,6 +1015,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
         sessions_settings_routes,
         memory_world_routes,
         tasks_files_routes,
+        reminders_routes,
     )
 
     sessions_settings_routes.register(
@@ -1026,6 +1027,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
     tasks_files_routes.register(
         app, session, hub, _broadcast_context_window, live_session
     )
+    reminders_routes.register(app, session)
 
     # ── Avatar / static assets ──────────────────────────────────────
 

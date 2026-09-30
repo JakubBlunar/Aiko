@@ -1,6 +1,7 @@
 import type { AssistantSettings } from "@/types";
 import { Toggle } from "@/components/Toggle";
 import { Section } from "./SettingsSection";
+import { RemindersPanel } from "./RemindersPanel";
 
 export interface ToolsTabProps {
   settings: AssistantSettings;
@@ -8,14 +9,14 @@ export interface ToolsTabProps {
 }
 
 /**
- * The "Tools" settings tab: the master tool switch plus the three live tool
- * toggles (get_time / recall / web_search). Extracted from SettingsDrawer
+ * The "Tools" settings tab: tool switches and pending reminders. Extracted from SettingsDrawer
  * (phase 4c) so the drawer shell stays a thin tab dispatcher.
  */
 export function ToolsTab({ settings, apply }: ToolsTabProps) {
   const toolsEnabled = settings.tools?.enabled ?? true;
   return (
-    <Section title="Tools">
+    <div className="space-y-6">
+      <Section title="Tools">
       <p className="text-[11px] text-ink-100/50">
         Tools let Aiko reach for fresh facts before answering: the current
         time, your notebook, or the public web. Disable any she shouldn't use.
@@ -51,6 +52,14 @@ export function ToolsTab({ settings, apply }: ToolsTabProps) {
       >
         web_search — DuckDuckGo
       </Toggle>
+      <Toggle
+        className="ml-4"
+        checked={settings.tools?.reminders ?? true}
+        disabled={!toolsEnabled}
+        onChange={(checked) => void apply({ tools: { reminders: checked } })}
+      >
+        reminders - set and cancel by request
+      </Toggle>
       {settings.tools?.available && settings.tools.available.length > 0 ? (
         <div className="rounded-md bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/60">
           Active: {settings.tools.available.join(", ")}
@@ -60,6 +69,8 @@ export function ToolsTab({ settings, apply }: ToolsTabProps) {
           No tools currently available.
         </div>
       )}
-    </Section>
+      </Section>
+      <RemindersPanel />
+    </div>
   );
 }

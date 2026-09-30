@@ -440,7 +440,7 @@ audit already shipped: LF everywhere via `.gitattributes`, ruff green on
 ### D. New tools / capabilities — [`tools.md`](tools.md)
 
 - **D-approval.** Spoken / Aiko-voiced task approvals.
-- **D1.** Calendar / reminders tool.
+- **D1.** One-shot reminders shipped; recurrence and OS notifications open.
 - **D7.** Anticipatory routine assistance — act on what she's learned.
 
 Dev / debug tooling (DT-series):
