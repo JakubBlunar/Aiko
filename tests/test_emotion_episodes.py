@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -366,6 +367,51 @@ class _Host(InnerLifeProvidersMixin):
             ),
         )
         self._chat_db = _FakeKv(initial)
+
+
+def _jealousy_host(**kwargs):
+    host = _Host(**kwargs)
+    host._settings.agent.calibrated_jealousy_enabled = True
+    host._relationship_axes_store = SimpleNamespace(
+        get=lambda _uid: SimpleNamespace(trust=0.8, comfort=0.8, closeness=0.8),
+    )
+    host._arc_store = SimpleNamespace(
+        get_or_default=lambda _uid: SimpleNamespace(arc="casual_check_in"),
+    )
+    host.relationship_stage_now = lambda: "close"
+    host._intimacy_ceiling_value = lambda: 0.7
+    host._intimacy_user_pace = lambda: SimpleNamespace(user_pace=0.7)
+    return host
+
+
+def test_invited_jealousy_is_one_turn_without_an_episode():
+    host = _jealousy_host()
+    invitation = "Are you jealous that I talked to another assistant?"
+    assert "user-invited playful feeling" in host._render_emotion_episode_block(invitation)
+    assert ee.KV_EMOTION_EPISODES not in host._chat_db.data
+    assert host._render_emotion_episode_block(invitation) == ""
+    assert host._render_emotion_episode_block("I spent time with my friends") == ""
+
+
+@pytest.mark.parametrize("initial", ["broken", "[]", "{}", '{"episodes": "invalid"}'])
+def test_invited_jealousy_fails_closed_on_corrupt_episode_state(initial):
+    host = _jealousy_host(initial=initial)
+    assert host._render_emotion_episode_block(
+        "Are you jealous that I talked to another assistant?",
+    ) == ""
+
+
+def test_invited_jealousy_does_not_override_support_or_existing_emotion():
+    invitation = "Are you jealous that I talked to another assistant?"
+    host = _jealousy_host()
+    host._arc_store.get_or_default = lambda _uid: SimpleNamespace(arc="support")
+    assert host._render_emotion_episode_block(invitation) == ""
+    host = _jealousy_host(initial=ee.serialize(_state_with(now=datetime.now(timezone.utc))))
+    assert "user-invited playful feeling" not in host._render_emotion_episode_block(invitation)
+    assert not any("calibrated_jealousy" in key for key in host._chat_db.data)
+    host = _jealousy_host()
+    host._settings.agent.calibrated_jealousy_enabled = False
+    assert host._render_emotion_episode_block(invitation) == ""
 
 
 class ProviderTests(unittest.TestCase):

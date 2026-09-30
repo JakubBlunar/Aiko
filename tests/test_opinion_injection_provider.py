@@ -154,15 +154,25 @@ def test_candor_extends_only_grounded_taste_once(monkeypatch):
         StanceConcept(id=-12, content=source.label, embedding=_VEC_ALIGNED),
     ]
     host._user_id = "test-user"
+    host._arc_store = SimpleNamespace(
+        get_or_default=lambda _uid: SimpleNamespace(arc="casual_check_in"),
+    )
     host._relationship_tenure_days = lambda: 90
     host._relationship_axes_store = SimpleNamespace(get=lambda _uid: SimpleNamespace(trust=0.8))
     stored = {}
     host._chat_db = SimpleNamespace(kv_get=stored.get, kv_set=stored.__setitem__)
     block = host._render_opinion_injection_block(CONTRADICTING_USER_MSG)
     assert "Candor permission" in block
+    assert "Say your take" not in block
+    assert source.label in block
     assert len(stored) == 1
     host._opinion_injection_cooldown = 0
     assert "Candor permission" not in host._render_opinion_injection_block(CONTRADICTING_USER_MSG)
+    stored.clear()
+    host._opinion_injection_cooldown = 0
+    host._arc_store.get_or_default = lambda _uid: SimpleNamespace(arc="support")
+    assert "Candor permission" not in host._render_opinion_injection_block(CONTRADICTING_USER_MSG)
+    assert stored == {}
 
 
 def test_candor_does_not_promote_raw_memories():

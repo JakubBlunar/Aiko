@@ -280,7 +280,7 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
 
         permission = offer_for_stance(self, result)
         if permission:
-            block = f"{block}\n{permission}"
+            block = permission
         self._opinion_injection_cue_emitted = True  # K46
         return block
 
@@ -1903,7 +1903,9 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             raw = chat_db.kv_get(_ee.KV_EMOTION_EPISODES)
             state = _ee.deserialize(raw)
             if not state.episodes and state.pending_thaw is None:
-                return ""
+                from app.core.affect.calibrated_jealousy import offer_for_turn
+
+                return offer_for_turn(self, user_text, episode_record=raw)
             state = _ee.apply_decay(state, now)
 
             text = (user_text or "").strip()

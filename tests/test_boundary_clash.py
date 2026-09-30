@@ -63,6 +63,9 @@ def test_decline_provider_and_repeat_override(monkeypatch):
     host = _Host(pairs=[(source, 0.9)])
     host._settings.agent.decline_enabled = True
     host._user_id = "test-user"
+    host._arc_store = SimpleNamespace(
+        get_or_default=lambda _uid: SimpleNamespace(arc="casual_check_in"),
+    )
     host._relationship_tenure_days = lambda: 90
     host._relationship_axes_store = SimpleNamespace(get=lambda _uid: SimpleNamespace(trust=0.5))
     stored = {}
@@ -78,6 +81,14 @@ def test_decline_provider_and_repeat_override(monkeypatch):
     assert "Personal-disclosure permission" not in host._render_boundary_clash_block(
         "Tell me about your feelings",
     )
+    stored.clear()
+    host._boundary_clash_cooldown = 0
+    host._boundary_clash_session_count = 0
+    host._arc_store.get_or_default = lambda _uid: SimpleNamespace(arc="support")
+    assert "Personal-disclosure permission" not in host._render_boundary_clash_block(
+        "Tell me about your feelings",
+    )
+    assert stored == {}
 
 
 class BoundaryClashDetectorTests(unittest.TestCase):

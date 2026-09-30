@@ -54,6 +54,8 @@ def offer_for_stance(host: object, result: object) -> str:
 
         if result.stance_origin != "concept" or result.stance_memory_id >= 0:
             return ""
+        if host._arc_store.get_or_default(host._user_id).arc != "casual_check_in":
+            return ""
         view = concept_view_from(host)
         if view is None or not view.enabled:
             return ""
@@ -82,7 +84,7 @@ def offer_for_stance(host: object, result: object) -> str:
         logging.getLogger("app.candor_gate").info(
             "candor offered: concept_id=%d", source.concept_id,
         )
-        return PERMISSION
+        return f"Grounded taste you hold: {source.label[:180]}\n{PERMISSION}"
     except Exception:
         logging.getLogger("app.candor_gate").debug("candor unavailable", exc_info=True)
         return ""

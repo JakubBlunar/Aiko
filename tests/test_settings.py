@@ -23,6 +23,21 @@ from app.core.infra.settings import AvatarSettings, McpServerSettings, load_sett
 from app.core.memory.memory_extractor import MemoryExtractor
 
 
+def test_relationship_permission_switches_round_trip():
+    from app.core.infra.agent_settings import AgentSettings
+    from app.core.infra.agent_settings_parse import parse_agent_settings
+
+    names = ("candor_gate_enabled", "decline_enabled", "calibrated_jealousy_enabled")
+    default_path = Path(__file__).resolve().parents[1] / "config" / "default.json"
+    defaults = json.loads(default_path.read_text(encoding="utf-8"))["agent"]
+    for name in names:
+        assert getattr(AgentSettings(), name) is False
+        assert defaults[name] is False
+        assert getattr(parse_agent_settings({}), name) is False
+        assert getattr(parse_agent_settings({name: True}), name) is True
+        assert getattr(parse_agent_settings({name: False}), name) is False
+
+
 class AvatarExpressivenessLoaderTests(unittest.TestCase):
     """``avatar.expressiveness`` round-trips through the loader and
     is clamped into the documented [0.0, 1.5] range."""

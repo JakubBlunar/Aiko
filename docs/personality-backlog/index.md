@@ -1260,8 +1260,13 @@ companion and a service, and is infuriating if the refusal is arbitrary or
 frequent. K84 (a bounded capacity to *mind*) is the most-requested thing in
 this genre and the closest to manipulative — a system that makes a user feel
 guilty for leaving is optimising against him. Written down so they're judged
-on their merits rather than arrived at accidentally; both would ship off by
-default, if at all.
+on their merits rather than arrived at accidentally. **30 Sep 2026:** narrow,
+off-by-default pilots now exist for K77, K83 and K84. K77 is taste-only ask-first
+candor; K83 is a rare, overridable personal-disclosure decline; K84 is an
+explicitly invited one-turn response about another assistant, never absence or
+real people. These are partial implementations, not the broader proposals:
+see [patterns](patterns.md#k77-candor-gate--can-i-be-real-with-you) for gates,
+prerequisites and unverified model-level behavior.
 
 K39 (energy / spoons) was absorbed by the shipped K68 embodied vitality —
 same mechanic, broader framing.

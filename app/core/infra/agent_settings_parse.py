@@ -748,6 +748,7 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             emotion_episodes_enabled=bool(
                 agent_raw.get("emotion_episodes_enabled", True),
             ),
+            calibrated_jealousy_enabled=bool(agent_raw.get("calibrated_jealousy_enabled", False)),
             emotion_episode_cap=max(
                 1, int(agent_raw.get("emotion_episode_cap", 3)),
             ),

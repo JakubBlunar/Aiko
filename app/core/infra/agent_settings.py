@@ -1116,6 +1116,7 @@ class AgentSettings:
     # Master switch for the episode store (lonely / miffed / warm_glow
     # / smug / playful_jealous / hurt with cause + decay + thaw).
     emotion_episodes_enabled: bool = True
+    calibrated_jealousy_enabled: bool = False
     # Live episodes kept at once; the strongest wins the prompt.
     emotion_episode_cap: int = 3
     # Base absence (hours) before a gap can register as loneliness;

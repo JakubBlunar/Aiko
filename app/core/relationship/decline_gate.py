@@ -100,6 +100,8 @@ def offer_for_boundary(host: object, text: str, source: object) -> str:
         from app.core.concepts.concept_lifecycle import RelationshipSignal, effective_plasticity
         from app.core.infra import timephrase
 
+        if host._arc_store.get_or_default(host._user_id).arc != "casual_check_in":
+            return ""
         axes = host._relationship_axes_store.get(host._user_id)
         days = host._relationship_tenure_days()
         full = float(getattr(host._memory_settings, "concept_plasticity_duration_days_full", 180))

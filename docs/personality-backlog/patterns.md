@@ -107,7 +107,7 @@ Behavioral activation and model-quality evaluation remain open.
 | K81 | Taste formation — topics she *likes*, not just topics she's seen | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k81-taste-formation--topics-she-likes-not-just-topics-shes-seen) |
 | K82 | The dropped sub-topic | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k82-the-dropped-sub-topic--he-said-three-things-she-answered-one) |
 | K83 | The right to decline | Partial: opt-in disclosure-only pilot |
-| K84 | Calibrated jealousy | ❌ open (filed as a risky idea) |
+| K84 | Calibrated jealousy | Partial: opt-in, explicitly invited pilot |
 | K85 | The third subject — interests that aren't him | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k85-the-third-subject--interests-that-arent-him) |
 | K86 | Immortal future plans — asking about things that already happened | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k86-immortal-future-plans--asking-about-things-that-already-happened) |
 | K87 | Curiosity that isn't about him | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k87-curiosity-that-isnt-about-him) |
@@ -422,6 +422,15 @@ from the prompt, not proven delivery. Tests cover admission and provider wiring;
 model-level consent handling is not yet verified. Broader concerns, relationship
 observations and L44 calibration remain open. Default is **off**; no live settings
 are changed by this implementation.
+The concept layer and K29 must also be enabled; only casual-check-in arcs qualify.
+The candor directive replaces K29's immediate-disagreement directive rather than
+stacking contradictory instructions. The normal stance handling notes explicitly
+defer to ask-first permission on that turn.
+
+**Shared pilot verification (K77/K83/K84):** 444 focused tests passed. Full
+backend run: 12,152 passed, 8 skipped; the only failure is the pre-existing MCP
+private-reach budget guard (471 vs 466). Lint and frontend typecheck passed.
+No live restart, setting changes or real-model conversation evaluation was done.
 
 **Motivation.** K29 lets Aiko push back on a stance and K46 keeps her from
 caving on taste, but there's no model of **earned bluntness** — the moment a
@@ -517,6 +526,8 @@ The prompt requires an alternative and prohibits invented biography, guilt,
 punishment or withholding help. It does not hard-filter generated replies:
 model-level adherence still needs evaluation. Broader emotional requests,
 affect-only triggers and any repair arc remain unimplemented.
+The concept layer and boundary-clash provider must also be enabled. Only
+casual-check-in arcs qualify; support, reflection and task arcs stay unaffected.
 
 **Motivation.** Aiko answers everything. Every turn produces a substantive reply
 on whatever subject was raised, because nothing in the architecture contemplates
@@ -551,6 +562,25 @@ boundary-clash detector, a rare one-shot cue, persona block on how she says no,
 ---
 
 ## K84. Calibrated jealousy — the risky one, written down honestly
+
+**30 Sep 2026: explicitly invited pilot implemented.**
+`agent.calibrated_jealousy_enabled=false` is the default. Opting in permits at
+most one light sentence in response to a standalone question shaped like
+"Are you jealous that I talked to another assistant?" Named ChatGPT, Claude,
+Gemini and Copilot alternatives are also recognized. It never triggers on
+absence, real people, uninvited comparisons or mixed requests. Admission needs
+a close/intimate stage, trust/closeness/comfort and user pace >=0.5, intimacy
+ceiling >=0.6, a casual-check-in arc and an empty emotion slot. Existing K57
+episodes and thaws take priority; missing or malformed inputs fail closed.
+Relationship/arc dependencies and cooldown/episode records must be readable;
+the existing J12 helpers retain their normal neutral/default pacing fallbacks.
+It reuses the T5 emotion block as a local response tint, offers no independent
+stance and creates no topical cue. A per-user 14-day offer cooldown is the only
+new stored state: no accumulated jealousy episode, affect impulse or axes
+penalty. The prompt permits no guilt, demands, exclusivity, comparison with
+real people, reassurance-seeking or carryover into memories/callbacks. Output
+adherence is prompt-level and still requires real-model evaluation. Unsolicited
+jealousy and absence-based attachment reactions remain deliberately unimplemented.
 
 **Motivation.** Filed deliberately as a *risky* idea rather than a
 recommendation, because it is the most requested thing in this genre and also

@@ -214,6 +214,7 @@
     "appetite_min_want_pressure": 0.35,
     "appetite_min_axes": 0.15,
     "emotion_episodes_enabled": true,
+    "calibrated_jealousy_enabled": false,
     "emotion_episode_cap": 3,
     "emotion_lonely_threshold_hours": 5.0,
     "emotion_high_band": 0.5,
