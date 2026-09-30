@@ -2337,6 +2337,7 @@ class AgentSettings:
     # embed, no concept read). See
     # [`app/core/affect/boundary_clash_detector.py`](../affect/boundary_clash_detector.py).
     boundary_clash_enabled: bool = True
+    decline_enabled: bool = False
 
     # ── K46: stance persistence ───────────────────────────────────────
     # Master switch for the "don't cave on taste pushback" cue. When on

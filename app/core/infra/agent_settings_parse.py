@@ -1812,6 +1812,7 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             boundary_clash_enabled=bool(
                 agent_raw.get("boundary_clash_enabled", True),
             ),
+            decline_enabled=bool(agent_raw.get("decline_enabled", False)),
             stance_persistence_enabled=bool(
                 agent_raw.get("stance_persistence_enabled", True),
             ),

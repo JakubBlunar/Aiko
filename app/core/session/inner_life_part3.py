@@ -346,6 +346,11 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
           sharp in-the-moment cue never nags.
         * Cosine + word-count gates live in the detector module.
         """
+        from app.core.relationship import decline_gate
+
+        override = decline_gate.take_override(self)
+        if override:
+            return override
         if not bool(
             getattr(self._settings.agent, "boundary_clash_enabled", True)
         ):
@@ -465,6 +470,14 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
         )
 
         try:
+            source = next(
+                (concept for concept, _similarity in pairs
+                 if concept.concept_id == result.concept_id),
+                None,
+            )
+            permission = decline_gate.offer_for_boundary(self, user_text, source)
+            if permission:
+                return permission
             return boundary_clash_detector.render_inner_life_block(
                 result,
                 user_display_name=self.user_display_name,

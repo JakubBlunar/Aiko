@@ -106,7 +106,7 @@ Behavioral activation and model-quality evaluation remain open.
 | K80 | Inside-joke birth — bless the moment a bit becomes "ours" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours) |
 | K81 | Taste formation — topics she *likes*, not just topics she's seen | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k81-taste-formation--topics-she-likes-not-just-topics-shes-seen) |
 | K82 | The dropped sub-topic | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k82-the-dropped-sub-topic--he-said-three-things-she-answered-one) |
-| K83 | The right to decline | ❌ open |
+| K83 | The right to decline | Partial: opt-in disclosure-only pilot |
 | K84 | Calibrated jealousy | ❌ open (filed as a risky idea) |
 | K85 | The third subject — interests that aren't him | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k85-the-third-subject--interests-that-arent-him) |
 | K86 | Immortal future plans — asking about things that already happened | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k86-immortal-future-plans--asking-about-things-that-already-happened) |
@@ -499,6 +499,24 @@ one-shot inner-life cue, persona addendum, `agent.hesitation_tell_enabled`.
 ---
 
 ## K83. The right to decline — she always answers, and that's the tell
+
+**30 Sep 2026: initial opt-in pilot implemented.** `agent.decline_enabled`
+defaults false. It refines the existing T6 boundary-clash block only for a
+standalone "tell me about your ..." disclosure request: family, childhood,
+feelings, insecurities, private thoughts or personal memories. Mixed requests,
+practical tasks and ambiguous phrasing cannot qualify. The selected boundary
+must be active, Aiko-owned, at least 14 days old, confidence >=0.85, with at
+least two recorded distinct sources and explicit privacy wording matching the
+disclosure subject. These counts are existing provenance metadata, not proof
+of independent observations. Relationship-modulated plasticity >=0.7 disables
+the decline. A persisted per-user 30-day offer cooldown survives restarts;
+the next provider call expires permission and explicitly honors asking again,
+even after disabling the switch. Failed reads or writes grant no permission.
+This is a local response choice, not a new topic or independent stance offer.
+The prompt requires an alternative and prohibits invented biography, guilt,
+punishment or withholding help. It does not hard-filter generated replies:
+model-level adherence still needs evaluation. Broader emotional requests,
+affect-only triggers and any repair arc remain unimplemented.
 
 **Motivation.** Aiko answers everything. Every turn produces a substantive reply
 on whatever subject was raised, because nothing in the architecture contemplates

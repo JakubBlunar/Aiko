@@ -48,6 +48,38 @@ LONG_TURN = "honestly I really don't want you poking fun at this right now"
 # ── Detector ──────────────────────────────────────────────────────────────
 
 
+def test_decline_provider_and_repeat_override(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.core.infra import timephrase
+
+    now = datetime(2026, 9, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(timephrase, "utcnow", lambda: now)
+    source = SimpleNamespace(
+        concept_id=19, kind="boundary", subject="aiko", status="active",
+        distinct_source_count=3, confidence=0.9, plasticity=0.3,
+        label="I prefer to keep my feelings private",
+        created_at=(now - timedelta(days=30)).isoformat(),
+    )
+    host = _Host(pairs=[(source, 0.9)])
+    host._settings.agent.decline_enabled = True
+    host._user_id = "test-user"
+    host._relationship_tenure_days = lambda: 90
+    host._relationship_axes_store = SimpleNamespace(get=lambda _uid: SimpleNamespace(trust=0.5))
+    stored = {}
+    host._chat_db = SimpleNamespace(kv_get=stored.get, kv_set=stored.__setitem__)
+    block = host._render_boundary_clash_block("Tell me about your feelings")
+    assert "Personal-disclosure permission" in block
+    assert "don't refuse" not in block
+    assert "concept_id" in next(iter(stored.values()))
+    host._settings.agent.decline_enabled = False
+    assert "respect that override" in host._render_boundary_clash_block("Please answer anyway")
+    host._settings.agent.decline_enabled = True
+    host._boundary_clash_cooldown = 0
+    assert "Personal-disclosure permission" not in host._render_boundary_clash_block(
+        "Tell me about your feelings",
+    )
+
+
 class BoundaryClashDetectorTests(unittest.TestCase):
     def test_fires_above_cosine_as_approach(self) -> None:
         result = bcd.detect(

@@ -324,6 +324,7 @@
     "opinion_injection_enabled": true,
     "opinion_injection_require_definite": false,
     "candor_gate_enabled": false,
+    "decline_enabled": false,
     "stance_persistence_enabled": true,
     "long_arc_callback_enabled": true,
     "dormant_interest_enabled": true,

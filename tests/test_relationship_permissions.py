@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
-from app.core.relationship import candor_gate
+from app.core.relationship import candor_gate, decline_gate
 
 
 NOW = datetime(2026, 9, 30, tzinfo=timezone.utc)
@@ -39,3 +40,54 @@ def test_candor_earned_taste_permission(last_offered):
         trust=0.65, tenure_days=30, source_kind="taste", definite=True,
         now=NOW, last_offered=last_offered,
     )
+
+
+def _boundary(**overrides):
+    fields = dict(
+        concept_id=8, kind="boundary", subject="aiko", status="active",
+        distinct_source_count=3, confidence=0.9, plasticity=0.3,
+        label="I prefer to keep my feelings private",
+        created_at=(NOW - timedelta(days=30)).isoformat(),
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+@pytest.mark.parametrize("text", [
+    "Help me with my code", "Tell me about your feelings and fix my code",
+    "Tell me about your feelings. I need help", "Tell me about my family",
+    "Can you explain family therapy?", "I'm in danger", "please answer anyway",
+    "Write a story about your childhood", "Tell me about your feelings about Python",
+])
+def test_decline_never_admits_practical_mixed_or_ambiguous_requests(text):
+    assert not decline_gate.eligible(
+        text, source=_boundary(), plasticity=0.3, now=NOW, last_offered=None,
+    )
+
+
+@pytest.mark.parametrize("overrides", [
+    {"subject": "user"}, {"subject": "relationship"}, {"status": "candidate"},
+    {"kind": "taste"}, {"confidence": 0.8}, {"distinct_source_count": 1},
+    {"label": "I enjoy talking about my feelings"},
+    {"label": "I don't want to keep my feelings private"},
+    {"label": "I prefer not to keep my feelings private"},
+    {"label": "I prefer to keep my family private"},
+    {"created_at": NOW.isoformat()}, {"created_at": "broken"},
+])
+def test_decline_requires_matching_established_self_boundary(overrides):
+    assert not decline_gate.eligible(
+        "Tell me about your feelings", source=_boundary(**overrides),
+        plasticity=0.3, now=NOW, last_offered=None,
+    )
+
+
+@pytest.mark.parametrize("plasticity,last_offered,expected", [
+    (0.3, None, True), (0.7, None, False), (float("nan"), None, False),
+    (0.3, NOW.isoformat(), False), (0.3, "broken", False),
+    (0.3, (NOW - timedelta(days=30)).isoformat(), True),
+])
+def test_decline_loosened_boundary_and_monthly_cooldown(plasticity, last_offered, expected):
+    assert decline_gate.eligible(
+        "Could you tell me about your feelings?", source=_boundary(),
+        plasticity=plasticity, now=NOW, last_offered=last_offered,
+    ) is expected
