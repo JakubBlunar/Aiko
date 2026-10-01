@@ -277,11 +277,11 @@ Skips the forced pre-stream tool-decision LLM pass on turns with no tool-shaped 
 
 ### Skills framework — progressive tool disclosure
 
-Narrows which tools the model sees per turn instead of always shipping the whole catalogue. Both routers default off (= today's behaviour). See [skills-framework.md](skills-framework.md).
+Narrows which tools the model sees per turn instead of always shipping the whole catalogue. The brain router defaults on; the worker router remains opt-in. See [skills-framework.md](skills-framework.md).
 
-- `agent.skill_router_enabled` *(bool, `false`)* — brain-lane router. When `true`, a tool-shaped turn exposes only the matched tool families plus the always-on core, instead of every registered tool. The P14 tool families act as the brain skill-groups. Inspect the per-turn active set via `get_tool_gate_state` (`router_enabled` / `core_skills` / `last_active_tools`) over MCP.
+- `agent.skill_router_enabled` *(bool, `true`)* — brain-lane router. When `true`, a tool-shaped turn exposes only the matched tool families plus the always-on core, instead of every registered tool. The P14 tool families act as the brain skill-groups. Inspect the per-turn active set via `get_tool_gate_state` (`router_enabled` / `core_skills` / `last_active_tools`) over MCP. Set it to `false` to restore the full tool list.
 - `agent.brain_core_skills` *(list of str, `["time", "recall", "world"]`)* — families always exposed when the brain router narrows. `world` is included so Aiko keeps taking spontaneous room actions (sip tea, shift posture) on turns whose text named no item. An empty/invalid value falls back to the default triple.
-- `agent.workflow_skill_router_enabled` *(bool, `false`)* — worker-lane router. When `true`, the goal-workflow planner's skill menu is narrowed to the goal's capability group(s) (`files` / `web` / `vision` / `mcp:<server>`) before each plan, with a full-menu fallback on ambiguity or multi-group goals. Watch the planner `missing_capability` rate as the over-narrowing canary.
+- `agent.workflow_skill_router_enabled` *(bool, `false`)* — worker-lane router. When `true`, the goal-workflow planner's skill menu is narrowed to detected capability groups (`files` / `web` / `vision` / `mcp:<server>`) before each plan. Full-menu fallback applies to zero or multiple *detected* groups, but a mixed web + filesystem-plugin goal can still hide file skills; keep this off until the worker-router follow-up in [skills-framework.md](skills-framework.md#worker-router-default-on-gate). Watch the planner `missing_capability` rate as the over-narrowing canary.
 
 ### Promise follow-through (K43)
 

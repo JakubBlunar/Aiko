@@ -114,7 +114,7 @@
     "filler_enabled": true,
     "filler_first_token_ms": 800,
     "tool_pass_gate_enabled": true,
-    "skill_router_enabled": false,
+    "skill_router_enabled": true,
     "brain_core_skills": ["time", "recall", "world"],
     "workflow_skill_router_enabled": false,
     "promise_followthrough_enabled": true,

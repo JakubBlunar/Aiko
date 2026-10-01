@@ -1296,6 +1296,14 @@ real people. These are partial implementations, not the broader proposals:
 see [patterns](patterns.md#k77-candor-gate--can-i-be-real-with-you) for gates,
 prerequisites and unverified model-level behavior.
 
+**Default-on gate for K77/K83/K84 (open):** Keep all three opt-in until a
+real-model replay of invited and near-miss requests checks the actual replies,
+not just eligibility. Confirm that K77 asks then waits for consent, K83 never
+refuses practical help and honors an immediate re-ask, and K84 never adds guilt,
+exclusivity or an uninvited callback. Track offer versus delivered response,
+false positives and cooldown/override behavior across sessions; resolve any
+failures and update the default-contract test before flipping a shipped flag.
+
 K39 (energy / spoons) was absorbed by the shipped K68 embodied vitality —
 same mechanic, broader framing.
 
@@ -1393,6 +1401,14 @@ maintenance-LLM cost that wants a mature topic graph behind it. The
 finished write-ups live in [`shipped/concepts.md`](shipped/concepts.md);
 [`concepts.md`](concepts.md) keeps the design preamble plus the items
 that still carry open work. What follows is only what is still open.
+
+**Concept default-on gate (open):** Finish L22's offline quality evaluation
+on fresh and mature histories, then measure maintenance calls/latency and
+concept intake, promotion, reinforcement and spurious-concept rates over a
+representative observation window. Set an explicit resource budget and
+quality threshold, check that background synthesis does not degrade chat or
+inflate unsupported beliefs, and provide a rollback path before enabling
+`agent.concepts_enabled` for new installs. Existing opt-in users are unaffected.
 
 Open — quality and pruning:
 

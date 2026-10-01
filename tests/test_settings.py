@@ -38,6 +38,14 @@ def test_relationship_permission_switches_round_trip():
         assert getattr(parse_agent_settings({name: False}), name) is False
 
 
+def test_skill_router_defaults_keep_workflow_opt_in():
+    default_path = Path(__file__).resolve().parents[1] / "config" / "default.json"
+    defaults = json.loads(default_path.read_text(encoding="utf-8"))["agent"]
+    assert defaults["skill_router_enabled"] is True
+    assert defaults["workflow_skill_router_enabled"] is False
+    assert defaults["concepts_enabled"] is False
+
+
 class AvatarExpressivenessLoaderTests(unittest.TestCase):
     """``avatar.expressiveness`` round-trips through the loader and
     is clamped into the documented [0.0, 1.5] range."""

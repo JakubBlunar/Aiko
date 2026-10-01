@@ -1,10 +1,8 @@
 # Skills framework: lane-tagged skills + on-demand tool disclosure
 
-*Status: **implemented (phased), behind flags defaulting off.** Brain-lane
-progressive disclosure and the worker-lane router both ship; each is gated
-by a `router_mode`-style flag (`agent.skill_router_enabled` /
-`agent.workflow_skill_router_enabled`) that defaults to **false** (=
-today's exact behaviour). Pragmatic note: the existing P14 tool families
+*Status: **implemented (phased).** Brain-lane progressive disclosure defaults
+on (`agent.skill_router_enabled=true`); the worker-lane router remains opt-in
+(`agent.workflow_skill_router_enabled=false`). Pragmatic note: the existing P14 tool families
 ARE the brain skill-groups — there is no separate `Skill` class hierarchy
 (see "What this is not"). The always-on brain core is `time / recall /
 world` (`agent.brain_core_skills`).*
@@ -44,8 +42,8 @@ makes that the explicit, shared model across both lanes.
 - **Single-lane ownership:** every capability lives in exactly one
   lane. "Files" is worker-only, so a user asking for files can never hit
   a brain-vs-worker tool collision.
-- Everything ships behind a `router_mode` flag defaulting to `off`
-  (= today's behaviour), so rollout is a measured opt-in.
+- The brain router defaults on and is reversible via its flag. The worker
+  router stays off until mixed goals involving plugin skills are handled.
 
 ## Vocabulary (pinned first, because the words overload)
 
@@ -315,26 +313,24 @@ small per-turn cost.
 
 ## Settings and rollout
 
-- A `skills` block (or an extension of `ToolsSettings`):
-  - Per-skill / per-group enable flags (mirrors today's `tools.*` and
-    the `build_builtin_skill_registry(...)` enable args).
-  - An explicit always-on **core** set for the brain lane.
-  - `router_mode` for each lane:
-    - `off` (default) — send all brain tools / full planner menu =
-      **exactly today's behaviour**.
-    - `on` — progressive disclosure as described above.
-- Master flag defaults `off`. Rollout is opt-in and reversible at
-  runtime.
+- `agent.skill_router_enabled=true` narrows the brain tool pass; `false`
+  restores the full tool list. `agent.brain_core_skills` keeps `time`,
+  `recall`, and `world` exposed on narrowed turns.
+- `agent.workflow_skill_router_enabled=false` keeps the full workflow
+  planner menu; opting in narrows it by detected group.
 
-### Phased rollout
+### Worker-router default-on gate
 
-1. Land the `Skill` umbrella + registries + both routers **behind the
-   flag**, with `router_mode=off` so nothing changes in production.
-2. Migrate 1–2 brain families (e.g. `time`, `recall`) to the brain
-   router and measure tool-recall on a fixed eval set.
-3. Add the worker router; measure planner `missing_capability` rate
-   (the canary for over-narrowing).
-4. If recall holds, flip `router_mode=on` per lane.
+1. Fix group selection against the registered skill groups: the filesystem
+   plugin registers as `mcp:filesystem`, not `files`. A goal such as "search
+   the web and save the results to a file" currently selects only `web`
+   and hides the file skills. Mixed goals must retain both capabilities
+   (or use the full menu); unknown plugin capabilities must widen safely.
+2. Add registry-backed tests for web + filesystem, single-group, unknown
+   plugin and ambiguous goals, including the planner-visible skill list.
+3. Replay representative goals with the router off and on. Require no new
+   false `missing_capability` outcomes or lost multi-step file operations,
+   then watch that rate after opting in before changing the default.
 
 ## Observability
 
