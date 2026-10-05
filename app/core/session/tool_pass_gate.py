@@ -168,7 +168,7 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
     # opens a ~3s pass on an otherwise chatty turn.
     "web": _compile([
         r"look (?:it|that|this|them) up", r"look up",
-        r"search (?:for|the web|online|the internet)",
+        r"search(?:es|ing)?", r"web[_ -]search",
         r"google(?: it| that)?", r"on the internet",
         # A title usually sits between the two ("the new Dandadan season").
         r"new (?:\w+ ){0,2}(?:season|episode|series|anime|show|movie|film|"

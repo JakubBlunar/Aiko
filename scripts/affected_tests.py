@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Pick the test files affected by a set of changed files.
 
-The suite is ~9,000 tests across 420 files and takes ~11 minutes, which is
+The suite is ~12,000 tests and takes several minutes, which is
 too slow to sit in an edit loop. Almost all of that work is irrelevant to
 any one change: touching ``app/core/relationship/relationship.py`` can only
 break tests that reach it, and that reachability is already written down in
@@ -16,12 +16,14 @@ baseline, no plugin. It reads the tree as it is right now, so it can't go
 stale or disagree with a rebased branch, and it costs well under a second.
 The tradeoff is the other direction: it can only see imports it can read.
 
-**This is the inner-loop tool, not a release gate.** It over-selects
-happily (a change to ``settings.py`` reaches nearly everything, which is
-the honest answer) but it can under-select when a test reaches code by a
-route that isn't an import: a plugin loaded by name, a subprocess, a
-fixture that reads a data file. Run the full suite before you call
-something done.
+**This supports focused validation, not a proof of complete coverage.**
+Lazy package exports resolve individually; literal dynamic imports and
+patch targets also count. Data-file names seed their Python readers and
+the readers' importers. Shared hubs can still reach many tests, and
+computed imports, subprocesses, and dynamically chosen data paths can
+escape the graph. Review the selection and add explicit regression or
+integration tests for those routes. A full suite is not required for
+ordinary completion; see AGENTS.md for the escalation policy.
 
 Usage::
 
@@ -101,14 +103,14 @@ def _iter_source_files() -> list[Path]:
     return out
 
 
-def _imports_of(path: Path) -> set[str]:
+def _imports_of(path: Path, *, lazy_exports: bool = False) -> set[str]:
     """Dotted names imported by one file.
 
     ``from a.b import c`` yields both ``a.b`` and ``a.b.c`` -- ``c`` may be
     a submodule or just a name, and the resolver keeps whichever exists.
-    Imports under ``if TYPE_CHECKING:`` count: they are real ast nodes, and
-    they are exactly how the lazy-loading packages here still declare what
-    they depend on.
+    Type-only imports count except in lazy-export packages, whose exported
+    names are resolved individually. Literal dynamic imports and patch
+    targets count too.
     """
     try:
         tree = ast.parse((REPO_ROOT / path).read_text(encoding="utf-8"))
@@ -117,10 +119,22 @@ def _imports_of(path: Path) -> set[str]:
 
     package_parts = _package_parts(path)
     found: set[str] = set()
+    bindings: dict[str, str] = {}
+    ignored = {
+        id(child)
+        for node in ast.walk(tree)
+        if lazy_exports and isinstance(node, ast.If) and _is_type_checking(node.test)
+        for statement in node.body
+        for child in ast.walk(statement)
+    }
     for node in ast.walk(tree):
+        if id(node) in ignored:
+            continue
         if isinstance(node, ast.Import):
             for alias in node.names:
                 found.add(alias.name)
+                local = alias.asname or alias.name.split(".")[0]
+                bindings[local] = alias.name if alias.asname else local
         elif isinstance(node, ast.ImportFrom):
             if node.level:
                 # Relative import: climb out of the current package.
@@ -135,9 +149,76 @@ def _imports_of(path: Path) -> set[str]:
             if prefix:
                 found.add(".".join(prefix))
             for alias in node.names:
+                imported_name = ".".join([*prefix, alias.name])
+                found.add(imported_name)
                 if alias.name != "*":
-                    found.add(".".join([*prefix, alias.name]))
+                    bindings[alias.asname or alias.name] = imported_name
+        elif isinstance(node, ast.Call) and node.args:
+            function = node.func
+            name = (
+                function.id if isinstance(function, ast.Name)
+                else function.attr if isinstance(function, ast.Attribute)
+                else ""
+            )
+            target = node.args[0]
+            if (
+                name in {"import_module", "__import__", "patch"}
+                and isinstance(target, ast.Constant)
+                and isinstance(target.value, str)
+                and not target.value.startswith(".")
+            ):
+                found.add(target.value)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute) or id(node) in ignored:
+            continue
+        parts: list[str] = []
+        current = node
+        while isinstance(current, ast.Attribute):
+            parts.append(current.attr)
+            current = current.value
+        if isinstance(current, ast.Name) and current.id in bindings:
+            found.add(".".join([bindings[current.id], *reversed(parts)]))
     return found
+
+
+def _is_type_checking(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Name) and node.id == "TYPE_CHECKING"
+        or isinstance(node, ast.Attribute) and node.attr == "TYPE_CHECKING"
+    )
+
+
+def _lazy_export_modules(path: Path) -> dict[str, str] | None:
+    if path.name != "__init__.py":
+        return None
+    try:
+        tree = ast.parse((REPO_ROOT / path).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return None
+    if not any(
+        isinstance(node, ast.FunctionDef) and node.name == "__getattr__"
+        for node in tree.body
+    ):
+        return None
+    package = _module_name(path)
+    exports: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If) or not _is_type_checking(node.test):
+            continue
+        for statement in node.body:
+            for imported in ast.walk(statement):
+                if not isinstance(imported, ast.ImportFrom) or not imported.module:
+                    continue
+                if imported.level:
+                    parts = _package_parts(path)
+                    base = parts[:len(parts) - (imported.level - 1)]
+                    module = ".".join((*base, imported.module))
+                else:
+                    module = imported.module
+                for alias in imported.names:
+                    if alias.name != "*":
+                        exports[f"{package}.{alias.asname or alias.name}"] = module
+    return exports or None
 
 
 def _package_parts(path: Path) -> tuple[str, ...]:
@@ -162,15 +243,30 @@ def build_reverse_graph(
         if module is not None:
             by_module[module] = path
 
+    lazy_exports = {
+        path: exports for path in files
+        if (exports := _lazy_export_modules(path)) is not None
+    }
+    for exports in lazy_exports.values():
+        for name, module in exports.items():
+            if module in by_module:
+                by_module[name] = by_module[module]
+
     reverse: dict[Path, set[Path]] = {path: set() for path in files}
     for importer in files:
-        for name in _imports_of(importer):
-            target = by_module.get(name)
-            if target is None:
-                # ``from app.core.foo import Bar`` -- trim the trailing
-                # attribute and try the module it came from.
-                head = name.rsplit(".", 1)[0]
-                target = by_module.get(head)
+        names = _imports_of(importer, lazy_exports=importer in lazy_exports)
+        for name in tuple(names):
+            if name.endswith(".*"):
+                names.update(lazy_exports.get(by_module.get(name[:-2]), {}))
+        for name in names:
+            target = None
+            while name:
+                target = by_module.get(name)
+                if target is not None:
+                    break
+                name, separator, _attribute = name.rpartition(".")
+                if not separator:
+                    break
             if target is not None and target != importer:
                 reverse[target].add(importer)
     return reverse
@@ -203,6 +299,8 @@ def affected_tests(
     for path in changed:
         if path in graph or _is_test_file(path):
             queue.append((path, path))
+        if path.suffix != ".py":
+            queue.extend((reader, path) for reader in _tests_mentioning(path, files))
 
     while queue:
         current, root = queue.popleft()
@@ -215,15 +313,6 @@ def affected_tests(
             if importer not in seen:
                 queue.append((importer, root))
 
-    # Non-Python changes have no import edges. Fall back to a text search:
-    # a data file's name shows up in the tests that read it, which is how
-    # e.g. ``aiko_companion.txt`` finds the persona suites.
-    for path in changed:
-        if path.suffix == ".py":
-            continue
-        for test in _tests_mentioning(path, files):
-            origin.setdefault(test, path)
-
     return sorted(origin), origin
 
 
@@ -233,8 +322,6 @@ def _tests_mentioning(path: Path, files: list[Path]) -> list[Path]:
         return []
     out: list[Path] = []
     for candidate in files:
-        if not _is_test_file(candidate):
-            continue
         try:
             text = (REPO_ROOT / candidate).read_text(encoding="utf-8")
         except OSError:
@@ -314,15 +401,15 @@ def main(argv: list[str] | None = None) -> int:
     for path in changed:
         print(f"  {path}")
 
-    triggers = [p for p in changed if str(p) in GLOBAL_TRIGGERS]
+    triggers = [p for p in changed if p.as_posix() in GLOBAL_TRIGGERS]
     if triggers:
         print()
         print(
             "these affect every test, so the selection would be the whole "
             f"suite: {', '.join(str(p) for p in triggers)}",
         )
-        print("run: python -m pytest")
-        return 0
+        print("choose explicit regression/integration tests; no full suite was started")
+        return 2 if args.run else 0
 
     selected, origin = affected_tests(changed)
     print()

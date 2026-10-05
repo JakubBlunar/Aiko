@@ -228,6 +228,28 @@ class SignalFamilyTests(unittest.TestCase):
     def test_web_explicit_lookup_signal(self) -> None:
         self._assert_runs("can you look that up for me?", "web")
 
+    def test_web_search_request_variants_keep_search_exposed(self) -> None:
+        for text in (
+            "Search about it to know the whole name and what it is about",
+            "Search it for me",
+            "You should be able to do it. web_search tool",
+            "Remember that show? Search about it while I get tea",
+        ):
+            with self.subTest(text=text):
+                decision = _decide(text)
+                self.assertTrue(decision.run)
+                self.assertIn("web", decision.matched)
+                active = select_active_tool_names(
+                    decision, _ALL_TOOLS, router_enabled=True,
+                )
+                self.assertIn("web_search", active)
+
+    def test_search_request_does_not_enable_a_disabled_web_tool(self) -> None:
+        for text in ("Search about it", "Use the web_search tool"):
+            with self.subTest(text=text):
+                decision = _decide(text, tools=["get_time", "recall"])
+                self.assertFalse(decision.run)
+
     def test_web_announcement_signal(self) -> None:
         self._assert_runs("did they announce a second season yet?", "web")
 

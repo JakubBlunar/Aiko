@@ -133,10 +133,84 @@ class ReachabilityTests(unittest.TestCase):
             {"tests/test_a.py", "tests/test_b.py"},
         )
 
+    def test_lazy_exports_do_not_pull_in_unrelated_sibling_users(self) -> None:
+        self.tree.write("app/core/__init__.py", """
+            from typing import TYPE_CHECKING
+            def __getattr__(name):
+                raise AttributeError(name)
+            if TYPE_CHECKING:
+                from .leaf import Leaf
+                from .other import Other
+        """)
+        self.tree.write("app/core/leaf.py", "class Leaf: ...\n")
+        self.tree.write("app/core/other.py", "class Other: ...\n")
+        self.tree.write("tests/test_leaf.py", "from app.core import Leaf\n")
+        self.tree.write("tests/test_other.py", "from app.core import Other\n")
+        self.tree.write("tests/test_package.py", "import app.core\n")
+        self.assertEqual(
+            self.tree.selected("app/core/leaf.py"), {"tests/test_leaf.py"},
+        )
+        self.assertEqual(
+            self.tree.selected("app/core/__init__.py"),
+            {"tests/test_leaf.py", "tests/test_other.py", "tests/test_package.py"},
+        )
+
+    def test_lazy_export_alias_and_transitive_importer_are_selected(self) -> None:
+        self.tree.write("app/core/__init__.py", """
+            from typing import TYPE_CHECKING
+            def __getattr__(name):
+                raise AttributeError(name)
+            if TYPE_CHECKING:
+                from app.core.leaf import Leaf as PublicLeaf
+        """)
+        self.tree.write("app/core/leaf.py", "class Leaf: ...\n")
+        self.tree.write("app/core/mid.py", "from app.core import PublicLeaf\n")
+        self.tree.write("tests/test_mid.py", "import app.core.mid\n")
+        self.assertEqual(
+            self.tree.selected("app/core/leaf.py"), {"tests/test_mid.py"},
+        )
+
+    def test_lazy_exports_resolve_qualified_access_and_wildcard_imports(self) -> None:
+        self.tree.write("app/core/__init__.py", """
+            from typing import TYPE_CHECKING
+            def __getattr__(name):
+                raise AttributeError(name)
+            if TYPE_CHECKING:
+                from .leaf import Leaf
+                from .other import Other
+        """)
+        self.tree.write("app/core/leaf.py", "class Leaf: ...\n")
+        self.tree.write("app/core/other.py", "class Other: ...\n")
+        self.tree.write("tests/test_qualified.py", "import app.core\nvalue = app.core.Leaf\n")
+        self.tree.write("tests/test_alias.py", "import app.core as core\nvalue = core.Leaf\n")
+        self.tree.write("tests/test_star.py", "from app.core import *\n")
+        self.tree.write("tests/test_other.py", "import app.core as core\nvalue = core.Other\n")
+        self.assertEqual(
+            self.tree.selected("app/core/leaf.py"),
+            {"tests/test_qualified.py", "tests/test_alias.py", "tests/test_star.py"},
+        )
+
     def test_a_changed_test_selects_itself(self) -> None:
         self.tree.write("tests/test_solo.py", "VALUE = 1\n")
         self.assertEqual(
             self.tree.selected("tests/test_solo.py"), {"tests/test_solo.py"}
+        )
+
+    def test_literal_dynamic_imports_and_patch_targets_are_selected(self) -> None:
+        self.tree.write("app/core/leaf.py", "class Leaf: ...\n")
+        self.tree.write("tests/test_dynamic.py", """
+            import importlib
+            module = importlib.import_module("app.core.leaf")
+        """)
+        self.tree.write("tests/test_builtin.py", '__import__("app.core.leaf")\n')
+        self.tree.write("tests/test_patch.py", """
+            from unittest.mock import patch
+            patch("app.core.leaf.Leaf.method")
+        """)
+        self.tree.write("tests/test_unrelated.py", "VALUE = 1\n")
+        self.assertEqual(
+            self.tree.selected("app/core/leaf.py"),
+            {"tests/test_dynamic.py", "tests/test_builtin.py", "tests/test_patch.py"},
         )
 
     def test_a_syntax_error_does_not_abort_the_walk(self) -> None:
@@ -173,12 +247,38 @@ class NonPythonTests(unittest.TestCase):
         self.tree.write("tests/test_unrelated.py", "VALUE = 1\n")
         self.assertEqual(self.tree.selected("web/src/lib/time.ts"), set())
 
+    def test_a_data_file_reaches_tests_through_a_source_reader(self) -> None:
+        self.tree.write("data/persona/aiko_companion.txt", "persona text\n")
+        self.tree.write(
+            "app/core/persona.py", 'PATH = "data/persona/aiko_companion.txt"\n',
+        )
+        self.tree.write("tests/test_persona.py", "from app.core.persona import PATH\n")
+        self.tree.write("tests/test_unrelated.py", "VALUE = 1\n")
+        self.assertEqual(
+            self.tree.selected("data/persona/aiko_companion.txt"),
+            {"tests/test_persona.py"},
+        )
+
+    def test_a_data_file_reaches_tests_through_a_shared_fixture_helper(self) -> None:
+        self.tree.write("tests/fixtures/example.json", "{}\n")
+        self.tree.write("tests/fixture_helper.py", 'PATH = "example.json"\n')
+        self.tree.write("tests/test_example.py", "from fixture_helper import PATH\n")
+        self.assertEqual(
+            self.tree.selected("tests/fixtures/example.json"), {"tests/test_example.py"},
+        )
+
 
 class GlobalTriggerTests(unittest.TestCase):
     def test_conftest_is_a_whole_suite_trigger(self) -> None:
         # Its fixtures are autouse and session-scoped, so no subset is
         # honestly isolated from a change to it.
         self.assertIn("tests/conftest.py", at.GLOBAL_TRIGGERS)
+
+    def test_run_does_not_report_success_or_start_the_suite_for_a_global_trigger(self) -> None:
+        with patch.object(at.subprocess, "call") as run:
+            result = at.main(["--files", "tests/conftest.py", "--run"])
+        self.assertEqual(result, 2)
+        run.assert_not_called()
 
 
 if __name__ == "__main__":
