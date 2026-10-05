@@ -117,13 +117,13 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
     if (next) {
       // Order: restart the model update + RAF loops first, then the
       // renderer, so the first rendered frame already has fresh params.
-      if (model) model.autoUpdate = true;
+      if (model && !model.autoUpdate) model.autoUpdate = true;
       engine?.resume();
       app?.ticker.start();
     } else {
       app?.ticker.stop();
       engine?.pause();
-      if (model) model.autoUpdate = false;
+      if (model?.autoUpdate) model.autoUpdate = false;
     }
   }, []);
 
@@ -193,7 +193,7 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
       "/avatar/" +
       manifest.entry_filename.replace(/^\/+/, "");
 
-    Live2DModel.from(url, { autoInteract: false })
+    Live2DModel.from(url, { autoInteract: false, autoUpdate: false })
       .then((model) => {
         if (cancelled) {
           model.destroy({ children: true });

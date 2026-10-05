@@ -51,6 +51,15 @@ the mechanical half of this — broken paths and, more usefully, heading anchors
 that stopped resolving when a heading was reworded on its way into `shipped/`.
 Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
 
+## 1 Oct 2026: conversation archive recall
+
+**Backlog only.** [D8](tools.md#d8-conversation-archive-recall-with-daily-overviews)
+extends the existing K-time2 date-aware recall with user-scoped, paged transcript
+access for week/month retrospectives. Ship deterministic message lookup first;
+then add source-linked daily overviews as a derived index with explicit coverage,
+revision/deletion handling and message drill-down. This does not replace durable
+memory extraction or rolling session compaction, and adds no always-on prompt.
+
 ## 30 Sep 2026: immersion without changing models or Live2D
 
 **Backlog only; all eight proposals remain open.**

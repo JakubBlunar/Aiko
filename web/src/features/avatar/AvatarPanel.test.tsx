@@ -74,3 +74,21 @@ describe("why the footer height matters", () => {
     expect(avatarSource).toMatch(/fitModelToContainer\(model, app/);
   });
 });
+
+describe("Live2D ticker ownership", () => {
+  it("starts the model with automatic updates disabled until visibility is applied", () => {
+    expect(avatarSource).toMatch(
+      /Live2DModel\.from\(url,\s*\{\s*autoInteract:\s*false,\s*autoUpdate:\s*false\s*\}\)/,
+    );
+  });
+
+  it("does not add a second ticker listener when the model is already updating", () => {
+    expect(avatarSource).toMatch(
+      /if\s*\(model\s*&&\s*!model\.autoUpdate\)\s*model\.autoUpdate\s*=\s*true/,
+    );
+  });
+
+  it("only disables automatic updates when the model is currently updating", () => {
+    expect(avatarSource).toMatch(/if\s*\(model\?\.autoUpdate\)\s*model\.autoUpdate\s*=\s*false/);
+  });
+});

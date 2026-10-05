@@ -890,6 +890,7 @@ class SpeakingWorkersInitMixin:
                         self._memory_settings.memory_extractor_context_messages
                     ),
                     user_display_name_provider=lambda: self.user_display_name,
+                    context_window=lambda: self._worker_route_model_ctx()[1],
                 )
                 self._memory_extractor.add_listener(self._notify_memory_added)
             except Exception:

@@ -540,6 +540,29 @@ describe("AmbientBodyChannel — tickPreModel: arousal-scaled breath", () => {
 });
 
 describe("AmbientBodyChannel — tickPreModel: valence tilt", () => {
+  it("keeps the body pose stable when native motion writes alternate between frames", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock } = makeDeps(
+      { has_body_angle_y: true, has_body_angle_z: true },
+      { voiceMode: "listening" },
+    );
+    channel.attach(adapter, deps);
+    for (let frame = 0; frame < 200; frame += 1) {
+      channel.tickTier3(clock.advance(20), 0.02);
+      adapter.setParam("ParamBodyAngleY", frame % 2 === 0 ? -12 : 12);
+      adapter.setParam("ParamBodyAngleZ", frame % 2 === 0 ? -8 : 8);
+      channel.tickPreModel();
+      if (frame > 100) {
+        expect(adapter.params.get("ParamBodyAngleY")).toBeCloseTo(
+          channel.leanInEnvelope * 6,
+          6,
+        );
+        expect(Math.abs(adapter.params.get("ParamBodyAngleZ") ?? 0)).toBeLessThanOrEqual(1.5);
+      }
+    }
+  });
+
   it("positive valence biases ParamBodyAngleY toward positive degrees", () => {
     const adapter = new FakeAdapter();
     const channel = new AmbientBodyChannel();

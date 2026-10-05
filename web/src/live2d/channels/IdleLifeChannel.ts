@@ -45,8 +45,6 @@ export class IdleLifeChannel implements AvatarChannel {
   private _bodyZ = 0;
   private _lastAt = 0;
   private _lastExpression: string | null = null;
-  private _lastWrittenY: number | undefined = undefined;
-  private _lastWrittenZ: number | undefined = undefined;
   private _wasWriting = false;
   private _motionCancelled = "no_authored_idle_life_motion";
 
@@ -59,8 +57,6 @@ export class IdleLifeChannel implements AvatarChannel {
     this._lastAt = deps.now();
     this._lastExpression = null;
     this._wasWriting = false;
-    this._lastWrittenY = undefined;
-    this._lastWrittenZ = undefined;
   }
 
   detach(): void {
@@ -148,20 +144,12 @@ export class IdleLifeChannel implements AvatarChannel {
     }
     this._wasWriting = writing;
     if (caps.canOrientY) {
-      const current = adapter.getParam(BODY_Y);
-      const base =
-        current === this._lastWrittenY || current === undefined ? 0 : current;
-      const next = base + this._bodyY;
-      adapter.setParam(BODY_Y, next);
-      this._lastWrittenY = next;
+      const base = adapter.getParam(BODY_Y) ?? 0;
+      adapter.setParam(BODY_Y, base + this._bodyY);
     }
     if (caps.canOrientZ) {
-      const current = adapter.getParam(BODY_Z);
-      const base =
-        current === this._lastWrittenZ || current === undefined ? 0 : current;
-      const next = base + this._bodyZ;
-      adapter.setParam(BODY_Z, next);
-      this._lastWrittenZ = next;
+      const base = adapter.getParam(BODY_Z) ?? 0;
+      adapter.setParam(BODY_Z, base + this._bodyZ);
     }
     if (caps.canBreathe && opts.active && opts.breathClass !== "none") {
       const hz = breathHzForClass(opts.breathClass);
@@ -208,7 +196,5 @@ export class IdleLifeChannel implements AvatarChannel {
     if (caps.canBreathe) adapter.setParam(BREATH, 0);
     this._bodyY = 0;
     this._bodyZ = 0;
-    this._lastWrittenY = undefined;
-    this._lastWrittenZ = undefined;
   }
 }

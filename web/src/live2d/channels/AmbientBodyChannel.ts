@@ -122,6 +122,8 @@ export class AmbientBodyChannel implements AvatarChannel {
   private _sweat = 0;
   private _leanIn = 0;
   private _slump = 0;
+  private _bodyY = 0;
+  private _bodyZ = 0;
   private _lastReaction = "";
   /** Monotonic timestamp of the most recent rising-edge sass
    * trigger. ``-Infinity`` so the first frame's "now - sassAt"
@@ -144,6 +146,8 @@ export class AmbientBodyChannel implements AvatarChannel {
     this._sweat = 0;
     this._leanIn = 0;
     this._slump = 0;
+    this._bodyY = 0;
+    this._bodyZ = 0;
     this._lastReaction = deps.getStoreSnapshot().reaction || "";
     this._sassTriggeredAt = -Infinity;
     this._valenceTilt = 0;
@@ -290,6 +294,8 @@ export class AmbientBodyChannel implements AvatarChannel {
         bodyZ += SASS_AMPLITUDE * (1 - sassAge / SASS_DURATION_S) * expressiveness;
       }
 
+      this._bodyY = bodyY;
+      this._bodyZ = bodyZ;
       if (caps.has_body_angle_y) {
         adapter.setParam("ParamBodyAngleY", bodyY);
       }
@@ -304,11 +310,8 @@ export class AmbientBodyChannel implements AvatarChannel {
    * Runs in ``beforeModelUpdate`` so we *win* over the rig's
    * built-in breath driver (which writes Add-blend on
    * ``ParamBreath`` at the end of ``saveParameters``). For the
-   * body-angle valence-tilt we layer on top of whatever
-   * ``tickTier3`` already wrote that frame — the two work on
-   * different "layers" semantically (discrete vs continuous), and
-   * absolute-writing in ``tickPreModel`` is the only way to land
-   * the value cleanly without fighting the focus controller. */
+  * body angles we commit the cached body-language pose plus the
+  * valence tilt after native motion, focus, and physics writes. */
   tickPreModel(): void {
     const adapter = this._adapter;
     const deps = this._deps;
@@ -354,20 +357,15 @@ export class AmbientBodyChannel implements AvatarChannel {
       }
     }
 
-    // (ii) Valence-tilt bias on ParamBodyAngleY. The smoothing
-    // happens here (not on the snapshot read) so a snapshot that
-    // updates between frames doesn't ladder-step the tilt. We
-    // *add* to whatever ``tickTier3`` wrote this frame rather than
-    // overwriting it — pixi runs ``tickTier3`` first, then the
-    // expression manager's Add blend, then this. A read-modify-write
-    // here keeps the discrete contributions intact.
     if (caps.has_body_angle_y) {
       const target = valence;
       const rate = dt > 0 ? dt / VALENCE_TILT_TIME_CONSTANT_S : 0;
       this._valenceTilt = approach(this._valenceTilt, target, rate);
       const bias = this._valenceTilt * VALENCE_TILT_AMPLITUDE * expressiveness;
-      const current = adapter.getParam("ParamBodyAngleY") ?? 0;
-      adapter.setParam("ParamBodyAngleY", current + bias);
+      adapter.setParam("ParamBodyAngleY", this._bodyY + bias);
+    }
+    if (caps.has_body_angle_z) {
+      adapter.setParam("ParamBodyAngleZ", this._bodyZ);
     }
   }
 

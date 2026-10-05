@@ -11,9 +11,13 @@ from its front rather than its back.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import re
+import textwrap
 import unittest
+from types import SimpleNamespace
 
 from app.core.infra.chat_database import ChatDatabase, MessageRow
 from app.core.memory.memory_extractor import (
@@ -126,6 +130,50 @@ _KEY = "memory.extractor.watermark:s"
 
 
 class FirstRunTests(unittest.TestCase):
+    def test_bootstrap_uses_live_worker_context_with_reasoning_budget(self) -> None:
+        from app.core.session.speaking_workers_init_mixin import SpeakingWorkersInitMixin
+
+        source = textwrap.dedent(inspect.getsource(
+            SpeakingWorkersInitMixin._init_speaking_workers,
+        ))
+        constructor = next(
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "MemoryExtractor"
+        )
+        db = _FakeDb(count=30)
+        ollama = _FakeOllama(['{"memories": []}'])
+        ollama._think_headroom = 8192
+        route = SimpleNamespace(context_window=65536)
+        host = SimpleNamespace(
+            _chat_db=db,
+            _memory_store=_FakeStore(),
+            _embedder=_FakeEmbedder(),
+            _ollama=ollama,
+            _effective_worker_model="m",
+            _memory_settings=SimpleNamespace(
+                memory_extractor_max_tokens=4096,
+                memory_extractor_think=True,
+                memory_extractor_min_new=4,
+                memory_extractor_max_window=30,
+                memory_extractor_context_messages=10,
+            ),
+            user_display_name="Test User",
+            _worker_route_model_ctx=lambda: ("m", route.context_window),
+        )
+        expression = ast.Expression(body=constructor)
+        extractor = eval(
+            compile(ast.fix_missing_locations(expression), "<extractor bootstrap>", "eval"),
+            {"MemoryExtractor": MemoryExtractor, "self": host},
+        )
+        self.assertEqual(extractor._context_window(), 65536)
+        extractor.extract_for_session("s")
+        self.assertEqual(len(ollama.prompts), 1)
+        self.assertEqual(db.kv[_KEY], "30")
+        route.context_window = 32768
+        self.assertEqual(extractor._context_window(), 32768)
+
     def test_admission_checks_literal_evidence_and_speaker(self) -> None:
         from app.core.memory.memory_admission import admit_memory
 

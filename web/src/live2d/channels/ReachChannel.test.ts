@@ -19,6 +19,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ReachChannel } from "./ReachChannel";
+import { AmbientBodyChannel } from "./AmbientBodyChannel";
 import { FakeAdapter } from "../__fixtures__/fake-model";
 import { FakeClock } from "../__fixtures__/fake-clock";
 import { buildManifest, buildStoreSnapshot } from "../__fixtures__/test-manifest";
@@ -71,6 +72,28 @@ function hug(clock: FakeClock, durationMs = 600): ResolvedTouchEvent {
 }
 
 describe("ReachChannel — lean-in animation", () => {
+  it("preserves the reach on top of the final ambient pose without accumulating", () => {
+    const adapter = new FakeAdapter();
+    const channel = new ReachChannel();
+    const ambient = new AmbientBodyChannel();
+    const clock = new FakeClock(1_000);
+    const deps = makeDeps(fullRig(), clock);
+    channel.attach(adapter, deps);
+    ambient.attach(adapter, deps);
+    channel.onTouch(hug(clock, 600));
+    ambient.tickTier3(clock.advance(300), 0.3);
+    channel.tickTier3(clock.now(), 0.3);
+    for (let frame = 0; frame < 4; frame += 1) {
+      ambient.tickPreModel();
+      channel.tickPreModel();
+      expect(adapter.getParam("ParamBodyAngleY")).toBeCloseTo(6, 5);
+    }
+    clock.advance(300);
+    ambient.tickPreModel();
+    channel.tickPreModel();
+    expect(adapter.getParam("ParamBodyAngleY")).toBe(0);
+  });
+
   it("writes both body and head params during the pulse", () => {
     const adapter = new FakeAdapter();
     const channel = new ReachChannel();

@@ -45,6 +45,8 @@ function setup(
     },
     tick: (n = 40) => {
       for (let i = 0; i < n; i += 1) {
+        adapter.params.set("ParamBodyAngleY", 0);
+        adapter.params.set("ParamBodyAngleZ", 0);
         clock.advance(16);
         channel.tickPreModel!();
       }
@@ -53,6 +55,18 @@ function setup(
 }
 
 describe("IdleLifeChannel", () => {
+  it("preserves an unchanged upstream pose instead of alternating with zero", () => {
+    const { adapter, channel, clock } = setup();
+    for (let frame = 0; frame < 120; frame += 1) {
+      adapter.setParam("ParamBodyAngleY", 2.4);
+      adapter.setParam("ParamBodyAngleZ", 1.2);
+      clock.advance(16);
+      channel.tickPreModel();
+      expect(adapter.getParam("ParamBodyAngleY")).toBe(2.4);
+      expect(adapter.getParam("ParamBodyAngleZ")).toBe(1.2);
+    }
+  });
+
   it("settles the body while the world activity is reading", () => {
     const { adapter, tick } = setup({ worldActivity: "reading" });
     tick();

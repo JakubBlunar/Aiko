@@ -8,6 +8,93 @@ both parts).
 
 ---
 
+## D8. Conversation archive recall with daily overviews
+
+**Status: open; backlog only (1 Oct 2026).**
+
+**Motivation.** Aiko should be able to answer "what did we talk about last week?"
+or find an exchange from a month ago, including material that never became a
+long-term memory. A small relevance-ranked snippet set is not a complete account
+of a date range. Keep this a read-only, on-demand capability for the brain, not
+another always-on prompt block or an automatic invitation to reminisce.
+
+**Existing foundation, not work to repeat.**
+[K-time2](shipped/awareness.md#k-time2-date-anchored-retrieval-for-relative-time-queries--shipped)
+already resolves relative dates and adds bounded historical message hits to RAG.
+The existing `recall` tool searches memories, messages and documents, but returns
+at most 12 snippets, each clipped to 280 characters. Its output is not a paged
+transcript or an overview with explicit coverage. The rolling `SummaryWorker`
+summary serves current-session compaction; it is not a per-day archive index.
+
+**Recommended order.** Ship fast deterministic transcript access first. Add
+daily overviews only as a derived navigation layer once message lookup is sound.
+Summaries help choose which day/topic to open; original messages remain the
+authority for exact wording, attribution and corrections.
+
+**First slice: a bounded archive tool.** Extend `recall` or add a small
+`conversation_history` tool with explicit range, optional topic/session filters,
+and opaque pagination. Reuse `time_expr.parse_time_window` and the `timephrase`
+clock; resolve local calendar boundaries server-side and report the actual range
+and timezone. Scope every lookup to the current user, spanning that user's
+sessions only. Reuse SQLite's message-range access rather than relying on the
+semantic top-N, and include neighboring turns so speaker and pronouns resolve.
+Return message/session IDs, timestamps, roles, bounded text, total matched count,
+coverage and a continuation cursor in stable chronological order. Optional topic
+search must label its results as selected matches, not a complete period recap.
+
+The read path needs no extra LLM call, embedding call or background task. Enforce
+row/token caps and bounded indexed scans; offer explicit next-page or narrower
+range actions instead of flooding context. "No messages in this range", "only
+part of the range inspected", "no topic match" and "store unavailable" must be
+distinct outcomes. Register the tool's description, `recall` gate family and
+skill-router exposure so normal brain tool selection can actually reach it.
+
+**Second slice: source-linked daily overviews.** A demand-driven idle worker
+builds one bounded overview per user/local day across sessions with retained
+conversation. Store it in SQLite as a derived archive record, separate from
+durable memories and rolling session summaries. Each topic/event bullet cites
+its source message IDs or bounded ranges, with separate user/assistant attribution;
+record coverage, source watermark/hash, timezone and generator version. Age-tag
+worker input and use `today_anchor` plus `STORED_TEXT_TIME_RULE` for stored prose.
+No bare relative dates, invented events or converting Aiko's suggestions into
+facts about the user. No conversation means no fabricated "daily activity" entry.
+
+Expose overview lookup through the same archive capability, followed by explicit
+message drill-down. Build missing summaries lazily or in bounded idle batches,
+with checkpoints, retries and an opt-in bounded historical backfill. Handle
+late-arriving messages and edits as invalidation/revision, including incomplete
+current-day coverage. Missing or stale overviews must not block raw transcript
+access. Session/message deletion must invalidate affected derived content and
+cursors; a summary must never preserve deleted private text. A month recap can
+inspect a bounded page of daily entries before requesting deeper sources, not
+quietly mistake the last few messages for the entire month.
+
+**Acceptance checks.** Synthetic conversations spanning sessions, local midnight
+and daylight-saving changes resolve "last week" and "last month" correctly;
+pagination neither skips nor repeats messages; context survives page boundaries;
+cross-user rows never leak; broad recaps expose partial coverage; exact quotes
+come from source rows rather than summaries. A fact omitted by memory extraction
+is still retrievable. Empty dates, unavailable stores, missing summaries, retries,
+late messages, corrections and deletions have explicit tested outcomes. Include
+tool-gate/skill-router reach checks and real-model scenarios that choose overview
+then drill-down without guessing missing dialogue. Measure lookup latency and
+token cost before choosing page sizes or an overview-generation cadence.
+
+**Key files (existing).** [builtins.py](../../app/llm/tools/builtins.py),
+[tool_pass_gate.py](../../app/core/session/tool_pass_gate.py),
+[chat_database.py](../../app/core/infra/chat_database.py),
+[rag_retriever.py](../../app/core/rag/rag_retriever.py),
+[time_expr.py](../../app/core/infra/time_expr.py),
+[timephrase.py](../../app/core/infra/timephrase.py),
+[summary_worker.py](../../app/core/proactive/summary_worker.py).
+
+**Open decisions.** Extend `recall` versus a dedicated archive tool; initial
+row/token budgets; timezone policy for older messages after a timezone change;
+idle versus on-demand overview generation and historical backfill budget.
+**Effort.** Small-Medium for transcript access; Medium for durable daily overviews.
+
+---
+
 ## D-approval. Spoken / Aiko-voiced task approvals
 
 **Motivation.** The task-approval framework ([`docs/task-approvals.md`](../task-approvals.md))

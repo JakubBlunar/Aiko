@@ -77,11 +77,13 @@ export class ReachChannel implements AvatarChannel {
   private _adapter: Live2DModelAdapter | null = null;
   private _deps: ChannelDeps | null = null;
   private _active: ActiveReach | null = null;
+  private _bodyDelta = 0;
 
   attach(adapter: Live2DModelAdapter, deps: ChannelDeps): void {
     this._adapter = adapter;
     this._deps = deps;
     this._active = null;
+    this._bodyDelta = 0;
   }
 
   detach(): void {
@@ -103,6 +105,7 @@ export class ReachChannel implements AvatarChannel {
     this._adapter = null;
     this._deps = null;
     this._active = null;
+    this._bodyDelta = 0;
   }
 
   /** Engine-dispatched on every ``avatar_touch`` WS frame. A new
@@ -136,6 +139,7 @@ export class ReachChannel implements AvatarChannel {
       leanAmount: event.leanAmount,
       released: false,
     };
+    this._bodyDelta = 0;
     this._deps.debug?.("channel.reach", "onTouch", {
       kind: event.kind,
       leanAmount: event.leanAmount,
@@ -156,6 +160,7 @@ export class ReachChannel implements AvatarChannel {
     const caps = deps.manifest.capabilities ?? {};
     const elapsed = now - active.startedAt;
     if (elapsed >= active.durationMs) {
+      this._bodyDelta = 0;
       // Expiry frame: write rest exactly once, then drop the slot.
       if (!active.released) {
         if (caps.has_body_angle_y) {
@@ -186,6 +191,7 @@ export class ReachChannel implements AvatarChannel {
     const easing = Math.sin(Math.PI * Math.max(0, Math.min(1, t)));
     const bodyDelta = easing * active.leanAmount;
     const headDelta = easing * active.leanAmount * HEAD_LEAN_RATIO;
+    this._bodyDelta = bodyDelta;
 
     // Read-modify-write so we layer on top of AmbientBody's lean-in
     // / slump / bounce / valence-tilt rather than clobbering it.
@@ -201,6 +207,20 @@ export class ReachChannel implements AvatarChannel {
       const baseline = adapter.getParam(HEAD_PARAM) ?? 0;
       adapter.setParam(HEAD_PARAM, baseline + headDelta);
     }
+  }
+
+  tickPreModel(): void {
+    const adapter = this._adapter;
+    const deps = this._deps;
+    const active = this._active;
+    if (!adapter || !deps || !active || !deps.manifest.capabilities?.has_body_angle_y) {
+      return;
+    }
+    if (deps.now() - active.startedAt >= active.durationMs) {
+      return;
+    }
+    const baseline = adapter.getParam(BODY_PARAM) ?? 0;
+    adapter.setParam(BODY_PARAM, baseline + this._bodyDelta);
   }
 
   // ── test-only accessors ──────────────────────────────────────────
