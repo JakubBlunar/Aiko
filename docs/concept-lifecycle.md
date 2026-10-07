@@ -13,6 +13,158 @@ Implementation: [`app/core/concepts/concept_lifecycle_worker.py`](../app/core/co
 (pure confidence/gate math). Storage: [`concept_store.py`](../app/core/concepts/concept_store.py).
 Timeline: [`concept_event_store.py`](../app/core/concepts/concept_event_store.py).
 
+## Evidence routing and bounded reconsideration
+
+Synthesis keeps the existing admission floor and **24-source reinforcement
+ceiling**. A ceiling refusal is not a reason to mint a replacement concept.
+New or substantively revised supporting evidence still refreshes
+`last_reinforced_at` without adding an edge. Unchanged historical re-citations,
+off-topic evidence and explicitly `related` or `uncertain` matches do not
+refresh the old claim.
+
+Individual-memory passes (self-model, affect, boundaries, communication style,
+and pursuit) now select oldest unseen or content-changed rows first, with up to
+a quarter of the batch reserved for familiar anchors (at least one when the
+batch permits). Affect also fingerprints its affect metadata. Only offered
+rows receive fingerprints; overflow remains dirty and raises worker demand.
+Older signatures without fingerprints drain through catch-up batches; arrivals
+beyond the legacy watermark take priority over that historical backlog. Cluster
+and ordered-arc selection retain their existing evidence and grouping gates.
+
+The worker prompt evaluates **support and discovery independently**: one source
+may support an existing claim and a different new claim. Reinforcement declares
+`evidence_relation` as `same`, `related`, or `uncertain`. Existing labels remain
+visible even when full, annotated with source count and remaining capacity.
+Near-neighbour new claims in the existing consolidation band (`0.78` up to the
+`0.86` dedupe bar) must name `compared_to` and provide a concrete `distinction`
+from the nearest claim. The dedupe bar is not bypassed. Missing relation fields
+retain the old topical-admission behavior for compatibility and are counted;
+ambiguous capped matches are reconsidered rather than silently discarded.
+
+[`concept_synthesis_routing.py`](../app/core/concepts/concept_synthesis_routing.py)
+persists reconsiderations in `kv_meta` under `concept_synth.reconsideration`.
+Inputs are source references plus bounded structural context, not copied memory
+text or old prompts. Sources are reloaded and prompts are age-tagged on retry.
+Unclaimed inputs, off-topic refusals, explicitly uncertain/related matches,
+and missing distinctions are eligible. Exact capped repetition is not.
+
+The queue keeps **128 entries / 256 KiB**, permits **two reconsideration calls
+per synthesis run**, waits **six hours** between attempts, stops after **three
+attempts**, and expires entries after **seven days**. Repeated arrivals do not
+reset cooldown, attempts, or expiry. Settled outcomes remain as bounded receipts
+until expiry; eviction favors settled entries. Each retry uses the original
+proposer and parser, preserving source-count, deliberate-anchor, closed-arc,
+directional, recurrence and meta-depth/cycle gates. It may settle as `same_claim`,
+`new_claim`, or `no_claim`, or remain pending until exhausted. Failed responses
+remain pending; cancellation does not spend the attempt. No historical evidence
+edges, labels, confidence, or lifecycle status are rewritten by this change.
+
+`get_concepts_state` includes a content-free `synthesis` object from the public
+`concept_synthesis_diagnostics()` facade: latest routing counts, cumulative
+attempt/outcome counts, queue states and limits. `unique_*` counts are unique
+source references **within one run**, not independent observations or lifetime
+unique sources; cumulative counters intentionally omit them. `queue_repeats`
+and `repeat_source_attempts` separate repeated queue identities from repeated
+edge attempts. Per-concept ceiling messages are DEBUG; the aggregate admission
+summary stays INFO. All counters describe pipeline behavior, not proof that a
+new claim is correct or that no useful distinction was missed by the model.
+
+## Archived concept access
+
+Inactive does not mean irrelevant, and not retrieved does not mean unsupported.
+Synthesis still compares at most **40 existing claims** per proposer, but reserves
+up to **eight slots** for `dormant`, `retired`, or `contradicted` targets whose
+best fit to the offered evidence clears the existing admission floor. Remaining
+slots use the best eligible matches. Scoring stacks each eligible vector dimension
+once, not once per query. Without usable embeddings, separate persisted cursors
+rotate the archive and working pools rather than repeatedly showing the first page.
+There is no unconditional archive-wide LLM sweep and no additional selection call.
+
+Reconsideration pins its explicit targets before refreshed matches and old context
+are truncated to 40. Original reinforcement exclusions still apply. Generalization
+comparison filters to the requested meta depth **before** the cap and uses the
+offered bases' vectors. Other source-count, sequence, anchor, recurrence, cycle and
+depth gates remain unchanged, as do the 24-source cap and cosine thresholds.
+
+`comparison_eligible`, `comparison_offered`, `comparison_not_assessed`, and
+`archive_offered` are **comparison opportunities summed across calls**, not unique
+concepts, verdicts, or coverage of the entire archive. A shown label alone also
+does not prove the model assessed it. Live coverage and retrieval quality still
+need evaluation; these counters must not become an automatic negative belief gate.
+
+## Observation freshness and honest outcomes
+
+[`concept_support.py`](../app/core/concepts/concept_support.py) keeps cold SQLite
+KV receipts: a latest revision hash per concept/source, six latest fresh source
+references per concept, one latest assessment, and one latest disproof review.
+They contain IDs, hashes, timestamps and machine reasons, **not copied private
+text**, and are not loaded into the concept/vector mirror. Storage grows with
+observed source pairs; it is not an additional capped evidence-edge collection.
+
+Memory revisions cover content, kind, source/event dates and selected provenance
+or supersession metadata, not maintenance salience/confidence/updated timestamps.
+Cluster revisions include the representative, membership, size and member revision
+hashes. Concept bases use their actual reinforcement stamp and source count, not
+confidence decay. Immutable or unavailable revision shapes use an ID-only baseline.
+Source snapshots are captured before generation and reused within the synthesis
+run, avoiding repeated member reads and credit for edits the model did not see.
+
+An already-held source without a receipt is **baselined**, not credited as fresh
+on upgrade. Newly assessed source references, including valid sources refused
+only by the ceiling, and later substantive revisions can advance the observation
+clock. Replaying them unchanged cannot. Historical ceiling refusals had no such
+receipts; their first post-upgrade assessment cannot reconstruct whether an older
+worker previously saw them. No historical evidence or lifecycle clocks are
+backfilled. A merge preserves the latest existing support stamp instead of
+manufacturing a new observation simply because consolidation ran.
+
+The diagnostic `revival.states` groups the latest recorded assessment per concept:
+
+| Outcome | Meaning |
+| --- | --- |
+| `not_assessed` | Uncertain relation, unavailable sources/provider, deferred budget, or unusable review. Retrieval omission and an empty discovery response are unknown, not disproof. |
+| `assessed_no_support` | This evidence explicitly belongs to a related claim, fails the admission fit, or a review says the recorded disproof still applies. This is scoped to that assessment, not a universal claim that no support exists. |
+| `supported_pending` | Accepted same-claim support, but lifecycle confidence, age, sources, base dependencies, freshness, or disproof resolution still block activation. |
+| `revived` | L3 actually returned a previously inactive, non-candidate concept to `active`. Ordinary candidate promotion is recorded separately as `active`. |
+
+These are **latest assessment records**, not a replacement for lifecycle status
+or an independent-observation count. `fresh_support` and `historical_recitations`
+describe source receipts; `reinforced` still counts accepted proposer matches.
+Retry `same_claim`/`new_claim`/`no_claim` describes the batch disposition; the
+separate `assessment_states` cannot interpret `no_claim` as explicit rejection
+of every target. No receipt means no recorded assessment, not a negative verdict.
+A sticky belief may remain supported below the activation bar: one fresh signal
+buys one normal confidence step, not repeated accrual until it passes.
+
+### Re-adjudicating disproof
+
+[`concept_revival.py`](../app/core/concepts/concept_revival.py) guards every
+inactive-to-active transition with recorded disproof, including a formerly
+contradicted belief that later retired. Ordinary numerical activation bars are
+unchanged. Current `contradicted` status, negative edges, retained disproof IDs,
+or a historical contradiction event prevent retirement/deletion from bypassing
+the guard. Missing disproof is unresolved, not evidence of its resolution.
+
+The existing contradiction detector's direct LLM client must explicitly resolve
+**every** recorded negative memory against current same-belief support. Compatible
+positive evidence, time passing, or absence of another contradiction is insufficient.
+The response must name all resolved negative IDs; `STILL_VALID`, `UNCERTAIN`,
+malformed output, cancellation or failure cannot activate the belief. Negative
+history remains intact after success. This review reads evidence only; L3 remains
+the sole lifecycle-state writer.
+
+At most **two reviews per lifecycle tick**, within the existing contradiction
+batch and shared rate limiter, consider at most **six negative and six positive
+rows**. More negatives, deleted references, or unavailable evidence defer rather
+than silently truncate disproof. Positive context favors recent fresh sources,
+with bounded current cluster members and concept-base context. Two opportunities
+are reserved inside the shared batch when a pending revival is present, so active
+probes cannot consume the entire budget first. Uncertain/failed reviews have a
+persisted six-hour cooldown; definitive outcomes are cached until belief/support/
+negative revisions change. Pending review survives subsequent lifecycle passes
+without awarding another confidence step. The idle demand marks this work as
+LLM-bearing. This is model-dependent adjudication, not proof of factual truth.
+
 ## Status vocabulary
 
 | Status | Meaning | Revivable? |
@@ -20,7 +172,7 @@ Timeline: [`concept_event_store.py`](../app/core/concepts/concept_event_store.py
 | `candidate` | Proposed by L2 — **or graduated from a confirmed hypothesis (L30)** — and not yet earned a place in Aiko's worldview. | — (it's the entry state) |
 | `active` | Promoted: enough distinct evidence, stable long enough, confident enough. The **only** status L5 surfaces. | — |
 | `dormant` | Was active; confidence decayed below the dormant floor without fresh evidence. Quiet, not gone. | Yes — climbs back to `active` when reinforced. |
-| `contradicted` | **L9.** Was active; **counter-evidence** disproved it and drove confidence below the *contradicted* floor. "Actively disproven", distinct from a faded `dormant`. | Yes — climbs back to `active` when re-reinforced past the promote bar. |
+| `contradicted` | **L9.** Was active; **counter-evidence** disproved it and drove confidence below the *contradicted* floor. "Actively disproven", distinct from a faded `dormant`. | Yes, only with supported confidence and explicit resolution of recorded disproof. |
 | `retired` | Long-quiet (fell below the retire floor) **or** a candidate that never earned promotion. **Asleep, not dead.** | Yes — fresh evidence revives it (see below). |
 | `suppressed` | **Reserved, not built.** L6 user rejection → truly terminal; excluded from L2 re-proposal and never revived. | No (by design). |
 
@@ -43,7 +195,7 @@ stateDiagram-v2
     active --> candidate: demoted — evidence reconciled away to zero sources
     active --> dormant: confidence < dormant_floor
     active --> contradicted: counter-evidence AND confidence < contradicted_floor (L9)
-    contradicted --> active: revived — re-reinforced past promote_min_confidence
+    contradicted --> active: revived — support, confidence, explicit disproof resolution
     contradicted --> retired: confidence < retire_floor
     dormant --> active: revived — reinforced AND confidence >= promote_min_confidence
     dormant --> retired: confidence < retire_floor
@@ -67,11 +219,11 @@ worker is also gated by `agent.concepts_enabled`.
 | `active → candidate` | `distinct_source_count == 0` — every supporting edge was deleted or repointed away (L25), so the belief rests on nothing. Checked **before** the confidence floors, because confidence decays far too slowly to notice on its own. It keeps its confidence and re-promotes normally once evidence returns. | (none — structural) |
 | `active → dormant` | `confidence < dormant_floor` (and **not** contradicted this tick) | `concept_dormant_confidence_floor` |
 | `active → contradicted` | **L9** — the detector confirmed counter-evidence this tick **and** the plasticity-damped penalty drove `confidence < contradicted_floor`. Above the floor it stays `active` but weakened. | `concept_contradiction_*` (detector), `concept_contradiction_penalty`, `concept_contradicted_confidence_floor` |
-| `contradicted → active` | re-reinforced (`last_reinforced_at` newer than the last pass) back up to `>= promote_min_confidence` | `concept_promote_min_confidence` |
+| `contradicted → active` | accepted fresh support (or its pending review), `confidence >= promote_min_confidence`, and explicit resolution of all recorded disproof | `concept_promote_min_confidence`, existing contradiction batch/rate budgets |
 | `contradicted → retired` | keeps decaying below `retire_floor` | `concept_retire_confidence_floor` |
 | `dormant → active` | fresh evidence (`last_reinforced_at` newer than the last pass) **and** `confidence >= promote_min_confidence`. The evidence half used to be implicit — while decay was the only route into `dormant`, recovered confidence could only come from reinforcement — but the L22 sweep parks concepts still sitting near their promotion confidence, so it is now checked. Revival still does **not** re-run the kind's `promotion_gate`, unlike the `retired` row below: a faded concept returns on its original evidence. | `concept_promote_min_confidence` |
 | `dormant → retired` | `confidence < retire_floor`, **or** (L46) nothing has reinforced it for `dormant_ttl_days` — see below | `concept_retire_confidence_floor`, `concept_dormant_ttl_days` |
-| `retired → active / dormant / candidate` | fresh evidence (`last_reinforced_at` newer than the last lifecycle pass) lifts confidence; routed to `active` if it clears the gate, else `dormant` (if it had been promoted) or `candidate` (if it never had) | (gate + floors above) |
+| `retired → active / dormant / candidate` | fresh evidence (or its pending disproof review) lifts confidence; routed to `active` if it clears the gate and any disproof review, else `dormant` (if it had been promoted) or `candidate` (if it never had) | (gate + floors above) |
 
 **The dormancy TTL (L46).** Confidence was the only route out of `dormant`, and
 it is a slow one. The L22 sweep demotes never-reinforced actives while their
@@ -100,7 +252,8 @@ auto-applied.
 Because the anchor is `last_reinforced_at`, anything that can *stop* that stamp
 moving becomes a retirement path. There is one: L31's evidence ceiling
 (`concept_evidence_max_sources`) refuses new sources on a concept that already
-holds its limit. So a refusal for that reason still bumps the stamp — otherwise a
+holds its limit. So a new or revised observation refused for that reason still
+bumps the stamp, but an unchanged replay does not. Otherwise a
 capped concept would drift `active → dormant → retired` while the evidence for it
 kept arriving, retiring the best-supported rows in the graph *because* they had
 the most evidence. Anything else added at the inflow needs the same check.
@@ -111,7 +264,9 @@ contradiction is what *routes* to `contradicted`, and it takes priority
 over the dormant check when both would trigger the same tick. A
 `contradicted` concept is never surfaced by L5 (the block filters
 `status="active"`), and the detector only ever runs on `active` concepts,
-so a disproven belief stays quiet until it is genuinely re-reinforced.
+so a disproven belief stays quiet until support and explicit disproof resolution
+jointly justify revival. The separate bounded revival review can examine inactive
+beliefs without enabling the ordinary active-only contradiction search for them.
 
 Age (`age_days`) gates the promotion stability check and the candidate TTL,
 and feeds the L16 plasticity drift. It never *causes* a status change: the

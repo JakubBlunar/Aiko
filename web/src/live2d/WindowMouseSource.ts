@@ -63,6 +63,7 @@ export class WindowMouseSource implements MouseSource {
       return () => undefined;
     }
     const onMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
       this._x = e.clientX;
       this._y = e.clientY;
       this._lastMoveAt = this._now();

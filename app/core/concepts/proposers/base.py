@@ -71,6 +71,10 @@ class CandidateProposal:
     subject: str
     evidence_model: str = "set"
     reinforces_id: int | None = None
+    evidence_relation: str = "unspecified"
+    distinction: str = ""
+    compared_to: int | None = None
+    input_manifest: Any = None
 
 
 @dataclass(slots=True)

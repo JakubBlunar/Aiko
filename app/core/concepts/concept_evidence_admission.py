@@ -102,6 +102,7 @@ class Admission:
     #: new sources appear here -- re-citing a source the concept already
     #: holds says nothing about where the bar should sit.
     cosines: list[float] = field(default_factory=list)
+    fits: dict[tuple[str, str], float | None] = field(default_factory=dict)
     #: How many of ``kept`` were sources the concept did not already hold,
     #: i.e. what this reinforcement actually added.
     admitted: int = 0
@@ -172,24 +173,32 @@ def admit(
     room = None if cap <= 0 else max(0, cap - len(existing_sources))
 
     admitted_new: set[tuple[str, str]] = set()
+    refused_nodes: set[tuple[str, str]] = set()
     for node in evidence:
+        if node in refused_nodes:
+            continue
         if node in existing_sources or node in admitted_new:
             out.kept.append(node)
             continue
 
+        cos = None
         if check_cosine:
             vec = _unit(vectors.get(node))
             if vec.size == unit_label.size and vec.size > 0:
                 cos = float(np.dot(unit_label, vec))
                 out.cosines.append(cos)
                 if cos < float(floor):
+                    out.fits[node] = cos
+                    refused_nodes.add(node)
                     out.refused.append(
                         Refusal(node=node, reason=REFUSED_OFFTOPIC, cosine=cos)
                     )
                     continue
 
+        out.fits[node] = cos
         if room is not None and len(admitted_new) >= room:
-            out.refused.append(Refusal(node=node, reason=REFUSED_FULL))
+            refused_nodes.add(node)
+            out.refused.append(Refusal(node=node, reason=REFUSED_FULL, cosine=cos))
             continue
 
         admitted_new.add(node)

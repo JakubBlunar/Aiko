@@ -877,7 +877,7 @@ class ContradictionTests(unittest.TestCase):
             "contradicted", [e.event_type for e in h.events.list()]
         )
 
-    def test_contradicted_revives_on_fresh_evidence(self) -> None:
+    def test_contradicted_does_not_revive_without_disproof_review(self) -> None:
         h = _harness(with_clock=False, detector=_FakeDetector())
         c = _add(
             h.store, status="contradicted", confidence=0.2,
@@ -887,8 +887,23 @@ class ContradictionTests(unittest.TestCase):
         )
         h.worker.run()
         got = h.store.get(c.concept_id)
-        self.assertEqual(got.status, "active")
-        self.assertIn("revived", [e.event_type for e in h.events.list()])
+        self.assertEqual(got.status, "contradicted")
+        self.assertNotIn("revived", [e.event_type for e in h.events.list()])
+        self.assertEqual(h.store.support.state(c.concept_id)["state"], "not_assessed")
+
+    def test_retired_disproven_belief_cannot_bypass_review(self) -> None:
+        from app.core.concepts.concept_store import ConceptEdge
+
+        h = _harness(with_clock=False)
+        concept = _add(h.store, status="retired", confidence=0.2,
+                       distinct_source_count=4, first_evidence_at=_iso(20),
+                       last_lifecycle_at=_iso(2), last_reinforced_at=_iso(1),
+                       promoted_at=_iso(15))
+        h.store.add_edge(ConceptEdge(src_type="concept", src_id=str(concept.concept_id),
+                                    dst_type="memory", dst_id="99", relation="contradicts",
+                                    polarity=-1))
+        h.worker.run()
+        self.assertEqual(h.store.get(concept.concept_id).status, "retired")
 
     def test_contradicted_retires_on_decay(self) -> None:
         h = _harness(detector=_FakeDetector())
@@ -901,6 +916,115 @@ class ContradictionTests(unittest.TestCase):
         h.kv.set("engagement.total_units", "0.0")
         h.worker.run()
         self.assertEqual(h.store.get(c.concept_id).status, "retired")
+
+    def _review_harness(self, verdict, *, settings=None):
+        from app.core.concepts.concept_store import ConceptEdge
+
+        detector = _FakeDetector(target_ids=set())
+        detector.review_calls = 0
+        detector._memory_store = SimpleNamespace(
+            get=lambda ident: SimpleNamespace(id=ident, content=f"Evidence {ident}"))
+
+        def reassess(concept, negative, positive):
+            detector.review_calls += 1
+            self.assertEqual([row.id for row in negative], [99])
+            self.assertEqual([row.id for row in positive], [100])
+            return verdict
+
+        detector.reassess = reassess
+        harness = _harness(settings, with_clock=False, detector=detector)
+        concept = _add(harness.store, status="contradicted", confidence=0.2,
+                       distinct_source_count=4, first_evidence_at=_iso(20),
+                       last_lifecycle_at=_iso(2), last_reinforced_at=_iso(1),
+                       promoted_at=_iso(15))
+        harness.store.add_edge(ConceptEdge(
+            src_type="concept", src_id=str(concept.concept_id), dst_type="memory", dst_id="99",
+            relation="contradicts", polarity=-1,
+        ))
+        harness.store.support.record_inputs(concept.concept_id, [("memory", "100")])
+        return harness, concept, detector
+
+    def test_explicit_resolution_revives_and_preserves_disproof_history(self):
+        harness, concept, detector = self._review_harness("RESOLVED")
+        harness.worker.run()
+        self.assertEqual(harness.store.get(concept.concept_id).status, "active")
+        self.assertEqual(harness.store.support.state(concept.concept_id)["state"], "revived")
+        self.assertEqual(detector.review_calls, 1)
+        self.assertEqual(len(harness.store.edges_from("concept", concept.concept_id)), 1)
+
+    def test_still_valid_disproof_is_assessed_without_support_and_cached(self):
+        harness, concept, detector = self._review_harness("STILL_VALID")
+        harness.worker.run()
+        confidence = concept.confidence
+        harness.worker.run()
+        self.assertEqual(concept.status, "contradicted")
+        self.assertLessEqual(concept.confidence, confidence)
+        self.assertEqual(detector.review_calls, 1)
+        self.assertEqual(harness.store.support.state(concept.concept_id)["state"],
+                         "assessed_no_support")
+
+    def test_budget_deferral_can_resolve_later_without_repeated_accrual(self):
+        harness, concept, detector = self._review_harness(
+            "RESOLVED", settings=_settings(concept_contradiction_batch_size=0))
+        harness.worker.run()
+        confidence = concept.confidence
+        self.assertEqual(concept.status, "contradicted")
+        self.assertEqual(detector.review_calls, 0)
+        harness.settings.concept_contradiction_batch_size = 2
+        harness.worker.run()
+        self.assertEqual(concept.status, "active")
+        self.assertLessEqual(concept.confidence, confidence)
+        self.assertEqual(detector.review_calls, 1)
+
+    def test_review_failure_is_pending_and_does_not_repeat_accrual(self):
+        harness, concept, detector = self._review_harness("RESOLVED")
+
+        def fail(*args):
+            detector.review_calls += 1
+            raise RuntimeError("unavailable")
+
+        detector.reassess = fail
+        harness.worker.run()
+        confidence = concept.confidence
+        harness.worker.run()
+        self.assertEqual(concept.status, "contradicted")
+        self.assertLessEqual(concept.confidence, confidence)
+        self.assertEqual(detector.review_calls, 1)
+        self.assertEqual(harness.store.support.state(concept.concept_id)["state"],
+                         "not_assessed")
+
+    def test_review_slots_survive_a_crowded_active_probe_batch(self):
+        harness, concept, detector = self._review_harness("RESOLVED")
+        for index in range(25):
+            _add(harness.store, label=f"Active belief {index}", status="active", confidence=0.8,
+                 last_lifecycle_at=_iso(3), last_reinforced_at=_iso(5), promoted_at=_iso(15))
+        stats = harness.worker.run()
+        self.assertEqual(concept.status, "active")
+        self.assertEqual(detector.review_calls, 1)
+        self.assertLessEqual(stats["contradiction_checks"], 20)
+
+    def test_sticky_supported_belief_stays_pending_without_extra_accrual(self):
+        harness = _harness(with_clock=False)
+        concept = _add(harness.store, status="dormant", confidence=0.05, plasticity=0.15,
+                       distinct_source_count=4, first_evidence_at=_iso(20),
+                       last_lifecycle_at=_iso(2), last_reinforced_at=_iso(1),
+                       promoted_at=_iso(15))
+        harness.worker.run()
+        confidence = concept.confidence
+        self.assertEqual(concept.status, "dormant")
+        self.assertEqual(harness.store.support.state(concept.concept_id)["state"],
+                         "supported_pending")
+        harness.worker.run()
+        self.assertLessEqual(concept.confidence, confidence)
+
+    def test_missing_counter_evidence_cannot_be_cleared_by_deleting_its_edge(self):
+        harness, concept, detector = self._review_harness("RESOLVED")
+        harness.store.support.remember_disproof(concept.concept_id, 98)
+        concept.status = "retired"
+        harness.store.update(concept)
+        harness.worker.run()
+        self.assertEqual(concept.status, "retired")
+        self.assertEqual(detector.review_calls, 0)
 
     def test_detector_not_consulted_for_non_active(self) -> None:
         det = _FakeDetector()

@@ -2517,12 +2517,38 @@ candor gate in turn depends on.
 
 ## L48. Refused evidence already mints a new concept, and what it mints is a twin
 
+**Correction (7 Oct 2026).** The historical heading and fallback explanation
+were wrong. `_persist` returns after both explicit-ID and cosine-deduped
+reinforcement; refused edges did not fall through to creation. Duplicate
+families below were real, but they do not establish that refusals caused them.
+The cap remains unchanged. Delta-first individual-memory selection, separate
+support/discovery instructions, explicit near-neighbour distinctions, bounded
+source-referenced reconsideration and aggregate outcome diagnostics are now
+implemented. See [the canonical routing contract](../concept-lifecycle.md#evidence-routing-and-bounded-reconsideration).
+Validation is synthetic regression coverage; live model quality remains to be
+measured after deployment. The historical heading is retained for inbound links.
+
+**Revival follow-up (7 Oct 2026).** Implemented explicit retry-target pinning,
+eight reserved archive opportunities inside the existing 40-target budget,
+persisted rotation without embeddings, and meta-depth filtering before that cap.
+Source-revision receipts separate changed support from unchanged historical
+citations, including observations accepted at the evidence ceiling. Outcomes now
+distinguish unassessed, assessed-without-support, supported-pending and actual
+lifecycle revival. Contradicted or historically disproven concepts require bounded,
+explicit re-adjudication of their recorded negative evidence; ordinary support
+cannot silently undo disproof, including after retirement. Confidence/activation
+thresholds and graph history remain unchanged. See
+[archive access and freshness](../concept-lifecycle.md#archived-concept-access)
+and [disproof review](../concept-lifecycle.md#re-adjudicating-disproof) for budgets,
+upgrade limitations and diagnostic semantics. Regression-tested, not yet a live
+model-quality or full-archive coverage result.
+
 **Motivation.** Asked as a design question — *when a concept refuses evidence to
 avoid bloat, could the synthesiser mint a new concept from it instead, so it gets
-rolled into a higher one later?* The first half is already the live behaviour: a
-proposal that fails to reinforce falls through to creation. So the measurement
-worth having is not "would this work" but "what has it already produced", and the
-answer is duplicate families rather than new abstractions.
+rolled into a higher one later?* Capacity does not establish novelty. The missing
+behavior was reconsidering what evidence means without inventing a paraphrase
+of its full target. Independently, the graph had accumulated duplicate families
+that consolidation still needs to address.
 
 **The two refusals are not the same problem, which is the crux.**
 [`concept_evidence_admission.py`](../../app/core/concepts/concept_evidence_admission.py)
@@ -2544,9 +2570,9 @@ accretion case the gate was written for is real (#145 `ritual`, 141 sources,
 confidence 0.37) but it is the exception; mostly the cap stops well-supported
 beliefs from growing, and the evidence goes somewhere else.
 
-**Where it goes, measured.** The fall-through-to-creation path has produced
-families of near-synonyms that each independently climbed toward the same
-ceiling:
+**Duplicate pressure, measured separately.** Independently created families of
+near-synonyms each climbed toward the same ceiling; these measurements do not
+identify what happened to refused source references:
 
 | Family | Rows | Sources each |
 | --- | --- | --- |
@@ -2559,8 +2585,7 @@ Four separate concepts for one ritual and seven for another is not a
 richer model; it is the same belief paying rent four and seven
 times, in the T3 concept lane, every turn.
 
-**So the answer to the original question is: the minting works, the roll-up is
-missing** — and the roll-up is exactly L46. A family of seven near-identical
+**Consolidation and abstraction remain complementary to routing.** A family of seven near-identical
 rituals is the ideal `generalization` base set, and today it cannot become one,
 because the pass that would abstract over them draws only from concepts and the
 duplicates *are* the concepts. Two directions, and they are complements rather
@@ -2593,7 +2618,8 @@ actually drain against an inflow this fast.
 
 **Key files.**
 - [`concept_evidence_admission.py`](../../app/core/concepts/concept_evidence_admission.py) — `admit()`, `REFUSED_OFFTOPIC` vs `REFUSED_FULL`, and the `Admission.reinforced` note on why a ceiling refusal must still stamp `last_reinforced_at`
-- [`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py) — `_reinforce` (~L3323, the choke point), `_record_admission`, `_flush_admission`; the fall-through to creation is where a "refused, so mint" hook would already be
+- [`concept_synthesis_worker.py`](../../app/core/concepts/concept_synthesis_worker.py) — `_reinforce`, `_record_admission`, `_flush_admission`; reinforcement returns without a creation fallback
+- [`concept_synthesis_routing.py`](../../app/core/concepts/concept_synthesis_routing.py) — bounded reconsideration through the original proposer gates, explicit comparison and content-free outcome diagnostics
 - [`concept_consolidation_worker.py`](../../app/core/concepts/concept_consolidation_worker.py) — `_collect_pairs`, the per-block nomination and the daily cap
 - [`concept_dedupe.py`](../../app/core/concepts/concept_dedupe.py) — `DEDUPE_COS` 0.86, the bar these twins pass under at creation time
 

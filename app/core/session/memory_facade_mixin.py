@@ -899,6 +899,13 @@ class MemoryFacadeMixin:
 
     # ── concepts (L1/L2 debug surface) ───────────────────────────────────
 
+    def concept_synthesis_diagnostics(self) -> dict[str, Any]:
+        """Content-free evidence routing and bounded reconsideration outcomes."""
+        worker = getattr(self, "_concept_synthesis_worker", None)
+        if worker is None:
+            return {"enabled": False}
+        return {"enabled": True, **worker.synthesis_diagnostics()}
+
     def concepts_snapshot(
         self,
         *,

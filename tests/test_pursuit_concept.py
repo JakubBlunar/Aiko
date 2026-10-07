@@ -258,24 +258,26 @@ class PassTests(unittest.TestCase):
         worker._run_pursuit_pass(None, worker.spec(), {})
         self.assertEqual(worker._memory_store.asked, [("pursuit_note",)])
 
-    def test_the_batch_is_the_most_recent_in_order(self) -> None:
+    def test_the_batch_drains_oldest_unseen_notes_in_order(self) -> None:
         # Chronological, not salience-sorted: recurrence is the signal,
         # and a salience sort hides the dull repetition that proves it.
         worker = _Worker(self._mems(5))
         worker._run_pursuit_pass(None, worker.spec(), {})
         offered = [m.id for m in worker.offered[0]]
-        self.assertEqual(offered, [4, 5])
+        self.assertEqual(offered, [1, 2])
 
     def test_a_settled_pool_does_not_re_fire(self) -> None:
         worker = _Worker(self._mems(4))
         stats: dict[str, Any] = {}
         worker._run_pursuit_pass(None, worker.spec(), stats)
         self.assertTrue(stats["pursuit_dirty"])
+        worker._run_pursuit_pass(None, worker.spec(), stats)
+        worker._run_pursuit_pass(None, worker.spec(), stats)
         self.assertEqual(
             worker._run_pursuit_pass(None, worker.spec(), stats), []
         )
         self.assertFalse(stats["pursuit_dirty"])
-        self.assertEqual(len(worker.offered), 1)
+        self.assertEqual(len(worker.offered), 3)
 
     def test_enough_new_notes_re_fire_it(self) -> None:
         worker = _Worker(self._mems(4))

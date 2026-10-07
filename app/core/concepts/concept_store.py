@@ -179,6 +179,9 @@ class ConceptStore:
 
     def __init__(self, db: "ChatDatabase") -> None:
         self._db = db
+        from app.core.concepts.concept_support import SupportLedger
+
+        self.support = SupportLedger(db)
         # L17c: optional sink for absorption records. ``merge_into``
         # deletes the absorbed row, so unless something captures the
         # mapping at that moment the id becomes a dead end and any
@@ -789,7 +792,10 @@ class ConceptStore:
         sources = {(e.src_type, str(e.src_id)) for e in evidence}
         canonical.evidence_count = len(evidence)
         canonical.distinct_source_count = len(sources)
-        canonical.last_reinforced_at = _now_iso()
+        canonical.last_reinforced_at = max(
+            (stamp for stamp in (canonical.last_reinforced_at, absorbed.last_reinforced_at)
+             if stamp), default=None,
+        )
         self.update(canonical)
         return True
 

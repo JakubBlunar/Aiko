@@ -23,6 +23,7 @@ from app.core.concepts.concept_event_store import ConceptEventStore
 from app.core.concepts.concept_evidence_admission import load_fit_sample
 from app.core.concepts.concept_store import Concept, ConceptEdge, ConceptStore
 from app.core.concepts.concept_synthesis_worker import ConceptSynthesisWorker
+from app.core.concepts.concept_synthesis_inputs import select_memory_batch
 from app.core.infra.chat_database import ChatDatabase
 
 
@@ -911,7 +912,7 @@ class DedupeThresholdTests(unittest.TestCase):
                 return vec
             return self._fallback.embed(text)
 
-    def _run(self, *, twin_label: str, cosine: float):
+    def _run(self, *, twin_label: str, cosine: float, distinction: bool = False):
         anchor = np.zeros(16, dtype=np.float32)
         anchor[0] = 1.0
 
@@ -923,6 +924,9 @@ class DedupeThresholdTests(unittest.TestCase):
                 "evidence_cluster_reps": [100, 101],
                 "rationale": "same behaviour, different words",
                 "confidence": 0.7,
+                **({"compared_to": seed_id,
+                    "distinction": "A music preference during cooking, not a recovery habit."}
+                   if distinction else {}),
             }]}
 
         h = WorkerHarness(responder)
@@ -952,10 +956,19 @@ class DedupeThresholdTests(unittest.TestCase):
         h, _ = self._run(
             twin_label="Jacob listens to Powerwolf while cooking",
             cosine=0.80,
+            distinction=True,
         )
         self.assertEqual(
             len(h.store.list_by(subject="user", kind="identity")), 2
         )
+
+    def test_related_claim_without_a_distinction_is_deferred(self) -> None:
+        harness, _ = self._run(
+            twin_label="A different claim without its comparison",
+            cosine=0.80,
+        )
+        self.assertEqual(len(harness.store.list_by(subject="user", kind="identity")), 1)
+        self.assertEqual(harness.worker._last_stats["routing"]["missing_distinction"], 1)
 
 
 class RegisterRuleTests(unittest.TestCase):
@@ -1086,6 +1099,68 @@ class IncrementalTests(unittest.TestCase):
         self.assertTrue(forced["aiko_dirty"])
         self.assertGreater(forced["user_dirty_total"], 0)
         self.assertGreater(forced["llm_calls"], 0)
+
+
+class DeltaMemoryBatchTests(unittest.TestCase):
+    def test_legacy_catchup_does_not_hide_new_arrivals(self) -> None:
+        rows = _self_memories()
+        rows.append(MemStub(5, "A fresh observation", "self", 0.01))
+        batch = select_memory_batch(
+            rows, {"mem_max_id": 4}, excluded_ids=set(), limit=2,
+        )
+        self.assertEqual(batch.rows[0].id, 5)
+        self.assertEqual(batch.origin_max_id, 4)
+        self.assertEqual(batch.remaining, 3)
+
+    def test_low_salience_new_rows_precede_familiar_anchors(self) -> None:
+        rows = _self_memories()
+        baseline = select_memory_batch(rows, {}, excluded_ids=set(), limit=4)
+        rows.append(MemStub(5, "A new specific observation.", "self", 0.01))
+        batch = select_memory_batch(
+            rows, {"mem_fingerprints": baseline.fingerprints},
+            excluded_ids=set(), limit=2,
+        )
+        self.assertEqual([row.id for row in batch.rows], [5, 1])
+        self.assertEqual(batch.remaining, 0)
+
+    def test_checkpoint_does_not_skip_overflow(self) -> None:
+        rows = _self_memories()
+        first = select_memory_batch(rows, {}, excluded_ids=set(), limit=2)
+        self.assertEqual(set(first.fingerprints), {"1", "2"})
+        self.assertEqual(first.remaining, 2)
+        second = select_memory_batch(
+            rows, {"mem_fingerprints": first.fingerprints},
+            excluded_ids=set(), limit=2,
+        )
+        self.assertEqual(second.rows[0].id, 3)
+        self.assertEqual(second.remaining, 1)
+        third = select_memory_batch(
+            rows, {"mem_fingerprints": second.fingerprints},
+            excluded_ids=set(), limit=2,
+        )
+        self.assertEqual(third.rows[0].id, 4)
+        self.assertEqual(third.remaining, 0)
+
+    def test_content_edits_are_dirty_without_count_growth(self) -> None:
+        rows = _self_memories()
+        first = select_memory_batch(rows, {}, excluded_ids=set(), limit=4)
+        rows[3].content = "A materially revised observation."
+        batch = select_memory_batch(
+            rows, {"mem_fingerprints": first.fingerprints},
+            excluded_ids=set(), limit=2,
+        )
+        self.assertEqual(batch.pending, 1)
+        self.assertEqual(batch.rows[0].id, 4)
+
+    def test_worker_drains_pending_rows_then_becomes_clean(self) -> None:
+        harness = WorkerHarness(
+            lambda system, user: {"concepts": []},
+            mem_settings=_mem_settings(cap_aiko=2),
+        )
+        self.assertTrue(harness.worker.run()["aiko_dirty"])
+        self.assertTrue(harness.worker.run()["aiko_dirty"])
+        self.assertTrue(harness.worker.run()["aiko_dirty"])
+        self.assertFalse(harness.worker.run()["aiko_dirty"])
 
 
 class DominanceTests(unittest.TestCase):

@@ -2618,7 +2618,8 @@ def register(mcp, session: "SessionController") -> None:
                     )
                 by_status.setdefault(c.status, []).append(row)
             return json.dumps(
-                {"total": len(concepts), "by_status": by_status}, indent=2
+                {"total": len(concepts), "by_status": by_status,
+                 "synthesis": session.concept_synthesis_diagnostics()}, indent=2
             )
         except Exception as exc:
             return f"get_concepts_state raised: {exc}"

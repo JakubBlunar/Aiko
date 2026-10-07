@@ -69,6 +69,10 @@ from app.core.concepts.concept_meta_depth import (
 )
 from app.core.concepts.concept_surfacing import engagement_baseline
 from app.core.concepts.concept_store import Concept, ConceptEdge
+from app.core.concepts.concept_synthesis_inputs import select_memory_batch
+from app.core.concepts.concept_synthesis_routing import (
+    DISTINCTION_COS, ROUTING_RULE, SynthesisRoutingMixin,
+)
 from app.core.concepts.surfacing_conduct import (
     CONDUCT_LAST_RUN_KEY,
     detect_conduct,
@@ -203,7 +207,7 @@ def _salvage_concepts(text: str) -> list[dict[str, Any]]:
     return out
 
 
-class ConceptSynthesisWorker:
+class ConceptSynthesisWorker(SynthesisRoutingMixin):
     """Idle worker that proposes candidate identity concepts."""
 
     name = "concept_synthesis"
@@ -350,12 +354,13 @@ class ConceptSynthesisWorker:
                 pressure=0.0, reason="no history", needs_llm=needs_llm,
             )
         remaining = int(stats.get("user_dirty_remaining", 0) or 0)
+        remaining += int(stats.get("memory_dirty_remaining", 0) or 0)
         if remaining > 0:
             return WorkSignal(
                 pressure=pressure_from_count(
                     remaining, saturation=max(1, self._max_clusters_per_run),
                 ),
-                reason=f"{remaining} clusters queued",
+                reason=f"{remaining} evidence inputs queued",
                 needs_llm=needs_llm,
             )
         return WorkSignal(pressure=0.0, reason="drained", needs_llm=needs_llm)
@@ -1018,7 +1023,9 @@ class ConceptSynthesisWorker:
             "self_correction_clusters": 0,
         }
 
-        for spec in CONCEPT_PROPOSERS:
+        self._routing_begin(stats)
+        for original_spec in CONCEPT_PROPOSERS:
+            spec = self._capture_proposer(original_spec)
             if self._cancel_event.is_set():
                 break
             try:
@@ -1072,6 +1079,8 @@ class ConceptSynthesisWorker:
             for proposal in proposals:
                 self._persist(proposal, stats)
 
+        self._run_reconsiderations(ctx, CONCEPT_PROPOSERS, stats)
+        self._routing_finish(stats)
         self._flush_admission(stats)
         stats["llm_calls"] = self._llm_calls
         stats["llm_ms"] = int((time.monotonic() - started) * 1000)
@@ -1228,8 +1237,15 @@ class ConceptSynthesisWorker:
 
         # Memory watermark drift (fall back to the legacy "count"/"max_id"
         # shape so an in-flight upgrade re-proposes once, then settles).
-        prev_count = int(prev.get("mem_count", prev.get("count", 0)))
-        mem_dirty = force or (not prev) or abs(mem_count - prev_count) >= delta
+        cluster_reps = {int(rep) for rep, _l, _s, _k in aiko_clusters}
+        memory_batch = select_memory_batch(
+            pop, prev, excluded_ids=cluster_reps,
+            limit=self._max_aiko_memories, force=force,
+        )
+        stats["memory_dirty_remaining"] = (
+            int(stats.get("memory_dirty_remaining", 0)) + memory_batch.remaining
+        )
+        mem_dirty = force or (not prev) or bool(memory_batch.pending)
 
         # Cluster drift: new / relabelled / size-drifted aiko clusters.
         prev_clusters = prev.get("clusters", {}) if prev else {}
@@ -1268,19 +1284,7 @@ class ConceptSynthesisWorker:
             for rep, label, size, _drift, _new in focus_rows
         ]
 
-        # Specifics: salience-sorted self-memories, minus any that are a
-        # cluster's representative (so a theme and its headline memory aren't
-        # offered as two separate sources), capped.
-        cluster_reps = {int(rep) for rep, _l, _s, _k in aiko_clusters}
-        batch = [
-            m
-            for m in sorted(
-                pop,
-                key=lambda m: float(getattr(m, "salience", 0.0)),
-                reverse=True,
-            )
-            if int(m.id) not in cluster_reps
-        ][: self._max_aiko_memories]
+        batch = memory_batch.rows
 
         proposals = spec.propose(
             ctx,
@@ -1307,6 +1311,8 @@ class ConceptSynthesisWorker:
             {
                 "mem_count": mem_count,
                 "mem_max_id": mem_max_id,
+                "mem_fingerprints": memory_batch.fingerprints,
+                "mem_origin_max_id": memory_batch.origin_max_id,
                 "clusters": new_clusters,
             },
         )
@@ -1376,6 +1382,9 @@ class ConceptSynthesisWorker:
         # affect-stamped self-memory specifics.
         memories_batch: list[Any] = []
         memory_affect: dict[int, str] = {}
+        memory_batch = None
+        sig_key = spec.sig_key or ("concept_synth.affect_sig." + subject)
+        prev = self._load_sigs(sig_key)
         if subject == "aiko":
             aiko_kinds = set(AIKO_SELF_KINDS)
             self_mems = self._memory_store.iter_by_kinds(AIKO_SELF_KINDS)
@@ -1420,17 +1429,16 @@ class ConceptSynthesisWorker:
                         float(v),
                     ),
                 )
-            # Self-memory specifics (with affect), salience desc, minus reps.
             reps = set(annotated.keys())
-            memories_batch = [
-                m
-                for m in sorted(
-                    self_mems,
-                    key=lambda m: float(getattr(m, "salience", 0.0)),
-                    reverse=True,
-                )
-                if int(m.id) in mem_aff and int(m.id) not in reps
-            ][: self._max_aiko_memories]
+            memory_batch = select_memory_batch(
+                [memory for memory in self_mems if int(memory.id) in mem_aff],
+                prev, excluded_ids=reps, limit=self._max_aiko_memories,
+                force=force, metadata_keys=("affect",),
+            )
+            memories_batch = memory_batch.rows
+            stats["memory_dirty_remaining"] = (
+                int(stats.get("memory_dirty_remaining", 0)) + memory_batch.remaining
+            )
             for m in memories_batch:
                 v, a = mem_aff[int(m.id)]
                 memory_affect[int(m.id)] = _ca.affect_phrase(v, a)
@@ -1440,8 +1448,6 @@ class ConceptSynthesisWorker:
             return []
 
         # Combined dirty-tracking under the subject's affect sig.
-        sig_key = spec.sig_key or ("concept_synth.affect_sig." + subject)
-        prev = self._load_sigs(sig_key)
         prev_ann = prev.get("annotated", {}) if prev else {}
         delta = self._dirty_size_delta
         dirty: list[tuple[int, int, bool]] = []  # rep, samples, is_new
@@ -1458,11 +1464,7 @@ class ConceptSynthesisWorker:
                 dirty.append((rep, samples, False))
         mem_dirty = False
         if subject == "aiko":
-            prev_mc = int(prev.get("mem_affect_count", 0)) if prev else 0
-            mem_dirty = (
-                force or (not prev)
-                or abs(len(memory_affect) - prev_mc) >= delta
-            )
+            mem_dirty = force or (not prev) or bool(memory_batch.pending)
 
         is_dirty = force or bool(dirty) or mem_dirty
         stats["affect_dirty"] = bool(is_dirty)
@@ -1532,6 +1534,8 @@ class ConceptSynthesisWorker:
         sig: dict[str, Any] = {"annotated": new_ann}
         if subject == "aiko":
             sig["mem_affect_count"] = len(memory_affect)
+            sig["mem_fingerprints"] = memory_batch.fingerprints
+            sig["mem_origin_max_id"] = memory_batch.origin_max_id
         self._save_sigs(sig_key, sig)
         return proposals
 
@@ -1711,16 +1715,20 @@ class ConceptSynthesisWorker:
 
         sig_key = spec.sig_key or "concept_synth.pursuit_sig.aiko"
         prev = self._load_sigs(sig_key)
-        prev_count = int(prev.get("mem_count", 0)) if prev else 0
-        delta = self._dirty_size_delta
-        is_dirty = force or (not prev) or (mem_count - prev_count) >= delta
+        memory_batch = select_memory_batch(
+            pop, prev, excluded_ids=set(), limit=self._max_pursuit_memories, force=force,
+        )
+        stats["memory_dirty_remaining"] = (
+            int(stats.get("memory_dirty_remaining", 0)) + memory_batch.remaining
+        )
+        is_dirty = force or (not prev) or bool(memory_batch.pending)
         stats["pursuit_dirty"] = bool(is_dirty)
         if not is_dirty:
             return []
 
         batch = sorted(
-            pop, key=lambda m: str(getattr(m, "created_at", "") or ""),
-        )[-self._max_pursuit_memories:]
+            memory_batch.rows, key=lambda memory: str(getattr(memory, "created_at", "") or ""),
+        )
 
         proposals = spec.propose(
             ctx,
@@ -1732,6 +1740,8 @@ class ConceptSynthesisWorker:
             {
                 "mem_count": mem_count,
                 "mem_max_id": max((int(m.id) for m in pop), default=0),
+                "mem_fingerprints": memory_batch.fingerprints,
+                "mem_origin_max_id": memory_batch.origin_max_id,
             },
         )
         return proposals
@@ -2407,8 +2417,15 @@ class ConceptSynthesisWorker:
         prev = self._load_sigs(sig_key)
         delta = self._dirty_size_delta
 
-        prev_count = int(prev.get("mem_count", 0)) if prev else 0
-        mem_dirty = force or (not prev) or abs(mem_count - prev_count) >= delta
+        cluster_reps = {int(rep) for rep, _l, _s, _k in clusters}
+        memory_batch = select_memory_batch(
+            pop, prev, excluded_ids=cluster_reps,
+            limit=self._max_boundary_memories, force=force,
+        )
+        stats["memory_dirty_remaining"] = (
+            int(stats.get("memory_dirty_remaining", 0)) + memory_batch.remaining
+        )
+        mem_dirty = force or (not prev) or bool(memory_batch.pending)
 
         prev_clusters = prev.get("clusters", {}) if prev else {}
         dirty_clusters: list[tuple[int, str, int, int, bool]] = []
@@ -2445,19 +2462,7 @@ class ConceptSynthesisWorker:
             for rep, label, size, _drift, _new in focus_rows
         ]
 
-        # Anchor specifics: salience-sorted, minus any that are a cluster's
-        # representative (so a theme and its headline note aren't offered
-        # twice), capped.
-        cluster_reps = {int(rep) for rep, _l, _s, _k in clusters}
-        batch = [
-            m
-            for m in sorted(
-                pop,
-                key=lambda m: float(getattr(m, "salience", 0.0)),
-                reverse=True,
-            )
-            if int(m.id) not in cluster_reps
-        ][: self._max_boundary_memories]
+        batch = memory_batch.rows
 
         proposals = spec.propose(
             ctx,
@@ -2484,6 +2489,8 @@ class ConceptSynthesisWorker:
             {
                 "mem_count": mem_count,
                 "mem_max_id": mem_max_id,
+                "mem_fingerprints": memory_batch.fingerprints,
+                "mem_origin_max_id": memory_batch.origin_max_id,
                 "clusters": new_clusters,
             },
         )
@@ -2537,9 +2544,16 @@ class ConceptSynthesisWorker:
         prev = self._load_sigs(sig_key)
         delta = self._dirty_size_delta
 
-        prev_count = int(prev.get("mem_count", 0)) if prev else 0
+        cluster_reps = {int(rep) for rep, _l, _s, _k in clusters}
+        memory_batch = select_memory_batch(
+            pop, prev, excluded_ids=cluster_reps,
+            limit=self._max_comm_style_memories, force=force,
+        )
+        stats["memory_dirty_remaining"] = (
+            int(stats.get("memory_dirty_remaining", 0)) + memory_batch.remaining
+        )
         prev_digest = str(prev.get("digest_hash", "")) if prev else ""
-        mem_dirty = force or (not prev) or abs(mem_count - prev_count) >= delta
+        mem_dirty = force or (not prev) or bool(memory_batch.pending)
         digest_dirty = bool(digest_hash) and digest_hash != prev_digest
 
         prev_clusters = prev.get("clusters", {}) if prev else {}
@@ -2577,16 +2591,7 @@ class ConceptSynthesisWorker:
             for rep, label, size, _drift, _new in focus_rows
         ]
 
-        cluster_reps = {int(rep) for rep, _l, _s, _k in clusters}
-        batch = [
-            m
-            for m in sorted(
-                pop,
-                key=lambda m: float(getattr(m, "salience", 0.0)),
-                reverse=True,
-            )
-            if int(m.id) not in cluster_reps
-        ][: self._max_comm_style_memories]
+        batch = memory_batch.rows
 
         proposals = spec.propose(
             ctx,
@@ -2611,6 +2616,8 @@ class ConceptSynthesisWorker:
             {
                 "mem_count": mem_count,
                 "mem_max_id": mem_max_id,
+                "mem_fingerprints": memory_batch.fingerprints,
+                "mem_origin_max_id": memory_batch.origin_max_id,
                 "digest_hash": digest_hash,
                 "clusters": new_clusters,
             },
@@ -2739,7 +2746,7 @@ class ConceptSynthesisWorker:
         proposals = spec.propose(
             ctx,
             concepts=pool,
-            existing=self._existing_generalizations(spec, depth=1),
+            existing=self._existing_generalizations(spec, depth=1, concepts=pool),
         )
         self._save_sigs(
             sig_key, {"fingerprint": fingerprint, "count": len(pool)}
@@ -2793,7 +2800,7 @@ class ConceptSynthesisWorker:
         proposals = spec.propose(
             ctx,
             concepts=pool,
-            existing=self._existing_generalizations(spec, depth=2),
+            existing=self._existing_generalizations(spec, depth=2, concepts=pool),
             stacking=True,
         )
         self._save_sigs(
@@ -3136,19 +3143,20 @@ class ConceptSynthesisWorker:
         return False
 
     def _existing_generalizations(
-        self, spec: ProposerSpec, *, depth: int
+        self, spec: ProposerSpec, *, depth: int, concepts: Sequence[Any] = ()
     ) -> list[ExistingConcept]:
         """Existing generalizations at exactly ``depth``, so L1 cannot
         reinforce an L2 with bases and L2 cannot reinforce an L1."""
-        existing = self._existing_for(spec)
         memo: dict[int, int] = {}
-        out: list[ExistingConcept] = []
-        for item in existing:
-            if meta_depth(
-                self._concept_store, int(item.id), memo=memo
-            ) == int(depth):
-                out.append(item)
-        return out
+        eligible = [
+            concept for concept in self._concept_store.list_by(
+                subject=spec.subject, kind=spec.kind
+            )
+            if meta_depth(self._concept_store, concept.concept_id, memo=memo) == int(depth)
+        ]
+        return self._existing_for(
+            spec, concepts=concepts, eligible=eligible, scope=f":depth{depth}"
+        )
 
     @staticmethod
     def _activity_hint(concept: Concept, now: "datetime | None") -> str:
@@ -3283,65 +3291,33 @@ class ConceptSynthesisWorker:
         *,
         focus: "Sequence[Any]" = (),
         memories: "Sequence[Any]" = (),
+        concepts: "Sequence[Any]" = (),
+        eligible: "Sequence[Concept] | None" = None,
+        scope: str = "",
     ) -> list[ExistingConcept]:
-        """The existing concepts worth showing this proposer, bounded.
-
-        Handed to the LLM so it can reinforce an existing concept by id
-        instead of re-proposing it. This used to pass *every* stored
-        concept of the (subject, kind), on the assumption that
-        cardinality stays low. It does not: identity/user alone reached
-        203, at which point the block was three things at once -- a large
-        recurring token cost, a 200-shot demonstration of the exact
-        sentence template to imitate, and a list too long to pick an id
-        out of, so reinforce-by-id under-fired and near-duplicates were
-        minted instead.
-
-        So select by relevance to what this pass is actually looking at:
-        take the focus material's representative memories (and any
-        specific memories offered) as query vectors, and keep the nearest
-        concepts by cosine. Concepts about *this* material are exactly the
-        ones the model might reinforce; the rest were never candidates.
-
-        ``focus`` is any sequence of objects carrying a cluster
-        representative id in ``rep`` -- :class:`FocusCluster` for the
-        cluster passes, :class:`NarrativeCandidate` for the ordered ones.
-
-        Falls back to the whole set, still capped, when no query vector is
-        available (passes with no cluster/memory focus, or an unembedded
-        corpus) -- a short arbitrary list beats an unbounded one.
-        """
+        """Bounded claim comparisons, with archive access and rotating fallback."""
         query_vecs = self._focus_vectors(focus, memories)
-        if not query_vecs:
-            return [
-                ExistingConcept(id=c.concept_id, label=c.label)
-                for c in self._concept_store.list_by(
-                    subject=spec.subject, kind=spec.kind
-                )[:_MAX_EXISTING]
-            ]
+        for base in concepts:
+            concept = self._concept_store.get(int(base.id))
+            if concept is not None and concept.embedding.size:
+                query_vecs.append(concept.embedding)
+        rows = list(eligible) if eligible is not None else self._concept_store.list_by(
+            subject=spec.subject, kind=spec.kind
+        )
+        return [self._existing_row(concept) for concept in self._select_existing(
+            rows, query_vecs, scope=spec.subject + ":" + spec.kind + scope, limit=_MAX_EXISTING
+        )]
 
-        # Best cosine per concept across the focus vectors, so a concept
-        # that is highly relevant to one cluster is not diluted by being
-        # unrelated to the others.
-        best: dict[int, tuple[float, str]] = {}
-        for vec in query_vecs:
-            try:
-                hits = self._concept_store.nearest(
-                    vec,
-                    subject=spec.subject,
-                    kind=spec.kind,
-                    status=None,
-                    k=_MAX_EXISTING,
-                )
-            except Exception:
-                log.debug("existing-concept selection failed", exc_info=True)
-                continue
-            for concept, cos in hits:
-                cid = int(concept.concept_id)
-                if cid not in best or cos > best[cid][0]:
-                    best[cid] = (float(cos), concept.label)
-
-        ranked = sorted(best.items(), key=lambda kv: -kv[1][0])[:_MAX_EXISTING]
-        return [ExistingConcept(id=cid, label=label) for cid, (_c, label) in ranked]
+    def _existing_row(self, concept: Concept) -> ExistingConcept:
+        ceiling = self._max_sources()
+        sources = int(concept.distinct_source_count)
+        capacity = "unlimited" if ceiling <= 0 else str(max(0, ceiling - sources))
+        return ExistingConcept(
+            id=concept.concept_id,
+            label=concept.label,
+              note=f"status={concept.status}; {sources} sources; evidence room={capacity}; "
+                 "capacity is not a reason to invent another claim",
+        )
 
     def _mark_affect_succession(
         self,
@@ -3448,6 +3424,8 @@ class ConceptSynthesisWorker:
     def _persist(
         self, proposal: CandidateProposal, stats: dict[str, Any]
     ) -> None:
+        if not hasattr(self, "_routing_stats"):
+            self._routing_begin(stats)
         if not proposal.evidence:
             return
 
@@ -3471,6 +3449,17 @@ class ConceptSynthesisWorker:
         # existing concept (the proposer already validated the id against
         # the list it was given; get() guards the store-race).
         if proposal.reinforces_id is not None:
+            self._routing_stats["explicit_id"] += 1
+            if proposal.evidence_relation in {"related", "uncertain"}:
+                self._concept_store.support.set_state(
+                    proposal.reinforces_id,
+                    "assessed_no_support" if proposal.evidence_relation == "related"
+                    else "not_assessed",
+                    "related_claim" if proposal.evidence_relation == "related"
+                    else "uncertain_match",
+                )
+                self._defer_proposal(proposal, "uncertain_match")
+                return
             concept = self._concept_store.get(proposal.reinforces_id)
             if concept is not None:
                 self._reinforce(concept, proposal, stats)
@@ -3499,7 +3488,24 @@ class ConceptSynthesisWorker:
         # below as ``novelty = 1 - top_sim`` for the discovery event.
         match, top_sim = self._find_duplicate(proposal, vec)
         if match is not None:
+            self._routing_stats["cosine_dedupe"] += 1
             self._reinforce(match, proposal, stats, cosine=top_sim)
+            return
+
+        comparison = (
+            self._concept_store.get(proposal.compared_to)
+            if proposal.compared_to is not None else None
+        )
+        comparison_cosine = vector_cosine(vec, comparison.embedding) if comparison else None
+        if top_sim >= DISTINCTION_COS and (
+            len(proposal.distinction) < 12
+            or comparison is None
+            or comparison.subject != proposal.subject
+            or comparison.kind != proposal.kind
+            or comparison_cosine is None
+            or comparison_cosine < top_sim - 0.01
+        ):
+            self._defer_proposal(proposal, "missing_distinction")
             return
 
         now = _now_iso()
@@ -3522,6 +3528,7 @@ class ConceptSynthesisWorker:
         self._add_evidence_edges(
             cid, proposal.evidence, evidence_model=proposal.evidence_model
         )
+        self._observe_support(concept, proposal.evidence, set())
         stats["added"] += 1
         self._bump_subject(stats, proposal.subject, "added")
         self._record_discovery(concept, proposal, top_sim, now)
@@ -3677,11 +3684,14 @@ class ConceptSynthesisWorker:
         reinforcement* is now the gate's verdict rather than a foregone
         conclusion.
         """
+        if not hasattr(self, "_routing_stats"):
+            self._routing_begin(stats)
         existing = self._concept_store.evidence_of(concept.concept_id)
+        vectors = self._evidence_vectors(proposal.evidence)
         verdict = admit(
             proposal.evidence,
             label_vector=concept.embedding,
-            vectors=self._evidence_vectors(proposal.evidence),
+            vectors=vectors,
             existing_sources={
                 (e.src_type, str(e.src_id)) for e in existing
             },
@@ -3689,6 +3699,21 @@ class ConceptSynthesisWorker:
             ceiling=self._max_sources(),
         )
         self._record_admission(stats, concept, verdict)
+        self._track_sources("offtopic", (item.node for item in verdict.offtopic))
+        self._track_sources("ceiling", (item.node for item in verdict.full))
+        held = {(edge.src_type, str(edge.src_id)) for edge in existing}
+        self._track_sources("admitted", (node for node in verdict.kept if node not in held))
+        self._track_sources("attempted", proposal.evidence)
+        self._routing_stats["evidence_attempts"] += len(set(proposal.evidence))
+        self._routing_stats["uncertain_fit"] += sum(fit is None for fit in verdict.fits.values())
+        residual = [item.node for item in verdict.offtopic]
+        if proposal.evidence_relation != "same":
+            residual.extend(item.node for item in verdict.full)
+        self._queue_reconsideration(
+            proposal.subject, proposal.kind, proposal.input_manifest, residual,
+            reason="offtopic" if verdict.offtopic else "ceiling_uncertain",
+            targets=[concept.concept_id],
+        )
 
         if verdict.kept:
             self._add_evidence_edges(
@@ -3701,8 +3726,14 @@ class ConceptSynthesisWorker:
             concept.distinct_source_count = len(
                 {(e.src_type, e.src_id) for e in ev}
             )
-        if verdict.reinforced:
+        observed = [*verdict.kept, *(item.node for item in verdict.full)]
+        fresh_support = self._observe_support(concept, observed, held) if observed else False
+        if fresh_support:
             concept.last_reinforced_at = _now_iso()
+        elif not verdict.reinforced:
+            self._concept_store.support.set_state(
+                concept.concept_id, "assessed_no_support", "evidence_fit_below_floor",
+            )
         # confidence / plasticity / status intentionally left to L3;
         # label / rationale intentionally left to the L17 drift worker.
         self._concept_store.update(concept)
@@ -3825,7 +3856,7 @@ class ConceptSynthesisWorker:
                 concept.concept_id, concept.label[:60],
             )
         if full:
-            log.info(
+            log.debug(
                 "concept at its evidence ceiling (%d sources): refused %d "
                 "new source(s) for #%s %r",
                 concept.distinct_source_count, len(full),
@@ -4087,7 +4118,7 @@ class ConceptSynthesisWorker:
                 "role": "system",
                 "content": (
                     f"{timephrase.today_anchor()}\n\n{system}\n\n"
-                    f"{timephrase.STORED_TEXT_TIME_RULE}"
+                    f"{timephrase.STORED_TEXT_TIME_RULE}\n\n{ROUTING_RULE}"
                 ),
             },
             {"role": "user", "content": user},
@@ -4109,9 +4140,23 @@ class ConceptSynthesisWorker:
             for chunk in stream:
                 chunks.append(chunk)
         except Exception:
+            self._synthesis_call_failed = True
             log.warning("concept synthesis LLM call failed", exc_info=True)
             return []
-        return self._parse("".join(chunks))
+        text = "".join(chunks)
+        parsed = self._parse(text)
+        if not parsed:
+            try:
+                answer = json.loads(text)
+                usable = isinstance(answer, dict) and (
+                    answer == {} or answer.get("concepts") == []
+                )
+            except (TypeError, ValueError):
+                usable = False
+            if not usable:
+                self._synthesis_call_failed = True
+                self._routing_stats["llm_unusable"] += 1
+        return parsed
 
     @staticmethod
     def _parse(raw: str) -> list[dict[str, Any]]:

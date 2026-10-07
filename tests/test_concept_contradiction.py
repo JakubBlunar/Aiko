@@ -118,6 +118,26 @@ def _detector(memory_store, *, rate_limiter=None, ollama=None):
 
 
 class DetectorTests(unittest.TestCase):
+    def test_reassessment_requires_explicit_resolution_of_every_disproof(self):
+        negative = [_Mem(11, "The belief no longer applies", _IN_BAND)]
+        positive = [_Mem(12, "A later correction restores that belief", _IN_BAND)]
+        for raw, expected in [
+            ('{"verdict":"RESOLVED","resolved_memory_ids":[11]}', "RESOLVED"),
+            ('{"verdict":"RESOLVED","resolved_memory_ids":[]}', None),
+            ('{"verdict":"STILL_VALID"}', "STILL_VALID"),
+            ('{"verdict":"NO"}', None),
+            ('invalid', None),
+        ]:
+            detector = _detector(_MemoryStore([]), ollama=_Ollama(raw))
+            self.assertEqual(detector.reassess(_concept("The belief"), negative, positive),
+                             expected)
+
+    def test_reassessment_fails_closed_when_rate_limited(self):
+        ollama = _Ollama('{"verdict":"RESOLVED","resolved_memory_ids":[11]}')
+        detector = _detector(_MemoryStore([]), rate_limiter=_RateLimiter(False), ollama=ollama)
+        self.assertIsNone(detector.reassess(_concept("The belief"), [], []))
+        self.assertEqual(ollama.calls, 0)
+
     def test_definite_skips_llm(self) -> None:
         # loves/hates antonym => definite => confirmed without an LLM call.
         store = _MemoryStore([

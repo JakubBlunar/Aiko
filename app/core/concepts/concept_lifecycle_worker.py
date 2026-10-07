@@ -4,7 +4,8 @@ An :class:`~app.core.proactive.idle_worker.IdleWorker` that owns every
 concept's ``confidence`` / ``plasticity`` / ``status`` (+ ``promoted_at``
 and the L3 engagement anchor). L2 only ever *creates* candidates and
 reinforces evidence counts / ``last_reinforced_at``; L3 derives the rest.
-No LLM calls -- pure arithmetic over a bounded batch.
+State math is pure arithmetic over a bounded batch; read-only contradiction
+and revival probes may use the shared rate-limited maintenance LLM.
 
 **Batched + incremental.** Aiko runs intermittently and the concept set
 grows, so instead of one big sweep this runs often (default 5 min) over
@@ -90,6 +91,7 @@ from app.core.concepts.concept_lifecycle import (
 from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_meta_depth import meta_depth
 from app.core.concepts.concept_store import ConceptEdge
+from app.core.concepts.concept_revival import RevivalMixin
 from app.core.concepts.concept_surfacing import (
     earned_standing,
     landing_baseline,
@@ -125,7 +127,7 @@ def _parse_iso(value: str | None) -> datetime | None:
     return ts
 
 
-class ConceptLifecycleWorker:
+class ConceptLifecycleWorker(RevivalMixin):
     """IdleWorker: single writer of concept confidence / plasticity /
     status, processed one rolling batch per tick."""
 
@@ -183,6 +185,7 @@ class ConceptLifecycleWorker:
         # L17a: per-tick snapshot of each batched concept's last recorded
         # confidence, loaded in ``run`` and consulted by the sampler.
         self._sample_baseline: dict[int, float] = {}
+        self._revival_reserved = 0
 
     # ── idle worker protocol ──────────────────────────────────────────
 
@@ -230,7 +233,7 @@ class ConceptLifecycleWorker:
         overdue = 0
         has_active = False
         for concept in batch:
-            if getattr(concept, "status", "") == "active":
+            if getattr(concept, "status", "") in {"active", "contradicted", "retired", "dormant"}:
                 has_active = True
             last = _parse_iso(getattr(concept, "last_lifecycle_at", None))
             if last is None or (now - last).total_seconds() >= cutoff_s:
@@ -304,6 +307,7 @@ class ConceptLifecycleWorker:
             # contradiction check this tick, and how many actually fired.
             "contradiction_checks": 0,
             "contradiction_hits": 0,
+            "revival_review_checks": 0,
             # L16 piece 3: probes skipped this tick because the concept is
             # sticky (low effective plasticity) and off its re-check stride.
             "contradiction_skipped_sticky": 0,
@@ -324,6 +328,12 @@ class ConceptLifecycleWorker:
             "standing_baseline": None,
             "events": 0,
         }
+        self._revival_reserved = min(
+            2, max(0, self._i("concept_contradiction_batch_size", 20))
+        ) if self._contradiction_detector is not None and any(
+            concept.status != "active" and self._has_revival_support(concept)
+            for concept in batch
+        ) else 0
         try:
             standing = self._maybe_refresh_standing(now)
             stats.update(standing)
@@ -562,6 +572,19 @@ class ConceptLifecycleWorker:
                 new_status, event_type = "dormant", "dormant"
             else:
                 new_status, event_type = old_status, ""
+        if new_status == "active" and old_status != "active":
+            try:
+                reviewed = self._review_revival(concept, now, stats)
+            except Exception:
+                log.debug("concept revival review unavailable", exc_info=True)
+                self._store.support.record_review(concept.concept_id, {
+                    "support_at": concept.last_reinforced_at,
+                })
+                self._store.support.set_state(concept.concept_id, "not_assessed",
+                                              "review_sources_or_provider_failed")
+                reviewed = False
+            if not reviewed:
+                new_status, event_type = old_status, ""
         status_changed = new_status != old_status
         if status_changed:
             concept.status = new_status
@@ -586,6 +609,15 @@ class ConceptLifecycleWorker:
                 self._engagement_clock.total()  # type: ignore[union-attr]
             )
         self._store.update(concept)
+        if old_status != "active" and concept.status == "active":
+            self._store.support.set_state(concept.concept_id,
+                                          "revived" if old_status != "candidate" else "active",
+                                          "lifecycle_gate_passed")
+        elif reinforced and concept.status != "active" and not self._store.support.review(
+            concept.concept_id
+        ):
+            self._store.support.set_state(concept.concept_id, "supported_pending",
+                                          "confidence_age_sources_or_base_gate")
 
         # 7. Emit a lifecycle event + cascade to dependents. A confirmed
         # contradiction always hits the timeline (disproof is worth
@@ -726,6 +758,7 @@ class ConceptLifecycleWorker:
                 )
                 return None
         batch = max(0, self._i("concept_contradiction_batch_size", 20))
+        batch -= getattr(self, "_revival_reserved", 0)
         if stats["contradiction_checks"] >= batch:
             return None
         stats["contradiction_checks"] += 1
@@ -752,6 +785,7 @@ class ConceptLifecycleWorker:
         memory_id = int(getattr(verdict, "memory_id", 0) or 0)
         if memory_id <= 0:
             return
+        self._store.support.remember_disproof(concept.concept_id, memory_id)
         try:
             self._store.add_edge(
                 ConceptEdge(
@@ -871,7 +905,7 @@ class ConceptLifecycleWorker:
             # it. Otherwise it stays disproven and quiet (never surfaced).
             promote_min_conf = self._f("concept_promote_min_confidence", 0.6)
             if (
-                self._reinforced_since_last(concept, False)
+                self._has_revival_support(concept)
                 and conf >= promote_min_conf
             ):
                 return "active", "revived"
@@ -895,7 +929,7 @@ class ConceptLifecycleWorker:
             # "quiet until something actually reinforces you".
             promote_min_conf = self._f("concept_promote_min_confidence", 0.6)
             if (
-                self._reinforced_since_last(concept, False)
+                self._has_revival_support(concept)
                 and conf >= promote_min_conf
             ):
                 return "active", "revived"
@@ -918,7 +952,7 @@ class ConceptLifecycleWorker:
 
         if status == "retired":
             # Revivable, but only on fresh evidence (confidence recovered).
-            if self._reinforced_since_last(concept, False):
+            if self._has_revival_support(concept):
                 if self._gate(concept, now, conf):
                     return "active", "revived"
                 if conf >= dormant_floor:
