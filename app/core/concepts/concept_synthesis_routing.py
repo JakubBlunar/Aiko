@@ -197,6 +197,7 @@ class SynthesisRoutingMixin:
                 node,
                 revision=revision,
                 previously_held=node in held,
+                manifest=self._support_manifest_cache.get(node),
             )
         ]
         fresh = len(fresh_nodes)
@@ -311,6 +312,7 @@ class SynthesisRoutingMixin:
         )
         self._routing_stats = Counter()
         self._support_revision_cache = {}
+        self._support_manifest_cache = {}
         self._routing_sources: dict[str, set[tuple[str, str]]] = {}
         self._retrying = False
         self._reconsider_due = []
@@ -353,6 +355,13 @@ class SynthesisRoutingMixin:
                 self._routing_stats["manifest_unsupported"] += 1
             if manifest is not None:
                 self._support_revisions(manifest_nodes(manifest))
+                from app.core.concepts.concept_evidence_lineage import capture_source_manifest
+
+                for node in manifest_nodes(manifest):
+                    if node[0] == "concept" or node not in self._support_manifest_cache:
+                        self._support_manifest_cache[node] = capture_source_manifest(
+                            self._concept_store, self._memory_store, self._topic_graph, node,
+                        )
             proposals = spec.propose(replace(ctx, call_llm=call), **kwargs)
             for proposal in proposals:
                 output = _match_output(proposal, outputs)

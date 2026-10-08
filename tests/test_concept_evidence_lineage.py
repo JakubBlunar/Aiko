@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.concepts.concept_evidence_lineage import (
-    SourceLineage, resolve_support, support_summary,
+    SourceLineage, capture_source_manifest, resolve_support, support_summary,
 )
 from app.core.concepts.concept_store import Concept, ConceptEdge
 from app.core.concepts.concept_view import ConceptView
@@ -210,3 +210,140 @@ def test_malformed_import_remains_unknown():
     report = view.evidence_independence(1)
     assert report["known_support_groups"] == 0
     assert report["issues"] == {"invalid_metadata": 1}
+
+
+def test_capture_freezes_cluster_roots_without_copying_private_text():
+    cluster = SimpleNamespace(representative_id=1, member_ids=[1])
+    memories = {1: _memory(10), 2: _memory(20)}
+    view, _ = _view(memories, [_edge(1, source_type="cluster")], clusters=[cluster])
+    manifest = capture_source_manifest(view._store, view._memory_store, view._topic_graph,
+                                       ("cluster", "1"))
+    cluster.member_ids.append(2)
+    memories[1].source_message_id = 30
+    assert manifest["sources"][0]["roots"] == ["message:10"]
+    assert manifest["issues"] == {}
+    assert view.evidence_independence(1)["known_support_groups"] == 2
+    assert set(manifest["sources"][0]) == {"roots", "category", "complete"}
+
+
+def test_capture_bounds_large_manifests_and_marks_them_unknown():
+    memory = _memory(metadata={"source_message_ids": list(range(1, 10000))})
+    view, _ = _view({1: memory}, [_edge(1)])
+    manifest = capture_source_manifest(view._store, view._memory_store, view._topic_graph,
+                                       ("memory", "1"))
+    assert manifest["sources"] == []
+    assert manifest["issues"] == {"manifest_bytes": 1}
+
+
+def test_frozen_admission_survives_cluster_and_memory_lineage_changes(tmp_path):
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.concepts.concept_support import SupportLedger
+
+    cluster = SimpleNamespace(representative_id=1, member_ids=[1])
+    memories = {1: _memory(10), 2: _memory(20)}
+    view, _ = _view(memories, [_edge(1, source_type="cluster")], clusters=[cluster])
+    ledger = SupportLedger(ChatDatabase(tmp_path / "lineage.db"))
+    view._store.support = ledger
+    manifest = capture_source_manifest(view._store, view._memory_store, view._topic_graph,
+                                       ("cluster", "1"))
+    assert ledger.observe(1, ("cluster", "1"), revision="first", manifest=manifest)
+    cluster.member_ids.append(2)
+    memories[1].source_message_id = 30
+    report = view.evidence_independence(1)
+    assert report["known_support_groups"] == 1
+    assert report["lineage_basis"] == "frozen"
+    assert report["frozen_source_count"] == 1
+    assert not ledger.observe(1, ("cluster", "1"), revision="first",
+                              manifest={"sources": [], "issues": {}})
+    assert view.evidence_independence(1)["known_support_groups"] == 1
+
+
+def test_capped_observations_are_shadow_support_without_more_edges(tmp_path):
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.concepts.concept_support import SupportLedger
+
+    view, _ = _view({1: _memory(10), 2: _memory(20)}, [_edge(1)])
+    ledger = SupportLedger(ChatDatabase(tmp_path / "lineage.db"))
+    view._store.support = ledger
+    for ident in (1, 2):
+        node = ("memory", str(ident))
+        manifest = capture_source_manifest(view._store, view._memory_store, view._topic_graph, node)
+        ledger.observe(1, node, revision="first", manifest=manifest)
+    report = view.evidence_independence(1)
+    assert report["direct_source_count"] == 1
+    assert report["known_support_groups"] == 2
+    assert report["frozen_source_count"] == 2
+
+
+def test_deduplication_preserves_new_observations_without_new_memory_rows(tmp_path):
+    import numpy as np
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.memory.memory_store import MemoryStore
+
+    ChatDatabase(tmp_path / "memories.db")
+    store = MemoryStore(tmp_path / "memories.db")
+    vector = np.array([1.0, 0.0], dtype=np.float32)
+    memory = store.add("Synthetic preference", kind="fact", embedding=vector,
+                       source_message_id=10, provenance="stated")
+    ident = memory.id
+    for _ in range(10):
+        assert store.add("Synthetic preference", kind="fact", embedding=vector,
+                 source_message_id=10, provenance="stated") is None
+    view, _ = _view({ident: store.get(ident)}, [_edge(ident)])
+    assert view.evidence_independence(1)["known_support_groups"] == 1
+    assert store.add("Synthetic preference", kind="fact", embedding=vector, source_message_id=20,
+                     provenance="stated") is None
+    view, _ = _view({ident: store.get(ident)}, [_edge(ident)])
+    assert view.evidence_independence(1)["known_support_groups"] == 2
+    assert len(store._mirror) == 1
+
+
+def test_deleted_frozen_source_stays_unknown_not_permanent_support(tmp_path):
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.concepts.concept_support import SupportLedger
+
+    memories = {1: _memory(10)}
+    view, _ = _view(memories, [_edge(1)])
+    view._store.support = SupportLedger(ChatDatabase(tmp_path / "lineage.db"))
+    manifest = capture_source_manifest(view._store, view._memory_store, view._topic_graph,
+                                       ("memory", "1"))
+    view._store.support.observe(1, ("memory", "1"), revision="first", manifest=manifest)
+    memories.clear()
+    report = view.evidence_independence(1)
+    assert report["known_support_groups"] == 0
+    assert report["issues"] == {"missing_frozen_source": 1}
+
+
+def test_l55_scoring_rejects_invented_sources_and_unattributed_assertions():
+    from scripts.evaluate_concept_reasoning import decision_payload, score_decision
+
+    case = next(row for row in CORPUS["cases"] if row["id"] == "separate_observation")
+    payload = decision_payload(case, "accounted")
+    assert score_decision(case, payload, '{"supported":true,"sources":["invented"]}')[
+        "invalid_sources"] == 1
+    assert not score_decision(case, payload, '{"supported":true,"sources":[]}')["correct"]
+    assert not score_decision(case, payload, '{"supported":true,"sources":["source:0"]}')["correct"]
+    assert score_decision(case, payload,
+                          '{"supported":true,"sources":["source:0","source:1"]}')["correct"]
+    assert not score_decision(case, payload, '{"supported":"true","sources":[]}')["valid"]
+
+
+def test_l55_model_calls_are_opt_in_bounded_and_do_not_store_generated_text():
+    from scripts.evaluate_concept_reasoning import evaluate
+
+    client = SimpleNamespace(chat=lambda *args, **kwargs: '{"supported":false,"sources":[]}')
+    cases = [row for row in CORPUS["cases"] if "decision" in row]
+    report = evaluate(client, cases, model="synthetic", variants=["baseline", "accounted"],
+                      repeats=3, max_calls=2)
+    assert len(report["rows"]) == 2
+    assert report["stopped"] == "budget"
+    assert all("answer" not in row for row in report["rows"])
+
+
+@pytest.mark.parametrize("observations", [None, "bad", [{"roots": [{}]}]])
+def test_malformed_observation_history_is_unknown(observations):
+    view, _ = _view({1: _memory(10, metadata={"support_observations": observations})}, [_edge(1)])
+    report = view.evidence_independence(1)
+    assert report["known_support_groups"] == 1
+    assert report["unknown_sources"] == 1
+    assert not report["complete"]

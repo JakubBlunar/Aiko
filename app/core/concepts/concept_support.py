@@ -13,6 +13,7 @@ STATE_PREFIX = "concept.support_state:"
 REVIEW_PREFIX = "concept.support_review:"
 INPUT_PREFIX = "concept.support_inputs:"
 DISPROOF_PREFIX = "concept.support_disproof:"
+MANIFEST_PREFIX = "concept.support_manifest:"
 
 
 def revision_hash(value: Any) -> str:
@@ -38,6 +39,8 @@ def memory_revision(memory: Any) -> str:
                     "provenance",
                     "superseded_by",
                     "superseded_reason",
+                    "support_observations",
+                    "support_observations_truncated",
                 )
             },
         ]
@@ -50,7 +53,8 @@ class SupportLedger:
     def __init__(self, db: Any) -> None:
         self._db = db
 
-    def observe(self, concept_id, node, *, revision="ref", previously_held=False) -> bool:
+    def observe(self, concept_id, node, *, revision="ref", previously_held=False,
+                manifest=None) -> bool:
         key = f"{SOURCE_PREFIX}{int(concept_id)}:{node[0]}:{node[1]}"
         previous = self._db.kv_get(key)
         fresh = (
@@ -63,7 +67,20 @@ class SupportLedger:
         )
         if previous is None or revision != "ref":
             self._db.kv_set(key, revision)
+        if fresh and manifest is not None:
+            self._db.kv_set(
+                f"{MANIFEST_PREFIX}{int(concept_id)}:{node[0]}:{node[1]}",
+                json.dumps({"node": list(node), "revision": revision,
+                            "at": timephrase.utcnow().isoformat(), "lineage": manifest}),
+            )
         return fresh
+
+    def manifests(self, concept_id: int, *, limit: int = 128):
+        rows = self._db._get_conn().execute(
+            "SELECT value FROM kv_meta WHERE key GLOB ? ORDER BY key LIMIT ?",
+            (f"{MANIFEST_PREFIX}{int(concept_id)}:*", int(limit) + 1),
+        ).fetchall()
+        return [json.loads(row[0]) for row in rows[:limit]], len(rows) > limit
 
     def set_state(self, concept_id: int, state: str, reason: str) -> None:
         self._db.kv_set(

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import json
 from typing import Iterable
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 
@@ -85,9 +87,48 @@ def _memory_lineage(memory) -> SourceLineage:
     return SourceLineage(roots, category, complete=bool(source_ids))
 
 
-def resolve_support(
+def memory_lineages(memory) -> list[SourceLineage]:
+    metadata = getattr(memory, "metadata", None) or {}
+    observations = metadata.get("support_observations", []) if isinstance(metadata, dict) else []
+    result = [_memory_lineage(memory)]
+    if not isinstance(observations, list):
+        return result + [SourceLineage(frozenset(), "unknown", complete=False)]
+    for row in observations[:64]:
+        if (isinstance(row, dict) and isinstance(row.get("roots"), list)
+                and all(isinstance(root, str) for root in row["roots"])
+                and row.get("category") in {"unknown", "testimony", "model_inference",
+                                            "model_reflection", "external_observation"}):
+            result.append(SourceLineage(frozenset(row["roots"]), row.get("category", "unknown"),
+                                        bool(row.get("complete"))))
+        else:
+            result.append(SourceLineage(frozenset(), "unknown", complete=False))
+    if isinstance(metadata, dict) and metadata.get("support_observations_truncated"):
+        result.append(SourceLineage(frozenset(), "unknown", complete=False))
+    return list(dict.fromkeys(result))
+
+
+def duplicate_observation_metadata(existing, *, metadata, kind, provenance, source_message_id):
+    incoming = SimpleNamespace(metadata=metadata or {}, kind=kind, provenance=provenance,
+                               source_message_id=source_message_id)
+    previous = memory_lineages(existing)
+    new_source = _memory_lineage(incoming)
+    if not new_source.roots or new_source in previous:
+        return {}
+    sources = list(dict.fromkeys([*previous, new_source]))
+    rows = [{"roots": sorted(source.roots), "category": source.category,
+             "complete": source.complete} for source in sources if source.roots]
+    truncated = len(rows) > 64 or len(json.dumps(rows)) > 32768
+    while rows and (len(rows) > 64 or len(json.dumps(rows)) > 32768):
+        rows.pop()
+    return {"support_observations": rows,
+            "support_observations_truncated": truncated or bool(
+                (existing.metadata or {}).get("support_observations_truncated"))}
+
+
+def _resolve_support(
     store, memory_store, topic_graph, concept_id: int, *, max_nodes: int = 256, max_depth: int = 12,
-) -> dict[str, object]:
+    source_node: tuple[str, int] | None = None,
+) -> tuple[dict[str, object], list[SourceLineage]]:
     """Resolve positive evidence to recorded roots under a strict traversal budget.
 
     Summaries and concepts are derivations, never observations. Current cluster
@@ -99,8 +140,11 @@ def resolve_support(
     issues: Counter[str] = Counter()
     seen: set[tuple[str, int]] = set()
     concept = store.get(int(concept_id)) if store is not None else None
-    pending = [("concept", int(concept_id), 0, frozenset())]
+    start_type, start_id = source_node or ("concept", int(concept_id))
+    pending = [(start_type, start_id, 0, frozenset())]
     direct_sources: set[tuple[str, str]] = set()
+    frozen_count = 0
+    live_count = 0
 
     def unknown(reason: str) -> None:
         issues[reason] += 1
@@ -128,11 +172,44 @@ def resolve_support(
                 unknown("missing_concept")
                 continue
             edges = store.evidence_of(node_id)
+            ledger = getattr(store, "support", None)
+            read_manifests = getattr(ledger, "manifests", None)
+            manifests, truncated = read_manifests(
+                node_id, limit=min(128, max(0, max_nodes - len(seen) - len(sources))),
+            ) if callable(read_manifests) else ([], False)
+            if truncated:
+                unknown("manifest_limit")
+            frozen_nodes = set()
+            for receipt in manifests:
+                manifest = receipt["lineage"]
+                frozen_nodes.add(tuple(receipt["node"]))
+                frozen_count += 1
+                source_type, source_id = receipt["node"]
+                if source_type in {"memory", "moment", "cluster"} and (
+                    memory_store is None or memory_store.get(int(source_id)) is None
+                ):
+                    unknown("missing_frozen_source")
+                    continue
+                if source_type == "concept" and store.get(int(source_id)) is None:
+                    unknown("missing_frozen_concept")
+                    continue
+                issues.update(manifest.get("issues", {}))
+                for row in manifest.get("sources", []):
+                    if len(sources) >= max_nodes:
+                        unknown("manifest_limit")
+                        break
+                    sources.append(SourceLineage(frozenset(row["roots"]), row["category"],
+                                                 row["complete"]))
+                if not manifest.get("sources"):
+                    sources.append(SourceLineage(frozenset(), "unknown", complete=False))
             for edge in edges[:max_nodes]:
                 if edge.polarity <= 0 or edge.strength <= 0:
                     continue
                 if depth == 0:
                     direct_sources.add((edge.src_type, str(edge.src_id)))
+                if (edge.src_type, str(edge.src_id)) in frozen_nodes:
+                    continue
+                live_count += 1
                 try:
                     children.append((edge.src_type, int(edge.src_id)))
                 except (TypeError, ValueError):
@@ -140,8 +217,16 @@ def resolve_support(
             if len(edges) > max_nodes:
                 unknown("edge_limit")
         elif node_type == "cluster":
-            cluster_id = topic_graph.cluster_id_for(node_id) if topic_graph is not None else None
-            members = topic_graph.cluster_member_ids(cluster_id) if cluster_id is not None else []
+            lookup = getattr(topic_graph, "cluster_id_for", None)
+            if callable(lookup):
+                cluster_id = lookup(node_id)
+                members = (
+                    topic_graph.cluster_member_ids(cluster_id) if cluster_id is not None else []
+                )
+            else:
+                clusters = topic_graph.topic_clusters() if topic_graph is not None else []
+                members = next((cluster.member_ids for cluster in clusters
+                                if cluster.representative_id == node_id), [])
             children = [("memory", member) for member in _ids(members)]
             if not children:
                 unknown("missing_cluster")
@@ -161,12 +246,12 @@ def resolve_support(
                     unknown("ungrounded_summary")
                     continue
             else:
-                sources.append(_memory_lineage(memory))
+                sources.extend(memory_lineages(memory))
                 continue
         else:
             unknown("unsupported_node")
             continue
-        if not children:
+        if not children and not (node_type == "concept" and manifests):
             unknown("ungrounded_concept")
         if len(children) > max_nodes:
             unknown("edge_limit")
@@ -186,5 +271,39 @@ def resolve_support(
         "visited_nodes": len(seen),
         "complete": not issues and result["unknown_sources"] == 0,
         "issues": dict(sorted(issues.items())),
+        "frozen_source_count": frozen_count,
+        "live_source_count": live_count,
+        "lineage_basis": "mixed" if frozen_count and live_count else
+                 "frozen" if frozen_count else "current",
     })
-    return result
+    return result, sources
+
+
+def resolve_support(
+    store, memory_store, topic_graph, concept_id: int, *, max_nodes: int = 256, max_depth: int = 12,
+) -> dict[str, object]:
+    return _resolve_support(
+        store, memory_store, topic_graph, concept_id, max_nodes=max_nodes, max_depth=max_depth,
+    )[0]
+
+
+def capture_source_manifest(store, memory_store, topic_graph, node) -> dict[str, object]:
+    try:
+        report, sources = _resolve_support(
+            store, memory_store, topic_graph, 0, max_nodes=64,
+            source_node=("memory" if node[0] == "moment" else node[0], int(node[1])),
+        )
+    except Exception:
+        return {"version": 1, "sources": [], "issues": {"capture_unavailable": 1}}
+    manifest = {
+        "version": 1,
+        "sources": [
+            {"roots": sorted(source.roots), "category": source.category,
+             "complete": source.complete}
+            for source in sources
+        ],
+        "issues": report["issues"],
+    }
+    if len(json.dumps(manifest)) > 32768:
+        return {"version": 1, "sources": [], "issues": {"manifest_bytes": 1}}
+    return manifest

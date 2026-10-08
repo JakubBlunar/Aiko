@@ -2394,6 +2394,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             [c.payload for c in selection.source("concept").chosen],
             floor_swap=floor_swap,
         )
+        concept_trace["selection_pressure"] = selection.as_dict()
         if concept_block:
             sections.append(concept_block)
 
@@ -2438,7 +2439,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         # Hard ceiling: never exceed the reservation, whatever the per-item
         # estimates said.
         if text:
+            original_length = len(text)
             text = clip_text_to_tokens(text, budget_tokens)
+            concept_trace["rendering_clipped"] = len(text) < original_length
 
         # Mark only the budgeted memory subset used (recency / revival).
         if rag is not None and chosen_hits:

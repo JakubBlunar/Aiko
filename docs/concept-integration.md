@@ -51,7 +51,7 @@ calls do not compute it. Missing stores produce an incomplete report, not zero
 support presented as a complete assessment. No raw text or roots are added to
 the shadow report; the surrounding provenance response still contains labels.
 
-The resolver follows positive `evidence` edges through concepts, current topic
+For uncaptured legacy sources, the resolver follows positive `evidence` edges through concepts, current topic
 cluster members and topic digests' existing `source_ids`. Only terminal memory
 lineage supplies roots. Duplicate and transitively overlapping root sets form
 one conservative support group. A derivation never contributes its own vote;
@@ -96,7 +96,66 @@ tests cover shared meta-concept ancestry, summaries, clusters, cycles, deleted
 memories, budgets and one-statement boundary compatibility. All run without model
 calls or personal conversation. This is a deterministic accounting baseline, not
 a model reasoning benchmark. Contextual reasoning, revision, counterfactuals,
-held-out model trials, ablations and token/latency scoring remain later L55 work.
+held-out contextual reasoning and full conversational model trials remain later L55 work.
+
+### Frozen admission provenance (8 Oct 2026)
+
+New genuine support captures content-free roots before synthesis and persists
+the admitted source revision in `concept.support_manifest:<concept>:<type>:<id>`.
+This includes accepted capped support without adding evidence edges. Replays and
+baseline-only legacy sources do not invent historical manifests. Reports prefer
+these snapshots over current derivations and distinguish `frozen`, `mixed` and
+`current` lineage bases, with frozen/live source counts.
+
+Capture is bounded at 64 traversed nodes / 32 KiB per source; reports read at
+most 128 receipts per concept within the shared traversal budget. Missing,
+failed or oversized captures remain incomplete, not proof of no support.
+Deleted source rows invalidate their frozen receipts. Only the latest admitted
+revision is kept per concept/source; source-pair storage grows with observed
+pairs but is not mirrored alongside embeddings. Historic uncaptured lineage
+retains the approximation limits above; no backfill is invented.
+
+Memory deduplication now preserves bounded, typed observation roots on the
+canonical row (64 observations / 32 KiB). Repeated extraction of the same
+observation does not mutate this metadata or refresh support. New source roots
+can survive without another memory row. Truncation remains explicitly unknown;
+separate message IDs still do not prove separate causal episodes.
+
+### Opt-in L55 decision evaluation
+
+`python scripts/evaluate_concept_reasoning.py --model <installed-model>` runs
+version-2 synthetic decision cases through the existing Ollama client.
+Baseline, roots-only ablation and accounted-summary variants share fixed
+questions and criteria. Metrics include correctness, unsupported assertions,
+appropriate abstention, invented/insufficient citations, malformed output,
+tokens and latency. No generated answer, private conversation, chat history or
+install configuration is written. These task-specific support requirements are
+evaluation criteria, not new lifecycle promotion thresholds.
+
+Defaults bound execution to 30 calls, 300 seconds checked between calls, 256
+generated tokens and a 30-second request timeout. `--max-calls`, `--max-seconds`,
+`--variants` and `--repeats` allow smaller runs and repeated comparisons. Use an
+already-running model; do not load a second large model for this check.
+Deterministic tests use a fake client and make no model calls.
+
+An exploratory six-case comparison on 8 Oct 2026 with
+`baytout3/qwen3.5-uncensored:9b` scored baseline 1/6, roots-only 5/6 and
+accounted 3/6, with no malformed outputs. The summary is therefore not an
+automatic reasoning improvement. This is a tiny synthetic accounting task,
+not a live companion-quality benchmark or calibrated probability. No promotion,
+prompt injection or surfacing budget changed from it.
+
+### Surfacing pressure diagnostics
+
+The concept trace includes `selection_pressure`: chosen/pinned counts, estimated
+tokens and drops for relevance, item caps and shared token budget per lane.
+`rendering_clipped` distinguishes final text clipping from selection pressure.
+Measure repeated high-quality omissions before enlarging caps; relevance misses,
+redundancy and estimator errors need different remedies. The latest live snapshot
+was about 18.4k system tokens with about 4k in the combined retrieval tier; it
+did not establish concept-cap starvation. Budgets remain unchanged. The live
+independence drill-down encountered a mixed-version SupportLedger after source
+edits; restart is needed for a consistent post-deployment audit.
 
 ## The role axis: `anchor` / `guide` / `generative`
 

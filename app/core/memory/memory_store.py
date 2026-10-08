@@ -1110,6 +1110,17 @@ class MemoryStore:
                         dup_id = mem.id
                         break
         if dup_id is not None:
+            from app.core.concepts.concept_evidence_lineage import duplicate_observation_metadata
+
+            existing = self.get(dup_id)
+            if existing is not None:
+                observation_metadata = duplicate_observation_metadata(
+                    existing, metadata=metadata, kind=kind,
+                    provenance=provenance_normalized, source_message_id=source_message_id,
+                )
+                if any(existing.metadata.get(key) != value
+                       for key, value in observation_metadata.items()):
+                    self.update(dup_id, metadata=observation_metadata, metadata_merge=True)
             if not admission_key:
                 self._touch_existing(dup_id, salience_clipped)
             return None

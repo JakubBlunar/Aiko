@@ -2680,7 +2680,7 @@ measurable. Do not enable several new cognition loops together.
 
 ## L49. Independent evidence and protection against self-confirmation
 
-**Status: first shadow slice implemented (2026-09-29); live audit pending.**
+**Status: shadow accounting and frozen-source follow-up implemented; consistent live audit pending.**
 Different memory or concept IDs do
 not necessarily mean different observations. One episode can be extracted into
 several memories, summarized into a cluster, generalized into a concept, and
@@ -2713,7 +2713,15 @@ bounded report on demand. No new model calls, promotion changes or historical
 backfill. See [the contract and limitations](../concept-integration.md#shadow-evidence-independence-l49--l55)
 and the small L55 corpus below.
 
-**Remaining.** Audit real shadow reports before any gate change. Separate
+**Follow-up (8 Oct 2026).** New admitted observations capture frozen roots before
+generation, including capped support; deduplicated memories retain bounded
+observation provenance without extra rows. Replays do not gain new votes or
+freshness metadata. Reports distinguish snapshots from current-derived legacy
+lineage and keep deletion/overflow unknown. Surfacing traces expose selection
+pressure and final clipping; budgets remain unchanged without evidence of useful
+omissions. See the integration contract for limits and upgrade caveats.
+
+**Remaining.** Audit real shadow reports after a consistent restart before any gate change. Separate
 messages are not proven separate episodes; external pages may share upstream
 sources. Freeze source manifests for mutable summaries/clusters, preserve source
 observations lost to deduplication, and cover other derivation writers before
@@ -2830,7 +2838,7 @@ hold conversation and latency budgets constant when comparing policies.
 
 ## L55. Evaluate reasoning independently of eloquence
 
-**Status: initial L49 accounting corpus implemented (2026-09-29); model harness open.** A response
+**Status: accounting corpus and opt-in bounded decision harness implemented; broader model harness open.** A response
 that says "I reconsidered" has not necessarily reconsidered anything. L22's
 concept-quality evaluation should be complemented by behavioral tests of
 reasoning, without recording personal conversation in the repository.
