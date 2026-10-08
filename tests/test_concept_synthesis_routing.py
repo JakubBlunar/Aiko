@@ -285,6 +285,101 @@ class SynthesisRoutingTests(unittest.TestCase):
         self.assertEqual(stats["routing"]["pending"], 0)
         self.assertGreater(stats["routing"]["expired"], 0)
 
+    def test_pending_receipts_survive_sustained_inflow_until_their_first_retry(self):
+        harness, _ = self._harness()
+        worker = harness.worker
+        start = timephrase.utcnow()
+        stats = {}
+        with patch("app.core.infra.timephrase.utcnow", return_value=start):
+            worker._routing_begin(stats)
+            for index in range(3):
+                worker._queue_reconsideration(
+                    "user", "identity", {"context": "x" * 32000},
+                    [("memory", str(index))], reason="unclaimed", targets=[],
+                )
+            original = list(worker._reconsiderations)
+            worker._routing_finish(stats)
+        for hour in range(1, 8):
+            with patch("app.core.infra.timephrase.utcnow",
+                       return_value=start + timedelta(hours=hour)):
+                worker._routing_begin(stats)
+                for index in range(50):
+                    worker._queue_reconsideration(
+                        "user", "identity", {"context": "x" * 32000},
+                        [("memory", str(hour * 100 + index))], reason="unclaimed", targets=[],
+                    )
+                worker._routing_finish(stats)
+                self.assertTrue(set(original) <= worker._reconsiderations.keys())
+                self.assertLessEqual(len(worker._kv_get(ROUTING_KEY)), QUEUE_BYTES)
+                self.assertGreater(stats["routing"]["capacity_declined"], 0)
+                if hour >= 6:
+                    self.assertEqual(worker._reconsider_due[:3], original)
+                    self.assertGreaterEqual(stats["routing"]["due"], 3)
+
+    def test_capacity_release_prefers_settled_receipts_and_keeps_pending_age(self):
+        harness, _ = self._harness()
+        worker = harness.worker
+        stats = {}
+        worker._routing_begin(stats)
+        for index in range(QUEUE_CAP):
+            worker._queue_reconsideration(
+                "user", "identity", {}, [("memory", str(index))],
+                reason="unclaimed", targets=[],
+            )
+        original = list(worker._reconsiderations)
+        before = dict(worker._reconsiderations[original[0]])
+        worker._queue_reconsideration(
+            "user", "identity", {"fresh": True}, [("memory", "0")],
+            reason="unclaimed", targets=[],
+        )
+        refreshed = worker._reconsiderations[original[0]]
+        for field in ("first_at", "next_at", "expires_at", "attempts"):
+            self.assertEqual(refreshed[field], before[field])
+        worker._reconsiderations[original[1]]["state"] = "no_claim"
+        worker._queue_reconsideration(
+            "user", "identity", {}, [("memory", "new")], reason="unclaimed", targets=[],
+        )
+        self.assertNotIn(original[1], worker._reconsiderations)
+        self.assertIn(original[0], worker._reconsiderations)
+        self.assertEqual(len(worker._reconsiderations), QUEUE_CAP)
+
+    def test_oversize_refresh_keeps_the_original_pending_manifest(self):
+        harness, _ = self._harness()
+        worker = harness.worker
+        worker._routing_begin({})
+        worker._queue_reconsideration(
+            "user", "identity", {"old": True}, [("memory", "0")],
+            reason="unclaimed", targets=[],
+        )
+        worker._queue_reconsideration(
+            "user", "identity", {"context": "x" * QUEUE_BYTES}, [("memory", "0")],
+            reason="unclaimed", targets=[],
+        )
+        self.assertEqual(next(iter(worker._reconsiderations.values()))["manifest"],
+                         {"old": True})
+        self.assertEqual(worker._routing_stats["manifest_refresh_deferred"], 1)
+
+    def test_retained_oldest_receipt_is_actually_reconsidered_after_inflow(self):
+        harness, ident = self._harness(relation="uncertain")
+        self._run(harness)
+        worker = harness.worker
+        original = next(iter(worker._reconsiderations.values()))
+        for index in range(QUEUE_CAP + 20):
+            worker._queue_reconsideration(
+                "user", "identity", original["manifest"], [("memory", str(1000 + index))],
+                reason="unclaimed", targets=[],
+            )
+        worker._routing_finish({})
+        harness.ollama._responder = lambda system, user: {
+            "concepts": [{"reinforces_id": ident, "evidence_cluster_reps": [100, 101],
+                          "evidence_relation": "same", "rationale": "Current support"}],
+        }
+        with self._advance(harness):
+            stats = self._run(harness)
+        self.assertEqual(worker._reconsiderations[original["key"]]["state"], "same_claim")
+        self.assertEqual(worker._reconsiderations[original["key"]]["attempts"], 1)
+        self.assertLessEqual(stats["routing"]["reconsidered"], MAX_RETRIES_PER_RUN)
+
     def test_disabled_kind_is_not_retried(self):
         harness, _ = self._harness(relation="uncertain")
         self._run(harness)

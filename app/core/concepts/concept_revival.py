@@ -47,11 +47,19 @@ class RevivalMixin:
         )[:6]
 
     def _has_revival_support(self, concept) -> bool:
+        review = self._store.support.review(concept.concept_id)
+        if concept.last_reinforced_at and review.get(
+            "blocked_support_at"
+        ) == concept.last_reinforced_at:
+            return False
         if self._reinforced_since_last(concept, False):
             return True
-        review = self._store.support.review(concept.concept_id)
         return bool(
-            concept.last_reinforced_at and review.get("support_at") == concept.last_reinforced_at
+            concept.last_reinforced_at
+            and review.get("support_at") == concept.last_reinforced_at
+            and review.get("pending", review.get("outcome") not in {
+                "resolved", "assessed_no_support", "invalidated",
+            })
         )
 
     def _review_revival(self, concept, now: datetime, stats) -> bool:
@@ -67,6 +75,9 @@ class RevivalMixin:
             and not ledger.had_disproof(concept.concept_id)
         ):
             return True
+        if not self._has_revival_support(concept):
+            ledger.set_state(concept.concept_id, "not_assessed", "fresh_observation_required")
+            return False
         review = ledger.review(concept.concept_id)
         support_at = concept.last_reinforced_at
         review["support_at"] = support_at
@@ -102,6 +113,7 @@ class RevivalMixin:
                         concept.label,
                         concept.rationale,
                         support_at,
+                        review.get("disproof_version", 0),
                         [(row.id, memory_revision(row)) for row in negative_rows],
                         [(row.id, memory_revision(row)) for row in positive_rows],
                     ]
@@ -132,6 +144,7 @@ class RevivalMixin:
                     )
                 else:
                     reason = "review_batch_exhausted"
+        review["pending"] = outcome == "not_assessed"
         ledger.record_review(concept.concept_id, review)
         ledger.set_state(
             concept.concept_id, "supported_pending" if outcome == "resolved" else outcome, reason

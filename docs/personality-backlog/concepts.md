@@ -2543,6 +2543,21 @@ and [disproof review](../concept-lifecycle.md#re-adjudicating-disproof) for budg
 upgrade limitations and diagnostic semantics. Regression-tested, not yet a live
 model-quality or full-archive coverage result.
 
+**Overnight repair (8 Oct 2026).** Live access/freshness counters improved, but
+the audit found three concrete control-flow defects; more transition events
+were not evidence of better beliefs. Dependency cascades now persist separate
+due markers instead of clearing support-consumption and decay anchors. Bounded
+retry admission protects accepted pending receipts until they can be serviced,
+evicts settled receipts first, and exposes capacity declines instead of
+silently replacing old work before its six-hour cooldown. Completed disproof
+reviews no longer grant permanent revival eligibility; successful activation
+consumes the ticket, and renewed disproof invalidates resolution even for the
+same negative source. Deferred reviews still resume without another confidence
+step. Original caps, attempt/call budgets, activation bars and negative history
+remain unchanged. See [dependency re-evaluation](../concept-lifecycle.md#dependency-re-evaluation)
+and the routing/review sections above for retention tradeoffs and legacy-state
+limitations. Regression-tested; no claim that every model verdict is correct.
+
 **Motivation.** Asked as a design question — *when a concept refuses evidence to
 avoid bloat, could the synthesiser mint a new concept from it instead, so it gets
 rolled into a higher one later?* Capacity does not establish novelty. The missing

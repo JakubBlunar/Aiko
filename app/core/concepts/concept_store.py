@@ -191,6 +191,7 @@ class ConceptStore:
         # In-process mirror (see module docstring). Small by design.
         self._concepts: dict[int, Concept] = {}
         self._vectors: dict[int, np.ndarray] = {}  # unit-norm
+        self._lifecycle_due: set[int] = set()
         # Cached stacked matrices, one per status, rebuilt lazily on the
         # next query after any write marks the mirror dirty. Was
         # active-only until L30a gave the hypothesis lane a per-turn
@@ -316,6 +317,13 @@ class ConceptStore:
         for r in rows:
             concept = self._row_to_concept(r)
             self._put_mirror(concept)
+        self._lifecycle_due = {
+            int(row[0].rsplit(":", 1)[1])
+            for row in conn.execute(
+                "SELECT key FROM kv_meta WHERE key GLOB 'concept.lifecycle_due:*'"
+            )
+            if row[0].rsplit(":", 1)[1].isdigit()
+        } & self._concepts.keys()
         return list(self._concepts.values())
 
     @staticmethod
@@ -378,11 +386,9 @@ class ConceptStore:
         return len(self._concepts)
 
     def list_stalest(self, limit: int) -> list[Concept]:
-        """Return up to ``limit`` concepts ordered by ``last_lifecycle_at``
-        ascending, NULLs first -- i.e. never-evaluated / most-overdue
-        concepts first. This is the L3 rolling round-robin fetch: over
-        successive ticks it sweeps the whole (small, mirrored) set without
-        a persisted cursor. Ties broken by ``concept_id`` for determinism.
+        """Reserve half the batch for dependency-due concepts, then fill
+        from the oldest evaluations, NULLs first. Both lanes use evaluation
+        time and concept ID for stable ordering without resetting anchors.
         """
         if limit <= 0:
             return []
@@ -396,7 +402,35 @@ class ConceptStore:
                 c.concept_id,
             )
         )
-        return concepts[: int(limit)]
+        due = [concept for concept in concepts if concept.concept_id in self._lifecycle_due]
+        reserved = due[: max(1, int(limit) // 2)]
+        reserved_ids = {concept.concept_id for concept in reserved}
+        return reserved + [concept for concept in concepts
+                           if concept.concept_id not in reserved_ids][: int(limit) - len(reserved)]
+
+    def mark_lifecycle_due(self, concept_id: int) -> None:
+        ident = int(concept_id)
+        if ident not in self._concepts or ident in self._lifecycle_due:
+            return
+        self._db.kv_set(f"concept.lifecycle_due:{ident}", _now_iso())
+        self._lifecycle_due.add(ident)
+
+    def is_lifecycle_due(self, concept_id: int) -> bool:
+        return int(concept_id) in self._lifecycle_due
+
+    def clear_lifecycle_due(self, concept_id: int, evaluated_at: str) -> None:
+        ident = int(concept_id)
+        if ident not in self._lifecycle_due:
+            return
+        connection = self._db._get_conn()
+        cursor = connection.execute(
+            "DELETE FROM kv_meta WHERE key = ? AND EXISTS "
+            "(SELECT 1 FROM concepts WHERE id = ? AND last_lifecycle_at = ?)",
+            (f"concept.lifecycle_due:{ident}", ident, evaluated_at),
+        )
+        connection.commit()
+        if cursor.rowcount:
+            self._lifecycle_due.discard(ident)
 
     def matrix_snapshot(
         self, concept_ids: "Sequence[int] | None" = None
@@ -651,11 +685,13 @@ class ConceptStore:
                 (str(cid), str(cid)),
             )
             conn.execute("DELETE FROM concepts WHERE id = ?", (cid,))
+            conn.execute("DELETE FROM kv_meta WHERE key = ?", (f"concept.lifecycle_due:{cid}",))
             conn.commit()
         except Exception:
             log.warning("concept delete failed (id=%s)", cid, exc_info=True)
             return
         self._drop_mirror(cid)
+        self._lifecycle_due.discard(cid)
 
     def _tension_parents(self, concept_id: int) -> set[int]:
         """The ids of the ``tension`` meta concepts this concept is a *base*

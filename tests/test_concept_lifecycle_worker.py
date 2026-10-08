@@ -810,6 +810,59 @@ class BatchingTests(unittest.TestCase):
         self.assertAlmostEqual(conf_a, conf_b, places=6)
 
 
+class DependencyFreshnessTests(unittest.TestCase):
+    def test_dependency_refresh_preserves_consumed_support_and_decay_anchor(self):
+        from app.core.concepts.concept_store import ConceptEdge
+
+        harness = _harness(with_clock=False)
+        base = _add(harness.store, status="active", confidence=0.9,
+                    last_lifecycle_at=_iso(1), last_reinforced_at=_iso(40))
+        dependent = _add(harness.store, kind="generalization", status="retired",
+                         confidence=0.55, plasticity=0.23,
+                         last_lifecycle_at=_iso(1), last_reinforced_at=_iso(40),
+                         last_lifecycle_engagement=100.0, promoted_at=_iso(35))
+        harness.store.add_edge(ConceptEdge(
+            src_type="concept", src_id=str(base.concept_id), dst_type="concept",
+            dst_id=str(dependent.concept_id), relation="evidence",
+        ))
+        harness.worker._mark_dependents_stale(base)
+        self.assertEqual(dependent.last_lifecycle_at, _iso(1))
+        self.assertEqual(dependent.last_lifecycle_engagement, 100.0)
+        self.assertFalse(harness.worker._reinforced_since_last(dependent, False))
+        harness.worker.run()
+        self.assertEqual(dependent.status, "retired")
+        self.assertLessEqual(dependent.confidence, 0.55)
+        self.assertEqual(dependent.plasticity, 0.23)
+        self.assertNotIn("revived", [event.event_type for event in harness.events.list()])
+
+    def test_due_dependency_survives_restart_without_starving_regular_rows(self):
+        harness = _harness(with_clock=False)
+        old = _add(harness.store, last_lifecycle_at=_iso(10))
+        due = _add(harness.store, last_lifecycle_at=_iso(1), last_reinforced_at=_iso(40))
+        harness.store.mark_lifecycle_due(due.concept_id)
+        reloaded = ConceptStore(harness.db)
+        reloaded.load_all()
+        self.assertEqual([row.concept_id for row in reloaded.list_stalest(2)],
+                         [due.concept_id, old.concept_id])
+        self.assertEqual(reloaded.get(due.concept_id).last_lifecycle_at, _iso(1))
+        reloaded.clear_lifecycle_due(due.concept_id, _NOW.isoformat())
+        self.assertEqual(reloaded.list_stalest(1)[0].concept_id, due.concept_id)
+        due = reloaded.get(due.concept_id)
+        due.last_lifecycle_at = _NOW.isoformat()
+        reloaded.update(due)
+        reloaded.clear_lifecycle_due(due.concept_id, _NOW.isoformat())
+        self.assertEqual(reloaded.list_stalest(1)[0].concept_id, old.concept_id)
+
+    def test_dependency_dirtiness_drives_demand_even_after_a_recent_evaluation(self):
+        harness = _harness(with_clock=False)
+        concept = _add(harness.store, last_lifecycle_at=_NOW.isoformat())
+        self.assertEqual(harness.worker.demand(now=_NOW, last_run_at=_NOW).pressure, 0)
+        harness.store.mark_lifecycle_due(concept.concept_id)
+        self.assertGreater(harness.worker.demand(now=_NOW, last_run_at=_NOW).pressure, 0)
+        harness.store.delete(concept.concept_id)
+        self.assertIsNone(harness.db.kv_get(f"concept.lifecycle_due:{concept.concept_id}"))
+
+
 class _FakeDetector:
     """Stand-in for :class:`ConceptContradictionDetector`. Fires for the
     given concept ids (or all when ``target_ids`` is None), counting how
@@ -951,6 +1004,51 @@ class ContradictionTests(unittest.TestCase):
         self.assertEqual(harness.store.support.state(concept.concept_id)["state"], "revived")
         self.assertEqual(detector.review_calls, 1)
         self.assertEqual(len(harness.store.edges_from("concept", concept.concept_id)), 1)
+
+    def test_completed_review_is_consumed_and_cannot_reauthorize_old_support(self):
+        harness, concept, detector = self._review_harness("RESOLVED")
+        harness.worker.run()
+        review = harness.store.support.review(concept.concept_id)
+        self.assertFalse(review["pending"])
+        self.assertEqual(review["consumed_at"], _NOW.isoformat())
+        concept.status = "contradicted"
+        harness.store.update(concept)
+        harness.worker.run()
+        self.assertEqual(concept.status, "contradicted")
+        self.assertEqual(detector.review_calls, 1)
+        self.assertFalse(harness.worker._has_revival_support(concept))
+
+    def test_legacy_resolved_review_is_not_pending_support(self):
+        harness, concept, _ = self._review_harness("RESOLVED")
+        concept.last_lifecycle_at = _NOW.isoformat()
+        harness.store.update(concept)
+        harness.store.support.record_review(concept.concept_id, {
+            "support_at": concept.last_reinforced_at, "outcome": "resolved",
+        })
+        self.assertFalse(harness.worker._has_revival_support(concept))
+
+    def test_renewed_same_disproof_invalidates_cached_resolution(self):
+        harness, concept, detector = self._review_harness("RESOLVED")
+        harness.worker.run()
+        support_at = concept.last_reinforced_at
+        harness.worker._persist_contradiction_edge(
+            concept, SimpleNamespace(memory_id=99, similarity=1.0),
+        )
+        self.assertEqual(concept.last_reinforced_at, support_at)
+        self.assertEqual(harness.store.support.review(concept.concept_id)["outcome"],
+                         "invalidated")
+        concept.status = "contradicted"
+        concept.last_lifecycle_at = _iso(2)
+        harness.store.update(concept)
+        harness.worker.run()
+        self.assertEqual(concept.status, "contradicted")
+        self.assertEqual(detector.review_calls, 1)
+        concept.last_reinforced_at = (_NOW + timedelta(seconds=1)).isoformat()
+        harness.store.update(concept)
+        harness.worker._clock = lambda: _NOW + timedelta(seconds=2)
+        harness.worker.run()
+        self.assertEqual(concept.status, "active")
+        self.assertEqual(detector.review_calls, 2)
 
     def test_still_valid_disproof_is_assessed_without_support_and_cached(self):
         harness, concept, detector = self._review_harness("STILL_VALID")

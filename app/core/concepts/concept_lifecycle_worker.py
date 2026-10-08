@@ -236,7 +236,11 @@ class ConceptLifecycleWorker(RevivalMixin):
             if getattr(concept, "status", "") in {"active", "contradicted", "retired", "dormant"}:
                 has_active = True
             last = _parse_iso(getattr(concept, "last_lifecycle_at", None))
-            if last is None or (now - last).total_seconds() >= cutoff_s:
+            if (
+                self._store.is_lifecycle_due(concept.concept_id)
+                or last is None
+                or (now - last).total_seconds() >= cutoff_s
+            ):
                 overdue += 1
         # The contradiction detector runs a memory search and may call the
         # worker LLM, but only for active concepts and only when wired.
@@ -577,9 +581,9 @@ class ConceptLifecycleWorker(RevivalMixin):
                 reviewed = self._review_revival(concept, now, stats)
             except Exception:
                 log.debug("concept revival review unavailable", exc_info=True)
-                self._store.support.record_review(concept.concept_id, {
-                    "support_at": concept.last_reinforced_at,
-                })
+                review = self._store.support.review(concept.concept_id)
+                review.update(support_at=concept.last_reinforced_at, pending=True)
+                self._store.support.record_review(concept.concept_id, review)
                 self._store.support.set_state(concept.concept_id, "not_assessed",
                                               "review_sources_or_provider_failed")
                 reviewed = False
@@ -609,7 +613,9 @@ class ConceptLifecycleWorker(RevivalMixin):
                 self._engagement_clock.total()  # type: ignore[union-attr]
             )
         self._store.update(concept)
+        self._store.clear_lifecycle_due(concept.concept_id, concept.last_lifecycle_at)
         if old_status != "active" and concept.status == "active":
+            self._store.support.consume_review(concept.concept_id, now.isoformat())
             self._store.support.set_state(concept.concept_id,
                                           "revived" if old_status != "candidate" else "active",
                                           "lifecycle_gate_passed")
@@ -785,7 +791,9 @@ class ConceptLifecycleWorker(RevivalMixin):
         memory_id = int(getattr(verdict, "memory_id", 0) or 0)
         if memory_id <= 0:
             return
-        self._store.support.remember_disproof(concept.concept_id, memory_id)
+        self._store.support.remember_disproof(
+            concept.concept_id, memory_id, support_at=concept.last_reinforced_at,
+        )
         try:
             self._store.add_edge(
                 ConceptEdge(
@@ -1337,10 +1345,8 @@ class ConceptLifecycleWorker(RevivalMixin):
             dep = self._store.get(dep_id)
             if dep is None:
                 continue
-            dep.last_lifecycle_at = None
-            dep.last_lifecycle_engagement = None
             try:
-                self._store.update(dep)
+                self._store.mark_lifecycle_due(dep_id)
             except Exception:
                 log.debug(
                     "cascade stale-mark failed (id=%s)", dep_id, exc_info=True

@@ -99,13 +99,27 @@ class SupportLedger:
     def record_review(self, concept_id: int, row: dict[str, Any]) -> None:
         self._db.kv_set(REVIEW_PREFIX + str(int(concept_id)), json.dumps(row))
 
+    def consume_review(self, concept_id: int, evaluated_at: str) -> None:
+        row = self.review(concept_id)
+        if row:
+            row.update(pending=False, consumed_at=evaluated_at)
+            self.record_review(concept_id, row)
+
     def disproof_ids(self, concept_id: int) -> list[int]:
         raw = self._db.kv_get(DISPROOF_PREFIX + str(int(concept_id)))
         return json.loads(raw) if raw else []
 
-    def remember_disproof(self, concept_id: int, memory_id: int) -> None:
+    def remember_disproof(self, concept_id: int, memory_id: int, *, support_at=None) -> None:
         ids = sorted(set(self.disproof_ids(concept_id)) | {int(memory_id)})[:7]
         self._db.kv_set(DISPROOF_PREFIX + str(int(concept_id)), json.dumps(ids))
+        review = self.review(concept_id)
+        review.update(
+            pending=False, outcome="invalidated", reason="renewed_disproof",
+            blocked_support_at=support_at or review.get("support_at"),
+            disproof_version=int(review.get("disproof_version", 0)) + 1,
+            invalidated_at=timephrase.utcnow().isoformat(),
+        )
+        self.record_review(concept_id, review)
 
     def had_disproof(self, concept_id: int) -> bool:
         if self.disproof_ids(concept_id):

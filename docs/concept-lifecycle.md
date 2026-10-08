@@ -52,7 +52,15 @@ The queue keeps **128 entries / 256 KiB**, permits **two reconsideration calls
 per synthesis run**, waits **six hours** between attempts, stops after **three
 attempts**, and expires entries after **seven days**. Repeated arrivals do not
 reset cooldown, attempts, or expiry. Settled outcomes remain as bounded receipts
-until expiry; eviction favors settled entries. Each retry uses the original
+until expiry. Admission enforces both limits before retaining a receipt and
+evicts settled entries first. **New work cannot evict accepted pending work**:
+if it cannot fit, it is counted as `capacity_declined`, not silently substituted
+for an older retry. A manifest refresh that cannot fit leaves the old reference
+manifest intact (`manifest_refresh_deferred`); its source text still reloads on
+retry. Due work runs oldest scheduled attempt first, with original arrival time
+as the tie-break, so another attempt returns behind already-due first attempts.
+An oversized legacy queue is trimmed settled-first, then newest-pending-first.
+Each retry uses the original
 proposer and parser, preserving source-count, deliberate-anchor, closed-arc,
 directional, recurrence and meta-depth/cycle gates. It may settle as `same_claim`,
 `new_claim`, or `no_claim`, or remain pending until exhausted. Failed responses
@@ -65,7 +73,13 @@ attempt/outcome counts, queue states and limits. `unique_*` counts are unique
 source references **within one run**, not independent observations or lifetime
 unique sources; cumulative counters intentionally omit them. `queue_repeats`
 and `repeat_source_attempts` separate repeated queue identities from repeated
-edge attempts. Per-concept ceiling messages are DEBUG; the aggregate admission
+edge attempts. `capacity_declined` counts inputs **not retained** for a delayed
+retry, not waiting work or assessed-without-support. They may appear in a later
+normal source batch, but a later retry is not guaranteed. `due` is the current
+eligible pending backlog, excluded from cumulative counts like `pending`.
+These bounds deliberately trade new admission for a real retry opportunity for
+accepted work; they do not claim exhaustive source coverage.
+Per-concept ceiling messages are DEBUG; the aggregate admission
 summary stays INFO. All counters describe pipeline behavior, not proof that a
 new claim is correct or that no useful distinction was missed by the model.
 
@@ -136,6 +150,27 @@ of every target. No receipt means no recorded assessment, not a negative verdict
 A sticky belief may remain supported below the activation bar: one fresh signal
 buys one normal confidence step, not repeated accrual until it passes.
 
+### Dependency re-evaluation
+
+A base's status change marks its dependents due in separate, content-free
+`concept.lifecycle_due:<id>` KV rows. It **does not clear** `last_lifecycle_at`,
+`last_lifecycle_engagement`, or the evidence-age anchor. Rechecking a dependency
+therefore cannot turn an already-consumed old citation into fresh support,
+restart plasticity initialization, or skip elapsed confidence decay.
+
+The store loads these markers with the concept mirror at startup and reserves
+up to half each lifecycle batch for due dependencies (one slot for a one-row
+batch). The remaining slots continue the normal oldest-evaluation sweep; both
+lanes use oldest evaluation time and ID for stable ordering. Due markers also
+count as demand even if the preceding evaluation was recent. A marker clears
+only after a matching lifecycle timestamp is persisted, or the concept is
+deleted. No recursive cascade or larger lifecycle batch is introduced.
+
+Rollout prevents future anchor erasure; it does not reconstruct timestamps
+already cleared by older versions or rewrite historical revival events. The
+timeline's `revived` event can also describe `retired` returning to `dormant` or
+`candidate`; the assessment state `revived` denotes an actual return to `active`.
+
 ### Re-adjudicating disproof
 
 [`concept_revival.py`](../app/core/concepts/concept_revival.py) guards every
@@ -161,8 +196,20 @@ with bounded current cluster members and concept-base context. Two opportunities
 are reserved inside the shared batch when a pending revival is present, so active
 probes cannot consume the entire budget first. Uncertain/failed reviews have a
 persisted six-hour cooldown; definitive outcomes are cached until belief/support/
-negative revisions change. Pending review survives subsequent lifecycle passes
-without awarding another confidence step. The idle demand marks this work as
+negative revisions change **or another disproof is confirmed**, even for the
+same negative ID and unchanged text. Every confirmation advances the disproof
+version and blocks eligibility from the support stamp present at confirmation;
+only a different, genuinely observed support stamp can reopen consideration.
+Negative edges and append-only history remain intact.
+
+Unfinished reviews carry an explicit pending ticket tied to their support
+stamp. That ticket survives subsequent lifecycle passes without awarding
+another confidence step. A definitive no-support outcome ends the ticket;
+successful activation consumes it and records `consumed_at`. A completed
+`resolved` receipt is an audit/cache result, **not permanent revival permission**.
+Legacy resolved/no-support receipts without a pending flag are treated as
+completed; legacy uncertain or budget-deferred receipts can still resume.
+The idle demand marks this work as
 LLM-bearing. This is model-dependent adjudication, not proof of factual truth.
 
 ## Status vocabulary
@@ -763,9 +810,9 @@ writes `confidence` / `plasticity` / `status`; that stays L3's alone.
 - **`retired` is revivable; `suppressed` (future) is terminal.**
 - **Meta-confidence bounded by `min(bases)`.** A meta concept's
   confidence is clamped to the minimum of its base concepts', and a base
-  status change marks its dependents stale (their `last_lifecycle_at` is
-  reset) so the next tick re-evaluates them — a batch-safe cascade. No-op
-  today (only `set`/identity concepts exist), wired for later meta kinds.
+  status change marks its dependents due without resetting consumed-support
+  or decay anchors, so a bounded later tick re-evaluates them. This is a
+  batch-safe cascade for meta kinds such as tensions and generalizations.
 - **Pure arithmetic over concept state.** The confidence / status math is
   arithmetic over a bounded row set; L3 is the only writer of *concept*
   state. The LLM / write touchpoints are all **inputs / side-channels**

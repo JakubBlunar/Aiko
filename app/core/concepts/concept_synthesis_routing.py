@@ -324,6 +324,13 @@ class SynthesisRoutingMixin:
             next_at = timephrase.parse_iso(str(row.get("next_at", "")))
             if row.get("state") == "pending" and next_at is not None and next_at <= now:
                 self._reconsider_due.append(key)
+        self._reconsider_due.sort(
+            key=lambda key: (
+                self._reconsiderations[key]["next_at"],
+                self._reconsiderations[key]["first_at"],
+                key,
+            )
+        )
         stats["routing"] = {}
 
     def _capture_proposer(self, spec: ProposerSpec) -> ProposerSpec:
@@ -406,11 +413,13 @@ class SynthesisRoutingMixin:
         key = hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()[:24]
         if key in self._reconsiderations:
             if self._reconsiderations[key]["state"] == "pending":
-                self._reconsiderations[key]["manifest"] = manifest
+                refreshed = dict(self._reconsiderations[key], manifest=manifest)
+                if not self._retain_reconsideration(refreshed):
+                    self._routing_stats["manifest_refresh_deferred"] += 1
             self._routing_stats["queue_repeats"] += 1
             return
         now = timephrase.utcnow()
-        self._reconsiderations[key] = {
+        row = {
             "key": key,
             "subject": subject,
             "kind": kind,
@@ -425,7 +434,28 @@ class SynthesisRoutingMixin:
             "next_at": (now + timedelta(hours=RETRY_HOURS)).isoformat(),
             "expires_at": (now + timedelta(days=TTL_DAYS)).isoformat(),
         }
-        self._routing_stats["queued"] += 1
+        if self._retain_reconsideration(row):
+            self._routing_stats["queued"] += 1
+        else:
+            self._routing_stats["capacity_declined"] += 1
+
+    def _retain_reconsideration(self, row: dict[str, Any]) -> bool:
+        retained = dict(self._reconsiderations)
+        retained[row["key"]] = row
+        evicted = 0
+        while len(retained) > QUEUE_CAP or len(json.dumps(list(retained.values()))) > QUEUE_BYTES:
+            terminal = next(
+                (key for key, entry in retained.items()
+                 if key != row["key"] and entry["state"] != "pending"),
+                None,
+            )
+            if terminal is None:
+                return False
+            del retained[terminal]
+            evicted += 1
+        self._reconsiderations = retained
+        self._routing_stats["evicted"] += evicted
+        return True
 
     def _defer_proposal(self, proposal: CandidateProposal, reason: str) -> None:
         self._routing_stats[reason] += 1
@@ -689,7 +719,8 @@ class SynthesisRoutingMixin:
         rows = list(self._reconsiderations.values())
         while len(rows) > QUEUE_CAP or len(json.dumps(rows)) > QUEUE_BYTES:
             terminal = next(
-                (index for index, row in enumerate(rows) if row["state"] != "pending"), 0
+                (index for index, row in enumerate(rows) if row["state"] != "pending"),
+                len(rows) - 1,
             )
             rows.pop(terminal)
             self._routing_stats["evicted"] += 1
@@ -700,6 +731,12 @@ class SynthesisRoutingMixin:
             "evidence_attempts"
         ] - len(self._routing_sources.get("attempted", set()))
         self._routing_stats["pending"] = sum(row["state"] == "pending" for row in rows)
+        now = timephrase.utcnow()
+        self._routing_stats["due"] = sum(
+            row["state"] == "pending"
+            and (timephrase.parse_iso(row["next_at"]) or now) <= now
+            for row in rows
+        )
         stats["routing"] = dict(self._routing_stats)
         try:
             raw = self._kv_get(DIAGNOSTICS_KEY)
@@ -709,7 +746,7 @@ class SynthesisRoutingMixin:
         if not isinstance(cumulative, dict):
             cumulative = {}
         for name, count in self._routing_stats.items():
-            if name != "pending" and not name.startswith("unique_"):
+            if name not in {"pending", "due"} and not name.startswith("unique_"):
                 cumulative[name] = int(cumulative.get(name, 0)) + count
         self._kv_set(DIAGNOSTICS_KEY, json.dumps(cumulative))
 
