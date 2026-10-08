@@ -21,8 +21,10 @@ from app.core.concepts.concept_synthesis_routing import (
 )
 from app.core.concepts.proposers.base import NarrativeCandidate
 from app.core.concepts.proposers.base import ExistingConcept, ProposerContext
+from app.core.concepts.proposers.communication_style_aiko import SPEC as STYLE_SPEC
 from app.core.concepts.proposers.identity_user import SPEC
 from app.core.concepts.proposers.narrative_user import SPEC as NARRATIVE_SPEC
+from app.core.concepts.proposers.self_correction_aiko import SPEC as CORRECTION_SPEC
 from app.core.session.memory_facade_mixin import MemoryFacadeMixin
 from app.core.infra import timephrase
 from test_concept_synthesis_worker import (
@@ -94,6 +96,29 @@ class SynthesisRoutingTests(unittest.TestCase):
         return patch(
             "app.core.infra.timephrase.utcnow", return_value=first + timedelta(hours=hours)
         )
+
+    def _queue_style_receipt(self, harness, *, proposer_key=None):
+        stats = {"added": 0, "reinforced": 0, "by_subject": {}}
+        harness.worker._routing_begin(stats)
+        manifest = _encode({
+            "focus_clusters": [],
+            "cluster_index": {},
+            "memories": [harness.mem._by_id[ident] for ident in (100, 101)],
+            "existing": [],
+        })
+        if proposer_key is not None:
+            manifest["$proposer"] = proposer_key
+        harness.worker._queue_reconsideration(
+            "aiko",
+            "communication_style",
+            manifest,
+            [("memory", str(ident)) for ident in (100, 101)],
+            reason="unclaimed",
+            targets=[],
+        )
+        harness.worker._routing_finish(stats)
+        harness.ollama._responder = lambda system, user: {"concepts": []}
+        return stats
 
     def test_exact_support_at_ceiling_does_not_queue_or_create(self):
         harness, ident = self._harness(relation="same")
@@ -578,6 +603,105 @@ class SynthesisRoutingTests(unittest.TestCase):
             )
         self.assertEqual(stats["added"], 0)
         self.assertEqual(harness.store.list_by(kind="narrative"), [])
+
+    def test_style_retry_uses_style_proposer_not_self_correction(self):
+        for proposer_key in (None, STYLE_SPEC.sig_key):
+            for specs in ((STYLE_SPEC, CORRECTION_SPEC), (CORRECTION_SPEC, STYLE_SPEC)):
+                with self.subTest(proposer_key=proposer_key, first=specs[0].population):
+                    harness, _ = self._harness()
+                    stats = self._queue_style_receipt(harness, proposer_key=proposer_key)
+                    with self._advance(harness):
+                        harness.worker._routing_begin(stats)
+                        harness.worker._run_reconsiderations(
+                            ProposerContext(harness.worker._call_llm), specs, stats,
+                        )
+                    self.assertEqual(harness.worker._routing_stats["reconsidered"], 1)
+                    self.assertEqual(harness.ollama.calls, 1)
+                    self.assertEqual(stats["added"], 0)
+
+    def test_capture_persists_proposer_identity(self):
+        harness, _ = self._harness()
+        self._queue_style_receipt(harness)
+        row = next(iter(harness.worker._reconsiderations.values()))
+        kwargs = harness.worker._decode_input(row["manifest"])
+        harness.worker._reconsiderations.clear()
+        harness.worker._capture_proposer(STYLE_SPEC).propose(
+            ProposerContext(harness.worker._call_llm), **kwargs,
+        )
+        harness.worker._routing_finish({})
+        row = json.loads(harness.worker._kv_get(ROUTING_KEY))[0]
+        self.assertEqual(row["manifest"]["$proposer"], STYLE_SPEC.sig_key)
+        self.assertNotIn("$proposer", harness.worker._decode_input(row["manifest"]))
+
+    def test_tagged_retry_resolves_proposers_with_overlapping_signatures(self):
+        def wrong_proposer(ctx, **kwargs):
+            self.fail("A tagged receipt must not switch to another compatible proposer")
+
+        alternative = replace(
+            STYLE_SPEC, sig_key="concept_synth.other_style_sig.aiko", propose=wrong_proposer,
+        )
+        harness, _ = self._harness()
+        stats = self._queue_style_receipt(harness, proposer_key=STYLE_SPEC.sig_key)
+        with self._advance(harness):
+            harness.worker._routing_begin(stats)
+            harness.worker._run_reconsiderations(
+                ProposerContext(harness.worker._call_llm), (alternative, STYLE_SPEC), stats,
+            )
+        self.assertEqual(harness.worker._routing_stats["reconsidered"], 1)
+        self.assertEqual(harness.ollama.calls, 1)
+
+    def test_same_sources_from_different_proposers_keep_distinct_receipts(self):
+        harness, _ = self._harness()
+        harness.worker._routing_begin({})
+        for spec in (STYLE_SPEC, CORRECTION_SPEC, STYLE_SPEC):
+            manifest = _encode({"existing": []})
+            manifest["$proposer"] = spec.sig_key
+            harness.worker._queue_reconsideration(
+                spec.subject, spec.kind, manifest, [("memory", "100")],
+                reason="unclaimed", targets=[],
+            )
+        self.assertEqual(len(harness.worker._reconsiderations), 2)
+        self.assertEqual(harness.worker._routing_stats["queue_repeats"], 1)
+
+    def test_unavailable_or_ambiguous_retry_does_not_call_a_proposer(self):
+        alternative = replace(STYLE_SPEC, sig_key="concept_synth.other_style_sig.aiko")
+        cases = (
+            (None, (STYLE_SPEC, alternative)),
+            (None, (CORRECTION_SPEC,)),
+            ("missing_proposer", (STYLE_SPEC, CORRECTION_SPEC)),
+            (STYLE_SPEC.sig_key, (CORRECTION_SPEC,)),
+        )
+        for proposer_key, specs in cases:
+            with self.subTest(proposer_key=proposer_key, populations=specs):
+                harness, _ = self._harness()
+                stats = self._queue_style_receipt(harness, proposer_key=proposer_key)
+                with self._advance(harness):
+                    harness.worker._routing_begin(stats)
+                    harness.worker._run_reconsiderations(
+                        ProposerContext(harness.worker._call_llm), specs, stats,
+                    )
+                row = next(iter(harness.worker._reconsiderations.values()))
+                self.assertEqual(row["state"], "unavailable")
+                self.assertEqual(row["assessment_state"], "not_assessed")
+                self.assertEqual(row["attempts"], 0)
+                self.assertEqual(harness.worker._routing_stats["proposer_unavailable"], 1)
+                self.assertEqual(harness.ollama.calls, 0)
+
+    def test_style_retry_respects_its_flag_without_using_self_correction(self):
+        harness, _ = self._harness()
+        stats = self._queue_style_receipt(harness)
+        harness.worker._agent_settings.communication_style_synthesis_enabled = False
+        with self._advance(harness):
+            harness.worker._routing_begin(stats)
+            harness.worker._run_reconsiderations(
+                ProposerContext(harness.worker._call_llm),
+                (STYLE_SPEC, CORRECTION_SPEC),
+                stats,
+            )
+        row = next(iter(harness.worker._reconsiderations.values()))
+        self.assertEqual(row["state"], "pending")
+        self.assertEqual(row["attempts"], 0)
+        self.assertEqual(harness.ollama.calls, 0)
 
     def test_reinforcement_exclusion_survives_a_round_trip(self):
         harness, ident = self._harness()

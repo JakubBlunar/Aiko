@@ -7,6 +7,7 @@ import json
 from collections import Counter
 from dataclasses import fields, is_dataclass, replace
 from datetime import timedelta
+from inspect import signature
 from typing import Any
 
 import numpy as np
@@ -347,6 +348,7 @@ class SynthesisRoutingMixin:
 
             try:
                 manifest = _encode(kwargs)
+                manifest["$proposer"] = spec.sig_key
                 if len(json.dumps(manifest)) > 32768:
                     manifest = None
                     self._routing_stats["manifest_oversize"] += 1
@@ -419,6 +421,8 @@ class SynthesisRoutingMixin:
         if self._retrying or manifest is None or not nodes:
             return
         identity = [subject, kind, sorted(set(nodes)), sorted(set(targets))]
+        if isinstance(manifest, dict) and "$proposer" in manifest:
+            identity.append(manifest["$proposer"])
         key = hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()[:24]
         if key in self._reconsiderations:
             if self._reconsiderations[key]["state"] == "pending":
@@ -602,23 +606,36 @@ class SynthesisRoutingMixin:
         specs: Any,
         stats: dict[str, Any],
     ) -> None:
-        by_kind = {(spec.subject, spec.kind): spec for spec in specs}
+        by_kind: dict[tuple[str, str], list[ProposerSpec]] = {}
+        for spec in specs:
+            by_kind.setdefault((spec.subject, spec.kind), []).append(spec)
         calls = 0
         for key in self._reconsider_due:
             if calls >= MAX_RETRIES_PER_RUN or self._cancel_event.is_set():
                 break
             row = self._reconsiderations[key]
-            spec = by_kind.get((row["subject"], row["kind"]))
-            if spec is None:
-                row["state"] = "unavailable"
-                row["assessment_state"] = "not_assessed"
-                continue
             try:
                 kwargs = self._decode_input(row["manifest"])
             except (TypeError, ValueError, KeyError):
                 row["state"] = "source_unavailable"
                 self._routing_stats["source_unavailable"] += 1
                 continue
+            proposer_key = row["manifest"].get("$proposer")
+            compatible = []
+            for candidate in by_kind.get((row["subject"], row["kind"]), []):
+                if proposer_key is not None and candidate.sig_key != proposer_key:
+                    continue
+                try:
+                    signature(candidate.propose).bind(ctx, **kwargs)
+                except (TypeError, ValueError):
+                    continue
+                compatible.append(candidate)
+            if len(compatible) != 1:
+                row["state"] = "unavailable"
+                row["assessment_state"] = "not_assessed"
+                self._routing_stats["proposer_unavailable"] += 1
+                continue
+            spec = compatible[0]
             if not self._retry_enabled(spec, kwargs):
                 continue
             old = kwargs.get("existing", [])

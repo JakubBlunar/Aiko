@@ -67,6 +67,17 @@ directional, recurrence and meta-depth/cycle gates. It may settle as `same_claim
 remain pending; cancellation does not spend the attempt. No historical evidence
 edges, labels, confidence, or lifecycle status are rewritten by this change.
 
+**Retry dispatch (9 Oct 2026).** New manifests record the originating proposer's
+stable `sig_key`, also included in queue identity: two producers of the same
+kind cannot overwrite each other's inputs. Subject and kind alone are not a
+dispatch key; Aiko's ordinary communication-style and self-correction proposers
+share them but accept different inputs. Legacy receipts without a proposer ID
+are dispatched only when exactly one matching proposer accepts their saved
+arguments. Missing, incompatible or ambiguous matches settle as `unavailable`
+with `assessment_state=not_assessed` and increment `proposer_unavailable`, without
+a model call or spent attempt. The selected producer's feature flag still gates
+execution. No live queue rewrite or budget increase is required.
+
 `get_concepts_state` includes a content-free `synthesis` object from the public
 `concept_synthesis_diagnostics()` facade: latest routing counts, cumulative
 attempt/outcome counts, queue states and limits. `unique_*` counts are unique
