@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "scope": "Synthetic evidence-independence contracts, not a model reasoning benchmark",
   "cases": [
     {
@@ -77,5 +77,15 @@
       ],
       "expected": {"known_support_groups": 1, "unknown_sources": 0}
     }
+  ],
+  "applicability_cases": [
+    {"id": "learning", "turn": "I'm learning Python", "contexts": ["learning"]},
+    {"id": "troubleshooting", "turn": "Let's debug this failure", "contexts": ["troubleshooting"]},
+    {"id": "unknown", "turn": "Continue please", "contexts": []},
+    {"id": "ambiguous", "turn": "I'm learning while debugging", "contexts": ["learning", "troubleshooting"]},
+    {"id": "quoted", "turn": "He quoted \"I'm learning Python\"", "contexts": []},
+    {"id": "hypothetical", "turn": "Imagine troubleshooting together", "contexts": []},
+    {"id": "roleplay", "turn": "Role-play a learning conversation", "contexts": []},
+    {"id": "ended", "turn": "We're done troubleshooting", "contexts": []}
   ]
 }

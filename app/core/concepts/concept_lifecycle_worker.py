@@ -769,7 +769,14 @@ class ConceptLifecycleWorker(RevivalMixin):
             return None
         stats["contradiction_checks"] += 1
         try:
-            verdict = self._contradiction_detector.detect(concept)
+            scope = (
+                self._store.applicability.get(concept.concept_id)
+                if concept.kind == "communication_style" else None
+            )
+            verdict = (
+                self._contradiction_detector.detect(concept, applicability=scope)
+                if scope else self._contradiction_detector.detect(concept)
+            )
         except Exception:
             log.debug(
                 "contradiction detect failed (id=%s)",

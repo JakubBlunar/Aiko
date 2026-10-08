@@ -532,6 +532,46 @@ class RegionBuilderTests(unittest.TestCase):
         # Only the budgeted subset was marked used (not the whole pool).
         self.assertEqual(len(store.mark_used_calls), 1)
 
+    def test_style_context_filters_before_selection_and_unknown_is_conditional(self):
+        host, _ = self._host()
+        styles = [
+            SimpleNamespace(
+                concept_id=cid, label=label, confidence=0.9, plasticity=0.4,
+                kind="communication_style", subject="user", status="active",
+                last_reinforced_at=None,
+            )
+            for cid, label in (
+                (7, "Brief when troubleshooting"), (8, "Detailed while learning"),
+                (9, "Warm while hanging out"),
+            )
+        ]
+        scopes = {
+            cid: {"version": 1, "contexts": [{"name": name}], "exceptions": []}
+            for cid, name in ((7, "troubleshooting"), (8, "learning"), (9, "casual"))
+        }
+        host._concept_store = _FakeConceptStore(styles, near_score=0.9)
+        host._concept_store.applicability = SimpleNamespace(get=scopes.get)
+        for text, expected in (("Let's debug", 7), ("I'm learning", 8), ("Just chatting", 9)):
+            with self.subTest(text=text):
+                region = host.build_relevant_context(
+                    user_text=text, recent_turns=[], session_key="s1", budget_tokens=2000,
+                )
+                self.assertEqual(
+                    [row["concept_id"] for row in region.concept_trace["surfaced"]], [expected],
+                )
+                self.assertIn("fits the current context", region.text)
+        region = host.build_relevant_context(
+            user_text="Continue please", recent_turns=[], session_key="s1", budget_tokens=2000,
+        )
+        self.assertEqual(len(region.concept_trace["surfaced"]), 3)
+        self.assertIn("not a current rule", region.text)
+        self.assertNotIn("You're fairly sure", region.text)
+        scopes[7]["superseded_by"] = 9
+        region = host.build_relevant_context(
+            user_text="Let's debug", recent_turns=[], session_key="s1", budget_tokens=2000,
+        )
+        self.assertEqual(region.concept_trace["surfaced"], [])
+
     def test_region_hard_clipped_to_budget(self) -> None:
         host, _ = self._host()
         region = host.build_relevant_context(

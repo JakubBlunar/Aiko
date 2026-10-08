@@ -388,6 +388,8 @@ class ConceptDriftWorker:
         concept = self._store.get(concept_id)
         if concept is None or concept.status == "retired":
             return False
+        if concept.kind == "communication_style" and self._store.applicability.get(concept_id):
+            return False
         proposed = str(proposal.label or "").strip()
         if not proposed:
             return False

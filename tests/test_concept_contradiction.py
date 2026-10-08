@@ -118,6 +118,25 @@ def _detector(memory_store, *, rate_limiter=None, ollama=None):
 
 
 class DetectorTests(unittest.TestCase):
+    def test_scoped_style_ignores_other_context_and_nonassertions(self):
+        scope = {"version": 1, "contexts": [{"name": "troubleshooting"}], "exceptions": []}
+        for content in (
+            "While learning, Sam hates brief replies",
+            'Sam quoted "When troubleshooting, I hate brief replies"',
+        ):
+            with self.subTest(content=content):
+                ollama = _Ollama('{"verdict":"YES"}')
+                detector = _detector(_MemoryStore([_Hit(_Mem(11, content, _IN_BAND))]),
+                                     ollama=ollama)
+                self.assertIsNone(detector.detect(_concept("Sam loves brief replies"),
+                                                  applicability=scope))
+                self.assertEqual(ollama.calls, 0)
+        detector = _detector(_MemoryStore([
+            _Hit(_Mem(11, "When troubleshooting, Sam hates brief replies", _IN_BAND)),
+        ]))
+        self.assertIsNotNone(detector.detect(_concept("Sam loves brief replies"),
+                                            applicability=scope))
+
     def test_reassessment_requires_explicit_resolution_of_every_disproof(self):
         negative = [_Mem(11, "The belief no longer applies", _IN_BAND)]
         positive = [_Mem(12, "A later correction restores that belief", _IN_BAND)]

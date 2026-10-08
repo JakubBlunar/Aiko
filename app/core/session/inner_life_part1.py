@@ -1760,6 +1760,21 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             getattr(ms, "concept_importance_strength", 0.4)
         )
         score_components: dict[int, dict] = {}
+        from app.core.concepts.concept_applicability import (
+            applicability_state, current_contexts, scope_hint,
+        )
+
+        snapshot = None
+        situation_reader = getattr(self, "conversation_situation_snapshot", None)
+        if callable(situation_reader):
+            try:
+                snapshot = situation_reader(user_text=user_text)
+            except Exception:
+                log.debug("style applicability situation unavailable", exc_info=True)
+        style_contexts = current_contexts(user_text, snapshot)
+        style_states: dict[int, str] = {}
+        style_scopes: dict[int, dict | None] = {}
+        applicability = getattr(getattr(self, "_concept_store", None), "applicability", None)
 
         def _habituation(cid: int, floor: float) -> float:
             if not hab_enabled:
@@ -1919,6 +1934,15 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             # want to make that choice too.
             if not renders_in_static_block(getattr(concept, "kind", "") or ""):
                 return False
+            style_cost = 0
+            if getattr(concept, "kind", "") == "communication_style":
+                scope = applicability.get(cid) if applicability is not None else None
+                state = applicability_state(scope, style_contexts)
+                style_states[cid] = state
+                style_scopes[cid] = scope
+                if state not in {"matched", "unknown", "unknown_context"}:
+                    return False
+                style_cost = estimate_tokens(scope_hint(scope)) + 8
             kind = get_kind(getattr(concept, "kind", "") or "")
             weights = (
                 kind.surface_weights if kind is not None
@@ -1972,7 +1996,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             )
             concept_cands.append(ContextCandidate(
                 source="concept", relevance=relevance,
-                tokens=estimate_tokens(label) + 16, order=order,
+                tokens=estimate_tokens(label) + 16 + style_cost, order=order,
                 payload=concept, key=f"k{cid or order}",
             ))
             comp = {
@@ -2375,6 +2399,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         concept_block, concept_trace = self._render_relevant_concepts(
             concept_pairs, pinned_ids=pinned_ids,
             score_components=score_components,
+            style_states=style_states, style_scopes=style_scopes,
         )
         # L39: record the dedupe so an empty concept lane is distinguishable
         # from a cold layer -- a claimed concept is still in the prompt via T0,
@@ -2395,6 +2420,11 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             floor_swap=floor_swap,
         )
         concept_trace["selection_pressure"] = selection.as_dict()
+        if style_states:
+            concept_trace["applicability"] = {
+                "current_contexts": sorted(style_contexts),
+                "evaluated": {str(cid): state for cid, state in style_states.items()},
+            }
         if concept_block:
             sections.append(concept_block)
 
@@ -2885,6 +2915,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
     def _render_relevant_concepts(
         self, concepts: list, *, pinned_ids: "set[int] | None" = None,
         score_components: "dict[int, dict] | None" = None,
+        style_states: "dict[int, str] | None" = None,
+        style_scopes: "dict[int, dict | None] | None" = None,
     ) -> tuple[str, dict]:
         """Render the budget-chosen concepts as hedged impressions, reusing
         the L5 confidence hedging + evidence grounding. Returns
@@ -2983,6 +3015,18 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             comp = components.get(cid_int)
             reason = comp.get("reason") if comp else None
             lead = self._reason_framing(reason, conf_val) if framing_on else hedge
+            if kind == "communication_style":
+                from app.core.concepts.concept_applicability import scope_hint
+
+                state = (style_states or {}).get(cid_int, "unknown")
+                if state not in {"matched", "unknown", "unknown_context"}:
+                    continue
+                hint = scope_hint((style_scopes or {}).get(cid_int))
+                lead = (
+                    f"{hedge} this delivery preference fits the current context:"
+                    if state == "matched" else "A possible delivery preference, not a current rule:"
+                )
+                rationale_clause += f" ({hint})"
             groups.setdefault((subject, family), []).append(
                 f"- {lead} {label}{grounding}{rationale_clause}"
             )
@@ -3012,6 +3056,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     entry["surface_reason_label"] = SURFACE_REASON_LABELS.get(
                         reason, reason
                     )
+            if kind == "communication_style":
+                entry["applicability"] = (style_states or {}).get(cid_int, "unknown")
             surfaced_trace.append(entry)
         sections: list[str] = []
         for subject in ("user", "relationship", "aiko"):

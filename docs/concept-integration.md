@@ -124,7 +124,8 @@ separate message IDs still do not prove separate causal episodes.
 ### Opt-in L55 decision evaluation
 
 `python scripts/evaluate_concept_reasoning.py --model <installed-model>` runs
-version-2 synthetic decision cases through the existing Ollama client.
+the synthetic decision cases through the existing Ollama client (corpus v3 also
+contains deterministic L50 context contrasts).
 Baseline, roots-only ablation and accounted-summary variants share fixed
 questions and criteria. Metrics include correctness, unsupported assertions,
 appropriate abstention, invented/insufficient citations, malformed output,
@@ -156,6 +157,70 @@ was about 18.4k system tokens with about 4k in the combined retrieval tier; it
 did not establish concept-cap starvation. Budgets remain unchanged. The live
 independence drill-down encountered a mixed-version SupportLedger after source
 edits; restart is needed for a consistent post-deployment audit.
+
+### Context-scoped styles (L50 pilot, 8 Oct 2026)
+
+Communication-style proposals can carry explicit applicability alongside their
+label, without a new kind or schema migration. The pilot recognizes `learning`,
+`troubleshooting` and `casual`; it does not infer an unlimited situation taxonomy.
+Casual also recognizes explicit everyday phrasing: "just chatting", "just
+talking", "catching up", "hanging out", "everyday discussion", and relaxed or
+light-hearted chat/conversation. The same vocabulary validates cited scope spans
+and reads the fresh situation frame. Bare "chat", greetings and a generic topic
+discussion do not establish casual context by themselves; mixed learning/casual
+signals remain ambiguous. Ended/negated casual turns cannot inherit the frame.
+Each context/exception cites an offered, also-cited memory ID and an exact span
+of at most 160 characters. At most three contexts and three exceptions are
+accepted. Recognizable quotation, hypothetical and role-play framing is rejected;
+an exception span cannot be relabeled as a positive scope. Cluster-only and
+legacy lines remain unqualified, never guessed into one of these contexts.
+
+The cold `kv_meta` record `concept.applicability:<id>` retains the qualifiers,
+their `observed_at` (memory event time, unknown when absent) and
+`source_recorded_at` (memory creation time). Observation/record time is **not**
+validity time. Optional `validity.from` / `until` require exact absolute dates
+in a cited `from`/`since` or `until`/`before` span; start is inclusive and end
+exclusive on the local calendar through `timephrase.now()`. Reinforcement does
+not extend validity or overwrite the admission snapshot. Records are bounded
+per claim, not a globally fixed-size archive; they include short private spans
+and are not content-free diagnostics.
+
+Before T3 flex/activation selection, explicit current-turn context takes
+precedence over the fresh, active, world-compatible situation frame's
+`shared_activity`. An ended/negated, quoted or hypothetical turn cannot inherit
+a stale context. No concept label establishes what is happening now. A unique
+matching context permits a style with its existing confidence hedge; exceptions,
+other contexts, expiry and effective supersession exclude it before it spends a
+budget slot. Unknown/ambiguous contexts retain conditional readings, explicitly
+not current rules. Legacy/unqualified applicability is labeled unverified. These
+readings still compete within the existing caps; there is no guarantee every
+alternative fits the prompt. Qualifier text is included in item cost estimates.
+Applicability is an eligibility/framing check, not a ranking bonus; matching
+styles still compete on the existing relevance scores and budgets. Other concept
+kinds are unaffected by this style-specific filter.
+The trace's `applicability` records context names and per-ID decisions, not quotes.
+
+Different scopes cannot cosine-reinforce or consolidate into each other. A
+source-cited scope difference supplies the existing near-neighbor distinction
+check rather than weakening its cosine thresholds. Scoped labels are not
+automatically relabeled by drift. An explicit correction names `supersedes_id`,
+a same-context correction span and the new preference; a learning correction
+cannot replace a troubleshooting claim. The old label, evidence, lifecycle
+status and history remain intact, with a cold successor reference rather than a
+reasoning-failure event. A future `validity.from` keeps the earlier style usable
+until that start date. Ordinary contradiction probes for scoped styles consider
+only uniquely matching source contexts; unknown/cross-context/nonassertion
+memories cannot trigger that penalty.
+
+Tests cover admission, actual budget selection/rendering, consolidation refusal,
+drift preservation, lifecycle detector wiring, explicit correction, future start
+and expiry, and eight deterministic corpus contrasts. They are not model-level
+proof that Aiko always follows the prompt. The English lexical pilot can reject
+legitimate quoted notes and cannot recover framing erased by an earlier memory
+summary. Exact spans establish provenance, not general semantic entailment.
+Arbitrary contexts, episode-level qualifiers, bitemporal queries, old-record
+backfill, scoped revival adjudication and live response-quality measurement
+remain open. No promotion bar, source ceiling or surfacing budget is raised.
 
 ## The role axis: `anchor` / `guide` / `generative`
 

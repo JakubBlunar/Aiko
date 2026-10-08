@@ -2730,7 +2730,8 @@ must stay unknown rather than be guessed.
 
 ## L50. Context-scoped claims and temporal validity
 
-**Status: open.** A durable belief should say not only *what*, but *when it
+**Status: bounded communication-style pilot implemented (8 Oct 2026); broader
+temporal/scoped reasoning remains open.** A durable belief should say not only *what*, but *when it
 applies*. "Prefers brief troubleshooting" and "enjoys detailed explanations
 while learning" can both be true. Embedding proximity alone cannot decide
 whether two claims conflict, complement each other, or describe a change.
@@ -2749,6 +2750,25 @@ hypothetical and role-play statements do not become personal traits.
 
 **Build on:** L23 context-scoped style, L9 contradiction, L31's measured refusal
 to split everything, and narrative time helpers. **Effort:** Medium.
+
+**Implemented slice.** Source-cited `learning` / `troubleshooting` / `casual`
+contexts, exceptions, observed-versus-recorded timestamps and explicit absolute
+validity dates live in cold KV records, not new vector/schema fields. T3 reads
+the current turn/fresh compatible situation, filters wrong-context/expired styles
+before selection and qualifies unknown/legacy applicability. Scoped claims cannot
+cross-reinforce/merge or drift into unqualified rules. Explicit same-context
+corrections retain historical claims with a successor reference; future-dated
+changes wait for their start date. Scoped contradiction probes require matching
+source context. Existing caps and promotion thresholds are unchanged.
+
+**Verification and limits.** Real-store admission/correction, selection/rendering,
+consolidation, drift and lifecycle wiring regressions plus eight synthetic L55
+context contrasts cover the pilot. English lexical/structural citation checks
+are not general entailment or a guarantee about model replies. Arbitrary
+contexts, erased quotation framing, scoped revival review, historical backfill
+and broader temporal queries remain open. See
+[`concept-integration.md`](../concept-integration.md#context-scoped-styles-l50-pilot-8-oct-2026)
+for the contract and rollout limits. No live restart or state repair was performed.
 
 ## L51. A bounded working model for the current problem
 

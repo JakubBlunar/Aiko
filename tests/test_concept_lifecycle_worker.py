@@ -894,6 +894,22 @@ class _FakeDetector:
 
 
 class ContradictionTests(unittest.TestCase):
+    def test_scoped_style_passes_applicability_to_detector(self):
+        calls = []
+
+        class Detector:
+            def detect(self, concept, *, applicability=None):
+                calls.append(applicability)
+                return None
+
+        h = _harness(detector=Detector())
+        concept = _add(h.store, kind="communication_style", status="active")
+        scope = {"version": 1, "contexts": [{"name": "learning"}], "exceptions": []}
+        h.store.applicability.record(concept.concept_id, scope)
+        stats = {"contradiction_checks": 0, "contradiction_hits": 0}
+        h.worker._maybe_detect_contradiction(concept, stats, 0.5)
+        self.assertEqual(calls, [scope])
+
     def test_active_to_contradicted_when_penalty_crosses_floor(self) -> None:
         h = _harness(detector=_FakeDetector())
         c = _add(

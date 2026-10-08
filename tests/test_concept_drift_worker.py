@@ -312,6 +312,19 @@ class RelabelTests(unittest.TestCase):
             concept.rationale, "he asked for shorter answers about ops"
         )
 
+    def test_scoped_style_is_not_rewritten_as_an_unscoped_preference(self):
+        concept = self.h.store.get(self.cid)
+        concept.kind = "communication_style"
+        self.h.store.update(concept)
+        self.h.store.applicability.record(self.cid, {
+            "version": 1, "contexts": [{"name": "learning"}], "exceptions": [],
+        })
+        self._propose("prefers depth calibrated to the topic")
+        stats = self._run()
+        self.assertEqual(stats["relabel_applied"], 0)
+        self.assertEqual(self.h.store.get(self.cid).label, "likes detailed answers")
+        self.assertEqual(self.embedder.calls, [])
+
     def test_embedding_moves_with_the_wording(self) -> None:
         before = self.h.store.get(self.cid).embedding.copy()  # type: ignore
         self._propose("prefers depth calibrated to the topic")

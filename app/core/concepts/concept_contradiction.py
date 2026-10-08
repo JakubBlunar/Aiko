@@ -143,7 +143,7 @@ class ConceptContradictionDetector:
         self._similarity_max = float(similarity_max)
         self._max_candidates = max(1, int(max_candidates))
 
-    def detect(self, concept: "Concept") -> ContradictionVerdict | None:
+    def detect(self, concept: "Concept", *, applicability=None) -> ContradictionVerdict | None:
         """Return the first confirmed contradiction for ``concept``, else
         ``None``. Does no writes; safe to call inside the L3 pass."""
         emb = getattr(concept, "embedding", None)
@@ -174,6 +174,13 @@ class ConceptContradictionDetector:
             content = (getattr(mem, "content", "") or "").strip()
             if not content:
                 continue
+            if applicability is not None:
+                from app.core.concepts.concept_applicability import (
+                    applicability_state, context_names,
+                )
+
+                if applicability_state(applicability, context_names(content)) != "matched":
+                    continue
             # Recompute the raw cosine for band-filtering: MemoryStore.search
             # returns a salience-adjusted score, not the plain cosine.
             cos = float(cosine_similarity(emb, mem.embedding))

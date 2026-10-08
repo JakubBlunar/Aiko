@@ -3312,11 +3312,26 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
         ceiling = self._max_sources()
         sources = int(concept.distinct_source_count)
         capacity = "unlimited" if ceiling <= 0 else str(max(0, ceiling - sources))
+        scope = (
+            self._concept_store.applicability.get(concept.concept_id)
+            if concept.kind == "communication_style" else None
+        )
+        scope_note = ""
+        if scope:
+            validity_window = {key: scope.get("validity", {}).get(key) for key in ("from", "until")}
+            scope_note = (
+                f"; applicability={[item['name'] for item in scope['contexts']]}; "
+                f"exceptions={[item['name'] for item in scope['exceptions']]}; "
+                f"validity={validity_window}; "
+                f"superseded_by={scope.get('superseded_by')}"
+            )
         return ExistingConcept(
             id=concept.concept_id,
             label=concept.label,
               note=f"status={concept.status}; {sources} sources; evidence room={capacity}; "
-                 "capacity is not a reason to invent another claim",
+                 "capacity is not a reason to invent another claim" + scope_note,
+            reinforce=not bool(scope and scope.get("superseded_by")),
+            applicability=scope,
         )
 
     def _mark_affect_succession(
@@ -3428,6 +3443,21 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
             self._routing_begin(stats)
         if not proposal.evidence:
             return
+        if proposal.kind == "communication_style" and proposal.supersedes_id is not None:
+            from app.core.concepts.concept_applicability import context_names, scope_key
+
+            old = self._concept_store.get(proposal.supersedes_id)
+            old_scope = self._concept_store.applicability.get(proposal.supersedes_id)
+            if (
+                old is None or old.kind != proposal.kind or old.subject != proposal.subject
+                or not scope_key(proposal.applicability) or not scope_key(old_scope)
+                or scope_key(proposal.applicability)[:2] != scope_key(old_scope)[:2]
+                or old_scope.get("superseded_by")
+                or not proposal.applicability.get("correction")
+                or context_names(proposal.applicability["correction"].get("quote", ""))
+                != set(scope_key(proposal.applicability)[0])
+            ):
+                return
 
         # Meta depth cap + cycle guard (L12 / L46), enforced at persist time.
         # Tension (and other non-generalization metas) may reference only
@@ -3529,6 +3559,12 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
             cid, proposal.evidence, evidence_model=proposal.evidence_model
         )
         self._observe_support(concept, proposal.evidence, set())
+        if proposal.kind == "communication_style" and proposal.applicability:
+            self._concept_store.applicability.record(cid, proposal.applicability)
+            if proposal.supersedes_id is not None:
+                self._concept_store.applicability.supersede(
+                    proposal.supersedes_id, cid, proposal.applicability["correction"],
+                )
         stats["added"] += 1
         self._bump_subject(stats, proposal.subject, "added")
         self._record_discovery(concept, proposal, top_sim, now)
@@ -3557,6 +3593,19 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
         not (see that module).
         """
         exclude: set[int] = set()
+        if proposal.kind == "communication_style":
+            from app.core.concepts.concept_applicability import scope_key
+
+            wanted = scope_key(proposal.applicability)
+            for concept in self._concept_store.list_by(
+                subject=proposal.subject, kind=proposal.kind,
+            ):
+                scope = self._concept_store.applicability.get(concept.concept_id)
+                if (
+                    scope_key(scope) != wanted or scope and scope.get("superseded_by")
+                    or concept.concept_id == proposal.supersedes_id
+                ):
+                    exclude.add(concept.concept_id)
         if proposal.kind == "generalization":
             for node_type, node_id in proposal.evidence:
                 if node_type != "concept":
@@ -3567,13 +3616,34 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
                     continue
                 exclude.add(cid)
                 exclude |= descendant_ids(self._concept_store, cid)
-        return find_duplicate(
+        match, top_sim = find_duplicate(
             self._concept_store,
             vec,
             subject=proposal.subject,
             kind=proposal.kind,
             exclude_ids=exclude,
         )
+        if match is None and proposal.kind == "communication_style" and proposal.applicability:
+            from app.core.concepts.concept_applicability import scope_hint, scope_key
+
+            nearest = self._concept_store.nearest(
+                vec, subject=proposal.subject, kind=proposal.kind, status=None, k=1,
+            )
+            if nearest:
+                target = nearest[0][0]
+                previous = self._concept_store.applicability.get(target.concept_id)
+                if (
+                    scope_key(previous) != scope_key(proposal.applicability)
+                    or proposal.supersedes_id is not None
+                ):
+                    proposal.compared_to = target.concept_id
+                    proposal.distinction = (
+                        "Source-cited applicability: " + scope_hint(proposal.applicability)
+                        + "; compared claim: " + scope_hint(previous)
+                                + (f"; explicit change supersedes #{proposal.supersedes_id}"
+                                    if proposal.supersedes_id else "")
+                    )
+        return match, top_sim
 
     def _is_child_rename(
         self, vec: Any, evidence: list[tuple[str, str]]
@@ -3686,6 +3756,15 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
         """
         if not hasattr(self, "_routing_stats"):
             self._routing_begin(stats)
+        if concept.kind == "communication_style":
+            from app.core.concepts.concept_applicability import scope_key
+
+            scope = self._concept_store.applicability.get(concept.concept_id)
+            if (
+                scope and scope.get("superseded_by")
+                or scope_key(scope) != scope_key(proposal.applicability)
+            ):
+                return
         existing = self._concept_store.evidence_of(concept.concept_id)
         vectors = self._evidence_vectors(proposal.evidence)
         verdict = admit(
@@ -3744,6 +3823,10 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
             return
         stats["reinforced"] += 1
         self._bump_subject(stats, proposal.subject, "reinforced")
+        if proposal.kind == "communication_style" and proposal.supersedes_id is not None:
+            self._concept_store.applicability.supersede(
+                proposal.supersedes_id, concept.concept_id, proposal.applicability["correction"],
+            )
         self._stage_relabel(concept, proposal, cosine)
 
     # ── L31 evidence admission ─────────────────────────────────────────

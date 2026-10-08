@@ -180,8 +180,10 @@ class ConceptStore:
     def __init__(self, db: "ChatDatabase") -> None:
         self._db = db
         from app.core.concepts.concept_support import SupportLedger
+        from app.core.concepts.concept_applicability import ApplicabilityLedger
 
         self.support = SupportLedger(db)
+        self.applicability = ApplicabilityLedger(db)
         # L17c: optional sink for absorption records. ``merge_into``
         # deletes the absorbed row, so unless something captures the
         # mapping at that moment the id becomes a dead end and any
@@ -686,6 +688,7 @@ class ConceptStore:
             )
             conn.execute("DELETE FROM concepts WHERE id = ?", (cid,))
             conn.execute("DELETE FROM kv_meta WHERE key = ?", (f"concept.lifecycle_due:{cid}",))
+            conn.execute("DELETE FROM kv_meta WHERE key = ?", (f"concept.applicability:{cid}",))
             conn.commit()
         except Exception:
             log.warning("concept delete failed (id=%s)", cid, exc_info=True)
@@ -747,6 +750,15 @@ class ConceptStore:
             or canonical.kind != absorbed.kind
         ):
             return False
+        if canonical.kind == "communication_style":
+            from app.core.concepts.concept_applicability import scope_key
+
+            scopes = [self.applicability.get(cid) for cid in (can_id, abs_id)]
+            if (
+                scope_key(scopes[0]) != scope_key(scopes[1])
+                or any(scope and scope.get("superseded_by") for scope in scopes)
+            ):
+                return False
         if (
             canonical.evidence_model == "meta"
             or absorbed.evidence_model == "meta"

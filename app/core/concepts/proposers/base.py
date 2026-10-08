@@ -49,6 +49,7 @@ class ExistingConcept:
     label: str
     note: str = ""
     reinforce: bool = True
+    applicability: Any = None
 
 
 @dataclass(slots=True)
@@ -75,6 +76,8 @@ class CandidateProposal:
     distinction: str = ""
     compared_to: int | None = None
     input_manifest: Any = None
+    applicability: Any = None
+    supersedes_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -792,20 +795,28 @@ def propose_communication_style(
     what lets the L3 :func:`communication_style_evidence_gate` floor the source
     count at 1. ``subject`` shapes the prompt voice only.
     """
+    from app.core.concepts.concept_applicability import (
+        asserted_style_source, context_names, parse_applicability,
+    )
+
     valid_reps = {int(rep) for rep, _label, _size in cluster_index}
     valid_mem_ids: set[int] = set()
+    offered_memories = {}
     mem_lines: list[str] = []
     for mem in memories:
+        if not asserted_style_source(mem):
+            continue
         try:
             mid = int(mem.id)
         except (TypeError, ValueError, AttributeError):
             continue
         valid_mem_ids.add(mid)
+        offered_memories[mid] = mem
         mem_lines.append(mem_line(mem))
 
     if not valid_reps and not valid_mem_ids:
         return []
-    existing_ids = {int(e.id) for e in existing}
+    existing_ids = {int(e.id) for e in existing if e.reinforce}
 
     sections: list[str] = []
     digest = (style_digest or "").strip()
@@ -845,6 +856,23 @@ def propose_communication_style(
         "(cite cluster rep ids in 'evidence_cluster_reps' and/or remembered-note "
         "ids in 'evidence_memory_ids'), or reinforce a known one by id."
     )
+    system += (
+        "\nL50 applicability pilot: for each new or reinforced scoped line "
+        "include 'applicability': "
+        "{'contexts': [{'name': 'learning'|'troubleshooting'|'casual', 'memory_id': int, "
+        "'quote': str}], 'exceptions': [same shape], 'validity': optional "
+        "{'from': 'YYYY-MM-DD', 'until': 'YYYY-MM-DD', 'memory_id': int, 'quote': str}}. "
+        "Each quote must be an EXACT span of a cited remembered note, naming when/while/"
+        "during/for/unless/except the context applies; never invent a qualifier or date. "
+        "Omit validity when no explicit absolute dates were stated (until is exclusive). "
+        "Unsupported/other contexts remain unqualified; do not force them into these names. "
+        "Quoted, hypothetical and role-play preferences are not personal traits. "
+        "Different contexts can coexist: never reinforce a different scoped line. "
+        "For an explicit changed preference in the SAME context, propose a new label and "
+        "'supersedes_id': the known ID plus 'correction': {'memory_id': int, 'quote': str}; "
+        "the exact quote must explicitly say instead/no longer/changed preference. "
+        "A change in one context must not replace another."
+    )
     user = "\n\n".join(sections)
 
     raw = ctx.call_llm(system, user)
@@ -871,9 +899,34 @@ def propose_communication_style(
         evidence = [("cluster", str(r)) for r in reps]
         evidence += [("memory", str(i)) for i in mids]
         rationale = str(item.get("rationale") or "").strip()
+        scope = parse_applicability(
+            item.get("applicability"), {mid: offered_memories[mid] for mid in mids},
+        )
+        if item.get("applicability") is not None and scope is None:
+            continue
+        supersedes = item.get("supersedes_id")
+        if supersedes is not None:
+            correction = item.get("correction")
+            if (
+                type(supersedes) is not int or supersedes not in existing_ids or scope is None
+                or not isinstance(correction, dict)
+                or type(correction.get("memory_id")) is not int
+                or correction["memory_id"] not in mids
+                or not isinstance(correction.get("quote"), str)
+                or not 8 <= len(correction["quote"]) <= 160
+                or correction["quote"] not in offered_memories[correction["memory_id"]].content
+                or not any(word in correction["quote"].lower()
+                           for word in ("instead", "no longer", "changed preference"))
+                or context_names(correction["quote"])
+                != {item["name"] for item in scope["contexts"]}
+            ):
+                continue
+            scope["correction"] = {key: correction[key] for key in ("memory_id", "quote")}
 
         reinforces = resolve_reinforces(item.get("reinforces_id"), existing_ids)
         if reinforces is not None:
+            if supersedes is not None:
+                continue
             proposals.append(
                 CandidateProposal(
                     label="",
@@ -884,6 +937,7 @@ def propose_communication_style(
                     subject=subject,
                     evidence_model="set",
                     reinforces_id=reinforces,
+                    applicability=scope,
                 )
             )
             continue
@@ -901,6 +955,8 @@ def propose_communication_style(
                 kind="communication_style",
                 subject=subject,
                 evidence_model="set",
+                applicability=scope,
+                supersedes_id=supersedes,
             )
         )
     return proposals

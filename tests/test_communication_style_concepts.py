@@ -464,5 +464,241 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("Jacob", aiko)
 
 
+class ApplicabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.memory = types.SimpleNamespace(
+            id=500, content="When troubleshooting, keep it brief except while learning.",
+            created_at="2026-10-01T12:00:00+00:00",
+        )
+        self.payload = {
+            "contexts": [{"name": "troubleshooting", "memory_id": 500,
+                          "quote": "When troubleshooting"}],
+            "exceptions": [{"name": "learning", "memory_id": 500,
+                            "quote": "except while learning"}],
+        }
+
+    def test_contrastive_context_and_exception(self):
+        from app.core.concepts.concept_applicability import (
+            applicability_state, current_contexts, parse_applicability,
+        )
+
+        scope = parse_applicability(self.payload, {500: self.memory})
+        self.assertIsNotNone(scope)
+        self.assertEqual(scope["contexts"][0]["source_recorded_at"], self.memory.created_at)
+        self.assertEqual(scope["contexts"][0]["observed_at"], "")
+        self.assertEqual(applicability_state(scope, current_contexts("Let's debug")), "matched")
+        self.assertEqual(applicability_state(scope, current_contexts("I'm learning")), "exception")
+        self.assertEqual(applicability_state(scope, set()), "unknown_context")
+        self.assertEqual(
+            applicability_state(scope, {"learning", "troubleshooting"}), "unknown_context",
+        )
+
+    def test_invented_quote_or_source_is_not_admitted(self):
+        from app.core.concepts.concept_applicability import parse_applicability
+
+        self.assertIsNone(parse_applicability(self.payload, {}))
+        self.memory.content = "A general delivery note without a context."
+        self.assertIsNone(parse_applicability(self.payload, {500: self.memory}))
+
+    def test_nonassertions_do_not_become_scoped_traits(self):
+        from app.core.concepts.concept_applicability import parse_applicability
+
+        original = self.memory.content
+        for prefix in ('He quoted "', "Hypothetically, ", "In roleplay, ", "Supposing "):
+            with self.subTest(prefix=prefix):
+                self.memory.content = prefix + original
+                self.assertIsNone(parse_applicability(self.payload, {500: self.memory}))
+        self.memory.content = "He said '" + original + "'"
+        self.assertIsNone(parse_applicability(self.payload, {500: self.memory}))
+
+    def test_only_fresh_compatible_situation_supplies_context(self):
+        from app.core.concepts.concept_applicability import current_contexts
+
+        snapshot = types.SimpleNamespace(
+            inferred=types.SimpleNamespace(status="active", shared_activity="learning Python"),
+            inferred_stale=False, world_compatible=True,
+        )
+        self.assertEqual(current_contexts("Continue please", snapshot), {"learning"})
+        self.assertEqual(current_contexts("Let's debug", snapshot), {"troubleshooting"})
+        self.assertEqual(current_contexts('He quoted "learning Python"', snapshot), set())
+        snapshot.inferred_stale = True
+        self.assertEqual(current_contexts("Continue please", snapshot), set())
+
+    def test_scoped_claims_survive_dedupe_merge_and_same_context_correction(self):
+        from app.core.concepts.concept_applicability import parse_applicability
+        from app.core.concepts.proposers.base import CandidateProposal
+
+        h = WorkerHarness(lambda system, user: {"concepts": []}, self_memories=[self.memory])
+        stats = {"added": 0, "reinforced": 0, "by_subject": {}}
+
+        def proposal(label, name, quote, **kwargs):
+            scope = parse_applicability(
+                {"contexts": [{"name": name, "memory_id": 500, "quote": quote}]},
+                {500: self.memory},
+            )
+            return CandidateProposal(
+                label, "source-cited preference", 0.8, [("memory", "500")],
+                "communication_style", "user", applicability=scope, **kwargs,
+            )
+
+        brief = proposal("Keep replies brief", "troubleshooting", "When troubleshooting")
+        self.memory.content += " While learning, use detailed replies."
+        detail = proposal("Use detailed replies", "learning", "While learning")
+        h.worker._persist(brief, stats)
+        first = h.store.list_by(kind="communication_style")[0]
+        h.worker._persist(detail, stats)
+        rows = h.store.list_by(kind="communication_style")
+        self.assertEqual(len(rows), 2)
+        second = next(row for row in rows if row.concept_id != first.concept_id)
+        self.assertFalse(h.store.merge_into(
+            canonical_id=first.concept_id, absorbed_id=second.concept_id,
+        ))
+        self.memory.content += " When troubleshooting, use detailed replies instead."
+        changed = proposal(
+            "Use detailed replies instead", "troubleshooting", "When troubleshooting",
+            supersedes_id=first.concept_id,
+        )
+        changed.applicability["correction"] = {
+            "memory_id": 500, "quote": "When troubleshooting, use detailed replies instead.",
+        }
+        h.worker._persist(changed, stats)
+        self.assertEqual(h.store.count(), 3)
+        self.assertIsNotNone(h.store.applicability.get(first.concept_id)["superseded_by"])
+        self.assertNotIn("superseded_by", h.store.applicability.get(second.concept_id))
+        self.assertEqual(h.store.get(first.concept_id).label, "Keep replies brief")
+        self.assertEqual(h.store.get(second.concept_id).label, "Use detailed replies")
+        changed.supersedes_id = second.concept_id
+        h.worker._persist(changed, stats)
+        self.assertEqual(h.store.count(), 3)
+        self.assertNotIn("superseded_by", h.store.applicability.get(second.concept_id))
+
+    def test_parser_admits_scope_only_from_cited_asserted_sources(self):
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "Brief while troubleshooting", "evidence_memory_ids": [500],
+                "applicability": self.payload, "confidence": 0.8,
+            }]}
+
+        ctx, calls = _ctx(responder)
+        result = propose_communication_style_user(ctx, memories=[self.memory])
+        self.assertEqual(result[0].applicability["contexts"][0]["name"], "troubleshooting")
+        self.assertIn("EXACT span", calls["system"])
+        self.memory.content = "Hypothetical: " + self.memory.content
+        self.assertEqual(propose_communication_style_user(ctx, memories=[self.memory]), [])
+
+    def test_dates_are_cited_and_expiry_is_not_reinforcement_age(self):
+        from unittest.mock import patch
+        from app.core.concepts.concept_applicability import applicability_state, parse_applicability
+        from app.core.infra import timephrase
+
+        self.memory.content += " From 2026-10-01 until 2026-10-07."
+        self.payload["validity"] = {
+            "from": "2026-10-01", "until": "2026-10-07", "memory_id": 500,
+            "quote": "From 2026-10-01 until 2026-10-07",
+        }
+        scope = parse_applicability(self.payload, {500: self.memory})
+        with patch.object(timephrase, "now", return_value=timephrase.parse_iso("2026-10-08")):
+            self.assertEqual(applicability_state(scope, {"troubleshooting"}), "outside_validity")
+        self.payload["validity"]["until"] = "2099-01-01"
+        self.assertIsNone(parse_applicability(self.payload, {500: self.memory}))
+
+    def test_correction_quote_cannot_borrow_scope_from_another_note(self):
+        def responder(system, user):
+            return {"concepts": [{
+                "label": "Use detail when troubleshooting", "evidence_memory_ids": [500],
+                "applicability": self.payload, "supersedes_id": 42,
+                "correction": {"memory_id": 500, "quote": "While learning, use detail instead."},
+            }]}
+
+        self.memory.content += " While learning, use detail instead."
+        ctx, _ = _ctx(responder)
+        self.assertEqual(propose_communication_style_user(
+            ctx, memories=[self.memory],
+            existing=[ExistingConcept(42, "Brief when troubleshooting")],
+        ), [])
+
+    def test_future_succession_keeps_current_claim_until_start_date(self):
+        from unittest.mock import patch
+        from app.core.concepts.concept_applicability import applicability_state
+        from app.core.infra import timephrase
+
+        h = WorkerHarness(lambda system, user: {"concepts": []})
+        old = {"version": 1, "contexts": [{"name": "learning"}], "exceptions": []}
+        new = {**old, "validity": {"from": "2026-11-01"}}
+        h.store.applicability.record(1, old)
+        h.store.applicability.record(2, new)
+        h.store.applicability.supersede(1, 2, {"memory_id": 500, "quote": "explicit change"})
+        with patch.object(timephrase, "now", return_value=timephrase.parse_iso("2026-10-08")):
+            self.assertEqual(
+                applicability_state(h.store.applicability.get(1), {"learning"}), "matched",
+            )
+            self.assertEqual(applicability_state(new, {"learning"}), "outside_validity")
+        with patch.object(timephrase, "now", return_value=timephrase.parse_iso("2026-11-01")):
+            self.assertEqual(
+                applicability_state(h.store.applicability.get(1), {"learning"}), "superseded",
+            )
+            self.assertEqual(applicability_state(new, {"learning"}), "matched")
+
+    def test_l55_context_corpus_and_corrupt_records(self):
+        import json
+        from pathlib import Path
+        from app.core.concepts.concept_applicability import applicability_state, current_contexts
+
+        corpus = json.loads((Path(__file__).parent / "fixtures" / "reasoning_l55.json").read_text())
+        for case in corpus["applicability_cases"]:
+            with self.subTest(case=case["id"]):
+                self.assertEqual(current_contexts(case["turn"]), set(case["contexts"]))
+        for scope in (None, {}, {"version": 1, "contexts": None},
+                      {"version": 1, "contexts": [{"name": "unknown"}]},
+                      {"version": 1, "contexts": [{"name": "learning"}], "validity": None}):
+            with self.subTest(scope=scope):
+                self.assertEqual(applicability_state(scope, {"learning"}), "unknown")
+
+    def test_exception_span_cannot_be_recast_as_positive_context(self):
+        from app.core.concepts.concept_applicability import parse_applicability
+
+        payload = {"contexts": [{"name": "learning", "memory_id": 500,
+                                 "quote": "while learning"}]}
+        self.assertIsNone(parse_applicability(payload, {500: self.memory}))
+
+    def test_everyday_casual_phrases_are_source_cited_contexts(self):
+        from app.core.concepts.concept_applicability import (
+            applicability_state, current_contexts, parse_applicability,
+        )
+
+        for phrase in (
+            "just chatting", "just talking", "catching up", "hanging out",
+            "everyday discussion", "relaxed conversation", "light-hearted chat", "chitchat",
+        ):
+            with self.subTest(phrase=phrase):
+                memory = types.SimpleNamespace(id=501, content=f"When {phrase}, keep it warm.")
+                scope = parse_applicability(
+                    {"contexts": [{"name": "casual", "memory_id": 501,
+                                   "quote": f"When {phrase}"}]}, {501: memory},
+                )
+                self.assertIsNotNone(scope)
+                self.assertEqual(current_contexts(f"Let's spend time {phrase}"), {"casual"})
+                self.assertEqual(applicability_state(scope, {"casual"}), "matched")
+
+    def test_casual_extension_does_not_guess_from_generic_chat_or_override_ambiguity(self):
+        from app.core.concepts.concept_applicability import current_contexts
+
+        for text in ("Explain the chat server", "Let's discuss the film", "Hello!",
+                     "Hypothetically, just chatting", 'He quoted "hanging out"',
+                     "Stop just chatting"):
+            with self.subTest(text=text):
+                self.assertEqual(current_contexts(text), set())
+        self.assertEqual(
+            current_contexts("I'm learning while just chatting"), {"learning", "casual"},
+        )
+        snapshot = types.SimpleNamespace(
+            inferred=types.SimpleNamespace(status="active", shared_activity="hanging out"),
+            inferred_stale=False, world_compatible=True,
+        )
+        self.assertEqual(current_contexts("Continue please", snapshot), {"casual"})
+        self.assertEqual(current_contexts("Let's debug", snapshot), {"troubleshooting"})
+        self.assertEqual(current_contexts("No longer hanging out", snapshot), set())
+
+
 if __name__ == "__main__":
     unittest.main()
