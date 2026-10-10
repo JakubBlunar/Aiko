@@ -111,6 +111,18 @@ class BookTests(unittest.TestCase):
         self.assertEqual(titled["title"], "The Glasshouse Letters")
         self.assertEqual(titled["progress"], 3)
 
+    def test_titling_preserves_supplied_contents_and_finished_status(self) -> None:
+        state = {
+            "title": "A supplied story", "chapters": ["Original text."],
+            "progress": 1, "total": 1, "status": "finished",
+            "last_read_excerpt": "Original text.",
+        }
+        self.assertEqual(evo.ensure_book_titled(state, random.Random(1)), {
+            **state, "blurb": "",
+        })
+        unnamed = evo.ensure_book_titled({"chapters": ["Original text."]}, random.Random(1))
+        self.assertEqual(unnamed["title"], "the supplied text")
+
     def test_stamp_same_title_keeps_progress(self) -> None:
         rng = random.Random(0)
         stamped = evo.stamp_book_title(
@@ -163,6 +175,10 @@ class _FakeItem:
         self.description = ""
         self.quantity = quantity
         self.state = state or {}
+        if slug == evo.BOOK_SLUG and "chapters" not in self.state:
+            self.state["chapters"] = ["An original test passage about a garden."] * int(
+                self.state.get("total") or 5
+            )
         self.consumable = consumable
         self.kind = kind
         self.location_id = location_id
@@ -324,6 +340,23 @@ class WorkerTests(unittest.TestCase):
         self.assertTrue(ring)
         self.assertEqual(ring[-1]["key"], "room_evolution")
         self.assertIn("Old Book", ring[-1]["seed"])
+        self.assertNotIn("ending", ring[-1]["seed"])
+        self.assertEqual(book.state["title"], "Old Book")
+        self.assertEqual(book.state["status"], "finished")
+        self.assertEqual(book.state["progress"], 5)
+        self.assertIn("test passage", book.state["last_read_excerpt"])
+
+    def test_title_and_counter_do_not_grant_reading(self) -> None:
+        book = _FakeItem(
+            1, evo.BOOK_SLUG, "Old Book",
+            state={"title": "Old Book", "progress": 4, "total": 5, "chapters": []},
+        )
+        self.assertIsNone(evo.available_book_step(book.state))
+        kv = _FakeKV()
+        worker = _worker(world=_FakeWorld([book]), kv=kv)
+        self.assertIsNone(worker._evolve_book(book, datetime.now(timezone.utc)))
+        self.assertEqual(book.state["progress"], 4)
+        self.assertEqual(load_idle_seeds(kv.kv_get), [])
 
     def test_cookie_refill_when_low(self) -> None:
         kv = _FakeKV()

@@ -7,9 +7,9 @@ the ``world_updated`` patch so the World tab shows the drift:
 * **tea pot** — cycles full → half → empty → (brews a fresh flavour).
 * **cookie jar** — refilled with a fresh batch once it runs low/empty
   (closes the loop with the away-beat "snack" that consumes it).
-* **sci-fi paperback** — gains reading progress and, on finishing, flips to
-  a brand-new book and emits a takeaway **seed** through the shared H17
-  idle-seed cue ("finally finished X — that ending!").
+* **paperback** — advances only through supplied passages, retaining the
+  latest excerpt. Finishing leaves the same book intact and emits a
+  concrete acknowledgement, never an invented plot reaction.
 * **the kitchen** (K91) — folds duplicate food stacks that months of gifts
   scattered across rooms back into one row per slug, so an away beat isn't
   eating from an arbitrary one of four "cookies".
@@ -21,7 +21,6 @@ a wall-clock floor so the room drifts gradually rather than thrashing.
 """
 from __future__ import annotations
 
-import json
 import logging
 import random
 from datetime import datetime, timezone
@@ -124,20 +123,18 @@ class RoomEvolutionWorker:
         candidates = sum(
             (
                 evo.TEA_POT_SLUG in items,
-                evo.BOOK_SLUG in items,
+                evo.BOOK_SLUG in items
+                and evo.available_book_step(items[evo.BOOK_SLUG].state) is not None,
                 jar is None or jar.quantity <= _COOKIE_LOW_AT,
                 self._duplicate_food_slugs(),
             )
         )
         if candidates <= 0:
             return WorkSignal(pressure=0.0, reason="no_candidates")
-        book_in_play = evo.BOOK_SLUG in items
         return WorkSignal(
             pressure=pressure_from_count(candidates, saturation=4),
             reason=f"{candidates} transitions",
-            needs_llm=bool(
-                book_in_play and self._ollama is not None and self._model
-            ),
+            needs_llm=False,
         )
 
     def run(self) -> dict[str, Any]:
@@ -156,7 +153,10 @@ class RoomEvolutionWorker:
 
         if evo.TEA_POT_SLUG in items:
             candidates.append(lambda n: self._evolve_tea(items[evo.TEA_POT_SLUG]))
-        if evo.BOOK_SLUG in items:
+        if (
+            evo.BOOK_SLUG in items
+            and evo.available_book_step(items[evo.BOOK_SLUG].state) is not None
+        ):
             candidates.append(lambda n: self._evolve_book(items[evo.BOOK_SLUG], n))
         # Cookies: refill candidate only when low or missing entirely.
         jar = items.get(evo.COOKIE_JAR_SLUG)
@@ -265,9 +265,10 @@ class RoomEvolutionWorker:
         return {"kind": "kitchen", "merged": merged}
 
     def _evolve_book(self, item: Any, now: datetime) -> dict[str, Any] | None:
-        new_state, new_name, new_desc, finished = evo.advance_book(
-            item.state, self._rng,
-        )
+        step = evo.available_book_step(item.state)
+        if step is None:
+            return None
+        new_state, new_name, new_desc, finished = step
         updated = self._world.update_item(
             item.id, name=new_name, description=new_desc, state=new_state,
         )
@@ -276,13 +277,16 @@ class RoomEvolutionWorker:
         self._broadcast({"item": updated.to_dict()})
 
         if finished:
-            seed = self._compose_book_seed(finished, new_name)
+            seed = (
+                f"I finished the supplied passages of {finished}. "
+                "I can come back to the saved text."
+            )
             if seed:
                 self._emit_seed(now, f"reading {finished}", seed)
             log.info(
-                "room-evolution book finished: %s -> %s", finished, new_name,
+                "room-evolution supplied book finished: %s", finished,
             )
-            return {"kind": "book", "finished": finished, "next": new_name}
+            return {"kind": "book", "finished": finished, "status": "finished"}
 
         log.info(
             "room-evolution book: progress=%s/%s",
@@ -291,49 +295,6 @@ class RoomEvolutionWorker:
         return {"kind": "book", "progress": new_state.get("progress")}
 
     # ── helpers ───────────────────────────────────────────────────────
-
-    def _compose_book_seed(
-        self, finished_title: str, next_title: str,
-    ) -> str | None:
-        """Compose the "finished X" takeaway. LLM if available, else template."""
-        if self._ollama is not None and self._model:
-            try:
-                name = self._user_display_name_provider() or "you"
-            except Exception:
-                name = "you"
-            system = (
-                f"You are Aiko's quiet inner voice. You just finished reading "
-                f'"{finished_title}" and you\'re about to start "{next_title}". '
-                "In ONE short sentence (max ~20 words), write a single "
-                "spoiler-free reaction or thought about finishing it that you "
-                f"might bring up to {name} later. First person, casual. No "
-                'quotes, no preamble. Return JSON {"seed": "<the thought>"}.'
-            )
-            try:
-                content, _usage = self._ollama.chat_json(
-                    [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": "Give me the thought."},
-                    ],
-                    model=self._model,
-                    options={"temperature": 0.9, "num_predict": 80},
-                    format_json=True,
-                    surface="room_evolution_book",
-                )
-                if content:
-                    blob = json.loads(content)
-                    if isinstance(blob, dict):
-                        seed = str(blob.get("seed") or "").strip()
-                        if seed:
-                            return seed[:240]
-            except Exception:
-                log.debug("book seed compose failed", exc_info=True)
-        # Deterministic fallback — finishing a book is worth a seed even
-        # without a worker model.
-        return (
-            f"I finally finished \"{finished_title}\" — that ending! "
-            "I want to tell someone about it."
-        )
 
     def _emit_seed(self, now: datetime, activity: str, seed: str) -> None:
         append_idle_seed(

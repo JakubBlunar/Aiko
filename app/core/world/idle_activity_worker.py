@@ -163,7 +163,7 @@ def append_journal(
     entry: dict[str, Any],
     *,
     max_entries: int,
-) -> None:
+) -> bool:
     """Append ``entry`` to the journal ring, trimming to ``max_entries``."""
     journal = load_journal(kv_get)
     journal.append(entry)
@@ -171,8 +171,10 @@ def append_journal(
         journal = journal[-max_entries:]
     try:
         kv_set(AWAY_ACTIVITIES_JOURNAL_KEY, json.dumps(journal))
+        return True
     except Exception:
-        log.debug("away_activity journal write failed", exc_info=True)
+        log.warning("away_activity journal write failed", exc_info=True)
+        return False
 
 
 def load_idle_seeds(kv_get: Callable[[str], str | None]) -> list[dict[str, Any]]:
@@ -402,7 +404,14 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             # H22 — stamp the outing's own cooldown when chosen.
             if beat.key == "outing":
                 self._mark_outing_fired(now)
-            beat_effect = self._apply_world_mutation(beat)
+            try:
+                beat_effect = self._apply_world_mutation(beat)
+                if beat.item_effect is not None and beat_effect is None:
+                    raise RuntimeError("the planned item action did not complete")
+            except Exception:
+                self._restore_moved_items(chain, keep_id=None)
+                log.warning("away activity failed: key=%s", beat.key, exc_info=True)
+                return {"fired": 0, "errored": True, "reason": "world_action_failed"}
             if beat_effect:
                 effects.append(beat_effect)
 
@@ -460,9 +469,11 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         }
         if len(chain) > 1:
             entry["keys"] = [b.key for b in chain]
-        append_journal(
+        journalled = append_journal(
             self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
         )
+        if not journalled:
+            return {"fired": 0, "errored": True, "reason": "journal_write_failed"}
         noted = self._note_pursuit(
             now, chain, summary, effects, closed_intention,
         )
@@ -1042,13 +1053,16 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             new_state = self._world_store.set_state(**state_kwargs)
             self._broadcast({"state": new_state.to_dict()})
         except Exception:
-            log.debug("away_activity set_state failed", exc_info=True)
+            log.warning("away_activity set_state failed", exc_info=True)
+            raise
 
         if plan.consume_item_id is not None:
             try:
-                item, _consumed = self._world_store.consume_item(
+                item, consumed = self._world_store.consume_item(
                     plan.consume_item_id, amount=1,
                 )
+                if not consumed:
+                    raise RuntimeError("the snack was not consumed")
                 if item is None:
                     self._broadcast(
                         {"deleted_item_id": int(plan.consume_item_id)}
@@ -1056,7 +1070,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 else:
                     self._broadcast({"item": item.to_dict()})
             except Exception:
-                log.debug("away_activity consume_item failed", exc_info=True)
+                log.warning("away_activity consume_item failed", exc_info=True)
+                raise
 
         if plan.move_item_id is not None and plan.move_to_location_id is not None:
             try:
@@ -1066,8 +1081,11 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 )
                 if moved is not None:
                     self._broadcast({"item": moved.to_dict()})
+                else:
+                    raise RuntimeError("the item could not be moved")
             except Exception:
-                log.debug("away_activity update_item failed", exc_info=True)
+                log.warning("away_activity update_item failed", exc_info=True)
+                raise
 
         if plan.restore_strays_at_location_id is not None:
             restore = getattr(self._world_store, "restore_strays_at", None)
@@ -1076,9 +1094,10 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                     for restored in restore(plan.restore_strays_at_location_id) or []:
                         self._broadcast({"item": restored.to_dict()})
                 except Exception:
-                    log.debug(
+                    log.warning(
                         "away_activity restore_strays failed", exc_info=True,
                     )
+                    raise
 
         if plan.item_effect is not None:
             return self._apply_item_effect(plan.item_effect)
@@ -1143,9 +1162,10 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         """Read one chapter. Finishing is a real event, so it seeds a cue."""
         from app.core.world import room_evolution as evo
 
-        new_state, new_name, new_desc, finished = evo.advance_book(
-            item.state, self._rng,
-        )
+        step = evo.available_book_step(item.state)
+        if step is None:
+            return None
+        new_state, new_name, new_desc, finished = step
         updated = self._world_store.update_item(
             int(item.id), name=new_name, description=new_desc, state=new_state,
         )
@@ -1163,8 +1183,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                     "activity": "reading " + str(finished),
                     "key": "read_book",
                     "seed": (
-                        'I finished "' + str(finished) + '" while you were out '
-                        "— I want to talk about that ending."
+                        'I finished the supplied passages of "' + str(finished)
+                        + '". The saved text is still there to revisit.'
                     ),
                 },
                 max_entries=self._idle_seed_max_ring,
@@ -1193,6 +1213,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             "the gist of what you'd casually mention you got up to — first "
             f"person, past tense, {shape}, no greeting, no stage "
             "directions, no emoji. Keep it small and natural."
+            " Preserve exactly what happened: do not add observations, findings, "
+            "physical outings or object use that is not in the supplied activity."
         )
         try:
             content, _usage = self._ollama.chat_json(
@@ -1317,6 +1339,38 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             posture = "sitting"
         slug = str(blob.get("location_slug") or "").strip().lower()
         loc = loc_by_slug.get(slug)
+        effect = self._resolve_named_effect(blob.get("changed_item"), items)
+        if str(blob.get("changed_item") or "").strip() and effect is None:
+            log.info("away activity rejected: unsupported item action")
+            return None
+        if loc is None:
+            log.info("away activity rejected: unknown location")
+            return None
+        # Free-text plans can otherwise invent arbitrary unsupported experiences.
+        if activity not in {"thinking", "idle", "napping"} and effect is None:
+            log.info("away activity rejected: no supported action for %s", activity)
+            return None
+        if effect is not None:
+            item = next(row for row in items if row.id == effect.item_id)
+            if effect.action == EFFECT_ADVANCE_BOOK:
+                from app.core.world.room_evolution import available_book_step
+
+                if available_book_step(item.state) is None:
+                    return None
+                activity, summary = "reading", beat_detail.read_book_summary(item)
+            elif effect.action == EFFECT_POUR_TEA:
+                tea_line = beat_detail.tea_summary(item)
+                if not tea_line:
+                    return None
+                activity, summary = "making_tea", tea_line
+            else:
+                activity, summary = "watering_plants", "watered " + item.name
+        else:
+            summary = {
+                "thinking": "let my thoughts wander for a while",
+                "idle": "rested quietly for a while",
+                "napping": "settled down for a little rest",
+            }[activity]
         return ActivityPlan(
             key="llm",
             posture=posture,
@@ -1324,9 +1378,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             summary=summary,
             aiko_location_id=(loc.id if loc is not None else None),
             precomposed=True,
-            item_effect=self._resolve_named_effect(
-                blob.get("changed_item"), items,
-            ),
+            item_effect=effect,
         )
 
     def _resolve_named_effect(
@@ -1337,7 +1389,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         The action is *derived* from the matched row's kind rather than
         taken from the model, so there is no way to ask for a transition
         the item doesn't support. An unmatched or unsupported name is
-        simply dropped -- the beat still happens, it just leaves no trace.
+        rejected before the plan can be executed.
         """
         name = str(raw_name or "").strip().lower()
         if not name:

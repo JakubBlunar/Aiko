@@ -27,15 +27,11 @@ OUTING_DAYLIGHT_PERIODS: frozenset[str] = frozenset(
 )
 
 # Varied past-tense outing flavours. She's back by the time the beat is
-# journalled, so each is narrated as a completed short trip. v0 of H5 —
-# no scene_id, no item relocation; the trace lives in the journal + the
-# H17 seed path (a small detail she brought home).
+# journalled as imagination, not physical travel.
 OUTING_BEATS: tuple[str, ...] = (
-    "popped out for a short walk — the air was lovely",
-    "stepped out and grabbed a coffee from the place downstairs",
-    "took a quick stroll around the block to stretch my legs",
-    "nipped out for some fresh air and watched the street for a bit",
-    "wandered out to the little shop on the corner and back",
+    "imagined taking a little walk somewhere quiet",
+    "daydreamed about a cosy cafe for a while",
+    "imagined a little street I might like to explore",
 )
 
 

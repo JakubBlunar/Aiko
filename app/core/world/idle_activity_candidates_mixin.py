@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from app.core.world import beat_detail
+from app.core.world.room_evolution import available_book_step
 from app.core.world.idle_activity_plan import (
     EFFECT_ADVANCE_BOOK,
     EFFECT_POUR_TEA,
@@ -56,6 +57,12 @@ class ActivityCandidatesMixin:
             locations = [
                 loc for loc in locations
                 if getattr(loc, "scene_id", scene_id) == scene_id
+            ]
+            local_ids = {loc.id for loc in locations}
+            items = [
+                item for item in items
+                if getattr(item, "location_id", None) is None
+                or item.location_id in local_ids
             ]
 
         candidates: dict[str, ActivityPlan] = {}
@@ -106,12 +113,12 @@ class ActivityCandidatesMixin:
                 aiko_location_id=loc_bed.id,
             )
 
-        # Doodle — always available, no inventory needed.
+        # Imagining a drawing needs no drawing tool or invented notebook.
         candidates["doodle"] = ActivityPlan(
             key="doodle",
             posture="sitting",
-            activity="doodling",
-            summary="doodled in my notebook for a while",
+            activity="thinking",
+            summary="thought about something I might draw for a while",
             aiko_location_id=(
                 loc_beanbag.id if loc_beanbag
                 else (loc_desk.id if loc_desk else None)
@@ -226,8 +233,10 @@ class ActivityCandidatesMixin:
             (
                 i
                 for i in items
-                if getattr(i, "kind", "") == "book"
-                or "book" in (getattr(i, "name", "") or "").lower()
+                if (
+                    getattr(i, "kind", "") == "book"
+                    or "book" in (getattr(i, "name", "") or "").lower()
+                ) and available_book_step(getattr(i, "state", None)) is not None
             ),
             None,
         )

@@ -154,6 +154,20 @@ class RenderBlockTests(unittest.TestCase):
         block = controller._render_world_block()
         self.assertNotEqual(block, "")
         self.assertIn("desk", block.lower())
+        self.assertIn("simulated world", block)
+        self.assertIn("object names do not grant tools", block)
+        _cleanup(tmp, controller)
+
+    def test_unified_grounding_preserves_world_capability_boundary(self) -> None:
+        from types import SimpleNamespace
+        from app.core.conversation.grounding_line import GroundingContext
+
+        controller, _, tmp = _make_controller()
+        controller._settings.agent = SimpleNamespace(grounding_line_mode="replace")
+        controller._build_grounding_context = lambda: GroundingContext(world_location="desk")
+        block = controller._render_grounding_line()
+        self.assertIn("simulated world", block)
+        self.assertIn("object names do not grant tools", block)
         _cleanup(tmp, controller)
 
     def test_returns_empty_when_store_missing(self) -> None:

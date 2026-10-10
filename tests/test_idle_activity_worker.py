@@ -10,9 +10,11 @@ The worker composes its line via the deterministic fallback
 from __future__ import annotations
 
 import random
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from types import SimpleNamespace
 
 from app.core.world import day_intention, in_progress_beat
 from app.core.world.idle_activity_worker import (
@@ -63,6 +65,10 @@ class _FakeItem:
         self.home_location_id = home_location_id
         self.slug = slug or name.lower().replace(" ", "_")
         self.state: dict[str, Any] = state if state is not None else {}
+        if kind == "book" and "chapters" not in self.state:
+            self.state["chapters"] = [
+                "An original test passage about a gardener noticing a new leaf."
+            ] * int(self.state.get("total") or 16)
         self.description = ""
         self.updated_at = ""
 
@@ -759,7 +765,7 @@ class ItemEffectTests(unittest.TestCase):
         self.assertIn("three chapters in", journal[0]["summary"])
         self.assertIn("four chapters in", journal[1]["summary"])
 
-    def test_finishing_a_book_seeds_a_cue_and_starts_a_new_one(self) -> None:
+    def test_finishing_supplied_passages_does_not_invent_a_new_book(self) -> None:
         kv = _FakeKV()
         book = self._book()
         book.state["progress"] = 15  # one chapter from the end of 16
@@ -770,8 +776,9 @@ class ItemEffectTests(unittest.TestCase):
         self.assertEqual(
             result["item_effect"]["finished"], "The Glasshouse Letters"
         )
-        self.assertNotEqual(book.state["title"], "The Glasshouse Letters")
-        self.assertEqual(book.state["progress"], 0)
+        self.assertEqual(book.state["title"], "The Glasshouse Letters")
+        self.assertEqual(book.state["progress"], 16)
+        self.assertEqual(book.state["status"], "finished")
         seeds = load_idle_seeds(kv.get)
         self.assertTrue(seeds)
         self.assertIn("Glasshouse", seeds[-1]["seed"])
@@ -857,7 +864,7 @@ class ItemEffectTests(unittest.TestCase):
         self.assertIn("midnight snack", result["summary"])
         self.assertIn(7, world.consumed)
 
-    def test_effect_failure_does_not_lose_the_beat(self) -> None:
+    def test_effect_failure_is_not_journalled_as_a_completed_beat(self) -> None:
         kv = _FakeKV()
         book = self._book()
         world = _FakeWorldStore(items=[book])
@@ -869,9 +876,10 @@ class ItemEffectTests(unittest.TestCase):
         worker = _make_worker(world=world, kv=kv, cooldown=0.0)
         worker.force_activity("read_book")
         result = worker.run()
-        self.assertEqual(result["fired"], 1)
+        self.assertEqual(result["fired"], 0)
+        self.assertEqual(result["reason"], "world_action_failed")
         self.assertNotIn("item_effect", result)
-        self.assertEqual(len(load_journal(kv.get)), 1)
+        self.assertEqual(len(load_journal(kv.get)), 0)
 
 
 class EpisodeTests(unittest.TestCase):
@@ -1327,6 +1335,92 @@ class NamedEffectResolutionTests(unittest.TestCase):
         self.assertIsNone(self._worker()._resolve_named_effect(None, []))
 
 
+class GroundedActivityTests(unittest.TestCase):
+    def _llm_plan(self, activity: str, changed_item: str = "", items=None):
+        worker = _make_worker(world=_FakeWorldStore(), kv=_FakeKV())
+        worker._model = "test"
+        worker._ollama = SimpleNamespace(chat_json=lambda *_args, **_kwargs: (
+            json.dumps({
+                "activity": activity, "summary": "performed an invented experience",
+                "changed_item": changed_item, "location_slug": "desk",
+                "posture": "sitting",
+            }), None,
+        ))
+        return worker._compose_plan_llm(
+            "Jacob", [_FakeLoc(1, "desk", "desk")], items or [],
+        )
+
+    def test_llm_cannot_grant_itself_an_unsupported_action(self) -> None:
+        self.assertIsNone(self._llm_plan("browsing"))
+        self.assertIsNone(self._llm_plan("reading", "an invented book"))
+        self.assertIsNone(self._llm_plan(
+            "reading", "book", [_FakeItem(1, "book", kind="book", state={"chapters": []})],
+        ))
+
+    def test_llm_thinking_is_grounded_not_its_invented_summary(self) -> None:
+        plan = self._llm_plan("thinking")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.summary, "let my thoughts wander for a while")
+
+    def test_unreadable_book_is_not_a_reading_candidate(self) -> None:
+        book = _FakeItem(1, "a named book", kind="book", state={"chapters": []})
+        worker = _make_worker(world=_FakeWorldStore(items=[book]), kv=_FakeKV())
+        snapshot = worker._build_candidates("Jacob", _utc_now())
+        self.assertNotIn("read_book", snapshot.candidates)
+
+    def test_other_scene_items_are_unavailable(self) -> None:
+        world = _FakeWorldStore(
+            items=[_FakeItem(1, "cookies", kind="food", consumable=True, location_id=2)],
+            locations=[_FakeLoc(1, "desk", scene_id=1), _FakeLoc(2, "kitchen", scene_id=2)],
+        )
+        worker = _make_worker(world=world, kv=_FakeKV())
+        snapshot = worker._build_candidates("Jacob", _utc_now())
+        self.assertEqual(snapshot.items, [])
+        self.assertNotIn("snack", snapshot.candidates)
+
+    def test_imagining_a_drawing_does_not_create_a_notebook(self) -> None:
+        worker = _make_worker(world=_FakeWorldStore(), kv=_FakeKV(), cooldown=0)
+        worker.force_activity("doodle")
+        result = worker.run()
+        self.assertEqual(result["activity"], "thinking")
+        self.assertIn("might draw", result["summary"])
+        self.assertNotIn("sketchbook", result["summary"])
+
+    def test_failed_consumption_does_not_record_eating(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore(
+            items=[_FakeItem(1, "cookies", kind="food", consumable=True)],
+        )
+        world.consume_item = lambda *_args, **_kwargs: None
+        worker = _make_worker(world=world, kv=kv, cooldown=0)
+        worker.force_activity("snack")
+        self.assertEqual(worker.run()["reason"], "world_action_failed")
+        self.assertEqual(load_journal(kv.get), [])
+
+    def test_failed_room_state_does_not_record_completed_activity(self) -> None:
+        kv = _FakeKV()
+        world = _FakeWorldStore()
+        world.set_state = lambda *_args, **_kwargs: None
+        worker = _make_worker(world=world, kv=kv, cooldown=0)
+        worker.force_activity("doodle")
+        self.assertEqual(worker.run()["reason"], "world_action_failed")
+        self.assertEqual(load_journal(kv.get), [])
+
+    def test_journal_failure_is_explicit(self) -> None:
+        kv = _FakeKV()
+        worker = _make_worker(world=_FakeWorldStore(), kv=kv, cooldown=0)
+
+        def fail_write(key, value):
+            if key == AWAY_ACTIVITIES_JOURNAL_KEY:
+                raise OSError("disk full")
+            kv.set(key, value)
+
+        worker._kv_set = fail_write
+        worker.force_activity("doodle")
+        self.assertEqual(worker.run()["reason"], "journal_write_failed")
+        self.assertEqual(load_journal(kv.get), [])
+
+
 class OutingTests(unittest.TestCase):
     """H22 — the rare 'I stepped out for a bit' away-beat."""
 
@@ -1338,6 +1432,9 @@ class OutingTests(unittest.TestCase):
         result = worker.run()
         self.assertEqual(result["fired"], 1)
         self.assertEqual(result["key"], "outing")
+        self.assertTrue(any(
+            word in result["summary"] for word in ("imagined", "daydreamed")
+        ))
         journal = load_journal(kv.get)
         self.assertEqual(journal[-1]["key"], "outing")
         # Outing cooldown was stamped so the next one is gated.

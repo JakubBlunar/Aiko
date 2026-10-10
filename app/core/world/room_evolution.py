@@ -168,10 +168,15 @@ def ensure_book_titled(
     before titles existed, without resetting the chapter count.
     """
     title, blurb, progress, total = _norm_book(state)
+    extra = dict(state or {})
+    if extra.get("chapters") and not title:
+        title = "the supplied text"
     if title:
-        return _book_state(title, blurb, progress, total)
+        return {**extra, **_book_state(
+            title, blurb, progress, total, status=str(extra.get("status") or "reading"),
+        )}
     new_title, new_blurb = pick_book_title(rng, exclude=exclude)
-    return _book_state(new_title, new_blurb, progress, total)
+    return {**extra, **_book_state(new_title, new_blurb, progress, total)}
 
 
 def stamp_book_title(
@@ -225,6 +230,31 @@ def advance_book(
     return new, new_title, new_blurb, title
 
 
+def available_book_step(state: dict | None) -> tuple[dict, str, str, str | None] | None:
+    """Read supplied text only; a title and a counter are not book contents."""
+    current = dict(state or {})
+    chapters = current.get("chapters")
+    if not isinstance(chapters, list) or not chapters or not all(
+        isinstance(chapter, str) and chapter.strip() for chapter in chapters
+    ):
+        return None
+    try:
+        progress = int(current.get("progress") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not 0 <= progress < len(chapters):
+        return None
+    title = str(current.get("title") or "the supplied text")
+    current.update(
+        progress=progress + 1, total=len(chapters),
+        last_read_excerpt=chapters[progress][:2000],
+        status="finished" if progress + 1 == len(chapters) else "reading",
+    )
+    return current, title, str(current.get("blurb") or ""), (
+        title if current["status"] == "finished" else None
+    )
+
+
 __all__ = [
     "TEA_POT_SLUG",
     "COOKIE_JAR_SLUG",
@@ -240,4 +270,5 @@ __all__ = [
     "ensure_book_titled",
     "stamp_book_title",
     "advance_book",
+    "available_book_step",
 ]

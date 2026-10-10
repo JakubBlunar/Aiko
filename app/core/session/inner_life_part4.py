@@ -22,6 +22,12 @@ log = logging.getLogger("app.session")
 # real, bounded so a verbose local model can't turn one shared photo into
 # the largest block of the turn.
 _SEEN_IMAGE_MAX_CHARS = 1200
+_WORLD_CAPABILITY_RULE = (
+    "\nThis room is your simulated world. Its recorded actions are real within "
+    "that simulation, but object names do not grant tools, book contents, "
+    "sensory access or physical travel. Claim external discoveries only from "
+    "results you actually received; distinguish imagined activities from completed ones."
+)
 
 
 class InnerLifePart4Mixin(DebugOverridesHostMixin):
@@ -167,7 +173,10 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
             ctx = self._build_grounding_context()
             if ctx is None:
                 return ""
-            return _render_line(ctx)
+            block = _render_line(ctx)
+            if block and getattr(self, "_world_store", None) is not None:
+                block += _WORLD_CAPABILITY_RULE
+            return block
         except Exception:
             log.debug("grounding line render failed", exc_info=True)
             return ""
@@ -188,10 +197,11 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
             # ``note_gift_received``, cleared post-turn) so she actually
             # reacts instead of skipping the always-on line.
             new_gift = bool(getattr(self, "_last_turn_gift_received", False))
-            return store.render_block(
+            block = store.render_block(
                 user_display_name=self.user_display_name,
                 new_gift=new_gift,
             )
+            return block + _WORLD_CAPABILITY_RULE if block else ""
         except Exception:
             log.debug("world block render failed", exc_info=True)
             return ""
@@ -1457,4 +1467,3 @@ class InnerLifePart4Mixin(DebugOverridesHostMixin):
         except Exception:
             log.debug("arc block render failed", exc_info=True)
             return ""
-

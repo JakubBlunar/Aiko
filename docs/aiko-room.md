@@ -1,5 +1,26 @@
 # Aiko's room
 
+## Grounded idle activity
+
+The apartment and garden are simulated places with authoritative stored state;
+they are not desktop sensors or permission to use external tools. Idle activity
+only uses items in the current scene (or carried items). Failed item mutations
+are reported as failures, not journalled as completed experiences.
+
+Reading requires actual supplied text in a book's `state.chapters` (a non-empty
+list of non-empty strings). A title, blurb or legacy progress counter alone does
+not enable reading. Each successful step retains a bounded `last_read_excerpt`;
+finishing does not invent replacement book contents. Supply those passages with
+the existing `PATCH /api/world/items/{item_id}` item-state endpoint (the World
+tab does not yet have a passage editor).
+
+The legacy doodle beat is now imagining a drawing, not claiming an unsaved
+sketchbook artifact. Legacy outings are explicitly daydreams, not completed café
+visits. Quiet rest, naps and sleep remain valid; activity need not be announced.
+LLM activity proposals cannot grant themselves unsupported actions or items.
+Personal projects use real research results and the existing diary, as described
+in [Idle workers](idle-workers.md#research-grounding).
+
 A small, persistent "virtual apartment" that gives Aiko a sense of
 place. The room is a *background* feature — she knows where she is and
 what's nearby, but the prompt explicitly tells her not to force-mention
