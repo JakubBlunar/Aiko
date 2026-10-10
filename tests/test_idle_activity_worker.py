@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from types import SimpleNamespace
 
-from app.core.world import day_intention, in_progress_beat
+from app.core.world import beat_detail, day_intention, in_progress_beat
 from app.core.world.idle_activity_worker import (
     AWAY_ACTIVITIES_JOURNAL_KEY,
     EFFECT_POUR_TEA,
@@ -749,6 +749,9 @@ class ItemEffectTests(unittest.TestCase):
         self.assertEqual(result["key"], "read_book")
         self.assertEqual(book.state["progress"], 4)
         self.assertEqual(result["item_effect"]["progress"], 4)
+        self.assertEqual(
+            datetime.fromisoformat(book.state["last_read_at"]).tzinfo, timezone.utc,
+        )
 
     def test_two_reading_beats_report_different_places(self) -> None:
         kv = _FakeKV()
@@ -803,6 +806,20 @@ class ItemEffectTests(unittest.TestCase):
         # The forced key produced no candidate, so some other beat ran.
         self.assertEqual(result["fired"], 1)
         self.assertNotEqual(result["key"], "tea")
+
+    def test_empty_first_pot_does_not_hide_another_available_tea(self) -> None:
+        kv = _FakeKV()
+        fresh = _FakeItem(
+            10, "peppermint tea pot", kind="gadget", slug="peppermint_tea_pot",
+            state={"fullness": "full", "flavor": "peppermint"},
+        )
+        world = _FakeWorldStore(items=[self._pot("empty"), fresh])
+        worker = _make_worker(world=world, kv=kv, cooldown=0)
+        worker.force_activity("tea")
+        result = worker.run()
+        self.assertEqual(result["key"], "tea")
+        self.assertIn("peppermint", result["summary"])
+        self.assertEqual(fresh.state["fullness"], "half")
 
     def test_snack_names_the_last_cookie(self) -> None:
         kv = _FakeKV()
@@ -1367,6 +1384,32 @@ class GroundedActivityTests(unittest.TestCase):
         worker = _make_worker(world=_FakeWorldStore(items=[book]), kv=_FakeKV())
         snapshot = worker._build_candidates("Jacob", _utc_now())
         self.assertNotIn("read_book", snapshot.candidates)
+
+    def test_multiple_readable_books_are_all_available_not_just_the_first(self) -> None:
+        books = [
+            _FakeItem(1, "fantasy book", kind="book", state={"chapters": ["Fantasy text."]}),
+            _FakeItem(2, "science fiction book", kind="book", state={"chapters": ["SF text."]}),
+        ]
+        worker = _make_worker(world=_FakeWorldStore(items=books), kv=_FakeKV())
+        plans = [
+            worker._build_candidates("Jacob", _utc_now()).candidates["read_book"]
+            for _ in range(20)
+        ]
+        picked = {plan.item_effect.item_id for plan in plans}
+        self.assertEqual(picked, {1, 2})
+
+    def test_bounded_passages_are_not_described_as_whole_chapters(self) -> None:
+        book = _FakeItem(1, "a fantasy", kind="book", state={
+            "chapters": ["First passage.", "Second passage."], "text_unit": "passage",
+            "progress": 0, "total": 2,
+        })
+        worker = _make_worker(world=_FakeWorldStore(items=[book]), kv=_FakeKV())
+        plan = worker._build_candidates("Jacob", _utc_now()).candidates["read_book"]
+        self.assertIn("first passage", plan.summary)
+        self.assertNotIn("chapter", plan.summary)
+        hint = beat_detail.item_state_hint(book, now=_utc_now())
+        self.assertIn("passage 0 of 2", hint)
+        self.assertNotIn("chapter", hint)
 
     def test_other_scene_items_are_unavailable(self) -> None:
         world = _FakeWorldStore(

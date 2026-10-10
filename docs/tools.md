@@ -188,7 +188,7 @@ For actually inhabiting her room (`WorldStore`) — see [`aiko-room.md`](aiko-ro
 | `look_around` | Fresh snapshot of her current spot, posture, and nearby items. |
 | `move_to` | Relocate her to a different spot (bed, desk, window seat, ...). |
 | `change_posture` | Update posture (sitting / curled_up / ...) + activity. |
-| `inspect_item` | Detailed read of one item (description, state, quantity). |
+| `inspect_item` | Detailed read of one item. Books return one supplied passage (up to 2,000 characters); optional `passage` (1-based) and `offset` support bounded reading without changing progress. |
 | `consume_item` | Decrement a consumable (cookies, tea); refuses non-consumables. |
 
 The read-only room tools (`look_around`, `inspect_item`) are intentionally

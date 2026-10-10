@@ -714,7 +714,19 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             return None
         activity = (plan.activity or "").replace("_", " ").strip() or "pottering about"
         context = summary.strip() or f"she was {activity}"
+        reading_context = ""
+        if plan.item_effect is not None and plan.item_effect.action == EFFECT_ADVANCE_BOOK:
+            book = self._world_store.get_item(plan.item_effect.item_id)
+            if book is not None:
+                excerpt = str(book.state.get("last_read_excerpt") or "")[:2000]
+                if excerpt:
+                    reading_context = (
+                        f"\nSupplied passage from {book.name}:\n{excerpt}\n"
+                        "Discuss only this passage, not an imagined plot or later chapters. "
+                        "Fictional events belong to the story, not your own experiences."
+                    )
         system = (
+            timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE + "\n"
             "You are Aiko's quiet inner voice. She just spent some time alone "
             f"doing this: {context}. In ONE short sentence (max ~20 words), "
             "write a single forward-looking thought, small question, or budding "
@@ -722,6 +734,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             "First person, casual, specific to the activity. No greeting, no "
             "quotes, no preamble — just the thought. Return JSON "
             '{"seed": "<the thought>"}.'
+            + reading_context
         )
         try:
             content, _usage = self._ollama.chat_json(
@@ -1166,6 +1179,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         if step is None:
             return None
         new_state, new_name, new_desc, finished = step
+        new_state["last_read_at"] = _utcnow().isoformat()
         updated = self._world_store.update_item(
             int(item.id), name=new_name, description=new_desc, state=new_state,
         )

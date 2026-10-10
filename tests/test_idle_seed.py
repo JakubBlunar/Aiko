@@ -19,6 +19,8 @@ from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
 from app.core.world.idle_activity_worker import (
     IDLE_SEEDS_KEY,
     ActivityPlan,
+    ItemEffect,
+    EFFECT_ADVANCE_BOOK,
     IdleAwayActivityWorker,
     load_idle_seeds,
 )
@@ -57,9 +59,11 @@ class _FakeOllama:
     def __init__(self, seed_text: str = "I wonder if Jacob has read it.") -> None:
         self.seed_text = seed_text
         self.calls = 0
+        self.messages = []
 
     def chat_json(self, messages, *, model, **kwargs):
         self.calls += 1
+        self.messages = messages
         return json.dumps({"seed": self.seed_text}), None
 
 
@@ -96,6 +100,25 @@ def _plan() -> ActivityPlan:
 
 
 class ProducerTests(unittest.TestCase):
+    def test_reading_thought_receives_only_the_saved_supplied_passage(self) -> None:
+        client = _FakeOllama()
+        worker = _worker(kv=_FakeKV(), ollama=client)
+        book = SimpleNamespace(name="A supplied fantasy", state={
+            "last_read_excerpt": "An actual supplied scene about a floating princess.",
+            "chapters": ["An unread later scene that must not enter the prompt."],
+        })
+        worker._world_store = SimpleNamespace(get_item=lambda item_id: book)
+        plan = ActivityPlan(
+            key="read_book", posture="sitting", activity="reading",
+            summary="read a supplied passage",
+            item_effect=ItemEffect(1, EFFECT_ADVANCE_BOOK),
+        )
+        worker._compose_seed_llm("Jacob", plan, plan.summary)
+        prompt = client.messages[0]["content"]
+        self.assertIn(book.state["last_read_excerpt"], prompt)
+        self.assertNotIn("An unread later scene", prompt)
+        self.assertIn("Fictional events belong to the story", prompt)
+
     def test_no_seed_without_model(self) -> None:
         kv = _FakeKV()
         worker = _worker(kv=kv, ollama=None)

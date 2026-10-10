@@ -524,6 +524,40 @@ class RenderBlockTests(unittest.TestCase):
             self.assertIn("Jacob", block)
             self.assertIn("cookies", block.lower())
 
+    def test_reading_names_the_last_read_book_not_the_original_paperback(self) -> None:
+        with _TempDb() as (path, _db):
+            store = WorldStore(path)
+            store.seed_default()
+            beanbag = store.find_location("beanbag")
+            for index, title in enumerate(("A fantasy", "A science fiction"), start=1):
+                store.add_item(
+                    slug=f"supplied_book_{index}", name=title, kind="book",
+                    location_id=beanbag.id,
+                    state={
+                        "title": title, "chapters": ["Actual passage.", "Later passage."],
+                        "progress": 1, "total": 2,
+                        "last_read_at": f"2026-10-10T0{index}:00:00+00:00",
+                    },
+                )
+            other_scene = store.add_scene(name="another room")
+            other_spot = store.add_location(
+                name="another reading corner", scene_id=other_scene.id, locked=False,
+            )
+            store.add_item(
+                slug="other_scene_book", name="A different room's book", kind="book",
+                location_id=other_spot.id,
+                state={"last_read_at": "2026-10-10T03:00:00+00:00"},
+            )
+            store.set_state(location_id=beanbag.id, activity="reading")
+            first_line = store.render_block().splitlines()[0]
+            self.assertIn("reading A science fiction (1/2)", first_line)
+            self.assertNotIn("reading A fantasy", first_line)
+            self.assertNotIn("A different room's book", first_line)
+            store.set_state(location_id=other_spot.id, activity="reading")
+            self.assertIn(
+                "reading A different room's book", store.render_block().splitlines()[0],
+            )
+
     def test_render_block_empty_when_no_world(self) -> None:
         with _TempDb() as (path, _db):
             store = WorldStore(path)

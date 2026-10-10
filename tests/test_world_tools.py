@@ -179,6 +179,66 @@ class ChangePostureTests(unittest.TestCase):
 
 
 class InspectItemTests(unittest.TestCase):
+    def _book(self):
+        h = _Harness()
+        self.addCleanup(h.cleanup)
+        shelf = h._world_store.find_location("bookshelf")
+        book, _ = h._world_store.add_item(
+            name="A supplied fantasy", slug="supplied_fantasy", kind="book",
+            location_id=shelf.id,
+            state={
+                "chapters": ["First supplied passage.", "Second supplied passage."],
+                "progress": 1, "title": "A supplied fantasy",
+                "source_url": "https://example.org/public-domain-book",
+            },
+        )
+        return h, book, InspectItemTool(h)
+
+    def test_book_inspection_returns_one_real_passage_and_provenance(self) -> None:
+        h, book, tool = self._book()
+        result = json.loads(tool.run({"item": book.name}))
+        self.assertNotIn("chapters", result["state"])
+        self.assertEqual(result["reading"]["text"], "First supplied passage.")
+        self.assertEqual(result["reading"]["passage"], 1)
+        self.assertEqual(result["state"]["source_url"], "https://example.org/public-domain-book")
+        second = json.loads(tool.run({"item": book.name, "passage": 2}))
+        self.assertEqual(second["reading"]["text"], "Second supplied passage.")
+        self.assertEqual(h._world_store.get_item(book.id).state["progress"], 1)
+
+    def test_long_passages_can_be_read_without_dumping_the_whole_book(self) -> None:
+        h, book, tool = self._book()
+        text = "A" * 4500
+        h._world_store.update_item(book.id, state={**book.state, "chapters": [text]})
+        first = json.loads(tool.run({"item": book.name}))
+        self.assertEqual(first["reading"]["text"], text[:2000])
+        self.assertEqual(first["reading"]["next_offset"], 2000)
+        second = json.loads(tool.run({"item": book.name, "offset": 2000}))
+        self.assertEqual(second["reading"]["next_offset"], 4000)
+        last = json.loads(tool.run({"item": book.name, "offset": 4000}))
+        self.assertEqual(len(last["reading"]["text"]), 500)
+        self.assertIsNone(last["reading"]["next_offset"])
+
+    def test_invalid_passage_inputs_fail_explicitly(self) -> None:
+        from app.llm.tools.base import ToolError
+
+        _, book, tool = self._book()
+        for extra in (
+            {"passage": 0}, {"passage": 3}, {"passage": True},
+            {"passage": "1"}, {"offset": -1}, {"offset": True}, {"offset": 1000},
+        ):
+            with self.subTest(extra=extra), self.assertRaises(ToolError):
+                tool.run({"item": book.name, **extra})
+        with self.assertRaisesRegex(ToolError, "no supplied"):
+            tool.run({"item": "cookies", "passage": 1})
+
+    def test_look_around_does_not_dump_book_contents(self) -> None:
+        h, book, _ = self._book()
+        h._world_store.set_state(location_id=book.location_id)
+        payload = LookAroundTool(h).run({})
+        self.assertNotIn("First supplied passage", payload)
+        self.assertNotIn("Second supplied passage", payload)
+        self.assertIn("passage_count", payload)
+
     def test_inspect_known_item(self) -> None:
         h = _Harness()
         tool = InspectItemTool(h)

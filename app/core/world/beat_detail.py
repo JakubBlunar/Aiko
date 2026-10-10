@@ -100,19 +100,20 @@ def read_book_summary(item: Any) -> str:
     if total <= 0:
         return "curled up with " + title + " and read for a while"
     progress = max(0, _int_of(state, "progress", 0))
+    unit = "passage" if state.get("text_unit") == "passage" else "chapter"
     if progress <= 0:
-        return "curled up with " + title + " and started the first chapter"
+        return "curled up with " + title + " and started the first " + unit
     remaining = total - progress
     if remaining <= 0:
         return "finished the last few pages of " + title
     if remaining == 1:
-        return "curled up with " + title + " — one chapter left now"
+        return "curled up with " + title + " — one " + unit + " left now"
     return (
         "curled up with "
         + title
         + " for a while, "
         + _count(progress)
-        + " chapters in now"
+        + " " + unit + "s in now"
     )
 
 
@@ -346,7 +347,8 @@ def item_state_hint(item: Any, *, now: datetime) -> str | None:
         total = _int_of(state, "total", 0)
         progress = _int_of(state, "progress", 0)
         if total > 0:
-            hint = "reading, chapter " + str(progress) + " of " + str(total)
+            unit = "passage" if state.get("text_unit") == "passage" else "chapter"
+            hint = "reading, " + unit + " " + str(progress) + " of " + str(total)
             blurb = str(state.get("blurb") or "").strip()
             return hint + "; " + blurb if blurb else hint
         return None

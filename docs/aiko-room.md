@@ -14,6 +14,21 @@ finishing does not invent replacement book contents. Supply those passages with
 the existing `PATCH /api/world/items/{item_id}` item-state endpoint (the World
 tab does not yet have a passage editor).
 
+`inspect_item` returns one actual book passage (at most 2,000 characters), with
+optional 1-based `passage` and character `offset` arguments. `next_offset`
+continues a longer passage. Inspection is read-only and never awards progress;
+`look_around` lists passage counts rather than dumping every book's contents.
+Idle reading thoughts receive the saved passage itself, so a title is not used
+to invent a plot reaction. Keep source URL, author and rights information in
+item state when supplying a real-world text.
+
+When several readable books are available, idle reading can select any of them;
+each retains its own progress and `last_read_at`. The room's reading activity
+names the most recently read book in the current scene, rather than always
+the original paperback. Set `text_unit` to `"passage"` for short text chunks
+so their progress is not described as whole chapters.
+An empty tea pot no longer hides a second full pot.
+
 The legacy doodle beat is now imagining a drawing, not claiming an unsaved
 sketchbook artifact. Legacy outings are explicitly daydreams, not completed café
 visits. Quiet rest, naps and sleep remain valid; activity need not be announced.

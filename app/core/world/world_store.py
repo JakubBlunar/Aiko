@@ -1770,7 +1770,14 @@ class WorldStore(WorldCarryMixin, WorldScenesMixin):
         posture = (state.posture or "sitting").replace("_", " ")
         activity = (state.activity or "idle").replace("_", " ")
         if canonical_activity(state.activity) == "reading":
-            book_clause = _reading_book_clause(items)
+            local_ids = {
+                location.id for location in locations.values()
+                if scene is None or location.scene_id == scene.id
+            }
+            book_clause = _reading_book_clause([
+                item for item in items
+                if item.location_id is None or item.location_id in local_ids
+            ])
             if book_clause:
                 activity = book_clause
         if loc is not None and loc.slug in _OUTDOOR_SLUGS and at_home:
@@ -2241,13 +2248,19 @@ def _looks_plural(name: str) -> bool:
 
 
 def _reading_book_clause(items: list[Item]) -> str:
-    """``reading The Glasshouse Letters (5/12)`` when the paperback is titled.
+    """Name the most recently read book, with a legacy paperback fallback.
 
     The book lives on the bookshelf; she reads it on the beanbag, so
     nearby-item labels never mention it. Fold the title into the
     activity clause instead of leaving a bare "reading".
     """
-    book = next(
+    read_books = [
+        item for item in items
+        if item.kind == "book"
+        and isinstance((item.state or {}).get("last_read_at"), str)
+        and item.state["last_read_at"]
+    ]
+    book = max(read_books, key=lambda item: item.state["last_read_at"]) if read_books else next(
         (i for i in items if (i.slug or "") == "scifi_paperback"),
         None,
     )

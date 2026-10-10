@@ -202,8 +202,10 @@ class ActivityCandidatesMixin:
             (
                 i
                 for i in items
-                if getattr(i, "slug", "") == "tea_pot"
-                or "tea pot" in (getattr(i, "name", "") or "").lower()
+                if (
+                    getattr(i, "slug", "") == "tea_pot"
+                    or "tea pot" in (getattr(i, "name", "") or "").lower()
+                ) and beat_detail.tea_summary(i)
             ),
             None,
         )
@@ -228,20 +230,17 @@ class ActivityCandidatesMixin:
         loc_beanbag: Any,
         loc_bookshelf: Any,
     ) -> None:
-        """Curl up with whatever she's part-way through."""
-        book = next(
-            (
-                i
-                for i in items
-                if (
-                    getattr(i, "kind", "") == "book"
-                    or "book" in (getattr(i, "name", "") or "").lower()
-                ) and available_book_step(getattr(i, "state", None)) is not None
-            ),
-            None,
-        )
-        if book is None:
+        """Curl up with a readable book, retaining its own progress."""
+        books = [
+            item for item in items
+            if (
+                getattr(item, "kind", "") == "book"
+                or "book" in (getattr(item, "name", "") or "").lower()
+            ) and available_book_step(getattr(item, "state", None)) is not None
+        ]
+        if not books:
             return
+        book = books[0] if len(books) == 1 else self._rng.choice(books)
         dest_id = (
             loc_beanbag.id if loc_beanbag
             else (loc_bookshelf.id if loc_bookshelf else None)

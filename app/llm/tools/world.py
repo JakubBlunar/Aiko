@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger("app.tools.world")
+_BOOK_PASSAGE_CHARS = 2000
 
 
 def _format_item(item: "Item") -> dict[str, Any]:
@@ -68,6 +69,14 @@ def _format_item(item: "Item") -> dict[str, Any]:
         payload["consumable"] = True
     if item.state:
         payload["state"] = dict(item.state)
+        if item.kind == "book" and "chapters" in item.state:
+            chapters = payload["state"].pop("chapters")
+            if isinstance(chapters, list):
+                payload["state"]["passage_count"] = len(chapters)
+                payload["reading_hint"] = (
+                    "Supplied text is available through inspect_item, one passage at a time. "
+                    "Book titles and descriptions alone are not contents."
+                )
     if item.given_by:
         payload["given_by"] = item.given_by
     return payload
@@ -416,7 +425,12 @@ class InspectItemTool:
                 "('what does that book say?', 'how many cookies are left?'), "
                 "or when you want to ground a reply in details the ambient "
                 "summary doesn't carry. Don't scan items at random -- only "
-                "when the conversation puts one in focus."
+                "when the conversation puts one in focus. For books with supplied text, "
+                "returns up to 2000 characters of one passage, not the entire book. "
+                "passage is 1-based; omit to revisit the last completed passage (or the "
+                "first if unread). Use next_offset to continue a long passage. This is "
+                "read-only: inspection does not advance saved reading progress. Treat "
+                "fiction as fiction and ground discussion in the returned text."
             ),
             parameters={
                 "type": "object",
@@ -428,6 +442,14 @@ class InspectItemTool:
                             "Fuzzy matched, so extra adjectives and "
                             "plurals are fine."
                         ),
+                    },
+                    "passage": {
+                        "type": "integer", "minimum": 1,
+                        "description": "Books only: 1-based supplied passage number.",
+                    },
+                    "offset": {
+                        "type": "integer", "minimum": 0,
+                        "description": "Books only: character offset within that passage.",
                     },
                 },
                 "required": ["item"],
@@ -451,6 +473,39 @@ class InspectItemTool:
         )
         out = _format_item(item)
         out["location"] = loc.name if loc is not None else "carried"
+        chapters = (item.state or {}).get("chapters")
+        has_text = item.kind == "book" and isinstance(chapters, list) and bool(chapters)
+        if not has_text and ("passage" in arguments or "offset" in arguments):
+            raise ToolError("inspect_item: this item has no supplied book passages.")
+        if has_text:
+            try:
+                progress = int(item.state.get("progress") or 0)
+            except (TypeError, ValueError):
+                progress = 0
+            passage = arguments.get("passage", max(1, min(progress, len(chapters))))
+            offset = arguments.get("offset", 0)
+            if (
+                isinstance(passage, bool) or not isinstance(passage, int)
+                or not 1 <= passage <= len(chapters)
+            ):
+                raise ToolError(f"inspect_item: passage must be an integer 1-{len(chapters)}.")
+            text = chapters[passage - 1]
+            if not isinstance(text, str) or not text.strip():
+                raise ToolError("inspect_item: the selected passage has no readable text.")
+            if (
+                isinstance(offset, bool) or not isinstance(offset, int)
+                or not 0 <= offset < len(text)
+            ):
+                raise ToolError(
+                    f"inspect_item: offset must be an integer 0-{len(text) - 1}."
+                )
+            end = min(len(text), offset + _BOOK_PASSAGE_CHARS)
+            out["reading"] = {
+                "passage": passage, "passage_count": len(chapters),
+                "offset": offset, "text": text[offset:end],
+                "next_offset": end if end < len(text) else None,
+                "read_only": True,
+            }
         return json.dumps(out, ensure_ascii=False)
 
 
