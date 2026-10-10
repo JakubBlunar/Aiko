@@ -527,8 +527,24 @@ class IdleWorkersInitMixin:
         if self._idle_scheduler is not None:
             try:
                 from app.core.proactive.hobby_worker import HobbyWorker
+                from app.core.proactive.pursuit_research import PursuitResearch
 
                 mem = self._memory_settings
+                research = None
+                if (
+                    getattr(self, "_memory_store", None) is not None
+                    and getattr(self, "_embedder", None) is not None
+                    and self._maintenance_client is not None
+                    and self._effective_worker_model
+                ):
+                    research = PursuitResearch(
+                        store=self._memory_store, embed=self._embedder.embed,
+                        client=self._maintenance_client, model=self._effective_worker_model,
+                        enabled=lambda: bool(
+                            getattr(self._settings.agent, "idle_curiosity_enabled", True)
+                        ) and getattr(self, "_idle_curiosity", None) is not None,
+                        user_name=lambda: self.user_display_name,
+                    )
                 self._hobby_worker = HobbyWorker(
                     chat_db=self._chat_db,
                     agent_settings=self._settings.agent,
@@ -545,6 +561,8 @@ class IdleWorkersInitMixin:
                     # overwrite.
                     pursuit_notes=self._pursuit_note_writer(),
                     world_store=getattr(self, "_world_store", None),
+                    research=research,
+                    cue_store_provider=lambda: getattr(self, "_cue_store", None),
                 )
                 self._idle_scheduler.register(self._hobby_worker)
             except Exception:

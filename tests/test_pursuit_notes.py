@@ -160,7 +160,24 @@ class _Notes:
 
 
 class HobbyNoteTests(unittest.TestCase):
-    def _worker(self, notes: _Notes | None) -> Any:
+    def _research(self) -> Any:
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        research = Mock(spec=["result", "request", "write_diary"])
+        research.result.return_value = SimpleNamespace(
+            id=9,
+            content="A saved finding about science-fiction storytelling.",
+            metadata={
+                "source_query": "science-fiction narrative structure",
+                "evidence_type": "search_excerpt",
+                "source_urls": ["https://example.org/storytelling"],
+            },
+        )
+        research.write_diary.return_value = 10
+        return research
+
+    def _worker(self, notes: _Notes | None, *, research: Any = None) -> Any:
         from app.core.proactive.hobby_worker import HobbyWorker
         from types import SimpleNamespace
 
@@ -179,6 +196,7 @@ class HobbyNoteTests(unittest.TestCase):
             ),
             user_display_name_provider=lambda: "Jacob",
             pursuit_notes=notes,  # type: ignore[arg-type]
+            research=research,
         )
 
     def _state(self, **over: Any) -> dict[str, Any]:
@@ -191,25 +209,39 @@ class HobbyNoteTests(unittest.TestCase):
             "advances": 2,
             "started_at": "2026-07-01T10:00:00+00:00",
             "last_advanced_at": None,
+            "progress_source": "research",
         }
         state.update(over)
         return state
 
     def test_a_milestone_advance_is_kept(self) -> None:
         notes = _Notes()
-        worker = self._worker(notes)
-        worker._advance_hobby(_NOW, self._state())
+        research = self._research()
+        worker = self._worker(notes, research=research)
+        state = self._state(unit="finding", research_result_ids=list(range(1, 9)))
+        result = worker._advance_hobby(_NOW, state)
+        self.assertTrue(result["advanced"])
+        self.assertEqual(result["research_memory_id"], 9)
+        research.result.assert_called_once_with(state)
+        research.write_diary.assert_called_once_with(state, _NOW)
+        self.assertEqual(state["research_result_ids"], list(range(1, 10)))
         self.assertEqual(len(notes.written), 1)
         entry = notes.written[0]
         self.assertEqual(entry["source"], "hobby_milestone")
         self.assertEqual(entry["topic"], "scifi_series")
-        self.assertIn("9 chapters into", entry["content"])
+        self.assertIn("9 findings into", entry["content"])
         self.assertIn("sci-fi series", entry["content"])
+        self.assertEqual(entry["extra"]["research_memory_id"], 9)
 
     def test_an_ordinary_advance_is_not(self) -> None:
         notes = _Notes()
-        worker = self._worker(notes)
-        worker._advance_hobby(_NOW, self._state(advances=0, progress=0))
+        research = self._research()
+        worker = self._worker(notes, research=research)
+        state = self._state(advances=0, progress=0)
+        result = worker._advance_hobby(_NOW, state)
+        self.assertTrue(result["advanced"])
+        research.result.assert_called_once_with(state)
+        research.write_diary.assert_not_called()
         self.assertEqual(notes.written, [])
 
     def test_the_finished_thread_survives_rotation(self) -> None:
@@ -228,10 +260,23 @@ class HobbyNoteTests(unittest.TestCase):
         worker._rotate_hobby(_NOW, self._state(progress=1, advances=12))
         self.assertIn("after 1 chapter.", notes.written[0]["content"])
 
+    def test_legacy_timer_progress_is_not_kept_as_completed_work(self) -> None:
+        notes = _Notes()
+        worker = self._worker(notes)
+        state = self._state(progress_source=None, progress=12, advances=12)
+        worker._rotate_hobby(_NOW, state)
+        self.assertIn("no result-backed progress", notes.written[0]["content"])
+        self.assertNotIn("12 chapters", notes.written[0]["content"])
+
     def test_no_writer_is_not_an_error(self) -> None:
-        worker = self._worker(None)
-        result = worker._advance_hobby(_NOW, self._state())
+        research = self._research()
+        worker = self._worker(None, research=research)
+        state = self._state()
+        result = worker._advance_hobby(_NOW, state)
         self.assertTrue(result["advanced"])
+        self.assertEqual(result["research_memory_id"], 9)
+        research.result.assert_called_once_with(state)
+        research.write_diary.assert_called_once_with(state, _NOW)
 
 
 if __name__ == "__main__":

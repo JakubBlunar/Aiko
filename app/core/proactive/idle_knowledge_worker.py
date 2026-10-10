@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
+from app.core.memory.research_evidence import evidence_metadata, source_indices
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicGraph
@@ -67,7 +68,9 @@ _SYSTEM_PROMPT = (
     "nothing else. Schema: {\"facts\": [{\"text\": \"<= 200 chars, one "
     "concrete impersonal fact -- names, titles, dates, examples; NEVER "
     "about any specific person in a conversation\", \"confidence\": "
-    "<number in [0, 1]>}]}. Return at most 2 facts. Facts must be "
+    "<number in [0, 1]>, \"source_indices\": "
+    "[<zero-based excerpt indices supporting this fact>]}]}. "
+    "Return at most 2 facts. Facts must be "
     "evergreen (not news, not time-sensitive). If the excerpts are "
     "off-topic, thin, or contradictory, return an empty list. Never "
     "invent facts the excerpts don't support."
@@ -212,6 +215,7 @@ class KnowledgeFact:
 
     text: str
     confidence: float
+    source_indices: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -454,6 +458,7 @@ class IdleKnowledgeWorker:
                 source_urls=source_urls,
                 cluster_key=pick.cluster_key,
                 now=now,
+                snippets=snippets,
             )
             if mem_id is None:
                 deduped += 1
@@ -991,14 +996,17 @@ class IdleKnowledgeWorker:
     ) -> list[KnowledgeFact] | None:
         """Distil up to two impersonal facts; ``None`` on cancel/parse-fail."""
         excerpts_text = "\n".join(
-            f"- {s['title']} ({s['url']}): {s['snippet']}"
-            for s in snippets[:_MAX_EXCERPTS]
+            f"[{index}] {s['title']} ({s['url']}): {s['snippet']}"
+            for index, s in enumerate(snippets[:_MAX_EXCERPTS])
         )
         user_content = _USER_TEMPLATE.format(
             topic=safe_query, excerpts=excerpts_text,
         )
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": (
+                timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE
+                + "\n" + _SYSTEM_PROMPT
+            )},
             {"role": "user", "content": user_content},
         ]
         chunks: list[str] = []
@@ -1058,7 +1066,10 @@ class IdleKnowledgeWorker:
             if conf < _MIN_FACT_CONFIDENCE:
                 continue
             seen.add(dedupe_key)
-            out.append(KnowledgeFact(text=text, confidence=conf))
+            out.append(KnowledgeFact(
+                text=text, confidence=conf,
+                source_indices=source_indices(item.get("source_indices")),
+            ))
             if len(out) >= _MAX_FACTS:
                 break
         return out
@@ -1108,6 +1119,7 @@ class IdleKnowledgeWorker:
                 source_urls=urls,
                 cluster_key=f"{source}:{_cluster_key(query)}",
                 now=now,
+                snippets=snippets,
             )
             if memory_id is not None:
                 written += 1
@@ -1128,6 +1140,7 @@ class IdleKnowledgeWorker:
         source_urls: list[str],
         cluster_key: str,
         now: datetime,
+        snippets: list[dict[str, str]] | None = None,
     ) -> int | None:
         try:
             embedding = self._embedder.embed(fact.text)
@@ -1150,6 +1163,7 @@ class IdleKnowledgeWorker:
                     "source_urls": source_urls[:5],
                     "cluster_key": cluster_key,
                     "learned_at": now.isoformat(),
+                    **evidence_metadata(snippets or [], fact.source_indices, now),
                 },
             )
         except Exception:

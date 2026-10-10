@@ -1,5 +1,39 @@
 # Idle workers
 
+## Research grounding
+
+Conversational `open_question` notes retain a `curiosity_purpose`: `ask_user`
+notes stay available for conversation and are not resolved by web research.
+Older notes beginning "Maybe ask" receive the same conservative treatment.
+Subject questions still pass through the outbound privacy gate.
+
+Both idle research paths save bounded `research_evidence` (title, URL and the
+search excerpt actually supplied to the model), retrieval time and supporting
+excerpt indices alongside their findings. These are search excerpts, not full
+articles or verified facts. Older model completions without citations are
+explicitly marked `unattributed`; a multi-result search does not automatically
+attribute every finding to its first URL.
+
+The standing hobby requests at most one pending public-subject question for its
+current incarnation (`hobby_key` plus `hobby_started_at`). Those questions get
+priority in the existing curiosity worker, sharing its privacy and search budget.
+Hobby time gates pace requests; they no longer award completed lessons. Progress
+advances only when a matching, evidence-bearing finding has been saved, and each
+result ID is applied once. Unavailable research, failed calls and inconclusive
+searches leave progress unchanged. Research progress uses "findings", not invented
+chapters or measurements; simulated room activity remains a separate channel.
+
+Successful project research stocks at most two optional `research_result` cues,
+using the existing idle-thought prompt block and cue consumption accounting.
+There is no forced announcement or return-from-absence requirement. At hobby
+milestones, a concrete first-person diary entry links back to the saved research;
+it reports what the excerpts suggested, rather than inventing a feeling or
+claiming full-page reading. The brain's `read_diary` tool can inspect that entry
+and the original research note. Sleep admission still pauses hobby and research.
+Old timer-earned project counters are not presented as completed work and are
+reset when the first result-backed advance arrives. Project rotation never
+replaces a book's supplied contents with a proposed title.
+
 Aiko does most of her thinking when you are not looking. Roughly fifty
 background workers grow the garden, decay memory salience, synthesise
 concepts, resummarise threads, and pick what she was doing while you were

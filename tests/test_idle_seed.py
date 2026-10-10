@@ -22,6 +22,7 @@ from app.core.world.idle_activity_worker import (
     IdleAwayActivityWorker,
     load_idle_seeds,
 )
+from app.core.session.cue_pool_mixin import CuePoolMixin
 
 
 class _FakeKV:
@@ -154,7 +155,7 @@ def _agent(**overrides: Any) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-class _Host(InnerLifeProvidersMixin):
+class _Host(InnerLifeProvidersMixin, CuePoolMixin):
     def __init__(
         self,
         *,

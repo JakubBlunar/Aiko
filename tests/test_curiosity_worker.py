@@ -39,6 +39,7 @@ class _FakeMemoryStore:
         salience: float,
         source_session: str | None = None,
         source_message_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> _FakeMemory | None:
         mem = _FakeMemory(
             id=self._next_id,

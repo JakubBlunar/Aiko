@@ -408,6 +408,10 @@ class CuriosityWorker:
                 salience=self._salience,
                 source_session=session_key,
                 source_message_id=None,
+                metadata={
+                    "curiosity_mode": mode,
+                    "curiosity_purpose": "ask_user" if mode == MODE_PERSON else "subject",
+                },
             )
         except Exception:
             log.debug("curiosity memory insert failed", exc_info=True)

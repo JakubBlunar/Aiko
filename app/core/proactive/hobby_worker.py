@@ -28,6 +28,7 @@ import json
 import logging
 import random
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
@@ -40,6 +41,7 @@ from app.core.world.room_evolution import (
     stamp_book_title,
 )
 from app.core.infra import timephrase
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -47,6 +49,7 @@ if TYPE_CHECKING:
     from app.core.memory.pursuit_notes import PursuitNoteWriter
     from app.core.world.world_store import WorldStore
     from app.llm.chat_client import ChatClient
+    from app.core.proactive.pursuit_research import PursuitResearch
 
 
 log = logging.getLogger("app.hobby_worker")
@@ -132,6 +135,8 @@ class HobbyWorker:
         pursuit_notes: "PursuitNoteWriter | None" = None,
         world_store: "WorldStore | None" = None,
         rng: random.Random | None = None,
+        research: "PursuitResearch | None" = None,
+        cue_store_provider: StoreProvider | None = None,
     ) -> None:
         self._chat_db = chat_db
         self._agent = agent_settings
@@ -143,6 +148,8 @@ class HobbyWorker:
         self._pursuit_notes = pursuit_notes
         self._world = world_store
         self._rng = rng or random.Random()
+        self._research = research
+        self._research_cues = CueProducer("research_result", cue_store_provider)
         # MCP debug one-shots.
         self._force_advance = False
         self._force_rotate = False
@@ -189,7 +196,8 @@ class HobbyWorker:
             pressure=1.0 if move in ("start", "rotate") else 0.6,
             reason=move,
             needs_llm=bool(
-                composes and self._ollama is not None and self._model
+                (composes or move == "advance" and self._research is not None)
+                and self._ollama is not None and self._model
             ),
         )
 
@@ -214,6 +222,8 @@ class HobbyWorker:
         ):
             return "rotate", True
         if not self._force_advance and not self._advance_due(now, state):
+            return None, False
+        if self._research is None:
             return None, False
         milestone = hobby_mod.is_milestone(
             advances=int(state.get("advances", 0)) + 1,
@@ -241,7 +251,10 @@ class HobbyWorker:
             # Pace progress with a wall-clock floor so it doesn't climb
             # every idle tick — a hobby that advances 24x/day reads as
             # fake.
-            return {"waiting": True, "label": state.get("label")}
+            return {
+                "waiting": True, "label": state.get("label"),
+                "reason": "research_unavailable" if self._research is None else "pacing",
+            }
         return self._advance_hobby(now, state)
 
     # ── transitions ──────────────────────────────────────────────────
@@ -292,9 +305,7 @@ class HobbyWorker:
                 exclude_artifacts=recent,
             )
 
-        if proposal.kind == "reading":
-            self._stamp_reading_onto_book(proposal)
-        # Drifting off reading parks the paperback; do not wipe it.
+        # A project proposal cannot replace a book's supplied contents.
 
         new_state = hobby_mod.proposal_to_state(
             proposal, now_iso=now.isoformat(timespec="seconds"),
@@ -319,22 +330,59 @@ class HobbyWorker:
     def _advance_hobby(
         self, now: datetime, state: dict[str, Any],
     ) -> dict[str, Any]:
-        if str(state.get("kind") or "") == "reading":
-            self._heal_room_book(state)
+        if self._research is None:
+            return {"waiting": True, "reason": "research_unavailable"}
+        result = self._research.result(state)
+        if result is None:
+            state["last_research_attempt_at"] = now.isoformat(timespec="seconds")
+            self._write(state)
+            try:
+                question_id = self._research.request(state, now)
+            except Exception:
+                log.warning("hobby research request failed: key=%s", state.get("key"),
+                            exc_info=True)
+                return {"waiting": True, "reason": "research_request_failed"}
+            return {"waiting": True, "research_question_id": question_id}
+        if state.get("progress_source") != "research":
+            state["progress"] = 0
+            state["advances"] = 0
+        state["research_result_ids"] = [*(state.get("research_result_ids") or []), result.id]
+        state["last_result"] = result.content
+        state["last_result_at"] = getattr(result, "created_at", None) or now.isoformat()
+        state["progress_source"] = "research"
+        state["unit"] = "finding"
         state["progress"] = int(state.get("progress", 0)) + 1
         state["advances"] = int(state.get("advances", 0)) + 1
         state["last_advanced_at"] = now.isoformat(timespec="seconds")
-        self._write(state)
-
         every = int(getattr(self._mem, "hobby_milestone_every", 3))
+        query = str(result.metadata.get("source_query") or state.get("artifact") or "")
+        cue_text = (
+            f"In your own quiet time, you searched about {query[:200]}. "
+            f"The search excerpts suggested: {result.content[:500]}. "
+            f"This is saved research entry {result.id}; read_diary can inspect its evidence. "
+            "You can mention a small part if it fits naturally, or leave it unspoken."
+        )
+        if (
+            self._research_cues.store() is not None
+            and str(result.id) not in self._research_cues.claimed_sources()
+            and self._research_cues.stock() < 2
+        ):
+            cue_id = self._research_cues.publish(
+                query[:200], cue_text,
+                payload={"source_id": str(result.id), "research_memory_id": result.id},
+            )
+            if not cue_id:
+                raise RuntimeError("research result cue was not persisted")
         emitted_seed = None
         if hobby_mod.is_milestone(
             advances=int(state["advances"]), every=every,
         ):
             seed = self._compose_milestone_seed(state)
             if seed:
-                self._emit_seed(now, str(state.get("label") or ""), seed)
                 emitted_seed = seed
+            self._research.write_diary(state, now)
+        self._write(state)
+        if hobby_mod.is_milestone(advances=int(state["advances"]), every=every):
             self._note_milestone(now, state, seed)
 
         log.info(
@@ -349,6 +397,7 @@ class HobbyWorker:
             "key": state.get("key"),
             "progress": state["progress"],
             "seed": emitted_seed,
+            "research_memory_id": result.id,
         }
 
     # ── next-hobby pick ───────────────────────────────────────────────
@@ -400,11 +449,15 @@ class HobbyWorker:
         ) or "(none yet)"
         items_line = self._room_items_line()
         prompt = (
-            "You are inventing Aiko's next personal project — one named "
+            timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE + "\n"
+            "You are choosing Aiko's next personal project — one named "
             "thing she will keep up in her own time for a few days. She "
             f"is wrapping {wrapped} (kind: {leaving_kind}). She is allowed "
             "to leave it unfinished; a paperback stays on the shelf with "
-            "its chapter count, a sketch stays in the book. Tonight's "
+            "its supplied text. Propose an interest or plan, not an existing artifact "
+            "or completed experiment. She can research public questions with web search "
+            "and keep findings in her diary; room objects do not supply book contents, "
+            "measurements or unsupported tools. The next "
             "standing project must drift to a *different kind*: one of "
             f"{kinds_line}. Do not propose another {leaving_kind} thread.\n"
             f"Things actually in her room: {items_line}. Ground the "
@@ -529,14 +582,17 @@ class HobbyWorker:
         title = str(new_state.get("title") or "").strip()
         blurb = str(new_state.get("blurb") or "").strip()
         try:
-            self._world.update_item(
+            updated = self._world.update_item(
                 int(item.id),
                 name=title or None,
                 description=blurb or None,
                 state=new_state,
             )
+            if updated is None:
+                raise RuntimeError("the book state was not persisted")
         except Exception:
-            log.debug("hobby book stamp failed", exc_info=True)
+            log.warning("hobby book stamp failed", exc_info=True)
+            raise
 
     def _live_plant_name(self) -> str:
         if self._world is None:
@@ -576,7 +632,10 @@ class HobbyWorker:
         min_hours = float(getattr(self._mem, "hobby_advance_min_hours", 6.0))
         if min_hours <= 0:
             return True
-        last = state.get("last_advanced_at")
+        last = max(
+            str(state.get("last_research_attempt_at") or ""),
+            str(state.get("last_advanced_at") or ""),
+        )
         if not last:
             return True
         try:
@@ -617,7 +676,10 @@ class HobbyWorker:
             source="hobby_milestone",
             topic=str(state.get("key") or ""),
             at=now,
-            extra={"advances": int(state.get("advances", 0))},
+            extra={
+                "advances": int(state.get("advances", 0)),
+                "research_memory_id": (state.get("research_result_ids") or [None])[-1],
+            },
         )
 
     def _note_wrapup(
@@ -633,6 +695,8 @@ class HobbyWorker:
             return
         line = (
             f"Wrapped up {label} after {self._progress_phrase(state)}."
+            if state.get("progress_source") == "research"
+            else f"Left the project idea {label}; no result-backed progress was recorded."
         )
         if seed:
             line = f"{line} {seed}"
@@ -659,7 +723,14 @@ class HobbyWorker:
         unit = str(state.get("unit") or "step")
         context = (
             f"You've been {label} for a while now ({progress} "
-            f"{unit}s in). The latest bit touched on {named}."
+            f"{unit}s in). The subject is {named}. "
+            "The latest saved result:\n"
+            + timephrase.format_memory_block([SimpleNamespace(
+                content=state.get("last_result") or "No saved result",
+                created_at=state.get("last_result_at"),
+            )])
+            + "\n"
+            "Reflect only on that recorded result; do not invent experiences or facts."
         )
         return self._compose_seed_llm(context)
 
@@ -670,8 +741,9 @@ class HobbyWorker:
     ) -> str | None:
         old_named = hobby_mod.artifact_phrase(old_state)
         context = (
-            f"You just wrapped up {old_named} and you're starting something "
+            f"You left the project idea {old_named} and you're starting something "
             f"new: {new_proposal.label} — specifically {new_proposal.artifact}."
+            "The title or project description is not proof that you completed it."
         )
         return self._compose_seed_llm(context)
 
@@ -683,12 +755,15 @@ class HobbyWorker:
         except Exception:
             name = "you"
         system = (
+            timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE + "\n"
             "You are Aiko's quiet inner voice, reflecting on a hobby you've "
             f"been keeping up in your own time. {context} In ONE short "
             "sentence (max ~20 words), write a single forward-looking "
             "thought, small question, or budding opinion this sparked that "
             f"you might bring up to {name} later. First person, casual, "
-            "specific. No greeting, no quotes, no preamble. Return JSON "
+            "specific. Project descriptions are plans, not proof of completed experiences. "
+            "Use only supplied saved results for claims about what you learned. "
+            "No greeting, no quotes, no preamble. Return JSON "
             '{"seed": "<the thought>"}.'
         )
         try:
@@ -712,10 +787,7 @@ class HobbyWorker:
         return seed[:240] or None
 
     def _write(self, state: dict[str, Any]) -> None:
-        try:
-            self._chat_db.kv_set(KV_CURRENT_HOBBY, json.dumps(state))
-        except Exception:
-            log.debug("hobby state write failed", exc_info=True)
+        self._chat_db.kv_set(KV_CURRENT_HOBBY, json.dumps(state))
 
     def _write_history(self, ring: list[dict[str, Any]]) -> None:
         try:

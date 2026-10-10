@@ -41,6 +41,11 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
+from app.core.memory.research_evidence import (
+    evidence_metadata,
+    researchable_question,
+    source_indices,
+)
 
 if TYPE_CHECKING:
     from app.core.memory.fact_check_rate_limiter import FactCheckRateLimiter
@@ -59,7 +64,8 @@ _SYSTEM_PROMPT = (
     "You answer one short factual question using web search excerpts. "
     "Reply with ONE JSON object on a single line and nothing else. "
     "Schema: {\"answer\": \"<= 200 chars, plain prose, no quotes\", "
-    "\"confidence\": <number in [0, 1]>}. "
+    "\"confidence\": <number in [0, 1]>, "
+    "\"source_indices\": [<zero-based excerpt indices supporting the answer>]}. "
     "If the excerpts are off-topic or contradictory, set confidence "
     "below 0.6 and keep the answer short or empty. Never invent facts "
     "the excerpts don't support."
@@ -137,6 +143,7 @@ class CuriosityAnswer:
 
     answer: str
     confidence: float
+    source_indices: tuple[int, ...] = ()
 
 
 class IdleCuriosityWorker:
@@ -284,7 +291,9 @@ class IdleCuriosityWorker:
             _preview(question.content),
         )
 
-        safe_query = self._scrub(question.content)
+        safe_query = self._scrub(
+            question.content, already_neutral=bool(question.metadata.get("already_neutral")),
+        )
         if safe_query is None:
             log.info(
                 "curiosity skip: privacy gate dropped question "
@@ -394,6 +403,7 @@ class IdleCuriosityWorker:
             answer=answer,
             safe_query=safe_query,
             now=now,
+            snippets=snippets,
         )
         if wrote_id is None:
             return {
@@ -452,6 +462,8 @@ class IdleCuriosityWorker:
         out: list["Memory"] = []
         for mem in candidates_sorted:
             metadata = mem.metadata or {}
+            if not researchable_question(mem.content or "", metadata):
+                continue
             if metadata.get("curiosity_resolved_at"):
                 continue
             skipped_at = _parse_iso(metadata.get("curiosity_skipped_at"))
@@ -476,11 +488,14 @@ class IdleCuriosityWorker:
     ) -> "Memory | None":
         """Oldest unresolved ``open_question`` not in cooldown."""
         eligible = self._eligible_questions(now=now)
-        return eligible[0] if eligible else None
+        return next((
+            question for question in eligible
+            if question.metadata.get("research_origin") == "pursuit"
+        ), eligible[0] if eligible else None)
 
     # ── pieces ───────────────────────────────────────────────────────
 
-    def _scrub(self, question_text: str) -> str | None:
+    def _scrub(self, question_text: str, *, already_neutral: bool = False) -> str | None:
         """Privacy-scrub the question. Late-binds user / assistant names.
 
         Reuses the same gate the F1 fact-checker uses, which already
@@ -513,6 +528,7 @@ class IdleCuriosityWorker:
                 reformulate_fn=self._query_reformulator,
                 user_names=user_names,
                 assistant_name=assistant_name,
+                already_neutral=already_neutral,
             )
         return scrub_claim_for_search(
             question_text,
@@ -551,15 +567,18 @@ class IdleCuriosityWorker:
         snippets: list[dict[str, str]],
     ) -> CuriosityAnswer | None:
         excerpts_text = "\n".join(
-            f"- {s['title']} ({s['url']}): {s['snippet']}"
-            for s in snippets[:_MAX_EXCERPTS]
+            f"[{index}] {s['title']} ({s['url']}): {s['snippet']}"
+            for index, s in enumerate(snippets[:_MAX_EXCERPTS])
         )
         user_content = _USER_TEMPLATE.format(
             question=safe_query,
             excerpts=excerpts_text,
         )
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": (
+                timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE
+                + "\n" + _SYSTEM_PROMPT
+            )},
             {"role": "user", "content": user_content},
         ]
         if log.isEnabledFor(logging.DEBUG):
@@ -615,7 +634,10 @@ class IdleCuriosityWorker:
         except (TypeError, ValueError):
             conf = 0.0
         conf = max(0.0, min(1.0, conf))
-        return CuriosityAnswer(answer=answer, confidence=conf)
+        return CuriosityAnswer(
+            answer=answer, confidence=conf,
+            source_indices=source_indices(parsed.get("source_indices")),
+        )
 
     # ── memory writes ────────────────────────────────────────────────
 
@@ -626,6 +648,7 @@ class IdleCuriosityWorker:
         answer: CuriosityAnswer,
         safe_query: str,
         now: datetime,
+        snippets: list[dict[str, str]] | None = None,
     ) -> int | None:
         try:
             embedding = self._embedder.embed(answer.answer)
@@ -641,10 +664,17 @@ class IdleCuriosityWorker:
                 salience=0.65,
                 confidence=confidence,
                 tier="long_term",
+                skip_dedupe=question.metadata.get("research_origin") == "pursuit",
                 metadata={
                     "source_open_question_id": int(question.id),
                     "source_query": safe_query[:200],
                     "discovered_at": now.isoformat(),
+                    **evidence_metadata(snippets or [], answer.source_indices, now),
+                    **{
+                        key: question.metadata[key]
+                        for key in ("research_origin", "hobby_key", "hobby_started_at")
+                        if key in question.metadata
+                    },
                 },
             )
         except Exception:

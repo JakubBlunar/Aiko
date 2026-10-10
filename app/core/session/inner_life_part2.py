@@ -1952,7 +1952,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         book_state = None
         if kind == "reading":
             book_state = _hobby_book_state(self, BOOK_SLUG)
-            if book_state:
+            if book_state and state.get("progress_source") != "research":
                 titled = str(
                     book_state.get("title") or ""
                 ).strip()
@@ -1960,13 +1960,24 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                     artifact = titled
         if not label and not artifact:
             return ""
-        progress, unit = prompt_progress(state, book_state)
+        if state.get("progress_source") == "research":
+            progress, unit = prompt_progress(state)
+        else:
+            progress, unit = 0, "finding"
         line = render_hobby_line(
             label, progress, unit, artifact=artifact, kind=kind,
         )
         return (
             f"Lately, in your own time, you've been {line}. Bring it up only "
-            "if it comes up naturally — don't force it."
+            "if it comes up naturally — don't force it. "
+            "Project descriptions are interests or ideas, not evidence of completed "
+            "lessons, experiments, or book contents. "
+            + (
+                f"Your latest saved research result: {state['last_result']}. "
+                "This came from search excerpts, not direct observation."
+                if state.get("last_result") else
+                "No research result is recorded for this project yet."
+            )
         )
 
     def _render_idle_seed_block(self) -> str:
@@ -1992,6 +2003,10 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             getattr(self._settings.agent, "idle_seed_enabled", True)
         ):
             return ""
+
+        research = self.take_pool_cue("research_result")
+        if research is not None:
+            return research.text
 
         force_next = bool(
             self._debug_overrides.take("idle_seed_force_next", False)
@@ -4423,5 +4438,3 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         except Exception:
             log.debug("implicit_need render failed", exc_info=True)
             return ""
-
-

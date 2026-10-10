@@ -280,7 +280,7 @@ def prompt_progress(
     cannot disagree. Everything else uses the hobby blob.
     """
     kind = str(state.get("kind") or "").strip().lower()
-    if kind == "reading" and book_state:
+    if kind == "reading" and book_state and state.get("progress_source") != "research":
         try:
             progress = int(book_state.get("progress", 0) or 0)
         except (TypeError, ValueError):

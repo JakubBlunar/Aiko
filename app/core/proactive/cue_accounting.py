@@ -395,6 +395,7 @@ CUE_SPECS: dict[str, CueSpec] = {
         # so a queued row is the whole of the arming signal. Nothing about
         # it can be inspected before the pass has run.
         CueSpec("second_thought"),
+        CueSpec("research_result"),
         CueSpec("interest_continuation"),
         CueSpec("calendar_anticipation"),
         CueSpec(
@@ -564,6 +565,21 @@ class CuePolicy:
 CUE_POLICIES: dict[str, CuePolicy] = {
     policy.name: policy
     for policy in (
+        CuePolicy(
+            "research_result",
+            inventory_target=2,
+            ttl_hours=168.0,
+            surface_cooldown_hours=6.0,
+            fulfilment=FULFILMENT_SPOKEN,
+            match_mode=MATCH_LEXICAL_OR_COSINE,
+            min_overlap=2,
+            block="idle_seeds_block",
+            essential_handling=(
+                "Research is an optional thing of your own to offer, not an owed report. "
+                "Stay with the user when it does not fit. These are search excerpts, not "
+                "full articles, personal observations or verified facts."
+            ),
+        ),
         # ── on-topic by construction: cosine is confounded, lexical decides
         CuePolicy(
             "knowledge_gap_notice",

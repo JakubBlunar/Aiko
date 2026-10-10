@@ -62,6 +62,21 @@ class _FakeOllama:
         return json.dumps({"seed": self.seed_text}), None
 
 
+class _FakeResearch:
+    def result(self, state):
+        return SimpleNamespace(
+            id=len(state.get("research_result_ids") or []) + 1,
+            content="A recorded finding about the project's specific subject.",
+            metadata={"source_query": "specific subject"},
+        )
+
+    def request(self, state, now):
+        return 1
+
+    def write_diary(self, state, now):
+        return 1
+
+
 def _mem(**overrides: Any) -> SimpleNamespace:
     base = dict(
         hobby_worker_interval_seconds=3600,
@@ -92,6 +107,7 @@ def _worker(
         model="worker-model" if ollama is not None else None,
         world_store=world_store,
         rng=random.Random(seed),
+        research=_FakeResearch(),
     )
 
 
@@ -107,6 +123,7 @@ def _write_hobby(db: _FakeChatDb, **fields: Any) -> dict[str, Any]:
         "advances": 0,
         "started_at": "2026-07-01T10:00:00+00:00",
         "last_advanced_at": None,
+        "progress_source": "research",
     }
     state.update(fields)
     db.store[KV_CURRENT_HOBBY] = json.dumps(state)
@@ -134,6 +151,7 @@ class _FakeItem:
             "progress": 5,
             "total": 12,
             "status": "reading",
+            "chapters": ["Original supplied passage."] * 12,
         }
 
 
@@ -323,7 +341,7 @@ class HobbyWorkerTests(unittest.TestCase):
         self.assertTrue(r.get("advanced"))
         self.assertEqual(load_hobby(db.kv_get)["progress"], 2)
 
-    def test_milestone_emits_seed(self) -> None:
+    def test_milestone_reflects_without_duplicating_result_cue_in_seed_ring(self) -> None:
         db = _FakeChatDb()
         ollama = _FakeOllama()
         worker = _worker(db=db, mem=_mem(hobby_milestone_every=2), ollama=ollama)
@@ -333,9 +351,7 @@ class HobbyWorkerTests(unittest.TestCase):
             worker._force_advance = True
             worker.run()
         ring = load_idle_seeds(db.kv_get)
-        self.assertTrue(ring)
-        self.assertEqual(ring[-1]["key"], "hobby")
-        self.assertTrue(ring[-1]["seed"])
+        self.assertEqual(ring, [])
         self.assertTrue(any(c["surface"] == "hobby_seed" for c in ollama.calls))
 
     def test_milestone_context_names_the_artifact(self) -> None:
@@ -460,7 +476,7 @@ class HobbyWorkerTests(unittest.TestCase):
         self.assertEqual(book.state["progress"], 5)
         self.assertEqual(book.state["title"], "The Glasshouse Letters")
 
-    def test_invented_reading_stamps_a_new_title_and_resets_progress(self) -> None:
+    def test_proposed_reading_does_not_replace_supplied_book(self) -> None:
         db = _FakeChatDb()
         world = _FakeWorld()
         proposal = {
@@ -489,9 +505,9 @@ class HobbyWorkerTests(unittest.TestCase):
         )
         worker.run()
         book = world.list_items()[0]
-        self.assertEqual(book.name, "Eleven Doors")
-        self.assertEqual(book.state["title"], "Eleven Doors")
-        self.assertEqual(book.state["progress"], 0)
+        self.assertEqual(book.name, "The Glasshouse Letters")
+        self.assertEqual(book.state["title"], "The Glasshouse Letters")
+        self.assertEqual(book.state["progress"], 5)
         state = load_hobby(db.kv_get)
         assert state is not None
         self.assertEqual(state["artifact"], "Eleven Doors")
@@ -538,6 +554,7 @@ class HobbyWorkerTests(unittest.TestCase):
                 "progress": 3,
                 "total": 12,
                 "status": "reading",
+                "chapters": ["Original supplied passage."] * 12,
             },
         )])
         worker = _worker(db=db, world_store=world)
@@ -554,6 +571,9 @@ class HobbyWorkerTests(unittest.TestCase):
         self.assertEqual(state["kind"], "reading")
         self.assertEqual(state["artifact"], "The Quantum Garden")
         self.assertEqual(world.list_items()[0].state["progress"], 3)
+        self.assertEqual(
+            world.list_items()[0].state["chapters"], ["Original supplied passage."] * 12,
+        )
 
     def test_history_is_not_a_second_standing_hobby(self) -> None:
         db = _FakeChatDb()
@@ -677,12 +697,14 @@ class HobbyProviderTests(unittest.TestCase):
             state={
                 "label": "working through a sci-fi series",
                 "progress": 5,
-                "unit": "chapter",
+                "unit": "finding",
+                "progress_source": "research",
+                "last_result": "A saved result about narrative structure.",
             }
         )
         out = host._render_hobby_block()
         self.assertIn("working through a sci-fi series", out)
-        self.assertIn("5 chapters in", out)
+        self.assertIn("5 findings in", out)
 
     def test_reading_hobby_names_the_room_book_not_the_genre(self) -> None:
         host = _Host(
@@ -698,7 +720,9 @@ class HobbyProviderTests(unittest.TestCase):
         out = host._render_hobby_block()
         self.assertIn("The Glasshouse Letters", out)
         self.assertNotIn("sci-fi series", out)
-        self.assertIn("5 chapters in", out)
+        self.assertIn("just started", out)
+        self.assertNotIn("chapters in", out)
+        self.assertIn("No research result", out)
 
     def test_handling_section_is_registered(self) -> None:
         from inspect import unwrap

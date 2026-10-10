@@ -41,6 +41,7 @@ from app.core.proactive.idle_curiosity_worker import (
     IdleCuriosityWorker,
 )
 from app.core.memory.memory_store import MemoryStore
+from app.core.proactive.pursuit_research import PursuitResearch
 
 
 # ── tiny stubs ─────────────────────────────────────────────────────────
@@ -279,6 +280,31 @@ class TestParseAnswer(unittest.TestCase):
 
 
 class TestQuestionSelection(unittest.TestCase):
+    def test_conversational_followup_is_not_researched_or_resolved(self) -> None:
+        world = _build_world()
+        store = world["memory_store"]
+        question_id = _seed_open_question(
+            store, world["embedder"], "Maybe ask Jacob how his garden is doing.",
+        )
+        result = world["worker"].run()
+        self.assertEqual(result.get("reason"), "no_unresolved_question")
+        self.assertEqual(world["web_search"].calls, [])
+        self.assertEqual(world["rate_limiter"].snapshot()["hour_used"], 0)
+        self.assertNotIn("curiosity_resolved_at", store.get(question_id).metadata)
+
+    def test_explicit_ask_user_purpose_survives_without_prefix(self) -> None:
+        world = _build_world()
+        store = world["memory_store"]
+        question_id = _seed_open_question(
+            store, world["embedder"], "How was the concert?",
+        )
+        store.update(
+            question_id, metadata={"curiosity_purpose": "ask_user"}, metadata_merge=True,
+        )
+        self.assertFalse(world["worker"].is_ready(
+            now=datetime.now(timezone.utc), last_run_at=None,
+        ))
+
     def test_picks_oldest_unresolved(self) -> None:
         world = _build_world()
         store: MemoryStore = world["memory_store"]
@@ -350,6 +376,45 @@ class TestQuestionSelection(unittest.TestCase):
 
 
 class TestRunSuccessPath(unittest.TestCase):
+    def test_pursuit_origin_and_attributed_evidence_reach_the_result_reader(self) -> None:
+        world = _build_world(answer_json={
+            "answer": "The violin originated in northern Italy.",
+            "confidence": 0.85, "source_indices": [0],
+        })
+        store = world["memory_store"]
+        question_id = _seed_open_question(
+            store, world["embedder"], "When did the violin originate?",
+        )
+        state = {"key": "violin", "started_at": "2026-10-01T10:00:00+00:00"}
+        store.update(question_id, metadata={
+            "curiosity_purpose": "research", "research_origin": "pursuit",
+            "already_neutral": True, "hobby_key": state["key"],
+            "hobby_started_at": state["started_at"],
+        }, metadata_merge=True)
+        result = world["worker"].run()
+        self.assertEqual(result["outcome"], "resolved")
+        reader = PursuitResearch(
+            store=store, embed=world["embedder"].embed, client=world["ollama"],
+            model="test", enabled=lambda: True, user_name=lambda: "Jacob",
+        )
+        finding = reader.result(state)
+        self.assertEqual(finding.id, result["answer_memory_id"])
+        self.assertEqual(finding.metadata["evidence_support"], "attributed")
+        self.assertEqual(finding.metadata["supporting_source_indices"], [0])
+        self.assertEqual(finding.metadata["source_url"], "https://en.example.org/violin")
+        self.assertEqual(world["rate_limiter"].snapshot(datetime.now(timezone.utc))["day_used"], 1)
+
+    def test_already_neutral_question_still_passes_privacy_gate(self) -> None:
+        world = _build_world(user_names=["Jacob"])
+        question_id = _seed_open_question(
+            world["memory_store"], world["embedder"], "Where does jacob@example.com live?",
+        )
+        world["memory_store"].update(
+            question_id, metadata={"already_neutral": True}, metadata_merge=True,
+        )
+        self.assertEqual(world["worker"].run()["reason"], "privacy_gate")
+        self.assertEqual(world["web_search"].calls, [])
+
     def test_writes_finding_and_stamps_source(self) -> None:
         world = _build_world()
         store: MemoryStore = world["memory_store"]
@@ -384,6 +449,10 @@ class TestRunSuccessPath(unittest.TestCase):
         )
         self.assertIn("violin", answer.content.lower())
         self.assertLessEqual(answer.confidence, 0.9)
+        self.assertEqual(answer.metadata["evidence_type"], "search_excerpt")
+        self.assertEqual(answer.metadata["research_evidence"][0]["title"], "Violin history")
+        self.assertIn("northern Italy", answer.metadata["research_evidence"][0]["snippet"])
+        self.assertEqual(answer.metadata["evidence_support"], "unattributed")
         # Web search query was the (unchanged) question text — no
         # PII stripping was needed for this short, generic question.
         self.assertEqual(len(world["web_search"].calls), 1)
