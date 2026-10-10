@@ -110,9 +110,11 @@ class MemoryFacadeMixin:
     # diary entry is -- first person, about her own time -- and reading
     # the diary without them would hide the half of her inner life that
     # happened while he was away.
+    # ``curiosity_finding`` is a separate research-note kind, with its
+    # source metadata preserved; surfacing it does not verify its claims.
     DIARY_KINDS: tuple[str, ...] = (
         "diary", "reflection", "shared_moment", "open_question",
-        "pursuit_note",
+        "pursuit_note", "curiosity_finding",
     )
 
     def _diary_kinds(self, kind: str | None) -> list[str]:
@@ -127,12 +129,23 @@ class MemoryFacadeMixin:
             return [norm]
         return list(self.DIARY_KINDS)
 
+    def _diary_rows(self, kind: str | None, q: str | None) -> list[Any]:
+        store = self._memory_store
+        if store is None:
+            return []
+        rows = store.iter_by_kinds(self._diary_kinds(kind))
+        query = (q or "").strip().casefold()
+        if query:
+            rows = [row for row in rows if query in row.content.casefold()]
+        return rows
+
     def list_diary(
         self,
         *,
         limit: int = 50,
         offset: int = 0,
         kind: str | None = None,
+        q: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return journal-flavoured memories newest-first (H9 diary view).
 
@@ -140,23 +153,18 @@ class MemoryFacadeMixin:
         dedupe, no extraction. Content prefixes (``[dream] `` /
         ``[mindmap] ``) are left on the row — the frontend strips them
         into badges so the functional discriminator survives for RAG /
-        turning-over while the diary reads clean.
+        turning-over while the diary reads clean. ``q`` is a literal,
+        case-insensitive content substring, applied before pagination.
         """
-        store = self._memory_store
-        if store is None:
-            return []
-        mems = store.iter_by_kinds(self._diary_kinds(kind))
+        mems = self._diary_rows(kind, q)
         mems.sort(key=lambda m: m.created_at, reverse=True)
         start = max(0, int(offset))
         stop = start + max(1, int(limit))
         return [m.to_dict() for m in mems[start:stop]]
 
-    def diary_count(self, *, kind: str | None = None) -> int:
+    def diary_count(self, *, kind: str | None = None, q: str | None = None) -> int:
         """Total journal-flavoured memories matching the diary filter."""
-        store = self._memory_store
-        if store is None:
-            return 0
-        return len(store.iter_by_kinds(self._diary_kinds(kind)))
+        return len(self._diary_rows(kind, q))
 
     def memory_cap(self) -> int:
         """Return the current ``memory.max_memories`` cap (UI hint).

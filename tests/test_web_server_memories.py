@@ -21,6 +21,7 @@ from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
 
 from app.core.infra.text_query import compile_query
+from app.core.session.memory_facade_mixin import MemoryFacadeMixin
 from app.web.server import create_web_app
 
 
@@ -171,7 +172,7 @@ class _MemoryState:
         return self.rows.pop(int(memory_id), None) is not None
 
     # H9 diary surface — mirrors the real facade's journal-kind clamping.
-    DIARY_KINDS = ("reflection", "shared_moment", "open_question")
+    DIARY_KINDS = MemoryFacadeMixin.DIARY_KINDS
 
     def _diary_kinds(self, kind: str | None) -> set[str]:
         norm = (kind or "").strip().lower()
@@ -400,6 +401,26 @@ class GetDiaryEndpointTests(unittest.TestCase):
         body = client.get("/api/diary?limit=2&offset=0").json()
         self.assertEqual(len(body["entries"]), 2)
         self.assertEqual(body["total"], 4)
+
+    def test_research_filter_preserves_evidence_metadata(self) -> None:
+        client, state = _build_client()
+        self._seed_mixed(state)
+        result = state.add_memory("I read about orchards", kind="curiosity_finding")
+        row = result["memory"]
+        row["metadata"] = {
+            "source_open_question_id": 5,
+            "source_urls": ["https://example.org/orchard"],
+            "research_evidence": [{
+                "title": "Orchards", "url": "https://example.org/orchard", "snippet": "Search hit",
+            }],
+            "evidence_type": "search_excerpt",
+        }
+        response = client.get("/api/diary?kind=curiosity_finding")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["total"], 1)
+        self.assertEqual(body["entries"], [row])
+        self.assertEqual(client.get("/api/diary").json()["total"], 5)
 
 
 class _ConflictState:

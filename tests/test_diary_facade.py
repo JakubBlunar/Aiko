@@ -113,6 +113,23 @@ class DiaryFacadeTests(unittest.TestCase):
         self.assertEqual(host.list_diary(), [])
         self.assertEqual(host.diary_count(), 0)
 
+    def test_research_kind_and_literal_query_filter_before_pagination(self) -> None:
+        rows = _sample_rows() + [
+            _FakeMemory(8, "curiosity_finding", "Orchard research", "2026-01-08T08:00:00Z"),
+            _FakeMemory(9, "fact", "Orchard fact", "2026-01-09T08:00:00Z"),
+        ]
+        host = _Host(_FakeStore(rows))
+        self.assertEqual(
+            [row["id"] for row in host.list_diary(limit=1, offset=1, q=" ORCHARD ")], [1],
+        )
+        self.assertEqual(host.diary_count(q=" ORCHARD "), 2)
+        self.assertEqual(host.diary_count(kind="curiosity_finding", q="orchard"), 1)
+        self.assertEqual(
+            [row["id"] for row in host.list_diary(kind="curiosity_finding")], [8],
+        )
+        self.assertEqual(host.list_diary(q="orch*"), [])
+        self.assertEqual(host.diary_count(q="missing"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

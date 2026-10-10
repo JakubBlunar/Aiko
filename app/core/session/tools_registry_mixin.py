@@ -81,6 +81,14 @@ class ToolsRegistryMixin:
             has_retriever = getattr(self, "_rag_retriever", None) is not None
             if getattr(tools_cfg, "recall", True) and has_retriever:
                 registry.register(RecallTool(self._rag_retriever))
+            if (
+                getattr(tools_cfg, "recall", True)
+                and getattr(getattr(self._settings, "memory", None), "enabled", False)
+                and getattr(self, "_memory_store", None) is not None
+            ):
+                from app.llm.tools.diary import ReadDiaryTool
+
+                registry.register(ReadDiaryTool(self))
             # F10d cluster-scoped recall. Gated by its own switch but needs
             # the same retriever; only useful once the topic graph is wired
             # (the tool returns an empty result otherwise, so it is safe to

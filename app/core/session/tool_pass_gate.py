@@ -96,6 +96,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "recall_concept": "recall",
     "recall_self_history": "recall",
     "recall_hypotheses": "recall",
+    "read_diary": "recall",
     # world / room / garden
     "look_around": "world",
     "move_to": "world",
@@ -204,6 +205,7 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"what(?:'s| is) on (?:my|the) (?:screen|desktop)",
     ]),
     "recall": _compile([
+        r"diar(?:y|ies)", r"journal", r"research notes?", r"curiosity findings?",
         r"remember", r"recall", r"memor(?:y|ies)", r"forg[eo]t(?:ten)?",
         r"did i (?:tell|mention|say)", r"have i (?:told|mentioned|said)",
         r"what did i (?:say|tell)", r"we talked about",

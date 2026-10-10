@@ -24,8 +24,40 @@ For things she can't just know:
 | `recall_concept` | Explains *why* she thinks/believes something — a higher-order concept with its rationale, supporting memories, topic areas, and related concepts. No-op without the concept store wired in. |
 | `recall_self_history` | Walks how a belief *changed* — eras of formed / replaced / faded / revived / held-all-along, each with the reason recorded at the time. Returns `thin_record` rather than improvising when the trail is too sparse. |
 | `recall_hypotheses` | Lists what she is still **unsure** about: open guesses with a credence, and an `origin` marking whether she derived each from something she noticed (`grounded`) or invented it outright (`invented`). See [`hypotheses.md`](hypotheses.md). |
+| `read_diary` | Read-only local diary browsing and ID inspection, including subjective reflections and separately marked research notes. See [Reading the diary](#reading-the-diary) below. |
 | `web_search` | Web results, fetched **synchronously inside the turn** so she can answer from them in the same reply. See [Synchronous web search](#synchronous-web-search-d3) below. |
 | `get_activity` | What is on the machine right now — foreground app, and a window title only when that app is allowlisted. Live sample when the desktop collector answers within ~250 ms; otherwise the last stored session and how stale it is. Never a screen recording. Gated by `tools.activity`. Independent of `agent.activity_awareness_enabled` for registration — the tool itself reports when awareness is off. |
+
+## Reading the diary
+
+`read_diary` reuses `SessionController.list_diary` / `diary_count` for browsing
+and `MemoryStore.get` for inspection. It creates no storage, jobs or memory
+writes. Registration requires `tools.enabled`, `tools.recall`, `memory.enabled`
+and an existing memory store; it does not require an embedder or RAG retriever.
+It belongs to the existing `recall` family for progressive disclosure.
+
+- `{"action":"list"}` returns the newest five entries.
+- List accepts `kind`, `q`, `limit` (1–20) and `offset` (0–10000).
+  `q` is a literal, case-insensitive substring of **content**, maximum 200
+  characters, not semantic search or a wildcard expression. Filtering happens
+  before pagination; `total` counts all matching diary entries.
+- `{"action":"get","entry_id":123}` inspects a listed diary ID. Missing IDs,
+  non-diary IDs, invalid filters/bounds, and unavailable storage are tool errors,
+  not empty successful responses.
+
+Both actions return `id`, `date` (the stored creation timestamp), `kind`,
+`content` and the existing `metadata` bag, including linked question/memory IDs
+and sources. Text and metadata are not rewritten. Reflections and dreams are
+subjective records, questions remain questions, and research notes are not
+promoted to verified facts.
+
+The Settings diary includes `curiosity_finding` with a distinct **research**
+badge/filter and expandable source details. New finding metadata uses
+`research_evidence: [{title, url, snippet}]` and
+`evidence_type: "search_excerpt"` alongside the existing `source_urls`.
+These are search-result excerpts, not evidence that full pages were read or
+claims verified. Older findings still show their saved URLs, or explicitly
+report that no source details were recorded.
 
 ## Synchronous web search (D3)
 

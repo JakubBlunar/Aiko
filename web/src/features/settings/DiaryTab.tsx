@@ -17,6 +17,7 @@ const KIND_FILTERS: ReadonlyArray<{ id: string | null; label: string }> = [
   { id: "reflection", label: "reflections" },
   { id: "shared_moment", label: "moments" },
   { id: "open_question", label: "questions" },
+  { id: "curiosity_finding", label: "research" },
 ];
 
 const BADGE_STYLES: Record<Exclude<JournalBadge, null>, { label: string; cls: string; title: string }> = {
@@ -47,7 +48,108 @@ function kindBadge(kind: string): { label: string; cls: string } | null {
   if (kind === "reflection") {
     return { label: "reflection", cls: "bg-sky-500/15 text-sky-200" };
   }
+  if (kind === "curiosity_finding") {
+    return { label: "research", cls: "bg-teal-500/20 text-teal-200" };
+  }
   return null;
+}
+
+function sourceHref(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function ResearchSources({ metadata }: { metadata: Memory["metadata"] }) {
+  const evidence = Array.isArray(metadata?.research_evidence) ? metadata.research_evidence : [];
+  const sources: Array<{ title: string; url: string; snippet: string }> = [];
+  for (const raw of evidence) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const title = typeof item.title === "string" ? item.title : "";
+    const url = typeof item.url === "string" ? item.url : "";
+    const snippet = typeof item.snippet === "string" ? item.snippet : "";
+    if (title || url || snippet) sources.push({ title, url, snippet });
+  }
+  const urls = Array.isArray(metadata?.source_urls) ? metadata.source_urls : [];
+  for (const url of urls) {
+    if (typeof url === "string" && url && !sources.some((source) => source.url === url)) {
+      sources.push({ title: "", url, snippet: "" });
+    }
+  }
+  return (
+    <details className="mt-2 text-[11px] text-ink-100/65">
+      <summary className="cursor-pointer">Research sources ({sources.length})</summary>
+      <p className="mt-1">
+        {evidence.length > 0 || metadata?.evidence_type === "search_excerpt"
+          ? "Search excerpts only — not verified full pages."
+          : "Saved source links; no search excerpts recorded."}
+      </p>
+      {sources.length === 0 ? <p>No source details recorded.</p> : (
+        <ul className="mt-1 space-y-2">
+          {sources.map((source, index) => {
+            const href = sourceHref(source.url);
+            return (
+              <li key={index} className="break-words">
+                {source.title ? <p className="font-medium">{source.title}</p> : null}
+                {source.url ? (
+                  href ? (
+                    <a href={href} target="_blank" rel="noopener noreferrer" className="underline">
+                      {source.url}
+                    </a>
+                  ) : <p>{source.url}</p>
+                ) : null}
+                {source.snippet ? (
+                  <blockquote className="mt-0.5 whitespace-pre-wrap">{source.snippet}</blockquote>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </details>
+  );
+}
+
+export function DiaryEntry({ entry }: { entry: Memory }) {
+  const research = entry.kind === "curiosity_finding";
+  const { text, badge } = research
+    ? { text: entry.content, badge: null }
+    : stripJournalPrefix(entry.content);
+  const badgeStyle = badge ? BADGE_STYLES[badge] : null;
+  const kBadge = badge ? null : kindBadge(entry.kind);
+  const time = entryTime(entry.created_at);
+  return (
+    <li
+      className={`rounded-md border px-3 py-2 text-xs ${
+        entry.pinned
+          ? "border-amber-400/40 bg-amber-500/5"
+          : "border-white/5 bg-white/[0.03]"
+      }`}
+    >
+      <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wide">
+        {badgeStyle ? (
+          <span
+            className={`rounded px-1.5 py-0.5 ${badgeStyle.cls}`}
+            title={badgeStyle.title}
+          >
+            {badgeStyle.label}
+          </span>
+        ) : kBadge ? (
+          <span className={`rounded px-1.5 py-0.5 ${kBadge.cls}`}>
+            {kBadge.label}
+          </span>
+        ) : null}
+        {time ? <span className="text-ink-100/35">{time}</span> : null}
+        {entry.pinned ? <span className="text-amber-300/70">pinned</span> : null}
+      </div>
+      <p className={`break-words text-ink-100/90${research ? "" : " italic"}`}>{text}</p>
+      {research ? <ResearchSources metadata={entry.metadata} /> : null}
+    </li>
+  );
 }
 
 function dayKey(iso: string): string {
@@ -129,7 +231,8 @@ export function DiaryTab() {
       <p className="text-[11px] text-ink-100/50">
         A window into Aiko's inner life — the reflections, dreams, and little
         noticings she writes between your conversations. Read-only; this is her
-        journal, in her own words.
+        journal, in her own words. Research notes are marked separately; saved
+        excerpts and reflections are not verified facts.
       </p>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -187,44 +290,7 @@ export function DiaryTab() {
                 {group.day}
               </h4>
               <ul className="space-y-1.5">
-                {group.entries.map((entry) => {
-                  const { text, badge } = stripJournalPrefix(entry.content);
-                  const badgeStyle = badge ? BADGE_STYLES[badge] : null;
-                  const kBadge = badge ? null : kindBadge(entry.kind);
-                  const time = entryTime(entry.created_at);
-                  return (
-                    <li
-                      key={entry.id}
-                      className={`rounded-md border px-3 py-2 text-xs ${
-                        entry.pinned
-                          ? "border-amber-400/40 bg-amber-500/5"
-                          : "border-white/5 bg-white/[0.03]"
-                      }`}
-                    >
-                      <div className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wide">
-                        {badgeStyle ? (
-                          <span
-                            className={`rounded px-1.5 py-0.5 ${badgeStyle.cls}`}
-                            title={badgeStyle.title}
-                          >
-                            {badgeStyle.label}
-                          </span>
-                        ) : kBadge ? (
-                          <span className={`rounded px-1.5 py-0.5 ${kBadge.cls}`}>
-                            {kBadge.label}
-                          </span>
-                        ) : null}
-                        {time ? (
-                          <span className="text-ink-100/35">{time}</span>
-                        ) : null}
-                        {entry.pinned ? (
-                          <span className="text-amber-300/70">pinned</span>
-                        ) : null}
-                      </div>
-                      <p className="break-words italic text-ink-100/90">{text}</p>
-                    </li>
-                  );
-                })}
+                {group.entries.map((entry) => <DiaryEntry key={entry.id} entry={entry} />)}
               </ul>
             </div>
           ))}
