@@ -105,6 +105,7 @@ dev = [
   # patch bump can fail a previously green tree; the ceiling keeps that from
   # happening on someone else's machine. Configured in ``[tool.ruff]`` below.
   "ruff>=0.14.0,<1",
+  "pylint>=4.0.0,<5",
 ]
 all = [
   "english-speaking-assistant[voice,wake-word,dev]",
@@ -164,3 +165,11 @@ select = ["F", "E", "W", "B"]
 # runtime puts on sys.path at activation. This test does the same by hand, so
 # its ``import aiko_browser`` lines *have* to follow that sys.path edit.
 "tests/test_browser_perception.py" = ["E402"]
+
+[tool.pylint.messages_control]
+disable = [
+  "missing-function-docstring",
+  "missing-class-docstring",
+  "import-outside-toplevel",
+  "broad-exception-caught"
+]

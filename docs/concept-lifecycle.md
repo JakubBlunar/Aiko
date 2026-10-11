@@ -67,6 +67,16 @@ directional, recurrence and meta-depth/cycle gates. It may settle as `same_claim
 remain pending; cancellation does not spend the attempt. No historical evidence
 edges, labels, confidence, or lifecycle status are rewritten by this change.
 
+**Unusable-answer handling (9 Oct 2026).** An initial pass with no usable model
+answer logs an INFO `concept proposer deferred` line with `reason=llm_unusable`,
+not a generic proposer-failure traceback. Its input signatures remain
+uncheckpointed and its source references remain eligible for bounded retry.
+Complete objects salvaged from a truncated response are still accepted; valid
+empty answers still checkpoint normally. Transport failures retain their original
+LLM warning and traceback, while unexpected proposer exceptions retain the
+generic WARNING traceback. This classification does not change generation caps,
+retry budgets or evidence gates, nor guarantee that model output will be valid.
+
 **Retry dispatch (9 Oct 2026).** New manifests record the originating proposer's
 stable `sig_key`, also included in queue identity: two producers of the same
 kind cannot overwrite each other's inputs. Subject and kind alone are not a

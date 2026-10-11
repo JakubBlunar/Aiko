@@ -13,6 +13,7 @@
     "lint": "npm run lint:py && npm run lint:web",
     "lint:py": "python -m ruff check app tests scripts",
     "lint:py:fix": "python -m ruff check --fix app tests scripts",
+    "lint:pylint": "node -e \"const { spawnSync } = require('node:child_process'); const python = process.platform === 'win32' ? '.venv/Scripts/python.exe' : '.venv/bin/python'; const result = spawnSync(python, ['-m', 'pylint', '--rcfile=pyproject.toml', '--reports=n', '--score=n', ...process.argv.slice(1)], { stdio: 'inherit' }); if (result.error) console.error(result.error.message); process.exit(result.status ?? 1);\" --",
     "lint:web": "npm --prefix web run typecheck"
   },
   "devDependencies": {

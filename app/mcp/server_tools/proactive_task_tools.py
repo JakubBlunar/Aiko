@@ -974,8 +974,6 @@ def register(mcp, session: "SessionController") -> None:
             from app.core.proactive.forward_curiosity_worker import (
                 load_questions,
                 _KV_LAST_FIRED_AT,
-                _KV_DAY,
-                _KV_DAY_COUNT,
             )
 
             kv = session._chat_db.kv_get
@@ -1011,8 +1009,6 @@ def register(mcp, session: "SessionController") -> None:
                         "forward_curiosity.last_surfaced_at"
                     ),
                     "last_fired_at": kv(_KV_LAST_FIRED_AT),
-                    "day": kv(_KV_DAY),
-                    "day_count": kv(_KV_DAY_COUNT),
                 },
                 indent=2,
             )

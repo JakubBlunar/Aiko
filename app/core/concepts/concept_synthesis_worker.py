@@ -71,7 +71,7 @@ from app.core.concepts.concept_surfacing import engagement_baseline
 from app.core.concepts.concept_store import Concept, ConceptEdge
 from app.core.concepts.concept_synthesis_inputs import select_memory_batch
 from app.core.concepts.concept_synthesis_routing import (
-    DISTINCTION_COS, ROUTING_RULE, SynthesisRoutingMixin,
+    DISTINCTION_COS, ROUTING_RULE, SynthesisCallFailed, SynthesisRoutingMixin,
 )
 from app.core.concepts.surfacing_conduct import (
     CONDUCT_LAST_RUN_KEY,
@@ -1070,6 +1070,12 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
                     )
                 else:
                     proposals = []
+            except SynthesisCallFailed:
+                log.info(
+                    "concept proposer deferred (kind=%s subject=%s reason=llm_unusable)",
+                    spec.kind, spec.subject,
+                )
+                continue
             except Exception:
                 log.warning(
                     "concept proposer failed (kind=%s subject=%s)",

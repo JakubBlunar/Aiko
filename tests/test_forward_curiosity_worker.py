@@ -11,10 +11,12 @@ since its state machine is the thing under test.
 """
 from __future__ import annotations
 
+import json
 import random
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.core.proactive.forward_curiosity_worker import (
     FORWARD_CURIOSITY_JOURNAL_KEY,
@@ -170,6 +172,45 @@ def _make_worker(
         subject_quota_provider=lambda: subject_quota,
         rng=random.Random(seed),
     )
+
+
+class McpStateTests(unittest.TestCase):
+    def test_state_returns_journal_and_watermarks_without_retired_counters(self) -> None:
+        from app.mcp.server_tools.proactive_task_tools import register
+
+        kv = _FakeKV()
+        questions = [{"question": "How did the project go?", "source": "future_plan"}]
+        kv.set(FORWARD_CURIOSITY_JOURNAL_KEY, json.dumps(questions))
+        kv.set("forward_curiosity.last_fired_at", _NOW.isoformat())
+        kv.set("forward_curiosity.last_surfaced_at", "2026-01-04T12:00:00+00:00")
+        tools = {}
+        mcp = SimpleNamespace(
+            tool=lambda: lambda function: tools.setdefault(function.__name__, function),
+        )
+        session = SimpleNamespace(
+            _settings=SimpleNamespace(agent=SimpleNamespace(forward_curiosity_enabled=True)),
+            _memory_settings=SimpleNamespace(forward_curiosity_min_gap_hours=8.0),
+            _chat_db=SimpleNamespace(kv_get=kv.get),
+            _pending_forward_curiosity_seconds=28800.0,
+            debug_overrides=SimpleNamespace(peek=lambda name, default: default),
+        )
+        register(mcp, session)
+
+        for worker_registered in (False, True):
+            with self.subTest(worker_registered=worker_registered):
+                session._forward_curiosity_worker = object() if worker_registered else None
+                state = json.loads(tools["get_forward_curiosity_state"]())
+
+                self.assertTrue(state["enabled"])
+                self.assertEqual(state["worker_registered"], worker_registered)
+                self.assertEqual(state["questions"], questions)
+                self.assertEqual(state["pending_seconds"], 28800.0)
+                self.assertFalse(state["force_next"])
+                self.assertEqual(state["min_gap_hours"], 8.0)
+                self.assertEqual(state["last_fired_at"], _NOW.isoformat())
+                self.assertEqual(state["last_surfaced_at"], "2026-01-04T12:00:00+00:00")
+                self.assertNotIn("day", state)
+                self.assertNotIn("day_count", state)
 
 
 class DraftingTests(unittest.TestCase):

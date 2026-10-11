@@ -12,9 +12,13 @@ Contract surface:
 """
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -95,6 +99,37 @@ def _make_worker(
 
 
 class DreamWorkerTests(unittest.TestCase):
+    def test_actual_bootstrap_constructor_accepts_its_keywords(self) -> None:
+        from app.core.session.speaking_workers_init_mixin import SpeakingWorkersInitMixin
+
+        source = textwrap.dedent(inspect.getsource(
+            SpeakingWorkersInitMixin._init_speaking_workers,
+        ))
+        constructor = next(
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "DreamWorker"
+        )
+        host = SimpleNamespace(
+            _ollama=_FakeOllama(),
+            _memory_store=None,
+            _embedder=_FakeEmbedder(),
+            _effective_worker_model="dream-model",
+            _chat_db=None,
+            _memory_settings=SimpleNamespace(sleep_dream_min_hours=1.5),
+            user_display_name="Test User",
+        )
+        expression = ast.Expression(body=constructor)
+        worker = eval(
+            compile(ast.fix_missing_locations(expression), "<dream bootstrap>", "eval"),
+            {"DreamWorker": DreamWorker, "self": host},
+        )
+        self.assertIsInstance(worker, DreamWorker)
+        self.assertEqual(worker._model, "dream-model")
+        self.assertEqual(worker._min_hours, 1.5)
+        self.assertEqual(host._ollama.calls, [])
+
     def test_persists_reflection_memory_with_dream_prefix(self) -> None:
         f = _Fixture()
         try:

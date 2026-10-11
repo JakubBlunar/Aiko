@@ -116,7 +116,6 @@ class SpeakingWorkersInitMixin:
                         ),
                     ),
                     user_display_name_provider=lambda: self.user_display_name,
-                    context_window=lambda: self._worker_route_model_ctx()[1],
                     sleep_store=getattr(self, "_sleep_store", None),
                     context_provider=lambda: {
                         "recent_callbacks": self._top_inner_life_contents(

@@ -1,0 +1,6 @@
+{
+  "pylint.importStrategy": "fromEnvironment",
+  "pylint.path": ["${interpreter}", "-m", "pylint"],
+  "pylint.cwd": "${workspaceFolder}",
+  "pylint.args": ["--rcfile=${workspaceFolder}/pyproject.toml"]
+}

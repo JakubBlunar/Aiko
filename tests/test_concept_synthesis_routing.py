@@ -21,6 +21,7 @@ from app.core.concepts.concept_synthesis_routing import (
 )
 from app.core.concepts.proposers.base import NarrativeCandidate
 from app.core.concepts.proposers.base import ExistingConcept, ProposerContext
+from app.core.concepts.proposers.boundary_user import SPEC as BOUNDARY_SPEC
 from app.core.concepts.proposers.communication_style_aiko import SPEC as STYLE_SPEC
 from app.core.concepts.proposers.identity_user import SPEC
 from app.core.concepts.proposers.narrative_user import SPEC as NARRATIVE_SPEC
@@ -527,6 +528,80 @@ class SynthesisRoutingTests(unittest.TestCase):
         self.assertEqual(stats["routing"]["llm_unusable"], 1)
         self.assertEqual(stats["routing"]["pending"], 1)
         self.assertEqual(self._run(harness)["reinforced"], 1)
+
+    def test_bad_boundary_answer_is_deferred_without_a_warning_traceback(self):
+        harness, _ = self._harness()
+        with (
+            patch("app.core.concepts.concept_synthesis_worker.CONCEPT_PROPOSERS", (BOUNDARY_SPEC,)),
+            patch.object(harness.ollama, "chat_stream", return_value=iter(["not JSON"])),
+            self.assertLogs("app.concept_synthesis_worker", level="INFO") as captured,
+        ):
+            stats = harness.worker.run()
+        records = [record for record in captured.records if "concept proposer" in record.msg]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].levelname, "INFO")
+        self.assertIsNone(records[0].exc_info)
+        self.assertIn("reason=llm_unusable", records[0].getMessage())
+        self.assertIsNone(harness.worker._kv_get(BOUNDARY_SPEC.sig_key))
+        self.assertEqual(stats["routing"]["llm_unusable"], 1)
+        self.assertEqual(stats["routing"]["pending"], 1)
+        with patch(
+            "app.core.concepts.concept_synthesis_worker.CONCEPT_PROPOSERS", (BOUNDARY_SPEC,),
+        ):
+            self.assertEqual(harness.worker.run()["llm_calls"], 1)
+            self.assertIsNotNone(harness.worker._kv_get(BOUNDARY_SPEC.sig_key))
+
+    def test_salvaged_boundary_answer_is_accepted_and_checkpointed(self):
+        harness, _ = self._harness()
+        item = {
+            "label": "A distinct recurring user boundary",
+            "evidence_cluster_reps": [100, 101],
+            "confidence": 0.7,
+            "rationale": "Two separate observations support this boundary",
+        }
+        truncated = '{"concepts": [' + json.dumps(item) + ', {"label": "incomplete'
+        with (
+            patch("app.core.concepts.concept_synthesis_worker.CONCEPT_PROPOSERS", (BOUNDARY_SPEC,)),
+            patch.object(harness.ollama, "chat_stream", return_value=iter([truncated])),
+            self.assertLogs("app.concept_synthesis_worker", level="INFO") as captured,
+        ):
+            stats = harness.worker.run()
+        self.assertEqual(stats["added"], 1)
+        self.assertEqual(stats["routing"].get("llm_unusable", 0), 0)
+        self.assertIsNotNone(harness.worker._kv_get(BOUNDARY_SPEC.sig_key))
+        self.assertTrue(any(
+            "salvaged 1 complete" in record.getMessage() for record in captured.records
+        ))
+        self.assertTrue(all(record.levelname == "INFO" for record in captured.records))
+
+    def test_boundary_transport_error_keeps_only_the_original_warning(self):
+        harness, _ = self._harness()
+        with (
+            patch("app.core.concepts.concept_synthesis_worker.CONCEPT_PROPOSERS", (BOUNDARY_SPEC,)),
+            patch.object(
+                harness.ollama, "chat_stream", side_effect=RuntimeError("transport failed"),
+            ),
+            self.assertLogs("app.concept_synthesis_worker", level="INFO") as captured,
+        ):
+            stats = harness.worker.run()
+        warnings = [record for record in captured.records if record.levelname == "WARNING"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0].msg, "concept synthesis LLM call failed")
+        self.assertEqual(warnings[0].exc_info[0], RuntimeError)
+        self.assertIsNone(harness.worker._kv_get(BOUNDARY_SPEC.sig_key))
+        self.assertEqual(stats["routing"]["pending"], 1)
+
+    def test_unexpected_boundary_error_keeps_warning_traceback(self):
+        harness, _ = self._harness()
+        with (
+            patch("app.core.concepts.concept_synthesis_worker.CONCEPT_PROPOSERS", (BOUNDARY_SPEC,)),
+            patch.object(harness.worker, "_run_boundary_pass", side_effect=RuntimeError("bug")),
+            self.assertLogs("app.concept_synthesis_worker", level="WARNING") as captured,
+        ):
+            harness.worker.run()
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn("concept proposer failed", captured.records[0].msg)
+        self.assertEqual(captured.records[0].exc_info[0], RuntimeError)
 
     def test_bad_retry_answer_stays_pending(self):
         harness, _ = self._harness(relation="uncertain")
