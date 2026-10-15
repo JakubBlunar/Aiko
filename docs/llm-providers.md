@@ -66,6 +66,66 @@ free-tier daily budget in well under an hour. Point them at Gemini too
 if you'd rather not run a local model at all — the remote provider's
 quota is on you in that case.
 
+## Venice AI (uncensored chat)
+
+Venice exposes an OpenAI-compatible Chat Completions API. Add a saved provider
+with base URL `https://api.venice.ai/api/v1`, kind `openai_compatible`, and API
+style `chat_completions`. Set `api_key_env` to `AIKO_VENICE_API_KEY` to keep the
+credential out of the config file. The backend process must inherit that
+environment variable; restart it after setting the variable if necessary.
+
+For GLM 4.7 Flash Heretic, assign this route after testing the provider:
+
+```json
+{
+  "main_chat": {
+    "provider_id": "venice",
+    "model": "olafangensan-glm-4.7-flash-heretic",
+    "context_window": 200000,
+    "max_tokens": 4096,
+    "temperature": null,
+    "reasoning_effort": "low"
+  }
+}
+```
+
+Keep the existing worker, workflow, and embedding routes unless you also intend
+to move those calls to the paid API. Keep the previous chat provider saved so
+you can switch back without rebuilding its credentials.
+
+On the direct `api.venice.ai` endpoint, Aiko disables Venice's additional system
+prompt so the configured persona remains authoritative. Configured reasoning
+effort is sent on reply calls; tool-selection calls use `none` to protect their
+small completion budget. Leave reasoning effort unset for Venice models that
+do not support it. These adjustments are host-specific and do not apply to an
+OpenRouter endpoint hosting the same model family.
+
+GLM 4.7 Flash Heretic on this direct endpoint uses `tool_choice: "auto"` and a
+focused instruction on the pre-stream tool-selection pass only. With a full
+companion context, forced `required` picks returned an opening bracket and
+padding until the 512-token cap, not a native function call, even with reasoning
+disabled. Automatic selection also needs the focused instruction to avoid a
+conversational answer instead of a call. The ordinary reply prompt is unchanged.
+Restart the backend after updating this client code; a route edit does not reload
+Python modules.
+
+Check the exact hosted model's `supportsFunctionCalling` flag in
+[Venice's model catalogue](https://docs.venice.ai/models/overview). Model-family
+support alone does not establish that a particular endpoint accepts tools.
+Verify both streaming replies and a native tool-call/result round trip before
+replacing a working chat route. Reasoning shares the completion budget with the
+visible answer. Use 4096 tokens with low reasoning as a starting point: the
+1024-token cap passed tiny connectivity probes but exhausted its allowance
+before producing any visible text on actual Aiko turns. The budget is a ceiling,
+not a requested reply length. If latency matters more than deliberation, this
+model also accepts `reasoning_effort: "none"`.
+
+Venice API usage requires spendable credits and an allowance on the API key.
+A `402` response saying `API key USD spend limit exceeded` means that key's
+configured spending limit is exhausted, even if the account still has credits.
+Adjust it in [Venice API settings](https://venice.ai/settings/api) before
+retrying; changing the model or resending the request will not fix the limit.
+
 ## LM Studio on another machine
 
 This is a good fit for Aiko's role-based routing. A Mac can serve one or more
@@ -192,6 +252,36 @@ For the first deployment, prefer one of these operational approaches:
 Do not use periodic dummy prompts as the final keep-warm mechanism. They spend
 compute, distort usage telemetry and can contend with actual worker requests.
 An explicit load/TTL lifecycle is cheaper and observable.
+
+### JSON output and reasoning
+
+Set the provider's `dialect` to `lm_studio` for JSON-producing workers, not
+only for native prewarm. LM Studio rejects `response_format.type=json_object`;
+Aiko maps schema-less JSON requests to an unrestricted object `json_schema`
+for this dialect. Explicit schemas, including Live policy's schema, remain
+unchanged. This applies to both streaming and non-streaming Chat Completions.
+
+For Qwen3.5 used by `live_policy`, the **Reasoning Parsing** start/end strings
+only separate reasoning from answer text; they do not disable thinking.
+The model's Jinja template opens `<think>` by default. In **My Models**, open
+the 4B model's gear, override **Prompt Template** using its existing Jinja
+template, and prepend:
+
+```jinja
+{%- set enable_thinking = false %}
+```
+
+Keep the rest of the template intact, save the per-model default, and reload
+the 4B model. If Prompt Template is hidden in the Advanced Configuration
+sidebar, right-click that sidebar and select **Always Show Prompt Template**.
+This selects the template's empty, closed thinking block before generation.
+See [LM Studio's prompt-template guide](https://lmstudio.ai/docs/app/advanced/prompt-template).
+
+Aiko's `think=False` does not currently disable reasoning through this
+compatible endpoint, and the tested `chat_template_kwargs` request flag was
+ignored on this host. With thinking enabled, schema-constrained JSON can
+arrive in `reasoning_content` while answer `content` is empty. Aiko does not
+promote that reasoning into an answer.
 
 ### Aiko-managed prewarm
 

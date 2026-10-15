@@ -206,6 +206,7 @@ class ClientCache:
                 reasoning_effort=getattr(provider, "reasoning_effort", "") or "",
                 api_style=getattr(provider, "api_style", "auto") or "auto",
                 store=bool(getattr(provider, "store", False)),
+                dialect=getattr(provider, "dialect", "") or "",
             )
         return OllamaClient(
             transport,

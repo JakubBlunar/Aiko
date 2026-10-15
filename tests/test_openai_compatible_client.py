@@ -143,6 +143,136 @@ class GeminiQuirkTests(unittest.TestCase):
         self.assertIn("Just be.", collapsed[0]["content"])
 
 
+class VeniceQuirkTests(unittest.TestCase):
+    def _payload(
+        self,
+        *,
+        base_url: str = "https://api.venice.ai/api/v1",
+        reasoning_effort: str = "low",
+        options: dict | None = None,
+        tools: list[dict] | None = None,
+        stream: bool = False,
+    ) -> dict:
+        model = "olafangensan-glm-4.7-flash-heretic"
+        client = OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url=base_url,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            api_style="chat_completions",
+        )
+        return client._build_payload(
+            messages=[{"role": "system", "content": "Aiko's persona."}],
+            model=model,
+            options=options,
+            tools=tools,
+            stream=stream,
+            format_json=False,
+        )
+
+    def test_preserves_persona_and_sends_reply_reasoning(self) -> None:
+        payload = self._payload()
+        self.assertEqual(
+            payload["venice_parameters"], {"include_venice_system_prompt": False},
+        )
+        self.assertEqual(payload["messages"][0]["content"], "Aiko's persona.")
+        self.assertEqual(payload["reasoning_effort"], "low")
+
+    def test_stream_honours_per_call_reasoning_override(self) -> None:
+        payload = self._payload(options={"reasoning_effort": "high"}, stream=True)
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertTrue(payload["stream"])
+        self.assertEqual(payload["stream_options"], {"include_usage": True})
+
+    def test_tool_pass_disables_reasoning(self) -> None:
+        tools = [{"type": "function", "function": {"name": "get_time"}}]
+        payload = self._payload(options={"num_predict": 512}, tools=tools)
+        self.assertEqual(payload["reasoning_effort"], "none")
+        self.assertEqual(payload["max_tokens"], 512)
+        self.assertEqual(payload["tools"], tools)
+
+    def test_heretic_tool_pass_relaxes_required_only(self) -> None:
+        model = "olafangensan-glm-4.7-flash-heretic"
+        client = OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url="https://api.venice.ai/api/v1",
+            model=model,
+            api_style="chat_completions",
+        )
+        self.assertEqual(client.tool_pass_tool_choice(model, "required"), "auto")
+        named_tool = {"type": "function", "function": {"name": "web_search"}}
+        for requested in ("auto", "none", named_tool):
+            with self.subTest(requested=requested):
+                self.assertEqual(client.tool_pass_tool_choice(model, requested), requested)
+
+    def test_heretic_choice_policy_is_host_and_model_scoped(self) -> None:
+        heretic = "olafangensan-glm-4.7-flash-heretic"
+        for base_url, model in (
+            ("https://api.venice.ai/api/v1", "other-model"),
+            ("https://openrouter.ai/api/v1", heretic),
+            ("https://api.venice.ai.example.com/v1", heretic),
+        ):
+            with self.subTest(base_url=base_url, model=model):
+                client = OpenAICompatibleClient(
+                    load_settings().ollama,
+                    base_url=base_url,
+                    model=model,
+                    api_style="chat_completions",
+                )
+                self.assertEqual(client.tool_pass_tool_choice(model, "required"), "required")
+
+    def test_focused_instruction_is_isolated_to_heretic_tool_pass(self) -> None:
+        heretic = "olafangensan-glm-4.7-flash-heretic"
+        venice = "https://api.venice.ai/api/v1"
+        tools = [{"type": "function", "function": {"name": "web_search"}}]
+        for base_url, model, surface, active_tools, expected in (
+            (venice, heretic, "tool_pass", tools, True),
+            (venice, heretic, "chat", tools, False),
+            (venice, heretic, "tool_pass", None, False),
+            (venice, "other-model", "tool_pass", tools, False),
+            ("https://openrouter.ai/api/v1", heretic, "tool_pass", tools, False),
+            ("https://api.venice.ai.example.com/v1", heretic, "tool_pass", tools, False),
+        ):
+            with self.subTest(base_url=base_url, model=model, surface=surface):
+                client = OpenAICompatibleClient(
+                    load_settings().ollama, base_url=base_url, model=model,
+                    api_style="chat_completions",
+                )
+                messages = [
+                    {"role": "system", "content": "Aiko's persona."},
+                    {"role": "user", "content": "Search the web for anime release dates."},
+                ]
+                original = [dict(message) for message in messages]
+                with patch.object(
+                    client, "_post_json_with_retry",
+                    return_value=(_fake_chat_response(), 1.0),
+                ) as post:
+                    client.chat_with_tools(messages, tools=active_tools, surface=surface)
+                sent = post.call_args.kwargs["payload"]["messages"]
+                self.assertEqual(messages, original)
+                self.assertEqual(sent[:len(original)], original)
+                self.assertEqual(len(sent), len(original) + int(expected))
+                if expected:
+                    self.assertEqual(sent[-1]["role"], "system")
+                    self.assertIn("call web_search now", sent[-1]["content"])
+                    self.assertIn("do not repeat completed lookups", sent[-1]["content"])
+
+    def test_unconfigured_or_omitted_reasoning_stays_absent(self) -> None:
+        for effort in ("", "omit", "default"):
+            with self.subTest(effort=effort):
+                self.assertNotIn("reasoning_effort", self._payload(reasoning_effort=effort))
+
+    def test_venice_parameters_do_not_leak_to_other_hosts(self) -> None:
+        for base_url in (
+            "https://openrouter.ai/api/v1",
+            "https://api.venice.ai.example.com/v1",
+        ):
+            with self.subTest(base_url=base_url):
+                payload = self._payload(base_url=base_url)
+                self.assertNotIn("venice_parameters", payload)
+                self.assertNotIn("reasoning_effort", payload)
+
+
 class ToolMessageNormalizationTests(unittest.TestCase):
     """The neutral tool-call shape that ``TurnRunner`` emits must be
     rewritten into strict OpenAI shape before posting — otherwise OpenAI
@@ -599,8 +729,8 @@ class ChatWithToolsTests(unittest.TestCase):
         settings = load_settings().ollama
         fake = _fake_chat_response(content="ok")
 
-        # GPT-5 family -> max_completion_tokens.
-        for model in ("gpt-5", "gpt-5-mini", "gpt-5-nano"):
+        # GPT-5 / GPT-6 families -> max_completion_tokens.
+        for model in ("gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-6-luna"):
             client = OpenAICompatibleClient(
                 settings,
                 base_url="https://api.openai.com/v1",
@@ -694,7 +824,7 @@ class ChatWithToolsTests(unittest.TestCase):
         settings = load_settings().ollama
         fake = _fake_chat_response(content="ok")
         for model in (
-            "gpt-5", "gpt-5-mini", "gpt-5-nano",
+            "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-6-luna",
             "o1", "o1-mini", "o3-mini", "o4-mini",
         ):
             client = OpenAICompatibleClient(
@@ -741,6 +871,35 @@ class ChatWithToolsTests(unittest.TestCase):
             # Knobs not in the unsupported set still pass through.
             self.assertEqual(payload.get("seed"), 7)
             self.assertEqual(payload.get("stop"), ["END"])
+
+    def test_gpt6_luna_keeps_chat_completions_with_new_token_field(self) -> None:
+        model = "gpt-6-luna"
+        client = OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url="https://api.openai.com/v1",
+            model=model,
+            reasoning_effort="low",
+        )
+        tools = [{"type": "function", "function": {"name": "get_time"}}]
+        for active_tools in (None, tools):
+            with self.subTest(tools=active_tools), patch(
+                "app.llm.openai_compatible_client.requests.post",
+                return_value=_fake_chat_response(),
+            ) as posted:
+                client.chat_with_tools(
+                    [{"role": "user", "content": "What time is it?"}],
+                    tools=active_tools,
+                    options={"num_predict": 1024, "temperature": 0.7},
+                )
+                self.assertEqual(
+                    posted.call_args.args[0],
+                    "https://api.openai.com/v1/chat/completions",
+                )
+                payload = posted.call_args.kwargs["json"]
+                self.assertEqual(payload["max_completion_tokens"], 1024)
+                self.assertEqual(payload["reasoning_effort"], "none" if active_tools else "low")
+                self.assertNotIn("max_tokens", payload)
+                self.assertNotIn("temperature", payload)
 
     def test_responses_api_family_sets_minimal_reasoning_effort(self) -> None:
         # Regression: GPT-5 + o-series consume part of the
@@ -1530,6 +1689,93 @@ class PromptCachingUsageTests(unittest.TestCase):
 
 
 class ChatJsonTests(unittest.TestCase):
+    def test_lm_studio_json_stream_uses_object_schema(self) -> None:
+        from app.core.infra.settings import LlmProvider
+        from app.llm.factory import build_probe_client
+
+        provider = LlmProvider(
+            id="mac",
+            name="Mac LM Studio",
+            kind="openai_compatible",
+            base_url="http://mac.local:1234/v1",
+            dialect="lm_studio",
+            api_style="chat_completions",
+        )
+        client = build_probe_client(provider, model="worker-model")
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=_sse_response([
+                'data: {"choices":[{"delta":{"content":"{}"}}]}',
+                "data: [DONE]",
+            ]),
+        ) as posted:
+            content = "".join(client.chat_stream(
+                [{"role": "user", "content": "make json"}],
+                format_json=True,
+            ))
+        self.assertEqual(content, "{}")
+        response_format = posted.call_args.kwargs["json"]["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertEqual(
+            response_format["json_schema"]["schema"],
+            {"type": "object", "additionalProperties": True},
+        )
+        self.assertFalse(response_format["json_schema"]["strict"])
+
+    def test_lm_studio_chat_json_uses_object_schema(self) -> None:
+        client = OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url="http://mac.local:1234/v1",
+            model="worker-model",
+            dialect="lm_studio",
+        )
+        with patch(
+            "app.llm.openai_compatible_client.requests.post",
+            return_value=_fake_chat_response(content='{"ok": true}'),
+        ) as posted:
+            content, _usage = client.chat_json(
+                [{"role": "user", "content": "make json"}],
+            )
+        self.assertEqual(content, '{"ok": true}')
+        response_format = posted.call_args.kwargs["json"]["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertEqual(
+            response_format["json_schema"]["schema"],
+            {"type": "object", "additionalProperties": True},
+        )
+        self.assertFalse(response_format["json_schema"]["strict"])
+
+    def test_lm_studio_preserves_explicit_schema_and_plain_text(self) -> None:
+        client = OpenAICompatibleClient(
+            load_settings().ollama,
+            base_url="http://mac.local:1234/v1",
+            model="worker-model",
+            dialect="lm_studio",
+        )
+        schema = {
+            "title": "Status",
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        }
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                plain = client._build_payload(
+                    messages=[], model="worker-model", options=None, tools=None,
+                    stream=stream, format_json=False,
+                )
+                self.assertNotIn("response_format", plain)
+                structured = client._build_payload(
+                    messages=[], model="worker-model", options=None, tools=None,
+                    stream=stream, format_json=False, json_schema=schema,
+                )
+                response_format = structured["response_format"]
+                self.assertEqual(response_format["type"], "json_schema")
+                self.assertEqual(response_format["json_schema"]["schema"], schema)
+                self.assertEqual(response_format["json_schema"]["name"], "Status")
+                self.assertTrue(response_format["json_schema"]["strict"])
+
     def test_default_sets_response_format_json(self) -> None:
         settings = load_settings().ollama
         client = OpenAICompatibleClient(

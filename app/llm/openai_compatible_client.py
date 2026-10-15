@@ -28,7 +28,9 @@ Quirks handled here:
   :func:`_warn_if_truncated`).
 - ``response_format={"type":"json_object"}`` is set when
   ``format_json=True`` so background workers (summary, extractor) get
-  JSON-shaped output on providers that respect it. When
+    JSON-shaped output on providers that respect it. The ``lm_studio``
+    dialect uses an unrestricted object schema instead because its
+    Chat Completions endpoint rejects ``json_object`` mode. When
   ``json_schema`` is passed, that becomes ``response_format.json_schema``
   (or ``text.format`` on the Responses surface). Providers that
   don't (looking at you, Groq with some models) will just return
@@ -47,6 +49,7 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -77,6 +80,15 @@ _BENIGN_TRUNCATION_SURFACES: frozenset[str] = frozenset({"tool_pass"})
 # Both are illegal on /v1/chat/completions and are stripped there.
 _RESPONSES_OUTPUT_KEY: str = "_responses_output"
 _RESPONSES_REASONING_KEY: str = "_responses_reasoning"
+
+_VENICE_HERETIC_TOOL_INSTRUCTION: str = (
+    "Select the tools needed for the latest user request. This is a tool-selection pass, "
+    "not a conversational reply. When the user asks you to search, look up, or check "
+    "the web, call web_search now rather than promising to search. Consider tool results "
+    "already present; do not repeat completed lookups. Use respond_directly only when "
+    "no available tool is needed. Emit native function calls, not prose or function "
+    "calls written inside text."
+)
 
 # Transient HTTP statuses worth a retry on the non-streaming POST paths.
 # 429 = rate limit; 5xx = server-side hiccups. OpenAI's own 500 body says
@@ -451,7 +463,7 @@ _OLLAMA_ONLY_OPTION_KEYS: frozenset[str] = frozenset({
 
 def _is_responses_api_family(model: str) -> bool:
     """Return True if ``model`` belongs to OpenAI's newer
-    Responses-API parameter family (GPT-5 + o-series reasoning).
+    parameter family (GPT-5 / GPT-6 + o-series reasoning).
 
     Two parameter-shape quirks distinguish this family from older
     OpenAI models (and from all non-OpenAI compat providers):
@@ -477,8 +489,8 @@ def _is_responses_api_family(model: str) -> bool:
     name = model.strip().lower()
     if not name:
         return False
-    # GPT-5 family (gpt-5, gpt-5-mini, gpt-5-nano, gpt-5-pro, …).
-    if name.startswith("gpt-5"):
+    # GPT-5 / GPT-6 families (gpt-5-mini, gpt-6-luna, …).
+    if name.startswith(("gpt-5", "gpt-6")):
         return True
     # o-series reasoning models: o1, o1-mini, o1-preview, o3, o3-mini,
     # o4, o4-mini, … Match the ``o<digit>`` prefix so future siblings
@@ -743,6 +755,7 @@ def _apply_json_output_format(
     format_json: bool,
     json_schema: dict[str, Any] | None,
     responses: bool,
+    dialect: str = "",
 ) -> None:
     """Set structured-output / JSON-mode fields on a request body.
 
@@ -773,10 +786,16 @@ def _apply_json_output_format(
     if format_json:
         if responses:
             payload["text"] = {"format": {"type": "json_object"}}
+        elif dialect == "lm_studio":
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "json_object",
+                    "schema": {"type": "object", "additionalProperties": True},
+                    "strict": False,
+                },
+            }
         else:
-            # response_format is OpenAI-only; Gemini's OpenAI-compat
-            # layer accepts it but enforces it weakly. Providers that
-            # don't understand it ignore the field.
             payload["response_format"] = {"type": "json_object"}
 
 
@@ -803,6 +822,7 @@ class OpenAICompatibleClient:
         reasoning_effort: str | None = None,
         api_style: str | None = None,
         store: bool = False,
+        dialect: str | None = None,
     ) -> None:
         if not (base_url or "").strip():
             raise ValueError("OpenAICompatibleClient requires a base_url")
@@ -845,6 +865,7 @@ class OpenAICompatibleClient:
         self._api_style = (
             style if style in ("auto", "responses", "chat_completions") else "auto"
         )
+        self._dialect = (dialect or "").strip().lower()
         # Whether the provider may keep the request + response as
         # application state. Only sent on the Responses surface, where
         # the field exists and its server-side default is ``true``. See
@@ -903,15 +924,23 @@ class OpenAICompatibleClient:
         model: str,
         requested: "str | dict[str, Any]",
     ) -> "str | dict[str, Any]":
-        """Relax the legacy forced-pick policy for modern GPT models.
+        """Relax forced picks for models that need automatic selection.
 
         ``required`` plus a synthetic ``respond_directly`` escape was added
         for older chatty models that narrated tool intent instead of
         emitting a call. Decimal-versioned GPT-5 models call tools reliably
         on ``auto``; forcing them encourages unnecessary calls and makes
-        every gated pass choose *something*. Other providers keep the
-        caller's historical policy.
+        every gated pass choose *something*. Venice's GLM Heretic emits
+        unterminated padding on forced picks with companion-sized context,
+        but returns native calls on ``auto``. Other providers keep the
+        caller's historical policy; explicit named-tool choices are unchanged.
         """
+        if (
+            requested == "required"
+            and urlsplit(self._base_url).hostname == "api.venice.ai"
+            and model == "olafangensan-glm-4.7-flash-heretic"
+        ):
+            return "auto"
         return "auto" if _use_responses_api(model) else requested
 
     def set_reasoning_effort(self, value: str | None) -> None:
@@ -996,7 +1025,14 @@ class OpenAICompatibleClient:
             # SSE case. Harmless on providers that ignore it.
             payload["stream_options"] = {"include_usage": True}
         responses_api = _is_responses_api_family(model)
-        if responses_api:
+        if urlsplit(self._base_url).hostname == "api.venice.ai":
+            payload["venice_parameters"] = {"include_venice_system_prompt": False}
+            effort = str(
+                (options or {}).get("reasoning_effort", self._reasoning_effort) or ""
+            ).strip().lower()
+            if effort not in ("", "omit", "default"):
+                payload["reasoning_effort"] = "none" if tools else effort
+        elif responses_api:
             # GPT-5 family + o-series consume part of the
             # ``max_completion_tokens`` budget on hidden reasoning
             # tokens before any visible output. With the default
@@ -1031,6 +1067,8 @@ class OpenAICompatibleClient:
             # their default ``medium`` effort on the tool pass).
             if tools and _tools_with_reasoning_unsupported(model):
                 effort = "omit"
+            elif tools and model.strip().lower() == "gpt-6-luna":
+                effort = "none"
             if effort != "omit":
                 payload["reasoning_effort"] = effort
         elif _is_gemini_model(model) and _gemini_supports_thinking(model):
@@ -1117,6 +1155,7 @@ class OpenAICompatibleClient:
             payload["tools"] = tools
         _apply_json_output_format(
             payload, format_json=format_json, json_schema=json_schema, responses=False,
+            dialect=self._dialect,
         )
         if not self._store and _host_is_openai(self._base_url):
             # Only OpenAI's own host: this endpoint is served by a dozen
@@ -1656,6 +1695,16 @@ class OpenAICompatibleClient:
     ) -> ChatResponse:
         del keep_alive  # Ollama-only knob; see __init__ docstring
         use_model = (model or "").strip() or self._default_model
+        if (
+            surface == "tool_pass"
+            and tools
+            and urlsplit(self._base_url).hostname == "api.venice.ai"
+            and use_model == "olafangensan-glm-4.7-flash-heretic"
+        ):
+            messages = [
+                *messages,
+                {"role": "system", "content": _VENICE_HERETIC_TOOL_INSTRUCTION},
+            ]
         self._run_model_preflight(use_model)
         if self._should_use_responses(use_model):
             content, tool_calls, usage, response_output_items = (
