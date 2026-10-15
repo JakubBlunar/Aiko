@@ -469,6 +469,63 @@ class PromptAssemblerBudgetTests(unittest.TestCase):
 
 
 class StanceAdmissionTests(unittest.TestCase):
+    def test_selected_cue_moves_next_to_handling_without_more_prompt_text(self) -> None:
+        from types import SimpleNamespace
+
+        from app.core.infra.agent_settings import AgentSettings
+        from app.core.proactive.cue_store import CueStore
+        from app.core.session.cue_pool_mixin import CuePoolMixin
+        from app.core.session.inner_life_part3 import InnerLifePart3Mixin
+
+        class Host(InnerLifePart3Mixin, CuePoolMixin):
+            user_display_name = "the user"
+
+            def _last_reply_was_anaphoric(self):
+                return False
+
+        with _TempDb() as db:
+            host = Host()
+            host._settings = SimpleNamespace(agent=AgentSettings())
+            host._cue_store = CueStore(db)
+            cue_id = host._cue_store.add("interest_drift", "lenses", "Selected lens observation")
+            assembler = _make_assembler(
+                db, persona_text=(
+                    "Stable persona.\n\nWhen your interests shift over time:\n"
+                    "- Handle the selected observation briefly.\n"
+                ),
+            )
+            assembler.set_inner_life_providers(
+                interest_drift=lambda text: host.take_pool_cue("interest_drift").text,
+                curiosity_gradient=lambda text: "A different possible question",
+                user_correction=lambda: "An owed repair",
+                stance_admission=host._admit_stance_offer,
+                stance=host._render_stance_block,
+            )
+            host._settings.agent.stance_block_enabled = False
+            _, baseline = assembler.assemble_with_budget(
+                "focus", "lenses", context_window=32000, response_budget=512, preview=True,
+            )
+            self.assertEqual(host._cue_store.get(cue_id).surfaced_count, 0)
+            host._settings.agent.stance_block_enabled = True
+            _, focused = assembler.assemble_with_budget(
+                "focus", "lenses", context_window=32000, response_budget=512,
+            )
+            self.assertLess(baseline.system_prompt.index("Selected lens observation"),
+                            baseline.system_prompt.index("A different possible question"))
+            self.assertLess(focused.system_prompt.index("A different possible question"),
+                            focused.system_prompt.index("Selected lens observation"))
+            self.assertLess(focused.system_prompt.index("Selected lens observation"),
+                            focused.system_prompt.index("Handle the selected observation briefly"))
+            self.assertEqual(len(focused.system_prompt), len(baseline.system_prompt))
+            self.assertEqual(focused.block_chars, baseline.block_chars)
+            self.assertEqual(focused.system_prompt.count("Selected lens observation"), 1)
+            self.assertIn("An owed repair", focused.system_prompt)
+            self.assertEqual(host._cue_store.get(cue_id).surfaced_count, 1)
+            self.assertEqual(
+                focused.surfacing_trace[-1]["optional_choice"]["focused_block"],
+                "interest_drift_block",
+            )
+
     def test_direct_question_does_not_claim_curiosity_seeds(self) -> None:
         with _TempDb() as db:
             assembler = _make_assembler(db, persona_text="P")
@@ -6103,6 +6160,39 @@ class CueRegisterRotationTests(unittest.TestCase):
                 "consecutive cue blocks must land with different "
                 f"register shapes; both got {prefix_a!r}",
             )
+
+    def test_rotated_pooled_cue_commits_actual_inclusion(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from app.core.session.surfacing_attempt import current_attempt
+
+        cue = SimpleNamespace(
+            id=1, cue_type="dropped_topic", created_at="2026-10-01T00:00:00+00:00",
+            surfaced_count=0, text="Heads-up: the lens comparison still needs an answer.",
+        )
+        for seed in range(4):
+            with self.subTest(seed=seed), _TempDb() as db:
+                committed = []
+                assembler = _make_assembler(
+                    db, persona_text="P", cue_register_rotation_enabled=True,
+                )
+
+                def provider(committed=committed):
+                    current_attempt.get().stage(
+                        self, cue, lambda: committed.append(cue.id), block="dropped_topic_block",
+                    )
+                    return cue.text
+
+                assembler.set_inner_life_providers(dropped_topic=provider)
+                with patch("app.core.conversation.cue_register.turn_seed", return_value=seed):
+                    messages, telemetry = assembler.assemble_with_budget(
+                        "rotated_claim", "Compare the lenses", context_window=4096,
+                        response_budget=256,
+                    )
+                self.assertIn("lens comparison", messages[0]["content"])
+                self.assertEqual(committed, [cue.id])
+                self.assertEqual(telemetry.surfacing_trace[-1]["claims"][0]["state"], "committed")
 
     def test_within_turn_determinism(self) -> None:
         # The tool pass and the streaming pass assemble the same

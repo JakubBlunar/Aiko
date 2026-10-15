@@ -253,6 +253,10 @@ class JudgmentShadowStore:
         result = {
             "mode": "shadow", "version": VERSION, "retained_runs": len(history),
             "retention_limit": MAX_RUNS, "statuses": dict(statuses),
+            "situation_outcomes": dict(Counter(row.get("situation_outcome") for row in history)),
+            "validation_reasons": dict(Counter(
+                row["validation_reason"] for row in history if row.get("validation_reason")
+            )),
             "comparisons": dict(counts),
             "interpretation": "disagreements_are_candidates_not_verified_errors",
             "output_limit_hits": sum(bool(row.get("output_limit_hit")) for row in history),

@@ -18,6 +18,7 @@ class SurfaceClaim:
     state: str = "staged"
     blocks: set[str] = field(default_factory=set)
     source_revision: str = ""
+    rendered_blocks: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -36,6 +37,12 @@ class SurfaceAttempt:
         claim.blocks.add(block)
         claim.source_revision = f"{row.created_at}:{row.surfaced_count}"
 
+    def record_transformation(self, block: str, original: str, rendered: str) -> None:
+        """Bind a trusted assembly transformation to its staged source cue."""
+        for claim in self.claims.values():
+            if claim.state == "staged" and block in claim.blocks and claim.text in original:
+                claim.rendered_blocks[block] = rendered
+
     def finish(
         self, text: str, *, discarded: str = "", included_blocks: dict | None = None,
     ) -> None:
@@ -44,7 +51,10 @@ class SurfaceAttempt:
                 continue
             if discarded:
                 claim.state = discarded
-            elif not claim.text or claim.text not in text:
+            elif not claim.text or not any(
+                candidate and candidate in text
+                for candidate in (claim.text, *claim.rendered_blocks.values())
+            ):
                 claim.state = "omitted"
             elif included_blocks is not None and not any(
                 included_blocks.get(block, 0) for block in claim.blocks

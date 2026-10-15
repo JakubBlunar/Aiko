@@ -11,8 +11,9 @@ are kept separate. Prompt presence is not evidence of attention, use, successful
 delivery, user agreement, or a justified memory write.
 
 Implementation update: the S1-S6 bounded pilots below are now implemented.
-The historical production measurements predate them; naturalness and decision
-quality still need isolated multi-turn evaluation before broader rollout.
+The initial production measurements predate them; the October follow-up below
+records post-rollout findings. Naturalness and decision quality still need
+isolated multi-turn evaluation before broader rollout.
 
 ## Reading map
 
@@ -472,6 +473,35 @@ over adding more always-on text or another planning pass.
 
 These fixes have deterministic regression coverage; their effect on natural
 conversation still requires post-restart observation.
+
+**2026-10-15 follow-up:**
+
+The October 1-13 cohort contains 642 replies, with prompt/cue/stance ledgers for
+639. Anniversary exposure fell to 18 prompts. Of 327 retained situation-worker
+reviews, 95 had invalid situation output, 15 were stale and only one hit the
+output limit. All identify the same worker model; temporary main-chat route
+trials do not explain those worker failures. These are bounded retained reviews,
+not every worker call, and their original rejection causes were not recorded.
+
+- Prefix rotation now registers the rendered block against its staged source
+  claim. Final inclusion still requires actual text and a registered destination;
+  previews and overflow retries do not spend showings. Previously, a changed
+  `Heads-up:` prefix could leave an included cue marked omitted and untracked.
+- Invalid worker output now records a content-free, field-specific
+  `validation_reason`, aggregated in worker `invalid_reasons`, warning logs and
+  the existing bounded judgment-shadow history. JSON, evidence, relative-time,
+  working-set and successor failures remain distinct. Prior valid state and
+  acceptance rules are unchanged; old failures cannot be retroactively classified.
+- When admission and the final stance agree on a pooled pilot cue, its existing
+  text moves immediately before the handling notes at the T6 tail. The trace
+  records `optional_choice.focused_block`. No wording, prompt size, topic
+  thresholds or interruption ceilings change, and losing or budget-omitted cues
+  are not restored. This is a layout intervention, not proof of improved expression.
+
+Claims, diagnostics and layout have deterministic regression coverage. A backend
+restart is needed to load them; subsequent established-model observations must
+measure expression and rejection reasons without treating a temporary model
+trial as a new baseline. No live history, cue rows or memories were rewritten.
 
 | Order | Work | Existing home | Cheapest discriminating check |
 | --- | --- | --- | --- |

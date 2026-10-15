@@ -377,6 +377,44 @@ def test_parse_rejects_relative_time_in_stored_text() -> None:
     assert parse_extraction(raw, valid_message_ids={1}) is None
 
 
+@pytest.mark.parametrize("payload,reason", [
+    ("not json", "invalid_json_object"),
+    ({"operation": "unknown"}, "invalid_operation"),
+    ({"operation": "keep", "confidence": 1}, "forbidden_confidence"),
+    ({"operation": "replace"}, "replacement_summary_missing"),
+    ({"operation": "replace", "summary": "Comparing lenses."}, "replacement_evidence_missing"),
+    ({"operation": "keep", "evidence_message_ids": [99]}, "evidence_id_unknown"),
+    ({"operation": "keep", "evidence_message_ids": ["bad"]}, "evidence_id_type"),
+    ({"operation": "keep", "working_set": []}, "working_set.shape"),
+    ({"operation": "keep", "working_set": {"facts": [1, 2, 3, 4]}}, "working_set.facts.shape"),
+    ({"operation": "keep", "working_set": {}}, "working_set.question.note_shape"),
+    ({"operation": "keep", "successor": []}, "successor.shape"),
+    ({"operation": "keep", "successor": {}}, "successor.kind_or_subject"),
+])
+def test_rejection_reasons_are_structural_codes(payload, reason) -> None:
+    reasons = []
+    raw = payload if isinstance(payload, str) else json.dumps(payload)
+    assert parse_extraction(raw, valid_message_ids={11, 12}, rejection_reasons=reasons) is None
+    assert reasons == [reason]
+
+
+def test_working_set_rejection_identifies_field_without_generated_text() -> None:
+    payload = _working_extraction()
+    payload["working_set"]["facts"][0]["text"] = "Private detail happening tonight."
+    reasons = []
+    assert parse_extraction(
+        json.dumps(payload), valid_message_ids={11, 12}, rejection_reasons=reasons,
+    ) is None
+    assert reasons == ["working_set.fact.relative_time"]
+    payload["working_set"]["facts"][0]["text"] = "The room is small."
+    reasons.clear()
+    assert parse_extraction(
+        json.dumps(payload), valid_message_ids={11, 12}, valid_user_message_ids={12},
+        rejection_reasons=reasons,
+    ) is None
+    assert reasons == ["working_set.question.user_evidence_missing"]
+
+
 def test_implicit_clear_requires_two_misses() -> None:
     now = datetime(2026, 9, 7, 20, 0, tzinfo=timezone.utc)
     state = reduce_situation(
@@ -583,6 +621,34 @@ def test_worker_records_output_limit_without_overwriting_valid_state(tmp_path) -
     assert worker.stats()["output_limit_hits"] == 1
     assert worker.stats()["invalid"] == 1
     assert worker.stats("main")["last_result"]["output_limit_hit"] is True
+    assert worker.stats()["invalid_reasons"] == {"invalid_json_object": 1}
+
+
+def test_worker_persists_content_free_validation_reason(tmp_path, caplog) -> None:
+    db = ChatDatabase(tmp_path / "invalid_reason.db")
+    user_id = db.add_message("main", "user", "Compare two lenses.")
+    db.add_message("main", "assistant", "Compare their focal lengths.")
+    store = ConversationSituationStore(db)
+    previous = reduce_situation(None, _replacement(), session_id="main", source_message_id=user_id)
+    store.upsert(previous)
+    payload = {
+        "operation": "replace", "summary": "Private observation tonight.",
+        "evidence_message_ids": [user_id],
+    }
+    worker = ConversationSituationWorker(
+        client=_FakeSituationClient([json.dumps(payload)]), chat_db=db, store=store,
+        model="established-worker", world_snapshot_provider=dict,
+    )
+    assert worker.run("main") == previous
+    assert store.get("main") == previous
+    assert worker.stats("main")["last_result"]["validation_reason"] == "relative_time"
+    report = worker.judgment_shadow_report("main", include_rows=True)
+    assert report["validation_reasons"] == {"relative_time": 1}
+    assert report["situation_outcomes"] == {"invalid_situation": 1}
+    assert report["rows"][0]["model"] == "established-worker"
+    assert "Private observation" not in json.dumps(report)
+    assert "Private observation" not in caplog.text
+    assert "reason=relative_time model=established-worker" in caplog.text
 
 
 @pytest.mark.parametrize("field,value", [

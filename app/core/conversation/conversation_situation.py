@@ -114,38 +114,52 @@ class InterestSuccessor:
 
 def _parse_evidence_note(value: Any, valid_ids: set[int]) -> EvidenceNote:
     if not isinstance(value, dict) or not isinstance(value.get("text"), str):
-        raise ValueError("invalid working-set note")
+        raise ValueError("note_shape")
     text = _clean_text(value["text"], limit=160)
     ids = value.get("evidence_message_ids")
-    if (
-        not text or timephrase.has_relative_deictic(text)
-        or not isinstance(ids, list) or not 1 <= len(ids) <= 3
-        or any(type(message_id) is not int or message_id not in valid_ids for message_id in ids)
-    ):
-        raise ValueError("invalid working-set evidence")
+    if not text:
+        raise ValueError("empty_text")
+    if timephrase.has_relative_deictic(text):
+        raise ValueError("relative_time")
+    if not isinstance(ids, list) or not 1 <= len(ids) <= 3:
+        raise ValueError("evidence_shape")
+    if any(type(message_id) is not int or message_id not in valid_ids for message_id in ids):
+        raise ValueError("evidence_id")
     return EvidenceNote(text, tuple(dict.fromkeys(ids)))
 
 
 def _parse_working_set(
-    payload: Any, valid_ids: set[int],
+    payload: Any, valid_ids: set[int], *, rejection_reasons: list[str] | None = None,
 ) -> ConversationWorkingSet | None:
     if not isinstance(payload, dict):
+        if rejection_reasons is not None:
+            rejection_reasons.append("working_set.shape")
         return None
 
-    def note(value: Any) -> EvidenceNote:
-        return _parse_evidence_note(value, valid_ids)
+    def note(value: Any, note_field: str) -> EvidenceNote:
+        try:
+            return _parse_evidence_note(value, valid_ids)
+        except ValueError as exc:
+            if rejection_reasons is not None:
+                rejection_reasons.append(f"working_set.{note_field}.{exc}")
+            raise
 
     try:
         facts = payload.get("facts", [])
         if not isinstance(facts, list) or len(facts) > 3:
+            if rejection_reasons is not None:
+                rejection_reasons.append("working_set.facts.shape")
             return None
         return ConversationWorkingSet(
-            question=note(payload.get("question")),
-            facts=tuple(note(value) for value in facts),
+            question=note(payload.get("question"), "question"),
+            facts=tuple(note(value, "fact") for value in facts),
             interpretation=(
-                note(payload["interpretation"]) if payload.get("interpretation") else None
+                note(payload["interpretation"], "interpretation")
+                if payload.get("interpretation") else None
             ),
-            unresolved=note(payload["unresolved"]) if payload.get("unresolved") else None,
+            unresolved=(
+                note(payload["unresolved"], "unresolved") if payload.get("unresolved") else None
+            ),
             recall_needed=payload.get("recall_needed") is True and bool(payload.get("unresolved")),
         )
     except (TypeError, ValueError):
@@ -244,14 +258,21 @@ def parse_extraction(
     *,
     valid_message_ids: Iterable[int],
     valid_user_message_ids: Iterable[int] | None = None,
+    rejection_reasons: list[str] | None = None,
 ) -> SituationExtraction | None:
     """Parse worker JSON without trusting model confidence or evidence ids."""
+    def reject(reason: str) -> None:
+        if rejection_reasons is not None:
+            rejection_reasons.append(reason)
+
     payload = _extract_json_object(raw)
-    if payload is None or "confidence" in payload:
-        return None
+    if payload is None:
+        return reject("invalid_json_object")
+    if "confidence" in payload:
+        return reject("forbidden_confidence")
     operation = str(payload.get("operation") or "").strip().lower()
     if operation not in VALID_OPERATIONS:
-        return None
+        return reject("invalid_operation")
 
     valid_ids = {int(value) for value in valid_message_ids}
     evidence: list[int] = []
@@ -261,9 +282,9 @@ def parse_extraction(
             try:
                 message_id = int(value)
             except (TypeError, ValueError):
-                return None
+                return reject("evidence_id_type")
             if message_id not in valid_ids:
-                return None
+                return reject("evidence_id_unknown")
             if message_id not in evidence:
                 evidence.append(message_id)
             if len(evidence) >= MAX_EVIDENCE_IDS:
@@ -277,34 +298,40 @@ def parse_extraction(
     aiko_activity = _clean_text(
         payload.get("aiko_activity"), limit=MAX_FIELD_CHARS
     )
-    if operation == REPLACE and (not summary or not evidence):
-        return None
+    if operation == REPLACE and not summary:
+        return reject("replacement_summary_missing")
+    if operation == REPLACE and not evidence:
+        return reject("replacement_evidence_missing")
     stored_text = " ".join((summary, shared_activity, place_ref, aiko_activity))
     if operation == REPLACE and timephrase.has_relative_deictic(stored_text):
-        return None
+        return reject("relative_time")
 
-    working_set = _parse_working_set(payload.get("working_set"), set(evidence))
+    working_set = (
+        _parse_working_set(
+            payload["working_set"], set(evidence), rejection_reasons=rejection_reasons,
+        ) if payload.get("working_set") is not None else None
+    )
     if payload.get("working_set") is not None and working_set is None:
         return None
     if working_set is not None and valid_user_message_ids is not None:
         if not set(working_set.question.evidence_message_ids).intersection(valid_user_message_ids):
-            return None
+            return reject("working_set.question.user_evidence_missing")
 
     successor = None
     proposed = payload.get("successor")
     if proposed is not None:
         if not isinstance(proposed, dict):
-            return None
+            return reject("successor.shape")
         kind = proposed.get("kind")
         subject = _clean_text(proposed.get("subject"), limit=80)
         if kind not in {"comparison", "shared_project", "aiko_pursuit"} or len(subject) < 6:
-            return None
+            return reject("successor.kind_or_subject")
         try:
             change = _parse_evidence_note(proposed.get("change"), set(evidence))
-        except (TypeError, ValueError):
-            return None
+        except (TypeError, ValueError) as exc:
+            return reject(f"successor.change.{exc}")
         if len(change.text) < 24 or "?" in change.text:
-            return None
+            return reject("successor.change.not_observation")
         successor = InterestSuccessor(subject, kind, change)
 
     return SituationExtraction(

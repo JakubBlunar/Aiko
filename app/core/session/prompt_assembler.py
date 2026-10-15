@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.core.conversation import cue_register
+from app.core.conversation.stance import POOLED_CHOICE_BLOCKS
 from app.core.infra.chat_database import ChatDatabase
 from app.core.session.prompt_prefix_telemetry import (
     PrefixDivergence,
@@ -57,7 +58,7 @@ from app.core.session.prompt_support import (
 from app.core.session.prompt_assembler_helpers_mixin import (
     PromptAssemblerHelpersMixin,
 )
-from app.core.session.surfacing_attempt import trace_assembly
+from app.core.session.surfacing_attempt import current_attempt, trace_assembly
 
 log = logging.getLogger("app.prompt_assembler")
 
@@ -3070,6 +3071,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             "user_reactions_block": user_reactions_block,
         }
         if self._cue_rotation_enabled:
+            attempt = current_attempt.get()
             seed = cue_register.turn_seed(user_text, len(history_msgs))
             ordinal = 0
             for name in cue_block_names:
@@ -3082,6 +3084,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 cue_blocks[name] = cue_register.rotate_cue_prefix(
                     block, seed=seed, ordinal=ordinal,
                 )
+                if attempt is not None:
+                    attempt.record_transformation(name, block, cue_blocks[name])
                 ordinal += lines
             mood_inertia_block = cue_blocks["mood_inertia_block"]
             clarification_block = cue_blocks["clarification_block"]
@@ -3935,6 +3939,19 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 timing_sink=provider_ms,
                 timing_name="stance",
             )
+        attempt = current_attempt.get()
+        if attempt is not None:
+            selected_block = attempt.decision.get("reason", "")
+            if (
+                selected_block in POOLED_CHOICE_BLOCKS
+                and attempt.optional_choice.get("winner") == selected_block
+            ):
+                selected_text = dict(_resolve_blocks(locals())).get(selected_block, "")
+                if selected_text and selected_text in system_parts:
+                    system_parts.remove(selected_text)
+                    focus_index = len(system_parts) - int(bool(handling_notes_block))
+                    system_parts.insert(focus_index, selected_text)
+                    attempt.optional_choice["focused_block"] = selected_block
         if stance_block:
             system_parts.append(stance_block)
 

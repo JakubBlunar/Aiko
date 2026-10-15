@@ -5,7 +5,7 @@ import json
 import hashlib
 import logging
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.conversation.conversation_situation import (
@@ -130,6 +130,7 @@ class ConversationSituationWorker:
         self._last_user_message_id: dict[str, int] = {}
         self._last_result: dict[str, dict[str, Any]] = {}
         self._last_live_run_at: dict[str, float] = {}
+        self._invalid_reasons: Counter[str] = Counter()
         self._stats = {
             "scheduled": 0,
             "completed": 0,
@@ -202,6 +203,7 @@ class ConversationSituationWorker:
     def stats(self, session_id: str | None = None) -> dict[str, Any]:
         report: dict[str, Any] = {
             **self._stats,
+            "invalid_reasons": dict(self._invalid_reasons),
             "every_n_user_turns": self._every_n,
             "judgment_shadow_enabled": self._judgment_shadow_enabled,
         }
@@ -300,19 +302,29 @@ class ConversationSituationWorker:
                     key, rows, target, raw, "stale", call_ms, output_limit_hit, usage,
                 )
                 return self._store.get(key)
+            rejection_reasons: list[str] = []
             extraction = parse_extraction(
                 raw, valid_message_ids=valid_ids,
                 valid_user_message_ids={int(row.id) for row in rows if row.role == "user"},
+                rejection_reasons=rejection_reasons,
             )
             if extraction is None:
+                validation_reason = next(iter(rejection_reasons), "invalid_working_set")
                 self._stats["invalid"] += 1
+                self._invalid_reasons[validation_reason] += 1
                 self._last_result[key] = {
                     "result": "invalid_output",
                     "preserved_previous": previous is not None,
                     "output_limit_hit": output_limit_hit,
+                    "validation_reason": validation_reason,
                 }
+                log.warning(
+                    "conversation situation rejected: reason=%s model=%s output_limit_hit=%s",
+                    validation_reason, self._model, output_limit_hit,
+                )
                 self._record_shadow(
                     key, rows, target, raw, "invalid_situation", call_ms, output_limit_hit, usage,
+                    validation_reason=validation_reason,
                 )
                 return previous
             source_message_id = max(valid_ids)
@@ -360,6 +372,7 @@ class ConversationSituationWorker:
 
     def _record_shadow(
         self, key, rows, target, raw, outcome, call_ms, output_limit_hit, usage=None,
+        *, validation_reason=None,
     ):
         if target is None:
             return
@@ -392,6 +405,7 @@ class ConversationSituationWorker:
                 "completion_tokens": getattr(usage, "completion_tokens", 0),
                 "max_output_tokens": self._max_tokens + judgment_shadow.OUTPUT_BUDGET,
                 "situation_outcome": outcome, "output_limit_hit": output_limit_hit,
+                "validation_reason": validation_reason,
                 "heuristic": replay, "comparisons": judgment_shadow.comparisons(review, replay),
             })
             self._stats["shadow_recorded"] += int(recorded)

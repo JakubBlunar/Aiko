@@ -103,6 +103,31 @@ class SurfacingTests(_Fixture):
             current_attempt.reset(token)
         self.assertEqual(self._row(cue_id).surfaced_count, 0)
 
+    def test_transformed_claim_still_requires_actual_destination(self) -> None:
+        from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
+
+        original = "Heads-up: the lens comparison needs an answer."
+        rendered = "Quiet note: the lens comparison needs an answer."
+        cue_id = self.store.add("dropped_topic", "lens comparison", original)
+        cases = (
+            ("", {"dropped_topic_block": len(rendered)}, ""),
+            (rendered, {"persona": len(rendered)}, ""),
+            (rendered, {"dropped_topic_block": len(rendered)}, "preview"),
+            (rendered, {"dropped_topic_block": len(rendered)}, "overflow_retry"),
+        )
+        for text, blocks, discarded in cases:
+            with self.subTest(text=text, blocks=blocks, discarded=discarded):
+                attempt = SurfaceAttempt()
+                token = current_attempt.set(attempt)
+                try:
+                    self.host.take_pool_cue("dropped_topic")
+                    attempt.record_transformation("dropped_topic_block", original, rendered)
+                    attempt.finish(text, included_blocks=blocks, discarded=discarded)
+                finally:
+                    current_attempt.reset(token)
+                self.assertEqual(self._row(cue_id).surfaced_count, 0)
+                self.assertEqual(self.host._surfaced_pool_cues, [])
+
     def test_feedback_binds_actual_expression_without_assuming_delivery(self) -> None:
         cue_id = self._surface("knowledge_gap_notice", "photography")
         self.host._settle_pool_cues(
