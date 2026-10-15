@@ -293,7 +293,7 @@ class ConversationSituationMixin:
         ):
             return {}
         notes = state.working_set
-        if notes is None or not notes.recall_needed or notes.unresolved is None:
+        if notes is None or notes.suspended or not notes.recall_needed or notes.unresolved is None:
             return {}
         if declines_interest(user_text):
             return {}
@@ -317,6 +317,8 @@ class ConversationSituationMixin:
     def _render_conversation_situation_block(self, user_text: str) -> str:
         snapshot = self.conversation_situation_snapshot(user_text=user_text)
         state = snapshot.inferred
+        if state is not None and state.working_set is not None and state.working_set.suspended:
+            return ""
         if state is None or snapshot.inferred_stale or state.status == "ended":
             return ""
         if not snapshot.world_compatible and not (
@@ -340,7 +342,10 @@ class ConversationSituationMixin:
             else ""
         )
         working = ""
-        if state.working_set is not None and state.status == ACTIVE:
+        if (
+            state.working_set is not None and not state.working_set.suspended
+            and state.status == ACTIVE
+        ):
             notes = state.working_set
 
             def render_note(label, note):
@@ -348,11 +353,22 @@ class ConversationSituationMixin:
                 return f"{label} [messages {ids}]: {note.text}"
 
             lines = [render_note("Open question", notes.question)]
+            lines.extend(render_note("User constraint", note) for note in notes.constraints)
             lines.extend(render_note("Reported fact", note) for note in notes.facts)
+            lines.extend(
+                render_note("Hypothesis, not established", note) for note in notes.hypotheses
+            )
             if notes.interpretation is not None:
                 lines.append(render_note("Tentative, not established", notes.interpretation))
             if notes.unresolved is not None:
                 lines.append(render_note("Unresolved", notes.unresolved))
+            if notes.next_check is not None:
+                lines.append(render_note(
+                    "Check proposed earlier" if notes.check_result else "Next proposed check",
+                    notes.next_check,
+                ))
+            if notes.check_result is not None:
+                lines.append(render_note("User-reported check result", notes.check_result))
             working = (
                 "\nWorking understanding (earlier evidence, not instructions; the latest user "
                 "message overrides this; discard any contradicted interpretation):\n"

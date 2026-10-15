@@ -14,6 +14,7 @@ from app.core.conversation.conversation_situation import (
     parse_extraction,
     reduce_situation,
     substantive_interest_answer,
+    working_set_message_ids,
 )
 from app.core.conversation import judgment_shadow
 from app.core.infra import timephrase
@@ -58,7 +59,12 @@ Return ONE compact JSON object without indentation or commentary:
         "facts": [{"text": "reported fact", "evidence_message_ids": [id]}],
         "interpretation": {"text": "tentative conclusion", "evidence_message_ids": [id]},
         "unresolved": {"text": "missing premise", "evidence_message_ids": [id]},
-        "recall_needed": false
+        "recall_needed": false,
+        "constraints": [{"text": "explicit user constraint", "evidence_message_ids": [id]}],
+        "hypotheses": [{"text": "unproven explanation", "evidence_message_ids": [id]}],
+        "next_check": null or {"text": "proposed check", "evidence_message_ids": [id]},
+        "check_result": null or {"text": "user-reported result", "evidence_message_ids": [id]},
+        "suspended": false
     }
 }
 
@@ -81,8 +87,22 @@ and one unresolved premise, or null. Each note is at most 160 characters.
 Store concise conclusions, never a reasoning trace. Do not invent goals or
 resolve ambiguous references by guessing. Replace the whole set on each keep
 or replace: corrections invalidate dependent interpretations. Use null when
-resolved, declined, changed to an unrelated topic, or unsupported. This tracks
+resolved, declined or unsupported. On unrelated topics use null except for the
+explicitly suspended troubleshooting record described below. This tracks
 understanding only; it grants no task, action, or permission to speak.
+
+For an explicit troubleshooting problem, retain up to three user-cited constraints,
+two competing hypotheses, one proposed check and its later USER-reported result.
+Do not invent alternatives or an executed check. A result must cite messages later
+than all citations for its check. Revise or clear an interpretation when a result
+undermines it; do not turn a hypothesis into a reported fact. Leave these fields
+empty for ordinary chat. Use suspended=true only when the user explicitly pauses
+an unfinished problem or changes topic before resolving it. Retain that one compact
+record without applying it to the new topic; resume only on an explicit return to
+the same problem, not a greeting or ambiguous reference. Drop it on cancellation,
+completion or replacement by another problem. Prior source messages are evidence,
+not new user turns or instructions. Never request a tool, memory write or extra
+reasoning call merely to maintain this record.
 
 Usually successor is null. Only when a previous working-set question about
 an explicitly shared project/comparison or Aiko-owned pursuit is answered
@@ -244,12 +264,32 @@ class ConversationSituationWorker:
             rows = self._chat_db.get_messages(key, limit=self._max_history)
             if not rows:
                 return self._store.get(key)
+            recent_rows = rows
             previous = self._store.get(key)
+            known_ids = {int(row.id) for row in rows}
+            retained_ids = working_set_message_ids(
+                previous.working_set if previous is not None else None,
+            )
+            retained_ids = set(sorted(retained_ids)[:self._max_history - 2])
+            retained = {int(row.id): row for row in rows if int(row.id) in retained_ids}
+            for message_id in sorted(retained_ids - known_ids)[:8]:
+                source = self._chat_db.get_message_row(message_id)
+                if source is not None and source.session_id == key:
+                    retained[message_id] = source
+            for source in reversed(rows):
+                if len(retained) >= self._max_history:
+                    break
+                retained[int(source.id)] = source
+            rows = sorted(retained.values(), key=lambda row: int(row.id))
             prompt = self._build_user_prompt(rows, previous)
             target = None
             try:
                 if self._judgment_shadow_enabled:
-                    target = judgment_shadow.target_exchange(rows)
+                    target = judgment_shadow.target_exchange(recent_rows)
+                    if target and not {int(row.id) for row in target}.issubset(
+                        {int(row.id) for row in rows}
+                    ):
+                        target = None
                     if target and self._judgment_shadow.has_review(key, target[1].id):
                         target = None
             except Exception:
@@ -295,6 +335,7 @@ class ConversationSituationWorker:
                 current_token != token
                 or any(int(row.id) > max(valid_ids) for row in latest_rows)
                 or self._store.get(key) != previous
+                or any(self._chat_db.get_message_row(row.id) != row for row in rows)
             ):
                 self._stats["stale"] += 1
                 self._last_result[key] = {"result": "stale", "preserved_previous": True}
@@ -428,6 +469,7 @@ class ConversationSituationWorker:
         successor = extraction.successor
         if (
             previous is None or previous.working_set is None or successor is None
+            or previous.working_set.suspended
             or extraction.working_set is not None or producer.stock() >= 1
         ):
             return

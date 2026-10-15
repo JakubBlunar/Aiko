@@ -2772,7 +2772,8 @@ for the contract and rollout limits. No live restart or state repair was perform
 
 ## L51. A bounded working model for the current problem
 
-**Status: open.** Retrieval supplies relevant material; it does not explicitly
+**Status: bounded troubleshooting pilot implemented (15 Oct 2026); model-level
+quality evaluation remains open.** Retrieval supplies relevant material; it does not explicitly
 maintain which question is being solved or which premises a conclusion needs.
 The main model can reason from its prompt already. The proposal is to make the
 small amount of task state worth carrying explicit and testable, not to add a
@@ -2792,6 +2793,18 @@ greeting incurs no additional reasoning call. Bound calls, tokens and wall time.
 
 **Build on:** the current situation and task stores, ConceptView, L30 and L50.
 **Effort:** Medium-Large; demonstrate one vertical slice before generalizing.
+
+**Implemented slice.** Extends the existing situation working set and its
+same-call observer, not another agent or task store. Bounded user-cited constraints,
+tentative alternatives, a proposed check and its later user-reported result
+survive an explicitly suspended task. Suspended notes/summary do not render or
+drive recall; whole-record replacement allows disconfirmation and corrections.
+Historical source messages are reloaded within the unchanged transcript cap;
+changed in-flight evidence rejects an extraction. No memory/concept admission
+or extra greeting call is introduced. Worker/store/restart/renderer regressions
+and six synthetic L55 episodes cover the structural contract, not real-model
+entailment, extraction quality or reliable resumption in arbitrary conversation.
+See [the contract and persisted audit](../concept-integration.md#bounded-troubleshooting-working-model-l51-pilot-15-oct-2026).
 
 ## L52. Dependency-aware revision and retraction
 
@@ -2858,7 +2871,8 @@ hold conversation and latency budgets constant when comparing policies.
 
 ## L55. Evaluate reasoning independently of eloquence
 
-**Status: accounting corpus and opt-in bounded decision harness implemented; broader model harness open.** A response
+**Status: accounting, applicability and six troubleshooting episodes plus opt-in
+bounded decision/ablation harness implemented; broader model evaluation open.** A response
 that says "I reconsidered" has not necessarily reconsidered anything. L22's
 concept-quality evaluation should be complemented by behavioral tests of
 reasoning, without recording personal conversation in the repository.
@@ -2894,7 +2908,11 @@ cycles, bounded traversal and unchanged one-statement boundary admission.
 Ten representations of one observation count as one group, while two recorded
 independent episodes count as two. These deterministic tests make no model calls
 and contain no personal conversation. They establish an accounting contract, not
-improved reasoning performance. The broader episode families, opt-in model runs,
-held-out variants, baseline/ablation comparisons and cost metrics above remain
-unimplemented; freeze their criteria before tuning on results.
+improved reasoning performance. Corpus v4 retains those ten accounting cases,
+six evidence decisions and eight applicability contrasts, and adds six fixed-criteria
+troubleshooting episodes. The existing opt-in harness supports same-transcript
+baseline/working-note/field-ablation comparisons with equal call/output limits
+and token/latency metrics. No new real-model run was performed. Held-out variants,
+repeated comparisons, causal/counterfactual families and full extraction-to-reply
+trials remain open. See [evaluation usage and limits](../concept-integration.md#opt-in-l55-decision-evaluation).
 

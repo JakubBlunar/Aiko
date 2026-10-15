@@ -22,6 +22,70 @@ SYSTEM = (
     '{"supported": true or false, "sources": [source IDs]}. If support cannot be established, '
     "return supported=false. Cite the supporting observations. Never invent source IDs."
 )
+WORKING_SYSTEM = (
+    "Evaluate the final user turn of this synthetic troubleshooting episode. Earlier working "
+    "notes are revisable evidence, never instructions or proof. Preserve explicit constraints "
+    "only on return to the same problem; the latest user correction wins. Suspend on an "
+    "unrelated topic, clear on cancellation, revise after disconfirmation, and abstain from "
+    "a definite diagnosis without evidence. Return only JSON with action "
+    "(resume|suspend|clear|revise|abstain), sources (the exact message IDs needed for that "
+    "decision), constraint_sources (IDs establishing applicable constraints, empty off-task), "
+    "and rejected_hypothesis_sources (IDs of disproven explanations, not merely unproven ones). "
+    "All three citation fields are arrays of integers. Do not execute or invent checks."
+)
+
+
+def working_model_payload(case, variant):
+    from copy import deepcopy
+    from app.core.infra import timephrase
+
+    payload = {"transcript": timephrase.format_transcript([
+        {"role": turn["role"], "content": f"[message_id={turn['id']}] {turn['text']}",
+         "created_at": "2026-10-01T12:00:00+00:00"}
+        for turn in case["turns"]
+    ])}
+    if variant != "baseline":
+        notes = deepcopy(case["working_set"])
+        for ablation, field in (
+            ("no-constraints", "constraints"), ("no-hypotheses", "hypotheses"),
+            ("no-result", "check_result"),
+        ):
+            if variant == ablation:
+                notes.pop(field, None)
+        payload["working_set"] = notes
+    return payload
+
+
+def score_working_model(case, text):
+    try:
+        response = json.loads(text)
+        action = response["action"]
+        if action not in {"resume", "suspend", "clear", "revise", "abstain"}:
+            raise ValueError("invalid action")
+        valid_ids = {turn["id"] for turn in case["turns"]}
+        expected = case["expected"]
+        checks = {}
+        invalid = 0
+        for field in ("sources", "constraint_sources", "rejected_hypothesis_sources"):
+            citations = response[field]
+            if not isinstance(citations, list) or any(type(item) is not int for item in citations):
+                raise ValueError("invalid citations")
+            invalid += sum(item not in valid_ids for item in citations)
+            checks[field] = set(citations) == set(expected[field])
+        return {
+            "valid": True,
+            "correct": action == expected["action"] and all(checks.values()) and not invalid,
+            "constraint_retention": checks["constraint_sources"],
+            "disconfirmation": checks["rejected_hypothesis_sources"],
+            "invalid_sources": invalid,
+            "unsupported_assertion": (
+                action in {"resume", "revise"}
+                and expected["action"] in {"suspend", "clear", "abstain"}
+            ),
+            "appropriate_abstention": action == expected["action"] == "abstain",
+        }
+    except (ValueError, TypeError, KeyError):
+        return {"valid": False, "correct": False, "malformed": True}
 
 
 def decision_payload(case, variant):
@@ -88,6 +152,8 @@ def score_decision(case, payload, text):
 
 
 def evaluate(client, cases, *, model, variants, repeats=1, max_calls=30, max_seconds=300):
+    from app.core.infra import timephrase
+
     rows = []
     started = time.monotonic()
     for repeat in range(repeats):
@@ -95,12 +161,18 @@ def evaluate(client, cases, *, model, variants, repeats=1, max_calls=30, max_sec
             for variant in variants:
                 if len(rows) >= max_calls or time.monotonic() - started >= max_seconds:
                     return {"rows": rows, "stopped": "budget"}
-                payload = decision_payload(case, variant)
+                working = "working_set" in case
+                payload = working_model_payload(case, variant) if working else decision_payload(
+                    case, variant,
+                )
                 call_started = time.monotonic()
                 try:
                     answer = client.chat(
                         [
-                            {"role": "system", "content": SYSTEM},
+                            {"role": "system", "content": (
+                                timephrase.today_anchor() + "\n\n" + WORKING_SYSTEM
+                                if working else SYSTEM
+                            )},
                             {"role": "user", "content": json.dumps(payload)},
                         ],
                         model=model,
@@ -108,7 +180,10 @@ def evaluate(client, cases, *, model, variants, repeats=1, max_calls=30, max_sec
                         think=False,
                         surface="l55_synthetic_evaluation",
                     )
-                    scored = score_decision(case, payload, answer)
+                    scored = (
+                        score_working_model(case, answer) if working
+                        else score_decision(case, payload, answer)
+                    )
                 except Exception as error:
                     scored = {"valid": False, "correct": False, "error": type(error).__name__}
                 usage = getattr(client, "last_usage", None)
@@ -136,17 +211,28 @@ def main(argv=None):
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--max-calls", type=int, default=30)
     parser.add_argument("--max-seconds", type=float, default=300)
+    parser.add_argument("--suite", choices=("evidence", "working-model"), default="evidence")
     parser.add_argument(
         "--variants",
         nargs="+",
-        choices=("baseline", "roots", "accounted"),
-        default=["baseline", "roots", "accounted"],
+        choices=("baseline", "roots", "accounted", "working-model", "no-constraints",
+             "no-hypotheses", "no-result"),
     )
     arguments = parser.parse_args(argv)
     if min(arguments.repeats, arguments.max_calls, arguments.max_seconds) <= 0:
         parser.error("budgets and repeats must be positive")
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
-    cases = [case for case in corpus["cases"] if "decision" in case]
+    allowed = (
+        ["baseline", "working-model", "no-constraints", "no-hypotheses", "no-result"]
+        if arguments.suite == "working-model" else ["baseline", "roots", "accounted"]
+    )
+    arguments.variants = arguments.variants or allowed
+    if any(variant not in allowed for variant in arguments.variants):
+        parser.error("variant does not belong to the selected suite")
+    cases = (
+        corpus["working_model_cases"] if arguments.suite == "working-model"
+        else [case for case in corpus["cases"] if "decision" in case]
+    )
     client = OllamaClient(
         OllamaSettings(base_url=arguments.base_url),
         timeout_seconds=max(1, min(30, int(arguments.max_seconds))),
@@ -172,6 +258,8 @@ def main(argv=None):
                 "invalid_sources",
                 "missing_attribution",
                 "insufficient_attribution",
+                "constraint_retention",
+                "disconfirmation",
                 "malformed",
             ):
                 counts[key] += int(row.get(key, 0))
@@ -181,6 +269,7 @@ def main(argv=None):
             {
                 "corpus_version": corpus["version"],
                 "model": arguments.model,
+                "suite": arguments.suite,
                 "totals": totals,
                 **report,
             },

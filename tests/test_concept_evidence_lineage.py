@@ -340,6 +340,56 @@ def test_l55_model_calls_are_opt_in_bounded_and_do_not_store_generated_text():
     assert all("answer" not in row for row in report["rows"])
 
 
+@pytest.mark.parametrize("case", CORPUS["working_model_cases"], ids=lambda case: case["id"])
+def test_l55_working_model_fixed_criteria_and_invented_citations(case):
+    from scripts.evaluate_concept_reasoning import score_working_model
+
+    assert score_working_model(case, json.dumps(case["expected"]))["correct"]
+    wrong = {**case["expected"], "sources": [999]}
+    scored = score_working_model(case, json.dumps(wrong))
+    assert not scored["correct"] and scored["invalid_sources"] == 1
+    assert not score_working_model(case, '{"action":"invented"}')["valid"]
+
+
+def test_l55_working_model_ablations_keep_the_same_transcript_and_budget():
+    from scripts.evaluate_concept_reasoning import evaluate, working_model_payload
+
+    cases = CORPUS["working_model_cases"]
+    variants = ["baseline", "working-model", "no-constraints", "no-hypotheses", "no-result"]
+    case = cases[1]
+    original = json.dumps(case, sort_keys=True)
+    payloads = {variant: working_model_payload(case, variant) for variant in variants}
+    assert "working_set" not in payloads["baseline"]
+    assert "constraints" not in payloads["no-constraints"]["working_set"]
+    assert "hypotheses" not in payloads["no-hypotheses"]["working_set"]
+    assert "check_result" not in payloads["no-result"]["working_set"]
+    assert len({payload["transcript"] for payload in payloads.values()}) == 1
+    assert json.dumps(case, sort_keys=True) == original
+    answers = iter(json.dumps(case["expected"]) for case in cases for _ in variants)
+    calls = []
+
+    def chat(messages, **kwargs):
+        calls.append((messages, kwargs))
+        return next(answers)
+
+    report = evaluate(SimpleNamespace(chat=chat), cases, model="synthetic", variants=variants)
+    assert report["stopped"] == "complete" and len(report["rows"]) == 30
+    assert all(row["correct"] for row in report["rows"])
+    assert all(call[1]["options"] == {"temperature": 0, "num_predict": 256} for call in calls)
+    assert all(not call[1]["think"] for call in calls)
+    assert all("answer" not in row and "transcript" not in row for row in report["rows"])
+
+
+def test_l55_working_model_budget_stops_without_another_model_call():
+    from scripts.evaluate_concept_reasoning import evaluate
+
+    calls = []
+    client = SimpleNamespace(chat=lambda *args, **kwargs: calls.append(kwargs) or "{}")
+    report = evaluate(client, CORPUS["working_model_cases"], model="synthetic",
+                      variants=["baseline", "working-model"], max_calls=1)
+    assert report["stopped"] == "budget" and len(calls) == 1
+
+
 @pytest.mark.parametrize("observations", [None, "bad", [{"roots": [{}]}]])
 def test_malformed_observation_history_is_unknown(observations):
     view, _ = _view({1: _memory(10, metadata={"support_observations": observations})}, [_edge(1)])

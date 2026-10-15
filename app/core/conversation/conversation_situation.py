@@ -103,6 +103,19 @@ class ConversationWorkingSet:
     interpretation: EvidenceNote | None = None
     unresolved: EvidenceNote | None = None
     recall_needed: bool = False
+    constraints: tuple[EvidenceNote, ...] = ()
+    hypotheses: tuple[EvidenceNote, ...] = ()
+    next_check: EvidenceNote | None = None
+    check_result: EvidenceNote | None = None
+    suspended: bool = False
+
+
+def working_set_message_ids(notes: ConversationWorkingSet | None) -> set[int]:
+    if notes is None:
+        return set()
+    items = (notes.question, *notes.facts, *notes.constraints, *notes.hypotheses,
+             notes.interpretation, notes.unresolved, notes.next_check, notes.check_result)
+    return {message_id for item in items if item for message_id in item.evidence_message_ids}
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +163,29 @@ def _parse_working_set(
             if rejection_reasons is not None:
                 rejection_reasons.append("working_set.facts.shape")
             return None
+        constraints = payload.get("constraints", [])
+        if not isinstance(constraints, list) or len(constraints) > 3:
+            if rejection_reasons is not None:
+                rejection_reasons.append("working_set.constraints.shape")
+            return None
+        hypotheses = payload.get("hypotheses", [])
+        if not isinstance(hypotheses, list) or len(hypotheses) > 2:
+            if rejection_reasons is not None:
+                rejection_reasons.append("working_set.hypotheses.shape")
+            return None
+        next_check = (
+            note(payload["next_check"], "next_check") if payload.get("next_check") else None
+        )
+        check_result = (
+            note(payload["check_result"], "check_result") if payload.get("check_result") else None
+        )
+        if check_result is not None and (
+            next_check is None
+            or min(check_result.evidence_message_ids) <= max(next_check.evidence_message_ids)
+        ):
+            if rejection_reasons is not None:
+                rejection_reasons.append("working_set.check_result.not_later_than_check")
+            return None
         return ConversationWorkingSet(
             question=note(payload.get("question"), "question"),
             facts=tuple(note(value, "fact") for value in facts),
@@ -161,6 +197,11 @@ def _parse_working_set(
                 note(payload["unresolved"], "unresolved") if payload.get("unresolved") else None
             ),
             recall_needed=payload.get("recall_needed") is True and bool(payload.get("unresolved")),
+            constraints=tuple(note(value, "constraint") for value in constraints),
+            hypotheses=tuple(note(value, "hypothesis") for value in hypotheses),
+            next_check=next_check,
+            check_result=check_result,
+            suspended=payload.get("suspended") is True,
         )
     except (TypeError, ValueError):
         return None
@@ -316,6 +357,13 @@ def parse_extraction(
     if working_set is not None and valid_user_message_ids is not None:
         if not set(working_set.question.evidence_message_ids).intersection(valid_user_message_ids):
             return reject("working_set.question.user_evidence_missing")
+        for constraint in working_set.constraints:
+            if not set(constraint.evidence_message_ids).intersection(valid_user_message_ids):
+                return reject("working_set.constraint.user_evidence_missing")
+        if working_set.check_result is not None and not set(
+            working_set.check_result.evidence_message_ids
+        ).intersection(valid_user_message_ids):
+            return reject("working_set.check_result.user_evidence_missing")
 
     successor = None
     proposed = payload.get("successor")
@@ -370,7 +418,10 @@ def reduce_situation(
             return None
         return replace(
             previous,
-            status=ACTIVE,
+            status=(
+                UNCERTAIN if extraction.working_set is not None
+                and extraction.working_set.suspended else ACTIVE
+            ),
             evidence_message_ids=extraction.evidence_message_ids or previous.evidence_message_ids,
             source_message_id=max(previous.source_message_id, int(source_message_id)),
             miss_count=0,
@@ -415,7 +466,11 @@ def reduce_situation(
         source_message_id=max(previous.source_message_id, int(source_message_id)),
         miss_count=misses,
         updated_at=timestamp,
-        working_set=None,
+        working_set=(
+            extraction.working_set
+            if extraction.working_set is not None and extraction.working_set.suspended
+            else None
+        ),
     )
 
 

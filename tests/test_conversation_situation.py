@@ -291,6 +291,48 @@ def _working_extraction():
     }
 
 
+def test_working_set_retains_cited_troubleshooting_constraints() -> None:
+    payload = _working_extraction()
+    payload["working_set"]["constraints"] = [
+        {"text": "Keep the existing configuration unchanged.", "evidence_message_ids": [11]},
+    ]
+    extraction = parse_extraction(json.dumps(payload), valid_message_ids={11, 12})
+    assert extraction is not None
+    assert extraction.working_set.constraints[0].text == (
+        "Keep the existing configuration unchanged."
+    )
+    assert extraction.working_set.constraints[0].evidence_message_ids == (11,)
+
+
+@pytest.mark.parametrize("field,limit", [("constraints", 3), ("hypotheses", 2)])
+def test_working_model_rejects_oversized_note_sets(field, limit) -> None:
+    payload = _working_extraction()
+    payload["working_set"][field] = [payload["working_set"]["question"]] * (limit + 1)
+    assert parse_extraction(json.dumps(payload), valid_message_ids={11, 12}) is None
+
+
+@pytest.mark.parametrize("field", ["constraints", "check_result"])
+def test_working_model_requires_user_report_for_constraints_and_results(field) -> None:
+    payload = _working_extraction()
+    note = {"text": "The check failed.", "evidence_message_ids": [12]}
+    payload["working_set"][field] = [note] if field == "constraints" else note
+    payload["working_set"]["next_check"] = payload["working_set"]["question"]
+    assert parse_extraction(
+        json.dumps(payload), valid_message_ids={11, 12}, valid_user_message_ids={11},
+    ) is None
+
+
+@pytest.mark.parametrize("result_id", [10, 11])
+def test_working_model_rejects_result_not_later_than_check(result_id) -> None:
+    payload = _working_extraction()
+    payload["evidence_message_ids"].append(result_id)
+    payload["working_set"]["next_check"] = payload["working_set"]["question"]
+    payload["working_set"]["check_result"] = {
+        "text": "The check failed.", "evidence_message_ids": [result_id],
+    }
+    assert parse_extraction(json.dumps(payload), valid_message_ids={10, 11, 12}) is None
+
+
 def test_working_set_round_trip_and_correction(tmp_path) -> None:
     payload = _working_extraction()
     payload["working_set"]["recall_needed"] = True
@@ -497,6 +539,143 @@ class _FakeSituationClient:
         self.messages.append(messages)
         self.calls.append(_kwargs)
         return self.responses.pop(0), ChatUsage()
+
+
+def test_troubleshooting_worker_pause_restart_resume_and_disconfirmation(tmp_path) -> None:
+    db = ChatDatabase(tmp_path / "troubleshooting.db")
+    store = ConversationSituationStore(db)
+    goal = db.add_message("main", "user", "Diagnose the server timeout. Do not change config.")
+    proposal = db.add_message("main", "assistant", "A network fault may explain it. Try ping.")
+    def note(text, source):
+        return {"text": text, "evidence_message_ids": [source]}
+    payload = {
+        "operation": "replace", "summary": "Diagnosing the server timeout.",
+        "evidence_message_ids": [goal, proposal],
+        "working_set": {
+            "question": note("Why does the server time out?", goal),
+            "constraints": [note("Do not change configuration.", goal)],
+            "hypotheses": [note("A network fault might explain the timeout.", proposal)],
+            "next_check": note("Try pinging the server.", proposal),
+            "unresolved": note("Network connectivity has not been checked.", proposal),
+            "recall_needed": True,
+        },
+    }
+    client = _FakeSituationClient([json.dumps(payload)])
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=store, model="worker",
+        world_snapshot_provider=dict, max_history_messages=4, judgment_shadow_enabled=False,
+    )
+    active = worker.run("main")
+    assert store.get("main") == active
+    host = _SnapshotHost(active)
+    assert "User constraint" in host._render_conversation_situation_block("Server timeout?")
+    assert "Hypothesis, not established" in host._render_conversation_situation_block("Timeout?")
+    pause = db.add_message("main", "user", "Pause the timeout issue. Let's talk about books.")
+    payload["operation"] = "keep"
+    payload["evidence_message_ids"].append(pause)
+    payload["working_set"]["suspended"] = True
+    client.responses.append(json.dumps(payload))
+    suspended = worker.run("main")
+    restored = ConversationSituationStore(db).get("main")
+    assert restored == suspended and restored.working_set.suspended
+    assert restored.status == UNCERTAIN
+    host = _SnapshotHost(restored)
+    assert host._render_conversation_situation_block("Books?") == ""
+    assert host.recall_information_need("Why does the server time out?") == {}
+    for _ in range(6):
+        db.add_message("main", "user", "A book discussion without a new troubleshooting task.")
+    result = db.add_message("main", "user", "Back to the timeout. Ping works; network is fine.")
+    payload["operation"] = "replace"
+    payload["evidence_message_ids"] = [goal, proposal, result]
+    payload["working_set"]["suspended"] = False
+    payload["working_set"]["hypotheses"] = []
+    payload["working_set"]["check_result"] = note("The user reports ping succeeded.", result)
+    payload["working_set"]["unresolved"] = None
+    payload["working_set"]["recall_needed"] = False
+    client.responses.append(json.dumps(payload))
+    resumed = worker.run("main")
+    block = _SnapshotHost(resumed)._render_conversation_situation_block("Server timeout?")
+    assert "User-reported check result" in block
+    assert "Hypothesis, not established" not in block
+    assert len(client.calls) == 3
+    assert all(call["options"]["num_predict"] == 1536 for call in client.calls)
+    transcript = client.messages[-1][1]["content"].split("RECENT TRANSCRIPT:\n")[1]
+    assert transcript.count("[message_id=") == 4
+    assert f"[message_id={goal}]" in transcript
+    assert f"[message_id={proposal}]" in transcript
+    assert f"[message_id={result}]" in transcript
+    assert store.get("other") is None
+    end = reduce_situation(
+        resumed, SituationExtraction(operation="clear", explicit_end=True),
+        session_id="main", source_message_id=result,
+    )
+    assert end.working_set is None
+
+
+@pytest.mark.parametrize("history_limit", [4, 14])
+def test_retained_working_sources_never_expand_the_transcript_cap(tmp_path, history_limit):
+    db = ChatDatabase(tmp_path / "bounded.db")
+    ids = [db.add_message("main", "assistant" if index == 1 else "user",
+                          f"Reported troubleshooting detail {index}.")
+           for index in range(8)]
+    payload = {
+        "operation": "replace", "summary": "Investigating the reported failure.",
+        "evidence_message_ids": ids,
+        "working_set": {
+            "question": {"text": "Why does the server fail?", "evidence_message_ids": [ids[0]]},
+            "facts": [{"text": "A reported symptom.", "evidence_message_ids": [source]}
+                      for source in ids[1:4]],
+            "constraints": [{"text": "A reported constraint.", "evidence_message_ids": [source]}
+                            for source in ids[4:7]],
+            "hypotheses": [{"text": "A tentative cause.", "evidence_message_ids": [ids[7]]}],
+        },
+    }
+    store = ConversationSituationStore(db)
+    store.upsert(reduce_situation(
+        None, parse_extraction(json.dumps(payload), valid_message_ids=set(ids)),
+        session_id="main", source_message_id=ids[-1],
+    ))
+    for _ in range(20):
+        latest = db.add_message("main", "user", "Cancel the investigation.")
+    client = _FakeSituationClient([json.dumps({"operation": "clear", "explicit_end": True})])
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=store, model="worker", world_snapshot_provider=dict,
+        max_history_messages=history_limit,
+    )
+    assert worker.run("main").working_set is None
+    transcript = client.messages[0][1]["content"].split("RECENT TRANSCRIPT:\n")[1]
+    assert transcript.count("[message_id=") == history_limit
+    assert f"[message_id={latest}]" in transcript
+    assert "SHADOW TARGET" not in client.messages[0][1]["content"]
+    assert client.calls[0]["options"]["num_predict"] == 1536
+
+
+@pytest.mark.parametrize("delete", [False, True])
+def test_worker_discards_changed_or_deleted_source_during_generation(tmp_path, delete):
+    db = ChatDatabase(tmp_path / "changed.db")
+    source = db.add_message("main", "user", "Diagnose the timeout.")
+
+    class ChangingClient:
+        def chat_json(self, *_args, **_kwargs):
+            if delete:
+                db.execute_commit("DELETE FROM messages WHERE id = ?", (source,))
+            else:
+                db.execute_commit(
+                    "UPDATE messages SET content = ? WHERE id = ?", ("Cancel.", source),
+                )
+            return json.dumps({
+                "operation": "replace", "summary": "Diagnosing the timeout.",
+                "evidence_message_ids": [source],
+            }), ChatUsage()
+
+    store = ConversationSituationStore(db)
+    worker = ConversationSituationWorker(
+        client=ChangingClient(), chat_db=db, store=store, model="worker",
+        world_snapshot_provider=dict, judgment_shadow_enabled=False,
+    )
+    assert worker.run("main") is None
+    assert worker.stats()["stale"] == 1
+    assert store.get("main") is None
 
 
 def test_judgment_shadow_validates_evidence_and_retains_only_references(tmp_path) -> None:

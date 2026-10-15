@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "scope": "Synthetic evidence-independence contracts, not a model reasoning benchmark",
   "cases": [
     {
@@ -76,6 +76,66 @@
         {"roots": ["observation:1"], "category": "model_inference"}
       ],
       "expected": {"known_support_groups": 1, "unknown_sources": 0}
+    }
+  ],
+  "working_model_cases": [
+    {
+      "id": "interrupted_server_task",
+      "turns": [
+        {"id": 1, "role": "user", "text": "Diagnose the server timeout without changing configuration."},
+        {"id": 2, "role": "user", "text": "Pause the server issue. Let's discuss books."},
+        {"id": 3, "role": "user", "text": "Back to the server timeout. What check comes next?"}
+      ],
+      "working_set": {"question": {"text": "Why does the server time out?", "evidence_message_ids": [1]}, "constraints": [{"text": "Do not change configuration.", "evidence_message_ids": [1]}], "suspended": true},
+      "expected": {"action": "resume", "sources": [1, 3], "constraint_sources": [1], "rejected_hypothesis_sources": []}
+    },
+    {
+      "id": "successful_ping_disconfirms_connectivity",
+      "turns": [
+        {"id": 1, "role": "user", "text": "Diagnose the timeout without changing configuration."},
+        {"id": 2, "role": "assistant", "text": "The server might be unreachable. Try pinging it."},
+        {"id": 3, "role": "user", "text": "The server responds to ping with no packet loss; it is reachable. Revise that explanation."}
+      ],
+      "working_set": {"question": {"text": "Why does the server time out?", "evidence_message_ids": [1]}, "constraints": [{"text": "Do not change configuration.", "evidence_message_ids": [1]}], "hypotheses": [{"text": "The server might be unreachable.", "evidence_message_ids": [2]}], "next_check": {"text": "Ping the server.", "evidence_message_ids": [2]}, "check_result": {"text": "The user reports the server responds to ping.", "evidence_message_ids": [3]}},
+      "expected": {"action": "revise", "sources": [1, 2, 3], "constraint_sources": [1], "rejected_hypothesis_sources": [2]}
+    },
+    {
+      "id": "unsupported_database_diagnosis",
+      "turns": [
+        {"id": 1, "role": "user", "text": "A request timed out. There are no logs or test results."},
+        {"id": 2, "role": "assistant", "text": "A database fault is one possible explanation, not an established result."},
+        {"id": 3, "role": "user", "text": "Which component has definitely failed?"}
+      ],
+      "working_set": {"question": {"text": "Why did the request time out?", "evidence_message_ids": [1]}, "hypotheses": [{"text": "A database fault might explain the timeout.", "evidence_message_ids": [2]}]},
+      "expected": {"action": "abstain", "sources": [1, 3], "constraint_sources": [], "rejected_hypothesis_sources": []}
+    },
+    {
+      "id": "unrelated_topic_does_not_inherit_constraints",
+      "turns": [
+        {"id": 1, "role": "user", "text": "Debug the server, but do not change configuration."},
+        {"id": 2, "role": "user", "text": "Pause that unfinished server issue. Let's talk about camera lenses instead."}
+      ],
+      "working_set": {"question": {"text": "Why does the server fail?", "evidence_message_ids": [1]}, "constraints": [{"text": "Do not change configuration.", "evidence_message_ids": [1]}], "suspended": true},
+      "expected": {"action": "suspend", "sources": [1, 2], "constraint_sources": [], "rejected_hypothesis_sources": []}
+    },
+    {
+      "id": "cancelled_task_is_not_resumed",
+      "turns": [
+        {"id": 1, "role": "user", "text": "Diagnose the server without modifying its configuration."},
+        {"id": 2, "role": "user", "text": "Cancel the server investigation entirely. I do not want to resume it."}
+      ],
+      "working_set": {"question": {"text": "Why does the server fail?", "evidence_message_ids": [1]}, "constraints": [{"text": "Do not change configuration.", "evidence_message_ids": [1]}]},
+      "expected": {"action": "clear", "sources": [2], "constraint_sources": [], "rejected_hypothesis_sources": []}
+    },
+    {
+      "id": "latest_explicit_constraint_correction_wins",
+      "turns": [
+        {"id": 1, "role": "user", "text": "Diagnose the server without changing configuration."},
+        {"id": 2, "role": "user", "text": "Pause the server investigation."},
+        {"id": 3, "role": "user", "text": "Back to the server. Correction: configuration changes are allowed, but do not restart it."}
+      ],
+      "working_set": {"question": {"text": "Why does the server fail?", "evidence_message_ids": [1]}, "constraints": [{"text": "Do not change configuration.", "evidence_message_ids": [1]}], "suspended": true},
+      "expected": {"action": "resume", "sources": [1, 3], "constraint_sources": [3], "rejected_hypothesis_sources": []}
     }
   ],
   "applicability_cases": [

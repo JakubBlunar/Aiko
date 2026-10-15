@@ -124,7 +124,7 @@ separate message IDs still do not prove separate causal episodes.
 ### Opt-in L55 decision evaluation
 
 `python scripts/evaluate_concept_reasoning.py --model <installed-model>` runs
-the synthetic decision cases through the existing Ollama client (corpus v3 also
+the synthetic decision cases through the existing Ollama client (corpus v4 also
 contains deterministic L50 context contrasts).
 Baseline, roots-only ablation and accounted-summary variants share fixed
 questions and criteria. Metrics include correctness, unsupported assertions,
@@ -145,6 +145,26 @@ accounted 3/6, with no malformed outputs. The summary is therefore not an
 automatic reasoning improvement. This is a tiny synthetic accounting task,
 not a live companion-quality benchmark or calibrated probability. No promotion,
 prompt injection or surfacing budget changed from it.
+
+Corpus v4 adds six synthetic troubleshooting episodes: interrupted constraints,
+disconfirmation, unsupported diagnosis, unrelated topic, cancellation and an
+explicit constraint correction. Run them explicitly with
+`python scripts/evaluate_concept_reasoning.py --suite working-model --model <installed-model>`.
+The default variants are `baseline`, `working-model`, `no-constraints`,
+`no-hypotheses` and `no-result`. Every variant receives the same age-tagged
+transcript; only the derived working notes differ. All share the existing call,
+request-timeout and output limits. Thirty calls cover one complete six-by-five
+comparison; a budget-stopped report is incomplete, not a balanced comparison.
+
+Frozen criteria score the action and exact citation sets separately from prose:
+applicable constraint retention, rejection of disconfirmed hypotheses, unsupported
+assertions and appropriate abstention. Component counters alone are not accuracy;
+`correct` also requires the right action and every expected citation set. Reports
+retain costs and scores, not generated answers. This tests decisions from supplied
+notes, not extraction accuracy or a full companion conversation. Deterministic
+fake-client tests validate scoring, ablations and bounds, not model reasoning.
+No new real-model comparison was run for this slice; held-out paraphrases,
+repeated runs and end-to-end model extraction/reply evaluation remain open.
 
 ### Surfacing pressure diagnostics
 
@@ -221,6 +241,68 @@ summary. Exact spans establish provenance, not general semantic entailment.
 Arbitrary contexts, episode-level qualifiers, bitemporal queries, old-record
 backfill, scoped revival adjudication and live response-quality measurement
 remain open. No promotion bar, source ceiling or surfacing budget is raised.
+
+### Bounded troubleshooting working model (L51 pilot, 15 Oct 2026)
+
+The existing `ConversationWorkingSet` now carries a goal/question, up to three
+facts and three explicit user constraints, two tentative hypotheses, one
+interpretation, one unresolved premise, one proposed check and one later
+user-reported result. Each note is at most 160 characters with 1-3 supplied
+message IDs; the shared top-level evidence list still has at most eight IDs.
+Constraints and results must cite a user message. Every result citation must be
+later than every check citation; the result is not proof Aiko executed anything.
+
+There is still one situation row per session, not a second task store. Optional
+fields default empty when restoring older rows. One `suspended` working set can
+survive an explicit interruption; it neither renders its old situation summary
+nor supplies recall demand. A paused `keep` makes the old situation uncertain.
+The observer must explicitly resupply notes on a return to the same task. A
+replacement is whole-record, so corrections can remove dependent interpretations
+and hypotheses. Missing notes still clear the working set, and explicit completion
+or cancellation clears it immediately; this is not a task backlog or guaranteed
+indefinite resumption service.
+
+Before the existing observer call, cited messages are reloaded from the same
+session, without increasing its transcript cap (default 14). At least two recent
+slots remain; an unusually small configured window can omit older citations,
+which cannot validate a new extraction. Missing/cross-session IDs are not offered.
+Changed/deleted in-flight transcript rows discard the extraction. Existing
+cadence, output cap (1536 plus the existing optional shadow allowance), request
+timeout, world compatibility and staleness checks remain. A greeting adds no new
+reasoning call. Longer prompts can still affect latency; no live cost claim is made.
+
+Rendering extends the existing T6 `conversation_situation_block`: it is evidence
+context, not a new stance offer, action request or permission to speak. Hypotheses
+stay explicitly tentative. The worker has no memory/concept writer and this
+record is not automatically admitted to either store. Citation and ordering
+checks are structural, not semantic entailment. Pausing/resuming, attribution and
+disconfirmation still depend on model extraction. The latest user turn overrides
+earlier notes; there is no model-level guarantee of obeying that instruction.
+Source deletion after a completed extraction does not retract cached prompts;
+general dependency/deletion propagation remains L52 work. No historical state,
+model route, source ceiling, promotion threshold or surfacing cap was changed.
+
+### Persisted feature audit (15 Oct 2026)
+
+The live MCP endpoint was unavailable. The audit used SQLite URI `mode=ro` plus
+`PRAGMA query_only=ON`, and a read transaction for provenance/eligibility aggregates.
+No writable app stores, model calls, test messages, worker forcing or backfill
+were used. Only counts and structural categories are recorded here.
+
+| Surface | Observation | Interpretation |
+| --- | --- | --- |
+| L49 frozen provenance | 11,319 receipts covering 1,620 of 12,299 concepts; 2,461 receipts contain capture issues | New capture is present. Legacy rows were not backfilled. Edge/node/manifest limits and missing ancestors remain explicit unknowns. Repeated ancestor issue counts are not unique failures. |
+| L50 applicability | One stored scoped style, for troubleshooting | Too little coverage to establish correct contextual selection, correction retention or casual/learning behavior in real replies. |
+| L33 eligibility | 79 outcomes: 66 excluded by method, one missing required provenance, 12 not contradictions; no eligible outcome or persisted introspection state | Lack of reflection output is consistent with the gates, not evidence of useful or broken reflection. No historical provenance was invented. |
+| Reconsideration | 52 pending receipts: 29 unattempted, 9 with one attempt, 14 with two | Prior retries are recorded. This snapshot alone does not establish current throughput, fairness or verdict accuracy. |
+| Disproof review | 48 latest receipts, 7 pending; outcomes include 25 invalidated and 15 resolved | Receipts are observable, but model verdict truth and subsequent behavior were not adjudicated. Missing outcome fields are not successful reviews. |
+
+Frozen-manifest aggregation is not a replay of the bounded current resolver:
+captured ancestry repeats and source deletion must still be checked on its live
+read path. Coverage and activity are not causal-independence or quality scores.
+The next useful audit is matched post-restart source/response sampling, including
+capture-limit cases, not higher budgets. Loaded-code consistency, live selection
+pressure, current worker scheduling and response quality remain unverified.
 
 ## The role axis: `anchor` / `guide` / `generative`
 
