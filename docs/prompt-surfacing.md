@@ -613,6 +613,15 @@ that a critical note was lost in production.
 
 ### S6. Learn from the reply, not just its existence
 
+**Situation evidence repair (23 Oct 2026).** The observer now supplies an explicit
+role-separated evidence menu, hides out-of-window citation IDs from its previous
+state prompt view, and explains the two observed rejection categories on the
+next scheduled call. The stored previous state is unchanged by prompt preparation.
+Unknown IDs and assistant-only grounding of user goals remain invalid; no extra
+retry call or larger output budget is introduced. Synthetic worker regressions
+cover both failures followed by a valid update. This establishes the repair
+contract, not a measured reduction in production failures.
+
 Keep K99 delivery evidence alongside, not substituted for, semantic outcome
 evidence. A user can answer a question even with missing client receipts;
 an audio completion cannot prove they answered it. Join the answer to the

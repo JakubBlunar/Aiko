@@ -803,6 +803,78 @@ def test_worker_records_output_limit_without_overwriting_valid_state(tmp_path) -
     assert worker.stats()["invalid_reasons"] == {"invalid_json_object": 1}
 
 
+def test_evidence_scope_excludes_old_ids_and_separates_speaker_roles(tmp_path):
+    db = ChatDatabase(tmp_path / "scope.db")
+    db.add_message("other", "user", "Unrelated session.")
+    user_id = db.add_message("main", "user", "Please compare the two lenses.")
+    db.add_message("other", "user", "Another unrelated message.")
+    assistant_id = db.add_message("main", "assistant", "Shall we compare their weights?")
+    store = ConversationSituationStore(db)
+    previous = reduce_situation(
+        None, _replacement(), session_id="main", source_message_id=12,
+    )
+    store.upsert(previous)
+    client = _FakeSituationClient([json.dumps({
+        "operation": "keep", "evidence_message_ids": [user_id],
+    })])
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=store, model="worker",
+        world_snapshot_provider=dict,
+    )
+    worker.run("main")
+    prompt = client.messages[0][1]["content"]
+    scope = json.loads(prompt.split("EVIDENCE SCOPE:\n")[1].split("\n")[0])
+    assert scope == {
+        "allowed_message_ids": [user_id, assistant_id],
+        "user_message_ids": [user_id], "assistant_message_ids": [assistant_id],
+    }
+    prior = json.loads(prompt.split("PREVIOUS SITUATION:\n")[1].split("\n")[0])
+    assert prior["evidence_message_ids"] == []
+    assert prior["citations_outside_scope"] is True
+    assert "source_message_id" not in prior
+    assert previous.evidence_message_ids == (11, 12)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("cause", [
+    "evidence_id_unknown", "working_set.question.user_evidence_missing",
+])
+def test_validation_feedback_repairs_next_scheduled_call_without_extra_generation(tmp_path, cause):
+    db = ChatDatabase(tmp_path / "repair-scope.db")
+    user_id = db.add_message("main", "user", "Please compare two lenses.")
+    assistant_id = db.add_message("main", "assistant", "Shall we compare their weights?")
+    store = ConversationSituationStore(db)
+    previous = reduce_situation(
+        None, _replacement(), session_id="main", source_message_id=user_id,
+    )
+    store.upsert(previous)
+    bad = {"operation": "keep", "evidence_message_ids": [99999]}
+    if cause.startswith("working_set"):
+        bad = {
+            "operation": "keep", "evidence_message_ids": [assistant_id],
+            "working_set": {"question": {
+                "text": "Compare the lens weights.", "evidence_message_ids": [assistant_id],
+            }},
+        }
+    good = {"operation": "replace", "summary": "Comparing two lenses.",
+            "evidence_message_ids": [user_id], "working_set": None}
+    client = _FakeSituationClient([json.dumps(bad), json.dumps(good)])
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=store, model="worker",
+        world_snapshot_provider=dict, judgment_shadow_enabled=False,
+    )
+    assert worker.run("main") == previous
+    assert store.get("main") == previous
+    assert len(client.calls) == 1
+    assert worker.stats("main")["last_result"]["validation_reason"] == cause
+    state = worker.run("main")
+    assert state.summary == good["summary"]
+    assert state.working_set is None
+    assert "VALIDATION FEEDBACK" in client.messages[1][1]["content"]
+    assert len(client.calls) == 2
+    assert all(call["options"]["num_predict"] == 1536 for call in client.calls)
+
+
 def test_worker_persists_content_free_validation_reason(tmp_path, caplog) -> None:
     db = ChatDatabase(tmp_path / "invalid_reason.db")
     user_id = db.add_message("main", "user", "Compare two lenses.")

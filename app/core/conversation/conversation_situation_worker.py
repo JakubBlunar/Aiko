@@ -81,6 +81,10 @@ conversation or memory. Never use it for curiosity, an external search, an
 action, or a premise that the user has just supplied. Prefer false when unsure.
 Its question must cite a user message. Every note must cite 1-3 supplied message
 IDs, all also included in the top-level evidence_message_ids (at most 8).
+Use only the integer IDs in EVIDENCE SCOPE, never turn numbers or IDs copied
+from an older situation. USER IDs may ground a question, constraint or result;
+ASSISTANT IDs may ground suggestions, not a new user goal. If the user did not
+express an open goal/question, working_set must be null, even if Aiko asked one.
 Use at most three facts. Attribute reports to their speaker; an assistant's
 suggestion is not an established fact. Use at most one tentative interpretation
 and one unresolved premise, or null. Each note is at most 160 characters.
@@ -281,7 +285,10 @@ class ConversationSituationWorker:
                     break
                 retained[int(source.id)] = source
             rows = sorted(retained.values(), key=lambda row: int(row.id))
-            prompt = self._build_user_prompt(rows, previous)
+            prompt = self._build_user_prompt(
+                rows, previous,
+                validation_reason=self._last_result.get(key, {}).get("validation_reason", ""),
+            )
             target = None
             try:
                 if self._judgment_shadow_enabled:
@@ -502,6 +509,7 @@ class ConversationSituationWorker:
         self,
         rows: list["MessageRow"],
         previous: ConversationSituationState | None,
+        *, validation_reason: str = "",
     ) -> str:
         now = timephrase.now()
         tagged_rows = [
@@ -518,12 +526,58 @@ class ConversationSituationWorker:
         except Exception:
             world = {}
         world = self._bounded_world_snapshot(world)
+        valid_ids = {int(row.id) for row in rows}
+        user_ids = sorted(int(row.id) for row in rows if row.role == "user")
         prior = previous.to_payload() if previous is not None else None
+        # Previous state is context, not a second evidence menu. Hide stale
+        # citation identifiers without mutating persisted state or inventing
+        # replacement references. A partial note is explicitly ungrounded here.
+        def prompt_view(value):
+            if isinstance(value, list):
+                return [prompt_view(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            result = {}
+            for name, item in value.items():
+                if name == "source_message_id":
+                    continue
+                if name == "evidence_message_ids":
+                    result[name] = [source for source in item if source in valid_ids]
+                    if len(result[name]) != len(item):
+                        result["citations_outside_scope"] = True
+                else:
+                    result[name] = prompt_view(item)
+            return result
+
+        prior = prompt_view(prior)
+        scope = {
+            "allowed_message_ids": sorted(valid_ids),
+            "user_message_ids": user_ids,
+            "assistant_message_ids": sorted(
+                int(row.id) for row in rows if row.role == "assistant"
+            ),
+        }
+        repair = ""
+        if validation_reason == "evidence_id_unknown":
+            repair = "The last output cited an unavailable ID. Copy only IDs from EVIDENCE SCOPE."
+        elif validation_reason.startswith("working_set.") and validation_reason.endswith(
+            "user_evidence_missing"
+        ):
+            repair = (
+                "The last working-set note lacked USER evidence. Cite the actual user goal, "
+                "constraint or result from EVIDENCE SCOPE, or omit the unsupported working set. "
+                "An assistant suggestion cannot supply the user's goal."
+            )
         return (
             "AUTHORITATIVE WORLD SNAPSHOT:\n"
             + json.dumps(world, ensure_ascii=False, separators=(",", ":"))
             + "\n\nPREVIOUS SITUATION:\n"
             + json.dumps(prior, ensure_ascii=False, separators=(",", ":"))
+            + "\n\nEVIDENCE SCOPE:\n"
+            + json.dumps(scope, separators=(",", ":"))
+            + "\nPrevious citations_outside_scope notes require fresh supplied evidence; "
+            "never substitute a nearby ID. Keep prior state only when it still fits."
+            + ("\n\nVALIDATION FEEDBACK:\n" + repair if repair else "")
             + "\n\nRECENT TRANSCRIPT:\n"
             + transcript
         )
