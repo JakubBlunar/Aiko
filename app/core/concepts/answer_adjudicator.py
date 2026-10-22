@@ -82,6 +82,8 @@ _DIRECT_ANSWER = re.compile(
     r"^(?:yes|yeah|yep|yup|no|nope|nah|not quite|not really|close|correct|"
     r"exactly|absolutely|definitely|mm[- ]?hm|kind of|sort of|pretty much)\b", re.I,
 )
+_FICTION_FRAME = re.compile(r"\b(?:fictional|imaginary|role[- ]?play|character)\b", re.I)
+_SELF_DISCLAIMER = re.compile(r"\bnot (?:me|myself|real|true)\b", re.I)
 
 #: Content-word overlap needed for a longer reply to count as on-subject.
 _MIN_OVERLAP = 1
@@ -101,7 +103,7 @@ _SYSTEM_PROMPT = (
     "about them. Answer with ONE JSON object on a single line and "
     "nothing else. Schema: {\"verdict\": \"CONFIRM\" | \"CORRECT\" | "
     "\"DENY\" | \"UNCLEAR\", \"restated\": \"<= 140 chars, or empty\", "
-    "\"reason\": \"<= 80 chars\"}. "
+    "\"reason\": \"<= 80 chars\", \"evidence\": \"exact reply span, or empty\"}. "
     "CONFIRM = the reply agrees the guess is true, including a casual "
     "yes. "
     "CORRECT = the reply says the guess is close but not quite, and "
@@ -256,6 +258,11 @@ def adjudicate(
     body = (reply or "").strip()
     if not statement or not body:
         return AnswerVerdict()
+    # An exact quote can still describe someone fictional. An explicit
+    # non-self disclaimer must not become passive evidence about the user,
+    # even if the model overlooks it. Mixed/ambiguous observations may abstain.
+    if not question and _FICTION_FRAME.search(body) and _SELF_DISCLAIMER.search(body):
+        return AnswerVerdict(reason="off_subject")
     if not looks_like_an_answer(
         statement,
         body,

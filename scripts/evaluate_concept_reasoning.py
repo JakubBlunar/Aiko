@@ -161,6 +161,19 @@ def evaluate(client, cases, *, model, variants, repeats=1, max_calls=30, max_sec
             for variant in variants:
                 if len(rows) >= max_calls or time.monotonic() - started >= max_seconds:
                     return {"rows": rows, "stopped": "budget"}
+                if "belief" in case:
+                    from scripts.hypothesis_evidence_eval import evaluate_hypothesis_case
+
+                    scored = evaluate_hypothesis_case(client, case, model=model, variant=variant)
+                    usage = getattr(client, "last_usage", None) if scored["calls"] else None
+                    rows.append({
+                        "case": case["id"], "variant": variant, "repeat": repeat,
+                        "split": case["split"],
+                        "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                        "completion_tokens": getattr(usage, "completion_tokens", 0),
+                        **scored,
+                    })
+                    continue
                 working = "working_set" in case
                 payload = working_model_payload(case, variant) if working else decision_payload(
                     case, variant,
@@ -211,25 +224,37 @@ def main(argv=None):
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--max-calls", type=int, default=30)
     parser.add_argument("--max-seconds", type=float, default=300)
-    parser.add_argument("--suite", choices=("evidence", "working-model"), default="evidence")
+    parser.add_argument(
+        "--suite", choices=("evidence", "working-model", "hypotheses"), default="evidence",
+    )
+    parser.add_argument("--split", choices=("regression", "heldout", "all"), default="all")
     parser.add_argument(
         "--variants",
         nargs="+",
         choices=("baseline", "roots", "accounted", "working-model", "no-constraints",
-             "no-hypotheses", "no-result"),
+             "no-hypotheses", "no-result", "guarded"),
     )
     arguments = parser.parse_args(argv)
     if min(arguments.repeats, arguments.max_calls, arguments.max_seconds) <= 0:
         parser.error("budgets and repeats must be positive")
-    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    corpus_path = (
+        CORPUS.with_name("hypothesis_evidence_l55.json")
+        if arguments.suite == "hypotheses" else CORPUS
+    )
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
     allowed = (
         ["baseline", "working-model", "no-constraints", "no-hypotheses", "no-result"]
-        if arguments.suite == "working-model" else ["baseline", "roots", "accounted"]
+        if arguments.suite == "working-model" else
+        ["baseline", "guarded"] if arguments.suite == "hypotheses" else
+        ["baseline", "roots", "accounted"]
     )
     arguments.variants = arguments.variants or allowed
     if any(variant not in allowed for variant in arguments.variants):
         parser.error("variant does not belong to the selected suite")
     cases = (
+        [case for case in corpus["cases"]
+         if arguments.split == "all" or case["split"] == arguments.split]
+        if arguments.suite == "hypotheses" else
         corpus["working_model_cases"] if arguments.suite == "working-model"
         else [case for case in corpus["cases"] if "decision" in case]
     )
@@ -249,7 +274,8 @@ def main(argv=None):
     totals = {}
     for variant in arguments.variants:
         selected = [row for row in report["rows"] if row["variant"] == variant]
-        counts = Counter({"calls": len(selected)})
+        counts = Counter({"decisions": len(selected),
+                          "calls": sum(row.get("calls", 1) for row in selected)})
         for row in selected:
             for key in (
                 "correct",
@@ -261,8 +287,15 @@ def main(argv=None):
                 "constraint_retention",
                 "disconfirmation",
                 "malformed",
+                "missed_answer",
+                "failed_call",
             ):
                 counts[key] += int(row.get(key, 0))
+        if arguments.suite == "hypotheses":
+            counts["expression_checks"] = sum(row.get("expression_correct") is not None
+                                               for row in selected)
+            counts["expression_correct"] = sum(row.get("expression_correct") is True
+                                                for row in selected)
         totals[variant] = dict(counts)
     print(
         json.dumps(
@@ -270,6 +303,7 @@ def main(argv=None):
                 "corpus_version": corpus["version"],
                 "model": arguments.model,
                 "suite": arguments.suite,
+                "split": arguments.split if arguments.suite == "hypotheses" else None,
                 "totals": totals,
                 **report,
             },

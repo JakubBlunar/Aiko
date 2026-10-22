@@ -2914,5 +2914,11 @@ troubleshooting episodes. The existing opt-in harness supports same-transcript
 baseline/working-note/field-ablation comparisons with equal call/output limits
 and token/latency metrics. No new real-model run was performed. Held-out variants,
 repeated comparisons, causal/counterfactual families and full extraction-to-reply
-trials remain open. See [evaluation usage and limits](../concept-integration.md#opt-in-l55-decision-evaluation).
+trials remain open. The 23 Oct hypothesis extension adds eight regression and
+eight held-out expression/evidence cases, production-guard and unscoped-judge
+arms, and explicit failed-call/missed-answer counters. A small exploratory run
+found one fictional-testimony failure; a subsequent CPU-tested guard addresses
+its explicit non-self disclaimer, with real-model revalidation pending available
+inference resources. This does not establish full L49/L50/L51 extraction quality.
+See [evaluation usage, results and limits](../concept-integration.md#opt-in-l55-decision-evaluation).
 

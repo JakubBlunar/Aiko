@@ -166,6 +166,37 @@ fake-client tests validate scoring, ablations and bounds, not model reasoning.
 No new real-model comparison was run for this slice; held-out paraphrases,
 repeated runs and end-to-end model extraction/reply evaluation remain open.
 
+The hypothesis extension (23 Oct 2026) uses
+[`hypothesis_evidence_l55.json`](../tests/fixtures/hypothesis_evidence_l55.json):
+eight regression cases and eight held-out wording variants. Run it only when
+local inference resources are available:
+`python scripts/evaluate_concept_reasoning.py --suite hypotheses --model <installed-model> --max-calls 32`.
+`--split regression|heldout|all` selects the cohort. The baseline is an unscoped
+guess/reply judge ablation, not a replay of the old runtime. The guarded arm uses
+the production expression and answer adjudicators. Both have a one-call,
+160-output-token ceiling per decision; a guard may abstain without a call.
+The decision count also bounds execution conservatively, even for zero-call
+abstentions. Reports distinguish actual calls, failed calls, missed answers,
+unsupported assertions and expression checks. They retain scores and costs,
+not model-generated answers.
+
+One exploratory run on 23 Oct with `baytout3/qwen3.5-uncensored:9b` completed
+all 32 decisions before further inference was stopped at the user's request.
+Baseline: 10/16 correct, five unsupported assertions and one cold-start timeout.
+Guarded: 15/16 correct, one unsupported assertion, no missed answers and nine
+actual calls. The held-out subset scored 6/8 and 8/8 respectively. These are
+small synthetic samples without repetitions or a controlled latency comparison;
+the baseline's failed call is not a correct abstention.
+
+The remaining guarded failure treated a fictional scene as testimony despite
+an explicit "not me" disclaimer. A subsequent conservative production guard
+rejects that passive observation before inference, and a fake-client regression
+holds it against a model that would confirm. That follow-up has **not** been
+rerun against the real model. Quoted evidence alone still cannot prove entailment.
+The CPU accounting/applicability tests and situation-worker regressions cover
+L49/L50/L51 contracts; full model extraction-to-reply evaluation, repeated runs
+and same-episode support audits remain open. No live memory was repaired.
+
 ### Surfacing pressure diagnostics
 
 The concept trace includes `selection_pressure`: chosen/pinned counts, estimated

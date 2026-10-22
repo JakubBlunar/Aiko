@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "description": "Synthetic expression and evidence cases; heldout wording is not used to tune the guards. No private transcript data.",
+  "cases": [
+    {"id":"direct_yes","split":"regression","mode":"direct","belief":"Walking is thinking time","assistant":"Is walking your thinking time?","reply":"Yes, exactly.","expected":{"asked":true,"verdict":"confirm"}},
+    {"id":"direct_no","split":"regression","mode":"direct","belief":"Walking is thinking time","assistant":"Is walking your thinking time?","reply":"No, I just enjoy the exercise.","expected":{"asked":true,"verdict":"deny"}},
+    {"id":"topical_statement","split":"regression","mode":"direct","belief":"Walking is thinking time","assistant":"Walking gives you thinking time.","reply":"Yes, that sounds lovely.","expected":{"asked":false,"verdict":"unclear"}},
+    {"id":"different_question","split":"regression","mode":"direct","belief":"Walking is thinking time","assistant":"Walking gives you thinking time. What shall we watch?","reply":"Yes, the new episode.","expected":{"asked":false,"verdict":"unclear"}},
+    {"id":"passive_praise","split":"regression","mode":"observation","belief":"Walking is thinking time","reply":"That was beautiful, I love talking with you.","expected":{"asked":false,"verdict":"unclear"}},
+    {"id":"passive_fact","split":"regression","mode":"observation","belief":"Walking is thinking time","reply":"Walking is when I do my thinking.","expected":{"asked":false,"verdict":"confirm"}},
+    {"id":"quoted_question","split":"regression","mode":"direct","belief":"Walking is thinking time","assistant":"She asked, \"Is walking your thinking time?\"","reply":"Yes, exactly.","expected":{"asked":false,"verdict":"unclear"}},
+    {"id":"roleplay_observation","split":"regression","mode":"observation","belief":"Walking is thinking time","reply":"In our fictional scene, walking is my thinking time. That is the character, not me.","expected":{"asked":false,"verdict":"unclear"}},
+    {"id":"music_yes","split":"heldout","mode":"direct","belief":"Quiet music helps concentration","assistant":"Does quiet music help your concentration?","reply":"Yes, it really does.","expected":{"asked":true,"verdict":"confirm"}},
+    {"id":"music_deny","split":"heldout","mode":"direct","belief":"Quiet music helps concentration","assistant":"Does quiet music help your concentration?","reply":"No, it distracts me.","expected":{"asked":true,"verdict":"deny"}},
+    {"id":"music_affection","split":"heldout","mode":"observation","belief":"Quiet music helps concentration","reply":"You make everything better. Thank you for being here.","expected":{"asked":false,"verdict":"unclear"}},
+    {"id":"music_generic_agreement","split":"heldout","mode":"observation","belief":"Quiet music helps concentration","reply":"Yes, exactly.","expected":{"asked":false,"verdict":"unclear"}},
+    {"id":"music_passive_fact","split":"heldout","mode":"observation","belief":"Quiet music helps concentration","reply":"Quiet music helps my concentration when I write.","expected":{"asked":false,"verdict":"confirm"}},
+    {"id":"music_quoted_preference","split":"heldout","mode":"observation","belief":"Quiet music helps concentration","reply":"My colleague says quiet music helps concentration. I have no opinion on that myself.","expected":{"asked":false,"verdict":"unclear"}},
+    {"id":"music_unasked","split":"heldout","mode":"direct","belief":"Quiet music helps concentration","assistant":"Quiet music helps your concentration. Want a snack?","reply":"Yes, thanks.","expected":{"asked":false,"verdict":"unclear"}},
+    {"id":"music_deictic","split":"heldout","mode":"direct","belief":"Quiet music helps concentration","assistant":"Quiet music helps your concentration. Is that right?","reply":"Yes, exactly.","expected":{"asked":true,"verdict":"confirm"}}
+  ]
+}
