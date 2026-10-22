@@ -451,6 +451,21 @@ class CuePoolMixin:
                 text_vec=turn_vec if whole_turn else reply_vec,
             )
             evidence = self._verdict_evidence(verdict)
+            asked_text = assistant_text[:1000]
+            if row.cue_type == "concept_hypothesis":
+                from app.core.concepts.hypothesis_expression import question_span
+
+                asked_text = question_span(
+                    str(row.payload.get("label") or row.subject), assistant_text,
+                )
+                if not asked_text:
+                    if was_surfaced:
+                        store.record_feedback(
+                            row.id, "not_asked", assistant_message_id=assistant_message_id,
+                            reason="no_grounded_question",
+                        )
+                        self._retire_or_retry(store, row, policy, evidence="not_asked")
+                    continue
             if not verdict.echoed:
                 if was_surfaced:
                     store.record_feedback(
@@ -467,7 +482,8 @@ class CuePoolMixin:
                 store.patch_payload(row.id, {
                     "asked_message_id": assistant_message_id,
                     "asked_session_id": getattr(self, "session_key", None),
-                    "asked_text": assistant_text[:1000],
+                    "asked_text": asked_text,
+                    "ask_verified": row.cue_type == "concept_hypothesis",
                 })
                 store.record_feedback(
                     row.id, "no_answer_yet", assistant_message_id=assistant_message_id,

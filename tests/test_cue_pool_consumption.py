@@ -677,6 +677,38 @@ class HypothesisAskStampTests(_Fixture):
 
         self.assertEqual(self._state(cue_id), STATE_AWAITING)
 
+    def test_topical_statement_and_unrelated_question_do_not_spend_ask(self) -> None:
+        for text in (
+            "Walking clears your head. I'll keep you company.",
+            "Walking clears your head. Which movie should we watch?",
+        ):
+            with self.subTest(text=text):
+                cue_id = self._cue()
+                row = self.store.get(cue_id)
+                self.store.mark_surfaced(cue_id)
+                self.host._register_surfaced_cue(row)
+                self.host._settle_pool_cues(
+                    user_text="walking clears my head", assistant_text=text,
+                    reply_vec=_vec(1, 0), assistant_message_id=99,
+                )
+                saved = self.store.get(cue_id)
+                self.assertEqual(saved.ask_count, 0)
+                self.assertEqual(saved.payload["feedback"][-1]["state"], "not_asked")
+
+    def test_only_the_target_question_is_saved(self) -> None:
+        cue_id = self._cue()
+        row = self.store.get(cue_id)
+        self.store.mark_surfaced(cue_id)
+        self.host._register_surfaced_cue(row)
+        self.host._settle_pool_cues(
+            user_text="hello",
+            assistant_text="Nice to see you. Does walking clear your head? Tea is ready.",
+            assistant_message_id=99,
+        )
+        payload = self.store.get(cue_id).payload
+        self.assertEqual(payload["asked_text"], "Does walking clear your head?")
+        self.assertTrue(payload["ask_verified"])
+
 
 class BroadcastTests(_Fixture):
     def test_a_used_cue_reaches_the_listener(self) -> None:

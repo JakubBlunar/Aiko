@@ -54,7 +54,10 @@ class _FakeOllama:
 
     def chat_stream(self, messages, **kwargs):
         self.calls += 1
-        yield self._payloads.pop(0) if self._payloads else _json("unclear")
+        raw = self._payloads.pop(0) if self._payloads else _json("unclear")
+        value = json.loads(raw)
+        value.setdefault("evidence", messages[-1]["content"].split("THEIR REPLY: ")[-1])
+        yield json.dumps(value)
 
 
 class _FakeMemoryStore:
@@ -180,6 +183,8 @@ class _Fixture(unittest.TestCase):
                     self.concept.concept_id if target_id is None else target_id
                 ),
                 "label": self.LABEL,
+                "ask_verified": True,
+                "asked_text": "Does walking help you think?",
                 "kind": "pattern",
                 "subject": "user",
                 "importance": 0.8,
@@ -199,6 +204,18 @@ class _Fixture(unittest.TestCase):
 
 
 class SettledVerdictTests(_Fixture):
+    def test_legacy_unverified_ask_cannot_write_evidence(self) -> None:
+        cue_id = self._awaiting_cue()
+        self.cues.patch_payload(cue_id, {
+            "ask_verified": False, "asked_text": "Walking helps you think. I will join you.",
+        })
+        host = self._host("CONFIRM")
+        host._resolve_concept_hypotheses(user_text="yes, definitely")
+        self.assertEqual(host._maintenance_client.calls, 0)
+        self.assertEqual(self.memories.added, [])
+        self.assertEqual(self._reload().distinct_source_count, 1)
+        self.assertEqual(self.cues.get(cue_id).used_evidence, "unverified_ask")
+
     def test_answer_feedback_preserves_original_event_with_unknown_delivery(self) -> None:
         cue_id = self._awaiting_cue()
         host = self._host("CONFIRM")
@@ -277,7 +294,7 @@ class UnclearTests(_Fixture):
         # reads as doubting their first answer.
         cue_id = self._awaiting_cue()
         host = self._host("UNCLEAR")
-        host._resolve_concept_hypotheses(user_text="anyway, never mind")
+        host._resolve_concept_hypotheses(user_text="Walking? Maybe, who knows.")
 
         self.assertEqual(self._state(cue_id), STATE_EXPIRED)
         row = next(r for r in self.cues.list_for_user() if r.id == cue_id)
@@ -286,7 +303,7 @@ class UnclearTests(_Fixture):
     def test_model_explanation_is_not_used_as_an_expire_category(self) -> None:
         cue_id = self._awaiting_cue()
         host = self._host("UNCLEAR", reason="reply changes topic")
-        host._resolve_concept_hypotheses(user_text="anyway, never mind")
+        host._resolve_concept_hypotheses(user_text="Walking? Maybe, who knows.")
 
         row = next(r for r in self.cues.list_for_user() if r.id == cue_id)
         self.assertEqual(row.used_evidence, "max_asks/model_unclear")
@@ -539,7 +556,7 @@ class AmbientListenTests(_Fixture):
         store, row = self._invented(asked=1, support=1, credence=0.7)
         host = self._host("CONFIRM")
         host._hypothesis_store = store
-        host._listen_supported_hypotheses(user_text="yeah, that's still true")
+        host._listen_supported_hypotheses(user_text="Walking is when I do my thinking.")
 
         after = store.get(row.hypothesis_id)
         self.assertEqual(after.support_count, 2)
@@ -567,6 +584,8 @@ class AmbientListenTests(_Fixture):
                 "target_type": "hypothesis",
                 "target_id": row.hypothesis_id,
                 "label": self.STATEMENT,
+                "ask_verified": True,
+                "asked_text": "Does walking help you think?",
             },
             embedding=_BELIEF_VEC,
         )

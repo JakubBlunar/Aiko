@@ -28,7 +28,7 @@ from app.core.session.answer_event import capture_answer_event, current_answer_e
 log = logging.getLogger("app.session")
 
 #: Echo miss / classifier never ran -- keep listening, do not re-ask.
-_HOLD_REASONS = frozenset({"off_subject", "no_client", "unparsed"})
+_HOLD_REASONS = frozenset({"off_subject", "no_client", "unparsed", "unsupported_evidence"})
 #: Off-subject user turns before the hold itself expires.
 _AWAITING_HOLD_TURNS = 3
 #: Wall-clock bound on the same hold, from ``last_asked_at``.
@@ -119,7 +119,6 @@ class HypothesisResolveMixin:
                 0.45,
             )
         )
-        question, question_vec = self._hypothesis_question_echo()
         for row in rows:
             event = current_answer_event.get() or {}
             asked_session = row.payload.get("asked_session_id")
@@ -129,8 +128,14 @@ class HypothesisResolveMixin:
             ledger_provider = getattr(self, "delivery_ledger", None)
             if ledger_provider is not None:
                 delivery = ledger_provider().evidence_for(row.payload.get("asked_message_id"))
-            actual_question = str(row.payload.get("asked_text") or question)
             belief = str(row.payload.get("label") or "") or row.subject
+            from app.core.concepts.hypothesis_expression import question_span
+
+            actual_question = question_span(belief, str(row.payload.get("asked_text") or ""))
+            if not row.payload.get("ask_verified") or not actual_question:
+                store.record_feedback(row.id, "unverified_ask", **event)
+                store.expire(row.id, evidence="unverified_ask")
+                continue
             verdict = adjudicate(
                 belief=belief,
                 reply=body,
@@ -140,13 +145,13 @@ class HypothesisResolveMixin:
                 reply_vec=reply_vec,
                 min_cosine=min_cosine,
                 question=actual_question,
-                question_vec=question_vec if actual_question == question else None,
                 cancel_event=getattr(self, "_fact_check_cancel", None),
             )
             if verdict.verdict == UNCLEAR:
                 stage = (
                     "unrelated_answer" if verdict.reason == "off_subject"
-                    else "adjudicator_failure" if verdict.reason in {"no_client", "unparsed"}
+                    else "adjudicator_failure"
+                    if verdict.reason in {"no_client", "unparsed", "unsupported_evidence"}
                     else "no_accepted_answer"
                 )
                 store.record_feedback(
@@ -340,7 +345,10 @@ class HypothesisResolveMixin:
             str(hit.statement or ""),
             body,
             confirming=verdict.verdict == "confirm",
+            evidence=verdict.evidence,
         )
+        if memory_id is None:
+            return
         self._apply_invented_answer(hit, verdict, memory_id, body)
         log.info(
             "hypothesis ambient verdict: hid=%s verdict=%s",
@@ -375,7 +383,10 @@ class HypothesisResolveMixin:
             return False
         memory_id = self._store_hypothesis_answer(
             belief, user_text, confirming=verdict.verdict == CONFIRM,
+            evidence=verdict.evidence, question=str(row.payload.get("asked_text") or ""),
         )
+        if memory_id is None:
+            return False
         if target_type == "hypothesis":
             return self._apply_invented_answer(target, verdict, memory_id, user_text)
 
@@ -516,6 +527,7 @@ class HypothesisResolveMixin:
 
     def _store_hypothesis_answer(
         self, belief: str, user_text: str, *, confirming: bool,
+        evidence: str | None = None, question: str = "",
     ) -> int | None:
         """Persist what the user actually said, as an ordinary memory."""
         memory_store = getattr(self, "_memory_store", None)
@@ -523,8 +535,12 @@ class HypothesisResolveMixin:
         body = (user_text or "").strip()
         if memory_store is None or embedder is None or not body:
             return None
-        lead = "confirmed" if confirming else "responded to"
-        content = f"Asked about \"{belief}\" -- they {lead}: {body}"[:1000]
+        # Debug-forced verdicts retain their explicit source text. Runtime calls
+        # must supply the adjudicator's validated span, never a generated restatement.
+        quote = body if evidence is None else evidence.strip()
+        if not quote or quote not in body:
+            return None
+        content = f'User evidence concerning "{belief}": {quote}'[:1000]
         event = current_answer_event.get() or {}
         try:
             memory = memory_store.add(
@@ -536,7 +552,14 @@ class HypothesisResolveMixin:
                 tier="long_term",
                 source_session=event.get("session_id", getattr(self, "session_key", None)),
                 source_message_id=event.get("user_message_id"),
-                metadata={"answer_event": event},
+                metadata={
+                    "answer_event": event,
+                    "hypothesis_answer": {
+                        "mode": "direct" if question else "observation",
+                        "question": question[:1000], "evidence": quote,
+                        "verdict": "confirm" if confirming else "response",
+                    },
+                },
                 event_time=event.get("observed_at"),
             )
         except Exception:

@@ -1082,6 +1082,15 @@ existing number.
 
 ## H44. Nothing has ever graduated, and at this calibration nothing can
 
+**22 Oct 2026 correction and repair.** One graduation is now recorded, on
+12 Oct, but source inspection found unsupported confirmations: the stored ask
+was not a target question and the later replies did not establish the claim.
+The resulting concept is a candidate. The historical heading below is therefore
+not a current count or a claim that the exit is unreachable. Keep H7/H44 open
+for learning quality. The [expression/evidence repair](../prompt-surfacing.md#hypothesis-expression-and-evidence-repair-22-oct-2026)
+adds verified question spans, direct-versus-passive answer gates and quoted
+evidence. It does not lower graduation thresholds or repair historical state.
+
 **Severity: medium — the L30 loop's last exit has never once been taken, and the
 arithmetic says it is not waiting on more data.**
 

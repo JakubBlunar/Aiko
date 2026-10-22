@@ -10,6 +10,7 @@ the opposition guard can only ever weaken it.
 """
 from __future__ import annotations
 
+import json
 import unittest
 from typing import Any
 
@@ -38,7 +39,15 @@ class _FakeOllama:
         self.calls.append(messages)
         if not self._payloads:
             raise AssertionError("adjudicator called more times than staged")
-        yield self._payloads.pop(0)
+        raw = self._payloads.pop(0)
+        try:
+            value = json.loads(raw)
+            if isinstance(value, dict):
+                value.setdefault("evidence", messages[-1]["content"].split("THEIR REPLY: ")[-1])
+                raw = json.dumps(value)
+        except json.JSONDecodeError:
+            pass
+        yield raw
 
 
 class _RaisingOllama:
@@ -60,6 +69,7 @@ def _json(verdict: str, restated: str = "", reason: str = "r") -> str:
 
 def _run(payload: str, reply: str = "yeah, pretty much", **kw):
     ollama = _FakeOllama(payload)
+    kw.setdefault("question", "Does walking help you think?")
     verdict = adjudicate(
         belief=_BELIEF, reply=reply, ollama=ollama, model="m", **kw,
     )
@@ -120,14 +130,16 @@ class FailurePathTests(unittest.TestCase):
     def test_the_call_raising(self) -> None:
         ollama = _RaisingOllama()
         verdict = adjudicate(
-            belief=_BELIEF, reply="yeah", ollama=ollama, model="m",
+            belief=_BELIEF, reply="yeah", question="Does walking help you think?",
+            ollama=ollama, model="m",
         )
         self.assertEqual(verdict.verdict, UNCLEAR)
         self.assertEqual(ollama.calls, 1)
 
     def test_no_client_at_all(self) -> None:
         verdict = adjudicate(
-            belief=_BELIEF, reply="yeah", ollama=None, model="m",
+            belief=_BELIEF, reply="yeah", question="Does walking help you think?",
+            ollama=None, model="m",
         )
         self.assertEqual(verdict.verdict, UNCLEAR)
         self.assertEqual(verdict.reason, "no_client")
@@ -217,11 +229,31 @@ class OppositionGuardTests(unittest.TestCase):
 
 
 class EchoGateTests(unittest.TestCase):
-    def test_a_short_reply_always_reaches_the_model(self) -> None:
+    def test_unrelated_short_reply_is_not_passive_evidence(self) -> None:
+        for reply in ("You are wonderful, let's start another episode.", "yes, definitely"):
+            verdict, model = _run(_json("CONFIRM"), reply=reply, question="")
+            self.assertEqual(verdict.reason, "off_subject")
+            self.assertFalse(model.calls)
+
+    def test_the_actual_question_reaches_the_judge(self) -> None:
+        _, model = _run(_json("CONFIRM"), question="Does walking help you think?")
+        self.assertIn("Does walking help you think?", model.calls[0][-1]["content"])
+        self.assertIn("DIRECT ANSWER", model.calls[0][-1]["content"])
+
+    def test_invented_or_missing_evidence_cannot_settle(self) -> None:
+        for evidence in ("", "an assertion the user never made"):
+            verdict, _ = _run(json.dumps({"verdict": "CONFIRM", "evidence": evidence}))
+            self.assertEqual(verdict.reason, "unsupported_evidence")
+            self.assertFalse(verdict.settles)
+
+    def test_a_short_answer_requires_a_question(self) -> None:
         # The whole point: "yeah, kind of" shares no content words with
         # the belief, so a lexical gate would drop exactly the answers
         # this loop exists to read.
-        self.assertTrue(looks_like_an_answer(_BELIEF, "yeah, kind of"))
+        self.assertFalse(looks_like_an_answer(_BELIEF, "yeah, kind of"))
+        self.assertTrue(looks_like_an_answer(
+            _BELIEF, "yeah, kind of", question="Does walking help you think?",
+        ))
 
     def test_a_long_unrelated_reply_is_gated_out(self) -> None:
         essay = (

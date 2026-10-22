@@ -399,6 +399,25 @@ delivery status, adjudication outcome and applied/not-applied update. Generic
 topic matching is labeled `answer_matched`, not semantic acceptance. A completed audio clip cannot authorize storing
 "the user agreed"; a missing receipt cannot justify automatically repeating it.
 
+### Hypothesis expression and evidence repair (22 Oct 2026)
+
+The offline audit found topic-matched statements recorded as asks and unrelated
+replies counted as confirmations. Hypothesis cues now require a conservative,
+target-linked question/request span before spending an ask; whole-reply cosine
+cannot establish one. The exact span is retained. This call-free English matcher
+can miss semantic paraphrases, so a missing receipt is not proof that no question
+was expressed. Legacy awaiting cues without a verified ask fail closed rather
+than generating new evidence. No historical backfill is performed.
+
+Direct answer judgments receive the actual question. Short acknowledgements
+only bypass topical gating for direct answers; short passive observations need
+explicit subject overlap. Settling verdicts must cite an exact user-reply span;
+missing/invented evidence is an adjudicator failure, not a denial or confirmation.
+Stored answer memories retain the quote and attribution instead of declaring
+that the user confirmed the model's interpretation. These checks establish
+expression/provenance contracts, not general semantic entailment. Broader L55
+model evaluation remains necessary.
+
 ## Evidence from the running installation
 
 Read-only audit on local 2026-09-27, with the report clock at approximately
