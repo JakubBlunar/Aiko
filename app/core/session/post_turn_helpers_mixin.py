@@ -2141,7 +2141,10 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
             # turn in the denominator that never had a prompt, dragging
             # every firing rate down.
             return
-        written = store.add_turn(message_id, block_chars)
+        written = store.add_turn(
+            message_id, block_chars,
+            surfacing_trace=getattr(telemetry, "surfacing_trace", None),
+        )
         if written:
             log.debug(
                 "prompt block accounting: msg=%d blocks=%d",

@@ -52,12 +52,16 @@ class TurnPromptBlockStore:
         self,
         assistant_message_id: int,
         block_chars: Mapping[str, int],
+        *, surfacing_trace: list | None = None,
     ) -> int:
         """Record the non-empty blocks of one assembly. Returns rows written.
 
         One transaction per turn: a turn's block set is a unit, and a
         half-written turn would understate every rate computed from it
         while still counting in the denominator.
+
+        The optional content-free assembly receipt is a separate diagnostic
+        write after that transaction. Its failure cannot lose block accounting.
         """
         if not block_chars or int(assistant_message_id) <= 0:
             return 0
@@ -81,6 +85,10 @@ class TurnPromptBlockStore:
         except Exception:
             log.warning("prompt block insert failed", exc_info=True)
             return 0
+        if surfacing_trace:
+            from app.core.memory.surfacing_trace_store import record_trace
+
+            record_trace(self._db, assistant_message_id, surfacing_trace)
         return len(payload)
 
     # ── reads ─────────────────────────────────────────────────────────

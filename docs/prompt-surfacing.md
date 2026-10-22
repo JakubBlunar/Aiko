@@ -533,6 +533,27 @@ trial as a new baseline. No live history, cue rows or memories were rewritten.
 
 ### S1. A reasoned trace, not another score
 
+**Bounded offline pilot (23 Oct 2026).** Post-turn prompt accounting now also
+persists the content-free assembly trace under `diagnostic.surfacing.*` in
+`kv_meta`: the latest 128 recorded assistant message IDs, at most two attempts
+per turn. Explicit allowlists retain provider states/error classes, omission
+reasons, stance, optional winner/focus, handling presence and final cue claims
+with source revisions. Rendered prompt, cue and transcript text are excluded.
+Attempt/claim truncation is counted. These are diagnostic receipts, not cue
+supply or learned value, and failed writes cannot undo prompt accounting.
+
+`python scripts/hypothesis_surface_report.py` opens SQLite read-only and follows
+the `concept_hypothesis` family through retained final claims, focus, verified
+ask receipts, reported delivery, accepted answers and applied updates. Existing
+concept targets and invented hypotheses are reported separately. Legacy asks,
+missing traces, unreadable data and unavailable delivery remain visible;
+feedback keeps only eight events, so these counts are not conversion rates.
+The initial offline audit found seven unverified legacy ask receipts among 85
+retained cues and no new trace receipts, as expected before restarting Aiko.
+This provides the join needed for a later equal-budget placement comparison;
+it does not establish that focus improves expression or justify broader
+arbitration. Protected-turn admission and cue budgets retain their current policy.
+
 Extend existing telemetry with a bounded turn/assembly-attempt trace:
 source reference and revision, provider, eligibility verdict, omission reason,
 claim state, final inclusion, handling inclusion, chosen move and downstream

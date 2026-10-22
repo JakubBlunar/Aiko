@@ -1343,6 +1343,14 @@ with P31a's `get_prompt_block_costs` first.
 
 ## P43. 105 blocks, no arbitration -- replace the aggressive denylist
 
+**23 Oct 2026 diagnostic pilot.** Assembly attempts and final claims now survive
+restart as bounded, content-free receipts joined to assistant message IDs.
+The read-only hypothesis-family report distinguishes final commits, focused
+placement, verified asks, delivery and answer/update stages, retaining unknown
+coverage and unverified legacy asks. This makes a one-family placement experiment
+inspectable offline; its behavioral comparison and general arbitration remain
+open. See the [trace pilot](../prompt-surfacing.md#s1-a-reasoned-trace-not-another-score).
+
 **27 Sep 2026 scope update.** The registry now contains 125 names; the title
 below is the original audit label. K92 now stages pooled claims per assembly
 attempt and adds interest-drift/associative-wander admission to its curiosity-seed pilot,
