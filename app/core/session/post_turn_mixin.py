@@ -1130,16 +1130,14 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     "conversation situation schedule failed", exc_info=True
                 )
 
-        # K17 — clarification-repair detector. Regex-only, runs inline
-        # right after the dialogue_act tagger so its result lands in
-        # the same "what was the shape of this turn" cluster. Stashes
-        # a one-shot result on the controller; the next turn's
-        # prompt assembler renders it via the inner-life provider.
-        # Disabled-path: the detector returns ``None`` when the
-        # setting is off, so the slot stays empty and the provider
-        # short-circuits.
+        # K17 fallback when the situation path is unavailable. K103 now
+        # handles corrections in their own reply through that T6 provider;
+        # do not re-arm the same repair on the following, possibly new topic.
         if bool(
             getattr(self._settings.agent, "clarification_repair_enabled", True)
+        ) and (
+            getattr(self, "_conversation_situation_store", None) is None
+            or not getattr(self._settings.agent, "conversation_situation_enabled", True)
         ):
             try:
                 from app.core.conversation import clarification_detector

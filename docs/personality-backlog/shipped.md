@@ -6,6 +6,12 @@ When an entry lands, move its write-up here and leave the open file only a one-l
 
 ---
 
+## [Shipped slice — K102/K103 social understanding](shipped/social-understanding.md)
+
+- [K102 pragmatic frames](shipped/social-understanding.md#k102-pragmatic-frames) — bounded cited context; broader behavioral validation open.
+- [K103 specific conversational repair](shipped/social-understanding.md#k103-specific-conversational-repair) — same-turn correction guidance and a cited target.
+- [T5 synthetic baseline](shipped/social-understanding.md#t5-baseline-and-reproducible-probes) — 12 scenarios, 15 checkpoints; no general naturalness claim.
+
 ## [Shipped — Avatar & expressiveness (B-series)](shipped/avatar.md)
 
 - [B1 / B2. Continuous expressiveness + listening micro-nods](shipped/avatar.md#b1--b2-continuous-expressiveness--listening-micro-nods)

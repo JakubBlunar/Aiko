@@ -97,6 +97,34 @@ class EvidenceNote:
 
 
 @dataclass(frozen=True, slots=True)
+class PragmaticFrame:
+    """Tentative, local social meaning; never a memory or permission source."""
+
+    referents: EvidenceNote
+    scope: EvidenceNote
+    reading: EvidenceNote
+    alternative: EvidenceNote | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RepairTarget:
+    """One unresolved misunderstanding, distinct from relationship recovery."""
+
+    target: EvidenceNote
+    correction: EvidenceNote
+    replacement: EvidenceNote
+
+
+def social_message_ids(frame: PragmaticFrame | None, repair: RepairTarget | None) -> set[int]:
+    notes = []
+    if frame:
+        notes.extend((frame.referents, frame.scope, frame.reading, frame.alternative))
+    if repair:
+        notes.extend((repair.target, repair.correction, repair.replacement))
+    return {message_id for note in notes if note for message_id in note.evidence_message_ids}
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationWorkingSet:
     question: EvidenceNote
     facts: tuple[EvidenceNote, ...] = ()
@@ -139,6 +167,61 @@ def _parse_evidence_note(value: Any, valid_ids: set[int]) -> EvidenceNote:
     if any(type(message_id) is not int or message_id not in valid_ids for message_id in ids):
         raise ValueError("evidence_id")
     return EvidenceNote(text, tuple(dict.fromkeys(ids)))
+
+
+def _parse_social_context_strict(
+    payload: dict[str, Any], valid_ids: set[int], user_ids: set[int] | None = None,
+) -> tuple[PragmaticFrame | None, RepairTarget | None]:
+    frame = repair = None
+    proposed = payload.get("pragmatic_frame")
+    if proposed is not None:
+        if not isinstance(proposed, dict):
+            raise ValueError("pragmatic_frame.shape")
+        try:
+            frame = PragmaticFrame(
+                *(_parse_evidence_note(proposed.get(name), valid_ids)
+                  for name in ("referents", "scope", "reading")),
+                alternative=(_parse_evidence_note(proposed["alternative"], valid_ids)
+                             if proposed.get("alternative") is not None else None),
+            )
+        except ValueError as exc:
+            raise ValueError("pragmatic_frame." + str(exc)) from exc
+    proposed = payload.get("repair_target")
+    if proposed is not None:
+        if not isinstance(proposed, dict):
+            raise ValueError("repair_target.shape")
+        try:
+            repair = RepairTarget(*(_parse_evidence_note(proposed.get(name), valid_ids)
+                                    for name in ("target", "correction", "replacement")))
+        except ValueError as exc:
+            raise ValueError("repair_target." + str(exc)) from exc
+        if min(repair.correction.evidence_message_ids) <= max(repair.target.evidence_message_ids):
+            raise ValueError("repair_target.correction_not_later")
+        if user_ids is not None and not set(repair.correction.evidence_message_ids) <= user_ids:
+            raise ValueError("repair_target.correction.user_evidence_missing")
+        if not set(repair.replacement.evidence_message_ids).intersection(
+            repair.correction.evidence_message_ids
+        ):
+            raise ValueError("repair_target.replacement.correction_evidence_missing")
+    return frame, repair
+
+
+def _parse_social_context(
+    payload: dict[str, Any], valid_ids: set[int], user_ids: set[int] | None = None,
+    rejection_reasons: list[str] | None = None,
+) -> tuple[PragmaticFrame | None, RepairTarget | None]:
+    # Optional social notes must never displace an otherwise valid question or
+    # constraint set. Reject each unsupported field independently, without
+    # trying to manufacture citations or keeping the previous social reading.
+    def parse_field(name):
+        try:
+            return _parse_social_context_strict({name: payload.get(name)}, valid_ids, user_ids)
+        except ValueError as exc:
+            if rejection_reasons is not None:
+                rejection_reasons.append(str(exc))
+            return None, None
+
+    return parse_field("pragmatic_frame")[0], parse_field("repair_target")[1]
 
 
 def _parse_working_set(
@@ -221,6 +304,8 @@ class SituationExtraction:
     explicit_end: bool = False
     working_set: ConversationWorkingSet | None = None
     successor: InterestSuccessor | None = None
+    pragmatic_frame: PragmaticFrame | None = None
+    repair_target: RepairTarget | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +325,8 @@ class ConversationSituationState:
     miss_count: int
     updated_at: str
     working_set: ConversationWorkingSet | None = None
+    pragmatic_frame: PragmaticFrame | None = None
+    repair_target: RepairTarget | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -382,6 +469,12 @@ def parse_extraction(
             return reject("successor.change.not_observation")
         successor = InterestSuccessor(subject, kind, change)
 
+    frame, repair = _parse_social_context(
+        payload, set(evidence),
+        set(valid_user_message_ids) if valid_user_message_ids is not None else None,
+        rejection_reasons,
+    )
+
     return SituationExtraction(
         operation=operation,
         summary=summary,
@@ -393,6 +486,8 @@ def parse_extraction(
         explicit_end=bool(payload.get("explicit_end", False)),
         working_set=working_set,
         successor=successor,
+        pragmatic_frame=frame,
+        repair_target=repair,
     )
 
 
@@ -427,6 +522,8 @@ def reduce_situation(
             miss_count=0,
             updated_at=timestamp,
             working_set=extraction.working_set,
+            pragmatic_frame=extraction.pragmatic_frame,
+            repair_target=extraction.repair_target,
         )
 
     if extraction.operation == REPLACE:
@@ -444,6 +541,8 @@ def reduce_situation(
             miss_count=0,
             updated_at=timestamp,
             working_set=extraction.working_set,
+            pragmatic_frame=extraction.pragmatic_frame,
+            repair_target=extraction.repair_target,
         )
 
     if previous is None:
@@ -457,6 +556,8 @@ def reduce_situation(
             miss_count=IMPLICIT_CLEAR_MISSES,
             updated_at=timestamp,
             working_set=None,
+            pragmatic_frame=None,
+            repair_target=None,
         )
     misses = int(previous.miss_count) + 1
     return replace(
@@ -471,6 +572,8 @@ def reduce_situation(
             if extraction.working_set is not None and extraction.working_set.suspended
             else None
         ),
+        pragmatic_frame=None,
+        repair_target=None,
     )
 
 
@@ -494,6 +597,7 @@ class ConversationSituationStore:
             evidence = json.loads(str(row[3] or "[]"))
             if not isinstance(state, dict) or not isinstance(evidence, list):
                 return None
+            frame, repair = _parse_social_context(state, set(evidence))
             status = str(row[1] or ENDED)
             if status not in VALID_STATUSES:
                 status = ENDED
@@ -517,6 +621,8 @@ class ConversationSituationStore:
                 miss_count=max(0, int(row[5] or 0)),
                 updated_at=str(row[6] or ""),
                 working_set=_parse_working_set(state.get("working_set"), set(evidence)),
+                pragmatic_frame=frame,
+                repair_target=repair,
             )
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
@@ -530,6 +636,8 @@ class ConversationSituationStore:
                 "place_ref": state.place_ref,
                 "aiko_activity": state.aiko_activity,
                 "working_set": asdict(state.working_set) if state.working_set else None,
+                "pragmatic_frame": asdict(state.pragmatic_frame) if state.pragmatic_frame else None,
+                "repair_target": asdict(state.repair_target) if state.repair_target else None,
             },
             ensure_ascii=False,
             separators=(",", ":"),

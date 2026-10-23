@@ -125,8 +125,8 @@ Behavioral activation and model-quality evaluation remain open.
 | K99 | Common ground with delivery provenance | Implementation shipped; behavioral comparison open |
 | K100 | Evidence-bound memory admission | Two-writer pilot implemented; broader entailment and behavioral evaluation open |
 | K101 | Route an unresolved premise to a bounded next step | Strict read-only recall pilot implemented; broader routing/evaluation open |
-| K102 | Pragmatic frames and indirect meaning | Open proposal, 23 Oct 2026 |
-| K103 | Repair the specific misunderstanding | Open proposal, 23 Oct 2026 |
+| K102 | Pragmatic frames and indirect meaning | Bounded implementation and baseline, 24 Oct; broader behavioral validation open below |
+| K103 | Repair the specific misunderstanding | Same-turn repair and cited target, 24 Oct; broader behavioral validation open below |
 | K104 | Cause-specific feelings and mixed emotions | Open proposal, 23 Oct 2026 |
 | K105 | Expression follows communicative intent | Open proposal, 23 Oct 2026 |
 | K106 | Shared shorthand with negotiated meaning | Open proposal, 23 Oct 2026 |
@@ -1341,66 +1341,32 @@ fixtures; require better decisions rather than a higher tool-call rate.
 
 ## K102. Pragmatic frames and indirect meaning
 
-**Open proposal, 23 Oct 2026.** A familiar companion needs to follow what a line
-is doing in its context. "Great, another crash" after a failed build and "Great,
-it finally works" should not produce the same celebration. "You menace" in a
-mutually playful exchange need not become a personal conflict. These are
-synthetic contrasts, not observed production failures.
+**Bounded implementation, 24 Oct 2026.** The existing situation observer can
+retain a short, cited pragmatic frame without another worker or a larger output
+budget. The current-model T5 baseline was captured first. Implementation and
+evaluation limits live in [the shipped slice](shipped/social-understanding.md#k102-pragmatic-frames).
 
-**First slice.** Evaluate the main model with existing context before adding
-state. If useful, extend the current situation projection with one short-lived,
-source-linked frame: participants/referents, literal or pretend scope, a
-tentative communicative reading and an unresolved alternative. Use the existing
-observer budget; measure displacement/truncation before increasing it. Its
-post-reply reading is prior context only: the current user message and explicit
-corrections win. A mixed serious/playful message may need a local span boundary;
-do not classify an entire conversation as a joke.
-
-**Acceptance.** Paired contexts change the response appropriately; sarcasm
-without supporting context stays uncertain. Quoted speech retains its speaker.
-Leaving a pretend scene restores ordinary interpretation. Explicit boundaries
-are honored even inside banter. A low-stakes ambiguous joke need not trigger a
-clarification, while an ambiguity material to a decision can. No extra model
-call on ordinary greetings, no memory admission from a frame, and no inference
-of permission from teasing. Test held-out paraphrases and language variants.
-
-**Owners:** K4/K69/K97, L50 and K100; keep fictional-testimony admission with
-its existing owner. Key files:
-[dialogue_act_tagger.py](../../app/core/conversation/dialogue_act_tagger.py),
-[conversation_situation_worker.py](../../app/core/conversation/conversation_situation_worker.py),
-[conversation_situation.py](../../app/core/conversation/conversation_situation.py).
-**Effort:** Medium. Start alongside K103 and the T5 baseline.
+**Still open:** repeated, blinded evaluation of context-dependent interpretation,
+mixed serious/playful spans, unsupported sarcasm, quoted speakers, pretend exits,
+boundaries within banter and material versus harmless ambiguity. Include held-out
+paraphrases, language variants and long-history displacement. The small baseline
+already handled the obvious contrasts; optional-frame availability is not proof
+that frames improve naturalness. K4/K69/K97, L50 and K100 retain their ownership;
+fictional-testimony admission is unchanged.
 
 ## K103. Repair the specific misunderstanding
 
-**Open proposal, 23 Oct 2026.** "I meant the other server" should lead to the
-correct server and a revised answer. "I was joking" should revise a literal
-reading without a long apology or an invented rupture. A more positive next
-turn does not prove that the misunderstanding was repaired.
+**Bounded implementation, 24 Oct 2026.** Explicit correction cues now guide the
+reply to the correction itself. An optional cited target lives in the existing
+situation row; the old delayed K17 path remains the fallback when that path is
+unavailable. See [the shipped slice](shipped/social-understanding.md#k103-specific-conversational-repair).
 
-**First slice.** Extend existing repair handling with one bounded, cited repair
-target: the earlier claim/referent, the user's correction, and the replacement
-reading or remaining ambiguity. Answer the affected point proportionally, then
-retire the repair when the corrected point is addressed or explicitly dropped.
-Use K99's delivery provenance when distinguishing unheard audio (repeat the
-relevant span) from misunderstood content (rephrase/correct it). F13/L52 retain
-ownership of actual durable belief corrections; a local conversational repair
-must not become a new personal trait.
-
-**Acceptance.** Later pronouns use the corrected referent; a correction does not
-erase unrelated facts. "Sorry, what?" after interrupted audio repeats only the
-needed material. A joke correction changes the reading without altering
-closeness or requiring reassurance. After a pivot or cancellation the repair
-does not reopen itself. Compare wrong-referent recurrence, unnecessary apologies
-and extra clarification turns against the existing K17 path.
-
-**Owners:** K17/K23/K38/K97/K99, F13 and J6; reuse the situation record and
-current prompt tier, not a second repair worker. Key files:
-[conversation_situation.py](../../app/core/conversation/conversation_situation.py),
-[conflict_repair.py](../../app/core/relationship/conflict_repair.py),
-[delivery.py](../../app/core/conversation/delivery.py).
-**Effort:** Medium. K102 helps interpret repairs but explicit-correction cases
-can be tested independently.
+**Still open:** repeated comparisons of later wrong-referent recurrence, excess
+apologies, clarification turns and unwanted callbacks against K17. Real
+interrupted-audio listening and delivery tests remain separate from transcript
+probes. An unrelated positive turn is not evidence of specific repair. F13/L52
+still own durable corrections, K99 owns delivery evidence, and J6's independent
+relationship-recovery heuristic is unchanged; this slice does not validate it.
 
 ## K104. Cause-specific feelings and mixed emotions
 

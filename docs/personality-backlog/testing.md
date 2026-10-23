@@ -282,8 +282,10 @@ Read representative successes and failures, including quiet controls.
 
 ### 23 Oct 2026: social reasoning and expression track
 
-**Backlog extension, no new harness or evaluation results.** Add K102-K106 and
-J12/L36 scenarios to T5; keep L55's evidence/decision scores separate. Use
+**K102/K103 baseline and bounded runner implemented, 24 Oct 2026.** See
+[the implementation and initial limits](shipped/social-understanding.md#t5-baseline-and-reproducible-probes).
+The remaining K104-K106 and J12/L36 expansion is still open. Keep L55's
+evidence/decision scores separate. Use
 synthetic 6-12-turn episodes with a held-out variant changing one decisive
 context fact, speaker, goal or correction. Expected behavior is a set of
 acceptable outcomes, not an exact line or a mandatory emotional performance.

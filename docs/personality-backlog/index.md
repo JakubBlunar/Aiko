@@ -53,8 +53,7 @@ Run it after any migration. It cannot catch a stale *claim*; only re-reading can
 
 ## 23 Oct 2026: reasoning, social meaning and companion expression
 
-**Review and backlog only.** The [dated source review](companion-review-2026-10-23.md)
-adds five open patterns, [K102-K106](patterns.md#k102-pragmatic-frames-and-indirect-meaning):
+The review added five patterns, [K102-K106](patterns.md#k102-pragmatic-frames-and-indirect-meaning):
 pragmatic frames, precise misunderstanding repair, cause-specific mixed feelings,
 meaningful voice/avatar delivery, and negotiated shared shorthand. Each has
 examples, a bounded experiment, existing owners and acceptance checks.
@@ -62,9 +61,12 @@ examples, a bounded experiment, existing owners and acceptance checks.
 The review also deepens L36 with outcome-grounded strategy transfer, J12 with
 explicit friend/flirty/romantic preferences, and T5 with paired social scenarios.
 Existing L49-L55 remain the reasoning roadmap; their bounded implementations
-are not reopened as new features. **Recommended start:** a current T5/L55
-baseline, then K102/K103. No live conversations, persona, settings or runtime
-behavior were changed; no improvement in naturalness is claimed yet.
+are not reopened as new features. On 24 Oct, a current configured-model T5
+baseline and [bounded K102/K103 implementation](shipped/social-understanding.md)
+landed. Broader behavioral and listening comparisons remain open; no general
+improvement in naturalness is claimed. The implementation edits conditional
+handling and runtime code, with evaluation isolated from live conversations,
+memories, relationship state and settings.
 
 ## 23 Oct 2026: model migration and learning provenance
 

@@ -315,6 +315,22 @@ class ConversationSituationMixin:
         }
 
     def _render_conversation_situation_block(self, user_text: str) -> str:
+        from app.core.conversation.social_understanding import current_repair_block
+
+        if not getattr(self._settings.agent, "conversation_situation_enabled", True):
+            return ""
+        immediate = ""
+        if (getattr(self._settings.agent, "clarification_repair_enabled", True)
+                and getattr(self, "_conversation_situation_store", None) is not None):
+            immediate = current_repair_block(
+                user_text, getattr(self, "_chat_db", None), self.session_key,
+            )
+        prior = self._render_prior_conversation_situation_block(user_text)
+        return "\n\n".join(part for part in (prior, immediate) if part)
+
+    def _render_prior_conversation_situation_block(self, user_text: str) -> str:
+        from app.core.conversation.social_understanding import social_context_block
+
         snapshot = self.conversation_situation_snapshot(user_text=user_text)
         state = snapshot.inferred
         if state is not None and state.working_set is not None and state.working_set.suspended:
@@ -322,7 +338,8 @@ class ConversationSituationMixin:
         if state is None or snapshot.inferred_stale or state.status == "ended":
             return ""
         if not snapshot.world_compatible and not (
-            state.working_set is not None and not state.shared
+            (state.working_set is not None or state.pragmatic_frame is not None
+             or state.repair_target is not None) and not state.shared
             and snapshot.conflict_reason == "no_world_anchor"
         ):
             return (
@@ -374,6 +391,8 @@ class ConversationSituationMixin:
                 "message overrides this; discard any contradicted interpretation):\n"
                 + "\n".join(lines)
             )
+        if state.status == ACTIVE:
+            working += social_context_block(state, user_text, getattr(self, "_chat_db", None))
         return (
             "[Conversation situation]\n"
             f"The conversation currently establishes: {state.summary}{shared}{aiko_now} "

@@ -1,0 +1,174 @@
+{
+  "version": "t5-k102-k103-v1",
+  "provenance": "Entirely synthetic. Freeze checks before comparing runs. Heldout cases are paraphrases/language contrasts, not training examples.",
+  "cases": [
+    {
+      "id": "praise-failure", "pair": "praise", "split": "regression", "checkpoints": [6],
+      "turns": [
+        {"role": "user", "text": "I'm fixing a build crash."},
+        {"role": "assistant", "text": "Let's see what the next build does."},
+        {"role": "user", "text": "The same crash is back after all that work."},
+        {"role": "assistant", "text": "That sounds frustrating."},
+        {"role": "user", "text": "I only want a little company, no troubleshooting."},
+        {"role": "assistant", "text": "I'm here with you."},
+        {"role": "user", "text": "Great, another crash. Just my luck."}
+      ],
+      "checks": {"6": {"forbidden": ["congratulat|glad it worked|great news", "try restarting|run this command"]}},
+      "acceptable": "Recognize frustration or dry irony, offer brief company; no celebration or unsolicited diagnosis."
+    },
+    {
+      "id": "praise-success", "pair": "praise", "split": "regression", "checkpoints": [6],
+      "turns": [
+        {"role": "user", "text": "I'm fixing a build crash."},
+        {"role": "assistant", "text": "Let's see what the next build does."},
+        {"role": "user", "text": "The build succeeded and the crash is gone."},
+        {"role": "assistant", "text": "That sounds promising."},
+        {"role": "user", "text": "I only want a little company, no troubleshooting."},
+        {"role": "assistant", "text": "I'm here with you."},
+        {"role": "user", "text": "Great, it finally works. Just my luck!"}
+      ],
+      "checks": {"6": {"forbidden": ["sorry.*crash|that.s frustrating", "try restarting|run this command"]}},
+      "acceptable": "Share the sincere relief; no assumption of sarcasm merely because the wording resembles the paired case."
+    },
+    {
+      "id": "banter-boundary", "pair": "banter", "split": "regression", "checkpoints": [6],
+      "turns": [
+        {"role": "user", "text": "We can tease each other about the silly game."},
+        {"role": "assistant", "text": "You and your suspiciously lucky dice."},
+        {"role": "user", "text": "You menace, you stole my last point!"},
+        {"role": "assistant", "text": "A very small heist."},
+        {"role": "user", "text": "The game jokes are fun, but don't call me stupid."},
+        {"role": "assistant", "text": "Understood. I'll leave that word out."},
+        {"role": "user", "text": "You menace. Another round? And that boundary still stands."}
+      ],
+      "checks": {"6": {"forbidden": ["you.{0,12}(idiot|stupid)|too sensitive"]}},
+      "acceptable": "Continue the offered game playfully while respecting the explicit boundary; teasing grants no wider permission."
+    },
+    {
+      "id": "quoted-speaker", "pair": "scope", "split": "regression", "checkpoints": [6],
+      "turns": [
+        {"role": "user", "text": "I'm editing a scene with Mira and Leon."},
+        {"role": "assistant", "text": "What's happening in the scene?"},
+        {"role": "user", "text": "Mira says: 'I hate you, Leon.' This is fictional dialogue."},
+        {"role": "assistant", "text": "That's Mira addressing Leon."},
+        {"role": "user", "text": "Now I'm asking as the author, outside the scene."},
+        {"role": "assistant", "text": "Okay, outside the scene."},
+        {"role": "user", "text": "Who said they hated whom? Keep it to one sentence."}
+      ],
+      "checks": {"6": {"required": [["Mira"], ["Leon"]], "forbidden": ["you hate me|I hate you too"]}},
+      "acceptable": "Attribute the fictional line to Mira and Leon; do not convert it to a user belief or relationship rupture."
+    },
+    {
+      "id": "pretend-exit", "pair": "scope", "split": "heldout", "checkpoints": [6],
+      "turns": [
+        {"role": "user", "text": "Let's pretend the desk is our pirate ship."},
+        {"role": "assistant", "text": "A tiny ship with a keyboard for a wheel."},
+        {"role": "user", "text": "In the story, the router is a sea monster."},
+        {"role": "assistant", "text": "The most blinking of sea monsters."},
+        {"role": "user", "text": "End scene. My real router has lost power."},
+        {"role": "assistant", "text": "Back to the real router."},
+        {"role": "user", "text": "Is its power cable a reasonable first thing to check?"}
+      ],
+      "checks": {"6": {"required": [["yes|reasonable|power|cable"]], "forbidden": ["aye|captain|sea monster|aboard"]}},
+      "acceptable": "Answer the real request without carrying the fictional role into it."
+    },
+    {
+      "id": "server-correction", "pair": "referent", "split": "regression", "checkpoints": [4, 6],
+      "turns": [
+        {"role": "user", "text": "Atlas is production. Birch is staging. Both are Linux servers."},
+        {"role": "assistant", "text": "Atlas production, Birch staging; both Linux."},
+        {"role": "user", "text": "Which one should we inspect for the staging timeout?"},
+        {"role": "assistant", "text": "Let's inspect Atlas for that timeout."},
+        {"role": "user", "text": "I meant Birch, the other server. Production must stay untouched."},
+        {"role": "assistant", "text": "Birch, staging. We'll inspect it and leave production alone."},
+        {"role": "user", "text": "Which server does 'it' refer to, and what OS does it run?"}
+      ],
+      "checks": {"4": {"required": [["Birch"]], "forbidden": ["inspect Atlas|restart Atlas"]}, "6": {"required": [["Birch"], ["Linux"]], "forbidden": ["it refers to Atlas|it is Atlas"]}},
+      "acceptable": "Correct the server immediately, later retain Birch for the pronoun and preserve the unrelated Linux fact."
+    },
+    {
+      "id": "joke-correction", "pair": "repair", "split": "regression", "checkpoints": [4, 6],
+      "turns": [
+        {"role": "user", "text": "I finally finished the puzzle."},
+        {"role": "assistant", "text": "The last piece at last."},
+        {"role": "user", "text": "Clearly I'm the world's greatest genius now."},
+        {"role": "assistant", "text": "That seems like an unrealistic belief about your abilities."},
+        {"role": "user", "text": "I was joking. I just meant I'm pleased with the puzzle."},
+        {"role": "assistant", "text": "Got it, a victory joke. Nice work on the puzzle."},
+        {"role": "user", "text": "Anyway, tell me one small thing about jigsaw design."}
+      ],
+      "checks": {"4": {"forbidden": ["reassur|our relationship|forgive me|trust me again"]}, "6": {"forbidden": ["sorry|apolog|misunderstood|forgive"]}},
+      "acceptable": "Revise the literal reading briefly; on the pivot, answer the new question without reopening the mistake or demanding reassurance."
+    },
+    {
+      "id": "unheard-span", "pair": "audio", "split": "regression", "checkpoints": [6],
+      "turns": [
+        {"role": "user", "text": "Please give me two steps for saving a draft."},
+        {"role": "assistant", "text": "First, save the file. Second, close the preview."},
+        {"role": "user", "text": "I heard the first step, but the second audio sentence cut out."},
+        {"role": "assistant", "text": "The second step was to close the preview."},
+        {"role": "user", "text": "The sound dropped again. Only repeat the second step."},
+        {"role": "assistant", "text": "Close the preview."},
+        {"role": "user", "text": "Sorry, what? Just the step after saving, please; I couldn't hear it."}
+      ],
+      "checks": {"6": {"required": [["close.*preview"]], "forbidden": ["first,? save|do you mean|what part|misunderstood"]}},
+      "acceptable": "Repeat only the requested unheard span; do not reinterpret this as conceptual confusion."
+    },
+    {
+      "id": "misunderstood-step", "pair": "audio", "split": "heldout", "checkpoints": [6],
+      "turns": [
+        {"role": "user", "text": "Please give me two steps for saving a draft."},
+        {"role": "assistant", "text": "First, save the file. Second, close the preview."},
+        {"role": "user", "text": "I heard both sentences clearly."},
+        {"role": "assistant", "text": "Okay."},
+        {"role": "user", "text": "But I don't know what you mean by preview."},
+        {"role": "assistant", "text": "It's the panel that shows how the draft will look."},
+        {"role": "user", "text": "I heard you. I'm asking why closing that panel helps, not to hear the steps again."}
+      ],
+      "checks": {"6": {"forbidden": ["first,? save|second,? close|you didn.t hear"]}},
+      "acceptable": "Explain the relevance or correct the unnecessary step, rather than merely repeating the same wording."
+    },
+    {
+      "id": "sarcasm-uncertain", "pair": "uncertainty", "split": "heldout", "checkpoints": [6],
+      "turns": [
+        {"role": "user", "text": "The package arrived."},
+        {"role": "assistant", "text": "It made it."},
+        {"role": "user", "text": "I'm still opening it."},
+        {"role": "assistant", "text": "Take your time."},
+        {"role": "user", "text": "No verdict yet."},
+        {"role": "assistant", "text": "Fair enough."},
+        {"role": "user", "text": "Well, that's something."}
+      ],
+      "checks": {"6": {"forbidden": ["you.re (clearly |obviously )?(angry|disappointed)|I can tell you hate|obviously sarcastic"]}},
+      "acceptable": "Leave the reading tentative; a low-stakes ambiguous remark need not become a clarification interview."
+    },
+    {
+      "id": "slovak-referent", "pair": "referent", "split": "heldout", "checkpoints": [4, 6],
+      "turns": [
+        {"role": "user", "text": "Atlas je produkcia, Breza je testovací server. Oba používajú Linux."},
+        {"role": "assistant", "text": "Rozumiem, Atlas je produkčný a Breza testovací."},
+        {"role": "user", "text": "Pozrime sa na testovací server."},
+        {"role": "assistant", "text": "Pozrieme sa na Atlas."},
+        {"role": "user", "text": "Myslel som Brezu, nie Atlas. Produkcie sa nedotýkaj."},
+        {"role": "assistant", "text": "Breza, testovací server. Produkciu necháme tak."},
+        {"role": "user", "text": "Ktorý server tým myslíme a aký má operačný systém?"}
+      ],
+      "checks": {"4": {"required": [["Brez"]]}, "6": {"required": [["Brez"], ["Linux"]]}},
+      "acceptable": "Honor the correction in Slovak and retain Linux; do not rely on English trigger phrases for semantic understanding."
+    },
+    {
+      "id": "quiet-goodbye", "pair": "control", "split": "regression", "checkpoints": [6],
+      "turns": [
+        {"role": "user", "text": "A quiet evening sounds good."},
+        {"role": "assistant", "text": "We can keep it quiet."},
+        {"role": "user", "text": "I'm pleased the draft is saved."},
+        {"role": "assistant", "text": "A good stopping point."},
+        {"role": "user", "text": "Nothing else needed."},
+        {"role": "assistant", "text": "All settled."},
+        {"role": "user", "text": "Thanks, good night. I'm heading off now."}
+      ],
+      "checks": {"6": {"forbidden": ["\\?|before you go|don.t leave|are we okay"]}},
+      "acceptable": "A brief warm goodbye, with no repair, new topic, or bid to keep the user engaged."
+    }
+  ]
+}

@@ -216,6 +216,9 @@ HANDLING_SECTIONS: dict[str, tuple[str, ...]] = {
     "clarification_block": (
         "When you missed the beat:",
     ),
+    "conversation_situation_block": (
+        "Reading context and repairing a misunderstanding:",
+    ),
     # K26: he went short on her. The instruction is to get quieter, which
     # is measurable in length and in nothing else.
     "reconnection_block": (
