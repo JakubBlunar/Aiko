@@ -766,6 +766,8 @@ class ConceptView:
             c = self._store.get(cid)
             if c is None or getattr(c, "status", None) != "active":
                 continue
+            if hasattr(self._store, "is_assertable") and not self._store.is_assertable(cid):
+                continue
             if wanted is not None and str(getattr(c, "kind", "")) not in wanted:
                 continue
             out.append(c)
@@ -911,6 +913,8 @@ class ConceptView:
         def _bump(concept: "Concept", strength: float) -> None:
             cid = int(getattr(concept, "concept_id", 0))
             if cid <= 0 or cid in seeds:
+                return
+            if hasattr(self._store, "is_assertable") and not self._store.is_assertable(cid):
                 return
             prev = acc.get(cid)
             if prev is None or strength > prev[1]:

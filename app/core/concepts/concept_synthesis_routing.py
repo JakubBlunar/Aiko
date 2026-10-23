@@ -364,8 +364,18 @@ class SynthesisRoutingMixin:
                         self._support_manifest_cache[node] = capture_source_manifest(
                             self._concept_store, self._memory_store, self._topic_graph, node,
                         )
+            frozen_dependencies = {
+                node: self._concept_store.dependencies.fingerprint(node)
+                for node in manifest_nodes(manifest)
+            }
             proposals = spec.propose(replace(ctx, call_llm=call), **kwargs)
             for proposal in proposals:
+                proposal.dependency_revisions = {
+                    node: frozen_dependencies[key]
+                    for node in proposal.evidence
+                    if (key := (("memory", node[1]) if node[0] == "moment" else node))
+                    in frozen_dependencies
+                }
                 output = _match_output(proposal, outputs)
                 relation = str(output.get("evidence_relation") or "unspecified")
                 proposal.evidence_relation = (

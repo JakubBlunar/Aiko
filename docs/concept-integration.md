@@ -614,6 +614,88 @@ measured and recorded but left alone; see **L45** in
 [`docs/personality-backlog/concepts.md`](personality-backlog/concepts.md) for
 why that line is drawn there.
 
+## Dependency-aware retraction (L52)
+
+The first implementation (23 Oct 2026) uses `concept_dependencies.py` and the
+existing L3 lifecycle, without a second belief store or an LLM call. The direction
+of `depends_on` is **source -> conclusion**, consistent with `evidence`. Its
+meaning is membership in a recorded sufficient support set: every member of one
+set must remain valid; any valid set can keep the conclusion viable. Cold KV
+receipts store only source IDs and semantic fingerprints; graph edges index
+membership. Subsumed sets are removed, but different source revisions remain
+distinct observations of support. These sets do not add independent confidence
+votes; L49 still owns the independence question.
+
+L2 captures support on creation and complete reinforcement. For ordinary `set`
+evidence, each admitted observation is an alternative; for `sequence` and `meta`
+evidence, the complete proposal is required together. A partially admitted
+proposal never becomes a smaller sufficient conjunction. On a legacy claim's
+first reinforcement, available existing evidence is captured first, preserving
+generalization's existing any-two-base policy when representable within the cap.
+Historical `self_correction` concepts are excluded. These are structural policies,
+not an entailment model: a future semantic proposer can register explicit minimal
+sets through `ConceptStore.dependencies.add()` without changing the graph contract.
+For manifested proposer inputs, source fingerprints are frozen before generation;
+an edit/deletion during generation rejects the stale proposal, and admission checks
+the fingerprints again before writing receipts. Inputs without a reconstructible
+manifest retain the admission-time check only.
+
+Source validity is read from SQLite and the concept mirror: missing rows or
+dependency edges, changed claim/memory wording, superseded memories, L15's explicit
+inaccurate/superseded revision stamps, memory
+confidence below 0.4, missing recorded source messages, inactive concepts and
+unresolved recorded disproof all prevent a support set from certifying a claim.
+Confidence, reinforcement timestamps and salience alone are not semantic revision
+fingerprints. Changed content requires a fresh admission before it can support
+the old conclusion again. Unknown historical lineage stays unknown.
+
+L3 stores the latest content-free assessment, including which alternatives remain
+and which premises failed, and marks immediate dependents due when the assessment
+changes. Processing remains incremental through the existing due/stalest lanes;
+no recursive state mutation occurs. Unsupported active claims return to candidate
+status and cannot promote while support remains invalid. Support loss applies no
+contradiction penalty and never asserts the opposite. Confidence accrual and
+promotion source counts use surviving support, with meta confidence bounded by
+the strongest valid set's weakest premise. Ordinary age/confidence gates remain.
+
+Every assessment is capped at 256 visited claims/members and eight concept levels;
+admission permits at most 32 alternatives and 24 members per set. Cycles, missing
+data and exhausted budgets fail closed. Admission rejects oversized sets instead
+of truncating them into a different claim. Alias merges preflight the receipt
+graph before any edge mutation, refuse cycles or increased dependency depth, then
+remap references and fingerprints onto the canonical concept. A stale source
+revision must remain stale through a merge.
+
+**Deletion and prompt policy.** Memory/concept/edge deletion leaves failed source
+references in dependent receipts, so lost evidence cannot become a smaller valid
+set. L25's delete hook/orphan sweep still reconciles evidence edges and counts.
+Deleting the conclusion removes its own dependency receipts and latest assessment;
+dependent receipts keep only IDs/hashes, never deleted source text. Existing
+learning-event/alias historical snapshots retain their established retention
+policy. Deleting a known originating message also prevents its materialized
+memory from certifying tracked conclusions. This is not a general source-erasure
+cascade: legacy memories without recorded message lineage cannot be inferred.
+
+Active and candidate store selection checks live dependency validity **before**
+top-k clipping, including already-cached embedding matrices. Cluster lookup and
+spreading activation apply the same gate. An invalid derived candidate cannot
+return through L30's ordinary open-question selection. Existing assembled or
+in-flight prompts and old chat transcripts are not rewritten; the next ordinary
+assembly reads current support. Provenance (`concept_provenance`, REST and the
+existing MCP drill-down) includes the live dependency assessment and support sets.
+
+**Rollout limits.** New L2 admissions and reinforced legacy rows participate;
+untouched historical claims and other creation paths remain `legacy_untracked`
+and keep existing lifecycle behavior. Frozen message/URL manifests are not a full
+semantic dependency graph. Destructive memory merges that change source content
+need fresh admission rather than automatically inheriting semantic support. The
+L51 situation workspace still replaces its bounded record on correction; this
+slice does not introduce persistent dependencies between its local hypotheses
+and the durable concept graph. No live database migration/backfill is performed.
+Cluster dependencies currently track their representative memory, not every
+historic member or an independently edited cluster digest. Changes outside those
+recorded dependencies require later admission/review; lineage is not reconstructed.
+
 ## Recipe for a new consumer
 
 1. Take a `ConceptView` (a late-bound provider is fine — see

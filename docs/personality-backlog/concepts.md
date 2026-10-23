@@ -2808,7 +2808,8 @@ See [the contract and persisted audit](../concept-integration.md#bounded-trouble
 
 ## L52. Dependency-aware revision and retraction
 
-**Status: open; the useful first application of L34.** Knowing that a concept
+**Status: bounded structural support pilot implemented (23 Oct 2026); semantic
+support extraction and historical coverage remain open.** Knowing that a concept
 is contradicted is different from knowing which downstream conclusions cease
 to be justified. Existing evidence edges and lifecycle propagation are the
 starting point, not something to replace with a second truth store.
@@ -2826,6 +2827,27 @@ has an explicit policy for derived hypotheses, cached prompts and provenance;
 the new L47 cascade alone does not solve downstream deletion.
 
 **Build on:** L15, L25, L34, L46 and L49. **Effort:** Large.
+
+**Implemented slice.** `depends_on` follows the graph's source-to-dependent
+direction. Content-free receipts preserve AND support sets with OR alternatives;
+removing a source or edge cannot silently shrink a conjunction. New L2 admissions
+record support, and reinforcement captures available legacy evidence before adding
+new alternatives. Revised, superseded, deleted or low-confidence memories and
+non-active/disproven premises invalidate their sets. Valid alternatives survive.
+L3 records bounded assessments, revisits downstream claims and returns unsupported
+active claims to candidate status without inferring the opposite. Active and
+candidate retrieval check live support before clipping, including warm cosine
+matrices; aliases are remapped only after a cycle/depth preflight. Provenance
+includes the support sets and failed premises.
+
+**Verification and limits.** Real SQLite regressions cover alternatives,
+transitive loss, memory revisions/deletion, retrieval, restart and merge guards.
+The structural policy interprets set observations as alternatives and complete
+sequence/meta proposals as conjunctions; it does not prove semantic sufficiency
+or evidence independence. Historical self-correction bases remain historical.
+Untouched legacy claims and other concept writers remain explicitly untracked;
+there is no graph-wide historical backfill, extra model call, or live state repair.
+See [the contract](../concept-integration.md#dependency-aware-retraction-l52).
 
 ## L53. Causal explanations and counterfactual checks
 

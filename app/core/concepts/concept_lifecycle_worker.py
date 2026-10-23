@@ -455,6 +455,7 @@ class ConceptLifecycleWorker(RevivalMixin):
     ) -> None:
         stats["scanned"] += 1
         first_eval = concept.last_lifecycle_at is None
+        dependency_review = self._store.dependencies.reconsider(concept.concept_id)
 
         # 0. Anchor *age* to engaged time, before anything reads it. On its
         # first evaluation a concept's engaged age is zero by definition, so
@@ -488,7 +489,9 @@ class ConceptLifecycleWorker(RevivalMixin):
 
         # 1. Accrual + decay (engagement-driven, per-concept anchor).
         engaged_days = self._engaged_days(concept, now)
-        target = confidence_target(concept.distinct_source_count)
+        target = confidence_target(dependency_review.get(
+            "valid_source_count", concept.distinct_source_count,
+        ))
         reinforced = self._reinforced_since_last(concept, first_eval)
         new_conf = next_confidence(
             concept.confidence,
@@ -552,7 +555,12 @@ class ConceptLifecycleWorker(RevivalMixin):
         # in *before* the gate sees its confidence. ``meta_moot`` (rule 2) is
         # carried down to the transition override below. No-op for base kinds.
         meta_moot = False
-        if concept.evidence_model == "meta":
+        if dependency_review["tracked"]:
+            if dependency_review["viable"]:
+                new_conf = min(new_conf, dependency_review["confidence_bound"])
+                concept.confidence = new_conf
+            stats["dependency_reviews"] = stats.get("dependency_reviews", 0) + 1
+        elif concept.evidence_model == "meta":
             new_conf, meta_moot = self._apply_meta_rules(concept, new_conf)
             concept.confidence = new_conf
 
@@ -561,6 +569,11 @@ class ConceptLifecycleWorker(RevivalMixin):
         new_status, event_type = self._transition(
             concept, now, new_conf, contradicted=verdict is not None
         )
+        if dependency_review["tracked"] and not dependency_review["viable"]:
+            if old_status == "active" and new_status != "contradicted":
+                new_status, event_type = "candidate", "demoted"
+            elif new_status == "active":
+                new_status, event_type = old_status, ""
         # L12 meta rule 2 (cascade): a tension whose base is no longer active is
         # moot -- never let it be (or become) active. Demote a promoted one to
         # dormant (revivable when the base returns and the tension is
@@ -635,10 +648,14 @@ class ConceptLifecycleWorker(RevivalMixin):
                 reason_override=self._contradiction_reason(verdict, new_conf),
             )
             stats["events"] += 1
-            if status_changed:
-                self._mark_dependents_stale(concept)
+            self._mark_dependents_stale(concept)
         elif status_changed:
-            self._emit(concept, event_type, new_conf, now)
+            self._emit(
+                concept, event_type, new_conf, now,
+                reason_override=("Dependency support withdrawn; reconsider this conclusion."
+                                 if dependency_review["tracked"]
+                                 and not dependency_review["viable"] else None),
+            )
             stats["events"] += 1
             self._mark_dependents_stale(concept)
         elif (
@@ -1001,8 +1018,13 @@ class ConceptLifecycleWorker(RevivalMixin):
                 min_confidence,
                 self._f("concept_promote_young_min_confidence", 0.72),
             )
+        dependency_review = self._store.dependencies.assess(concept.concept_id)
+        if not dependency_review["viable"]:
+            return False
         kwargs: dict[str, Any] = {
-            "distinct_source_count": concept.distinct_source_count,
+            "distinct_source_count": dependency_review.get(
+                "valid_source_count", concept.distinct_source_count,
+            ),
             "age_days": self._age_days(concept, now),
             "confidence": conf,
             "min_sources": min_sources,
@@ -1097,8 +1119,7 @@ class ConceptLifecycleWorker(RevivalMixin):
             return None
         return float(state.valence)
 
-    @staticmethod
-    def _has_any_evidence(concept: "Concept") -> bool:
+    def _has_any_evidence(self, concept: "Concept") -> bool:
         """Whether an active belief still rests on anything at all.
 
         Deliberately the weakest possible re-gate: zero distinct sources
@@ -1114,6 +1135,8 @@ class ConceptLifecycleWorker(RevivalMixin):
         is a threshold decision to make against the quality scoreboard
         rather than a bug fix, so it stays out of this path for now.
         """
+        if concept.concept_id in self._store.dependencies.records:
+            return self._store.dependencies.assess(concept.concept_id)["viable"]
         return int(concept.distinct_source_count) > 0
 
     def _graph_mature(self) -> bool:

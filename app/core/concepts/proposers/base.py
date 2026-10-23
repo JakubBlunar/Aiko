@@ -78,6 +78,8 @@ class CandidateProposal:
     input_manifest: Any = None
     applicability: Any = None
     supersedes_id: int | None = None
+    # Server-selected source fingerprints, frozen before the proposer runs.
+    dependency_revisions: Any = None
 
 
 @dataclass(slots=True)

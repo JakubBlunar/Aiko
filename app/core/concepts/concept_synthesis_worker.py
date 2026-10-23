@@ -3449,6 +3449,13 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
             self._routing_begin(stats)
         if not proposal.evidence:
             return
+        if any(
+            node in proposal.evidence
+            and self._concept_store.dependencies.fingerprint(node) != revision
+            for node, revision in (proposal.dependency_revisions or {}).items()
+        ):
+            stats["dependency_source_changed"] = stats.get("dependency_source_changed", 0) + 1
+            return
         if proposal.kind == "communication_style" and proposal.supersedes_id is not None:
             from app.core.concepts.concept_applicability import context_names, scope_key
 
@@ -3565,6 +3572,7 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
             cid, proposal.evidence, evidence_model=proposal.evidence_model
         )
         self._observe_support(concept, proposal.evidence, set())
+        self._record_dependencies(concept, proposal.evidence, proposal.dependency_revisions)
         if proposal.kind == "communication_style" and proposal.applicability:
             self._concept_store.applicability.record(cid, proposal.applicability)
             if proposal.supersedes_id is not None:
@@ -3772,6 +3780,10 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
             ):
                 return
         existing = self._concept_store.evidence_of(concept.concept_id)
+        try:
+            self._concept_store.dependencies.capture_legacy(concept)
+        except ValueError:
+            log.debug("legacy dependency capture unavailable (id=%s)", concept.concept_id)
         vectors = self._evidence_vectors(proposal.evidence)
         verdict = admit(
             proposal.evidence,
@@ -3812,6 +3824,9 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
                 {(e.src_type, e.src_id) for e in ev}
             )
         observed = [*verdict.kept, *(item.node for item in verdict.full)]
+        # A partially admitted conjunction must never become a sufficient set.
+        if concept.evidence_model == "set" or not verdict.offtopic and not verdict.full:
+            self._record_dependencies(concept, verdict.kept, proposal.dependency_revisions)
         fresh_support = self._observe_support(concept, observed, held) if observed else False
         if fresh_support:
             concept.last_reinforced_at = _now_iso()
@@ -3836,6 +3851,13 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
         self._stage_relabel(concept, proposal, cosine)
 
     # ── L31 evidence admission ─────────────────────────────────────────
+
+    def _record_dependencies(self, concept, nodes, revisions=None) -> None:
+        try:
+            self._concept_store.dependencies.admit(concept, nodes, revisions=revisions)
+        except ValueError:
+            self._concept_store.dependencies.defer_untracked(concept.concept_id)
+            log.debug("dependency admission refused (id=%s)", concept.concept_id)
 
     def _admission_cosine(self) -> float:
         """The bar a cited source must clear to be about the concept.

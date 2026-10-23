@@ -202,6 +202,9 @@ class ConceptStore:
         # merely slow.
         self._active_dirty: bool = True
         self._status_mats: dict[str, tuple[list[int], np.ndarray, int]] = {}
+        from app.core.concepts.concept_dependencies import DependencyLedger
+
+        self.dependencies = DependencyLedger(self)
 
     # ── mirror maintenance ────────────────────────────────────────────
 
@@ -326,6 +329,7 @@ class ConceptStore:
             )
             if row[0].rsplit(":", 1)[1].isdigit()
         } & self._concepts.keys()
+        self.dependencies.reload()
         return list(self._concepts.values())
 
     @staticmethod
@@ -375,6 +379,11 @@ class ConceptStore:
         kind: str | None = None,
         user_id: object = _UNSET,
     ) -> list[Concept]:
+        """Active/candidate selection excludes invalid dependencies.
+
+        ``all()`` / ``get()`` and queries without a status retain raw lifecycle
+        rows for diagnostics and readmission, including unsupported claims.
+        """
         return [
             c
             for c in self._concepts.values()
@@ -382,7 +391,16 @@ class ConceptStore:
             and (subject is None or c.subject == subject)
             and (kind is None or c.kind == kind)
             and (user_id is _UNSET or c.user_id == user_id)
+            and (status not in {"active", "candidate"}
+                 or self.dependencies.assess(c.concept_id)["viable"])
         ]
+
+    def is_assertable(self, concept_id: int) -> bool:
+        """Live support gate, including the interval before L3 revisits a row."""
+        concept = self.get(concept_id)
+        return bool(concept and concept.status == "active"
+                    and (concept_id not in self.dependencies.records
+                         or self.dependencies.assess(concept_id)["viable"]))
 
     def count(self) -> int:
         return len(self._concepts)
@@ -497,6 +515,9 @@ class ConceptStore:
         status's cached stacked matrix; anything further filtered stacks
         on demand (cheap at concept scale, but never do it in a loop --
         see :meth:`stack_for`).
+
+        Active/candidate queries check current dependency support before top-k
+        clipping; a warm embedding matrix cannot preserve a withdrawn premise.
         """
         q = _unit(query_vec)
         if q.size == 0 or k <= 0:
@@ -526,7 +547,16 @@ class ConceptStore:
         if not ids or mat.size == 0:
             return []
         sims = mat @ q
-        order = np.argsort(-sims)[: min(k, len(ids))]
+        order = np.argsort(-sims)
+        if status in {"active", "candidate"}:
+            viable = []
+            for index in order:
+                if self.dependencies.assess(ids[index])["viable"]:
+                    viable.append(index)
+                    if len(viable) >= k:
+                        break
+            order = viable
+        order = order[: min(k, len(ids))]
         return [(self._concepts[ids[i]], float(sims[i])) for i in order]
 
     # ── concept writes ────────────────────────────────────────────────
@@ -598,6 +628,12 @@ class ConceptStore:
         concept.updated_at = _now_iso()
         blob, dim = _encode_embedding(concept.embedding)
         try:
+            # Callers mutate mirrored objects in place, so compare persisted
+            # values rather than an alias of the same mutable Concept.
+            previous = conn.execute(
+                "SELECT status, label, rationale FROM concepts WHERE id = ?",
+                (int(concept.concept_id),),
+            ).fetchone()
             conn.execute(
                 "UPDATE concepts SET "
                 "  label = ?, kind = ?, subject = ?, user_id = ?, "
@@ -650,6 +686,9 @@ class ConceptStore:
             )
             return
         self._put_mirror(concept)
+        if previous != (concept.status, concept.label, concept.rationale):
+            for dependent in self.dependents_of(concept.concept_id):
+                self.mark_lifecycle_due(dependent)
 
     def set_alias_sink(
         self, sink: "Callable[[dict[str, object]], None] | None"
@@ -678,6 +717,8 @@ class ConceptStore:
         """Delete a concept and every edge touching it (as concept node),
         then drop it from the mirror."""
         cid = int(concept_id)
+        for dependent in self.dependents_of(cid):
+            self.mark_lifecycle_due(dependent)
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         try:
             conn.execute(
@@ -695,6 +736,7 @@ class ConceptStore:
             return
         self._drop_mirror(cid)
         self._lifecycle_due.discard(cid)
+        self.dependencies.forget(cid)
 
     def _tension_parents(self, concept_id: int) -> set[int]:
         """The ids of the ``tension`` meta concepts this concept is a *base*
@@ -744,6 +786,9 @@ class ConceptStore:
         canonical = self.get(can_id)
         absorbed = self.get(abs_id)
         if canonical is None or absorbed is None:
+            return False
+        dependency_plan = self.dependencies.merge_plan(can_id, abs_id)
+        if dependency_plan is None:
             return False
         if (
             canonical.subject != absorbed.subject
@@ -828,6 +873,8 @@ class ConceptStore:
         # it the id becomes a dead end and every trajectory ending in this
         # merge is unreachable.
         self._record_alias(canonical_id=can_id, absorbed=absorbed)
+
+        self.dependencies.apply_merge(dependency_plan)
 
         # Drop the absorbed row (also clears its now-orphaned edges + the
         # mirror entry).
@@ -1033,6 +1080,9 @@ class ConceptStore:
     # ── cascade hooks ─────────────────────────────────────────────────
 
     def delete_edge(self, edge_id: int) -> None:
+        for edge in self._edge_rows("id = ?", (int(edge_id),)):
+            if edge.dst_type == "concept" and edge.relation in {"evidence", "depends_on"}:
+                self.mark_lifecycle_due(int(edge.dst_id))
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         try:
             conn.execute(
@@ -1044,6 +1094,9 @@ class ConceptStore:
 
     def delete_edges_for_node(self, node_type: str, node_id: object) -> None:
         """Drop every edge touching a node on either side."""
+        for edge in self.edges_from(node_type, node_id):
+            if edge.dst_type == "concept" and edge.relation in {"evidence", "depends_on"}:
+                self.mark_lifecycle_due(int(edge.dst_id))
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         try:
             conn.execute(
@@ -1073,7 +1126,7 @@ class ConceptStore:
         edges (concept -> memory). Cluster evidence ids are representative
         memory ids too. Used to recount after deletion or repointing (L25)."""
         out: set[int] = set()
-        for node_type in ("memory", "cluster"):
+        for node_type in ("memory", "cluster", "moment"):
             for e in self.edges_from(node_type, memory_id):
                 if e.dst_type == "concept":
                     try:
@@ -1130,7 +1183,7 @@ class ConceptStore:
             rows = conn.execute(
                 "SELECT id, src_type, src_id, dst_type, dst_id, relation, "
                 "polarity, strength, ordinal, created_at FROM concept_edges "
-                "WHERE (src_type IN ('memory', 'cluster') "
+                "WHERE (src_type IN ('memory', 'cluster', 'moment') "
                 "       AND CAST(src_id AS INTEGER) "
                 "       NOT IN (SELECT id FROM memories)) "
                 "   OR (dst_type = 'memory' AND CAST(dst_id AS INTEGER) "

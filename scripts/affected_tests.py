@@ -25,6 +25,14 @@ escape the graph. Review the selection and add explicit regression or
 integration tests for those routes. A full suite is not required for
 ordinary completion; see AGENTS.md for the escalation policy.
 
+``--run`` owns a directory under the project's visible ``.tmp-tests/`` for
+tempfile and pytest fixtures, then
+removes it after the pytest process exits (including failed runs). Legacy
+``mkdtemp()`` helpers therefore cannot accumulate databases between runs.
+Caught interrupts stop the owned process tree before cleanup. A forced kill
+or power loss can still leave its printed scratch directory behind. Direct
+``python -m pytest`` invocations do not receive this runner's cleanup.
+
 Usage::
 
     python scripts/affected_tests.py                 # vs working tree + HEAD
@@ -38,8 +46,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
+import signal
 import subprocess
 import sys
+import tempfile
 from collections import deque
 from pathlib import Path
 
@@ -364,6 +375,56 @@ def _git(args: list[str]) -> list[str]:
 # ── cli ─────────────────────────────────────────────────────────────────
 
 
+def _stop_test_process(process: subprocess.Popen) -> None:
+    """Stop only our child tree so Windows releases database file handles."""
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+    else:
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+
+
+def _run_tests(command: list[str]) -> int:
+    """Keep all default test scratch beneath one explicitly owned directory.
+
+    Cleanup happens in the parent, after SQLite/LanceDB handles in the child
+    have closed. Never sweep a general temp directory or another run's files.
+    Explicit test-specific paths and user-supplied --basetemp remain the caller's.
+    """
+    parent = REPO_ROOT / ".tmp-tests"
+    parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="run-", dir=parent) as directory:
+        root = Path(directory)
+        env = dict(os.environ, TEMP=str(root), TMP=str(root), TMPDIR=str(root))
+        cmd = list(command)
+        if not any("tmp_path_retention_policy" in arg for arg in command):
+            cmd.extend(["-o", "tmp_path_retention_policy=none"])
+        if not any(arg == "--basetemp" or arg.startswith("--basetemp=") for arg in command):
+            cmd.extend(["--basetemp", str(root / "pytest")])
+        print(f"temporary test data: {root} (cleaned after pytest exits)", flush=True)
+        process = subprocess.Popen(
+            cmd, cwd=REPO_ROOT, env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            start_new_session=os.name != "nt",
+        )
+        try:
+            return process.wait()
+        finally:
+            _stop_test_process(process)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Select the test files affected by changed files.",
@@ -434,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
     cmd = [sys.executable, "-m", "pytest", *[str(p) for p in selected], *extra]
     print()
     print("+ " + " ".join(cmd))
-    return subprocess.call(cmd, cwd=REPO_ROOT)
+    return _run_tests(cmd)
 
 
 if __name__ == "__main__":

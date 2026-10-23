@@ -72,6 +72,7 @@ class ConceptEdgeReconciler:
             return
         self._store.delete_edges_for_node("memory", mid)
         self._store.delete_edges_for_node("cluster", mid)
+        self._store.delete_edges_for_node("moment", mid)
         for cid in affected:
             self._recount(cid)
 

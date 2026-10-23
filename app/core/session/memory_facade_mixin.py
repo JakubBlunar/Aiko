@@ -1247,6 +1247,8 @@ class MemoryFacadeMixin:
                 "kind": (concept.kind if concept is not None else ""),
                 "subject": (concept.subject if concept is not None else ""),
                 "status": (concept.status if concept is not None else ""),
+                "dependencies": (store.dependencies.assess(resolved)
+                                 if store is not None else {}),
                 "alias_chain": learning.alias_chain(cid),
                 "absorbed": [
                     {

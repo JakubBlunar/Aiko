@@ -15,6 +15,8 @@ import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+import os
+import sys
 
 from scripts import affected_tests as at
 
@@ -275,10 +277,110 @@ class GlobalTriggerTests(unittest.TestCase):
         self.assertIn("tests/conftest.py", at.GLOBAL_TRIGGERS)
 
     def test_run_does_not_report_success_or_start_the_suite_for_a_global_trigger(self) -> None:
-        with patch.object(at.subprocess, "call") as run:
+        with patch.object(at, "_run_tests") as run:
             result = at.main(["--files", "tests/conftest.py", "--run"])
         self.assertEqual(result, 2)
         run.assert_not_called()
+
+
+class ManagedTestRunTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tree = _Tree()
+        self.addCleanup(self.tree.cleanup)
+
+    def test_unmanaged_child_tempfiles_are_removed_after_success_and_failure(self) -> None:
+        # Exercise a real child that leaks mkdtemp(), like the legacy DB
+        # harnesses, without running another pytest or creating large data.
+        for exit_code in (0, 1):
+            with self.subTest(exit_code=exit_code):
+                marker = self.tree.root / f"scratch-{exit_code}.txt"
+                code = (
+                    "import os, pathlib, sqlite3, sys, tempfile; "
+                    "root = pathlib.Path(os.environ['TEMP']); "
+                    "assert os.environ['TMP'] == os.environ['TMPDIR'] == str(root); "
+                    "folder = pathlib.Path(tempfile.mkdtemp()); "
+                    "conn = sqlite3.connect(folder / 'test.db'); "
+                    "conn.execute('CREATE TABLE example (id INTEGER)'); conn.commit(); "
+                    "pathlib.Path(sys.argv[1]).write_text(str(root)); "
+                    "sys.exit(int(sys.argv[2]))"
+                )
+                sibling = self.tree.root / ".tmp-tests" / "unrelated.txt"
+                sibling.parent.mkdir(parents=True, exist_ok=True)
+                sibling.write_text("keep", encoding="utf-8")
+                original_env = {key: os.environ.get(key) for key in ("TEMP", "TMP", "TMPDIR")}
+                with patch.object(at, "REPO_ROOT", self.tree.root):
+                    result = at._run_tests([
+                        sys.executable, "-c", code, str(marker), str(exit_code),
+                    ])
+                self.assertEqual(result, exit_code)
+                root = Path(marker.read_text())
+                self.assertEqual(root.parent, self.tree.root / ".tmp-tests")
+                self.assertFalse(root.exists())
+                self.assertEqual(sibling.read_text(), "keep")
+                self.assertEqual(original_env, {
+                    key: os.environ.get(key) for key in original_env
+                })
+
+    def test_interrupt_stops_child_before_removing_its_files(self) -> None:
+        events = []
+
+        class Child:
+            def __init__(self, command, **kwargs):
+                self.root = Path(kwargs["env"]["TEMP"])
+                (self.root / "held.db").write_bytes(b"test")
+
+            def wait(self):
+                raise KeyboardInterrupt
+
+        def stop(child):
+            self.assertTrue((child.root / "held.db").exists())
+            events.append(child.root)
+
+        with patch.object(at, "REPO_ROOT", self.tree.root), \
+                patch.object(at.subprocess, "Popen", Child), \
+                patch.object(at, "_stop_test_process", stop), \
+                self.assertRaises(KeyboardInterrupt):
+            at._run_tests([sys.executable, "-m", "pytest"])
+        self.assertEqual(len(events), 1)
+        self.assertFalse(events[0].exists())
+
+    def test_launch_failure_also_cleans_owned_directory(self) -> None:
+        with patch.object(at, "REPO_ROOT", self.tree.root), \
+                patch.object(at.subprocess, "Popen", side_effect=OSError("cannot start")), \
+                self.assertRaises(OSError):
+            at._run_tests([sys.executable, "-m", "pytest"])
+        self.assertEqual(list((self.tree.root / ".tmp-tests").iterdir()), [])
+
+    def test_windows_interrupt_targets_only_owned_process_tree(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows process-tree termination")
+        from unittest.mock import Mock
+
+        child = Mock(pid=12345)
+        child.poll.return_value = None
+        with patch.object(at.subprocess, "run") as terminate:
+            at._stop_test_process(child)
+        self.assertEqual(terminate.call_args.args[0],
+                         ["taskkill", "/PID", "12345", "/T", "/F"])
+        child.wait.assert_called_once_with(timeout=5)
+
+    def test_finished_child_is_not_terminated(self) -> None:
+        from unittest.mock import Mock
+
+        child = Mock()
+        child.poll.return_value = 0
+        with patch.object(at.subprocess, "run") as terminate:
+            at._stop_test_process(child)
+        terminate.assert_not_called()
+
+    def test_explicit_runner_forwards_targets(self) -> None:
+        from scripts import run_tests
+
+        with patch.object(run_tests, "_run_tests", return_value=1) as run:
+            self.assertEqual(run_tests.main(["tests/test_example.py", "-q"]), 1)
+        run.assert_called_once_with([
+            sys.executable, "-m", "pytest", "tests/test_example.py", "-q",
+        ])
 
 
 if __name__ == "__main__":
