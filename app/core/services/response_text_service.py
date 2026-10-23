@@ -4,6 +4,8 @@ import dataclasses
 import re
 from typing import NamedTuple
 
+from app.core.services.history_metadata import strip_history_age_prefix
+
 
 # Reaction grammar: ``[[reaction:NAME]]`` for a single reaction, or
 # ``[[reaction:A+B]]`` for a *stack* — the renderer takes the first
@@ -855,7 +857,7 @@ def extract_predict_tags(text: str) -> list[PredictTag]:
     return out
 
 
-def strip_all_meta_tags(text: str) -> str:
+def strip_all_meta_tags(text: str, *, streaming: bool = False) -> str:
     """Remove every closed meta tag the assistant emits.
 
     Behaviour:
@@ -873,7 +875,11 @@ def strip_all_meta_tags(text: str) -> str:
         ``_META_TAG_BACKSTOP_PATTERN``. A tag we cannot parse must still
         never be visible.
 
-    Does NOT call ``.strip()`` on the result, so streaming callers can keep
+    Bare leading history clock labels are also removed. ``streaming=True``
+    holds unresolved prefixes until they can be distinguished from literal
+    brackets and Markdown links.
+
+    Does NOT call ``.strip()`` on ordinary prose, so streaming callers can keep
     monotonic ``len(visible)`` offsets across deltas. Partial (unclosed)
     tags pass through unchanged -- callers are expected to use
     :func:`safe_visible_prefix` for streaming display.
@@ -975,7 +981,7 @@ def strip_all_meta_tags(text: str) -> str:
     # had a body no interpreter above accepted. Drop it rather than let
     # it reach the bubble, the transcript or TTS.
     s = _META_TAG_BACKSTOP_PATTERN.sub("", s)
-    return s
+    return strip_history_age_prefix(s, streaming=streaming)
 
 
 def split_text_with_stage_directions(text: str) -> list[tuple[str, str]]:
@@ -1122,7 +1128,7 @@ def safe_visible_prefix(text: str) -> str:
     """
     if not text:
         return ""
-    cleaned = strip_all_meta_tags(text)
+    cleaned = strip_all_meta_tags(text, streaming=True)
     if not cleaned:
         return ""
     holdback_start = len(cleaned)

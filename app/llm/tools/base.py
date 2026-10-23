@@ -6,6 +6,9 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from jsonschema.validators import validator_for
+
+from app.llm.tool_arguments import parse_tool_arguments
 
 log = logging.getLogger("app.tools")
 
@@ -78,9 +81,21 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._validators: dict[str, Any] = {}
+        self._schemas: dict[str, ToolSchema] = {}
 
     def register(self, tool: Tool) -> None:
         schema = tool.schema()
+        parameters = dict(schema.parameters)
+        # Tool parameter objects name their accepted arguments. Explicit
+        # extensible schemas (notably plugin payloads) retain that choice.
+        if "properties" in parameters:
+            parameters.setdefault("additionalProperties", False)
+        schema = ToolSchema(schema.name, schema.description, parameters)
+        validator = validator_for(parameters)
+        validator.check_schema(parameters)
+        self._validators[schema.name] = validator(parameters)
+        self._schemas[schema.name] = schema
         self._tools[schema.name] = tool
 
     def names(self) -> list[str]:
@@ -96,7 +111,7 @@ class ToolRegistry:
         """
         out: list[dict[str, str]] = []
         for name in sorted(self._tools.keys()):
-            schema = self._tools[name].schema()
+            schema = self._schemas[name]
             out.append({
                 "name": schema.name,
                 "description": schema.description,
@@ -116,7 +131,7 @@ class ToolRegistry:
         names = sorted(self._tools.keys())
         if allow is not None:
             names = [n for n in names if n in allow]
-        return [self._tools[n].schema().to_ollama() for n in names]
+        return [self._schemas[n].to_ollama() for n in names]
 
     def dispatch(self, name: str, arguments: dict[str, Any], *, call_id: str = "") -> ToolResult:
         tool = self._tools.get(name)
@@ -127,6 +142,16 @@ class ToolRegistry:
                 content=f"error: unknown tool {name!r}",
                 ok=False,
             )
+        arguments, error = parse_tool_arguments(arguments)
+        if error is None:
+            invalid = next(self._validators[name].iter_errors(arguments), None)
+            if invalid is not None:
+                # Do not echo argument values (which can contain private text)
+                # into diagnostics. The path and schema keyword are sufficient.
+                path = ".".join(str(p) for p in invalid.absolute_path) or "arguments"
+                error = f"Invalid {path}: violates {invalid.validator}."
+        if error is not None:
+            return ToolResult(name=name, call_id=call_id, content=error, ok=False)
         try:
             content = tool.run(arguments or {})
         except ToolError as exc:

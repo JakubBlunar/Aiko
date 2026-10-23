@@ -29,7 +29,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.affect.affect_state import felt_phrase
@@ -213,8 +213,11 @@ class ReflectionWorker:
         affect_before: "AffectState | None" = None,
         affect_after: "AffectState | None" = None,
         on_memory_added: Callable[[Any], None] | None = None,
+        turn_outcome=None,
     ) -> Reflection | None:
         """Run a reflection pass if not throttled. Returns ``None`` on skip."""
+        if turn_outcome is not None and not turn_outcome.learning_eligible:
+            return None
         now = time.monotonic()
         if now - self._last_run_at < self._min_seconds_between:
             self._stats["skipped_recent"] += 1
@@ -240,6 +243,7 @@ class ReflectionWorker:
             reaction=reaction,
             affect=affect_after,
             on_memory_added=on_memory_added,
+            turn_outcome=turn_outcome,
         )
 
     # ── internals ───────────────────────────────────────────────────────
@@ -253,6 +257,7 @@ class ReflectionWorker:
         reaction: str,
         affect: "AffectState | None",
         on_memory_added: Callable[[Any], None] | None,
+        turn_outcome=None,
     ) -> Reflection | None:
         try:
             messages = [
@@ -310,6 +315,7 @@ class ReflectionWorker:
             reflection,
             session_key=session_key,
             on_memory_added=on_memory_added,
+            turn_outcome=turn_outcome,
         )
         self._stats["completed"] += 1
         return reflection
@@ -320,6 +326,7 @@ class ReflectionWorker:
         *,
         session_key: str,
         on_memory_added: Callable[[Any], None] | None,
+        turn_outcome=None,
     ) -> None:
         if self._memory_store is None or self._embedder is None:
             return
@@ -340,7 +347,11 @@ class ReflectionWorker:
                     embedding=emb,
                     salience=salience,
                     source_session=session_key,
-                    source_message_id=None,
+                    source_message_id=(
+                        turn_outcome.assistant_message_id if turn_outcome is not None else None
+                    ),
+                    **({"metadata": {"turn_outcome": asdict(turn_outcome)}}
+                       if turn_outcome is not None else {}),
                     # Schema v8: reflections / open questions /
                     # callbacks are speculative LLM-journal output.
                     # Scratchpad so they decay fast unless they prove

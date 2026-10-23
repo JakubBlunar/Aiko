@@ -74,6 +74,100 @@ style `chat_completions`. Set `api_key_env` to `AIKO_VENICE_API_KEY` to keep the
 credential out of the config file. The backend process must inherit that
 environment variable; restart it after setting the variable if necessary.
 
+### DeepSeek V4.1 Flash Uncensored: recommended chat starting point
+
+Tested on 23 October 2026 with model ID `deepseek-v4-1-flash-uncensored`.
+For `main_chat`, start with provider `venice`, reasoning effort `low`,
+context window `256000`, and maximum completion tokens `1024`. Keep worker,
+workflow and embedding assignments independent; changing the chat model does
+not require moving background jobs to a paid provider.
+
+An isolated Docker check passed streaming replies, conversation recall, native
+tool-call/result round trips and simple structured output. Warm ordinary
+replies completed in roughly one second; a time-tool turn took roughly three
+seconds. These are small-sample observations, not latency guarantees or a
+full evaluation of the cognitive workers and long-term companion behavior.
+
+The existing stable prompt-prefix ordering works with Venice's automatic
+cache. Warm requests exceeded 95% cached input in some checks, but cache hits
+varied; no additional cache-key strategy was needed. Reasoning consumes the
+completion allowance, so very small output limits can leave no visible reply.
+The larger advertised context window was not fully tested.
+
+Provider-independent reply cleanup removes echoed leading history-age labels
+before chat display, speech dispatch and transcript storage. Prompt guidance
+also distinguishes those labels from dialogue and discourages invented shared
+history. Clear closing messages end previous-tool continuity, avoiding repeated
+lookups after a goodbye while preserving substantive follow-ups and pending work.
+
+Only this summary is retained. Raw evaluation outputs, conversation samples,
+request traces, configuration snapshots and reproduction artifacts were removed.
+
+#### Follow-up review: stream integrity and remaining migration checks
+
+Synthetic regressions found shared client gaps, rather than demonstrated
+DeepSeek service failures. Chat Completions now rejects in-stream provider
+errors, explicit refusal signals, streams ending without a completion signal,
+and reasoning-only replies with no answer. These failures do not commit an
+assistant transcript or reach the normal completed-turn learning path. Already
+streamed text/audio cannot be recalled if an error arrives later.
+
+Inline thinking blocks are filtered incrementally before reply tags can be
+interpreted, matching the existing non-streaming cleanup. Separate
+`reasoning_content` remains private. SSE decoding is explicitly UTF-8, including
+servers that omit their charset, as required by the
+[SSE standard](https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream).
+Only possible tag suffixes wait; ordinary replies still stream immediately.
+
+The first three follow-ups are implemented:
+
+- **Learning provenance:** each attempt records its provider, model, route
+  fingerprint and completion status in SQLite's additive `turn_outcomes` table.
+  Completed assistant messages and their provenance commit atomically. Cancelled,
+  truncated, empty, failed and explicitly blocked replies do not enter saved
+  assistant history or normal affect/trust/tag learning. The user's message is
+  retained. Reflection memories carry their source; delayed writes recheck that
+  the completed source still exists. Existing legacy evidence stays unknown.
+  The route fingerprint identifies configuration, not a provider's model weights.
+  Plain-text declines still cannot be reliably classified from wording alone. See
+  [K107](personality-backlog/patterns.md#k107-provider-outcomes-are-not-character-evidence).
+- **Tool argument validation:** malformed JSON stays an error through OpenAI,
+  Responses and Ollama parsing; it cannot execute a no-argument tool by becoming
+  an empty object. The registry validates required fields, types, enums, bounds
+  and nested values before execution, with no type coercion. Named parameter
+  schemas reject extra fields unless explicitly extensible. Errors retain the
+  original call ID so a later decision round can correct the call. Existing
+  per-tool checks and decision-round limits remain in force. This adds no
+  automatic replay of completed tool actions.
+- **Reasoning-aware metrics:** Chat Completions and Responses record reported
+  reasoning tokens separately, including streaming calls. Completion/billing
+  totals stay intact; answer throughput subtracts reasoning when the split is
+  known. Diagnostics and the context popover expose both counts. Missing details
+  display as `Not reported`, including a merged turn where any nonempty call
+  lacks a split; such turns retain the previous completion-rate fallback.
+  Venice documents the token breakdown in its
+  [reasoning guide](https://docs.venice.ai/guides/features/reasoning-models).
+
+Still awaiting the user's longer behavioral check:
+
+- **Behavior across several turns:** compare retained corrections, shared-history
+  grounding, affection preferences, quiet goodbyes and interrupted speech with
+  the cognitive features enabled. The earlier minimal controller check did not
+  establish those properties. Use synthetic sessions, equal budgets and human
+  review of tone; keep only aggregate notes in this document.
+
+No inference request or live conversation was needed for this follow-up source
+review and deterministic regression checks. No raw evaluation artifacts were
+recreated. Low reasoning and the existing cache strategy remain the starting point.
+Validation includes 225 targeted Python tests, representative database,
+memory, tool, sleep and provider-switch integrations, 171 related frontend
+tests, and `npm run lint`. Shared database/client imports make the selector
+reach 384 test files, so representative integrations were used instead of the
+full suite. Rebuild/restart the backend image and refresh the frontend to load
+the changes; the running installation was not changed by these checks.
+
+### GLM 4.7 Flash Heretic
+
 For GLM 4.7 Flash Heretic, assign this route after testing the provider:
 
 ```json

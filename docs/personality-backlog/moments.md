@@ -91,6 +91,31 @@ control. **Tonal guard:** the dial is a *ceiling*, not a target — at a low
 setting she's simply warm-but-contained; the learned signal only nudges
 within that ceiling. **Effort.** Medium.
 
+### 23 Oct 2026: relationship preference and current conversational context
+
+**Backlog extension; not implemented.** Make friend, playful/flirty and romantic
+expression explicit user preferences, independently configurable from inferred
+closeness. These are expression choices, not claims about human feelings or
+permissions inferred from a bond score. A user can choose warmth without pet
+names, or romance without teasing; reuse J11's affection kinds within the user's
+chosen limits rather than making stage a mandate to escalate.
+
+Context can narrow the preference: practical work may call for concise help;
+an invited affectionate exchange can support a warmer register. Infer a
+temporary tone cautiously, but require user evidence for lasting boundary
+changes. A stop or de-escalation request takes effect on the current reply and
+invalidates incompatible queued gestures/cues before dispatch. A historical
+romantic preference cannot override the new instruction. Persist explicit
+preferences through the existing settings setter/override contract.
+
+**Acceptance.** A warm friendship never auto-upgrades to romance from engagement
+alone. An invited romantic register still answers practical questions directly.
+Pausing flirtation removes pet names, relevant touches and queued romantic
+beats across clients without erasing ordinary shared history. Restart preserves
+explicit preferences. Declining affection does not lower relationship axes or
+create sulking/jealousy cues. Evaluate behavior with K102/K104; do not optimize
+for more affection or longer sessions.
+
 ---
 
 ## J13. Pet-name reciprocity & evolution

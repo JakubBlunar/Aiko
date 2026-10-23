@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import unittest
 
+import pytest
+
 from app.core.session.tool_pass_gate import (
     BRAIN_CORE_FAMILIES,
     GateContext,
@@ -58,6 +60,44 @@ _ALL_TOOLS = [
 ]
 
 _NO_CONTEXT = GateContext()
+
+
+@pytest.mark.parametrize("text", [
+    "Thanks!", "That works, thanks.", "Thanks, that's all.", "Goodbye!",
+    "See you later.", "Thanks, that's all. A short goodbye, please.",
+    "Thanks, that's all. Give me a warm, very short goodbye.",
+])
+def test_closing_a_finished_lookup_does_not_repeat_it(text):
+    decision = should_run_tool_pass(
+        text, ["get_time"], context=GateContext(last_turn_dispatched_tool=True),
+    )
+    assert not decision.run
+    assert decision.reason == "closed_followup"
+
+
+@pytest.mark.parametrize("text", [
+    "Thanks, what time is it in Tokyo?", "Thanks, also Tokyo please.",
+    "And the other one?", "Thanks, that's all. Check the weather too.",
+    "Before you say goodbye, check the time.", "See you tomorrow at what time?",
+])
+def test_substantive_followups_keep_tool_continuity(text):
+    assert should_run_tool_pass(
+        text, ["get_time"], context=GateContext(last_turn_dispatched_tool=True),
+    ).run
+
+
+@pytest.mark.parametrize("flag", ["force", "tasks_active", "finished_task_block", "recall_need"])
+def test_closing_never_overrides_pending_work_or_explicit_bypass(flag):
+    assert should_run_tool_pass(
+        "Thanks, that's all.", ["get_time", "recall"],
+        context=GateContext(last_turn_dispatched_tool=True, **{flag: True}),
+    ).run
+
+
+def test_closing_keeps_unknown_plugin_tool_conservative():
+    assert should_run_tool_pass(
+        "Thanks!", ["new_plugin_tool"], context=GateContext(last_turn_dispatched_tool=True),
+    ).run
 
 
 def _decide(text: str, tools: list[str] | None = None,

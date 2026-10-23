@@ -15,6 +15,7 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
   # HTTP + audio processing
   "requests>=2.32.3,<3",
+  "jsonschema>=4.26.0,<5",
   "numpy>=2.2.3,<3",
   "scipy>=1.13.0,<2",
   "soundfile>=0.13.0,<0.14",

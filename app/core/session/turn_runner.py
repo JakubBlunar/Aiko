@@ -16,6 +16,8 @@ Replaces the old ``_AgentWrapper`` + ``AgentController`` + ``TurnTriage`` +
 """
 from __future__ import annotations
 
+from app.llm.turn_outcome import TurnOutcome
+
 import json
 import logging
 import re
@@ -212,6 +214,7 @@ class TurnResult:
     # parsed arc onto ``messages.arc`` without re-querying the DB.
     # ``None`` when the reply was empty / aborted and never persisted.
     assistant_message_id: int | None = None
+    outcome: TurnOutcome | None = None
 
 
 class TurnRunner:
@@ -245,7 +248,9 @@ class TurnRunner:
         brain_core_families: "Iterable[str] | None" = None,
         delivery_provider: Callable | None = None,
         information_need_provider: Callable[[str], dict] | None = None,
+        source_identity_provider: Callable[[], dict] | None = None,
     ) -> None:
+        self._source_identity_provider = source_identity_provider
         self._ollama = ollama
         self._delivery_provider = delivery_provider
         self._information_need_provider = information_need_provider
@@ -567,7 +572,11 @@ class TurnRunner:
                 self._embedder.begin_turn()
             except Exception:
                 log.debug("embedder.begin_turn failed", exc_info=True)
+        outcome = TurnOutcome(model=self._model, user_message_id=resume_user_message_id)
         try:
+            source = self._source_identity_provider() if self._source_identity_provider else {}
+            outcome.provider_id = source.get("provider_id", "unknown")
+            outcome.route_revision = source.get("route_revision", "")
             result = self._run_inner(
                 session_key=session_key,
                 user_text=user_text,
@@ -581,6 +590,7 @@ class TurnRunner:
                 stop_requested=stop_requested,
                 resume_user_message_id=resume_user_message_id,
                 allow_empty_user=allow_empty_user,
+                outcome=outcome,
             )
             if ledger is not None:
                 ledger.finish(
@@ -589,6 +599,16 @@ class TurnRunner:
                 )
             delivery_finished = True
             return result
+        except Exception as exc:
+            # An ancillary failure after committing a reply must not rewrite
+            # the provenance that listeners and delayed writers already saw.
+            if outcome.assistant_message_id is None:
+                outcome.fail(exc)
+                try:
+                    self._db.record_turn_outcome(session_key, outcome)
+                except Exception:
+                    log.exception("Could not record failed turn outcome")
+            raise
         finally:
             if ledger is not None and not delivery_finished:
                 ledger.finish(delivery_id, None, aborted=True)
@@ -617,7 +637,9 @@ class TurnRunner:
         stop_requested: StopPredicate | None,
         resume_user_message_id: int | None,
         allow_empty_user: bool = False,
+        outcome: TurnOutcome | None = None,
     ) -> TurnResult:
+        outcome = outcome or TurnOutcome(model=self._model)
         self._stop.clear()
         cleaned_user = sanitize_user_text(user_text)
         if not cleaned_user and not allow_empty_user:
@@ -631,7 +653,7 @@ class TurnRunner:
         # Live main-wake passes ``allow_empty_user`` and must not mint a
         # fake user line.
         if resume_user_message_id is None and cleaned_user:
-            self._db.add_message(
+            outcome.user_message_id = self._db.add_message(
                 session_id=session_key,
                 role="user",
                 content=cleaned_user,
@@ -903,6 +925,16 @@ class TurnRunner:
             # Belt-and-braces: ensure the watchdog is never left armed.
             self._filler.disarm()
 
+        # A client may stop cooperatively without yielding another delta.
+        aborted = aborted or self._stop.is_set() or self._is_stop_requested(stop_requested)
+        outcome.finish(
+            reason=self._ollama.last_usage.done_reason, cancelled=aborted,
+            has_answer=bool(strip_all_meta_tags(full).strip()),
+        )
+        if outcome.status == "empty":
+            from app.core.services.response_text_service import extract_sleep_decisions
+            if extract_sleep_decisions(full):
+                outcome.status = "control_only"
         full_raw = full
         if mood is None:
             # Phase 3 stack form: route the primary into ``mood`` and
@@ -969,7 +1001,7 @@ class TurnRunner:
             _TOUCH_TAG_PATTERN,
         )
 
-        if not aborted:
+        if outcome.learning_eligible:
             if on_overlay is not None:
                 for match in _OVERLAY_TAG_PATTERN.finditer(full_raw):
                     try:
@@ -1101,12 +1133,13 @@ class TurnRunner:
                     log.debug("notify_compaction_soon failed", exc_info=True)
 
         assistant_message_id: int | None = None
-        if cleaned and not aborted:
+        if cleaned and outcome.learning_eligible:
             assistant_message_id = self._db.add_message(
                 session_id=session_key,
                 role="assistant",
                 content=cleaned,
-                token_count=usage.completion_tokens or estimate_tokens(cleaned),
+                token_count=(self._ollama.last_usage.answer_tokens or estimate_tokens(cleaned)),
+                outcome=outcome,
             )
             self._extract_self_tagged_memories(
                 full_raw,
@@ -1119,6 +1152,8 @@ class TurnRunner:
                 assistant_message_id=assistant_message_id,
             )
             self._post_turn(session_key)
+        else:
+            self._db.record_turn_outcome(session_key, outcome)
 
         # Per plan: one structured INFO line per turn so a single grep
         # (e.g. `turn=abc12345`) yields the headline metrics. The order of
@@ -1207,7 +1242,8 @@ class TurnRunner:
         )
 
         # Carry-over for the *next* turn's filler tone.
-        self._last_reaction = mood or self._last_reaction
+        if outcome.learning_eligible:
+            self._last_reaction = mood or self._last_reaction
 
         return TurnResult(
             text=cleaned,
@@ -1222,6 +1258,7 @@ class TurnRunner:
             raw_text=full_raw,
             mood_fallback=mood_fallback,
             assistant_message_id=assistant_message_id,
+            outcome=outcome,
         )
 
     # ── helpers ───────────────────────────────────────────────────────
@@ -1313,6 +1350,8 @@ class TurnRunner:
                 "stream_pass_tokens": int(stream_prompt_tokens),
                 "merged_prompt_tokens": int(usage.prompt_tokens),
                 "completion_tokens": int(usage.completion_tokens),
+                "reasoning_tokens": usage.reasoning_tokens,
+                "answer_tokens": usage.answer_tokens,
                 # Timing, including whether eval duration was measured by
                 # the provider or derived from wall clock.
                 "first_token_ms": (
@@ -1630,6 +1669,14 @@ class TurnRunner:
             messages.append(assistant_msg)
 
             for idx, call in enumerate(real_calls):
+                argument_error = getattr(call, "argument_error", None)
+                if isinstance(argument_error, str) and argument_error:
+                    messages.append({
+                        "role": "tool", "name": call.name,
+                        "tool_call_id": tool_call_ids[idx],
+                        "content": argument_error,
+                    })
+                    continue
                 if strict_allow and call.name not in (allow or set()):
                     messages.append({
                         "role": "tool", "name": call.name,

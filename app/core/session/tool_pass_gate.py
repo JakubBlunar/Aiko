@@ -16,7 +16,8 @@ Design contract (conservative by construction):
   continuity signals (finished-task block, active tasks, the previous
   turn dispatched a tool), an armed force flag, or any registered tool
   whose name we don't have a pattern family for, all bypass the text
-  heuristic entirely.
+  heuristic entirely. A whole closing act ends previous-tool continuity
+  alone; it never overrides pending work or an explicit bypass.
 * Signal patterns are *per tool family* and only consulted for families
   that actually have registered tools this turn — disabling
   ``tools.world`` in config deactivates the room/garden patterns.
@@ -38,7 +39,34 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from app.core.conversation.turn_shape import brief_reply_kind
+
 log = logging.getLogger("app.core.session.tool_pass_gate")
+
+
+_FAREWELL = re.compile(
+    r"(?:bye(?: bye)?|goodbye|good night|see you(?: later| soon| tomorrow)?|"
+    r"(?:(?:give me|say)\s+)?a\s+(?:(?:warm|very|short|brief)[, ]+)*goodbye"
+    r"(?:,?\s+please)?)[.!]*",
+    re.IGNORECASE,
+)
+
+
+def _closes_tool_followup(user_text: str) -> bool:
+    """Require a whole closing act, not a thank-you embedded in a new request."""
+    text = (user_text or "").replace("\u2019", "'").strip()
+    if brief_reply_kind(text) in {"completion", "acknowledgement"}:
+        return True
+    if _FAREWELL.fullmatch(text):
+        return True
+    # A completion followed only by a request to say goodbye still closes the
+    # old lookup. A substantive follow-up in either clause fails these reads.
+    completion, separator, farewell = text.partition(". ")
+    return bool(
+        separator
+        and brief_reply_kind(completion) == "completion"
+        and _FAREWELL.fullmatch(farewell)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +78,8 @@ class GateContext:
     relaxation path stays intact).
     ``last_turn_dispatched_tool`` — the previous turn dispatched at least
     one real tool; follow-ups like "and the other folder?" carry no
-    tool-shaped token of their own.
+    tool-shaped token of their own. An explicit closing act ends this signal;
+    pending tasks and forced passes still win over a goodbye.
     ``tasks_active`` — at least one task is ``running`` /
     ``awaiting_input`` / ``paused``; the user's message may be the answer
     a pending ``answer_file_task`` is waiting for.
@@ -369,6 +398,13 @@ def should_run_tool_pass(
         decision = GateDecision(run=True, reason="finished_task")
     elif context.tasks_active:
         decision = GateDecision(run=True, reason="tasks_active")
+    elif (
+        context.last_turn_dispatched_tool
+        and not context.recall_need
+        and _closes_tool_followup(user_text)
+        and not families_for_tools(registered_tool_names, extra_families=extra_families)[1]
+    ):
+        decision = GateDecision(run=False, reason="closed_followup")
     elif context.last_turn_dispatched_tool:
         decision = GateDecision(run=True, reason="last_turn_tool")
     else:

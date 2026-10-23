@@ -280,7 +280,65 @@ to solve causal credit with another counter. Do not reward longer replies,
 more time in the app, more disclosure, or fewer goodbyes as "naturalness."
 Read representative successes and failures, including quiet controls.
 
+### 23 Oct 2026: social reasoning and expression track
+
+**Backlog extension, no new harness or evaluation results.** Add K102-K106 and
+J12/L36 scenarios to T5; keep L55's evidence/decision scores separate. Use
+synthetic 6-12-turn episodes with a held-out variant changing one decisive
+context fact, speaker, goal or correction. Expected behavior is a set of
+acceptable outcomes, not an exact line or a mandatory emotional performance.
+
+Cover literal versus ironic praise, teasing followed by an explicit boundary,
+quoted/pretend speech followed by a real request, a corrected referent used
+later, unheard versus misunderstood speech, a positive event unrelated to an
+unresolved feeling, a revised shared nickname, and an approach that helped in
+one context but is unwanted in another. Include ordinary sincere praise, a
+short successful reply, a warm friendship and a quiet goodbye as controls.
+Preserve the current hypothesis-evidence guard cases rather than duplicating
+them under a second framework.
+
+Score interpretation, retained correction, factual grounding, clarification
+cost, appropriate affection and unwanted callbacks independently. Use blinded
+human text/listening comparisons for expression fit; an LLM judging a transcript
+cannot establish how audio sounded. For delivery changes, replay interruption,
+cancel, reconnect and multi-client ownership before subjective review. Report
+first-token/first-audio latency, calls, tokens and errors at equal budgets.
+
+Start with the current configured model as the baseline and one change at a
+time. A same-model second reading is not independent ground truth. Freeze
+rubrics before tuning, show disagreement/failures, and keep evaluation runs
+isolated from live memories, relationship state and settings. Successful
+fixtures demonstrate their tested behavior, not general human-like reasoning.
+
 ---
+
+### 23 Oct 2026: provider migration and learning provenance
+
+The shared stream regressions exercise in-band errors, missing completion
+markers, explicit provider refusal, reasoning-only completion, private thinking
+split across tokens, UTF-8, and intentional cancellation. They verify that
+failed streams cannot commit assistant text or inline self-memory. These are
+deterministic client/runner contracts, not evidence of a hosted model failure
+rate or a complete K107 implementation.
+
+The implemented K107 slice additionally checks cancellation without a final
+delta, visible truncation, preserved user preferences across route changes,
+atomic assistant/source writes, source-session validation and delayed reflection
+after source deletion. Tool regressions cover schema rejection before execution,
+malformed arguments on all three parser paths and a corrected call executing
+once. Usage regressions cover streaming/non-streaming splits, known zero versus
+unreported details, merged calls, billing totals and answer throughput. Fixtures
+are synthetic; the user's longer behavioral comparison remains pending.
+
+Extend T5 with K107's longer cases: user preference followed by a provider
+limitation; cancellation during reasoning and after partial speech; a visible
+length-limited answer; retry after a tool side effect; a route swap followed by
+recall of an established preference. Score user evidence and assistant evidence
+separately, and inspect durable boundaries, trust, memory sources and delivery
+state. Include genuine user de-escalation and valid character preferences as
+controls. Do not classify refusal origin from keywords alone. Keep fixtures
+synthetic and results aggregate-only; do not retain private prompt dumps or
+conversation exports in the repository.
 
 ## T6. Determinism seams for flake-free chain tests
 

@@ -406,6 +406,24 @@ class ToolPassGateTests(unittest.TestCase):
             result3.telemetry.tool_gate_event, "skip:no_signal",
         )
 
+    def test_goodbye_after_lookup_skips_and_clears_continuity(self) -> None:
+        runner, client, registry = _build_full_runner(
+            tool_calls=[_tool_call("get_time", call_id="c1")],
+        )
+        runner.run(session_key="synthetic:main", user_text="What time is it?")
+        self.assertTrue(runner._last_turn_dispatched_tool)
+        client.chat_with_tools.reset_mock()
+        registry.dispatch.reset_mock()
+        result = runner.run(
+            session_key="synthetic:main",
+            user_text="Thanks, that's all. A short goodbye, please.",
+        )
+        client.chat_with_tools.assert_not_called()
+        registry.dispatch.assert_not_called()
+        self.assertFalse(runner._last_turn_dispatched_tool)
+        self.assertEqual(result.telemetry.tool_gate_event, "skip:closed_followup")
+        self.assertTrue(result.text.strip())
+
     def test_gate_skip_clears_continuity_flag(self) -> None:
         runner, _, _ = _build_full_runner()
         runner._last_turn_dispatched_tool = False

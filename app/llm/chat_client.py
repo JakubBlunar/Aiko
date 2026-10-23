@@ -37,6 +37,7 @@ class ChatToolCall:
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
     call_id: str = ""
+    argument_error: str | None = None
 
 
 @dataclass(slots=True)
@@ -101,6 +102,14 @@ class ChatUsage:
     # which is honest but includes network jitter, so the flag exists to
     # keep the two kinds of number distinguishable in telemetry.
     eval_duration_estimated: bool = False
+    # None means the provider did not report a split; zero is a known zero.
+    reasoning_tokens: int | None = None
+
+    @property
+    def answer_tokens(self) -> int | None:
+        if self.reasoning_tokens is None:
+            return None
+        return max(0, self.completion_tokens - self.reasoning_tokens)
 
     @property
     def total_tokens(self) -> int:
@@ -110,7 +119,8 @@ class ChatUsage:
     def tokens_per_second(self) -> float:
         if self.eval_duration_ms <= 0 or self.completion_tokens <= 0:
             return 0.0
-        return round((self.completion_tokens * 1000.0) / self.eval_duration_ms, 1)
+        tokens = self.answer_tokens if self.answer_tokens is not None else self.completion_tokens
+        return round((tokens * 1000.0) / self.eval_duration_ms, 1)
 
     @property
     def cached_tokens_pct(self) -> float:
@@ -152,6 +162,12 @@ class ChatUsage:
             # give 2 (truthy but nonsense as a field value).
             eval_duration_estimated=(
                 self.eval_duration_estimated or other.eval_duration_estimated
+            ),
+            reasoning_tokens=(
+                (self.reasoning_tokens or 0) + (other.reasoning_tokens or 0)
+                if (self.reasoning_tokens is not None or self.completion_tokens == 0)
+                and (other.reasoning_tokens is not None or other.completion_tokens == 0)
+                else None
             ),
         )
 

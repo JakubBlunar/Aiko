@@ -125,6 +125,12 @@ Behavioral activation and model-quality evaluation remain open.
 | K99 | Common ground with delivery provenance | Implementation shipped; behavioral comparison open |
 | K100 | Evidence-bound memory admission | Two-writer pilot implemented; broader entailment and behavioral evaluation open |
 | K101 | Route an unresolved premise to a bounded next step | Strict read-only recall pilot implemented; broader routing/evaluation open |
+| K102 | Pragmatic frames and indirect meaning | Open proposal, 23 Oct 2026 |
+| K103 | Repair the specific misunderstanding | Open proposal, 23 Oct 2026 |
+| K104 | Cause-specific feelings and mixed emotions | Open proposal, 23 Oct 2026 |
+| K105 | Expression follows communicative intent | Open proposal, 23 Oct 2026 |
+| K106 | Shared shorthand with negotiated meaning | Open proposal, 23 Oct 2026 |
+| K107 | Provider outcomes are not character evidence | Explicit outcome provenance implemented; semantic attribution open, 23 Oct 2026 |
 
 ---
 
@@ -1330,3 +1336,217 @@ fixtures; require better decisions rather than a higher tool-call rate.
 **Priority:** after traceability and initial K92/K100 work. **Effort:** medium.
 **Related:** K17, K69, K97, K92, P14 and
 [S4](../prompt-surfacing.md#s4-use-uncertainty-to-choose-the-next-useful-step).
+
+---
+
+## K102. Pragmatic frames and indirect meaning
+
+**Open proposal, 23 Oct 2026.** A familiar companion needs to follow what a line
+is doing in its context. "Great, another crash" after a failed build and "Great,
+it finally works" should not produce the same celebration. "You menace" in a
+mutually playful exchange need not become a personal conflict. These are
+synthetic contrasts, not observed production failures.
+
+**First slice.** Evaluate the main model with existing context before adding
+state. If useful, extend the current situation projection with one short-lived,
+source-linked frame: participants/referents, literal or pretend scope, a
+tentative communicative reading and an unresolved alternative. Use the existing
+observer budget; measure displacement/truncation before increasing it. Its
+post-reply reading is prior context only: the current user message and explicit
+corrections win. A mixed serious/playful message may need a local span boundary;
+do not classify an entire conversation as a joke.
+
+**Acceptance.** Paired contexts change the response appropriately; sarcasm
+without supporting context stays uncertain. Quoted speech retains its speaker.
+Leaving a pretend scene restores ordinary interpretation. Explicit boundaries
+are honored even inside banter. A low-stakes ambiguous joke need not trigger a
+clarification, while an ambiguity material to a decision can. No extra model
+call on ordinary greetings, no memory admission from a frame, and no inference
+of permission from teasing. Test held-out paraphrases and language variants.
+
+**Owners:** K4/K69/K97, L50 and K100; keep fictional-testimony admission with
+its existing owner. Key files:
+[dialogue_act_tagger.py](../../app/core/conversation/dialogue_act_tagger.py),
+[conversation_situation_worker.py](../../app/core/conversation/conversation_situation_worker.py),
+[conversation_situation.py](../../app/core/conversation/conversation_situation.py).
+**Effort:** Medium. Start alongside K103 and the T5 baseline.
+
+## K103. Repair the specific misunderstanding
+
+**Open proposal, 23 Oct 2026.** "I meant the other server" should lead to the
+correct server and a revised answer. "I was joking" should revise a literal
+reading without a long apology or an invented rupture. A more positive next
+turn does not prove that the misunderstanding was repaired.
+
+**First slice.** Extend existing repair handling with one bounded, cited repair
+target: the earlier claim/referent, the user's correction, and the replacement
+reading or remaining ambiguity. Answer the affected point proportionally, then
+retire the repair when the corrected point is addressed or explicitly dropped.
+Use K99's delivery provenance when distinguishing unheard audio (repeat the
+relevant span) from misunderstood content (rephrase/correct it). F13/L52 retain
+ownership of actual durable belief corrections; a local conversational repair
+must not become a new personal trait.
+
+**Acceptance.** Later pronouns use the corrected referent; a correction does not
+erase unrelated facts. "Sorry, what?" after interrupted audio repeats only the
+needed material. A joke correction changes the reading without altering
+closeness or requiring reassurance. After a pivot or cancellation the repair
+does not reopen itself. Compare wrong-referent recurrence, unnecessary apologies
+and extra clarification turns against the existing K17 path.
+
+**Owners:** K17/K23/K38/K97/K99, F13 and J6; reuse the situation record and
+current prompt tier, not a second repair worker. Key files:
+[conversation_situation.py](../../app/core/conversation/conversation_situation.py),
+[conflict_repair.py](../../app/core/relationship/conflict_repair.py),
+[delivery.py](../../app/core/conversation/delivery.py).
+**Effort:** Medium. K102 helps interpret repairs but explicit-correction cases
+can be tested independently.
+
+## K104. Cause-specific feelings and mixed emotions
+
+**Open proposal, 23 Oct 2026.** Aiko can be pleased about a shared success while
+still disappointed about a different unfinished exchange. Excitement about an
+activity can coexist with uncertainty. K57 already retains several episodes;
+this proposal concerns their causes, updates and expression rather than another
+emotion catalogue. Long-lived L12 tension concepts remain separate.
+
+**Source basis.** `add_episode` currently merges the same emotion across causes;
+any `warm_glow` cancels `miffed` and halves `hurt`. The episode provider selects
+`strongest(state)`. This is a testable simplification, not evidence that users
+want more persistent negative affect.
+
+**First slice.** Keep K57's cap and decay. Associate an episode with a bounded
+source event/topic, update a matching cause, and resolve it only with relevant
+evidence or normal expiry. Permit at most two compatible, relevant feelings in
+the existing render, with a strict text budget. Start with positive/neutral
+ambivalence; do not add new grievance producers, penalties or slower hurt decay.
+If semantic cause matching needs inference, compare it in shadow first.
+
+**Acceptance.** An unrelated compliment does not certify resolution of a
+different issue; relevant clarification can resolve it. Repeated evidence does
+not amplify an episode. Mixed feelings produce one proportionate response,
+not a recitation of mood labels or oscillating faces. Acknowledged/resolved
+issues stay resolved. Normal goodbyes, work, other friendships and declined
+romance do not generate new grievance episodes. Silence can remain appropriate.
+
+**Owners:** K45/K57/K60 and J6. Key files:
+[emotion_episodes.py](../../app/core/affect/emotion_episodes.py),
+[expression_mask.py](../../app/core/affect/expression_mask.py),
+[inner_life_part3.py](../../app/core/session/inner_life_part3.py).
+**Effort:** Medium; evaluate with J12's expression preferences.
+
+## K105. Expression follows communicative intent
+
+**Open proposal, 23 Oct 2026.** The same words can be sincere, teasing or a
+careful correction. Pauses and laughter should help that meaning land. Existing
+sentence reactions, prosody tags, earcons, expression stacks and Live floor
+manners already supply controls; this is a semantic selection experiment.
+
+**First slice.** Compare a few matched utterances using existing controls. If a
+gap remains, let the main reply optionally attach one bounded delivery intent
+to an utterance, such as reassurance, playful challenge or gentle correction.
+Resolve it to supported controls through current cadence/avatar owners. Use
+response/chunk identity and actual playback events for transient expression
+timing; text generation is not evidence that a sentence has been heard. Do not
+buffer a whole reply or add a separate director call just for expression.
+
+**Acceptance.** In a blinded listening comparison, delivery fits the intended
+meaning without reducing intelligibility or worsening first-audio latency.
+Paired sincere/teasing lines remain distinguishable without canned laughter.
+Interrupted or cancelled chunks cannot fire a late grin, laugh or pause. Text
+mode remains natural without invented spoken fillers, unsupported rigs degrade
+gracefully, and two clients do not both perform a playback-linked beat. Tags
+remain absent from stored/displayed text. Silence and neutral delivery are
+valid controls, not failures to be made more expressive.
+
+**Owners:** K58/K60/K99, Live L5/L9 and the existing TTS prefetch/playback
+contract. Key files: [cadence.py](../../app/core/voice/cadence.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[ExpressionChannel.ts](../../web/src/live2d/channels/ExpressionChannel.ts).
+Engine-independent behavior stays shared; do not reimplement pacing/gain or
+assume word timing that the engine does not expose.
+**Effort:** Small for the evaluation, Medium-Large for any cross-client timing
+extension. Depends on measured need, not a new rig or model.
+
+## K106. Shared shorthand with negotiated meaning
+
+**Open proposal, 23 Oct 2026.** "Gremlin hour" might mean their short coding
+session, while "the blue one" might identify a particular shared draft. Using
+that meaning naturally is a different ability from repeating a catchphrase or
+noticing an inside joke. The names and examples here are synthetic.
+
+**First slice.** Keep a small, session-local set of explicitly agreed terms,
+their referents/meanings and source IDs. One ambiguous use is not agreement;
+Aiko proposing a name is not user adoption. Retain correction, scope and expiry
+with each meaning. Only explicitly requested or independently supported durable
+terms enter existing memory through `MemoryStore.add(...)`; K80 remains the
+owner of joke birth. No new vector store, permanent glossary prompt or forced
+callback cue is needed. Named proactive offers still use the cue pool.
+
+**Acceptance.** Reuse an agreed term without explaining its origin every time;
+use its meaning to resolve a later reference. A corrected name replaces the
+active reading without losing source history. Identical words in another task
+do not import the old referent. Declined names stay unused; ambiguous meanings
+can remain unresolved. Deleting the underlying source invalidates unsupported
+derived entries. Measure referent accuracy and unwanted callbacks, not phrase
+reuse frequency.
+
+**Owners:** K22/K62/K80, L7 relationship concepts, L50 and J13. Key files:
+[catchphrase_miner.py](../../app/core/memory/catchphrase_miner.py),
+[conversation_situation.py](../../app/core/conversation/conversation_situation.py),
+[memory_store.py](../../app/core/memory/memory_store.py).
+**Effort:** Medium. Start with explicit naming; do not infer a private language
+from embedding similarity alone.
+
+## K107. Provider outcomes are not character evidence
+
+**First slice implemented, 23 Oct 2026; semantic attribution open.** A model swap changes the generator,
+not Aiko's established preferences. A provider refusal, output-budget exhaustion,
+cancelled reply or transport failure must not silently become "I dislike this,"
+a new durable boundary, a relationship setback or evidence of a shared event.
+The same distinction matters outside romance: a failed calendar lookup is not
+evidence that she chose not to attend.
+
+**Verified source gap.** Chat Completions used to accept in-band errors and
+unmarked EOF as completed replies. It now rejects those cases and explicit
+provider refusal signals before transcript commit and completed-turn learning;
+private inline thinking is also removed before control-tag interpretation.
+These guards are implemented. Structured turn outcomes now gate transcript
+commit, inline memory, post-turn affect/trust updates and reflection scheduling.
+Cancelled, truncated and failed answers are excluded from saved assistant history,
+while the user's message remains usable. Ordinary textual declines still lack
+reliable origin information; this is not a complete semantic attribution system.
+
+**Implemented first slice.** An additive `turn_outcomes` SQLite table stores the
+attempt, user/assistant IDs, status, provider, model and route fingerprint.
+Successful assistant insertion commits with its provenance before message
+listeners run. Reflection passes the outcome to `MemoryStore.add`, which checks
+source completion and deletion again at write time. Source-linked memories carry
+`turn_sources` and `source_authority="generated_output"`; this does not upgrade
+generated speech into user testimony or prove a personal preference. Background
+transcript readers cannot ingest the excluded failed answer. Existing legacy
+evidence is not retroactively relabelled. Route swaps preserve existing memories.
+Do not introduce a refusal-keyword classifier or force a model to answer by
+changing its stated reason.
+
+**Still open.** Classify ordinary text-only declines only when stronger origin
+evidence becomes available; audit all downstream concept promotion against that
+authority. Delivery and tool-side-effect idempotency remain separate contracts:
+already streamed audio cannot be recalled, and this change adds no automatic
+tool replay. Validate those longer scenarios before closing K107 as a whole.
+
+**Acceptance.** Synthetic provider refusal/error and no-answer budget exhaustion
+leave durable character boundaries and trust unchanged. A real user stop still
+takes effect immediately. Interrupted output is not treated as a completed or
+heard exchange, and retrying cannot duplicate tool side effects. Unknown origin
+stays unknown; a supported explicit character preference can still be learned
+through the existing evidence rules. Switching routes preserves existing
+preferences rather than relearning them from the new provider's defaults.
+
+**Owners:** J12, K99/K100 and the existing evidence-admission contracts. Key
+files: [chat_client.py](../../app/llm/chat_client.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[chat_turn_mixin.py](../../app/core/session/chat_turn_mixin.py), and
+[post_turn_mixin.py](../../app/core/session/post_turn_mixin.py).
+**Effort:** Medium. Start with explicit outcomes and source-linked writers;
+evaluate ordinary friendship/affection and practical tool errors as controls.

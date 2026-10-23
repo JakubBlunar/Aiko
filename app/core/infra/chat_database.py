@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
+from app.core.infra.message_outcomes import MessageOutcomesMixin, OUTCOME_SCHEMA
 
 log = logging.getLogger("app.chat_database")
 
@@ -1406,7 +1407,7 @@ def _snippet(text: str | None, *, max_chars: int = 80) -> str:
     return flat[: max_chars - 1].rstrip() + "\u2026"
 
 
-class ChatDatabase:
+class ChatDatabase(MessageOutcomesMixin):
     """Thread-safe SQLite store for chat messages, embeddings, and summaries."""
 
     def __init__(self, db_path: Path) -> None:
@@ -1500,6 +1501,7 @@ class ChatDatabase:
 
     def _init_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_CREATE_TABLES)
+        conn.executescript(OUTCOME_SCHEMA)
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
             # Fresh database: CREATE TABLE memories above already
@@ -2340,34 +2342,6 @@ class ChatDatabase:
             conn.commit()
 
     # ── Messages ──
-
-    def add_message(
-        self,
-        session_id: str,
-        role: str,
-        content: str,
-        token_count: int = 0,
-        *,
-        arc: str | None = None,
-        dialogue_act: str | None = None,
-        attachments: str | None = None,
-    ) -> int:
-        conn = self._get_conn()
-        created_at = _now_iso()
-        cursor = conn.execute(
-            "INSERT INTO messages (session_id, role, content, token_count, "
-            "created_at, arc, dialogue_act, attachments) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (session_id, role, content, token_count, created_at, arc, dialogue_act, attachments),
-        )
-        conn.commit()
-        msg_id = int(cursor.lastrowid or 0)
-        self._notify_added_message(MessageRow(
-            id=msg_id, session_id=session_id, role=role, content=content,
-            token_count=token_count, created_at=created_at, arc=arc,
-            dialogue_act=dialogue_act, attachments=attachments,
-        ))
-        return msg_id
 
     def _notify_added_message(self, row: MessageRow) -> None:
         for listener in list(self._add_listeners):

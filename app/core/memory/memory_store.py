@@ -966,6 +966,12 @@ class MemoryStore:
         cleaned = (content or "").strip()
         if not cleaned or len(cleaned) < 4:
             return None
+        from app.core.memory.turn_evidence import check_turn_evidence
+        allowed, metadata = check_turn_evidence(
+            self._get_conn(), metadata, source_message_id, source_session,
+        )
+        if not allowed:
+            return None
         admission_key = (metadata or {}).get("admission_key")
         if admission_key and self._get_conn().execute(
             "SELECT id FROM memories WHERE json_extract(metadata, '$.admission_key') = ? LIMIT 1",

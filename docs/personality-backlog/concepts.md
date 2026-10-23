@@ -1823,9 +1823,11 @@ that kind already owns a live steering path, and a new kind would have needed it
 rebuilt. A `strategy` kind still has to justify itself against "an actionable
 comm-style line with a context clause in it". (2) How
 is "this approach worked" measured (K14 engagement signals, user reactions)?
-**L37's surfacing outcome ledger is the answer to this** — it was the open
-question blocking the item, and it now has a design: a strategy's effectiveness
-is the engaged rate of the turns where it was in play. (3) Guard against
+**L37's surfacing outcome ledger supplies context, not an effectiveness label.**
+Its following-turn engagement signal is shared by multiple surfaced items and
+does not establish that an approach worked or caused the reaction. Prefer
+explicit outcomes and source-linked comparisons; retain unknown outcomes as
+unknown. (3) Guard against
 over-fitting rigid rules that make her robotic — plasticity + context-gating.
 (4) L44 (per-domain self-calibration) is the natural reliability axis for a
 strategy: "this approach works, in the domains where my judgement is any good" —
@@ -1837,9 +1839,32 @@ effectiveness signal).
 
 **Depends on.** L23 (communication_style), L17d (self-correction as a strategy
 source — **now shipped**, so the source exists and its output is already a
-comm-style rule), L34 (belief -> strategy edges), K14 (effectiveness signal),
-L37 (which turns that signal into a per-strategy measure), L44 (per-domain
+comm-style rule), L34 (belief -> strategy edges), K14 (engagement context),
+L37 (surfacing attribution context, not causal credit), L44 (per-domain
 reliability — blocked on supply, treat as optional).
+
+### 23 Oct 2026: outcome-grounded strategy transfer
+
+**Backlog extension; not implemented.** Before introducing a new `strategy` kind,
+pilot one approach through L50's scoped `communication_style` and L51's existing
+working model. Retain references to the originating situation, relevant
+constraints, chosen approach, independently reported result and known exception.
+This is a compact case for reuse, not stored private reasoning. Its evidence
+and any durable writes follow L49/K100 and `MemoryStore.add(...)`.
+
+For example, "concrete steps helped when troubleshooting" does not justify
+giving steps when the user explicitly wants to vent. A repeated phrase, a warm
+reaction or longer engagement is not confirmation of success. Rank a bounded
+set of applicable cases; absence of a good match should leave the normal reply
+path alone. No new worker or inference call on every casual turn.
+
+**Acceptance.** Transfer an approach to a held-out problem with matching
+constraints; reject the superficially similar case with a different goal.
+Preserve a user-corrected exception. Retracting an outcome invalidates the
+strategy's unsupported justification through L52, rather than asserting that the
+opposite approach works. Never learn "keep the user talking" from longer chats.
+Use explicit helpfulness/outcome labels and T5/L55 comparisons at equal budgets.
+New kind/schema work remains conditional on the pilot exposing a real need.
 
 ---
 

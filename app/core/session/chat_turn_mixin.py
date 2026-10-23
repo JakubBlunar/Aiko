@@ -329,6 +329,7 @@ class ChatTurnMixin:
                 raw_assistant_text=getattr(result, "raw_text", "") or "",
                 user_message_id=user_message_id,
                 assistant_message_id=getattr(result, "assistant_message_id", None),
+                turn_outcome=getattr(result, "outcome", None),
                 # G4 needs this turn's block sizes. Passed explicitly
                 # because ``_last_system_prompt`` is not stamped until
                 # after this call returns, so reading it from there would
@@ -373,6 +374,8 @@ class ChatTurnMixin:
             "prompt_tokens": int(usage.prompt_tokens),
             "context_tokens": int(context_tokens),
             "completion_tokens": int(usage.completion_tokens),
+            "reasoning_tokens": usage.reasoning_tokens,
+            "answer_tokens": usage.answer_tokens,
             "total_tokens": int(usage.total_tokens),
             # P44: prompt-cache hit rate. Parsed by the OpenAI-compatible
             # client since the beginning but never surfaced past the

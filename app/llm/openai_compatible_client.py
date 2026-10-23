@@ -8,8 +8,8 @@ rest of the code knowing the difference.
 
 Why hand-rolled? Two reasons:
 
-1. We already depend on ``requests`` (the Ollama client uses it), and a
-   single-file implementation is ~300 lines. Pulling in
+1. We already depend on ``requests`` (the Ollama client uses it), and
+   direct HTTP keeps the transport under our control. Pulling in
    ``langchain-openai`` would add 30+ MB of transitive deps and a
    global ``ChatOpenAI`` class hierarchy we don't want to inherit.
 2. Some providers (Gemini's OpenAI-compat layer in particular) have
@@ -37,6 +37,9 @@ Quirks handled here:
   text and the existing parsers tolerate that.
 - Extra headers (``HTTP-Referer`` / ``X-Title`` for OpenRouter, etc.)
   are forwarded from ``LlmProvider.extra_headers``.
+
+Chat Completions stream framing, private-text filtering and completion
+validation live in :mod:`app.llm.chat_completion_stream`.
 """
 
 from __future__ import annotations
@@ -54,6 +57,18 @@ from urllib.parse import urlsplit
 import requests
 
 from app.core.infra.settings import OllamaSettings
+from app.llm.tool_arguments import parse_tool_arguments
+from app.llm.token_usage import (
+    read_reasoning_tokens,
+    responses_usage as _responses_usage,
+    fill_wall_clock_eval_duration as _fill_wall_clock_eval_duration,
+)
+from app.llm.turn_outcome import ProviderOutcomeError
+from app.llm.chat_completion_stream import (
+    iter_sse_data_lines as _iter_sse_data_lines,
+    map_finish_reason as _map_finish_reason,
+    stream_chat_completion,
+)
 from app.llm.chat_client import (
     CACHE_BREAKPOINT_KEY,
     ChatResponse,
@@ -657,26 +672,6 @@ _RESPONSES_API_UNSUPPORTED_OPTION_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _map_finish_reason(reason: object) -> str | None:
-    """Translate OpenAI ``finish_reason`` to the Ollama-shaped vocabulary.
-
-    The truncation gate downstream only looks at ``"length"``; mapping
-    keeps the warning behaviour symmetric across providers. ``"stop"``
-    passes through unchanged; everything else collapses to its lowercase
-    string form for telemetry.
-    """
-    if reason is None:
-        return None
-    text = str(reason).strip().lower()
-    if not text:
-        return None
-    if text == "length":
-        return "length"
-    if text == "stop":
-        return "stop"
-    return text
-
-
 def _warn_if_truncated(
     usage: ChatUsage, *, model: str, surface: str, benign: bool = False,
 ) -> None:
@@ -705,48 +700,6 @@ def _warn_if_truncated(
         "max_tokens if this is frequent)",
         surface, model, int(usage.completion_tokens),
     )
-
-
-# Regex used to split an SSE event line on its first colon. The OpenAI
-# streaming protocol uses ``data: {...}\n\n``; everything else (heartbeat
-# ``:`` comments, ``id:`` / ``event:`` fields) is ignored.
-_SSE_SPLIT_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*):\s?(.*)$")
-
-
-def _iter_sse_data_lines(
-    response: requests.Response,
-    *,
-    stop_event: threading.Event | None = None,
-) -> Generator[str, None, None]:
-    """Yield each ``data:`` payload (without the prefix) from an SSE stream.
-
-    Skips comments, ``event:``/``id:`` fields, and the terminator
-    sentinel ``[DONE]``. Returns when the stream closes or the
-    ``stop_event`` fires (the underlying socket is closed by the
-    caller's ``with`` block in either case).
-
-    Malformed lines (no colon, unknown field name) are silently
-    dropped — providers occasionally emit junk and we'd rather keep
-    streaming than raise mid-token.
-    """
-    for raw_line in response.iter_lines(decode_unicode=True):
-        if stop_event is not None and stop_event.is_set():
-            return
-        if not raw_line:
-            continue
-        if raw_line.startswith(":"):  # SSE heartbeat comment
-            continue
-        match = _SSE_SPLIT_RE.match(raw_line)
-        if match is None:
-            continue
-        field_name, value = match.group(1), match.group(2)
-        if field_name != "data":
-            continue
-        value = value.strip()
-        if value == "[DONE]":
-            return
-        if value:
-            yield value
 
 
 def _apply_json_output_format(
@@ -1567,8 +1520,10 @@ class OpenAICompatibleClient:
             tool_choice=None,
         )
         usage = ChatUsage()
+        self.last_usage = usage
         t0 = time.monotonic()
         first_token_ms: float | None = None
+        visible_content = False
         try:
             with requests.post(
                 f"{self._base_url}/responses",
@@ -1597,11 +1552,17 @@ class OpenAICompatibleClient:
                     if ctype == "response.output_text.delta":
                         token = chunk.get("delta")
                         if isinstance(token, str) and token:
+                            visible_content = visible_content or bool(token.strip())
                             if first_token_ms is None:
                                 first_token_ms = (
                                     time.monotonic() - t0
                                 ) * 1000.0
                             yield token
+                    elif ctype == "response.refusal.delta":
+                        raise ProviderOutcomeError(
+                            "Response was blocked by the provider.", outcome="provider_blocked",
+                            finish_reason="refusal",
+                        )
                     elif ctype in (
                         "response.completed", "response.incomplete",
                     ):
@@ -1615,6 +1576,7 @@ class OpenAICompatibleClient:
                                 usage.completion_tokens = int(
                                     u.get("output_tokens", 0) or 0,
                                 )
+                                read_reasoning_tokens(usage, u, responses=True)
                                 details = u.get("input_tokens_details")
                                 if isinstance(details, dict):
                                     usage.cached_tokens = int(
@@ -1622,7 +1584,13 @@ class OpenAICompatibleClient:
                                     )
                             status = resp_obj.get("status")
                             if status == "incomplete":
+                                done_reason = "incomplete"
                                 inc = resp_obj.get("incomplete_details") or {}
+                                if isinstance(inc, dict) and inc.get("reason") == "content_filter":
+                                    raise ProviderOutcomeError(
+                                        "Response was blocked by the provider.",
+                                        outcome="provider_blocked", finish_reason="content_filter",
+                                    )
                                 if (
                                     isinstance(inc, dict)
                                     and inc.get("reason") == "max_output_tokens"
@@ -1637,10 +1605,21 @@ class OpenAICompatibleClient:
                             "surface=%s msg=%s",
                             model, surface, err_msg,
                         )
-                        raise RuntimeError(
-                            f"responses stream error: {err_msg}",
+                        raise ProviderOutcomeError(
+                            "Responses stream reported a provider error.", outcome="provider_error",
                         )
                 usage.done_reason = done_reason
+                if stop_event is None or not stop_event.is_set():
+                    if done_reason is None:
+                        raise ProviderOutcomeError(
+                            "Responses stream ended before completion.", outcome="incomplete",
+                        )
+                    if not visible_content:
+                        raise ProviderOutcomeError(
+                            "Response produced no visible answer.",
+                            outcome="budget_exhausted" if done_reason == "length" else "empty",
+                            finish_reason=done_reason,
+                        )
         except requests.RequestException as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
             log.error(
@@ -1842,6 +1821,7 @@ class OpenAICompatibleClient:
             format_json=format_json,
         )
         usage = ChatUsage()
+        self.last_usage = usage
         t0 = time.monotonic()
         first_token_ms: float | None = None
         try:
@@ -1858,55 +1838,9 @@ class OpenAICompatibleClient:
                         "chat_stream", response, elapsed_ms=elapsed_ms,
                     )
                 response.raise_for_status()
-                finish_reason: str | None = None
-                for data in _iter_sse_data_lines(
-                    response, stop_event=stop_event,
-                ):
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(chunk, dict):
-                        continue
-                    # Usage stats arrive in a dedicated terminal chunk
-                    # (when stream_options.include_usage was honoured).
-                    usage_payload = chunk.get("usage")
-                    if isinstance(usage_payload, dict):
-                        usage.prompt_tokens = int(
-                            usage_payload.get("prompt_tokens", 0) or 0,
-                        )
-                        usage.completion_tokens = int(
-                            usage_payload.get("completion_tokens", 0) or 0,
-                        )
-                        # OpenAI prompt-caching: see _build_usage above
-                        # for the equivalent non-streaming path. Field
-                        # is absent on most non-OpenAI providers, so
-                        # the default ``0`` is the right outcome there.
-                        details = usage_payload.get("prompt_tokens_details")
-                        if isinstance(details, dict):
-                            usage.cached_tokens = int(
-                                details.get("cached_tokens", 0) or 0,
-                            )
-                    choices = chunk.get("choices") or []
-                    if not isinstance(choices, list) or not choices:
-                        continue
-                    first_choice = choices[0]
-                    if not isinstance(first_choice, dict):
-                        continue
-                    delta = first_choice.get("delta") or {}
-                    if not isinstance(delta, dict):
-                        continue
-                    token = delta.get("content")
-                    if isinstance(token, str) and token:
-                        if first_token_ms is None:
-                            first_token_ms = (
-                                time.monotonic() - t0
-                            ) * 1000.0
-                        yield token
-                    fr = first_choice.get("finish_reason")
-                    if fr is not None:
-                        finish_reason = str(fr)
-                usage.done_reason = _map_finish_reason(finish_reason)
+                first_token_ms = yield from stream_chat_completion(
+                    response, usage=usage, started_at=t0, stop_event=stop_event,
+                )
         except requests.RequestException as exc:
             elapsed_ms = (time.monotonic() - t0) * 1000.0
             log.error(
@@ -2104,6 +2038,8 @@ class OpenAICompatibleClient:
         """
         if not isinstance(body, dict):
             return "", [], None
+        if body.get("error") is not None:
+            raise ProviderOutcomeError("Provider reported an error.", outcome="provider_error")
         choices = body.get("choices") or []
         if not isinstance(choices, list) or not choices:
             return "", [], None
@@ -2113,6 +2049,11 @@ class OpenAICompatibleClient:
         message = first.get("message") or {}
         if not isinstance(message, dict):
             message = {}
+        if message.get("refusal") or first.get("finish_reason") in {"refusal", "content_filter"}:
+            raise ProviderOutcomeError(
+                "Chat completion was blocked by the provider.", outcome="provider_blocked",
+                finish_reason=first.get("finish_reason") or "refusal",
+            )
         content = message.get("content") or ""
         if not isinstance(content, str):
             content = "" if content is None else str(content)
@@ -2147,6 +2088,7 @@ class OpenAICompatibleClient:
                 usage.cached_tokens = int(
                     details.get("cached_tokens", 0) or 0,
                 )
+            read_reasoning_tokens(usage, usage_dict)
         usage.done_reason = _map_finish_reason(finish_reason)
         return usage
 
@@ -2174,18 +2116,10 @@ def _parse_openai_tool_calls(raw: object) -> list[ChatToolCall]:
             continue
         call_id = str(item.get("id", "") or "").strip()
         raw_args = function.get("arguments", {})
-        args: dict[str, Any]
-        if isinstance(raw_args, dict):
-            args = dict(raw_args)
-        elif isinstance(raw_args, str):
-            try:
-                loaded = json.loads(raw_args)
-            except Exception:
-                loaded = {}
-            args = dict(loaded) if isinstance(loaded, dict) else {}
-        else:
-            args = {}
-        parsed.append(ChatToolCall(name=name, arguments=args, call_id=call_id))
+        args, error = parse_tool_arguments(raw_args)
+        parsed.append(ChatToolCall(
+            name=name, arguments=args, call_id=call_id, argument_error=error,
+        ))
     return parsed
 
 
@@ -2447,6 +2381,8 @@ def _parse_responses_output(
     """
     if not isinstance(body, dict):
         return "", [], None
+    if body.get("error") is not None or body.get("status") == "failed":
+        raise ProviderOutcomeError("Provider reported an error.", outcome="provider_error")
     text_parts: list[str] = []
     tool_calls: list[ChatToolCall] = []
     output = body.get("output")
@@ -2459,6 +2395,11 @@ def _parse_responses_output(
                 content = item.get("content")
                 if isinstance(content, list):
                     for part in content:
+                        if isinstance(part, dict) and part.get("type") == "refusal":
+                            raise ProviderOutcomeError(
+                                "Response was blocked by the provider.", outcome="provider_blocked",
+                                finish_reason="refusal",
+                            )
                         if (
                             isinstance(part, dict)
                             and part.get("type") == "output_text"
@@ -2476,23 +2417,19 @@ def _parse_responses_output(
                     item.get("call_id", "") or item.get("id", "") or "",
                 ).strip()
                 raw_args = item.get("arguments", {})
-                if isinstance(raw_args, str):
-                    try:
-                        loaded = json.loads(raw_args)
-                    except Exception:
-                        loaded = {}
-                    args = dict(loaded) if isinstance(loaded, dict) else {}
-                elif isinstance(raw_args, dict):
-                    args = dict(raw_args)
-                else:
-                    args = {}
-                tool_calls.append(
-                    ChatToolCall(name=name, arguments=args, call_id=call_id),
-                )
+                args, error = parse_tool_arguments(raw_args)
+                tool_calls.append(ChatToolCall(
+                    name=name, arguments=args, call_id=call_id, argument_error=error,
+                ))
     status = body.get("status")
     done_reason: str | None = None
     if status == "incomplete":
         inc = body.get("incomplete_details") or {}
+        if isinstance(inc, dict) and inc.get("reason") == "content_filter":
+            raise ProviderOutcomeError(
+                "Response was blocked by the provider.", outcome="provider_blocked",
+                finish_reason="content_filter",
+            )
         if isinstance(inc, dict) and inc.get("reason") == "max_output_tokens":
             done_reason = "length"
         else:
@@ -2529,55 +2466,6 @@ def _extract_responses_stream_error(chunk: dict[str, Any]) -> str:
             return msg.strip()
     return str(chunk)[:300]
 
-
-def _responses_usage(
-    usage_dict: object, *, total_ms: float, done_reason: str | None,
-) -> ChatUsage:
-    """Build a ChatUsage from a Responses ``usage`` block.
-
-    Responses names the token fields ``input_tokens`` /
-    ``output_tokens`` (vs chat-completions' ``prompt_tokens`` /
-    ``completion_tokens``) and reports cache hits under
-    ``input_tokens_details.cached_tokens``. ``done_reason`` is already
-    mapped by :func:`_parse_responses_output`, so it's stored as-is.
-    """
-    usage = ChatUsage(total_duration_ms=float(total_ms))
-    if isinstance(usage_dict, dict):
-        usage.prompt_tokens = int(usage_dict.get("input_tokens", 0) or 0)
-        usage.completion_tokens = int(usage_dict.get("output_tokens", 0) or 0)
-        details = usage_dict.get("input_tokens_details")
-        if isinstance(details, dict):
-            usage.cached_tokens = int(details.get("cached_tokens", 0) or 0)
-    usage.done_reason = done_reason
-    return usage
-
-
-def _fill_wall_clock_eval_duration(
-    usage: ChatUsage,
-    first_token_ms: float | None,
-    elapsed_ms: float,
-) -> None:
-    """Derive generation time from the stream when the provider won't say.
-
-    Ollama reports ``eval_duration`` natively; no OpenAI-compatible
-    endpoint does. ``ChatUsage.tokens_per_second`` divides by that field,
-    so every cloud turn used to render as ``0 tok/s`` in the UI and log a
-    flat ``eval_ms=0``.
-
-    The stream itself already knows enough: the span between the first
-    content delta and the last byte IS the generation phase, with
-    time-to-first-token (queueing plus prompt eval) excluded. It carries
-    network jitter that Ollama's server-side number does not, hence the
-    ``eval_duration_estimated`` flag rather than pretending the two are
-    the same measurement.
-
-    Only fills a field the provider left empty, so a future endpoint that
-    starts reporting real timings silently wins.
-    """
-    if usage.eval_duration_ms > 0 or first_token_ms is None:
-        return
-    usage.eval_duration_ms = max(0.0, elapsed_ms - first_token_ms)
-    usage.eval_duration_estimated = True
 
 
 __all__ = ["OpenAICompatibleClient"]

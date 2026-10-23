@@ -102,6 +102,16 @@ class LlmClientsMixin:
             except Exception:
                 log.debug("worker runtime model cascade failed", exc_info=True)
 
+    def _chat_source_identity(self) -> dict:
+        import hashlib
+        import json
+        from app.core.infra.settings import llm_route_to_dict
+
+        route = self._settings.llm.routes.get("main_chat")
+        fields = llm_route_to_dict(route) if route is not None else {}
+        revision = hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()[:16]
+        return {"provider_id": fields.get("provider_id", "unknown"), "route_revision": revision}
+
     def _route_or_none(self, role: str) -> "LlmRoute | None":
         """Look up one role in the route table; ``None`` when unset."""
         try:

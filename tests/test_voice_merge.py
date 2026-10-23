@@ -253,6 +253,7 @@ class TurnRunnerResumeTests(_TempDbCase):
         ollama.chat_stream.return_value = iter([])
         ollama.last_usage = MagicMock(
             prompt_tokens=10, completion_tokens=0,
+            done_reason=None,
             total_duration_ms=0.0, eval_duration_ms=0.0,
             prompt_eval_duration_ms=0.0, tokens_per_second=0.0,
             total_tokens=10, merge=lambda _o: ollama.last_usage,

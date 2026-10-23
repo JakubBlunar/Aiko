@@ -9,6 +9,8 @@ from typing import Any
 
 import requests
 
+from app.llm.tool_arguments import parse_tool_arguments
+
 from app.core.infra.settings import OllamaSettings
 from app.llm.chat_client import (
     ChatResponse,
@@ -899,18 +901,10 @@ class OllamaClient:
                 continue
             call_id = str(item.get("id", "") or "").strip()
             raw_args = function.get("arguments", {})
-            args: dict[str, Any]
-            if isinstance(raw_args, dict):
-                args = dict(raw_args)
-            elif isinstance(raw_args, str):
-                try:
-                    loaded = json.loads(raw_args)
-                except Exception:
-                    loaded = {}
-                args = dict(loaded) if isinstance(loaded, dict) else {}
-            else:
-                args = {}
-            parsed.append(OllamaToolCall(name=name, arguments=args, call_id=call_id))
+            args, error = parse_tool_arguments(raw_args)
+            parsed.append(OllamaToolCall(
+                name=name, arguments=args, call_id=call_id, argument_error=error,
+            ))
         return parsed
 
     def list_models(self) -> list[str]:

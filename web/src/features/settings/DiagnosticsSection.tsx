@@ -104,6 +104,22 @@ export function DiagnosticsSection({
             label="Completion"
             value={(last.completion_tokens ?? 0).toLocaleString()}
           />
+          <Stat
+            label="Reasoning"
+            value={
+              last.reasoning_tokens == null
+                ? "Not reported"
+                : last.reasoning_tokens.toLocaleString()
+            }
+          />
+          <Stat
+            label="Answer tokens"
+            value={
+              last.answer_tokens == null
+                ? "Not reported"
+                : last.answer_tokens.toLocaleString()
+            }
+          />
         </div>
       </div>
 
@@ -141,9 +157,7 @@ export function DiagnosticsSection({
           <Stat
             label="Fill avg"
             value={
-              avg.prompt_pct
-                ? `${Math.round(avg.prompt_pct * 100)}%`
-                : "—"
+              avg.prompt_pct ? `${Math.round(avg.prompt_pct * 100)}%` : "—"
             }
           />
         </div>
@@ -154,10 +168,7 @@ export function DiagnosticsSection({
           Summary state
         </div>
         <div className="space-y-1 text-[11px]">
-          <RowMini
-            label="Active"
-            value={last.summary_active ? "yes" : "no"}
-          />
+          <RowMini label="Active" value={last.summary_active ? "yes" : "no"} />
           <RowMini
             label="Messages covered"
             value={String(last.summary_messages ?? 0)}
@@ -260,10 +271,10 @@ function DebugLoggingBlock({ onApplyPatch, busy }: DebugLoggingBlockProps) {
         </span>
       </div>
       <p className="mb-3 text-[11px] leading-snug text-ink-100/55">
-        Captures WS events, avatar channel decisions, and settings
-        changes into <code className="font-mono text-ink-100/70">data/app.log</code> with a{" "}
-        <code className="font-mono text-ink-100/70">[ui]</code> prefix. Leave off in normal use;
-        flip on, reproduce a bug, then share the log file.
+        Captures WS events, avatar channel decisions, and settings changes into{" "}
+        <code className="font-mono text-ink-100/70">data/app.log</code> with a{" "}
+        <code className="font-mono text-ink-100/70">[ui]</code> prefix. Leave
+        off in normal use; flip on, reproduce a bug, then share the log file.
       </p>
       <label className="flex cursor-pointer items-center gap-2 text-[12px] text-ink-100/85">
         <input

@@ -167,6 +167,15 @@ function ContextPopover({ ctxWindow, ctxSource }: PopoverProps) {
           value={`${promptTokens.toLocaleString()} / ${(m.completion_tokens ?? 0).toLocaleString()}`}
           title="Total prompt / completion tokens billed this turn, summed across the tool-decision pass and the reply pass. On tool turns this is higher than 'used' because each pass re-sends the system prompt — 'used' above is the largest single call (true window occupancy)."
         />
+        <Stat
+          label="Reasoning tokens"
+          value={m.reasoning_tokens == null ? "Not reported" : m.reasoning_tokens.toLocaleString()}
+        />
+        <Stat
+          label="Answer tokens"
+          value={m.answer_tokens == null ? "Not reported" : m.answer_tokens.toLocaleString()}
+          title="Reported completion tokens minus reasoning tokens, across the tool and reply calls."
+        />
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">

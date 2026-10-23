@@ -1974,6 +1974,8 @@ export interface MetricsSnapshot {
   // passes and double-counts the system prompt on tool turns.
   context_tokens?: number;
   completion_tokens?: number;
+  reasoning_tokens?: number | null;
+  answer_tokens?: number | null;
   total_tokens?: number;
   // Ollama timing breakdown.
   total_duration_ms?: number;

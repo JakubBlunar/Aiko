@@ -26,6 +26,7 @@ from collections import deque
 from typing import Any
 
 from app.core.infra import timephrase
+from app.llm.turn_outcome import TurnOutcome
 from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
 
 
@@ -130,6 +131,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
         user_message_id: int | None = None,
         assistant_message_id: int | None = None,
         telemetry: Any = None,
+        turn_outcome: TurnOutcome | None = None,
     ) -> None:
         """Run all post-turn inner-life updates (cheap, no LLM).
 
@@ -142,6 +144,13 @@ class PostTurnMixin(PostTurnHelpersMixin):
         More post-turn jobs (user-state estimator, promise regex, agenda
         regex) will hang off this method as the relevant phases land.
         """
+        if turn_outcome is not None and not turn_outcome.learning_eligible:
+            if turn_outcome.status == "control_only":
+                self._apply_sleep_decision(
+                    raw_assistant_text=raw_assistant_text, assistant_text="",
+                    assistant_message_id=None,
+                )
+            return
         answer_event = {
             "session_id": self.session_key,
             "user_message_id": user_message_id,
@@ -961,6 +970,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                         affect_before=affect_before,
                         affect_after=affect_after,
                         on_memory_added=self._notify_memory_added,
+                        turn_outcome=turn_outcome,
                     )
                 except Exception:
                     log.debug("reflection job raised", exc_info=True)

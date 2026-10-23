@@ -51,6 +51,33 @@ the mechanical half of this — broken paths and, more usefully, heading anchors
 that stopped resolving when a heading was reworded on its way into `shipped/`.
 Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
 
+## 23 Oct 2026: reasoning, social meaning and companion expression
+
+**Review and backlog only.** The [dated source review](companion-review-2026-10-23.md)
+adds five open patterns, [K102-K106](patterns.md#k102-pragmatic-frames-and-indirect-meaning):
+pragmatic frames, precise misunderstanding repair, cause-specific mixed feelings,
+meaningful voice/avatar delivery, and negotiated shared shorthand. Each has
+examples, a bounded experiment, existing owners and acceptance checks.
+
+The review also deepens L36 with outcome-grounded strategy transfer, J12 with
+explicit friend/flirty/romantic preferences, and T5 with paired social scenarios.
+Existing L49-L55 remain the reasoning roadmap; their bounded implementations
+are not reopened as new features. **Recommended start:** a current T5/L55
+baseline, then K102/K103. No live conversations, persona, settings or runtime
+behavior were changed; no improvement in naturalness is claimed yet.
+
+## 23 Oct 2026: model migration and learning provenance
+
+The DeepSeek follow-up review adds
+[K107](patterns.md#k107-provider-outcomes-are-not-character-evidence): provider
+outcomes must not become durable character evidence. Shared stream integrity,
+private-thinking and UTF-8 guards, structured turn provenance, delayed-memory
+source checks, tool argument validation and reasoning metrics are implemented.
+Ordinary text-only refusal attribution and broader behavioral validation remain
+open. The concise recommendation and implementation summary live in
+[LLM providers](../llm-providers.md#follow-up-review-stream-integrity-and-remaining-migration-checks).
+Only documentation and synthetic regression fixtures are retained.
+
 ## 1 Oct 2026: conversation archive recall
 
 **Backlog only.** [D8](tools.md#d8-conversation-archive-recall-with-daily-overviews)

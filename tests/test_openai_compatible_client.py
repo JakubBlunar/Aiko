@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 from app.core.infra.settings import load_settings
+from app.llm.turn_outcome import ProviderOutcomeError
 from app.llm.openai_compatible_client import (
     OpenAICompatibleClient,
     _collapse_system_for_gemini,
@@ -2217,7 +2218,7 @@ class ResponsesApiClientTests(unittest.TestCase):
             "app.llm.openai_compatible_client.requests.post",
             return_value=fake,
         ):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(ProviderOutcomeError):
                 list(client.chat_stream(
                     [{"role": "user", "content": "hi"}],
                     options={"num_predict": 64},
@@ -2453,7 +2454,7 @@ class DataRetentionTests(unittest.TestCase):
             return _sse_response([
                 'data: {"type": "response.created"}',
                 'data: {"type": "response.output_text.delta", "delta": "hi"}',
-                'data: {"type": "response.completed"}',
+                'data: {"type": "response.completed", "response": {"status": "completed"}}',
                 "data: [DONE]",
             ])
 
