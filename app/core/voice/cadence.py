@@ -123,6 +123,7 @@ _PROSODY_OVERLAYS: dict[str, tuple[float, float, int]] = {
     "slow":    (0.95,  0.0, 0),
     "fast":    (1.05,  0.0, 0),
     "firm":    (0.99, +2.0, 80),
+    "pause":   (1.0,   0.0, 180),
 }
 
 
@@ -148,8 +149,8 @@ def _apply_prosody_overlay(
         reaction=base.reaction,
         pause_before_ms=max(int(base.pause_before_ms), int(pause_before)),
         pause_after_ms=int(base.pause_after_ms),
-        prefix_text=base.prefix_text,
-        prefix_reaction=base.prefix_reaction,
+        prefix_text="" if label.strip().lower() == "pause" else base.prefix_text,
+        prefix_reaction="" if label.strip().lower() == "pause" else base.prefix_reaction,
         speed_hint=float(round(base.speed_hint * speed_mult, 4)),
         gain_db=float(base.gain_db + gain_delta),
         prosody_label=str(label).strip().lower(),
@@ -514,7 +515,10 @@ class ProsodyDispatcher:
         if params.pause_before_ms > 0:
             self._enqueue_silence(int(params.pause_before_ms))
         self._enqueue_with_speed(
-            _apply_text_pauses(text, params),
+            # Real queue silence already carries the pause. Rewriting the
+            # punctuation as well asks the engine to perform it a second time.
+            text if self._silence_provider is not None and params.prosody_label == "pause"
+            else _apply_text_pauses(text, params),
             params.reaction,
             params.speed_hint,
             gain_db=params.gain_db,

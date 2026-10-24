@@ -284,7 +284,9 @@ Read representative successes and failures, including quiet controls.
 
 **K102/K103 baseline and bounded runner implemented, 24 Oct 2026.** See
 [the implementation and initial limits](shipped/social-understanding.md#t5-baseline-and-reproducible-probes).
-The remaining K104-K106 and J12/L36 expansion is still open. Keep L55's
+K104 has a cause-aware deterministic slice; K105 has a pause-only cue and mood
+mist. See [their implementation limits](shipped/mixed-feelings-expression.md).
+Conversational/listening evaluation, K106 and J12/L36 expansion remain open. Keep L55's
 evidence/decision scores separate. Use
 synthetic 6-12-turn episodes with a held-out variant changing one decisive
 context fact, speaker, goal or correction. Expected behavior is a set of

@@ -46,6 +46,7 @@ def register(mcp, session: "SessionController") -> None:
                         "id": e.id,
                         "emotion": e.emotion,
                         "cause": e.cause,
+                        "cause_id": e.cause_key or _ee.cause_key(e.source, e.cause),
                         "stored_intensity": round(e.intensity, 3),
                         "current_intensity": round(
                             decayed_by_id[e.id].intensity, 3,
@@ -63,6 +64,7 @@ def register(mcp, session: "SessionController") -> None:
                 "staged_triggers": list(
                     getattr(session, "_pending_emotion_triggers", []) or []
                 ),
+                "resolved_cause_count": len(stored.resolved_keys),
             }
             return json.dumps(payload)
         except Exception as exc:
@@ -73,14 +75,16 @@ def register(mcp, session: "SessionController") -> None:
         kind: str,
         cause: str = "",
         intensity: float = 0.6,
+        cause_id: str = "",
     ) -> str:
         """K57 — write an episode straight into the kv store.
 
         ``kind`` is one of lonely / miffed / warm_glow / smug /
         playful_jealous / hurt. The next turn's provider renders it
         (verify via ``get_last_response_detail.system_prompt``).
-        Counter-events apply: forcing warm_glow cancels a live
-        miffed and arms the thaw.
+        ``cause_id`` optionally links updates to the same source event.
+        Warmth does not clear an unrelated episode. No intensity bump
+        is applied for repeated evidence.
         """
         try:
 
@@ -106,6 +110,7 @@ def register(mcp, session: "SessionController") -> None:
                 intensity=intensity,
                 source="forced",
                 now=now,
+                cause_id=cause_id,
                 cap=max(
                     1,
                     int(getattr(
@@ -130,8 +135,8 @@ def register(mcp, session: "SessionController") -> None:
             return f"force_emotion_episode raised: {exc}"
 
     @mcp.tool()
-    def resolve_emotion_episode(kind: str) -> str:
-        """K57 — resolve a live episode by hand (arms the thaw cue)."""
+    def resolve_emotion_episode(kind: str, episode_id: str = "") -> str:
+        """Resolve one cause by ID; omitted ID selects the first of this kind."""
         try:
             from app.core.affect import emotion_episodes as _ee
 
@@ -142,7 +147,9 @@ def register(mcp, session: "SessionController") -> None:
                 chat_db.kv_get(_ee.KV_EMOTION_EPISODES),
             )
             before = len(state.episodes)
-            state = _ee.resolve(state, kind, reason="resolved via MCP")
+            state = _ee.resolve(
+                state, kind, reason="resolved via MCP", episode_id=episode_id,
+            )
             chat_db.kv_set(
                 _ee.KV_EMOTION_EPISODES, _ee.serialize(state),
             )

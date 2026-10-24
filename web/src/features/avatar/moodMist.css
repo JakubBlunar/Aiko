@@ -1,0 +1,45 @@
+.aiko-mood-mist {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition: opacity 1.8s ease;
+  /* Fade to transparent at every edge, including the overlay window. */
+  mask-image: radial-gradient(ellipse 58% 53% at 50% 49%, #000 24%, transparent 95%);
+  -webkit-mask-image: radial-gradient(ellipse 58% 53% at 50% 49%, #000 24%, transparent 95%);
+}
+
+.aiko-mood-mist__color {
+  position: absolute;
+  inset: 0;
+  transition: opacity 2.8s ease;
+}
+
+.aiko-mood-mist__veil {
+  position: absolute;
+  inset: 5% -12% 3%;
+  background: radial-gradient(ellipse 42% 46% at 40% 43%, currentColor, transparent 78%);
+  animation: aikoMistDrift 16s ease-in-out infinite alternate;
+}
+
+.aiko-mood-mist__veil--far {
+  background: radial-gradient(ellipse 38% 42% at 64% 59%, currentColor, transparent 80%);
+  opacity: 0.65;
+  animation-duration: 21s;
+  animation-direction: alternate-reverse;
+}
+
+.aiko-mood-mist[data-active="false"] .aiko-mood-mist__veil {
+  animation-play-state: paused;
+}
+
+@keyframes aikoMistDrift {
+  from { transform: translate(-2%, 2%) scale(0.96) rotate(-4deg); }
+  to { transform: translate(3%, -2%) scale(1.06) rotate(5deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aiko-mood-mist,
+  .aiko-mood-mist__color { transition: none; }
+  .aiko-mood-mist__veil { animation: none; }
+}

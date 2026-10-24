@@ -125,7 +125,7 @@ class AddEpisodeTests(unittest.TestCase):
             empty,
         )
 
-    def test_same_emotion_merges_with_bump(self) -> None:
+    def test_same_emotion_keeps_distinct_causes(self) -> None:
         state = _state_with(intensity=0.4)
         state = ee.add_episode(
             state,
@@ -135,9 +135,9 @@ class AddEpisodeTests(unittest.TestCase):
             source="test2",
             now=NOW,
         )
-        self.assertEqual(len(state.episodes), 1)
-        self.assertAlmostEqual(state.episodes[0].intensity, 0.5)
-        self.assertEqual(state.episodes[0].cause, "and he did it again")
+        self.assertEqual(len(state.episodes), 2)
+        self.assertAlmostEqual(state.episodes[0].intensity, 0.4)
+        self.assertEqual(state.episodes[1].cause, "and he did it again")
 
     def test_cap_replaces_weakest_only_when_stronger(self) -> None:
         state = ee.EpisodeState()
@@ -169,7 +169,7 @@ class AddEpisodeTests(unittest.TestCase):
             {ee.EMOTION_MIFFED, ee.EMOTION_LONELY, ee.EMOTION_HURT},
         )
 
-    def test_warm_glow_cancels_miffed_and_arms_thaw(self) -> None:
+    def test_unrelated_warmth_keeps_miffed_without_thaw(self) -> None:
         state = _state_with(emotion=ee.EMOTION_MIFFED, intensity=0.6)
         state = ee.add_episode(
             state,
@@ -180,12 +180,11 @@ class AddEpisodeTests(unittest.TestCase):
             now=NOW,
         )
         emotions = {e.emotion for e in state.episodes}
-        self.assertNotIn(ee.EMOTION_MIFFED, emotions)
+        self.assertIn(ee.EMOTION_MIFFED, emotions)
         self.assertIn(ee.EMOTION_WARM_GLOW, emotions)
-        self.assertIsNotNone(state.pending_thaw)
-        self.assertEqual(state.pending_thaw[0], ee.EMOTION_MIFFED)
+        self.assertIsNone(state.pending_thaw)
 
-    def test_warm_glow_halves_hurt(self) -> None:
+    def test_unrelated_warmth_does_not_reduce_hurt(self) -> None:
         state = _state_with(emotion=ee.EMOTION_HURT, intensity=0.8)
         state = ee.add_episode(
             state,
@@ -198,7 +197,7 @@ class AddEpisodeTests(unittest.TestCase):
         hurt = next(
             e for e in state.episodes if e.emotion == ee.EMOTION_HURT
         )
-        self.assertAlmostEqual(hurt.intensity, 0.4)
+        self.assertAlmostEqual(hurt.intensity, 0.8)
 
 
 class ResolveAndThawTests(unittest.TestCase):
@@ -228,12 +227,12 @@ class AcknowledgmentTests(unittest.TestCase):
     def _episode(self, emotion: str, cause: str = "c") -> ee.EmotionEpisode:
         return _state_with(emotion=emotion, cause=cause).episodes[0]
 
-    def test_miffed_keyword_hit(self) -> None:
-        ep = self._episode(ee.EMOTION_MIFFED)
+    def test_miffed_acknowledgment_needs_cause(self) -> None:
+        ep = self._episode(ee.EMOTION_MIFFED, "the playlist thread got brushed off")
         self.assertTrue(
-            ee.detect_acknowledgment(ep, "okay, sorry about earlier"),
+            ee.detect_acknowledgment(ep, "sorry I brushed off the playlist thread"),
         )
-        self.assertTrue(ee.detect_acknowledgment(ep, "My bad, truly."))
+        self.assertFalse(ee.detect_acknowledgment(ep, "My bad, truly."))
 
     def test_miffed_unrelated_text_misses(self) -> None:
         ep = self._episode(ee.EMOTION_MIFFED)
@@ -415,6 +414,35 @@ def test_invited_jealousy_does_not_override_support_or_existing_emotion():
 
 
 class ProviderTests(unittest.TestCase):
+    def test_mixed_provider_keeps_causes_without_competing_registers(self) -> None:
+        now = datetime.now(timezone.utc)
+        state = _state_with(cause="the garden plan was dismissed", now=now)
+        state = ee.add_episode(
+            state, emotion=ee.EMOTION_WARM_GLOW, cause="the music demo succeeded",
+            intensity=0.4, source="test", now=now,
+        )
+        host = _Host(initial=ee.serialize(state))
+        block = host._render_emotion_episode_block("About the garden plan")
+        self.assertIn("Coexisting feelings", block)
+        self.assertIn("garden plan", block)
+        self.assertIn("music demo", block)
+        self.assertNotIn("[[reaction:", block)
+        self.assertLessEqual(len(block), 800)
+
+    def test_provider_resolves_only_the_acknowledged_same_emotion_cause(self) -> None:
+        now = datetime.now(timezone.utc)
+        state = _state_with(cause="the garden plan was dismissed", now=now)
+        state = ee.add_episode(
+            state, emotion=ee.EMOTION_MIFFED, cause="the music demo was dismissed",
+            intensity=0.5, source="test", now=now,
+        )
+        host = _Host(initial=ee.serialize(state))
+        block = host._render_emotion_episode_block("Sorry I dismissed the garden plan")
+        self.assertIn("garden plan", block)
+        persisted = ee.deserialize(host._chat_db.data[ee.KV_EMOTION_EPISODES])
+        self.assertEqual([ep.cause for ep in persisted.episodes], ["the music demo was dismissed"])
+        self.assertEqual(host._render_emotion_episode_block("What's for dinner?"), "")
+
     def test_disabled_switch_silent(self) -> None:
         host = _Host(
             enabled=False, initial=ee.serialize(_state_with()),
@@ -451,7 +479,7 @@ class ProviderTests(unittest.TestCase):
             initial=ee.serialize(_state_with(intensity=0.6, now=now)),
         )
         block = host._render_emotion_episode_block(
-            "I'm sorry about earlier, that was on me",
+            "I'm sorry I brushed off the thread you opened",
         )
         self.assertIn("melted", block)
         persisted = ee.deserialize(

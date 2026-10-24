@@ -127,8 +127,8 @@ Behavioral activation and model-quality evaluation remain open.
 | K101 | Route an unresolved premise to a bounded next step | Strict read-only recall pilot implemented; broader routing/evaluation open |
 | K102 | Pragmatic frames and indirect meaning | Bounded implementation and baseline, 24 Oct; broader behavioral validation open below |
 | K103 | Repair the specific misunderstanding | Same-turn repair and cited target, 24 Oct; broader behavioral validation open below |
-| K104 | Cause-specific feelings and mixed emotions | Open proposal, 23 Oct 2026 |
-| K105 | Expression follows communicative intent | Open proposal, 23 Oct 2026 |
+| K104 | Cause-specific feelings and mixed emotions | Cause-aware deterministic slice, 24 Oct 2026 |
+| K105 | Expression follows communicative intent | Partial: pause-only cue and mood mist, 24 Oct 2026 |
 | K106 | Shared shorthand with negotiated meaning | Open proposal, 23 Oct 2026 |
 | K107 | Provider outcomes are not character evidence | Explicit outcome provenance implemented; semantic attribution open, 23 Oct 2026 |
 
@@ -1370,16 +1370,20 @@ relationship-recovery heuristic is unchanged; this slice does not validate it.
 
 ## K104. Cause-specific feelings and mixed emotions
 
-**Open proposal, 23 Oct 2026.** Aiko can be pleased about a shared success while
+**Deterministic slice implemented, 24 Oct 2026.** See
+[cause-specific feelings and bounded mixed rendering](shipped/mixed-feelings-expression.md).
+Semantic cause matching and conversational evaluation remain open.
+Aiko can be pleased about a shared success while
 still disappointed about a different unfinished exchange. Excitement about an
 activity can coexist with uncertainty. K57 already retains several episodes;
 this proposal concerns their causes, updates and expression rather than another
 emotion catalogue. Long-lived L12 tension concepts remain separate.
 
-**Source basis.** `add_episode` currently merges the same emotion across causes;
-any `warm_glow` cancels `miffed` and halves `hurt`. The episode provider selects
-`strongest(state)`. This is a testable simplification, not evidence that users
-want more persistent negative affect.
+**Original source basis.** Before this slice, `add_episode` merged the same
+emotion across causes; any `warm_glow` cancelled `miffed` and halved `hurt`.
+The episode provider selected `strongest(state)`. Those simplifications
+motivated the slice; they were not evidence that users wanted more persistent
+negative affect.
 
 **First slice.** Keep K57's cap and decay. Associate an episode with a bounded
 source event/topic, update a matching cause, and resolve it only with relevant
@@ -1403,7 +1407,11 @@ romance do not generate new grievance episodes. Silence can remain appropriate.
 
 ## K105. Expression follows communicative intent
 
-**Open proposal, 23 Oct 2026.** The same words can be sincere, teasing or a
+**Partial implementation, 24 Oct 2026:** a pause-only cue and subtle mood mist;
+see [supported expression and remaining evaluation](shipped/mixed-feelings-expression.md#k105-a-supported-beat-and-a-visible-atmosphere).
+Speaking pace and the existing rig are preserved; no new laughter synthesis.
+The semantic-selection and listening experiment remains open.
+The same words can be sincere, teasing or a
 careful correction. Pauses and laughter should help that meaning land. Existing
 sentence reactions, prosody tags, earcons, expression stacks and Live floor
 manners already supply controls; this is a semantic selection experiment.

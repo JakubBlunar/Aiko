@@ -13,8 +13,12 @@ import { readBool, writeBool } from "../persist";
 import type { SliceCreator } from "../types";
 
 const LS_AUDIO_MUTED = "aiko.audio.muted";
+export const MOOD_MIST_STORAGE_KEY = "aiko.avatar.moodMist";
 
 export interface AvatarSlice {
+  /** Per-device decorative atmosphere preference. */
+  moodMistEnabled: boolean;
+  setMoodMistEnabled: (enabled: boolean) => void;
   // Live2D avatar (fixed Alexia bundle).
   avatar: AvatarProfile | null;
   /** Lip-sync amplitude in [0, 1]; updated at <=30 Hz from the WS. */
@@ -55,6 +59,11 @@ export interface AvatarSlice {
 }
 
 export const createAvatarSlice: SliceCreator<AvatarSlice> = (set) => ({
+  moodMistEnabled: readBool(MOOD_MIST_STORAGE_KEY, true),
+  setMoodMistEnabled: (enabled) => {
+    writeBool(MOOD_MIST_STORAGE_KEY, enabled);
+    set({ moodMistEnabled: enabled });
+  },
   avatar: null,
   audioAmplitude: 0,
   audioOutput: null,

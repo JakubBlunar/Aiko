@@ -29,6 +29,7 @@ from typing import Any, Callable, Iterable, TYPE_CHECKING
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.voice.filler_injector import FillerInjector, pick_lookup_filler
+from app.core.voice.pause_stream import speech_prefix_with_pauses
 from app.core.infra.log_context import get_turn_id, reset_turn_id, set_turn_id
 from app.core.session.prompt_assembler import (
     PromptAssembler,
@@ -472,6 +473,7 @@ class TurnRunner:
             _OUTFIT_TAG_PATTERN,
             _OVERLAY_TAG_PATTERN,
             _TOUCH_TAG_PATTERN,
+            consume_leading_prosody_tag,
         )
 
         # Fire avatar side-channel markers first (overlay / outfit /
@@ -520,10 +522,16 @@ class TurnRunner:
             return
         for kind, content in pieces:
             if kind == "text":
+                delivery, _ = consume_leading_prosody_tag(content)
                 prepared = prepare_tts_text(content)
                 if prepared and strip_fillers:
                     prepared = strip_speech_fillers(prepared)
                 if prepared:
+                    # K105 adds only a silent beat. Preserve this cue through
+                    # cleanup for cadence, without enabling legacy rate/gain
+                    # tags that were previously stripped at this boundary.
+                    if delivery == "pause":
+                        prepared = "[[prosody:pause]] " + prepared
                     on_tts_chunk(prepared, mood)
             elif kind == "earcon" and on_earcon is not None:
                 try:
@@ -897,10 +905,11 @@ class TurnRunner:
                     ui_sent_chars = len(visible)
 
                 if on_tts_chunk is not None and mood is not None:
-                    new_tts_chars = visible[tts_appended_chars:]
+                    spoken = speech_prefix_with_pauses(body)
+                    new_tts_chars = spoken[tts_appended_chars:]
                     if new_tts_chars:
                         tts_buffer += new_tts_chars
-                        tts_appended_chars = len(visible)
+                        tts_appended_chars = len(spoken)
                         chunks, tts_buffer = drain_tts_stream_chunks(
                             tts_buffer, flush=False,
                         )
@@ -1046,6 +1055,7 @@ class TurnRunner:
         # for genuinely-held-back tails.
         _, _, body_after_reaction = parse_reaction_stack_at_start(full_raw)
         body_text = strip_all_meta_tags(body_after_reaction)
+        spoken_text = speech_prefix_with_pauses(body_after_reaction, streaming=False)
         # Final-flush: emit any tail that the streaming holdback was sitting on
         # (e.g. a "[[" that turned out NOT to be a tag) so the UI bubble lands
         # in the same state as the persisted message.
@@ -1055,10 +1065,10 @@ class TurnRunner:
         if (
             on_tts_chunk is not None
             and mood is not None
-            and len(body_text) > tts_appended_chars
+            and len(spoken_text) > tts_appended_chars
         ):
-            tts_buffer += body_text[tts_appended_chars:]
-            tts_appended_chars = len(body_text)
+            tts_buffer += spoken_text[tts_appended_chars:]
+            tts_appended_chars = len(spoken_text)
         cleaned = sanitize_assistant_text(body_text)
 
         # Flush any trailing TTS buffer (final sentence without terminator).

@@ -120,7 +120,7 @@ class ValidValuesConstantTests(unittest.TestCase):
     def test_six_values_locked(self) -> None:
         self.assertEqual(
             tuple(PROSODY_TAG_VALUES),
-            ("whisper", "soft", "slow", "fast", "firm"),
+            ("whisper", "soft", "slow", "fast", "firm", "pause"),
         )
 
 

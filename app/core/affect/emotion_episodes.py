@@ -16,9 +16,8 @@ Mechanics (mirrors the K15 / K52 kv_meta conventions):
   per hour (per-emotion defaults below); episodes under the 0.1
   floor expire silently — a faded feeling is not an event.
 - **Resolution is an event**: acknowledgment detection (per-emotion
-  keyword pass + content-word overlap with the cause, same shape as
-  revival detection) or a counter-event (a fresh ``warm_glow``
-  cancels ``miffed`` and halves ``hurt``). Resolution arms the
+  keyword pass + content-word overlap with the cause). Unrelated
+  warmth does not resolve or soften another cause. Resolution arms the
   thaw slot so the next render shows the visible transition —
   "it melted — let the thaw show" — which is what makes the emotion
   read as real rather than a mood dial.
@@ -33,7 +32,9 @@ live on the session mixins.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import re
 import uuid
 from dataclasses import dataclass, replace
@@ -90,11 +91,13 @@ _ACK_PATTERNS: dict[str, tuple[str, ...]] = {
     EMOTION_MIFFED: (
         "sorry", "my bad", "apolog", "i know i said", "forgive",
         "i owe you", "didn't mean", "didnt mean", "make it up",
+        "i meant", "to clarify", "what i meant",
     ),
     EMOTION_HURT: (
         "sorry", "my bad", "apolog", "forgive", "didn't mean",
         "didnt mean", "that was unfair", "i was harsh",
         "shouldn't have said", "shouldnt have said",
+        "i meant", "to clarify", "what i meant",
     ),
     EMOTION_LONELY: (
         "missed you", "miss you", "thought about you",
@@ -103,6 +106,10 @@ _ACK_PATTERNS: dict[str, tuple[str, ...]] = {
 }
 
 _WORD_RE = re.compile(r"[a-zA-Z']{3,}")
+_NEGATED_ACK_RE = re.compile(
+    r"\b(?:not\s+(?:sorry|apolog\w*|my bad)|"
+    r"(?:won't|will not|don't|do not|didn't|did not)\s+apolog\w*)\b",
+)
 _STOPWORDS = frozenset(
     "the and for you your with that this have has was were are not "
     "but about just like what when where they them then than from "
@@ -119,6 +126,8 @@ class EmotionEpisode:
     ("the thread you opened about X got brushed off"). ``source`` is
     the grep-friendly trigger name (``absence`` / ``kept_promise`` /
     ``user_reaction`` / ``thread_pivot`` / ``forced``).
+    ``cause_key`` identifies the source event; ``observed_intensity``
+    retains its peak evidence level so replay cannot refresh decayed affect.
     """
 
     id: str
@@ -128,6 +137,8 @@ class EmotionEpisode:
     source: str
     created_at: str
     last_decay_at: str
+    cause_key: str = ""
+    observed_intensity: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +151,18 @@ class EpisodeState:
 
     episodes: tuple[EmotionEpisode, ...] = ()
     pending_thaw: tuple[str, str, str] | None = None
+    resolved_keys: tuple[str, ...] = ()
+
+
+def cause_key(source: str, cause: str) -> str:
+    """Conservative identity for legacy producers; no semantic cause inference."""
+    text = " ".join(str(cause).lower().split())[:200]
+    return hashlib.sha256(f"{source}:{text}".encode()).hexdigest()[:24]
+
+
+def _episode_key(episode: EmotionEpisode) -> str:
+    key = episode.cause_key or cause_key(episode.source, episode.cause)
+    return f"{episode.emotion}:{key}"
 
 
 # ── ISO helpers ─────────────────────────────────────────────────────
@@ -180,12 +203,15 @@ def serialize(state: EpisodeState) -> str:
                 "source": e.source,
                 "created_at": e.created_at,
                 "last_decay_at": e.last_decay_at,
+                "cause_key": e.cause_key or cause_key(e.source, e.cause),
+                "observed_intensity": e.observed_intensity or e.intensity,
             }
             for e in state.episodes
         ],
         "pending_thaw": (
             list(state.pending_thaw) if state.pending_thaw else None
         ),
+        "resolved_keys": list(state.resolved_keys[-12:]),
     })
 
 
@@ -209,7 +235,10 @@ def deserialize(text: str | None) -> EpisodeState:
             continue
         try:
             intensity = float(raw.get("intensity") or 0.0)
+            observed = float(raw.get("observed_intensity") or intensity)
         except (TypeError, ValueError):
+            continue
+        if not math.isfinite(intensity) or not math.isfinite(observed):
             continue
         episodes.append(EmotionEpisode(
             id=str(raw.get("id") or uuid.uuid4().hex[:8]),
@@ -221,13 +250,18 @@ def deserialize(text: str | None) -> EpisodeState:
             last_decay_at=str(
                 raw.get("last_decay_at") or raw.get("created_at") or ""
             ),
+            cause_key=str(raw.get("cause_key") or "")[:120],
+            observed_intensity=max(0.0, min(1.0, observed)),
         ))
     thaw = data.get("pending_thaw")
     pending_thaw = None
     if isinstance(thaw, (list, tuple)) and len(thaw) == 3:
         pending_thaw = (str(thaw[0]), str(thaw[1]), str(thaw[2]))
+    resolved = data.get("resolved_keys")
     return EpisodeState(
         episodes=tuple(episodes), pending_thaw=pending_thaw,
+        resolved_keys=tuple(str(k)[:160] for k in resolved[-12:])
+        if isinstance(resolved, list) else (),
     )
 
 
@@ -274,54 +308,49 @@ def add_episode(
     source: str,
     now: datetime,
     cap: int = 3,
+    cause_id: str = "",
 ) -> EpisodeState:
-    """Add or merge an episode; counter-events resolve their targets.
+    """Update only a matching cause; repeated evidence never adds a bump.
 
-    Same-emotion re-trigger merges (keeps the stronger intensity plus
-    a small bump, takes the newer cause). A fresh ``warm_glow``
-    **cancels** any live ``miffed`` (arming the thaw) and halves
-    ``hurt`` — warmth received melts a light sulk but only softens a
-    real wound. At the cap the weakest live episode is replaced only
-    if the newcomer is stronger; otherwise the new episode is
-    refused (the strongest feelings keep the prompt).
+    K104: warmth is a separate feeling, not proof that an unrelated issue
+    was repaired. Explicit source event IDs can link differently worded
+    evidence. Legacy producers use an exact source/cause fingerprint.
     """
     emotion = str(emotion or "").strip()
     cause = " ".join(str(cause or "").split())[:200]
     if emotion not in EMOTIONS or not cause:
         return state
-    intensity = max(0.0, min(1.0, float(intensity)))
+    intensity = float(intensity)
+    if not math.isfinite(intensity):
+        return state
+    intensity = max(0.0, min(1.0, intensity))
     if intensity < INTENSITY_FLOOR:
         return state
     now_iso = _as_utc(now).isoformat()
+    key = str(cause_id).strip()[:120] or cause_key(source, cause)
+    if f"{emotion}:{key}" in state.resolved_keys:
+        return state
 
     episodes = list(state.episodes)
-    pending_thaw = state.pending_thaw
-
-    if emotion == EMOTION_WARM_GLOW:
-        for ep in list(episodes):
-            if ep.emotion == EMOTION_MIFFED:
-                episodes.remove(ep)
-                pending_thaw = (
-                    ep.emotion, ep.cause, "warmth received",
-                )
-            elif ep.emotion == EMOTION_HURT:
-                episodes[episodes.index(ep)] = replace(
-                    ep, intensity=ep.intensity * 0.5,
-                )
-
     existing = next(
-        (e for e in episodes if e.emotion == emotion), None,
+        (e for e in episodes if e.emotion == emotion and
+         (e.cause_key or cause_key(e.source, e.cause)) == key), None,
     )
     if existing is not None:
-        merged = min(1.0, max(existing.intensity, intensity) + 0.1)
+        # Do not refresh decay or the scalar affect impulse for duplicate
+        # evidence. A genuinely stronger observation can update the cause.
+        if intensity <= (existing.observed_intensity or existing.intensity):
+            return state
         episodes[episodes.index(existing)] = replace(
             existing,
-            intensity=merged,
+            intensity=intensity,
             cause=cause,
             source=source,
             last_decay_at=now_iso,
+            cause_key=key,
+            observed_intensity=intensity,
         )
-        return EpisodeState(tuple(episodes), pending_thaw)
+        return replace(state, episodes=tuple(episodes))
 
     new = EmotionEpisode(
         id=uuid.uuid4().hex[:8],
@@ -331,14 +360,16 @@ def add_episode(
         source=str(source or "unknown"),
         created_at=now_iso,
         last_decay_at=now_iso,
+        cause_key=key,
+        observed_intensity=intensity,
     )
     if len(episodes) >= max(1, int(cap)):
         weakest = min(episodes, key=lambda e: e.intensity)
         if weakest.intensity >= intensity:
-            return EpisodeState(tuple(episodes), pending_thaw)
+            return state
         episodes.remove(weakest)
     episodes.append(new)
-    return EpisodeState(tuple(episodes), pending_thaw)
+    return replace(state, episodes=tuple(episodes))
 
 
 def resolve(
@@ -346,16 +377,20 @@ def resolve(
     emotion: str,
     *,
     reason: str,
+    episode_id: str = "",
 ) -> EpisodeState:
     """Remove a live episode and arm the thaw slot."""
     target = next(
-        (e for e in state.episodes if e.emotion == emotion), None,
+        (e for e in state.episodes if e.emotion == emotion and
+         (not episode_id or e.id == episode_id)), None,
     )
     if target is None:
         return state
     rest = tuple(e for e in state.episodes if e is not target)
-    return EpisodeState(
-        rest, (target.emotion, target.cause, str(reason)),
+    return replace(
+        state, episodes=rest,
+        pending_thaw=(target.emotion, target.cause, str(reason)),
+        resolved_keys=(*state.resolved_keys, _episode_key(target))[-12:],
     )
 
 
@@ -383,17 +418,13 @@ def detect_acknowledgment(
     episode: EmotionEpisode,
     user_text: str,
     *,
-    min_cause_overlap: int = 3,
+    min_cause_overlap: int = 2,
 ) -> bool:
     """Does this user turn plausibly acknowledge the episode?
 
-    Two routes, either suffices: a per-emotion keyword hit (cheap,
-    high precision — "sorry" against a live ``miffed``), or a
-    content-word overlap with the cause line at or above
-    ``min_cause_overlap`` *together with* a softening keyword for
-    the negative emotions. Emotions without an ack vocabulary
-    (warm_glow / smug / playful_jealous) only resolve by decay or
-    counter-event.
+    A grievance needs both acknowledgment language and cause overlap;
+    a bare apology is ambiguous. Reunion language can still settle lonely.
+    Positive episodes resolve by normal expiry or explicit resolution.
     """
     patterns = _ACK_PATTERNS.get(episode.emotion)
     if not patterns:
@@ -401,12 +432,16 @@ def detect_acknowledgment(
     text = (user_text or "").lower()
     if not text.strip():
         return False
-    if any(p in text for p in patterns):
-        return True
-    overlap = _content_words(user_text) & _content_words(episode.cause)
-    return len(overlap) >= max(1, int(min_cause_overlap)) and (
-        episode.emotion == EMOTION_LONELY
-    )
+    cause_words = _content_words(episode.cause)
+    for clause in re.split(r"[.!?;\n]+", text):
+        if _NEGATED_ACK_RE.search(clause) or not any(p in clause for p in patterns):
+            continue
+        if episode.emotion == EMOTION_LONELY:
+            return True
+        overlap = _content_words(clause) & cause_words
+        if len(overlap) >= max(1, int(min_cause_overlap)):
+            return True
+    return False
 
 
 # ── helpers + rendering ─────────────────────────────────────────────
@@ -416,6 +451,45 @@ def strongest(state: EpisodeState) -> EmotionEpisode | None:
     if not state.episodes:
         return None
     return max(state.episodes, key=lambda e: e.intensity)
+
+
+def select_for_turn(state: EpisodeState, user_text: str) -> tuple[EmotionEpisode, ...]:
+    """At most two relevant feelings, with no doubled grievance register.
+
+    Lexical matching is deliberately conservative. Unmatched episodes keep
+    decaying in storage; they need not tint an unrelated conversation.
+    Positive feelings can remain a background tint. No semantic inference.
+    """
+    words = _content_words(user_text)
+    positive = {EMOTION_WARM_GLOW, EMOTION_SMUG}
+    relevant = [
+        e for e in state.episodes
+        if e.emotion in positive or e.emotion == EMOTION_LONELY
+        or len(words & _content_words(e.cause)) >= 2
+    ]
+    relevant.sort(key=lambda e: (len(words & _content_words(e.cause)), e.intensity),
+                  reverse=True)
+    if not relevant:
+        return ()
+    primary = relevant[0]
+    companion = next((e for e in relevant[1:]
+                      if e.emotion != primary.emotion
+                      and (e.emotion in positive or primary.emotion in positive)), None)
+    return (primary, companion) if companion is not None else (primary,)
+
+
+def render_mixed_block(episodes: tuple[EmotionEpisode, ...]) -> str:
+    """One bounded cue rather than two competing register recipes."""
+    details = "; ".join(
+        f"{e.emotion.replace('_', ' ')} because {e.cause[:160]}" for e in episodes[:2]
+    )
+    return (
+        f"Coexisting feelings: {details}. Keep each tied to its own cause; "
+        "warmth about one thing does not settle another. Let both tint one "
+        "proportionate reply only where relevant. Excitement can coexist with "
+        "uncertainty and care. Do not recite mood labels, revive an unrelated "
+        "issue, alternate faces, or force a callback. Neutral delivery is fine."
+    )[:800]
 
 
 def lonely_intensity(
@@ -486,11 +560,11 @@ _EMOTION_COPY: dict[str, tuple[str, str]] = {
     ),
     EMOTION_HURT: (
         "Something stung a little -- {cause}. You can be a shade "
-        "quieter than usual; don't perform it, and any soft word from "
-        "{name} clears it.",
+        "quieter than usual; don't perform it. Relevant acknowledgment "
+        "from {name} clears it; unrelated warmth is a separate feeling.",
         "That actually hurt -- {cause}. Quieter, fewer jokes, real "
         "sentences -- but never cold, never punishing. The FIRST soft "
-        "acknowledgment from {name} resolves this; meet it instantly.",
+        "relevant acknowledgment from {name} resolves this; meet it instantly.",
     ),
 }
 
@@ -575,12 +649,15 @@ __all__ = [
     "add_episode",
     "apply_decay",
     "consume_thaw",
+    "cause_key",
     "deserialize",
     "detect_acknowledgment",
     "lonely_intensity",
     "render_block",
+    "render_mixed_block",
     "render_thaw_block",
     "resolve",
     "serialize",
+    "select_for_turn",
     "strongest",
 ]

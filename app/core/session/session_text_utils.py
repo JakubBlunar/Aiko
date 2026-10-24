@@ -503,6 +503,13 @@ def drain_tts_stream_chunks(buffer: str, *, flush: bool) -> tuple[list[str], str
     chunks: list[str] = []
     start = 0
     for index, ch in enumerate(text):
+        # A delivery beat starts a fresh utterance even when the preceding
+        # sentence was too short for the ordinary streaming size threshold.
+        if text.startswith("[[prosody:pause]]", index):
+            preceding = text[start:index].strip()
+            if preceding.endswith((".", "!", "?")):
+                chunks.append(preceding)
+                start = index
         if ch == "\n":
             pass  # a newline is always a hard boundary
         elif ch in ".!?":

@@ -223,9 +223,20 @@ export function AvatarTab({
   companion,
   onPatchCompanion,
 }: AvatarTabProps) {
+  const moodMistEnabled = useAssistantStore((s) => s.moodMistEnabled);
+  const setMoodMistEnabled = useAssistantStore((s) => s.setMoodMistEnabled);
   return (
     <>
       <Section title="Avatar (Live2D)">
+        <Toggle
+          checked={moodMistEnabled}
+          onChange={setMoodMistEnabled}
+        >Mood mist</Toggle>
+        <p className="text-[10px] text-ink-100/40">
+          A quiet glow behind Aiko. Gold for joy, peach for warmth, lilac for
+          playfulness, teal for curiosity, blue for reflection and rose for
+          tenderness. Colors blend as her mood changes. Saved on this device.
+        </p>
         {avatarError ? (
           <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
             {avatarError}

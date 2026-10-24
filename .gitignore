@@ -98,3 +98,4 @@ web/src-tauri/gen/
 .playwright-mcp/**
 tmp
 .tmp-tests
+.tmp-avatar-playground/

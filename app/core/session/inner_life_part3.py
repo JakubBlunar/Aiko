@@ -1891,7 +1891,7 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             return False
 
     def _render_emotion_episode_block(self, user_text: str) -> str:
-        """K57: render the strongest live directed-emotion episode.
+        """K57/K104: render up to two relevant cause-specific feelings.
 
         Per turn: read the kv store, apply wall-clock decay, run
         acknowledgment detection against the live ``user_text``
@@ -1928,6 +1928,7 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                         state = _ee.resolve(
                             state, ep.emotion,
                             reason="they acknowledged it",
+                            episode_id=ep.id,
                         )
                         log.info(
                             "emotion-episode resolved: emotion=%s "
@@ -2006,9 +2007,10 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                         "\"...okay, fine. We're good. Stop smiling.\")"
                     )
                 return rendered_thaw
-            episode = _ee.strongest(state)
-            if episode is None:
+            selected = _ee.select_for_turn(state, text)
+            if not selected:
                 return ""
+            episode = selected[0]
             log.debug(
                 "emotion-episode render: emotion=%s intensity=%.2f",
                 episode.emotion, episode.intensity,
@@ -2058,6 +2060,8 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                     slip=slip,
                 )
 
+            if len(selected) == 2 and mode == _mask.MODE_OFF:
+                return _ee.render_mixed_block(selected)
             return _ee.render_block(
                 episode,
                 user_display_name=self.user_display_name,

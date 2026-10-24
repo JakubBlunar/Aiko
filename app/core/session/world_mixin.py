@@ -568,9 +568,9 @@ class WorldMixin:
             )
 
         # K57: warm reactions feed the episode store. Small intensity
-        # per click — the merge bump in ``add_episode`` lets a burst
-        # of hearts build a real glow (and a fresh warm_glow cancels
-        # a live miffed). Applied by the post-turn drain.
+        # per message; repeated clicks on that evidence do not amplify
+        # it, and unrelated warmth cannot resolve another cause (K104).
+        # Applied by the post-turn drain.
         if normalized_kind in ("heart", "hug", "rose"):
             try:
                 self._queue_emotion_trigger(
@@ -578,6 +578,7 @@ class WorldMixin:
                     cause=f"they reacted to you with a {normalized_kind}",
                     intensity=0.3,
                     source="user_reaction",
+                    cause_id=f"message:{message_id}",
                 )
             except Exception:
                 log.debug("reaction warm_glow queue failed", exc_info=True)

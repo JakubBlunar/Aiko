@@ -286,7 +286,7 @@ class ProviderMaskIntegrationTests(unittest.TestCase):
             now=datetime.now(timezone.utc),
         )
         host = _Host(initial=ee.serialize(state))
-        block = host._render_emotion_episode_block("hello")
+        block = host._render_emotion_episode_block("About that broken promise")
         self.assertIn("properly miffed", block)
 
     def test_caught_caring_outranks_episode(self) -> None:

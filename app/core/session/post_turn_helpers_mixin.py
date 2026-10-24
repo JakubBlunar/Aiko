@@ -368,6 +368,7 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
         cause: str,
         intensity: float,
         source: str,
+        cause_id: str = "",
     ) -> None:
         """K57: stage one episode trigger for the post-turn drain.
 
@@ -390,6 +391,9 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
                     "cause": str(cause),
                     "intensity": float(intensity),
                     "source": str(source),
+                    "cause_id": str(cause_id)[:120] or (
+                        f"absence:{timephrase.utcnow().isoformat()}" if source == "absence" else ""
+                    ),
                 })
         except Exception:
             log.debug("emotion trigger queue failed", exc_info=True)
@@ -833,7 +837,7 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
 
         Single consumer. Applies decay first (so merges see current
         intensities), adds each trigger through the pure
-        ``add_episode`` (warm_glow counter-events resolve inside),
+        ``add_episode`` (cause-scoped, without unrelated counter-events),
         persists, then nudges the scalar affect layer with the small
         per-emotion impulses so the two systems agree.
 
@@ -894,6 +898,7 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
                 source=trig["source"],
                 now=now,
                 cap=cap,
+                cause_id=trig.get("cause_id", ""),
             )
             if state is not before:
                 applied.append(trig)

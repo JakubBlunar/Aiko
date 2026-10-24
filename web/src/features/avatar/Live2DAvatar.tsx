@@ -6,7 +6,8 @@ import { isMobileViewport, useIsMobile } from "@/hooks/useIsMobile";
 import { useWindowVisible } from "@/hooks/useWindowVisible";
 import { useAssistantStore } from "@/store";
 import { useWorldStore } from "@/stores/useWorldStore";
-import type { AvatarProfile, VoiceMode } from "@/types";
+import type { AvatarProfile } from "@/types";
+import { MoodMist } from "./MoodMist";
 import {
   AvatarEngine,
   PixiLive2DAdapter,
@@ -460,24 +461,14 @@ export function Live2DAvatar({ manifest, scaleMultiplier }: Live2DAvatarProps) {
   // ── 3. Subtle mood tinting on the avatar container. Subscribed via
   // useAssistantStore so it re-renders whenever the WS pushes mood_state.
   const mood = useAssistantStore((s) => s.mood);
-  const voiceMode = useAssistantStore((s) => s.voiceMode);
-  const turnInProgress = useAssistantStore((s) => s.turnInProgress);
-  const ttsState = useAssistantStore((s) => s.ttsState);
   const tintFilter = moodToFilter(mood.label, mood.intensity);
-  const auraStyle = stateAura(voiceMode, turnInProgress, ttsState);
 
   return (
     <div
       className="relative h-full w-full"
       aria-label={`${manifest.display_name} (Live2D)`}
     >
-      {auraStyle && (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 transition-opacity duration-500 ease-out"
-          style={auraStyle}
-        />
-      )}
+      <MoodMist />
       <div
         ref={containerRef}
         className="relative h-full w-full transition-[filter] duration-700 ease-out"
@@ -535,38 +526,6 @@ function fitModelToContainer(
     model.y = app.screen.height;
     model.anchor.set(0.5, 1);
   }
-}
-
-// CSS-only soft glow overlay that signals listening / thinking /
-// speaking. No per-frame rAF cost.
-function stateAura(
-  voiceMode: VoiceMode,
-  turnInProgress: boolean,
-  ttsState: "idle" | "speaking",
-): React.CSSProperties | null {
-  if (ttsState === "speaking") {
-    return {
-      background:
-        "radial-gradient(circle at 50% 70%, rgba(255,210,160,0.18), transparent 65%)",
-      opacity: 0.8,
-    };
-  }
-  if (voiceMode === "thinking" || turnInProgress) {
-    return {
-      background:
-        "radial-gradient(circle at 50% 60%, rgba(180,200,255,0.18), transparent 60%)",
-      animation: "aikoThinkingPulse 2.4s ease-in-out infinite",
-      opacity: 0.85,
-    };
-  }
-  if (voiceMode === "listening" || voiceMode === "transcribing") {
-    return {
-      background:
-        "radial-gradient(circle at 50% 60%, rgba(160,255,200,0.16), transparent 60%)",
-      opacity: 0.7,
-    };
-  }
-  return null;
 }
 
 // Idle motion cadence biased by mood arousal.

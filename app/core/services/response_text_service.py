@@ -380,7 +380,7 @@ def extract_diary_entries(text: str) -> list[str]:
 # sentence wins; trailing tags are still stripped from chat / TTS by
 # :func:`strip_all_meta_tags` so a misplaced tag never leaks audio.
 PROSODY_TAG_VALUES: tuple[str, ...] = (
-    "whisper", "soft", "slow", "fast", "firm",
+    "whisper", "soft", "slow", "fast", "firm", "pause",
 )
 # Every value-bearing pattern below tolerates horizontal whitespace
 # around its body for the reason spelled out at ``_REACTION_TAG_PATTERN``:

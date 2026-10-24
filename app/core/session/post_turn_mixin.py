@@ -361,6 +361,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     cause="you followed through on something you promised",
                     intensity=0.45,
                     source="kept_promise",
+                    cause_id=f"kept_promise:{assistant_message_id}" if assistant_message_id else "",
                 )
         except Exception:
             log.debug("promise resolution hook failed", exc_info=True)
