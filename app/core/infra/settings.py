@@ -903,6 +903,9 @@ class ToolsSettings:
     enabled: bool = True
     get_time: bool = True
     recall: bool = True
+    conversation_history: bool = True
+    daily_overviews: bool = True
+    archive_timezone: str = "system"
     # F10d cluster-scoped recall (``recall_topic``): browse a whole topic
     # cluster of the memory graph rather than the few closest snippets.
     # Needs the topic graph wired (no-ops to an empty result otherwise).
@@ -2581,6 +2584,9 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             enabled=bool(tools_raw.get("enabled", True)),
             get_time=bool(tools_raw.get("get_time", True)),
             recall=bool(tools_raw.get("recall", True)),
+            conversation_history=bool(tools_raw.get("conversation_history", True)),
+            daily_overviews=bool(tools_raw.get("daily_overviews", True)),
+            archive_timezone=str(tools_raw.get("archive_timezone", "system") or "system"),
             recall_topic=bool(tools_raw.get("recall_topic", True)),
             recall_concept=bool(tools_raw.get("recall_concept", True)),
             recall_self_history=bool(

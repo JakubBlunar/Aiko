@@ -2683,6 +2683,13 @@ and **P52's volume half** (duplicate families are why the lane is expensive).
 
 ## Reasoning follow-up: from associations to revisable explanations
 
+**24 Oct 2026 follow-up:** [RS1-RS9](reasoning-surfacing.md) scopes the remaining
+source-to-reply evaluation, evidence-preserving recall, sufficient context,
+optional-cue arbitration, final-inclusion accounting, selective pre-speech
+reasoning, cache reuse, discriminating checks and usefulness attribution. These
+are open implementation/evaluation slices under the owners below; implemented
+L49-L52 pilots are not reopened. No live behavior changed in that review.
+
 **Planning only, 28 Sep 2026.** The goal is person-like competence: carry a
 problem across turns, distinguish observation from interpretation, consider
 alternatives, notice when a premise fails, and change a conclusion for a reason.

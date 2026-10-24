@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
+from app.core.infra.archive_schema import ARCHIVE_SCHEMA
 from app.core.infra.message_outcomes import MessageOutcomesMixin, OUTCOME_SCHEMA
 
 log = logging.getLogger("app.chat_database")
@@ -1502,6 +1503,7 @@ class ChatDatabase(MessageOutcomesMixin):
     def _init_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_CREATE_TABLES)
         conn.executescript(OUTCOME_SCHEMA)
+        conn.executescript(ARCHIVE_SCHEMA)
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
             # Fresh database: CREATE TABLE memories above already

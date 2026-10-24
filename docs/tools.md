@@ -28,6 +28,15 @@ For things she can't just know:
 | `web_search` | Web results, fetched **synchronously inside the turn** so she can answer from them in the same reply. See [Synchronous web search](#synchronous-web-search-d3) below. |
 | `get_activity` | What is on the machine right now — foreground app, and a window title only when that app is allowlisted. Live sample when the desktop collector answers within ~250 ms; otherwise the last stored session and how stale it is. Never a screen recording. Gated by `tools.activity`. Independent of `agent.activity_awareness_enabled` for registration — the tool itself reports when awareness is off. |
 
+## Conversation archive (D8)
+
+`conversation_history` reads the current user's retained dialogue across
+sessions, with chronological pages, literal topic filtering, neighboring turns
+and exact-message drill-down. Its `overviews` mode browses stored daily source
+outlines with explicit coverage and missing days. Recent-day outlines collect
+during idle time without inference; these are selected excerpts and counts,
+not generated topic summaries. See [archive contracts and backfill commands](conversation-archive.md).
+
 ## Reading the diary
 
 `read_diary` reuses `SessionController.list_diary` / `diary_count` for browsing

@@ -361,6 +361,8 @@ typing-inspection==0.4.3
     #   mcp
     #   pydantic
     #   pydantic-settings
+tzdata==2026.3
+    # via english-speaking-assistant (pyproject.toml)
 urllib3==2.7.0
     # via
     #   lance-namespace-urllib3-client

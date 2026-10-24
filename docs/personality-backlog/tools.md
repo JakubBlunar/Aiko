@@ -10,7 +10,16 @@ both parts).
 
 ## D8. Conversation archive recall with daily overviews
 
-**Status: open; backlog only (1 Oct 2026).**
+**Status: in progress (24 Oct 2026).** The deterministic archive tool and daily
+source-outline foundation are implemented. See [the implementation notes](../conversation-archive.md)
+for budgets, source lifecycle, review/backfill commands and remaining work.
+The original proposal below remains the target for generated topic summaries.
+
+The first daily records deliberately contain attributed source excerpts and
+counts, rather than generated prose. This makes data collection immediately
+reviewable without inference, while separating message-accounting coverage from
+selective-highlight coverage. Generated daily topic/event bullets and real-model
+overview-to-message selection scenarios remain open.
 
 **Motivation.** Aiko should be able to answer "what did we talk about last week?"
 or find an exchange from a month ago, including material that never became a

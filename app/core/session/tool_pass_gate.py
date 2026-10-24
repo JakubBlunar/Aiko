@@ -126,6 +126,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "recall_self_history": "recall",
     "recall_hypotheses": "recall",
     "read_diary": "recall",
+    "conversation_history": "recall",
     # world / room / garden
     "look_around": "world",
     "move_to": "world",
@@ -238,6 +239,9 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"remember", r"recall", r"memor(?:y|ies)", r"forg[eo]t(?:ten)?",
         r"did i (?:tell|mention|say)", r"have i (?:told|mentioned|said)",
         r"what did i (?:say|tell)", r"we talked about",
+        r"what did we (?:talk|discuss|say)", r"conversation (?:archive|history)",
+        r"(?:daily|weekly|monthly) (?:overview|recap)",
+        r"(?:recap|summari[sz]e) (?:our|the) (?:chat|conversation)s?",
         r"last (?:time|week|month) (?:i|we)\b",
         # L19: questions about change over time. Narrow phrases rather
         # than a bare "changed", which would fire on most turns.

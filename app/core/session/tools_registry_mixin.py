@@ -55,6 +55,16 @@ class ToolsRegistryMixin:
         registry = ToolRegistry()
         try:
             if (
+                getattr(tools_cfg, "conversation_history", True)
+                and getattr(self, "_chat_db", None) is not None
+            ):
+                from app.llm.tools.conversation_history import ConversationHistoryTool
+
+                registry.register(ConversationHistoryTool(
+                    self._chat_db, self._user_id,
+                    getattr(tools_cfg, "archive_timezone", "system"),
+                ))
+            if (
                 getattr(tools_cfg, "calendar", False)
                 and getattr(self, "_chat_db", None) is not None
             ):

@@ -51,6 +51,24 @@ the mechanical half of this — broken paths and, more usefully, heading anchors
 that stopped resolving when a heading was reworded on its way into `shipped/`.
 Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
 
+## 24 Oct 2026: selective context and grounded reasoning
+
+**Analysis and backlog only; all nine proposals remain open.** The
+[RS1-RS9 review](reasoning-surfacing.md) traces retrieval, concept evidence,
+cue competition, working state, speech and prompt-cache behavior against the
+current source. It distinguishes why an item was selected from why it is
+supported, applies now or explains a result. No current model-quality or live
+cache measurements are claimed.
+
+Start with end-to-end evaluation, accurate final-inclusion receipts and source-
+linked concept recall. Then compare smaller sufficient evidence sets and fewer
+competing optional steers. RS6 proposes a gated, bounded `reason_about` tool
+before speech, tested against selected context alone and selective reasoning
+effort. RS7 preserves prefix reuse with revision-aware evidence, and RS8/RS9
+extend existing causal-check and usefulness-learning owners. These are follow-up
+slices under L49-L55, K92/K96/K97/K101 and P43/P52, not duplicate cognition loops.
+No runtime, persona, settings or live memory changed.
+
 ## 23 Oct 2026: reasoning, social meaning and companion expression
 
 The review added five patterns, [K102-K106](patterns.md#k102-pragmatic-frames-and-indirect-meaning):
@@ -82,12 +100,13 @@ Only documentation and synthetic regression fixtures are retained.
 
 ## 1 Oct 2026: conversation archive recall
 
-**Backlog only.** [D8](tools.md#d8-conversation-archive-recall-with-daily-overviews)
-extends the existing K-time2 date-aware recall with user-scoped, paged transcript
-access for week/month retrospectives. Ship deterministic message lookup first;
-then add source-linked daily overviews as a derived index with explicit coverage,
-revision/deletion handling and message drill-down. This does not replace durable
-memory extraction or rolling session compaction, and adds no always-on prompt.
+**In progress, 24 Oct 2026.** [D8](tools.md#d8-conversation-archive-recall-with-daily-overviews)
+now has a user-scoped, paged `conversation_history` tool and compute-only daily
+source outlines across sessions, with source drill-down, coverage reporting and
+transactional edit/deletion invalidation. Recent days collect during idle time;
+historical backfill is explicitly bounded. Generated topic summaries remain open.
+See [implementation and review commands](../conversation-archive.md). This adds
+no always-on prompt and does not replace memory extraction or session compaction.
 
 ## 30 Sep 2026: immersion without changing models or Live2D
 
