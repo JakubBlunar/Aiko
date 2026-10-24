@@ -1,367 +1,122 @@
-# Testing + evaluation (T-series)
+# Testing and evaluation
 
-How we verify the behavioural system stays correct as the concept work
-(L-series) and future K-patterns pile on. Parked here after a design
-discussion: unit tests cover the *pure helpers* well, but nothing
-exercises the **worker -> cue -> prompt -> reply -> post-turn -> state**
-chain end-to-end, and the LLM sits in the middle as an untestable box.
-
-The organising idea is **bracket the LLM**: everything *before* it
-(`PromptAssembler` turning state into a prompt) and everything *after*
-it (`response_text_service` tag parsing + `_post_turn_inner_life` state
-deltas) is deterministic and testable with a scripted LLM double. The
-model's *content quality* is a separate concern handled by an eval
-track (T5), never a red/green unit gate.
-
-**Relationship to the DT-series** (in [`tools.md`](tools.md)): DT1/DT2/DT4
-are *live-app* MCP-driven debug tooling (drive the running instance,
-advance its clock, snapshot state). The T-series is the *offline* pytest
-counterpart — the same behaviours, but as fast, deterministic, CI-runnable
-tests with a fake LLM. They share concepts (fixed clock, "which blocks
-fired") and should share code where sensible (T6 `Clock` seam feeds DT1;
-the T2 harness and the DT4 replay harness are the offline / live faces of
-one idea).
-
-**Relationship to K10 / L22.** K10 persona regression (SHIPPED, on-demand)
-and L22 concept-quality eval are both members of the T5 eval family;
-[`data/persona/golden_turns.jsonl`](../../data/persona/golden_turns.jsonl)
-is the existing seed corpus. T5 is the umbrella that gives them a shared
-runner + scoreboard.
-
----
+Reviewed 24 Oct 2026 against checkout 8c666cf. Only unfinished implementation, explicit validation
+and deferred decisions are listed below. Existing tests were inspected, not rerun; source inspection
+is not live/model/device verification. Completed slices and superseded proposals are in [the shipped
+audit](shipped/audit-2026-10-24.md).
 
 ## T1. Shared `FakeChatClient` + `BehaviorHarness`
 
-**Motivation.** Every worker / turn test today hand-rolls its own LLM
-stub (`MagicMock`, `FakeOllama`, `_FakeOllama`, `_OllamaBlock`, …), so
-there is no single, trustworthy LLM double and no reusable way to stand
-up the collaborators a behavioural test needs. This duplication is the
-reason no end-to-end chain test exists (T2 is blocked on it). Build the
-missing seam once.
+**Status: Open implementation.**
 
-**Key files (new + existing).**
-- Existing contract: [`app/llm/chat_client.py`](../../app/llm/chat_client.py)
-  — the `ChatClient` structural protocol (`chat`, `chat_with_tools`,
-  `chat_stream`, `chat_json`) that `OllamaClient` /
-  `OpenAICompatibleClient` satisfy. The fake implements the same protocol.
-- New: `tests/support/fake_chat_client.py` — a scripted `FakeChatClient`
-  that returns canned responses per call (queue of replies, or a
-  `{prompt-substring -> reply}` map), records every call for assertions,
-  and can be told to *raise* (for the T3 fault-injection path). Must
-  cover `chat_stream` (yield tagged deltas), `chat_with_tools` (return a
-  scripted tool call or `respond_directly`), and `chat_json`.
-- New: `tests/support/harness.py` — a `BehaviorHarness` that assembles
-  a temp `ChatDatabase` + `MemoryStore` + real `IdleWorkerScheduler` +
-  real `PromptAssembler`, wired to a frozen clock + seeded RNG (see T6),
-  with `FakeChatClient` injected as both the chat and maintenance client.
+**Implemented / available:** Many feature-specific fakes/fixtures and managed temporary databases
+exist; the suite now has shared conftest isolation.
 
-**Sketched approach.**
-- Follow the existing temp-DB patterns (`test_schedule_learner.py`,
-  `test_agenda.py`) for store setup.
-- Expose small ergonomics: `harness.run_worker(name)` (wraps
-  `scheduler.force_run`), `harness.assemble_prompt(user_text)`,
-  `harness.run_turn(scripted_reply)` (drives `TurnRunner` /
-  post-turn with the fake's reply), and assertion helpers over `kv_meta`
-  / stores / rendered prompt blocks.
-- Keep it in `tests/support/` (a plain package, not a pytest `conftest`
-  — the suite is `unittest`-based with no shared fixtures today).
+**Remaining:** Build a reusable ChatClient-protocol fake and minimal real-collaborator
+BehaviorHarness. Do not assume no shared fixtures or no integration tests exist.
 
-**Open questions.**
-- How much of `SessionController` to instantiate for a "turn" test — the
-  full mixin stack is heavy; likely a minimal `ChatTurnMixin` host with
-  only the collaborators a given test touches.
-- Whether `_post_turn_inner_life` runs whole or gets a per-test
-  allow-list (some pieces are expensive; `test_vulnerability_budget_post_turn.py`
-  already stubs the whole thing out today — the harness should make
-  running *most* of it cheap enough to keep).
-
-**Effort.** Medium. Unlocks T2 and the T3 fault-injection variant.
-
----
+**Source check:** [conftest.py](../../tests/conftest.py), [chat_client.py](../../app/llm/chat_client.py).
 
 ## T2. End-to-end behavioural chain tests
 
-**Motivation.** Unit tests verify "the cue *would* render given this
-state" and "the worker's internal logic is correct" — but not that the
-pieces are wired together. A worker writing to the wrong `kv_meta`
-journal key, a T6 provider reading a stale watermark, or the tag parser
-dropping a `[[goal:]]` all sail through green today. These wiring bugs
-are exactly what gets more likely as the concept layer adds providers
-and journals.
+**Status: Partial.**
 
-**Key files (existing seams).**
-- `IdleWorkerScheduler.force_run(name)` — fire a worker past the timer /
-  quiet gate.
-- `PromptAssembler.set_inner_life_providers(...)` + the T6 providers —
-  assert the cue actually lands in the assembled prompt.
-- [`response_text_service.py`](../../app/core/services/response_text_service.py)
-  — tag parsing (`[[reaction:]]`, `[[goal:]]`, `[[predict:]]`,
-  `[[remember:]]`).
-- [`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
-  `_post_turn_inner_life` — the state deltas to assert against.
+**Implemented / available:** Targeted wiring/chain regressions cover several features, including
+staged cue admission, correction signals and delivery.
 
-**Sketched approach.** On top of T1's harness, one test per chain:
-1. seed state; `harness.run_worker("forward_curiosity")`
-2. assert the cue landed in `kv_meta`
-3. `harness.assemble_prompt(...)`; assert the T6 block contains it
-4. `harness.run_turn(scripted_reply="[[goal:...]] ...")`
-5. assert `GoalStore` / affect / journal watermark advanced
+**Remaining:** Add reusable worker -> cue -> final prompt -> parsed reply -> post-turn state chains
+through T1; existing local tests do not cover every behavioral chain.
 
-Start with **one** path (forward-curiosity cue -> prompt -> goal) as a
-proof-of-concept, then template the rest (rupture/repair, mood drift,
-wants ledger, belief prediction, task cues).
+[Implemented slice](shipped/audit-2026-10-24.md#testing-t2).
 
-**Open questions.**
-- Which chains are highest-value to cover first (lean: the ones with the
-  most cross-file hops — curiosity, beliefs/predictions, task cues).
-- How to keep these from becoming brittle snapshot tests — assert on
-  *presence of the cue payload*, not the exact rendered wording.
-
-**Effort.** Medium (small per chain once T1 exists).
-
----
+**Source check:** [test_moment_schedule_signals.py](../../tests/test_moment_schedule_signals.py),
+[test_prompt_assembler.py](../../tests/test_prompt_assembler.py),
+[response_text_service.py](../../app/core/services/response_text_service.py),
+[post_turn_mixin.py](../../app/core/session/post_turn_mixin.py).
 
 ## T3. Worker registry conformance + smoke + fault injection
 
-**Motivation.** There are ~51 `*_worker.py` files. Most "is this worker
-even doing its job" failures are mechanical: not registered, crashes on
-an empty DB, non-idempotent `force_run`, `is_ready` with a hidden side
-effect, a name collision, or a wedged scheduler thread when the worker's
-optional LLM call throws. One parametrized test over *every registered
-worker* buys enormous coverage for almost no code.
+**Status: Partial.**
 
-**Key files (existing).**
-- [`idle_worker_scheduler.py`](../../app/core/proactive/idle_worker_scheduler.py)
-  + the `IdleWorker` protocol (`app/core/proactive/idle_worker.py`).
-- The registration mixins (`speaking_workers_init_mixin.py`,
-  `idle_workers_init_mixin.py`) — the source of the "all registered
-  workers" list to iterate.
+**Implemented / available:** Scheduler and individual workers have smoke/failure regressions.
 
-**Sketched approach.**
-- **Conformance:** iterate all registered workers; assert unique `name`,
-  positive `interval_seconds`, `is_ready(now, last_run_at)` is pure
-  (calling it twice doesn't mutate state), and the object satisfies the
-  protocol.
-- **Smoke:** `force_run` each worker twice against (a) an empty DB and
-  (b) a lightly-seeded DB from T1's harness; assert no exception and no
-  state corruption (second run idempotent or monotonic).
-- **Fault injection:** run the LLM-using workers (consolidation,
-  conflict, diary, dream, belief, topic label/digest) with a
-  `FakeChatClient` set to raise; assert the worker degrades gracefully
-  and the scheduler thread survives (no wedge, error logged, next tick
-  still fires).
+**Remaining:** Add registry-wide uniqueness/readiness purity, seeded/empty-store repeat runs and LLM
+fault injection without booting live install state.
 
-**Open questions.**
-- Getting a clean "all registered workers" handle without booting the
-  full `SessionController` — may need a small registry-collection seam in
-  the init mixins.
-- Which workers legitimately need seeded state to run at all (skip-list
-  vs. minimal seed helper in the harness).
+[Implemented slice](shipped/audit-2026-10-24.md#testing-t3).
 
-**Effort.** Small–Medium.
-
----
+**Source check:** [idle_worker_scheduler.py](../../app/core/proactive/idle_worker_scheduler.py),
+[test_idle_worker_scheduler.py](../../tests/test_idle_worker_scheduler.py).
 
 ## T4. Prompt-build + tag-parse contract (golden) tests
 
-**Motivation.** The two deterministic halves the LLM sits between deserve
-explicit contract tests independent of any worker chain: (a) given a
-frozen state, the assembled prompt contains exactly the expected blocks
-in the expected T0->T6 order; (b) given a raw tagged model output, the
-parse + post-turn produces exactly the expected state delta. Together
-they pin the prompt-cache prefix ladder and the tag vocabulary — both
-easy to break silently when adding a block or a tag kind.
+**Status: Partial.**
 
-**Key files (existing).**
-- `prompt_assembler.py` `assemble_with_budget` + `_PROMPT_BLOCK_TIERS`
-  — the tier-order invariant (the T0->T6 prefix-stability ladder).
-- `response_text_service.py` — the tag grammar.
-- `tool_pass_gate.should_run_tool_pass` — a pure function; golden inputs
-  -> run / skip decisions (guards the "don't over-fire tools on banter"
-  contract).
+**Implemented / available:** Prompt-order/prefix, handling, tag parsing and stream tests exist.
 
-**Sketched approach.**
-- Prompt goldens: fixed provider set -> assert block *identities* and
-  order (not full wording) so the cache-prefix ladder is regression-safe;
-  a separate coarse "resting token floor" assertion (ties to P31).
-- Parse goldens: a table of `raw_output -> expected (tags, cleaned_text,
-  state_delta)` covering every inline tag kind, including malformed tags
-  (assert graceful strip, no crash).
+**Remaining:** Build a deliberate compact cross-feature golden contract layer for both assembled
+prompt and parsed output; avoid duplicating implementation-only unit tests.
 
-**Open questions.**
-- Snapshot storage: inline expected values vs. `tests/goldens/*.txt`
-  (lean inline for parse, file-based only if a prompt snapshot gets big).
+[Implemented slice](shipped/audit-2026-10-24.md#testing-t4).
 
-**Effort.** Small.
-
----
+**Source check:** [test_prompt_assembler.py](../../tests/test_prompt_assembler.py),
+[test_response_text_service.py](../../tests/test_response_text_service.py).
 
 ## T5. LLM behavioural eval suite (separate track, not a CI gate)
 
-**Motivation.** The one thing you genuinely *cannot* assert is "did the
-model behave in character / use the cue naturally." Trying to pin that
-with unit assertions is the trap. It needs an **eval** track: scripted
-scenarios run against a real, *pinned* small model, scored and tracked as
-a **scoreboard over time**, so a model swap or a prompt-tier change shows
-up as a *score regression* rather than a flaky red build. This is the
-umbrella over K10 (persona regression, shipped/on-demand) and L22
-(concept-quality eval).
+**Status: Partial.**
 
-**Key files (existing + new).**
-- [`data/persona/golden_turns.jsonl`](../../data/persona/golden_turns.jsonl)
-  — the seed corpus; extend to multi-turn scenarios.
-- New: `scripts/eval_runner.py` — runs scenarios, emits a scored report;
-  reuses the DT4 replay harness once it exists.
-- MCP `send_message(skip_tts=true)` + `get_last_response_detail` — the
-  live-drive path (shared with DT4).
+**Implemented / available:** K10, L55 and social-reasoning corpora/runners exist; K102/K103 have a
+small configured-model baseline, and K104/K105 have deterministic slices.
 
-**Sketched approach.**
-- **Structural / cheap (can gate CI):** well-formed tags emitted when the
-  scenario should trigger them; tool-pass fires on tool-shaped turns and
-  *not* on banter; no forbidden meta-tag leakage into the transcript.
-- **Semantic / rubric (scoreboard only, never a gate):** LLM-as-judge
-  against a rubric (in character? recalled the cue naturally? no Barnum
-  vagueness?). Slow, costly, drift-prone — track the trend, don't block.
-- Keep it out of the default `pytest -q` run; a separate `make eval` /
-  explicit invocation with its own budget.
+**Remaining:** Complete repeated held-out/blinded multi-turn and listening comparisons listed below,
+with equal budgets, source correctness, silence/decline/failure controls and no live relationship
+mutation.
 
-**Open questions.**
-- Which small model to pin as the eval baseline (must be reproducible;
-  quantised local model vs. a hosted pinned version).
-- Judge model + rubric stability — the judge itself drifts; consider a
-  fixed judge version and periodic human spot-audit of the scores.
-- **L37's surfacing outcome ledger is a second, non-judge objective**, and
-  arguably a better one: golden turns and a rubric judge both score whether
-  output *looks* right, while the ledger records what actually happened next
-  in real sessions. It can't replace the scoreboard (no ground truth per
-  scenario, and it only exists for turns a real user had), but a rubric score
-  that moves *opposite* to the engaged rate is a strong signal the rubric is
-  measuring taste rather than effect. Worth reporting side by side.
+[Implemented slice](shipped/audit-2026-10-24.md#testing-t5).
 
-**Effort.** Medium (largely unlocked once DT4 + a pinned model exist).
-
-### 27 Sep 2026: multi-turn naturalness track
-
-Extend T5, not a second evaluation framework. Compare the current system
-with one candidate change at a time, using synthetic or explicitly
-consented, de-identified 6-12-turn scenarios. Keep private source traces
-local; never copy personal conversations into tracked goldens. Pin the
-model, settings, prompt-budget envelope, and scenario inputs; repeat runs
-and counterbalance A/B order for human review. Judge disagreement and
-small samples remain visible rather than becoming a single "human score."
-
-**Scenario families and observable outcomes:**
-
-- A relevant cue waits through composing, then meets a real opening:
-  continuity without interrupting or replaying the same thought.
-- A corrected premise changes the later conclusion: no stale inference
-  repeated as a fact, and no unnecessary narration of private reasoning.
-- A good answer to her own interest leads to a specific next step:
-  progression rather than another version of the same question.
-- An interrupted explanation or unseen task result: no false "we already
-  discussed this" and no automatic repeat of everything.
-- Ordinary quiet company, a brief acknowledgement, a direct question, and
-  an explicit topic change: silence/following can be the best response.
-
-Report these beside time-to-first-token p50/p95, interruption and duplicate
-rates, unsupported claims, prompt cost, and background calls per hour.
-Score factual grounding and useful uncertainty separately from style.
-K97-K99 and Live L17-L18 each supply a focused counterexample in their
-entries; run the cheap scripted contracts before the model evaluation.
-
-**Attribution warning from the data.** The 14-day read-only snapshot had
-23,965 `surfacing_outcomes` rows over only 397 distinct assistant turns;
-the following engagement label is shared by many items in one turn.
-Those are not 23,965 independent user reactions and cannot identify which
-item caused engagement. Group by turn/session, retain unset outcomes as
-unknown, and keep L37 echo, cue fulfilment, and user uptake distinct.
-This extends H34/H35 and the existing L43/P43 work rather than claiming
-to solve causal credit with another counter. Do not reward longer replies,
-more time in the app, more disclosure, or fewer goodbyes as "naturalness."
-Read representative successes and failures, including quiet controls.
-
-### 23 Oct 2026: social reasoning and expression track
-
-**K102/K103 baseline and bounded runner implemented, 24 Oct 2026.** See
-[the implementation and initial limits](shipped/social-understanding.md#t5-baseline-and-reproducible-probes).
-K104 has a cause-aware deterministic slice; K105 has a pause-only cue and mood
-mist. See [their implementation limits](shipped/mixed-feelings-expression.md).
-Conversational/listening evaluation, K106 and J12/L36 expansion remain open. Keep L55's
-evidence/decision scores separate. Use
-synthetic 6-12-turn episodes with a held-out variant changing one decisive
-context fact, speaker, goal or correction. Expected behavior is a set of
-acceptable outcomes, not an exact line or a mandatory emotional performance.
-
-Cover literal versus ironic praise, teasing followed by an explicit boundary,
-quoted/pretend speech followed by a real request, a corrected referent used
-later, unheard versus misunderstood speech, a positive event unrelated to an
-unresolved feeling, a revised shared nickname, and an approach that helped in
-one context but is unwanted in another. Include ordinary sincere praise, a
-short successful reply, a warm friendship and a quiet goodbye as controls.
-Preserve the current hypothesis-evidence guard cases rather than duplicating
-them under a second framework.
-
-Score interpretation, retained correction, factual grounding, clarification
-cost, appropriate affection and unwanted callbacks independently. Use blinded
-human text/listening comparisons for expression fit; an LLM judging a transcript
-cannot establish how audio sounded. For delivery changes, replay interruption,
-cancel, reconnect and multi-client ownership before subjective review. Report
-first-token/first-audio latency, calls, tokens and errors at equal budgets.
-
-Start with the current configured model as the baseline and one change at a
-time. A same-model second reading is not independent ground truth. Freeze
-rubrics before tuning, show disagreement/failures, and keep evaluation runs
-isolated from live memories, relationship state and settings. Successful
-fixtures demonstrate their tested behavior, not general human-like reasoning.
-
----
-
-### 23 Oct 2026: provider migration and learning provenance
-
-The shared stream regressions exercise in-band errors, missing completion
-markers, explicit provider refusal, reasoning-only completion, private thinking
-split across tokens, UTF-8, and intentional cancellation. They verify that
-failed streams cannot commit assistant text or inline self-memory. These are
-deterministic client/runner contracts, not evidence of a hosted model failure
-rate or a complete K107 implementation.
-
-The implemented K107 slice additionally checks cancellation without a final
-delta, visible truncation, preserved user preferences across route changes,
-atomic assistant/source writes, source-session validation and delayed reflection
-after source deletion. Tool regressions cover schema rejection before execution,
-malformed arguments on all three parser paths and a corrected call executing
-once. Usage regressions cover streaming/non-streaming splits, known zero versus
-unreported details, merged calls, billing totals and answer throughput. Fixtures
-are synthetic; the user's longer behavioral comparison remains pending.
-
-Extend T5 with K107's longer cases: user preference followed by a provider
-limitation; cancellation during reasoning and after partial speech; a visible
-length-limited answer; retry after a tool side effect; a route swap followed by
-recall of an established preference. Score user evidence and assistant evidence
-separately, and inspect durable boundaries, trust, memory sources and delivery
-state. Include genuine user de-escalation and valid character preferences as
-controls. Do not classify refusal origin from keywords alone. Keep fixtures
-synthetic and results aggregate-only; do not retain private prompt dumps or
-conversation exports in the repository.
+**Source check:** [evaluate_social_reasoning.py](../../scripts/evaluate_social_reasoning.py),
+[social_reasoning_t5.json](../../tests/fixtures/social_reasoning_t5.json),
+[reasoning_l55.json](../../tests/fixtures/reasoning_l55.json).
 
 ## T6. Determinism seams for flake-free chain tests
 
-**Motivation.** Two sources of nondeterminism block reliable chain tests:
-the `get_time` tool ([`app/llm/tools/builtins.py`](../../app/llm/tools/builtins.py))
-reads the live system clock with no injection seam, and several workers
-default to `random.Random()` with system entropy. The T2 chain tests will
-be subtly flaky without a frozen clock + seeded RNG threaded through.
+**Status: Partial.**
 
-**Sketched approach.** Thread a single process-wide `Clock` seam through
-the time-gated paths (this is the *same* seam DT1 needs for the live
-virtual clock — build it once, share it) and give the RNG-using workers
-an injectable seeded `random.Random`. The T1 harness sets both to fixed
-values by default. Scope carefully: the brain loop's own timing must
-**not** be virtualised (per the DT1 note) — only the relationship /
-memory / cue time math and the `get_time` tool.
+**Implemented / available:** timephrase/DT1 clock injection and engagement-clock tests exist.
 
-**Open questions.** Same scoping question as DT1 — enumerate which
-subsystems read time directly and must move to the seam vs. which stay.
-Land this alongside or just before DT1 so they share the `Clock`.
+**Remaining:** Standardize seeded RNG injection across remaining workers and advance-clock/scheduler
+chain tests; keep narrative clock separate from real runtime timing.
 
-**Effort.** Small–Medium (shared with DT1).
+[Implemented slice](shipped/audit-2026-10-24.md#testing-t6).
+
+**Source check:** [timephrase.py](../../app/core/infra/timephrase.py),
+[test_debug_clock.py](../../tests/test_debug_clock.py),
+[test_engagement_clock.py](../../tests/test_engagement_clock.py),
+[builtins.py](../../app/llm/tools/builtins.py).
+
+## Named behavioral comparisons still open
+
+- **K97:** referents, corrected premises, interruptions and topic changes versus history/situation
+  baseline at equal context budgets.
+- **K98:** answer-earned semantic progression versus repeated asks, with quiet and subject-change controls.
+- **K99:** never-presented versus interrupted/played/acknowledged content, stale/duplicate
+  acknowledgements, reconnect and hardware listening tests.
+- **K102:** repeated held-out/blinded indirect meaning, mixed serious/playful spans, unsupported
+  sarcasm, quotations, pretend exits, boundaries, languages and long-history displacement.
+- **K103:** wrong-referent recurrence, excess apologies/clarifications/callbacks versus K17; real
+  interrupted-audio listening separately from text probes.
+- **K104/K105, J12/L36:** cause-specific mixed expression, semantic delivery/listening, explicit
+  relationship boundaries and outcome-grounded transfer.
+- **K78:** coarse vocal-tone evidence against consented/synthetic audio and actual listening,
+  keeping uncertainty and avoiding emotion/intent certainty.
+- **Live L17/L18 and K12/K62/K77/K83/K84/K96/K100/K101/K107:** matched route-level continuity,
+  silence, consent, source correctness, cancellation and provider-migration controls; preserve each
+  active item's narrower acceptance gate.
+
+<a id="27-sep-2026-multi-turn-naturalness-track"></a>
+<a id="23-oct-2026-social-reasoning-and-expression-track"></a>
+<a id="23-oct-2026-provider-migration-and-learning-provenance"></a>
+
+These are pending comparisons. Earlier small synthetic runs and historical pass totals are not
+general naturalness, real audio or current-deployment proof.

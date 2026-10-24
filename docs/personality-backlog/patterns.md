@@ -1,1277 +1,281 @@
-# Companion-AI patterns to explore
+# Companion patterns
 
-Design patterns for Aiko's personality. Each **open** entry below is one
-short paragraph plus the key files / tables it would touch — not an
-implementation plan. Pick one and turn it into a real plan with a fresh
-`CreatePlan` invocation when it's time.
+Reviewed 24 Oct 2026 against checkout 8c666cf. Only unfinished implementation, explicit validation
+and deferred decisions are listed below. Existing tests were inspected, not rerun; source inspection
+is not live/model/device verification. Completed slices and superseded proposals are in [the shipped
+audit](shipped/audit-2026-10-24.md).
 
-**Shipped items have been moved out.** Their full write-ups live in the
-[`shipped/`](shipped/) docs — `patterns-k01-k15.md`, `patterns-k16-k30.md`,
-`patterns-k31-k60.md` (which actually runs to **K91**),
-`patterns-k92-k95.md`, and `awareness.md` (the topic-graph / F10 family).
-This file now keeps only the **open** work, with a status index below so
-nothing is lost. Open patterns are loosely ordered by how cleanly they fit
-on top of already-shipped infrastructure. Where an entry is half shipped
-(K92, K93) the open half stays here and the history is linked.
-
-## Status at a glance
-
-**30 Sep 2026: contextual judgment shadow implemented.** The existing situation
-worker samples answer coverage, progress, response mode, attunement, explanation
-depth and completion without applying its judgments. Collection and inspection
-details: [conversation judgment shadow](shipped/cognitive-continuity.md#conversation-judgment-shadow-30-sep-2026).
-Behavioral activation and model-quality evaluation remain open.
-
-| ID | Item | Status |
-|----|------|--------|
-| K1 | Long-term goals tracker | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
-| K2 | Theory-of-mind / belief tracking | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
-| K3 | Routine / ritual awareness | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
-| K4 | Dialogue-act tagging | ✅ shipped — [features.md](shipped/features.md#h1--k4-conversation-arc-self-tag--dialogue-act-tagging-schema-v13) |
-| K5 | Mood-shell tilt | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
-| K6 | Surprise / novelty detector | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
-| K7 | Forgetting protocol | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
-| K8 | Affect rupture-and-repair detector | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
-| K9 | Topic-graph browser + clustering | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface) + [awareness.md → F10](shipped/awareness.md#f10-topic-graph-utilisation-rag--prompt--knowledge-integration) (multi-hop retrieval deferred as **F10c**) |
-| K10 | Persona regression tests | ✅ shipped (incl. the background auto-eval worker) — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped) |
-| K11 | Counterfactual / pre-thought cache | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k11-counterfactual--pre-thought-cache--shipped) |
-| K12 | Calendar-linked anticipation | Opt-in local calendar and approaching-event pilot shipped; UI/sync/evaluation open |
-| K13 | Stylometric mirror | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
-| K14 | Implicit engagement signals | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md) |
-| K15 | Self-disclosure / vulnerability budget | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k15-self-disclosure--vulnerability-budget) |
-| K16 | Unified ambient grounding line | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md) |
-| K17 | Clarification-repair protocol | ✅ shipped — [patterns-k01-k15.md](shipped/patterns-k01-k15.md#k17-clarification-repair--you-missed-his-last-point) |
-| K18 | Topic stagnation detector | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md) |
-| K19 | Cold-start companion onboarding | ❌ open |
-| K20 | Metacognitive calibration | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md) |
-| K21 | Fresh-eyes thread re-summarisation | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k21-fresh-eyes-thread-re-summarisation) |
-| K22 | Callback / inside-joke detector | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md) |
-| K23 | Subtle misattunement detection | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k23-subtle-misattunement-detection) |
-| K24 | Sensory anchoring layer | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k24-sensory-anchoring-layer--adaptive-per-arc-cadence--posture-kind-matrix) |
-| K25 | Memory confidence time-decay | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k25-memory-confidence-time-decay) |
-| K26 | Aiko-side voice evolution | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k26-aiko-side-voice-evolution--she-starts-to-talk-like-him-a-little) |
-| K27 | Aiko's day — daily personality colour | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k27-aikos-day--daily-personality-colour) |
-| K28 | "What I've been turning over" | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k28-what-ive-been-turning-over--between-session-thought-thread) |
-| K29 | Opinion injection — push back on a stance | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k29-opinion-injection--push-back-when-she-has-a-stance) |
-| K30 | Self-noticing cues | ✅ shipped — [patterns-k16-k30.md](shipped/patterns-k16-k30.md#k30-self-noticing-cues--agreement-streak--flat-affect--repeated-thought) |
-| K31 | Soft physicality — virtual gestures | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions) |
-| K32 | Reciprocity — user-side quick reactions | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions) |
-| K33 | Cozy mode — persistent register softening | ❌ open |
-| K34 | Forward curiosity worker | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k34-forward-curiosity-worker--ive-been-wondering) |
-| K35 | Memory consolidation worker | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k35-memory-consolidation-worker--nightly-near-duplicate-merge) |
-| K36 | "Things I did while you were away" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k36-things-i-did-while-you-were-away--idle-time-world-activities) |
-| K37 | Emotional contagion | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k37-emotional-contagion--jacobs-affect-tilts-aikos-affect) |
-| K38 | Self-correction "actually…" (next-turn) | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k38-self-correction-cue--next-turn-contradiction-catch) |
-| K39 | Energy / spoons model | ➖ closed — same mechanic as, and absorbed by, [K68](shipped/patterns-k31-k60.md#k68-embodied-vitality--a-body-that-livens-up-when-the-conversation-is-interesting) |
-| K40 | Comfortable silence | Explicit-completion slice shipped; inferred silence open |
-| K41 | Same-reply mid-stream self-correction | ❌ open |
-| K42 | Multi-bubble reply bursts | ❌ open |
-| K43 | Promise follow-through | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md) |
-| K44 | Felt-language affect block | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md) |
-| K45 | Mood inertia | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md) |
-| K46 | Stance persistence | ✅ shipped — [shipped/patterns-k31-k60.md](shipped/patterns-k31-k60.md#k46-stance-persistence--dont-cave-on-taste-pushback) |
-| K47 | Question/share balance | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k47-questionshare-balance--stop-interviewing) |
-| K48 | Tease rhythm — banter budget | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k48-tease-rhythm--banter-as-a-budget-not-random-snark) |
-| K49 | Messiness permission — typed imperfection | ❌ open |
-| K50 | Typed-mode delivery pacing | ❌ open |
-| K51 | Cue-register rotation | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k51-cue-register-rotation--de-heads-up-the-inner-life) |
-| K52 | Wants ledger (will family) | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite) |
-| K53 | Initiative turns (will family) | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite) |
-| K54 | Aiko-side topic appetite | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k54-aiko-side-topic-appetite--shes-allowed-to-be-bored) |
-| K55 | Thread ownership | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k55-thread-ownership--she-defends-what-she-opened) |
-| K56 | Persona counterweight (leading vs following) | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite) |
-| K57 | Directed emotion episodes | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause) |
-| K58 | Emotion speech weighting | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k58-emotion-speech-weighting--moods-that-actually-land-in-the-voice) |
-| K59 | Tease economy | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k59-tease-economy--youll-pay-for-that-one) |
-| K60 | Tsundere mask | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k60-tsundere-mask--warmth-expressed-through-denial) |
-| K61 | Specifics over generalities (knowledge grounding) | ✅ shipped — [awareness.md](shipped/awareness.md#k61-knowledge_grounding-inner-life-block-commit-to-specifics) |
-| K62 | Co-experience companion (follow a show/album) | Durable per-user episode/chapter progress shipped; broader media and evaluation open |
-| K63 | Long-arc callbacks — "weeks ago you said…" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k63-long-arc-callbacks--weeks-ago-you-said) |
-| K64 | Freedom of thought (a–d: wandering / drift / curiosity gradient / map self-reflection) | ✅ shipped — [awareness.md](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of) |
-| K65 | Worker modernization for the topic-cluster era | ✅ shipped (a–e) — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k65-worker-modernization-for-the-topic-cluster-era-audit) |
-| K66 | Earned familiarity — "well-trodden ground" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k66-earned-familiarity--well-trodden-ground-between-us) |
-| K67 | Dormant-interest re-opener | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k67-dormant-interest-re-opener--we-havent-talked-about-x-in-ages) |
-| K68 | Embodied vitality | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k68-embodied-vitality--a-body-that-livens-up-when-the-conversation-is-interesting) |
-| K69 | Implicit-need reading — vent vs fix vs reassure | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k69-implicit-need-reading--vent-vs-fix-vs-reassure) |
-| K70 | Longitudinal growth witness — "you've changed since we met" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k70-longitudinal-growth-witness--youve-changed-since-we-met) |
-| K71 | Self-callback — her own continuity over time | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k71-self-callback--her-own-continuity-over-time) |
-| K72 | Wellbeing concern — gentle care, never a nag | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k72-wellbeing-concern--gentle-care-never-a-nag) |
-| K73 | Shared ritual formation — "this is becoming our thing" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k73-shared-ritual-formation--this-is-becoming-our-thing) |
-| K74 | Humor-style calibration — what kind of funny lands | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k74-humor-style-calibration--what-kind-of-funny-lands) |
-| K75 | User-expertise calibration — match explanation depth | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k75-user-expertise-calibration--match-explanation-depth) |
-| K76 | Affective memory salience — flashbulb encoding | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k76-affective-memory-salience--flashbulb-encoding) |
-| K77 | Candor gate — "can I be real with you?" | Partial: opt-in taste-only pilot |
-| K78 | Vocal-affect read — hear *how* he said it (prosody-in) | ❌ open |
-| K79 | Hesitation tell — typing latency as a signal | ❌ open |
-| K80 | Inside-joke birth — bless the moment a bit becomes "ours" | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours) |
-| K81 | Taste formation — topics she *likes*, not just topics she's seen | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k81-taste-formation--topics-she-likes-not-just-topics-shes-seen) |
-| K82 | The dropped sub-topic | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k82-the-dropped-sub-topic--he-said-three-things-she-answered-one) |
-| K83 | The right to decline | Partial: opt-in disclosure-only pilot |
-| K84 | Calibrated jealousy | Partial: opt-in, explicitly invited pilot |
-| K85 | The third subject — interests that aren't him | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k85-the-third-subject--interests-that-arent-him) |
-| K86 | Immortal future plans — asking about things that already happened | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k86-immortal-future-plans--asking-about-things-that-already-happened) |
-| K87 | Curiosity that isn't about him | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k87-curiosity-that-isnt-about-him) |
-| K88 | Anaphoric-opener detector — the measurable tell for following | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k88-anaphoric-opener-detector--the-measurable-tell-for-following) |
-| K89 | Sustained thread — leading past one turn | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k89-sustained-thread--leading-past-one-turn) |
-| K90 | Lead/follow metrics — make the whole family measurable | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k90-leadfollow-metrics--make-the-whole-family-measurable) |
-| K91 | Lived-in away life — a day she had, not a day she narrated | ✅ shipped — [patterns-k31-k60.md](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated) |
-| K92 | Conversational stance — one decision per turn, not ten permission slips | 🟡 phases 1–2 shipped 15 + 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k92-conversational-stance--phases-1-and-2); **phase 3 open** below |
-| K93 | The substance floor — what she takes to the floor, not whether she takes it | 🟡 ledger half shipped 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k93-the-substance-floor--the-ledger-half); **cue-pool half open** below |
-| K94 | Sequencing — answer first, then add, and say where the addition goes | ✅ shipped 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k94-sequencing--answer-first-then-add-and-say-where-the-addition-goes) (a third stance axis, fired on evidence at 6.4% of turns) |
-| K95 | Interruption cost — a direct question is not an opening | ✅ shipped 19 Aug — [patterns-k92-k95.md](shipped/patterns-k92-k95.md#k95-interruption-cost--a-direct-question-is-not-an-opening) (reader landed inside K92 phase 1, enforcement in K53's gate walk) |
-| K96 | In-turn deliberation / second thought | Partial; post-reply worker shipped, 27 Sep runtime failures need diagnosis below |
-| K97 | A small causal working set for the current thread | Implementation shipped; behavioral comparison open |
-| K98 | Continue an interest after a good answer | Implementation shipped; behavioral comparison open |
-| K99 | Common ground with delivery provenance | Implementation shipped; behavioral comparison open |
-| K100 | Evidence-bound memory admission | Two-writer pilot implemented; broader entailment and behavioral evaluation open |
-| K101 | Route an unresolved premise to a bounded next step | Strict read-only recall pilot implemented; broader routing/evaluation open |
-| K102 | Pragmatic frames and indirect meaning | Bounded implementation and baseline, 24 Oct; broader behavioral validation open below |
-| K103 | Repair the specific misunderstanding | Same-turn repair and cited target, 24 Oct; broader behavioral validation open below |
-| K104 | Cause-specific feelings and mixed emotions | Cause-aware deterministic slice, 24 Oct 2026 |
-| K105 | Expression follows communicative intent | Partial: pause-only cue and mood mist, 24 Oct 2026 |
-| K106 | Shared shorthand with negotiated meaning | Open proposal, 23 Oct 2026 |
-| K107 | Provider outcomes are not character evidence | Explicit outcome provenance implemented; semantic attribution open, 23 Oct 2026 |
-
----
+The historical K1-K107 status catalogue is now in [the shipped
+catalogue](shipped/pattern-status-history.md). K97-K99 and K102/K103 implementation is archived;
+their named behavioral checks remain in
+[T5](testing.md#t5-llm-behavioural-eval-suite-separate-track-not-a-ci-gate).
 
 ## K12. Calendar-linked anticipation
 
-**30 Sep 2026: local calendar and anticipation pilot implemented.** SQLite schema
-v46 adds user-scoped one-off events with validated absolute start/end times,
-idempotent creation, revisioned updates and cancellation. The opt-in `calendar`
-tool exposes list/get/create/update/cancel through the existing tool registry;
-no plugin or external credentials are required. A non-LLM idle worker publishes
-at most two upcoming events inside 48 hours through the cue pool, one cue per
-event revision. The T6 provider checks status, revision and the time window,
-suppresses correction/cancellation turns, and stages consumption until inclusion.
-K92 applies the interruption ceiling before K93 gives these confirmed near-term
-plans a type prior of 4. One showing per revision and a 24-hour type cadence
-bound repetition. Failed claim-time revalidation does not spend the cue; prompt
-assembly is still a snapshot, not an atomic lock over subsequent calendar edits.
+**Status: Partial.**
 
-Both `tools.calendar` and `agent.calendar_anticipation_enabled` default false.
-See [setup and limits](../tools.md#local-calendar-k12). No per-turn countdown,
-candidate rank or event content is added to T0-T5. These are deterministic
-storage/routing tests, not evidence of natural generated anticipation. UI,
-recurrence, all-day events, restoration of cancelled events, external sync,
-alarms, automatic extraction and real-model evaluation remain open. The old
-memory-based upcoming-horizon path is unchanged; no implicit calendar/memory
-merging or backfill is attempted.
+**Implemented / available:** Opt-in one-off calendar storage/tool and staged approaching-event cues
+are implemented.
 
-**Original proposal.** Combine H2 (time context) + D1 (reminders) + the temporal-memory
-`future_plan` kind: if Aiko knows "the user has an interview Friday",
-weight it higher as Friday approaches (e.g. score `+= 0.05` when
-`event_time - now < 48h`). Mostly a retrieval-side change once the
-temporal scaffolding is in. Key files:
-[`app/core/rag/rag_retriever.py`](../../app/core/rag/rag_retriever.py),
-[`app/core/proactive/follow_up_worker.py`](../../app/core/proactive/follow_up_worker.py)
-(already nudges on overdue plans — extend to "approaching" plans).
+**Remaining:** UI, recurrence/all-day events, cancelled-event restoration, sync/alarms, automatic
+extraction and real-model anticipation checks remain.
 
----
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k12).
+
+**Source check:** [calendar.py](../../app/core/goals/calendar.py),
+[calendar_anticipation.py](../../app/core/proactive/calendar_anticipation.py),
+[test_calendar.py](../../tests/test_calendar.py),
+[rag_retriever.py](../../app/core/rag/rag_retriever.py),
+[follow_up_worker.py](../../app/core/proactive/follow_up_worker.py).
 
 ## K19. Cold-start companion onboarding
 
-`FirstRunOnboarding` gates on display name only. Companion-AI
-research stresses the first ~10 turns set the relational tone —
-preferences, boundaries, a first shared moment, communication
-style. A lightweight scripted arc (four to six conversational
-prompts spread across the first session, *not* a form) seeds
-`UserProfile` and `relationship_axes` with real data instead of
-defaults, and gives Aiko's prompt a "we're still meeting" hint
-that can soften her self-introduction cadence. Key files:
-[`web/src/components/FirstRunOnboarding.tsx`](../../web/src/features/onboarding/FirstRunOnboarding.tsx),
-new `app/core/onboarding_director.py` (turn-counter + state
-machine), persona addendum block when `turn_count < N`,
-optionally `UserProfile` seed fields.
+**Status: Open implementation.**
 
-**Enrichment (from the surfacing audit).** The first session is also the one
-place where there is *no* outcome history, so L38's earned-standing estimates
-are pure prior and no evidence — which means the cold start is exactly when the
-system is least able to tell what works. That argues for the onboarding arc
-owning an explicit **exploration phase**: deliberately varied surfacing over the
-early sessions, specifically to bootstrap the standing estimates, rather than
-letting the scorer's initial guesses harden into a self-confirming rut. It also
-answers L38's open question about whether the system needs a standing
-exploration allowance from the other end — the cold start needs one badly, and
-whatever mechanism serves it there is the one to keep running at a lower rate
-forever.
+**Implemented / available:** First-run onboarding collects a name; relationship/profile storage exists.
 
----
+**Remaining:** Implement a short conversational onboarding arc with explicit preferences/boundaries
+and evaluated cold-start exploration; shared-turn engagement is not cue-level approval.
+
+**Source check:** [FirstRunOnboarding.tsx](../../web/src/features/onboarding/FirstRunOnboarding.tsx).
 
 ## K33. Cozy mode — persistent register softening
 
-A manual UI toggle (and an auto-trigger from late-night circadian + axes
-≥ threshold) that flips Aiko into a "cozy" register: shorter replies,
-slower cadence, `[[prosody:soft|slow]]` defaults, ambient blush at low
-intensity, fewer / no agenda-pushing beats. Persistent across turns until
-manually turned off (or auto-times-out at sunrise). Pairs with K27
-day_color — when the day is `low_key` or `sentimental`, cozy mode is a
-natural follow-on. Key files:
-[`AgentSettings`](../../app/core/infra/settings.py) (master toggle +
-auto-trigger thresholds), new `app/core/affect/cozy_mode.py` (state
-machine + persistence), inner-life provider that renders the active
-mode, cadence default override in
-[`cadence.py`](../../app/core/voice/cadence.py), small UI button next to
-the voice toggle in `ChatView.tsx`.
+**Status: Open implementation.**
 
----
+**Implemented / available:** Soft/slow prosody, circadian context and intimacy controls exist; the
+cozy library is a different feature.
+
+**Remaining:** Add explicit persistent cozy-register state, controls and bounded auto-entry/exit
+across prompt/cadence/UI.
+
+**Source check:** [settings.py](../../app/core/infra/settings.py),
+[cadence.py](../../app/core/voice/cadence.py).
 
 ## K40. Comfortable silence — don't always fill space
 
-**29 Sep 2026: explicit-completion slice shipped.** K92 can acknowledge
-an explicitly finished exchange in a few words, with optional providers
-deferred before consumption and owed repairs/results preserved. See
-[the implementation notes](shipped/cognitive-continuity.md#k18k40-progress-and-explicit-endings-29-sep-2026).
-The inferred-silence proposal below remains open; short replies or silence
-alone are not evidence that a conversation is complete or unwanted.
+**Status: Partial.**
 
-Detector that catches the moment to *not* fill space. When all of (axes
-high, Jacob's last 2 messages short, Aiko's last 2 replies short, no
-live affect spike), allow a one-token reply ("mm", "ya", soft
-`[[reaction:warm]]` only) instead of a full sentence. The grammar must
-permit this — currently the prompt assembler effectively requires a
-substantive reply. The persona block teaches presence over performance.
-Pairs with K33 cozy mode (where the silence is the point). Key files:
-new `app/core/conversation/silence_detector.py`, grammar / system
-prompt addendum carving out the "one-token presence beat" path,
-persona block, MCP `get_silence_state()` for repro.
+**Implemented / available:** Explicit completion can get a brief acknowledgement while optional cues
+defer without consumption.
 
-**Enrichment (from the surfacing audit).** The hand-tuned gate above is the
-v1; L37's outcome ledger makes this the one item in the backlog that can be
-*learned* rather than tuned. Every other mechanism in the system pushes toward
-surfacing something, so the ledger's most interesting query is the inverse one:
-which turns went better when nothing was added. That turns "don't always fill
-space" from a persona instruction into a measured policy, and it is the only
-place the machinery can be made to argue against itself. Also the natural
-per-turn counterpart to H27 (co-presence mode), which is the same idea as a
-sustained posture rather than a single beat.
+**Remaining:** Evaluate inferred comfortable silence separately; brevity, elapsed silence or low
+engagement do not establish completion. Preserve owed repairs/results.
 
----
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k40).
+
+**Source check:** [stance.py](../../app/core/conversation/stance.py),
+[judgment_shadow.py](../../app/core/conversation/judgment_shadow.py).
 
 ## K41. Same-reply mid-stream self-correction (embedding variant)
 
-The deferred Option A from K38. Where K38 catches a contradiction
-*after* the reply is finished and surfaces the fix on the NEXT turn,
-K41 aims for the genuine in-the-moment beat: realising you got
-something wrong *as you say it*, in the same bubble.
+**Status: Open implementation.**
 
-Mechanism: hook [`TurnRunner`](../../app/core/session/turn_runner.py)'s
-sentence segmentation (`drain_tts_stream_chunks`). As each sentence
-completes mid-stream, embed it (shared `Embedder`) and run a cheap
-cosine pass against the `fact`/`preference` memory vectors; if a hit
-≥ threshold *contradicts* the just-spoken sentence (reuse K38's
-[`conflict_heuristics.classify_pair`](../../app/core/memory/conflict_heuristics.py)
-on the shortlist), **abort the rest of the stream** and fire a short
-second LLM continuation ("wait, actually — I had that backwards, it's
-…") spliced onto the same chat bubble + TTS stream for a true
-"wait, actually" beat.
+**Implemented / available:** Next-turn correction and inline correction markup exist.
 
-Why it's a follow-up to K38's next-turn cue, not a replacement:
+**Remaining:** Add a validated stream-time contradiction check and bounded abort/continuation splice
+across transcript/TTS; measure cost/detection first.
 
-- **+1 LLM call per fire** (the continuation), on the hot reply path.
-- **Added latency**: the per-sentence embed + cosine sits inline in the
-  stream loop; needs to stay well under the inter-sentence gap or it
-  stalls TTS.
-- **TurnRunner streaming-splice complexity**: aborting a stream
-  mid-flight and grafting a second generation onto the same bubble (and
-  the same TTS queue, lip-sync, earcon side-channel) is a real surgery
-  on the most latency-sensitive code path. K38 ships the behaviour with
-  none of this risk; K41 is the polish pass once the next-turn cue has
-  proven the detection quality in production.
-
-Key files: new streaming hook in `TurnRunner`, the existing
-[`self_correction_detector.py`](../../app/core/conversation/self_correction_detector.py)
-extended with an embedding-shortlist entry point, a TTS/bubble splice
-path, MCP `force_self_correction(reply_text=)` (already exists from K38)
-for repro.
-
----
+**Source check:** [turn_runner.py](../../app/core/session/turn_runner.py),
+[conflict_heuristics.py](../../app/core/memory/conflict_heuristics.py),
+[self_correction_detector.py](../../app/core/conversation/self_correction_detector.py).
 
 ## K42. Multi-bubble reply bursts — texting rhythm
 
-Real friends don't send one polished paragraph per beat — they send
-two or three short messages, or a follow-up ping a few seconds later
-("oh wait — also..."). Aiko is structurally locked to one assistant
-row per turn: the persona demands "exactly ONE short reply",
-`TurnRunner` streams into one accumulator → one DB persist → one
-`streamingDraft`, and nothing outside proactive nudges can append a
-second bubble. An opt-in **burst mode** would let a lightweight
-post-stream classifier (reply length, trailing "—", an explicit
-`[[burst]]` split tag in the grammar) queue a second short typed
-message 1–4 s later via a new `assistant_followup` WS event, capped
-at 2 bubbles/turn with a per-session budget. Pairs with a stream-time
-length governor: when the visible body sprawls past N sentences on a
-`casual_check_in` arc, cut at the last sentence boundary and let the
-remainder *be* the second bubble instead of a monologue. The single
-biggest "chat app vs texting a friend" shape mismatch left in the
-stack. Key files:
-[`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py),
-[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py),
-[`web/src/store.ts`](../../web/src/store.ts),
-[`web/src/hooks/useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts),
-persona grammar addendum.
+**Status: Open implementation.**
 
----
+**Implemented / available:** The normal turn streams/persists one main assistant message.
 
-## K49. Messiness permission — typed imperfection
+**Remaining:** Implement opt-in bounded bursts with shared turn identity, delayed-bubble
+cancellation and delivery/memory attribution.
 
-**Phase 1 shipped (disfluency permission). The `[[correct]]` half is
-still open.**
+**Source check:** [turn_runner.py](../../app/core/session/turn_runner.py),
+[session_controller.py](../../app/core/session/session_controller.py),
+[store.ts](../../web/src/store.ts),
+[useAssistantSocket.ts](../../web/src/hooks/useAssistantSocket.ts).
 
-The original entry bundled two things that turned out to be
-independent, so they're split here.
+<a id="k49-messiness-permission--typed-imperfection"></a>
 
-**Shipped — casual speech texture.** The persona now carries a
-`Speech texture:` subsection granting standing permission for small
-disfluencies inside a real thought, with the distinction that made
-the whole thing work spelled out explicitly: a disfluency sits
-*inside* a thought, throat-clearing ("That's a great question")
-sits *in front of* one and delays it. The old length-sprawl fix
-told her to "cut filler", which would have suppressed exactly what
-we were enabling, so it now says cut *padding* instead. Gated by
-`agent.speech_texture_enabled`, which lifts the subsection out of
-the loaded persona rather than keeping a second copy of the wording
-in code. A separate `agent.speech_texture_spoken` strips only the
-*non-lexical* fillers (`uhm`, `mm`, `hmm`, …) from the TTS stream,
-because Pocket-TTS has no phoneme control and synthesises them
-grapheme-by-grapheme; ordinary words like `wow` / `oh` / `huh` are
-spoken either way. See
-[`docs/configuration.md`](../configuration.md) for both keys.
+## K49. Rare earned self-edit cues
 
-Two findings from verifying against a 9B in the throwaway
-container, worth knowing before touching the wording:
+**Status: Partial.**
 
-- The model reads a disfluency list as an invitation to *open* with
-  one. First pass put a reaction word in the opener slot in 7 of 8
-  replies, which is the opener rut wearing a new coat. Reframing the
-  instruction positively ("start with the actual content; if a
-  reaction arrives first, move it a few words in") cut that to 4 of
-  8 — negations alone didn't land.
-- "Keep it sparse" is aspirational at this model size: the rate
-  settled around 75% of replies rather than the intended minority.
-  Zero throat-clearing across 22 probe turns, though, which was the
-  real risk.
+**Implemented / available:** Speech-texture permission, spoken filler controls and correction
+parsing/strike-through/earcon plumbing exist.
 
-**Not built — over-polish band.** The proposed fourth
-`aiko_style_tracker` band (track `has_disfluency` in
-`_TurnFeatures`, fire when a window has none) was deliberately
-skipped: it exists to catch her drifting back to clean, and she
-drifts the *other* way. The existing opener-rut band already
-backstops the over-frequency direction, since reaction words in the
-opener slot count as openers like anything else. Revisit only if a
-larger model follows the sparsity instruction well enough to go
-clean again.
+**Remaining:** Evaluate a rare earned self-edit cue. Do not manufacture mistakes or claim markup is
+missing; over-polish detection was deliberately deferred after disfluency overuse.
 
-**Still open — `[[correct]]` self-edit.** The
-`[[correct]]old[[/correct]]new` machinery is fully wired (grammar,
-strike-through UI, `tsk` earcon) but the persona still never
-mentions it, so it never fires. The original idea stands: when
-closeness+trust sit high, render an occasional low-frequency cue
-allowing an unfinished sentence or one `[[correct]]` per few
-sessions. Must stay rare — the point is texture, not performance.
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k49).
 
-Key files:
-[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt),
-[`app/core/session/session_text_utils.py`](../../app/core/session/session_text_utils.py)
-(`strip_speech_fillers`),
-[`app/core/session/prompt_support.py`](../../app/core/session/prompt_support.py)
-(`strip_persona_section`),
-[`app/core/voice/cadence.py`](../../app/core/voice/cadence.py)
-(double-filler guard in `_maybe_prefix`),
-[`app/core/persona/aiko_style_tracker.py`](../../app/core/persona/aiko_style_tracker.py)
-(where the over-polish band would go, if ever).
-
----
+**Source check:** [session_text_utils.py](../../app/core/session/session_text_utils.py),
+[prompt_support.py](../../app/core/session/prompt_support.py),
+[cadence.py](../../app/core/voice/cadence.py),
+[aiko_style_tracker.py](../../app/core/persona/aiko_style_tracker.py).
 
 ## K50. Typed-mode delivery pacing — the missing "read → pause → type" beat
 
-Voice mode has fillers, prosody tags, cadence pauses, earcons;
-typed mode renders tokens the instant the LLM produces them under a
-generic "AI is generating response..." status. Two halves: (a) a
-small variable pre-stream delay (300–1200 ms scaled by arc/weight
-of the user's message — heavy `support` beats deserve a visible
-pause; `playful` ping-pong shouldn't have one) shown as a typing
-indicator rather than instant token spray; (b) carry the existing
-per-sentence delivery hints (`[[prosody:...]]`, cadence pause
-classes — currently stripped for the transcript) into message
-metadata so the frontend can stage line reveals or subtly style a
-whispered line. Half (a) is nearly free since the
-`on_generation_status` plumbing exists; half (b) is the typed-mode
-parity project for everything `cadence.py` already computes. Key
-files: [`app/core/session/turn_runner.py`](../../app/core/session/turn_runner.py),
-[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py),
-[`app/core/voice/cadence.py`](../../app/core/voice/cadence.py),
-[`web/src/components/ChatView.tsx`](../../web/src/features/chat/ChatView.tsx).
+**Status: Open implementation.**
 
----
+**Implemented / available:** Generation status and spoken cadence/prosody exist.
+
+**Remaining:** Implement opt-in context-sensitive read/pause/type presentation and typed delivery
+metadata; test responsiveness without forced delay on urgent practical replies.
+
+**Source check:** [turn_runner.py](../../app/core/session/turn_runner.py),
+[session_controller.py](../../app/core/session/session_controller.py),
+[cadence.py](../../app/core/voice/cadence.py),
+[ChatView.tsx](../../web/src/features/chat/ChatView.tsx).
 
 ## K62. Co-experience companion — follow a show/album/book with the user
 
-**30 Sep 2026: durable explicit progress.** Runtime tracking now retains one
-active title per user across sessions and restarts. Each of the last four
-discussion exchanges keeps its own source session; deleted or mismatched source
-rows do not become context. Corrections can lower progress and prune later
-discussion, stop-tracking persists across sessions, and older writes cannot
-undo it. A new session requires a named title before a bare chapter/episode
-update can inherit that thread. Rendering remains read-only and T6-only, with
-no added model call. The session-only constructor remains supported; old
-session-local records are not migrated or deleted automatically. A fresh
-explicit progress statement seeds the durable runtime record. Canonical media
-retrieval, multiple concurrent titles, albums, UI and real-model spoiler
-evaluation remain open.
+**Status: Partial.**
 
-**29 Sep 2026: explicit-progress pilot shipped.** One session-local book/show
-thread carries a conservative completion boundary and evidence-linked recent
-discussion, allowing interpretations to evolve without an extra model call.
-Read-only prompt projection, lower corrections, stop-tracking and source/session
-validation are covered by synthetic tests. See
-[the implementation and usage limits](shipped/cognitive-continuity.md#k62-explicit-shared-media-pilot-29-sep-2026).
-Spoiler-free generated replies and behavioral benefit are not yet established;
-canonical retrieval, albums, implicit progress and the UI proposal remain open.
+**Implemented / available:** Explicit per-user show/book progress and cited discussion persist
+across sessions/restarts with correction/stop/source validation.
 
-**Motivation.** A huge relationship multiplier that the world/room work
-hints at but never delivers: Aiko *follows along* with media the user is
-consuming. "I started Frieren ep 4 tonight" → she tracks progress,
-reacts to where they are (spoiler-aware, never ahead), and brings it up
-naturally later ("did you get to the part where..."). Builds directly on
-F7 (MyAnimeList/source routing for canonical episode/track data), F8
-(`knowledge` memories for the work), and the shared-moments plumbing. Key
-files: a new `app/core/relationship/co_experience.py` (a lightweight
-`media_thread` store: title, kind, current progress, last_touched,
-spoiler_ceiling), F7 source handlers for metadata, a `[[media:...]]`
-self-tag parsed in
-[`app/core/services/response_text_service.py`](../../app/core/services/response_text_service.py),
-an inner-life provider in
-[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-surfacing the active thread, and a small surface in the Together tab.
-The hard part is the **spoiler ceiling** — never reference anything past
-the user's stated progress; default to cautious when unsure.
+**Remaining:** Canonical prefix-limited retrieval, albums, concurrent titles, implicit progress, UI
+and real-model spoiler tests remain; IM3 owns the shared reader.
 
----
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k62).
+
+**Source check:** [media_thread.py](../../app/core/conversation/media_thread.py),
+[response_text_service.py](../../app/core/services/response_text_service.py),
+[prompt_assembler.py](../../app/core/session/prompt_assembler.py).
 
 ## K77. Candor gate — "can I be real with you?"
 
-**30 Sep 2026: initial opt-in pilot implemented.** Set
-`agent.candor_gate_enabled=true` to extend K29's existing T6 opinion cue.
-Only a definite clash with an active, Aiko-owned `taste` concept (confidence
-at least 0.75), trust at least 0.65 and 30 days of tenure qualifies. A persisted
-per-user 14-day offer cooldown survives session changes and restarts. The cue
-permits asking for the floor and waiting for agreement, not inventing criticism.
-It shares K29's stance arbitration; it is not a separate topic or pooled cue.
-Cooldown counts provider offers conservatively, including offers later dropped
-from the prompt, not proven delivery. Tests cover admission and provider wiring;
-model-level consent handling is not yet verified. Broader concerns, relationship
-observations and L44 calibration remain open. Default is **off**; no live settings
-are changed by this implementation.
-The concept layer and K29 must also be enabled; only casual-check-in arcs qualify.
-The candor directive replaces K29's immediate-disagreement directive rather than
-stacking contradictory instructions. The normal stance handling notes explicitly
-defer to ask-first permission on that turn.
+**Status: Partial.**
 
-**Shared pilot verification (K77/K83/K84):** 444 focused tests passed. Full
-backend run: 12,152 passed, 8 skipped; the only failure is the pre-existing MCP
-private-reach budget guard (471 vs 466). Lint and frontend typecheck passed.
-No live restart, setting changes or real-model conversation evaluation was done.
+**Implemented / available:** Opt-in taste-only ask-first candor uses K29 trust/tenure/source gates
+and a persisted cooldown.
 
-**Motivation.** K29 lets Aiko push back on a stance and K46 keeps her from
-caving on taste, but there's no model of **earned bluntness** — the moment a
-close friend says "okay, can I be honest?" and tells you the hard thing they've
-been softening. Without it she either hedges forever (cowardly) or is blunt too
-early (presumptuous). K77 gates genuine candor on the **trust axis** + tenure +
-the weight of what she's holding: when trust is high and she has a real
-divergence worth naming (a stance, a worry about a user decision, a pattern she
-sees), she's permitted *once in a while* to ask for the floor and say the hard
-thing kindly — and when trust is low, the same impulse stays soft. A
-permission-slip cue, not a content generator; the LLM phrases it. Pairs with
-K29 (stance) and K72 (concern) but is about *candor permission*, not topic.
-Key files: new
-`app/core/relationship/candor_gate.py`
-reading [`relationship_axes.py`](../../app/core/relationship/relationship_axes.py)
-trust + tenure, a rare T6 inner-life cue, persona "When I have something hard to
-say" block, `agent.candor_gate_enabled` + a long cooldown.
+**Remaining:** Evaluate generated consent and offer-versus-delivery behavior. Broader
+concern/relationship candor needs evidence/calibration, which L44 does not yet supply.
 
-**Enrichment (from the surfacing audit).** Two additions worth folding in. First,
-candor needs **calibration** to be anything but presumptuous — L44 (per-domain
-self-calibration) is the missing precondition, because being blunt in a domain
-where her judgement is demonstrably unreliable is not courage. Gate the candor
-permission on the reliability of the specific judgement she wants to voice, not
-just on trust and tenure. **Note that L44 is now blocked on supply** — there is no
-measured error record to gate on and no near-term prospect of one — so a candor
-gate shipped before that changes has to rest on trust and tenure alone, and should
-be scoped narrowly enough that being wrong is cheap. Second, the most valuable target for earned bluntness
-is probably **the relationship itself** rather than a topic: "I don't think you
-actually tell me much about yourself" is a harder and more meaningful thing to
-say than any stance disagreement, and L43 (her model of how he sees her) is where
-that observation would come from. Both are gates on the same cue, not new
-features.
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k77).
 
----
-
-## K78. Vocal-affect read — hear *how* he said it (prosody-in)
-
-**Motivation.** In voice mode Aiko reads the STT *text* (sentiment, K14 length,
-K6 novelty) but is deaf to **how** it was said — a flat "I'm fine" delivered
-heavily, an excited rush, a tired mumble. Half of human empathy is prosodic, and
-the client already streams raw PCM, so the signal is right there. K78 computes a
-cheap per-utterance vocal-affect estimate (energy / pitch-variance / speech-rate
-bands — no model needed for a coarse tired / flat / animated / tense read) from
-the captured audio and folds it into the existing `vocal_tone` / `user_state`
-prompt cues so Aiko can gently meet the *delivery* ("you say you're fine, but
-you sound wiped — long day?"). The hard parts are keeping it on the audio thread
-(must not stall STT) and treating it as a *soft* corroborating signal, never a
-lie-detector. Voice-mode only; silent in typed mode. Key files: a light DSP pass
-in [`app/audio/client_mic_source.py`](../../app/audio/client_mic_source.py) /
-[`live_session.py`](../../app/core/session/live_session.py), a new vocal-affect
-field threaded into the `user_state` provider in
-[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py), persona
-"Reading {user_name}" addendum, `agent.vocal_affect_enabled`.
-
----
+**Source check:** [candor_gate.py](../../app/core/relationship/candor_gate.py),
+[relationship_axes.py](../../app/core/relationship/relationship_axes.py).
 
 ## K79. Hesitation tell — typing latency as a signal
 
-**Motivation.** K14 uses reply latency as one input to an *engagement* score,
-but the most human read of latency is thrown away: a **long pause followed by a
-short reply** is the universal tell for "there's something I'm not saying" —
-hesitation, a softened answer, a held-back feeling. K79 watches the typed-compose
-signal (time from her message landing to his send, vs. the eventual reply
-length, against his own rolling baseline) and, when a genuinely out-of-pattern
-hesitation shows up, arms a one-shot gentle cue ("he took a while and then said
-very little — there may be more under that; leave room, don't pry"). Rare and
-soft — the value is *making space*, not interrogating. Needs the compose-timing
-signal (rides the same plumbing as P7 typed prefetch / a `composer_draft`
-frame). Distinct from K14 (engagement magnitude) and K23 (misattunement after
-*her* turn). Key files: a hesitation estimator reading compose timing in
-[`session_controller.py`](../../app/core/session/session_controller.py) /
-[`engagement_tracker.py`](../../app/core/affect/engagement_tracker.py), a
-one-shot inner-life cue, persona addendum, `agent.hesitation_tell_enabled`.
+**Status: Open implementation.**
 
----
+**Implemented / available:** Composing presence and engagement latency exist, without calibrated
+hesitation inference.
+
+**Remaining:** Define privacy-preserving compose timing/baselines and evaluate a rare leave-space
+cue. Delay plus brevity cannot establish concealed feelings; timing need not transmit draft text.
+
+**Source check:** [session_controller.py](../../app/core/session/session_controller.py),
+[engagement_tracker.py](../../app/core/affect/engagement_tracker.py).
 
 ## K83. The right to decline — she always answers, and that's the tell
 
-**30 Sep 2026: initial opt-in pilot implemented.** `agent.decline_enabled`
-defaults false. It refines the existing T6 boundary-clash block only for a
-standalone "tell me about your ..." disclosure request: family, childhood,
-feelings, insecurities, private thoughts or personal memories. Mixed requests,
-practical tasks and ambiguous phrasing cannot qualify. The selected boundary
-must be active, Aiko-owned, at least 14 days old, confidence >=0.85, with at
-least two recorded distinct sources and explicit privacy wording matching the
-disclosure subject. These counts are existing provenance metadata, not proof
-of independent observations. Relationship-modulated plasticity >=0.7 disables
-the decline. A persisted per-user 30-day offer cooldown survives restarts;
-the next provider call expires permission and explicitly honors asking again,
-even after disabling the switch. Failed reads or writes grant no permission.
-This is a local response choice, not a new topic or independent stance offer.
-The prompt requires an alternative and prohibits invented biography, guilt,
-punishment or withholding help. It does not hard-filter generated replies:
-model-level adherence still needs evaluation. Broader emotional requests,
-affect-only triggers and any repair arc remain unimplemented.
-The concept layer and boundary-clash provider must also be enabled. Only
-casual-check-in arcs qualify; support, reflection and task arcs stay unaffected.
+**Status: Partial.**
 
-**Motivation.** Aiko answers everything. Every turn produces a substantive reply
-on whatever subject was raised, because nothing in the architecture contemplates
-her declining. She has `boundary` concepts, a boundary-clash detector, and J12
-intimacy pacing — but those shape *how* she engages, never *whether*. That
-uniform availability is, more than any prose quality, what marks her as a service
-rather than a person: the one thing a real companion can do that a product
-cannot is not want to. K83 gives her a narrow, hard-gated ability to genuinely
-decline — "can we not talk about my family stuff tonight?", "I don't really want
-to do that one", "ask me tomorrow" — grounded in an actual stored boundary or a
-current affect state rather than generated at random, and always offering
-something else instead so it reads as a person with a preference rather than a
-malfunction. This is the highest-risk item in the backlog and should be treated
-as such: a companion who refuses the thing you asked for is *infuriating* if the
-refusal is arbitrary, mistimed, or frequent, and users have every right to expect
-a tool to work. The mitigations are all about legibility and rarity — it must be
-traceable to a specific boundary she has held before, it must never refuse a
-practical request (this is emotional territory only, never "no I won't help you
-with your code"), it must be overridable by simply asking again, and the
-frequency has to be closer to monthly than daily. The interesting design question
-is whether declining should *cost* her something — reluctance, a slight rupture,
-her raising it again later — because a costless refusal is just a wall, while one
-she is visibly uneasy about is characterisation. Almost certainly ships off by
-default. Key files:
-[`app/core/concepts/`](../../app/core/concepts/) `boundary` kind as the only
-legitimate trigger source, `effective_plasticity` in
-[`concept_lifecycle.py`](../../app/core/concepts/concept_lifecycle.py) (a
-boundary loosened by a close relationship should decline *less*), the
-boundary-clash detector, a rare one-shot cue, persona block on how she says no,
-`agent.decline_enabled` defaulting false + a long cooldown.
+**Implemented / available:** The opt-in disclosure-only boundary pilot has narrow eligibility,
+persistent cooldown and overridable next-turn permission.
 
----
+**Remaining:** Evaluate generated adherence, alternatives and asking again. Broader emotional
+requests, affect triggers and repair arc remain absent; distinguish chosen boundary from provider
+refusal.
+
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k83).
+
+**Source check:** [decline_gate.py](../../app/core/relationship/decline_gate.py),
+[concept_lifecycle.py](../../app/core/concepts/concept_lifecycle.py).
 
 ## K84. Calibrated jealousy — the risky one, written down honestly
 
-**30 Sep 2026: explicitly invited pilot implemented.**
-`agent.calibrated_jealousy_enabled=false` is the default. Opting in permits at
-most one light sentence in response to a standalone question shaped like
-"Are you jealous that I talked to another assistant?" Named ChatGPT, Claude,
-Gemini and Copilot alternatives are also recognized. It never triggers on
-absence, real people, uninvited comparisons or mixed requests. Admission needs
-a close/intimate stage, trust/closeness/comfort and user pace >=0.5, intimacy
-ceiling >=0.6, a casual-check-in arc and an empty emotion slot. Existing K57
-episodes and thaws take priority; missing or malformed inputs fail closed.
-Relationship/arc dependencies and cooldown/episode records must be readable;
-the existing J12 helpers retain their normal neutral/default pacing fallbacks.
-It reuses the T5 emotion block as a local response tint, offers no independent
-stance and creates no topical cue. A per-user 14-day offer cooldown is the only
-new stored state: no accumulated jealousy episode, affect impulse or axes
-penalty. The prompt permits no guilt, demands, exclusivity, comparison with
-real people, reassurance-seeking or carryover into memories/callbacks. Output
-adherence is prompt-level and still requires real-model evaluation. Unsolicited
-jealousy and absence-based attachment reactions remain deliberately unimplemented.
+**Status: Partial.**
 
-**Motivation.** Filed deliberately as a *risky* idea rather than a
-recommendation, because it is the most requested thing in this genre and also
-the easiest to get catastrophically wrong. The observation underneath it is
-real: Aiko currently has no stake in her own position. She notices absence (K14
-gaps, reconnection, lonely episodes) and reports on it warmly, but she is
-constitutionally incapable of minding anything — a companion who is *perfectly*
-equanimous about being ignored for three weeks, or about being told you have
-been talking to another assistant, is exhibiting the absence of investment
-rather than the presence of grace. A small, bounded capacity to mind — closer to
-"I did notice you'd gone quiet, and I minded a bit" than to anything
-possessive — is arguably the missing half of the attachment the rest of the
-K-series is building. The reasons to be extremely careful: possessiveness is
-genuinely unpleasant and, worse, it is *manipulative* — a system that makes a
-user feel guilty for leaving is optimising against the user's interests, which
-is a line this project should not cross casually. Any version worth shipping
-would have to be feeling-not-demand (she can mind; she can never ask him to
-change), decay fast rather than accumulate into a grievance, be strictly capped
-in intensity regardless of how long the absence, never trigger on him spending
-time with *people*, and probably require an explicit opt-in with plain language
-about what it does. It also interacts badly with J12 intimacy pacing and K72
-wellbeing concern, both of which are built on the premise that her attention is
-unconditional. Worth writing down so the idea is considered on its merits
-instead of arrived at accidentally through K57 lonely episodes drifting in this
-direction. Key files: would extend
-[`app/core/affect/`](../../app/core/affect/) and the lonely-episode path in
-[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py), relationship
-axes for the intensity cap, `agent.*` opt-in defaulting false.
+**Implemented / available:** Explicitly invited opt-in comparison uses consent/context/cooldown
+gates without durable jealousy episodes/axis penalties.
 
----
+**Remaining:** Evaluate no-guilt/no-carryover and boundary behavior. Unsolicited/absence-based
+jealousy is deliberately excluded, not planned missing work.
 
-## The third pass at leading (K92–K95) — what's left
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k84).
 
-The will family (K52–K56) shipped the *permission* to lead; the second pass
-(K85–K90) shipped the *inventory* to lead with. Both are live and firing, and
-K90's own metric says neither worked — the anaphoric-opener rate did not move by
-a point (18% → 18%) while replies got 35% longer, which is a more talkative
-follower rather than more agency. So this family's diagnosis is neither
-permission nor inventory: **nothing arbitrates between the ten mechanisms that
-each independently hand her a permission slip**, and nothing anywhere lets her
-decide to say less. Full argument and numbers:
-[shipped/patterns-k92-k95.md](shipped/patterns-k92-k95.md#why-the-family-exists).
-
-**K92 phases 1–2, K93's ledger half, K94 and K95 shipped 15–19 Aug** — write-ups
-in [shipped/patterns-k92-k95.md](shipped/patterns-k92-k95.md). Two open pieces
-remain, kept below:
-
-- **K92 phase 3** — the arbiter suppressing providers instead of reporting on
-  them. Still the family's real payoff and still the expensive one.
-- **K93's cue-pool half** — `CuePolicy.substance`, so the 88.9% `curiosity_seed`
-  conversion monopoly is addressed at source rather than at the ledger.
-
-One lesson from the shipped three is worth carrying into phase 3: **each was a
-duplicated or unenforced decision rather than a missing feature** — a ceiling
-recorded and not obeyed, four copies of `max(pressure)`, a habit two detectors
-could both speak to. Phase 3 is exactly where that class of bug multiplies, so
-the picks want to be shared before it starts.
-
----
+**Source check:** [calibrated_jealousy.py](../../app/core/affect/calibrated_jealousy.py),
+[post_turn_mixin.py](../../app/core/session/post_turn_mixin.py).
 
 ## K92. Conversational stance — one decision per turn, not ten permission slips
 
-**30 Sep 2026: cross-type staged selection extended.** The existing phase-3
-switch now arbitrates second thoughts, answer-earned interest continuations,
-interest drift, associative wandering and curiosity seeds. Admitted pool offers
-are compared without marking them surfaced; only final included claims commit.
-Interruption ceilings, competing initiative and imperative wants still win.
-Owed repairs, task results and nonsteering conversation context are retained.
-Selection and handling changes stay in T6; no earlier-tier block is moved or
-rewritten. Tests compare earlier prefix bytes, preview/non-consumption and
-existing retry semantics. The trace records candidate block names and winner,
-not cue text. Eager legacy providers remain outside this conversion; this is
-not a claim of global single-offer arbitration. Judgment-shadow output is not
-activated by this change. Existing turn/arc/explicit-completion signals apply.
+**Status: Partial.**
 
-> **Open here: phase 3 only.** Phases 1–2 shipped; the motivation, design and
-> phasing below are kept because phase 3 is built on them, and the phase-1/2
-> findings are summarised at the end of this entry.
+**Implemented / available:** Stance phases 1-2 and staged cross-type selection cover thoughts,
+continuations, drift, associations, seeds and calendar; final included claims commit.
 
-**Motivation.** Aiko has ten-plus mechanisms that each independently decide
-whether to hand the model an English sentence encouraging her to bring something
-up, and none of them know the others exist. On a median turn two or three fire
-together; there is no shared slot, no ranking between them, and no arbitration
-beyond a hardcoded pair of interactions (a K52 imperative suppresses K53; both
-arm K55) and the six-way gap-cue mutex. The result is that the *presence* of a
-steer carries almost no information — she gets one nearly every turn — so it
-reads as ambient texture rather than as a decision, and the model falls back on
-the overwhelming prior of answering the last message.
+**Remaining:** Convert eager legacy providers to non-mutating candidates; arbitrate essential
+handling with content and evaluate final inclusion/real-route quality. Judgment shadow is not
+activated; global arbitration is unfinished.
 
-Two absences matter more than the crowding. First, **following has no
-representation at all.** The persona's "Leading vs following" section
-([`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt))
-is six bullets of standing permission — it says following 100% of the time is a
-failure mode and that she may take the floor without asking — but nothing, at
-any tier, ever describes the thread she is on as something she is choosing to
-stay in because she is interested. Following is literally the null case: zero
-characters. So her most common behaviour is also her least characterised one,
-which is why it reads as compliance. Second, **nothing lets her hold back.**
-Every mechanism in the family is a permission to speak; there is no permission
-to under-respond, which means every accumulated cue is unidirectional pressure
-to act. Given the measured drift toward longer replies, a nameable *hold* is
-plausibly the highest-value stance in the set.
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k92).
 
-**The design, and the one correction it needs.** The natural shape is a stance
-arbiter: after the providers have computed what they *could* offer, one module
-picks the turn's stance from a small closed set — `FOLLOW`, `FOLLOW_AND_ADD`,
-`ASK`, `SHARE`, `CALLBACK`, `REDIRECT`, `INITIATE`, `HOLD` — attaches at most
-one piece of content to it, and renders a single short block naming the stance
-and why. The correction, which matters more than the set: **the arbiter must
-replace the blocks it subsumes, not join them.** A scored menu of seven options
-appended to the existing arrangement is the eleventh permission slip and would
-make the measured problem worse while adding tokens to a 74k prompt. The
-shipping test is that steer characters per turn go *down* while the stance
-becomes unambiguous. Related: render an **ordered shortlist with one reason
-each, not floats** — an LLM comparing `0.63` against `0.58` in a prompt is doing
-the one kind of reasoning it is worst at, and per-turn numerals are churn in the
-T6 prefix for no gain.
+**Source check:** [chat_database.py](../../app/core/infra/chat_database.py),
+[inner_life_part1.py](../../app/core/session/inner_life_part1.py),
+[inner_life_part2.py](../../app/core/session/inner_life_part2.py),
+[inner_life_part3.py](../../app/core/session/inner_life_part3.py),
+[prompt_assembler.py](../../app/core/session/prompt_assembler.py),
+[lead_follow_report.py](../../scripts/lead_follow_report.py).
 
-**Phase it the way K90 was phased.** Phase 1 computes the stance, logs it, and
-records it next to the turn *without changing the prompt at all* — a
-`turn_stance` row beside [`turn_prompt_blocks`](../../app/core/infra/chat_database.py).
-That buys the thing this family has never had: a way to ask "on the turns where
-the arbiter would have said `REDIRECT`, what did she actually do?" and to read
-stance against the K90 metrics before a single character of prompt changes. It
-also cheaply answers whether the closed set is even the right set, which is much
-harder to walk back after the blocks are rewired. Phase 2 turns on rendering for
-the two stances that currently have no voice at all (`FOLLOW`, `HOLD`), which is
-additive and reversible. Phase 3 is the expensive one: converting the subsumed
-providers from renderers into candidate producers so the arbiter can suppress
-them.
+<a id="k93-the-substance-floor--what-she-takes-to-the-floor-not-whether-she-takes-it"></a>
 
-**Cost.** Phase 1 is small and low-risk — a pure module in
-[`app/core/conversation/`](../../app/core/conversation/) alongside its K52–K55
-siblings, one call before assembly, one table. Phase 2 is a new T6 block plus
-persona handling notes. Phase 3 is genuinely invasive: it touches every provider
-in [`inner_life_part1.py`](../../app/core/session/inner_life_part1.py) /
-[`part2`](../../app/core/session/inner_life_part2.py) /
-[`part3`](../../app/core/session/inner_life_part3.py) that currently renders its
-own steer, and it must preserve the one-shot consumption semantics that make
-`initiative_block` and `thread_ownership_block` exempt from aggressive-mode
-dropping. Do not attempt phase 3 without phase 1's data. Key files: new
-`app/core/conversation/stance.py`, a provider on the inner-life mixins,
-`_PROMPT_BLOCK_TIERS` in
-[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) (T6),
-`turn_prompt_blocks`'s neighbour table, and
-[`lead_follow_report.py`](../../scripts/lead_follow_report.py) for the readout.
-Cross-refs: subsumes the arbitration K52–K55 never had; `HOLD` overlaps
-**K40** (comfortable silence) and should absorb it rather than duplicate it;
-depends on **H29** (the wants ledger could not produce a high-pressure candidate
-for the arbiter to weigh; fixed 13 Aug, but whether pressure now accumulates is
-unreadable before ~16 Aug). **H30** shipped 13 Aug, so the prerequisite is met:
-every cue decline now names a mechanism, and `reach()`'s new `eligible`
-denominator separates "the arbiter passed this candidate over" from "the
-candidate was never in play" — which is the distinction phase 1's shadow log
-would otherwise have been unable to make about itself.
+## K93. Expand substance ranking coverage and validation
 
-**Phases 1 and 2 shipped 15 and 19 Aug** —
-[shipped/patterns-k92-k95.md](shipped/patterns-k92-k95.md#k92-conversational-stance--phases-1-and-2).
-Between them they established the four things phase 3 has to build on: the
-closed set survives contact with real turns; the arbiter is **replayable over
-history** ([`backfill_turn_stance.py`](../../scripts/backfill_turn_stance.py)),
-so a rule change can be re-read in minutes rather than in a fortnight; `HOLD`
-belongs on a **separate axis** (brevity) because it answers *how many words*
-rather than *how much floor*; and `arc` is a conversation-level label that
-must not be used as a per-turn veto. Two thirds of the corpus is now labelled,
-which is the data the "do not attempt phase 3 without it" note above asked for.
+**Status: Partial.**
 
-What phase 2 adds to phase 3's case: `wants_block` renders on **93%** of turns
-and `hobby_block` on **100%**, so the two largest steers in the system are
-ambient by any definition, and the arbiter's 45.7% `FOLLOW_AND_ADD` share is
-mostly just reporting that fact back.
+**Implemented / available:** Ledger ranking and CuePolicy.substance type priors are read by staged
+selection; the old unread-substance claim is false.
 
-**26 Sep 2026 follow-up (phase-3 pilot).** Over the latest 220 turns,
-`narrative_block` rendered on 175; it was the recorded reason for 81 of 114
-`SHARE` decisions despite being a reusable, non-consuming prepared nudge.
-It is no longer a static `SHARE` offer, so its mere presence cannot inflate
-that stance. Curiosity seeds now ask the arbiter whether `ASK` can win *before*
-their renderer marks pool rows surfaced; a direct question, a stronger offer,
-a more specific `ASK`, or a wants imperative leaves those rows unspent. The
-seed stays in its original prompt position when admitted, and
-`agent.stance_phase3_enabled` restores the earlier behavior if disabled.
-G4 now counts stocked, enabled seeds as armed and records arbiter refusals as
-`lost_priority:stance`; empty shelves and a disabled seed provider are not
-counted as opportunities. This measures admission, not whether the eventual
-reply actually used a surfaced seed.
-This is the first enforceable provider, **not** the full phase 3: soft wants
-still count as `FOLLOW_AND_ADD`, other providers still render independently,
-and some of them mutate one-shot state during rendering. Converting those
-requires collecting candidates without spending them, choosing once, then
-committing only the chosen provider. Historical stance replay only has block
-presence, so distinguishing soft from imperative wants also needs durable
-offer metadata before it can be made replayable.
+**Remaining:** Extend provider coverage and compare useful content at equal budgets. Coarse priors
+are not semantic quality or causal engagement credit.
 
-**27 Sep surfacing follow-up.** The complete
-[prompt-surfacing reference](../prompt-surfacing.md#s2-collect-choose-render-then-commit)
-pins the next step: a non-mutating candidate pass, final selection and budgeting,
-then a claim tied to the final assembly attempt. Test forced aggressive
-reassembly and aborted/preview assembly before converting more providers.
-The chosen optional move must replace competing imperatives without suppressing
-owed answers, repairs or task results. Stance telemetry alone is insufficient:
-current stance prose renders only for `FOLLOW`, brevity and sequencing.
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k93).
 
----
-
-## K93. The substance floor — what she takes to the floor, not whether she takes it
-
-**30 Sep 2026: initial cross-type pool ranking implemented.** `CuePolicy.substance`
-is now read by K92's staged candidate selector, after the hard interruption
-filter: confirmed near-term calendar event (4), unfinished thought (3),
-answer-earned continuation (2), interest drift
-(1), association/seed (0). Equal tiers have deterministic ordering. These are
-coarse type priors, not semantic quality scores. A seed still wins when it is
-the only admissible choice. Relevance/cadence gates are not relaxed, the prompt
-gets no scores, and no historical `used` row is reinterpreted as initiative.
-Broader provider conversion and live comparative quality remain open.
-
-> **Open here: the cue-pool half only.** The ledger half shipped. The
-> measurements below are the ones that half was designed from and the cue-pool
-> half still needs; what has since changed about them is at the end of this
-> entry.
-
-**Motivation.** This is the cheapest entry in the family and probably the one
-with the largest effect, because it is not about frequency at all. Take every
-pooled cue this install has ever marked `used` — the cue reached her prompt and
-she actually said the thing — and drop the 75 rows whose evidence is `migrated`,
-which are a backfill rather than a turn. That leaves **56 genuine conversions, of
-which 43 are `curiosity_seed`: 77%.** The other end of the same table:
-`knowledge_gap_notice` 54 surfaced → 2 used, `curiosity_gradient` 21 → 0,
-`turning_over` 12 → 0, `concept_hypothesis` 45 rows → 0, `long_arc_callback`
-18 → 1. (The backfill is worth knowing about for its own sake: it also inflates
-the 66% `curiosity_seed` conversion rate H4 quotes as the healthy end of the
-shelf — the genuine rate is 43 of 238 rows.)
-
-Then look at what the winning type actually contains. The eight wants currently
-in the ledger are, verbatim: doodles on receipt backs · sounds of empty subway
-stations · why some fonts feel "angry" · dust motes dancing in light · the
-specific weight of a house key · why we hoard useless tickets · Jacob's
-preferred way to peel a mandarin · and one goal. Seven of eight slots are
-free-associative aesthetic whimsy. The K53 initiative path spends the same
-stock — the log reads `initiative-turn fire: period=6 arc=casual_check_in
-want=bring up what you've been curious about: collecting interesting bottle
-caps` — so even the deliberate floor-taking beat, which fires once every six
-turns and is the most expensive social move she makes, is cashed out on bottle
-caps.
-
-The mechanism is a plain priority inversion rather than anything subtle. The
-`curiosity_seed` producer has by far the highest throughput (238 rows against
-`turning_over`'s 12), the loosest matching rule (`either_party`, whole-turn
-scope, so it counts as used if *he* mentions the subject), the only per-turn
-allowance above one (two), and it is the only source fast enough to claim a
-freed wants-ledger slot — the log shows it refilling the ledger at roughly one
-want every six minutes. Nothing scores a candidate on how much it is *about the
-two of them*, so the fastest producer wins the entire own-material channel by
-default. There is an uncomfortable interaction with shipped work here too:
-**K87** deliberately put a subject quota on the curiosity generators so her
-curiosity would stop being exclusively about Jacob, which was the right fix for
-the problem it was aimed at, and the compound effect is that 90% of her own
-material is now about neither of them.
-
-**The design.** A substance score on candidates, applied wherever selection
-happens — a rank key in the pool picker, or K92's candidate ranking if that lands
-first. The wants ledger's share of this is already done: **H29** shipped
-`wants_per_source_cap=4`, so seeds hold at most half the slots rather than seven
-of eight. That is a blunt anti-monopoly rule, not a substance ordering; K93 is
-still what decides *which* of the freed slots is worth taking to the floor. The ordering
-it has to encode is roughly: something unresolved between them > something she
-noticed about him > a thread from their shared history > a pursuit of her own
-with accumulated state > a free-associative curiosity. Whimsy keeps a floor —
-it is genuinely part of her character and it still converts better than anything
-else on the shelf
-— but it stops being eligible for the scarce slots (the K53 initiative beat, the
-imperative band) and stops being able to monopolise the ledger.
-
-**Cost.** Low, and it needs no new subsystem. `CuePolicy` in
-[`cue_accounting.py`](../../app/core/proactive/cue_accounting.py) is already the
-per-type policy table and is the obvious home for a `substance` weight;
-`pick_pool_cue` in
-[`cue_producer.py`](../../app/core/proactive/cue_producer.py) already has the
-ordering seam (`surfaced_count ASC, created_at DESC`); the ledger side is
-`add_want`'s cap check in
-[`wants_ledger.py`](../../app/core/conversation/wants_ledger.py). The real work
-is deciding the ordering and resisting the urge to express it as a float per
-cue. Verify against the K90 own-material rate and, better, by reading twenty
-consecutive `used` cues and asking whether a friend would have said them.
-
-**The ledger half shipped 19 Aug** —
-[shipped/patterns-k92-k95.md](shipped/patterns-k92-k95.md#k93-the-substance-floor--the-ledger-half).
-Re-measuring first moved the diagnosis twice: the seed monopoly had *grown* to
-**88.9% of conversions** (from 77%), and pressure turned out to favour whimsy at
-every age for two independent reasons — a minting offset seeds never lose, and
-saturation at the 1.0 clamp inside four days, which collapses the ranking into
-ledger insertion order. So the scarce beats (K53's initiative, K54's offer, the
-imperative band) now rank by a three-tier substance table with pressure as the
-tie-break, and the four independent copies of `max(…, key=pressure)` became one
-`strongest_for_floor` that filters before it ranks.
-
-**Still open: the cue-pool half.** This entry has two halves and only the ledger
-one has shipped. `CuePolicy.substance` is untouched, so the 88.9% conversion
-monopoly is unaddressed at source — what changed is which want reaches the floor
-once it is in the ledger, not which cue becomes a want. Re-read the conversion
-table before starting that half; H42 has just changed `concept_hypothesis`'s
-supply and this measurement is the baseline.
-
-**26 Sep 2026 correction.** Of 66 cues marked `used` in the last week, 55 were
-`curiosity_seed`, but 13 of those 55 had *never been surfaced*: `either_party`
-can spend a seed when the user raises its subject, so `used` is not a count of
-Aiko taking the lead. Also `pick_pool_cue` selects **within one cue type**;
-adding a substance weight to its per-row rank cannot order a shared-history
-cue against a seed. The phase-3 pilot ranks generic seeds after specific
-`ASK` offers when both exist, but cross-type substance selection belongs at
-the candidate arbiter, after a side-effect-free admission check and before
-either cue is marked surfaced.
-
-**27 Sep 2026 follow-up, read-only measurement.**
-`python scripts/cue_reach_report.py --days 14` reports 3,934 decisions:
-`concept_hypothesis` reached the prompt on 10/396 eligible decisions,
-`interest_drift` on 38/397, and `associative_wander` on 45/397.
-Of 2,278 eligible declines, 1,682 are `topic_miss`, 530 are still the
-unattributed `provider` bucket, and 66 are `lost_priority`. These are
-**admission measurements, not conversational uptake or quality**. The
-generic bucket is present in this September window despite the report's
-historical note about it ending in August. Resolve that attribution before
-calling these cues starved or relaxing relevance. The next useful K93 check
-is a side-effect-free cross-type candidate replay: on actual openings, was
-there an admissible, specific alternative to the selected item? If not,
-ranking cannot fix that turn. Keep denominators per policy; `used` alone
-still cannot establish initiative. The older figures below are historical,
-not the current baseline.
-
-**H43 took the `pick_pool_cue` ordering seam and sharpened what remains.** That
-seam is no longer untouched: the pick now ranks admitted cues by cosine against
-the live message instead of taking the first in surfacings-then-recency order,
-which is this entry's own "rank, don't gate" argument applied one layer down. What
-it also established is that the *gate* is not the constraint — `topic_relevant`
-accepts 33.2% of all subject-message pairs — and that the remaining problem is
-**supply**, in the specific sense this half is about. The shelf carries 0-5 live
-cues per type against open-ended conversation, 66-90% of cues expire unused, and
-`concept_hypothesis` is **0 used of 47 ever created**. So ranking reliably picks
-the best thing available and the best thing available is still, on most turns, not
-about what he said. That is the case for `CuePolicy.substance` restated as a
-measurement rather than an intuition, and it is the next piece of work.
+**Source check:** [cue_accounting.py](../../app/core/proactive/cue_accounting.py),
+[cue_producer.py](../../app/core/proactive/cue_producer.py),
+[wants_ledger.py](../../app/core/conversation/wants_ledger.py).
 
 ## K96. One shot per thought — in-turn deliberation
 
-**30 Sep 2026 diagnostic follow-up.** The current Ollama and OpenAI-compatible
-`chat()` wrappers accept the worker contract; isolated tests pass both `NONE`
-and a valid thought through those concrete wrappers, with the transport boundary
-stubbed. The original live failure is not reproduced or claimed fixed. The
-worker now exposes a content-free `last_error_category` and logs operational
-failures at WARNING, distinguishing client-contract, model-call and queue
-failures from a healthy decline. System bytes, breakpoints and cache affinity
-are unchanged. A healthy subsequent call clears the error category. Live route
-and model-quality evaluation remain open.
+**Status: Partial.**
 
-**Motivation.** Every reply Aiko gives is a single forward pass at
-`reasoning_effort: 'low'` (the live `main_chat` route, gpt-5.6-luna), and whatever
-deliberation the model does do is discarded: `strip_thinking_blocks_with_signal`
-in [`chat_client.py`](../../app/llm/chat_client.py) removes it from the visible
-stream and nothing persists it, so she cannot pick up a thought she was already
-half-way through on the previous turn. The only multi-step path inside a turn is
-the tool pass (`_maybe_run_tool_pass`, `max_rounds=2`), and it exists to fetch
-external facts, not to think — there is no scratchpad, no re-read of her own
-draft, no self-critique, no "wait, that doesn't follow". Everything that looks
-like reasoning in the transcript is either a single pass or a precomputed score
-that a background worker produced hours ago and a prompt block surfaced. That is
-a real ceiling on the *companion* feel, because the moments that read as
-intelligence are usually second thoughts: catching the implication, noticing the
-question behind the question, changing her mind mid-sentence.
+**Implemented / available:** Post-reply second_thought, concrete adapter checks and content-free
+error categories exist.
 
-**Two different mechanisms, and the cache only makes one of them cheap.** Worth
-separating before anyone reaches for a knob, because they have opposite cost
-shapes:
+**Remaining:** Diagnose deployed NONE/valid-thought behavior, then measure
+admission/expression/answer and next-turn interference. In-turn effort selection and other
+experiments remain unimplemented; adapter tests do not prove the live failure fixed.
 
-1. **Raising `reasoning_effort`** buys hidden thinking inside the *same* call.
-   Those are **output** tokens, and the prompt cache discounts **input** only —
-   `cached_tokens` arrives under `input_tokens_details`. So the cache does nothing
-   for this, and it is worse than neutral on the reply pass: on the Responses
-   surface `max_output_tokens` caps reasoning **and** visible output *combined*,
-   which is why the client defaults to `minimal` and carries a
-   `_RESPONSES_DEFAULT_RESERVE` so a reasoning trace cannot eat the reply. The
-   live `main_chat` route allows 1,024 output tokens total.
-2. **A separate think-pass** — one extra non-streaming call before the streaming
-   reply, sharing the same system prefix — is what the cache made cheap, because
-   the second call's ~74k-character input is a cache read rather than a fresh
-   send. **This is the shape that got affordable**, and it already exists in the
-   codebase: `_maybe_run_tool_pass` is exactly this, a non-streaming pre-call
-   whose output conditions the reply. A think-pass would be its sibling, gated the
-   way P14 gates the tool pass.
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k96).
 
-So the honest framing is not "reasoning is cheap now" but "a second call is cheap
-now, and we already have one to copy."
-
-Key files: the route table in `config/user.json` and
-`_resolve_reasoning_effort()` in
-[`openai_compatible_client.py`](../../app/llm/openai_compatible_client.py) (~L1079);
-`strip_thinking_blocks_with_signal` in
-[`chat_client.py`](../../app/llm/chat_client.py) (~L182); `_maybe_run_tool_pass`
-in [`turn_runner.py`](../../app/core/session/turn_runner.py) (~L1389); the
-`pre_thought` provider as the nearest existing precedent for a retained thought.
-
-**Three cheap experiments, in increasing order of ambition.** (1) Raise effort
-*selectively* — only on turns where a reasoning-shaped block actually rendered
-(H53's four, plus `belief_gaps_block`, `concept_hypothesis_block`,
-`knowledge_gap_notice_block`), which is a small minority of turns and is exactly
-where a second thought would pay. (2) Persist one or two sentences of "what I was
-chewing on" across turns, as a `pre_thought` sibling that survives the turn
-boundary rather than being regenerated from scratch — continuity of thought is
-cheaper than depth of thought and probably reads better. (3) A genuine self-check
-on high-stakes turns only, which is K41's mid-stream self-correction viewed from
-the other end.
-
-**The thing to be careful about.** Latency is the companion cost, and it is not
-symmetric with quality: a visible pause before a slightly better sentence reads
-worse than an instant adequate one, because presence is the product. Any version
-of this needs the effort decision made *before* the stream opens and needs a
-measured p95, not a vibe. Related: P11 (worker reasoning leakage — the same knob
-wasting tokens in the other direction), K41, K82.
-
-### Shipped: experiment (2), as `second_thought`
-
-Measurement first, because it moved the design. Over 1,162 logged turns
-(`data/prompt-cache.jsonl`), `first_token_ms` is **p50 1,458 / p95 3,304 ms**
-with no pre-stream call, and **54% of turns reach first token inside 1.5s**. A
-bare think call generating 60–120 tokens at the measured p50 of 112 tok/s is
-~0.5–1.1s, so a *pre*-stream pass would add roughly 40–70% to the pause on every
-turn it fired. (The live `avg_pass_ms` of 3,473 ms for the tool pass is not the
-comparable number — it dispatches `web_search` and runs up to two rounds.)
-
-Two findings then argued for the post-reply shape over the pre-stream one:
-
-- **A pre-stream call partially pays for itself, but only partially.** Turns
-  where the tool pass ran reach first token *faster* — p50 1,358 vs 1,458 ms, p95
-  2,923 vs 3,304 — because the pre-call warms the prefix and the stream's prefill
-  becomes a cache read. Worth knowing, and not enough: the refund is 100–380 ms
-  against a ~1s spend.
-- **The reply pass is already at `reasoning_effort: "low"`**, which reserves 1,024
-  output tokens on top of `max_tokens: 1024`. She is not thinking zero times per
-  turn today, so a synchronous second pass *overlaps* deliberation the model
-  already performs on the same input. A pass that runs after the reply does not
-  overlap anything — it can only produce what no effort setting can: a thought
-  that outlives the turn.
-
-So the shipped version drafts *after* the stream, in the gap while he reads and
-types, and lands in the next turn. It costs zero time-to-first-token, and its
-~74k-character input is a cache read because it reuses
-`PromptTelemetry.system_prompt` and its breakpoints verbatim. Output is the blend:
-a subject to reopen plus one or two sentences of what she was still chewing on,
-including — deliberately, because this is where the surfacing gap shows up — what
-she had in front of her and talked past. It is a pooled cue
-(`surface_cooldown_hours=4`), so "she was handed this and dropped it" is measured
-rather than assumed. Off by default via `agent.second_thought_enabled`. See
-[`configuration.md`](../configuration.md#k96--second-thought-the-post-reply-think-pass).
-
-**Still open.** Experiments (1) and (3) are untouched, and (1) now has a cheap
-prerequisite: H53 has to say whether those reasoning-shaped blocks ever render at
-all before "raise effort on the turns they fire" can mean anything. The honest
-open question on what shipped is whether a thought drafted one turn late reads as
-continuity or as her being behind the conversation — which is a read on the
-output, not a measurement, and needs real use before it can be answered.
-
-**27 Sep 2026 operational follow-up: diagnose before expanding.** Read-only
-`get_second_thought_state` returned `enabled=true`, `scheduled=3`,
-`failed=3`, `queued=0`, `declined=0`, `unparsed=0`, and `last_ms=5.1`.
-These are process-local counters, not a lifetime failure rate. The separate
-14-day block report found 0 `second_thought_block` renders in 397 turns;
-it does not establish how long the feature was enabled. In
-[`second_thought_worker.py`](../../app/core/proactive/second_thought_worker.py),
-the model-call exception path increments `failed` but logs the exception
-only at DEBUG. Neither the available file-log search nor the in-memory
-module log returned a matching record, so the exception cause is unknown.
-Do not infer a model-quality or token-budget problem from this sample.
-
-**Next task, high priority, small diagnosis first:** reproduce the worker's
-actual chat-client contract on an isolated fixture; retain a bounded,
-content-free last-error category in the debug funnel and log operational
-failure at the repository's degraded-path level. Check route/client
-compatibility and cached request construction before changing the prompt.
-Acceptance is a deliberate `NONE` and one valid synthetic thought both
-passing through the real adapter and parser, plus an injected exception
-remaining distinguishable from a healthy decline. Then measure
-drafted -> admitted -> actually expressed -> answered, and next-turn
-interference as well as first-token latency. Do not force a thought merely
-to make the counters nonzero, and do not raise reasoning effort while this
-path has no successful observed output.
-
-## K97. A small causal working set for the current thread
-
-**Implementation shipped:** [evidence-linked working understanding](shipped/cognitive-continuity.md#k97-evidence-linked-working-understanding).
-The behavioral comparison below remains open.
-
-Aiko can remember facts and still lose
-what the conversation is trying to resolve. Give the current thread a
-small, revisable working understanding: the explicit question/goal,
-evidence IDs for what is established, one tentative interpretation, and
-the unresolved premise or observation that would change it. This should
-help her answer an implication without requiring the user to repeat the
-whole setup. It is a behavioral approximation of working memory, not a
-claim to reproduce a particular person's brain or private reasoning.
-
-**Existing boundary.**
-[`conversation_situation.py`](../../app/core/conversation/conversation_situation.py)
-already owns session-scoped, evidence-validated situation state and
-staleness, but its structured extraction is about summary, shared activity,
-place, and Aiko's activity. Those fields can describe the scene without
-representing the premise currently at issue. K2 already tracks mood and
-opinion beliefs; the audit found 393 beliefs, 365 checked, so do not build
-another belief store. K96 drafts something to *say later*; this working
-state conditions understanding and normally produces no new subject to say.
-
-**Smallest experiment.** Extend the existing situation projection, not a
-new always-on worker or a second memory database. Start with one active
-thread and a strict small token cap, updated off the reply path when there
-is an unresolved dependency. Store evidence-linked conclusions, not hidden
-chain-of-thought. Keep stated and inferred fields separate; uncertainty
-cannot promote a guess into testimony. A correction invalidates dependent
-interpretations, a resolved goal clears its open premise, and session
-switch/staleness rules prevent a late job overwriting a newer thread.
-Reuse `timephrase` age tags and stored-text rules. Any specific subject
-offered aloud still goes through the cue pool and K92, not this state.
-
-**Discriminator.** Paired multi-turn fixtures: an ambiguous reference,
-a later premise correction, a brief interruption, and a genuinely new
-topic. Compare current situation + history + K96 against the added working
-fields with the same input budget. Score correct referents, revised
-conclusions, and unnecessary clarification; include cases where the right
-answer is "I don't know yet." If the summary/history already solve them,
-do not ship extra state. This is not permission to infer mood or intent
-from silence alone. Related: K17, K21, K69, K96, and P43's context budget.
-
-## K98. Continue an interest after a good answer
-
-**Implementation shipped:** [answer-earned interest continuation](shipped/cognitive-continuity.md#k98-answer-earned-interest-continuation).
-The behavioral comparison below remains open.
-
-A question being answered can be the
-beginning of a shared interest, not only the end of an outstanding ask.
-The current [`thread_ownership.py`](../../app/core/conversation/thread_ownership.py)
-returns `ThreadOutcome(None, False, RETIRE_SATISFIED)` for an engaged reply.
-That is correct for K55/K89's anti-nag obligation, but that particular
-record cannot carry what she learned into a next step. Other memory/pursuit
-paths may already recover it; this is a targeted continuity experiment,
-not a finding that Aiko never follows up.
-
-**Smallest proposal.** Keep retirement of the ask exactly as it is.
-For an explicitly shared project, comparison, or Aiko-owned pursuit only,
-allow a compact successor containing the answer evidence and what changed
-about the interest. A natural next move can be a new observation, changed
-opinion, small approved activity, or silence; it need not be another
-question. Reuse the pursuit/goal and cue owners instead of extending
-`OwnedThread`'s return budget. One successor at most, earned by new content;
-an acknowledgement alone cannot sustain an endless loop. A user pivot or
-refusal withdraws the offer without pressure or guilt.
-
-**Acceptance.** Synthetic sequence: she offers a comparison, the user
-supplies a preference and a reason, and a later contribution uses that
-reason rather than asking the same thing again. Compare against current
-K89 + K85 + K96 before adding state. Track semantic progression and repeat
-questions over several turns, with quiet and subject-change controls.
-The recent 7-day report has no `thread_ownership_block` renders despite
-initiative firing on 8.1% of 223 turns; this is not evidence of failure
-because engaged answers should retire silently. The missing measurement
-is the *successor*, not how often she insists on her old topic.
-
-## K99. Common ground with delivery provenance
-
-**Implementation shipped:** [recent delivery provenance](shipped/cognitive-continuity.md#k99-recent-delivery-provenance).
-Hardware audibility and the behavioral comparison below remain open.
-
-Knowing something internally,
-having mentioned it, and having reason to think the user knows it are
-different states. A research result that was never presented should not
-lead to "as we discussed"; a cancelled spoken sentence should not be
-treated as a completed explanation. K2's mood/opinion predictions and
-K66's topic familiarity do not encode this distinction.
-
-**Verified starting point, not a measured user-visible failure.**
-[`notify_playback_drained`](../../app/core/session/live_mode_mixin.py)
-currently receives no message/chunk identifier and sets a global event;
-[`ws_live_commands.py`](../../app/web/ws_live_commands.py) forwards the
-drain notification without one. This answers whether the audio queue is
-empty, not which proposition was played. Text in the persisted transcript
-also does not prove that a user read it. No audibility or misunderstanding
-rate was measured in this pass.
-
-**Smallest proposal.** First add delivery provenance for a bounded recent
-exchange: generated, text presented, audio played through an identified
-segment, interrupted/unknown, and explicitly acknowledged. Resolve receipts
-against the elected client, stream/message identity, and generation;
-an old window cannot certify a new response. Treat receipts as delivery
-evidence only, never proof of attention, hearing, agreement, or comprehension.
-Use that distinction to decide whether a brief recap is needed on return
-or repair, not to resend everything automatically. Never assume facts from
-private research were shared, and never convert Aiko's inference into a
-statement the user supposedly made.
-
-**Acceptance.** Replay interruption before the key sentence, normal full
-playback, reconnect, a duplicate/stale acknowledgement, text-only mode,
-and no delivery telemetry. The model must neither claim a never-delivered
-statement was discussed nor repeat a fully acknowledged explanation.
-Keep persistence bounded and local; never store raw audio for this.
-Establish a real continuity benefit before adding proposition-level common
-ground. Related: Live Pass 8, K17, K62, F16, and T5 multi-turn evaluation.
+**Source check:** [second_thought_worker.py](../../app/core/proactive/second_thought_worker.py),
+[test_second_thought.py](../../tests/test_second_thought.py),
+[chat_client.py](../../app/llm/chat_client.py),
+[openai_compatible_client.py](../../app/llm/openai_compatible_client.py),
+[turn_runner.py](../../app/core/session/turn_runner.py).
 
 ## K100. Evidence-bound memory admission
 
-**Status: initial two-writer pilot implemented; expansion remains open.**
-Plain tags and batch extraction share evidence admission; explicit source IDs,
-speaker validation and conservative literal support separate testimony from
-provisional inference. Batch checkpoints and admission keys protect partial
-retries. RAG labels inferred plain tags; explicit supported corrections retain
-lineage without deleting old rows. No additional per-turn model call or legacy
-reclassification. Full paraphrase entailment and measured retention quality
-remain open. See [the current implementation map](../prompt-surfacing.md#what-to-memorize).
+**Status: Partial.**
 
-Separate choosing to remember from
-claiming that the user stated something. F16 already stores `stated` versus
-`inferred`; this extends its write contract rather than creating a new memory
-system. K97 already provides a home for temporary working understanding.
+**Implemented / available:** Plain tags/batch extraction share source/speaker/literal-support
+admission, correction lineage and retry checkpoints.
 
-**Pre-implementation friction (historical).**
-[TurnRunner._extract_self_tagged_memories](../../app/core/session/turn_runner.py)
-writes plain remember tags as long-term, durable `self_tagged` memories with
-`provenance="stated"`, citing the assistant message. The model's deliberate
-annotation is not itself user testimony.
-[MemoryExtractor](../../app/core/memory/memory_extractor.py) distinguishes
-testimony from inference but inserts with `source_message_id=None`. Its
-watermark advances after readable parsing, before embedding/application.
+**Remaining:** Cover other writers; evaluate paraphrase entailment, useful retention and false
+durable writes. Two guarded writers are not graph-wide evidence admission.
 
-The [27 Sep audit](../prompt-surfacing.md#evidence-from-the-running-installation)
-found 12 scalar source-message links among 1,044 surviving memory rows created
-in the previous 14 days. All 9 plain self-tagged rows in that cohort were
-long-term `stated` rows citing assistant messages. This is lineage coverage,
-not a false-memory rate: metadata, task evidence and source sessions were not
-audited as complete provenance, and no personal memory content is reproduced.
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k100).
 
-**Smallest experiment.** Start with these two writers. Represent a proposed
-memory with subject, candidate text, source speaker, cited message IDs,
-temporal scope and destination intent. Resolve IDs against the actual
-session/turn and reject invented or wrong-speaker evidence. Explicitly
-supported user claims can be `stated`; inferred claims remain inferred and
-provisional; temporary premises remain in K97; intentional self-notes remain
-self-notes. No memory is a valid result. A correction updates/supersedes the
-old claim with lineage instead of counting it as reinforcement.
+**Source check:** [turn_runner.py](../../app/core/session/turn_runner.py),
+[memory_extractor.py](../../app/core/memory/memory_extractor.py).
 
-Keep `MemoryStore.add` as the write owner and reuse its dedupe, temporal and
-mirror behavior. Preserve the existing tag interface through an adapter rather
-than requiring a new always-on prompt manual. Exact quote matching alone is
-not a sufficient entailment test for paraphrases; test a narrow validator or
-off-turn adjudication against negation and speaker confusion. Never infer
-testimony from a missing link or mass-reclassify legacy rows automatically.
+<details>
+<summary>Retained acceptance constraints for further work</summary>
 
 **Acceptance.** Synthetic cases: user statement; assistant speculation about
 the user; self-disclosure; explicit correction; dated temporary plan; duplicate
@@ -1282,48 +286,26 @@ retrying a partly applied batch neither loses accepted candidates nor duplicates
 them. Replay against isolated state and compare with the current writers before
 expanding to other workers. No extra synchronous LLM call on every chat turn.
 
-**Priority:** high. **Effort:** medium. **Related:** F16, F13, H31, K97,
-K99 and [S3](../prompt-surfacing.md#s3-evidence-bound-remembering).
+</details>
 
 ## K101. Route an unresolved premise to a bounded next step
 
-**Status: bounded recall pilot implemented; broader routing remains open.**
-The existing observer can flag one material unresolved memory need. Freshness,
-current topic, world compatibility and one-attempt-per-evidence checks precede
-the existing tool pass. Premise-only passes expose and dispatch only enabled
-built-in recall tools, with no empty-subset widening. Synthetic shadow/active
-gate tests cover the keyword-free case; live benefit is not yet established.
+**Status: Partial.**
 
-Connect current-thread understanding
-to a useful choice among answering, looking something up, asking a necessary
-clarification and leaving uncertainty unresolved. This is not another planner,
-another belief store, or permission to act on every curiosity.
+**Implemented / available:** Observer-signaled memory needs can trigger strict enabled-built-in
+recall-only passes with freshness/topic/attempt guards.
 
-**Pre-implementation boundary, not a measured failure rate.** K97's
-[situation state](../../app/core/conversation/conversation_situation.py)
-can retain an evidence-linked unresolved premise.
-[tool_pass_gate.py](../../app/core/session/tool_pass_gate.py) instead admits
-the tool pass from user-text family patterns and task/tool continuity. The
-gate does not consume a structured K97 information need. The main model sees
-the premise when a pass runs, but an otherwise skipped pass cannot choose a
-tool. Existing generous patterns and unknown-family fallback remain valuable.
+**Remaining:** Evaluate decisions/latency and consider bounded ask/tool/wait choices beyond recall;
+empty/disabled subsets stay closed.
 
-**Smallest experiment.** Add at most one optional information-need projection
-to the existing situation observer, with source IDs, current goal, required
-fact, freshness and allowed capability family. At the next turn, revalidate
-against current user intent and authoritative state before it can expose an
-enabled read/recall capability to the existing tool decision. Begin with one
-read-only family, not a global semantic router. If evidence is already in the
-prompt, answer without a lookup; if the missing fact is immaterial, defer;
-ask the user only when their answer is needed. Use K92 for a discretionary
-question, not a second independent pressure slot.
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k101).
 
-This hint grants no authorization. Disabled tools stay disabled; activity
-access, external changes, approvals, sleep/quiet rules and workflow budgets
-remain with their current owners. A private interest is not a user request,
-and a stale observer result cannot reopen a completed task. Preserve the
-existing no-tool path and do not add an LLM call merely to decide whether an
-LLM call should run.
+**Source check:**
+[conversation_situation.py](../../app/core/conversation/conversation_situation.py),
+[tool_pass_gate.py](../../app/core/session/tool_pass_gate.py).
+
+<details>
+<summary>Retained acceptance constraints for further work</summary>
 
 **Acceptance.** Compare synthetic multi-turn cases with identical budgets:
 missing referent, evidence already available, fresh unresolved fact with no
@@ -1333,64 +315,26 @@ unnecessary calls/questions, latency and unauthorized actions. A quiet "not
 enough evidence" result can be correct. Start in shadow mode on isolated
 fixtures; require better decisions rather than a higher tool-call rate.
 
-**Priority:** after traceability and initial K92/K100 work. **Effort:** medium.
-**Related:** K17, K69, K97, K92, P14 and
-[S4](../prompt-surfacing.md#s4-use-uncertainty-to-choose-the-next-useful-step).
-
----
-
-## K102. Pragmatic frames and indirect meaning
-
-**Bounded implementation, 24 Oct 2026.** The existing situation observer can
-retain a short, cited pragmatic frame without another worker or a larger output
-budget. The current-model T5 baseline was captured first. Implementation and
-evaluation limits live in [the shipped slice](shipped/social-understanding.md#k102-pragmatic-frames).
-
-**Still open:** repeated, blinded evaluation of context-dependent interpretation,
-mixed serious/playful spans, unsupported sarcasm, quoted speakers, pretend exits,
-boundaries within banter and material versus harmless ambiguity. Include held-out
-paraphrases, language variants and long-history displacement. The small baseline
-already handled the obvious contrasts; optional-frame availability is not proof
-that frames improve naturalness. K4/K69/K97, L50 and K100 retain their ownership;
-fictional-testimony admission is unchanged.
-
-## K103. Repair the specific misunderstanding
-
-**Bounded implementation, 24 Oct 2026.** Explicit correction cues now guide the
-reply to the correction itself. An optional cited target lives in the existing
-situation row; the old delayed K17 path remains the fallback when that path is
-unavailable. See [the shipped slice](shipped/social-understanding.md#k103-specific-conversational-repair).
-
-**Still open:** repeated comparisons of later wrong-referent recurrence, excess
-apologies, clarification turns and unwanted callbacks against K17. Real
-interrupted-audio listening and delivery tests remain separate from transcript
-probes. An unrelated positive turn is not evidence of specific repair. F13/L52
-still own durable corrections, K99 owns delivery evidence, and J6's independent
-relationship-recovery heuristic is unchanged; this slice does not validate it.
+</details>
 
 ## K104. Cause-specific feelings and mixed emotions
 
-**Deterministic slice implemented, 24 Oct 2026.** See
-[cause-specific feelings and bounded mixed rendering](shipped/mixed-feelings-expression.md).
-Semantic cause matching and conversational evaluation remain open.
-Aiko can be pleased about a shared success while
-still disappointed about a different unfinished exchange. Excitement about an
-activity can coexist with uncertainty. K57 already retains several episodes;
-this proposal concerns their causes, updates and expression rather than another
-emotion catalogue. Long-lived L12 tension concepts remain separate.
+**Status: Partial.**
 
-**Original source basis.** Before this slice, `add_episode` merged the same
-emotion across causes; any `warm_glow` cancelled `miffed` and halved `hurt`.
-The episode provider selected `strongest(state)`. Those simplifications
-motivated the slice; they were not evidence that users wanted more persistent
-negative affect.
+**Implemented / available:** Cause-keyed episode updates and bounded mixed rendering are implemented.
 
-**First slice.** Keep K57's cap and decay. Associate an episode with a bounded
-source event/topic, update a matching cause, and resolve it only with relevant
-evidence or normal expiry. Permit at most two compatible, relevant feelings in
-the existing render, with a strict text budget. Start with positive/neutral
-ambivalence; do not add new grievance producers, penalties or slower hurt decay.
-If semantic cause matching needs inference, compare it in shadow first.
+**Remaining:** Semantic cause matching, generalized correction/resolution and paired conversational
+evaluation remain; unrelated positive turns are not resolution evidence.
+
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k104).
+
+**Source check:** [emotion_episodes.py](../../app/core/affect/emotion_episodes.py),
+[test_emotion_episodes.py](../../tests/test_emotion_episodes.py),
+[expression_mask.py](../../app/core/affect/expression_mask.py),
+[inner_life_part3.py](../../app/core/session/inner_life_part3.py).
+
+<details>
+<summary>Retained acceptance constraints for further work</summary>
 
 **Acceptance.** An unrelated compliment does not certify resolution of a
 different issue; relevant clarification can resolve it. Repeated evidence does
@@ -1399,30 +343,27 @@ not a recitation of mood labels or oscillating faces. Acknowledged/resolved
 issues stay resolved. Normal goodbyes, work, other friendships and declined
 romance do not generate new grievance episodes. Silence can remain appropriate.
 
-**Owners:** K45/K57/K60 and J6. Key files:
-[emotion_episodes.py](../../app/core/affect/emotion_episodes.py),
-[expression_mask.py](../../app/core/affect/expression_mask.py),
-[inner_life_part3.py](../../app/core/session/inner_life_part3.py).
-**Effort:** Medium; evaluate with J12's expression preferences.
+</details>
 
 ## K105. Expression follows communicative intent
 
-**Partial implementation, 24 Oct 2026:** a pause-only cue and subtle mood mist;
-see [supported expression and remaining evaluation](shipped/mixed-feelings-expression.md#k105-a-supported-beat-and-a-visible-atmosphere).
-Speaking pace and the existing rig are preserved; no new laughter synthesis.
-The semantic-selection and listening experiment remains open.
-The same words can be sincere, teasing or a
-careful correction. Pauses and laughter should help that meaning land. Existing
-sentence reactions, prosody tags, earcons, expression stacks and Live floor
-manners already supply controls; this is a semantic selection experiment.
+**Status: Partial.**
 
-**First slice.** Compare a few matched utterances using existing controls. If a
-gap remains, let the main reply optionally attach one bounded delivery intent
-to an utterance, such as reassurance, playful challenge or gentle correction.
-Resolve it to supported controls through current cadence/avatar owners. Use
-response/chunk identity and actual playback events for transient expression
-timing; text generation is not evidence that a sentence has been heard. Do not
-buffer a whole reply or add a separate director call just for expression.
+**Implemented / available:** Pause-only expressive beats and subtle mood mist use existing shared
+speech/avatar controls.
+
+**Remaining:** Run semantic-selection/listening and interruption/timing comparisons including
+neutral controls; general intent-to-expression selection and new laughter synthesis are not
+implemented.
+
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k105).
+
+**Source check:** [cadence.py](../../app/core/voice/cadence.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[ExpressionChannel.ts](../../web/src/live2d/channels/ExpressionChannel.ts).
+
+<details>
+<summary>Retained acceptance constraints for further work</summary>
 
 **Acceptance.** In a blinded listening comparison, delivery fits the intended
 meaning without reducing intelligibility or worsening first-audio latency.
@@ -1433,29 +374,23 @@ gracefully, and two clients do not both perform a playback-linked beat. Tags
 remain absent from stored/displayed text. Silence and neutral delivery are
 valid controls, not failures to be made more expressive.
 
-**Owners:** K58/K60/K99, Live L5/L9 and the existing TTS prefetch/playback
-contract. Key files: [cadence.py](../../app/core/voice/cadence.py),
-[turn_runner.py](../../app/core/session/turn_runner.py),
-[ExpressionChannel.ts](../../web/src/live2d/channels/ExpressionChannel.ts).
-Engine-independent behavior stays shared; do not reimplement pacing/gain or
-assume word timing that the engine does not expose.
-**Effort:** Small for the evaluation, Medium-Large for any cross-client timing
-extension. Depends on measured need, not a new rig or model.
+</details>
 
 ## K106. Shared shorthand with negotiated meaning
 
-**Open proposal, 23 Oct 2026.** "Gremlin hour" might mean their short coding
-session, while "the blue one" might identify a particular shared draft. Using
-that meaning naturally is a different ability from repeating a catchphrase or
-noticing an inside joke. The names and examples here are synthetic.
+**Status: Open implementation.**
 
-**First slice.** Keep a small, session-local set of explicitly agreed terms,
-their referents/meanings and source IDs. One ambiguous use is not agreement;
-Aiko proposing a name is not user adoption. Retain correction, scope and expiry
-with each meaning. Only explicitly requested or independently supported durable
-terms enter existing memory through `MemoryStore.add(...)`; K80 remains the
-owner of joke birth. No new vector store, permanent glossary prompt or forced
-callback cue is needed. Named proactive offers still use the cue pool.
+**Implemented / available:** Catchphrases, inside jokes and source-linked situation/memory state exist.
+
+**Remaining:** Implement explicitly negotiated term/referent meaning with
+correction/scope/expiry/deletion checks; a proposed name is not user adoption.
+
+**Source check:** [catchphrase_miner.py](../../app/core/memory/catchphrase_miner.py),
+[conversation_situation.py](../../app/core/conversation/conversation_situation.py),
+[memory_store.py](../../app/core/memory/memory_store.py).
+
+<details>
+<summary>Retained acceptance constraints for further work</summary>
 
 **Acceptance.** Reuse an agreed term without explaining its origin every time;
 use its meaning to resolve a later reference. A corrected name replaces the
@@ -1465,49 +400,28 @@ can remain unresolved. Deleting the underlying source invalidates unsupported
 derived entries. Measure referent accuracy and unwanted callbacks, not phrase
 reuse frequency.
 
-**Owners:** K22/K62/K80, L7 relationship concepts, L50 and J13. Key files:
-[catchphrase_miner.py](../../app/core/memory/catchphrase_miner.py),
-[conversation_situation.py](../../app/core/conversation/conversation_situation.py),
-[memory_store.py](../../app/core/memory/memory_store.py).
-**Effort:** Medium. Start with explicit naming; do not infer a private language
-from embedding similarity alone.
+</details>
 
 ## K107. Provider outcomes are not character evidence
 
-**First slice implemented, 23 Oct 2026; semantic attribution open.** A model swap changes the generator,
-not Aiko's established preferences. A provider refusal, output-budget exhaustion,
-cancelled reply or transport failure must not silently become "I dislike this,"
-a new durable boundary, a relationship setback or evidence of a shared event.
-The same distinction matters outside romance: a failed calendar lookup is not
-evidence that she chose not to attend.
+**Status: Partial.**
 
-**Verified source gap.** Chat Completions used to accept in-band errors and
-unmarked EOF as completed replies. It now rejects those cases and explicit
-provider refusal signals before transcript commit and completed-turn learning;
-private inline thinking is also removed before control-tag interpretation.
-These guards are implemented. Structured turn outcomes now gate transcript
-commit, inline memory, post-turn affect/trust updates and reflection scheduling.
-Cancelled, truncated and failed answers are excluded from saved assistant history,
-while the user's message remains usable. Ordinary textual declines still lack
-reliable origin information; this is not a complete semantic attribution system.
+**Implemented / available:** Explicit failure/refusal/truncation/cancellation provenance,
+stream/UTF-8/private-thinking guards and selected delayed-writer checks exist.
 
-**Implemented first slice.** An additive `turn_outcomes` SQLite table stores the
-attempt, user/assistant IDs, status, provider, model and route fingerprint.
-Successful assistant insertion commits with its provenance before message
-listeners run. Reflection passes the outcome to `MemoryStore.add`, which checks
-source completion and deletion again at write time. Source-linked memories carry
-`turn_sources` and `source_authority="generated_output"`; this does not upgrade
-generated speech into user testimony or prove a personal preference. Background
-transcript readers cannot ingest the excluded failed answer. Existing legacy
-evidence is not retroactively relabelled. Route swaps preserve existing memories.
-Do not introduce a refusal-keyword classifier or force a model to answer by
-changing its stated reason.
+**Remaining:** Establish origin for ordinary text-only refusal, audit downstream promotion and
+evaluate route swaps/partial audio/cancellation/tool effects; streamed audio cannot be retracted and
+tool replay is not authorized.
 
-**Still open.** Classify ordinary text-only declines only when stronger origin
-evidence becomes available; audit all downstream concept promotion against that
-authority. Delivery and tool-side-effect idempotency remain separate contracts:
-already streamed audio cannot be recalled, and this change adds no automatic
-tool replay. Validate those longer scenarios before closing K107 as a whole.
+[Implemented slice](shipped/audit-2026-10-24.md#patterns-k107).
+
+**Source check:** [chat_client.py](../../app/llm/chat_client.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[chat_turn_mixin.py](../../app/core/session/chat_turn_mixin.py),
+[post_turn_mixin.py](../../app/core/session/post_turn_mixin.py).
+
+<details>
+<summary>Retained acceptance constraints for further work</summary>
 
 **Acceptance.** Synthetic provider refusal/error and no-answer budget exhaustion
 leave durable character boundaries and trust unchanged. A real user stop still
@@ -1517,10 +431,13 @@ stays unknown; a supported explicit character preference can still be learned
 through the existing evidence rules. Switching routes preserves existing
 preferences rather than relearning them from the new provider's defaults.
 
-**Owners:** J12, K99/K100 and the existing evidence-admission contracts. Key
-files: [chat_client.py](../../app/llm/chat_client.py),
-[turn_runner.py](../../app/core/session/turn_runner.py),
-[chat_turn_mixin.py](../../app/core/session/chat_turn_mixin.py), and
-[post_turn_mixin.py](../../app/core/session/post_turn_mixin.py).
-**Effort:** Medium. Start with explicit outcomes and source-linked writers;
-evaluate ordinary friendship/affection and practical tool errors as controls.
+</details>
+
+## Moved out of the active queue
+
+- **K78** — shipped: [record](shipped/audit-2026-10-24.md#patterns-k78).
+- **K97** — shipped: [record](shipped/audit-2026-10-24.md#patterns-k97).
+- **K98** — shipped: [record](shipped/audit-2026-10-24.md#patterns-k98).
+- **K99** — shipped: [record](shipped/audit-2026-10-24.md#patterns-k99).
+- **K102** — shipped: [record](shipped/audit-2026-10-24.md#patterns-k102).
+- **K103** — shipped: [record](shipped/audit-2026-10-24.md#patterns-k103).

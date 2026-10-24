@@ -9,7 +9,7 @@ the re-read changed the conclusion — see the `Re-measured` sections.
 
 The [status index](../health.md#status-index) in the live file lists every
 entry, open and closed. The [recurring-shapes
-catalogue](../health.md#recurring-shapes) stays there too, since it is a
+catalogue](health-patterns.md#recurring-shapes) stays there too, since it is a
 working reference rather than a record.
 
 Ordered by number. **Anchors are stable**: inbound links use
@@ -1410,7 +1410,7 @@ answer it the same cheap way") and the method answers exactly one.
   in `app/` writes it. The entry read one grouping and reported the other.
 
 **The lesson is about the instrument, and it sharpens [shape
-14](../health.md#recurring-shapes).** A "last write per kind" table groups by *label*, and
+14](health-patterns.md#recurring-shapes).** A "last write per kind" table groups by *label*, and
 a label can have several writers: `callback` has two, and they disagree about
 what the kind means. So one stale cell can be a cadence, a dead output field, a
 different table, or a deliberate design gate, and the cell cannot tell you
@@ -2011,7 +2011,7 @@ than a defect with a correct answer. The measurement above is what that decision
 needs: 17 cells, one shape, a three-of-eight-weeks bar, and eleven consecutive
 declines.
 
-**[Shape 29](../health.md#recurring-shapes), and it is a rule about caps.** *A
+**[Shape 29](health-patterns.md#recurring-shapes), and it is a rule about caps.** *A
 permanent record under a size cap is not permanent, and every consumer that reads
 it as permanent becomes a bug when the cap trips.* Three separate defects in one
 function came from this: the pending budget starved by the record (fixed by the
@@ -3600,7 +3600,7 @@ Aiko chose herself.
 
 ### The shape worth keeping
 
-This is [recurring shape 15](../health.md#recurring-shapes) and the first
+This is [recurring shape 15](health-patterns.md#recurring-shapes) and the first
 instance of it here: **a missing value coerced to a valid one**. `or 0.0` is not
 a default, it is a fabrication, and it is most dangerous where zero is a
 *meaningful* value in the domain — temperature, valence, confidence, price. The
@@ -3665,7 +3665,7 @@ property `arc` was wrongly assumed to have.
 
 ### The shape worth keeping
 
-**[Recurring shape 16](../health.md#recurring-shapes): a signal reused at the
+**[Recurring shape 16](health-patterns.md#recurring-shapes): a signal reused at the
 wrong timescale.** Every
 input here was correct — the arc tagger is doing its job, and 110 turns of
 `support` is an accurate description of that conversation. The defect is entirely
@@ -3823,7 +3823,7 @@ one distinction that matters because the two are handled by different machinery.
 
 ### The shape worth keeping
 
-**[Recurring shape 17](../health.md#recurring-shapes): a predicate answering a
+**[Recurring shape 17](health-patterns.md#recurring-shapes): a predicate answering a
 narrower question than its caller needs.** `has_relative_deictic` is correct, its
 docstring is accurate, and its tests pass — it says "this wording will go stale".
 The caller needed "and which way does it point", helped itself to the answer it
@@ -3837,7 +3837,7 @@ guard is a test that asserts the predicate is *silent* on the thing it does not
 know, which is what `test_it_says_nothing_about_direction` now does.
 
 The second lesson is about defaults at the boundary, and it is
-[shape 15](../health.md#recurring-shapes) again in a place nobody thought to
+[shape 15](health-patterns.md#recurring-shapes) again in a place nobody thought to
 look: **an impossible input should be refused, not rounded**. A past event in the
 future is not a near-miss to smooth over, and "moments ago" was the single most
 destructive string in the chain — it took four memories written across two days
@@ -3996,7 +3996,7 @@ an inference, and it is `--dry-run` by default.
 
 ### The shape worth keeping
 
-**[Recurring shape 18](../health.md#recurring-shapes): a handoff documented in
+**[Recurring shape 18](health-patterns.md#recurring-shapes): a handoff documented in
 prose that no code implements.** This is shape 14 (a store with write and read but
 no upkeep) with a twist that made it survive far longer: the upkeep pass was not
 missing, it was **assigned**. One sentence in a docstring named a real, scheduled
@@ -4369,7 +4369,7 @@ Worse, it **hid** the cause: writing the pointer on the first user turn repairs
 it one turn after every launch, so the corruption became intermittent — visible
 only if you restarted, looked, and had not yet spoken — instead of constant. A
 fix aimed one layer above the cause, whose partial success is what buys the real
-cause another month. This is [shape 24](../health.md#recurring-shapes), and its exhibit.
+cause another month. This is [shape 24](health-patterns.md#recurring-shapes), and its exhibit.
 
 ### The fix is isolation, not more compensation
 
@@ -4504,7 +4504,7 @@ just after one has to go out anyway.
 
 ### Shape
 
-A third instance of [shape 12](../health.md#recurring-shapes) — two components each
+A third instance of [shape 12](health-patterns.md#recurring-shapes) — two components each
 individually correct, with the fault living in the contract between them, and
 each side's comment explaining why its own behaviour is right. Neither file's
 tests could have caught it: the mixin's would have to know what the browser does
@@ -4637,7 +4637,7 @@ exists to move.
 Added above: **a change declined on a cost that was never measured, beside a
 benefit that was measured exhaustively.** The tell is grammatical — the benefit
 written as a number, the cost as an adverb — which makes it cheap to look for.
-Also a second instance of [shape 23](../health.md#recurring-shapes) one level up: H43 said
+Also a second instance of [shape 23](health-patterns.md#recurring-shapes) one level up: H43 said
 what evidence would settle it and nothing was going to go and get it.
 
 ## H48. "She stopped being lively" — the fix that was measured on the wrong engine
@@ -4741,14 +4741,14 @@ coincidence — it is what a target derived from a bad reference does.
 
 ### Shape
 
-[Shape 12](../health.md#recurring-shapes) again, and a variant worth naming: **a measurement
+[Shape 12](health-patterns.md#recurring-shapes) again, and a variant worth naming: **a measurement
 that establishes a problem exists, taken as establishing that fixing it is free.**
 The 8.4 dB was real and correctly measured. The unmeasured quantity was how much
 of it was hers. The tell is a fix justified entirely by the size of the deviation
 it removes, with nothing said about what the deviation was made of — and here the
 commit message even wrote the reassurance out loud ("changes consistency and not
 loudness") on the axis that was measured, while the axis that mattered went
-unnamed. Sibling of [shape 25](../health.md#recurring-shapes), one entry up: there a cost was
+unnamed. Sibling of [shape 25](health-patterns.md#recurring-shapes), one entry up: there a cost was
 unmeasured and the change was declined, here a cost was unmeasured and the change
 was shipped.
 
@@ -4813,7 +4813,7 @@ is not correcting her pace to 6.55 syl/s, it is giving back everything it is
 allowed to and still falling short — and a saturated corrector passes variance
 straight through, which is the mechanism behind *"the second one was much slower"*
 surviving H46. Nothing in the log says "saturated"; the stage reports success
-either way, which is [shape 1](../health.md#recurring-shapes) wearing a different hat.
+either way, which is [shape 1](health-patterns.md#recurring-shapes) wearing a different hat.
 
 ### What is still not previewed
 
@@ -4937,7 +4937,7 @@ are what the native crash in the LanceDB upgrade was about.
 
 ### Shape
 
-New: [shape 27](../health.md#recurring-shapes), **a lossy transform whose output is
+New: [shape 27](health-patterns.md#recurring-shapes), **a lossy transform whose output is
 well-formed.** The loss rate was 100% and it survived the entire history because
 what it produced was clean readable text. Had it emitted `KamennÃ¡` or `Kamenn?`
 it would have been reported in a day. Detectability and severity ran in opposite
@@ -5013,7 +5013,7 @@ false-contradiction generator; both had to be fixed in the same change.
 
 ### Shape
 
-[Shape 12](../health.md#recurring-shapes), **a control whose only effect is to disable
+[Shape 12](health-patterns.md#recurring-shapes), **a control whose only effect is to disable
 itself**, in its purest form yet: the affordance was labelled "mark confirmed",
 it did write `status='confirmed'`, and the sole consequence was removing the row
 from the one query that read it. Every layer was individually correct. Worth

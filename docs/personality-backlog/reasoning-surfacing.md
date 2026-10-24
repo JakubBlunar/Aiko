@@ -165,6 +165,8 @@ misdiagnose the model or train a selector against the wrong outcome.
 
 ### RS1. Establish an end-to-end reasoning, attention and cost baseline
 
+**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
+
 **Priority: first. Effort: medium. Owners: L55/T5, P43/G6 and P24.**
 
 Extend the existing [reasoning evaluator](../../scripts/evaluate_concept_reasoning.py)
@@ -195,6 +197,8 @@ No personal transcripts or live relationship mutations belong in the fixture set
 
 ### RS2. Preserve evidence identity through concept recall and compact context
 
+**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
+
 **Priority: first. Effort: medium. Owners: L24/L49/L50/L52 and existing recall.**
 
 Introduce a bounded, read-only evidence projection, starting with
@@ -221,6 +225,8 @@ without inventing it. Preserve existing tool parameters or version compatibly.
 The default T3 token budget must not grow to accommodate the new representation.
 
 ### RS3. Select a sufficient working set for the current question
+
+**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
 
 **Priority: second. Effort: medium-large. Owners: L23/L51, K97/K101, P43/P52.**
 
@@ -251,6 +257,8 @@ selector call. Existing P52 continuity remains the comparison baseline.
 
 ### RS4. Admit optional cues jointly with their handling
 
+**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
+
 **Priority: second. Effort: medium per family. Owners: K92/K93 and P43/P50.**
 
 Extend the existing six-block optional-choice pilot one family at a time.
@@ -274,6 +282,8 @@ capacity for necessary evidence/history. A quiet turn can select no optional
 move. Compare expression/naturalness, not a target increase in cue consumption.
 
 ### RS5. Commit T3 accounting from complete final evidence bundles
+
+**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
 
 **Priority: first foundation, before learned selection. Effort: medium. Owners:
 P43/G6, L37 and K99.**
@@ -299,6 +309,8 @@ aggressive reassembly, preview, provider failure and an interrupted utterance.
 Existing cue and delivery receipts retain their distinct meanings.
 
 ### RS6. Trial a bounded automatic reasoning tool before speech
+
+**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
 
 **Priority: experiment after RS1/RS2. Effort: medium-large. Owners: K96/K101,
 L51/L53 and the existing tool pass.**
@@ -347,6 +359,8 @@ task lane and approval rules rather than blocking speech indefinitely.
 
 ### RS7. Reuse stable evidence without freezing stale conclusions
 
+**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
+
 **Priority: measure alongside RS1; rollout after RS3. Effort: medium. Owners:
 P44/P52 and prompt-cache infrastructure.**
 
@@ -379,6 +393,8 @@ misses. Do not claim savings from old P44/P52 cohorts or local hashes alone.
 
 ### RS8. Compare explanations through discriminating evidence
 
+**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
+
 **Priority: later vertical slice. Effort: medium-large. Owners: L53/L54, L51/L52
 and K101.**
 
@@ -404,6 +420,8 @@ would change the answer, Aiko can state the limit without manufacturing a task
 or a new cue. Evaluate via RS1 before expanding domains.
 
 ### RS9. Learn usefulness without rewarding repetition or confidence theatre
+
+**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
 
 **Priority: after trustworthy inclusion/answer receipts. Effort: medium. Owners:
 L37/L38/L44, F12/F17 and G5.**
@@ -453,7 +471,7 @@ path, measured comparison and an explicit decision to expand, revise or stop.
   and [integration contracts](../concept-integration.md).
 - [K92 stance](patterns.md#k92-conversational-stance--one-decision-per-turn-not-ten-permission-slips),
   [K96 second thought](patterns.md#k96-one-shot-per-thought--in-turn-deliberation),
-  [K97 working set](patterns.md#k97-a-small-causal-working-set-for-the-current-thread),
+  [K97 working set](shipped/audit-2026-10-24.md#patterns-k97),
   [K100 evidence admission](patterns.md#k100-evidence-bound-memory-admission) and
   [K101 premise routing](patterns.md#k101-route-an-unresolved-premise-to-a-bounded-next-step).
 - [P43 arbitration](perf.md#p43-105-blocks-no-arbitration----replace-the-aggressive-denylist),

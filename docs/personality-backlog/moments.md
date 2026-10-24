@@ -1,112 +1,88 @@
-# Shared-moments follow-ups
+# Shared moments and boundaries
 
-Promoted from the shared-moments + relationship-axes shipped entry
-(see [`shipped.md`](shipped.md)). These are deferred follow-ups, not new
-work. The ones that have landed moved to
-[`shipped/moments.md`](shipped/moments.md).
-
----
+Reviewed 24 Oct 2026 against checkout 8c666cf. Only unfinished implementation, explicit validation
+and deferred decisions are listed below. Existing tests were inspected, not rerun; source inspection
+is not live/model/device verification. Completed slices and superseded proposals are in [the shipped
+audit](shipped/audit-2026-10-24.md).
 
 ## J1. Multi-user moments / participant attribution
 
-Today every moment is keyed implicitly to Jacob. A future extension
-would attribute moments to multiple participants (`participants:
-[user_id, ...]` already exists in the metadata shape but is never
-read) so a multi-user setup (Jacob + a partner, or a family
-deployment) can have separate timelines. Key files:
-[`app/core/relationship/shared_moments.py`](../../app/core/relationship/shared_moments.py),
-[`app/web/server.py`](../../app/web/server.py) `/api/together` filter,
-Together tab UI.
+**Status: Open implementation.**
 
----
+**Implemented / available:** Shared moments and Together exist.
+
+**Remaining:** Add participant attribution, scoped reads/UI and migration for implicitly attributed
+historical moments.
+
+**Source check:** [shared_moments.py](../../app/core/relationship/shared_moments.py),
+[server.py](../../app/web/server.py).
 
 ## J2. Exportable timeline
 
-Markdown or PDF export of the moments timeline so Jacob has a
-keepsake of the relationship arc he can read outside the app. Key
-files: new `app/core/shared_moments_export.py`,
-[`app/web/server.py`](../../app/web/server.py) (new
-`GET /api/together/export?format=md|pdf`), Together tab UI (export
-button).
+**Status: Open implementation.**
 
----
+**Implemented / available:** Together displays stored moments.
+
+**Remaining:** Implement a source-faithful Markdown/PDF export endpoint and UI action, preserving
+participant scope and deletion behavior.
+
+**Source check:** [server.py](../../app/web/server.py).
 
 ## J3. Axes-aware proactive nudges
 
-The relationship axes are read-only into the prompt today. A clean
-follow-up is letting `ProactiveDirector` consume them — e.g.
-`comfort < -0.3` -> bias the next nudge toward checking in on Jacob
-rather than picking up a thread. Don't let the axes *trigger* a nudge
-on their own (would feel like surveillance); just colour the topic
-selection when a nudge fires for other reasons. Key files:
-[`app/core/proactive/proactive_director.py`](../../app/core/proactive/proactive_director.py)
-`_pick_topic`, [`app/core/relationship/relationship_axes.py`](../../app/core/relationship/relationship_axes.py).
+**Status: Open implementation.**
 
----
+**Implemented / available:** Axes guide expression and several gates.
 
-## J7. Moment-detection tuning (+ gift/promise ordering bug)
+**Remaining:** Wire axes into proactive topic selection when another reason already permits a nudge;
+axis movement must not independently trigger speech.
 
-**Motivation.** The Together tab tends to hold ~1 moment because the
-`MomentDetector` is tuned to miss rather than over-tag, AND two of its
-four documented signals are dead. With default
-`relationship_axes_enabled=true`,
-[`post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
-**clears** `_last_turn_gift_received` / `_last_turn_promise_kept`
-(~L2376-2377) *before*
-[`speaking_window_jobs_mixin.py`](../../app/core/session/speaking_window_jobs_mixin.py)
-`_maybe_schedule_moment_llm_job` (~L2393) reads them — so giving Aiko a
-gift or keeping a promise can **never** seed a moment unless a reaction
-tag or milestone also fires. **Fix the ordering** (snapshot the flags
-before they're cleared, or schedule the job earlier). Then optionally
-broaden the signal set with cheap "first-time" detectors (first time on a
-new topic cluster via K9, first landed joke via K22, first vulnerable
-disclosure) and pass the parsed mood `reaction` through to the detector
-(today only literal `[[reaction:...]]` tags in raw text count, not the
-resolved mood). Add an MCP `get_moment_detector_stats` dump
-(`MomentDetector.stats()` already tracks `llm_skipped_no_signal` /
-`llm_returned_null` / `llm_persisted`) so "why no moments?" is one call,
-not a code read. **Effort.** Small (bug) / Medium (broadening).
+**Source check:** [proactive_director.py](../../app/core/proactive/proactive_director.py),
+[relationship_axes.py](../../app/core/relationship/relationship_axes.py).
 
----
+<a id="j7-moment-detection-tuning--giftpromise-ordering-bug"></a>
 
-## J12. Intimacy pacing & boundary calibration
+## J7. Moment signal expansion and detector statistics
 
-**Motivation.** A companion that escalates intimacy *faster* than the user
-is comfortable with reads as clingy or uncanny; one that lags reads as
-cold. Today forwardness is governed by relationship stage (J4) + the
-`expression_mask` dial (K60) + the vulnerability budget (K15) — but **none
-of them read the user's own affection pace**. Two halves: (a) a learned
-**pacing signal** — track how forward the user himself is (does he use pet
-names, how warm/affectionate are his messages, does he reciprocate touch
-reactions) and keep Aiko calibrated to *slightly follow, never lead by
-much*; (b) an explicit user-facing **comfort dial** in Settings
-(`reserved ↔ affectionate`) that **hard-caps** forwardness regardless of
-stage — a plain consent/boundary control, the thing that makes an
-AI-companion feel safe rather than presumptuous. Key files:
-[`relationship_axes.py`](../../app/core/relationship/relationship_axes.py)
-(stage/axes source), a new pacing estimator, the gesture / disclosure /
-petname / reciprocal-vulnerability gates (read the cap), an
-`agent.intimacy_ceiling` settings field + a Settings → Avatar/Identity
-control. **Tonal guard:** the dial is a *ceiling*, not a target — at a low
-setting she's simply warm-but-contained; the learned signal only nudges
-within that ceiling. **Effort.** Medium.
+**Status: Partial.**
 
-### 23 Oct 2026: relationship preference and current conversational context
+**Implemented / available:** Gift/promise flags are snapshotted before clearing and explicitly
+passed to the scheduler; the ordering bug has regression coverage.
 
-**Backlog extension; not implemented.** Make friend, playful/flirty and romantic
-expression explicit user preferences, independently configurable from inferred
-closeness. These are expression choices, not claims about human feelings or
-permissions inferred from a bond score. A user can choose warmth without pet
-names, or romance without teasing; reuse J11's affection kinds within the user's
-chosen limits rather than making stage a mandate to escalate.
+**Remaining:** Evaluate first-time and resolved-reaction signals and expose consolidated detector
+statistics. Current scheduling still derives reaction signals from raw tags; broaden without
+fabricating milestones.
 
-Context can narrow the preference: practical work may call for concise help;
-an invited affectionate exchange can support a warmer register. Infer a
-temporary tone cautiously, but require user evidence for lasting boundary
-changes. A stop or de-escalation request takes effect on the current reply and
-invalidates incompatible queued gestures/cues before dispatch. A historical
-romantic preference cannot override the new instruction. Persist explicit
-preferences through the existing settings setter/override contract.
+[Implemented slice](shipped/audit-2026-10-24.md#moments-j7).
+
+**Source check:** [test_moment_schedule_signals.py](../../tests/test_moment_schedule_signals.py),
+[post_turn_mixin.py](../../app/core/session/post_turn_mixin.py),
+[speaking_window_jobs_mixin.py](../../app/core/session/speaking_window_jobs_mixin.py).
+
+<a id="j12-intimacy-pacing--boundary-calibration"></a>
+
+## J12. Explicit relationship preferences and boundary propagation
+
+**Status: Partial.**
+
+**Implemented / available:** Original consent ceiling, learned user-pace EMA, prompt cue,
+disclosure/reciprocity gates, settings persistence path and Avatar dial are implemented.
+
+**Remaining:** Implement the 23 Oct extension: independent friend/flirty/romantic and affection-kind
+preferences, same-turn de-escalation, queued gesture/cue invalidation across clients, restart and
+paired checks. B7 removed touch dispatch gates, so the dial does not prove a universal hard touch
+cap.
+
+[Implemented slice](shipped/audit-2026-10-24.md#moments-j12).
+
+**Source check:** [intimacy_pacing.py](../../app/core/relationship/intimacy_pacing.py),
+[test_intimacy_pacing.py](../../tests/test_intimacy_pacing.py),
+[AvatarTab.tsx](../../web/src/features/settings/AvatarTab.tsx),
+[sessions_settings_routes.py](../../app/web/rest/sessions_settings_routes.py),
+[relationship_axes.py](../../app/core/relationship/relationship_axes.py).
+
+<details>
+<summary>Retained acceptance constraints for further work</summary>
 
 **Acceptance.** A warm friendship never auto-upgrades to romance from engagement
 alone. An invited romantic register still answers practical questions directly.
@@ -116,18 +92,22 @@ explicit preferences. Declining affection does not lower relationship axes or
 create sulking/jealousy cues. Evaluate behavior with K102/K104; do not optimize
 for more affection or longer sessions.
 
----
+</details>
 
-## J13. Pet-name reciprocity & evolution
+<a id="j13-pet-name-reciprocity--evolution"></a>
 
-**Motivation.** Aiko's petname for the user exists but is static and
-one-directional. Pet names are a core companion-intimacy signal and two
-cheap deepeners are missing: (a) let her petname *evolve with stage* (J4)
-— neutral early, warmer once `close`/`intimate` — and notice when the user
-adopts or changes one for her; (b) capture and honour a **name the user
-gives Aiko** (a nickname for *her*) as a durable relationship artifact she
-remembers and responds to. Small surface, outsized warmth. Key files: the
-petname resolution path, [`user_profile.py`](../../app/core/infra/user_profile.py)
-(a field for the user's name-for-Aiko), relationship stage (J4) for the
-evolution gate. **Tonal guard:** never force a pet name; an unused one
-should fade, not be repeated at him. **Effort.** Small.
+## J13. Learned nickname adoption and reciprocity
+
+**Status: Partial.**
+
+**Implemented / available:** Address-style guidance already changes with relationship phase; it is
+not static as originally claimed.
+
+**Remaining:** Persist explicitly adopted names for Aiko, handle changes/reciprocity and let unused
+names fade within J12 boundaries. Phase-based permission is not learned nickname adoption.
+
+[Implemented slice](shipped/audit-2026-10-24.md#moments-j13).
+
+**Source check:** [relationship.py](../../app/core/relationship/relationship.py),
+[test_relationship_petname.py](../../tests/test_relationship_petname.py),
+[user_profile.py](../../app/core/infra/user_profile.py).

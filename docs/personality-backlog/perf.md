@@ -1,1899 +1,451 @@
-# Performance + observability
+# Performance and observability
 
-Companion polish often loses to a hot path that's too slow or too
-opaque to debug. The P-series collects performance and observability
-gaps that aren't features in their own right but pay back across the
-whole personality stack: every K-series entry rides on the same
-turn-build, RAG retrieval, and idle-worker plumbing, so making those
-faster or more measurable compounds.
-
-These items are intentionally narrow — most are a single afternoon
-once you sit down with them. Pair any K-series entry with the
-relevant P-item if it's near the same code; otherwise pick whichever
-unblocks the testing flow you're stuck on.
-
-(P1 per-turn embed budget + timing, P2 prompt-build phase
-telemetry, P3 cheap slice-cache validation, P4 RAG memory-hit
-batch lookup, P5 + P23 Lance scan push-down for
-`list_recent_user_vectors`, P6 MessageIndexer queue/stats
-visibility (`get_message_indexer_stats`), P8 idle-worker queue
-visibility + multi-worker drain, P9 streaming tokens off the
-`messages` array, P10 `(role, created_at)`
-schedule-learner index, P12 bulk memory-mirror on startup, P13
-route-driven worker model + context (with the declarative
-`_worker_runtime_updaters` cascade + worker-LLM priority gate),
-P14 heuristic tool-pass gate, P17 K22 callback-detector filtered
-mirror walk, P18 streaming-accumulator O(n²) fix, P19 RAG
-reader-writer lock + parallel per-source searches, P20 deferred
-(async) context compaction, P21 K29 borderline gate moved off the
-hot path, P22 inner-life shared recent-history memo, P25 client
-audio flush on abort, P27 lazy STT load + `stt.enabled`, P28 TTS
-gated on `tts.enabled` + `release_model`, P29
-`get_memory_breakdown`, P31a `get_prompt_block_costs`, P40 engine-swap
-release, P41 the two missing `messages` indexes, P47 paging
-`GET /api/concepts`, P48 the mobile render + audio-idle budget,
-P37 residual React re-renders, and P38 the per-tick Live2D
-snapshot cache have shipped — see [`shipped.md`](shipped.md).
-P15 was validated as **invalid** — the embedder LRU already
-collapses repeated `user_text` embeds, so the hot path is already
-at the 2-embed steady state it targeted; see its shipped.md note.)
-
-**Audit note (first pass).** The open entries were re-read against the
-code rather than trusted. Corrections are inline and flagged in place;
-the headline ones were P9 (shipped, entry never retired), P26 (the
-client-side analyser path already exists for mobile; the pacer is 20 Hz
-not 30), P32(b) (the L3 graph walk is already batched), P30 (the mirror
-ceiling is ~16k rows, not 5k, and `search` is a Python loop rather than
-a matmul), and P27/P28 (line references had drifted to the pre-split
-`session_controller.py`). P33-P40 came out of the same pass.
-
-**Audit note (second pass).** The cheap wins from that list then
-shipped, which produced three more corrections worth recording, because
-they were all the same *kind* of error — asserting behaviour from the
-shape of the code rather than from the code:
-
-- **P40** claimed neither engine swap released the old service. The STT
-  half had been fixed for a while.
-- **P28** looked fixed at a glance because playback *was* gated
-  correctly; the load thread started before any of those checks could
-  matter.
-- **`messages_in_range`**'s own docstring claimed an index covered it
-  that could not (wrong leading column) — now P41.
-
-Two of the "perf" findings also turned out to be plain behaviour bugs:
-catchphrase blocks silently never surfacing (P33), and a late engine
-callback emitting a second, un-aborted end-of-speech event (P25).
-Measurement first is the lesson: P29 and P31a exist so the *remaining*
-items stop being argued from static reading.
-
----
+Reviewed 24 Oct 2026 against checkout 8c666cf. Only unfinished implementation, explicit validation
+and deferred decisions are listed below. Existing tests were inspected, not rerun; source inspection
+is not live/model/device verification. Completed slices and superseded proposals are in [the shipped
+audit](shipped/audit-2026-10-24.md).
 
 ## P7. Typed-mode prefetch parity with voice
 
-**Motivation.** RAG prefetch + static-slice prebuild fire from
-`feed_stt_partial` / live capture only. Typed users compose for
-seconds with zero prewarm — every typed turn pays full embed +
-3× Lance search + ~15 inner-life providers cold. The voice win
-documented in `rag_prefetcher.py` is achievable for typed turns
-just by hooking the composer.
+**Status: Open implementation.**
 
-**Key files.**
-[`app/core/rag/rag_prefetcher.py`](../../app/core/rag/rag_prefetcher.py),
-[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
-(new `feed_typed_draft` entry point),
-[`web/src/features/chat/ChatView.tsx`](../../web/src/features/chat/ChatView.tsx)
-(debounced WS frame on draft length crossing a threshold).
+**Implemented / available:** Voice RAG prefetch and composing-presence frames exist.
 
-**Sketched approach.** New WS command `composer_draft` with
-`{text, length}`. Frontend debounces (~250 ms) and only sends
-once `length > prefetch_min_chars`. Backend reuses the existing
-`RagPrefetcher` with a `source="typed_draft"` tag so the cache
-key doesn't collide with voice. Cancellable on send / clear /
-component unmount.
+**Remaining:** Add bounded cancellable typed-draft prewarm with explicit privacy/opt-out behavior.
+Composing status alone is not draft prefetch.
 
-**Open questions.** Privacy posture — typed drafts are even more
-sensitive than partial STT (the user is mid-thought). Default
-should be ON-but-bounded, with a settings opt-out and
-draft-length cap (~120 chars) so we never prefetch a long-form
-diary entry.
+**Source check:** [rag_prefetcher.py](../../app/core/rag/rag_prefetcher.py),
+[session_controller.py](../../app/core/session/session_controller.py),
+[ChatView.tsx](../../web/src/features/chat/ChatView.tsx).
 
-**Effort.** Medium.
+<a id="p11-reclaim-background-worker-num_predict-from-reasoning-leakage"></a>
 
----
+## P11. Measure worker reasoning-token overhead on the actual route
 
+**Status: Partial.**
 
-## P11. Reclaim background-worker `num_predict` from reasoning leakage
+**Implemented / available:** Worker routes and provider reasoning controls/telemetry exist; visible
+thinking is filtered.
 
-**Motivation.** Reasoning-tuned models (qwen3.x family especially,
-including the `jaahas/qwen3.5-uncensored:9b` build we run today)
-ignore `think=False` and still emit `<think>...</think>` tokens
-that count fully against `num_predict`. We strip those blocks
-post-hoc in `OllamaClient`, and the truncation warning is now
-downgraded to DEBUG when the visible answer reaches a natural
-stop, so the noise is gone — but the *budget* is still being
-spent on a trace that the operator never sees. A relationship pulse
-with `max_tokens=320` may only have ~200 tokens of actual prose;
-the rest is reasoning we throw away. That eats wall-time on every
-worker run and forces us to over-provision the cap to avoid real
-truncation.
+**Remaining:** Measure reasoning-token leakage on the actual worker model/provider and compare
+native controls before prompt suffixes or model changes; the historic qwen route is not assumed
+current.
 
-**Key files.**
-[`app/core/relationship/relationship_pulse.py`](../../app/core/relationship/relationship_pulse.py)
-(`_build_pulse_prompt`),
-[`app/core/proactive/curiosity_worker.py`](../../app/core/proactive/curiosity_worker.py),
-[`app/core/memory/promise_extractor.py`](../../app/core/memory/promise_extractor.py),
-[`app/core/proactive/dream_worker.py`](../../app/core/proactive/dream_worker.py),
-[`app/core/conversation/conversation_arc.py`](../../app/core/conversation/conversation_arc.py),
-[`app/core/goals/agenda.py`](../../app/core/goals/agenda.py),
-[`app/core/memory/memory_consolidator.py`](../../app/core/memory/memory_consolidator.py),
-[`app/core/proactive/reflection_worker.py`](../../app/core/proactive/reflection_worker.py),
-[`app/core/infra/user_profile.py`](../../app/core/infra/user_profile.py),
-[`app/core/relationship/shared_moment_extractor.py`](../../app/core/relationship/shared_moment_extractor.py),
-[`app/core/proactive/prepared_nudge.py`](../../app/core/proactive/prepared_nudge.py),
-[`app/llm/ollama_client.py`](../../app/llm/ollama_client.py)
-(maybe a centralized `no_think_hint` helper applied to the user
-message of any background-worker call).
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p11).
 
-**Sketched approach.** Append `/no_think` to the user-content
-side of every background-worker prompt (qwen3 honours it as a
-soft directive in some fine-tunes; it's a no-op on
-non-reasoning models). Compare before/after: the
-`completion_tokens` field on the MCP `get_last_response_detail`
-should drop noticeably for surfaces tagged
-`relationship_pulse`, `reflection_worker`, etc. If qwen3.5
-uncensored ignores it, fall back to (a) wrapping prompts with
-`<no_think>...</no_think>` tags some templates support, or (b)
-running background workers on a non-reasoning Ollama model
-(e.g. a small 3B instruct) by pointing
-`llm.routes.worker_default` at it; the main turn still uses the
-reasoning model on `llm.routes.main_chat`. No new setting is
-needed — the route table already separates the two.
-
-**Open questions.** Does `/no_think` actually save tokens on
-`jaahas/qwen3.5-uncensored:9b` specifically, or does this fine-
-tune ignore both? If it ignores, the cleaner path is the dual-
-model split (a second worker route), which is more code but
-also unlocks faster background-worker turnaround independently.
-Note: P13 (shipped) makes the dual-model split actually work —
-set `llm.routes.worker_default.model` and every worker picks it
-up via the declarative cascade, no restart. Before P13 the only
-way to change the worker model was editing `ollama.chat_model`
-in `user.json` directly.
-
-**Effort.** Small (just the prompt suffix + before/after token
-measurements). Medium if we need the dual-model split.
-
----
+**Source check:** [relationship_pulse.py](../../app/core/relationship/relationship_pulse.py),
+[curiosity_worker.py](../../app/core/proactive/curiosity_worker.py),
+[promise_extractor.py](../../app/core/memory/promise_extractor.py),
+[dream_worker.py](../../app/core/proactive/dream_worker.py),
+[conversation_arc.py](../../app/core/conversation/conversation_arc.py),
+[agenda.py](../../app/core/goals/agenda.py).
 
 ## P16. Post-turn inner-life blocks the brain loop
 
-**Status: now measurable.** The entry's own "audit before splitting"
-caution stood for a while because there was *no instrumentation at all*
-on the cascade — nobody knew whether it cost 5 ms or 500. It is now
-stamped as `post_turn_ms` on the metrics record (and on the WS
-`Metrics` type), with a log line that escalates from DEBUG to INFO past
-`_POST_TURN_SLOW_MS`. Note that `post_turn_ms` is deliberately *not*
-folded into `total_ms`: the cascade runs after the reply has finished
-streaming, so adding it would inflate the number the latency badge
-shows. Also worth knowing when reading the figure: `embedder.end_turn()`
-fires *before* the cascade runs, so post-turn's 1-4 embeds land in the
-next turn's embed budget rather than this one's. **Collect real numbers
-before attempting the split below** — if the cascade is single-digit
-milliseconds on a normal turn, the Large refactor buys nothing.
+**Status: Partial.**
 
-**Motivation.** `chat_once_streaming` doesn't return until
-`_post_turn_inner_life` finishes — detector cascade, embed burst
-(see P15), K22 callback scan (see P17), SQLite writes. The brain
-loop is a single consumer, so a user who fires a quick follow-up
-message waits for all of the *previous* turn's bookkeeping before
-their message even starts assembling. Streaming + TTS may already
-be done from the user's perspective; the system is busy doing
-homework.
+**Implemented / available:** post_turn_ms measures the inline cascade separately from reply total time.
 
-**Key files.**
-[`app/core/session/session_controller.py`](../../app/core/session/session_controller.py)
-(`chat_once_streaming`, post-turn call ~6120),
-[`app/core/session/post_turn_mixin.py`](../../app/core/session/post_turn_mixin.py)
-(`_post_turn_inner_life`),
-[`app/core/brain/loop.py`](../../app/core/brain/loop.py).
+**Remaining:** Collect current cost/ordering evidence, then split only safe eventual work with
+stale-turn guards; next-turn repair/answer state must remain timely.
 
-**Sketched approach.** Split post-turn into a *fast lane*
-(anything that arms one-shot slots the NEXT prompt reads —
-clarification, rupture, self-correction, belief gaps) and a *slow
-lane* (embeds, callback scan, calibration, axes drift). Fast lane
-stays inline; slow lane moves to a background job with a
-turn-ordering guarantee (drop the job if a newer turn already
-superseded it). Alternatively run the whole post-turn as a brain
-event at lower priority than user messages.
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p16).
 
-**Open questions.** Which one-shot slots are actually read by the
-next prompt vs. merely eventually-consistent? Audit before
-splitting — a wrong call here makes cues silently miss a turn.
+**Source check:** [session_controller.py](../../app/core/session/session_controller.py),
+[post_turn_mixin.py](../../app/core/session/post_turn_mixin.py),
+[loop.py](../../app/core/brain/loop.py).
 
-**Effort.** Large.
+<a id="p24-voice-latency-batch-reaction-tag-tts-gate-double-stt-pass-first-chunk-threshold"></a>
 
----
+## P24. Remaining speech latency contracts and benchmarks
 
-## P24. Voice latency batch: reaction-tag TTS gate, double STT pass, first-chunk threshold
+**Status: Partial.**
 
-**Status: initial STT repair implemented locally; remainder open (2026-09-30).** The cascade can be
-made more conversational without replacing it with a native speech model.
-The main opportunity is removing serial barriers and repairing the STT
-integration, not simply choosing faster models. This audit inspected source
-and installed RealtimeSTT 1.0.2, not a live microphone trace. Timings below
-are configured/code-enforced waits, not measured end-to-end savings. Defaults
-are not proof of the running route or user overrides. The initial repair
-followed the audit; no measured end-to-end saving is claimed.
+**Implemented / available:** Initial STT partial-read/lifetime and explicit finalization repairs are
+implemented; later speech-pipeline changes must be read in current source.
 
-**Correction to the earlier entry.** There is no verified "stable final"
-transcript available for free in the current capture path. The earlier
-100-500 ms saving was not a benchmark, and "trust two identical partials"
-is not a sufficient finalization contract. The work is also larger than
-three small independent tweaks: the recorder's API/lifetime comes first.
+**Remaining:** Complete the benchmark and targeted contracts below: useful-audio onset, safe
+endpointing, generation/audio-coverage identity, bounded cancellable finalization, first-chunk
+release, incremental synthesis, buffering and interruption recovery. No live mic timing was measured
+here.
 
-### P24a. Repair the STT partial-read and recorder-lifetime contracts
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p24).
 
-**Priority: highest; correctness before optimization.**
-**Initial implementation:** `partial_text()` now reads a callback-fed,
-nonblocking snapshot; realtime updates reuse the main model rather than
-loading a second large model. Phrase boundaries reset that snapshot but
-do not call RealtimeSTT's shutdown-on-exit context manager; `shutdown()`
-owns actual teardown. `record_until_silence` polls the interim snapshot.
-Contract-faithful fake tests cover nonblocking reads and two phrase cycles.
-These are code/tests only, not an observed live voice result.
-
-[`RealtimeSttService.text`](../../app/stt/realtime_stt_service.py) calls
-`recorder.text()` synchronously. In installed RealtimeSTT 1.0.2, that calls
-`wait_audio()` and then final transcription; it is not a partial snapshot.
-Before the fix, the constructor set `realtime_model_type=model` but did not
-enable or subscribe to realtime transcription (its upstream default is false).
-
-Previously [`capture_live_phrase`](../../app/core/session/voice_capture_mixin.py)
-called this method in `_on_speech_start` **before** the captured pre-roll
-was fed, and again in `_on_chunk` / `_endpoint_check`. Those callbacks
-run on the same thread that feeds the recorder. Waiting for recording
-completion could therefore stall the very audio feed needed to complete
-it. This was a source-backed contract mismatch; its frequency and exact
-live symptoms were not measured before the repair.
-
-The second original mismatch was `stop_context()` calling
-`recorder.__exit__`, which calls `shutdown()` in the installed package.
-`capture_live_phrase` did this after each partial-enabled capture, then
-`process_live_capture` tried to transcribe on the same cached recorder.
-`__enter__` only returns that object; it does not restart it. The old
-standalone `transcribe` path also exited its owned context. Both phrase
-reuse and repeated WAV finalization now have fake coverage, but still
-need a real-recorder check.
-
-**Remaining direction.** Exercise the real recorder with synthetic audio
-and a live mic before claiming functional endpointing; measure resource
-contention from sharing the main model. Give partial updates phrase/generation
-ID, revision and audio coverage to reject late updates. Bound finalization
-and provide a cancellation path that unblocks it; direct transcription
-still waits for model inference and has no per-request timeout today.
-
-**Discriminating checks.** [`test_stt_lazy_load.py`](../../tests/test_stt_lazy_load.py)
-now uses a fake whose context exit invalidates it, and asserts that interim
-reads do not call final `text()` and two successive WAV decodes do not
-re-feed audio. The fake still returns final text immediately. Follow with
-an opt-in real-recorder test on synthetic audio, isolated from the running
-app, microphone, configuration and database; verify cancellation unblocks
-and two consecutive phrases finalize correctly.
-
-**External contract references:** upstream
-[external audio](https://github.com/koljab/RealtimeSTT/blob/master/docs/external-audio.md),
-[API compatibility](https://github.com/koljab/RealtimeSTT/blob/master/docs/api-compatibility.md),
-and [configuration](https://github.com/koljab/RealtimeSTT/blob/master/docs/configuration.md).
-These agree with the installed source: realtime callbacks supply interim
-text; `text()` supplies final text; context exit owns shutdown.
-
-### P24b. Measure end of user speech to useful audio, not just TTFT
-
-**Priority: alongside P24a.** The latency users experience is the critical
-path through endpoint wait, final STT, queue admission, prompt/RAG work,
-optional tool pass, first speakable text, TTS queue/synthesis/shaping, and
-client scheduling. Some work already overlaps; do not sum overlapping spans
-or add the duration of the user's own utterance to response latency.
-
-[`TurnRunner`](../../app/core/session/turn_runner.py) starts `first_token_ms`
-at the reply stream, **after** prompt construction and the optional tool
-pass. Its first delta can be metadata rather than a speakable clause.
-`capture_ms` covers the whole recording window; `stt_ms` covers the final
-transcribe call. None of those alone answers "how long after I stopped did
-the answer start?" Existing client `clipStart` / `firstPcm` debug events in
-[`AudioOutputManager`](../../web/src/audio/AudioOutputManager.ts) provide
-scheduling evidence, while K99 receipts establish clip completion, not
-physical audibility or answer onset.
-
-**Add a bounded, content-free turn timeline:** last voiced input sample,
-endpoint commit/reason, final transcript ready, brain admission/start,
-prompt ready, tool-pass start/end, first delta, first speakable chunk,
-synthesis queued/start/first PCM/end, shaping end, PCM send/receive and
-client scheduled onset. Use turn/phrase/clip IDs, model/provider/device,
-cold/warm state, cache-hit flags and queue depths. Keep raw audio and
-transcripts out of routine telemetry. Distinguish filler, earcon, silence
-and substantive answer audio; otherwise a quick "Hmm" falsely wins.
-
-Compute client-side input-end to scheduled-output onset on a consistent
-client clock when input/output share an owner. Use explicit clock mapping
-and uncertainty across devices; never subtract unrelated browser/server
-monotonic clocks. Scheduling remains a proxy: use consented loopback or an
-external recording for true audible onset. Report p50/p95, cancellations,
-timeouts, underruns and sample count, split by warm/cold, engine, device,
-short/long utterance and tool/no-tool turns. A stalled turn is not a missing
-sample to discard. Establish a baseline before promising a millisecond win.
-
-### P24c. Make endpointing responsive without cutting off thinking pauses
-
-**Priority: high after P24a.** Defaults in
-[`config/default.json`](../../config/default.json) are 0.6 s fast close,
-1.0 s phrase and 3.0 s turn silence. However, `capture_live_phrase` passes
-`min_speech_seconds_before_stop=1.5` and a 0.8 s grace period to
-[`ClientMicSource.capture_phrase`](../../app/audio/client_mic_source.py).
-The loop checks both endpoint commits and its ordinary silence stop only
-after 15 post-start 100 ms chunks. Despite its name, this counter includes
-silence. A short "yes" can therefore wait until roughly 1.5 s after detected
-speech start before endpointing may act. This is not an extra 1.5 s added
-to every turn, nor a measured 1.5 s response-time saving.
-
-Separate minimum *voiced evidence* from minimum elapsed capture duration.
-Allow a confidently complete short utterance to close at the fast tier;
-retain a longer window for incomplete clauses, uncertain ASR and deliberate
-pauses. Test a bounded semantic endpoint classifier off the feed thread only
-if VAD plus reliable partials remain inadequate. Do not use ASR punctuation
-alone as ground truth that someone has finished thinking. Keep PTT as an
-explicit endpoint and compare it with hands-free timing on the same fixture.
-
-The browser's
-[`mic-pcm-worklet.js`](../../web/public/mic-pcm-worklet.js) sends ~50 ms
-frames; `ClientMicSource` repacks into 100 ms capture blocks. A 20-40 ms
-experimental capture cadence could improve endpoint/barge-in resolution,
-but changing `_CHUNK_SECONDS` alone is wrong: several counters hard-code
-0.1 s. Derive thresholds from actual frame duration/sample counts and
-measure CPU, message rate and jitter. Packetization waits overlap; do not
-claim an automatic 50 + 100 ms saving.
-
-**Checks:** extend
-[`test_mic_capture_endpointing.py`](../../tests/test_mic_capture_endpointing.py)
-and [`test_endpointing.py`](../../tests/test_endpointing.py) with short
-answers, names/numbers, hesitations, mid-sentence pauses, trailing negation,
-noise and resumed speech. Compare endpoint lag *and* premature cuts / repair
-turns on replayed audio. A faster threshold that increases interruptions is
-not a successful optimization.
-
-### P24d. Finalize the already-fed audio once; keep speculation reversible
-
-**Priority: validate initial change, then consider memory-only finalization.**
-`process_live_capture` still calls `transcribe(wav_path)` after partial
-capture, but `RealtimeSttService.transcribe` now reads the 16 kHz mono Int16
-WAV once and calls RealtimeSTT's explicit `perform_final_transcription` on
-its float32 samples. It does not re-feed audio through VAD or call blocking
-`text()` for this path. The saved `_last_live_partial` remains only a RAG
-prefetch hint; `final=True` labels prefetch timing, not ASR finality.
-
-Next validate the direct final API against a real recorder, including
-concurrent interim work, cancellation, two consecutive phrases and PTT.
-Then consider passing the phrase buffer in memory rather than writing/
-reading a WAV. The prospective saving is avoiding redundant work, not an
-assumed expensive local WAV write. Partial equality does not establish
-coverage of the final word, negation, number or correction. Persist and
-dispatch only the phrase's confirmed final transcript; measure finalization
-cost and semantic transcription errors together.
-
-[`feed_stt_partial`](../../app/core/session/voice_mixin.py) already schedules
-RAG prefetch, prompt prebuild and background-worker preemption. Verify these
-actually fire after P24a, and instrument final-query hit/staleness rather
-than introducing a second speculative retrieval system. Consider sending
-the existing scheduler speech-start notification on reliable VAD onset so
-short turns need not wait for a >=12-character partial and its polling /
-debounce interval. Keep retrieval text-driven and validate caches against
-the final phrase and current session.
-
-Only later experiment with drafting a reply during likely-final silence.
-An ASR revision/resumed phrase must invalidate the draft. Speculation must
-not execute tools, write memories, consume cues, persist a reply or emit
-answer audio before commitment, and must yield compute to final STT/TTS.
-Use the existing partial-prefetch path first; speculative LLM work can make
-latency worse on shared hardware. Check two-phrase revisions, stale results,
-session switches and exactly-once final dispatch.
-
-### P24e. Release a useful first speech chunk before the whole answer
-
-**Priority: high; comparatively contained.** The reply stream in
-[`turn_runner.py`](../../app/core/session/turn_runner.py) still requires
-`mood is not None` before dispatching TTS. Missing/late reaction tags can
-hold all speech until stream end. Decouple speech readiness from mood
-parsing: use a provisional neutral reaction once a safe text prefix exists,
-then apply a later reaction to subsequent, not already-synthesized, chunks.
-Preserve streaming tag suppression and one set of text offsets so a late
-tag cannot leak, duplicate or erase spoken content.
-
-[`drain_tts_stream_chunks`](../../app/core/session/session_text_utils.py)
-requires a sentence/newline boundary plus >=24 characters or >=4 spaces
-(newline bypasses the size floor). It also waits for the character after
-`.!?` to distinguish a terminator from a decimal or filename. There is no
-elapsed-time or length-only flush for a long unpunctuated first sentence.
-
-Add a first-chunk policy that accepts short *complete* sentences, and a
-bounded wait that can release a safe clause when punctuation is delayed.
-Do not blindly stream every word: tiny clips worsen prosody, add synthesis
-overhead and can starve the next sentence. Retain larger later chunks,
-avoid splitting numbers/abbreviations/tags, and track time to useful content
-as well as time to an acknowledgement. A real timeout needs a timer or
-independent scheduler, not a check that only runs when another token arrives.
-Measure intentional leading pauses in
-[`cadence.py`](../../app/core/voice/cadence.py) separately from stalls;
-do not delete expressive timing globally to improve a benchmark.
-
-**Checks:** missing/split/late reaction tags; "Yes." then a delayed next
-delta; a long clause without a full stop; decimals/filenames; cancellation
-mid-tag; no duplicated/missing words or meta-tag speech. Compare first-chunk
-delay, synthesis time, boundary gaps and listening quality on both engines.
-
-### P24f. Stream synthesis, not merely a completed waveform
-
-**Priority: high potential, larger engineering task.**
-[`PocketTtsService`](../../app/tts/pocket_tts_service.py) generates a complete
-array through `_warm_clip` before `_play_clip` emits it.
-[`ChatterboxService`](../../app/tts/chatterbox_service.py) likewise waits for
-a sidecar `synth` request to finish writing a WAV, then reads and plays it.
-Both stream *transport* in small PCM frames, not incremental synthesis.
-[`TtsQueue`](../../app/core/voice/tts_queue.py) already prefetches the next
-sentence through `ClipCache` / `SynthesisGate`; that helps later sentences
-but cannot hide the first sentence's full synthesis time.
-
-Benchmark short initial text chunks first. Then capability-gate a genuine
-incremental PCM interface where the selected engine/version supports it.
-Do not assume a model's "streaming" label means the current adapter can
-yield usable PCM early. Chatterbox also needs an incremental sidecar
-protocol; swapping WAV I/O for bytes alone does not remove model latency.
-
-[`PcmPlaybackMixin`](../../app/tts/pcm_playback.py) currently calls
-`shape_clip` over the full clip before emission. Loudness, brightness,
-tempo matching and pitch-preserving speed need a shared bounded-lookahead /
-stateful design before early PCM is useful; do not bypass character/quality
-processing in just one engine. Preserve rate, gain, continuity, prefetch
-priority, cancellation and K99 delivery-token ownership. Keep a full-clip
-fallback for engines that cannot stream.
-
-**Checks:** first PCM arrives before synthesis finishes; uninterrupted
-sample/rate ordering and no boundary clicks; abort during synthesis and
-playback; no stale audio after a new turn; interrupted clips never count as
-delivered; no double synthesis; sustained production faster than playback
-on target hardware. Extend
-[`test_tts_queue_prefetch.py`](../../tests/test_tts_queue_prefetch.py) and
-[`test_tts_pacing_parity.py`](../../tests/test_tts_pacing_parity.py), and
-measure first-PCM latency separately from total generation / real-time factor.
-
-### P24g. Tune client buffering only with underrun evidence
-
-**Priority: secondary.** `FIRST_CLIP_IDLE_MARGIN_SEC` in
-[`AudioOutputManager`](../../web/src/audio/AudioOutputManager.ts) is now
-**0.15 s**, not the historical 0.1 s mentioned elsewhere in this backlog.
-It seeds scheduling after idle, not on every seamlessly chained sentence.
-Test a smaller/adaptive lead for stable local playback, retaining the
-current margin when device jitter/underruns demand it. Web Audio output
-and Bluetooth/device latency remain separate from application scheduling.
-
-The server's default `pcm_pre_roll_ms=600` is an immediate burst of queued
-PCM, **not a 600 ms startup sleep**. Reducing it is not an equivalent latency
-win and can reintroduce mobile/network underruns. Preserve the single audio
-owner, ordered frame delivery, cancellation flush, no-overlap chaining and
-foreground context recovery in [`voice-mode.md`](../voice-mode.md).
-Use a small browser replay to compare onset, gap/underrun counts and abort
-behavior on desktop, mobile and a jittered connection before changing defaults.
-
-### P24h. Reduce recovery time after interruption, not just reply onset
-
-**Priority: after STT correctness; coordinates with H7c.**
-[`LiveSession`](../../app/core/session/live_session.py) skips normal capture
-while `_processing` is set and samples mic energy every 50 ms for barge-in.
-The configured sustained-energy threshold defaults to 0.7 s; the idle ring
-retains about 1.5 s. Full transcript capture is not continuous throughout
-STT/LLM processing. A slow abort/finalization can outlast that retained audio.
-After processing clears, capture can resume while the consumer waits for
-client playback drain, so this is not a claim that all overlap is discarded.
-
-Keep one continuous bounded input/finalization owner and explicit floor
-state. Separate a quick, reversible local duck from a confirmed cancellation;
-distinguish acknowledgements from attempts to take the floor. Browser AEC
-already exists, but does not establish echo-safe full duplex on every device.
-Use output-aware VAD/echo tests before lowering the barge threshold. Stamp
-phrase/turn/audio generations so cancelled inference and late callbacks
-cannot revive old speech, and ensure a blocked recognizer releases promptly.
-
-**Checks:** headset and speaker playback; echo/noise versus genuine overlap;
-speech starting during final STT, LLM prefill and TTS synthesis; first-word
-retention; time from interruption onset to speaker silence and to the next
-answer. Preserve P25 audio flush and K99 interrupted-delivery semantics.
-Do not replace confirmed client drain with the server send clock.
-
-### P24i. Benchmark model/prompt cost after exposing the actual waits
-
-**Priority: measurement-driven.** P14 already skips unnecessary tool passes;
-do not describe every turn as two LLM calls. When the pass runs, it is still
-a serial non-streaming round trip before the reply. Compare tool/no-tool
-turns and inspect gate reasons before widening the bypass. Necessary lookup
-and approval behavior must survive; speculative speech cannot state a tool
-result before it arrives.
-
-Measure prompt assembly versus prefill, reasoning before visible output,
-prefix-cache reuse, model residency and worker contention separately. Use
-the existing route/prewarm/cache machinery and P31/P36/P43 rather than a
-parallel voice-only implementation of memory or personality. Benchmark a
-smaller/non-reasoning reply route and a lighter ASR configuration only on
-the same tasks with transcription/answer-quality criteria. The current STT
-constructor uses the same configured model for main and realtime work;
-a smaller partial model may help once callbacks work, but extra model
-residency can also make things worse on a shared GPU. No particular model
-or sub-second target is justified by this source audit alone.
-
-**Recommended sequence:** P24a plus P24b baseline; then P24c/P24d/P24e;
-then P24f if synthesis dominates; P24g only if client lead is material;
-P24h for interruption quality, and P24i guided by measured remaining cost.
-First benchmark corpus: warm/cold short answer, long reflective utterance,
-mid-sentence hesitation, corrected number/negation, tool lookup, long reply,
-and interruption during each major stage. Evaluate p50/p95 useful-answer
-onset, cut-off/error rates, audible gaps and cancel recovery together.
-A native speech model remains a separate experiment: the cascade can mimic
-low-latency turn-taking, but text plus the existing vocal-tone summary does
-not preserve all acoustic information or provide native full-duplex reasoning.
-
----
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[test_stt_lazy_load.py](../../tests/test_stt_lazy_load.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts),
+[client_mic_source.py](../../app/audio/client_mic_source.py).
 
 ## P26. Lip-sync rides the server clock, not the playback clock
 
-**Status: PARTLY SHIPPED (mobile only).** The sketched fix exists
-in the codebase and is wired for **mobile audio-owners**; desktop
-and the Tauri main window still ride the server clock. What's left
-is extending the existing path, not building it.
+**Status: Partial.**
 
-**Motivation.** On the server-clock path, mouth animation is
-driven by server-paced amplitude JSON (`_amplitude_pacer`, 50 ms
-hop = **20 Hz**, not the 30 Hz this entry originally claimed) + a
-network hop + the client's first-clip idle margin
-(`FIRST_CLIP_IDLE_MARGIN_SEC`, 0.1 s) + per-frame smoothing
-(`SMOOTH_FACTOR = 0.35`, ≈150 ms time constant at 60 Hz) — so the
-mouth runs a noticeable, variable beat behind the audio the user
-actually hears, and main-thread jank desyncs it further.
+**Implemented / available:** The client playback analyser drives mobile audio-owner lip-sync.
 
-**What already exists.** `AudioOutputManager` builds
-`AnalyserNode → destination` and RAF-samples RMS at ~60 Hz,
-exposed via `setLipsyncListener`. (Since
-[P48](shipped/perf.md#p48-the-avatar-and-the-audio-graph-ran-flat-out-on-phones)
-that loop only runs while something is playing and stops when the page
-hides, so extending the gate to desktop no longer means adding a
-permanent 60 Hz wakeup there.) The socket hook only routes it
-into the store when `isMobileViewport() && playsAudioHere`, and
-correspondingly ignores the `audio_amplitude` WS frame in that
-case. So both paths are live and mutually exclusive — per client,
-not per install.
+**Remaining:** Extend the same path to desktop/Tauri audio owners, keep WS metering for non-owners
+and retune smoothing with measured lag.
 
-**Key files.**
-[`app/tts/pocket_tts_service.py`](../../app/tts/pocket_tts_service.py)
-(`_amplitude_pacer` ~967-974),
-[`web/src/audio/AudioOutputManager.ts`](../../web/src/audio/AudioOutputManager.ts)
-(analyser ~108-117, RAF sampler ~428-492),
-[`web/src/hooks/useAssistantSocket.ts`](../../web/src/hooks/useAssistantSocket.ts)
-(the mobile-only routing gate ~76-88 and the mirrored
-`audio_amplitude` skip ~615-627),
-[`web/src/live2d/channels/LipsyncChannel.ts`](../../web/src/live2d/channels/LipsyncChannel.ts).
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p26).
 
-**Remaining approach.** Drop the `isMobileViewport()` condition so
-any audio-owning client derives amplitude from its own playback
-tap, and reduce the server pacer to voice-strip-meter duty for
-non-owning windows. Then re-tune `SMOOTH_FACTOR` — 150 ms of
-smoothing was compensating for server-clock jitter that the
-analyser path doesn't have, so the same constant now *adds* lag it
-no longer needs to hide.
+**Source check:** [pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts),
+[useAssistantSocket.ts](../../web/src/hooks/useAssistantSocket.ts),
+[LipsyncChannel.ts](../../web/src/live2d/channels/LipsyncChannel.ts).
 
-**Open questions.** What do non-owning windows (persona window,
-second browser tab) show? They have no local audio to analyse, so
-they still need the WS frames — meaning the pacer stays, and the
-choice is per-client rather than a protocol removal.
+<a id="p30-raise--disable-the-memorymax_memories-cap"></a>
 
-**Effort.** Small (extend the gate) + Small (re-tune smoothing),
-down from Medium now that the analyser path exists.
+## P30. Memory mirror reload and growth costs
 
----
+**Status: Partial.**
 
-## P30. Raise / disable the `memory.max_memories` cap
+**Implemented / available:** Tier caps default to zero/no eviction, VectorIndex speeds search/dedupe
+and ANN maintenance exists.
 
-**Status: the cap is gone — `max_memories`, `scratchpad_cap` and
-`archive_cap` all ship at `0`, meaning "never evict".** What is
-left of this entry is the part that was previously guesswork: what
-a growing corpus actually costs, and which three things to fix
-when it starts to hurt. Those are now measured rather than
-estimated, and the headline is that **none of them is the
-database**.
+**Remaining:** Remove decay's full mirror reload if measured worthwhile; stream reload instead of
+fetchall and evaluate mirror memory/LRU architecture. SQLite query speed was not the original
+bottleneck.
 
-**Why the cap went rather than moved.** `prune()` deletes rows; it
-does not demote them. So a cap is a forgetting policy wearing a
-performance guard's clothes, and every reason to keep it was a
-performance reason. The original one — the old topic graph's
-`O(n²)` in-process re-clustering on every read — is gone: the
-graph is persisted, incrementally maintained, and batch-refits
-through LanceDB ANN. `0` is a real sentinel rather than a large
-number because every cap setting clamps to a floor of 50 to
-survive a typo, and that floor is exactly what makes `max(50, n)`
-unable to express "no cap".
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p30).
 
-### The measured curve
-
-Real rows (real embeddings, real content lengths) duplicated in a
-copy of the live database, so this is a curve and not an
-extrapolation from one point. `search` is shown before and after
-fix 2 below:
-
-| rows | mirror load | resident | peak | `decay()` | `search()` was → now | plain SQL scan |
-|---|---|---|---|---|---|---|
-| 1,829 (today) | 0.08 s | 11 MB | 20 MB | 0.10 s | 5.6 → 0.1 ms | 0.7 ms |
-| 10,000 | 0.42 s | 61 MB | 108 MB | 0.64 s | 28.9 → 0.5 ms | 0.8 ms |
-| 20,000 | 0.85 s | 122 MB | 218 MB | 1.28 s | 60.8 → 1.1 ms | 1.2 ms |
-| 50,000 | 2.16 s | 305 MB | 545 MB | 3.20 s | 153.6 → 2.8 ms | 2.5 ms |
-
-Everything is linear in row count. Growth is running at ~450
-memories/week and rising, which puts 20k inside a year and 50k
-inside three.
-
-*Measurement note:* an earlier version of this table put the load
-at 14.7 s for 50k. That column had been timed with `tracemalloc`
-running, which is what produced the memory figures either side of
-it and which inflates allocation-heavy code several-fold. The
-memory columns are sound; the load column is the re-measured one.
-
-**SQLite is not in the picture and Postgres would not help.** A
-full aggregate over 50k memories is 2.5 ms; the whole database is
-58 MB. The corpus is a few tens of thousands of small rows read
-by one process — nowhere near the point where the relational
-engine is the constraint. Moving to Postgres would add a service
-to operate and move none of the numbers above, because all of
-them are Python-process costs. The one honest argument for it is
-pgvector replacing LanceDB, and that trade should be judged on
-the vector story, not on the row count.
-
-This holds for the whole database, not just this table: the
-fastest-growing tables are 25× this one and stay flat to 5M rows
-under the same test — see
-[P49](#p49-the-telemetry-ledgers-are-the-fastest-growing-tables).
-
-### The three things to fix — two done
-
-1. ~~**Embeddings are N separate arrays instead of one matrix.**~~
-   **Shipped.** At 20k rows the vectors are 81.9 MB either way, so
-   this was never about the bytes — it was that `search()` and
-   `add()`'s dedupe pass were per-row Python cosine loops over
-   them. Both now go through
-   [`VectorIndex`](../../app/core/memory/vector_index.py), one
-   contiguous `(rows, dim)` float32 matrix kept beside the mirror:
-   **search 153.6 → 2.8 ms and dedupe 54.2 → 2.8 ms at 50k**.
-   Dedupe is the one that mattered, since it ran on every write
-   rather than on a secondary read path. Deletion is a tombstone,
-   because compacting a row out of a matrix would make `prune()`
-   quadratic.
-2. **`decay()` re-reads the whole table.** It does the bulk
-   `UPDATE` in SQL and then calls `_reload_mirror()`, so a
-   scheduled decay costs a full disk re-read of every row and
-   BLOB: 3.2 s at 50k, which is most of the 2.16 s load plus the
-   update. The new salience is already computable in process;
-   updating the mirror in place makes this ~free. **Still open**,
-   and now the largest remaining item.
-3. **`_reload_mirror` uses `fetchall()`.** Peak is 1.8× resident
-   (218 MB vs 122 MB at 20k) purely because every row tuple and
-   BLOB is materialised before the first `Memory` is built.
-   Iterating the cursor removes the doubling for a few lines'
-   change, and peak is what decides whether a load survives, not
-   average. **Still open**, and cheap.
-
-With those two done, 50k rows costs ~2 s at startup, ~305 MB
-resident, and nothing measurable per query. RSS is then the only
-thing that still grows, and 305 MB is small next to the STT/TTS
-weights (P27/P28).
-
-### The MemoryRetriever question is now separate
-
-`MemoryStore.search` is not on the prompt path — retrieval goes
-`RagRetriever` → `RagStore`. `MemoryRetriever` is constructed,
-handed to `PromptAssembler`, and never invoked. Making `search`
-fast has removed the urgency, but the dead wiring is still worth
-either deleting or connecting on purpose.
-
-### Still-open architectural fork
-
-Is the mirror worth keeping once retrieval is fully ANN-backed, or
-should it become a bounded LRU of the hot set (equivalently: evict
-the `archive` tier and read it from LanceDB on demand)? Fix 1 and
-fix 2 both get cheaper to abandon later, so neither forecloses
-this. Overlaps with the F10 topic-graph utilisation cluster
-([`awareness.md`](awareness.md)).
-
-Unrelated but adjacent: `data/` is 1.37 GB, of which 1.09 GB
-(26,766 files) is `lancedb-20260813.bak` from the version upgrade
-and ~113 MB is stale `chat_sessions.db` backups. Nothing to design
-around, just worth deleting once the upgrade is trusted.
-
-**Key files.**
-[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
-(`_normalize_cap`, `prune`, `decay`, `_reload_mirror`, `search`),
-[`app/core/infra/memory_settings.py`](../../app/core/infra/memory_settings.py)
-(`_parse_tier_cap`),
-[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
-(`ensure_vector_index`),
-[`config/default.json`](../../config/default.json).
-
-**Effort.** Small (fix 1) → Small (fix 3) → Medium (fix 2, if
-`search` is kept at all) → Large (mirror eviction / LRU rework).
-
----
+**Source check:** [vector_index.py](../../app/core/memory/vector_index.py),
+[memory_store.py](../../app/core/memory/memory_store.py),
+[memory_settings.py](../../app/core/infra/memory_settings.py),
+[rag_store.py](../../app/core/rag/rag_store.py).
 
 ## P31. Audit + trim the baseline system prompt (~25-30k resting floor)
 
-**Status: (a) shipped, so this is no longer a guess.** Sketch item (a)
-— the measurement — landed as the `get_prompt_block_costs` MCP tool and
-`PromptTelemetry.block_chars`; see
-[`shipped/perf.md`](shipped/perf.md#p31a-get_prompt_block_costs--per-block-prompt-cost-weighted-by-tier).
-It ranks blocks by tokens × the tier's cache-miss probability, and
-reports empty blocks as `0` rather than omitting them, so (c)'s
-content-gating candidates surface directly.
+**Status: Partial.**
 
-**Correction, and it inverts this item's conclusion.** The figure recorded
-here was "the persona (~78k chars, ~19.5k estimated tokens) dominates
-everything else combined — so (b), the persona trim, is where the value
-is". Both halves were wrong. A live re-measure on 2026-08-04 puts the
-persona at **35,938 chars / 8,103 tokens** — the old char count was larger
-than the entire system prompt, so it cannot have been the persona alone.
-More importantly, the persona sits in `T0_stable`, and now that the
-prefix-stability work has the early tiers actually caching, `effective_tokens`
-ranks it **third**:
+**Implemented / available:** Per-block tier-weighted cost telemetry and earlier persona trim exist;
+the historical claim that persona dominates cost was corrected.
 
-| Block | Tier | Tokens | Effective |
-| --- | --- | --- | --- |
-| `relevant_context` | T3_rag | 3,378 | **2,027** |
-| `handling_notes_block` | T6 | 1,216 | **1,216** |
-| `persona` | T0 | 8,103 | 405 |
+**Remaining:** Remeasure the actual route/cache, then trim duplicate grammar, gate empty blocks and
+audit tier hygiene where evidence warrants. P43/P52 own volatile-tail/context work.
 
-A cached T0 block is billed at the cache discount, so the biggest block in
-the prompt is not the most expensive one. The remaining value is in the
-volatile tail — the T3 retrieval budget and the T6 detectors — which is
-P42 + P43 below rather than a persona pass. Re-run
-`get_prompt_block_costs` before acting on any number in this entry; the one
-above is the only measured one.
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p31).
 
-**Motivation.** On a *fresh* session with a single message the
-system prompt already measures ~25-30k tokens — that's the resting
-floor every turn pays before a word of history or RAG lands, and
-it's the dominant term in context occupancy now that the tool-pass
-double-count is fixed (see below). The floor is legitimate — it's
-the persona plus the full inner-life stack (K-series detectors,
-affect / mood shell, world, relationship, day-colour, circadian,
-grounding line, arc/agenda/goals, prosody + reaction grammar,
-etc.) — but it has never been *audited* block-by-block for
-value-per-token. Some blocks render every turn but only matter
-occasionally (K27 day-colour, K3 routines, anniversary windows);
-some persona sections may have grown redundant with the tag-
-grammar addenda; and OpenAI prompt caching only discounts the
-*stable prefix*, so a bloated-but-stable T0-T1 is cheap-per-turn
-while a bloated *volatile* T5-T6 pays full price every turn. A
-principled trim (or lazy-render) of the heaviest volatile blocks
-is likely the single biggest lever on both per-turn cost and
-effective context headroom.
+**Source check:** [prompt_assembler.py](../../app/core/session/prompt_assembler.py),
+[inner_life_providers_mixin.py](../../app/core/session/inner_life_providers_mixin.py),
+[prompt_support.py](../../app/core/session/prompt_support.py).
 
-**Context (why now).** The recent double-count fix means the
-occupancy readout is finally *truthful*: `context_prompt_tokens`
-(largest single call) drives the widget + compaction trigger, not
-the summed tool+stream `prompt_tokens`. So the ~25-30k is now
-visible as the real floor rather than being masked by the ~2x
-tool-turn inflation — making this the obvious next lever. The
-per-block telemetry from P2 (`PromptTelemetry` already carries
-`affect_tokens` / `circadian_tokens` / `profile_tokens` / … per
-inner-life block, plus `provider_ms` / `slowest_provider`) means
-the measurement surface for the audit already exists.
+<a id="p32-concept-layer--worker-budget--unbounded-graph-growth"></a>
 
-**Key files.**
-[`app/core/session/prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(`assemble_with_budget`, the `_PROMPT_BLOCK_TIERS` T0→T6 ladder,
-the `if block: system_parts.append(block)` cascade),
-[`app/core/session/inner_life_providers_mixin.py`](../../app/core/session/inner_life_providers_mixin.py)
-+ the `inner_life_part*.py` / `post_turn_mixin.py` providers (the
-per-block renderers),
-[`app/core/session/prompt_support.py`](../../app/core/session/prompt_support.py)
-(`PromptTelemetry` per-block token fields — the audit's ruler),
-[`data/persona/aiko_companion.txt`](../../data/persona/aiko_companion.txt)
-(the largest single T0 block; candidate for redundancy trimming
-against the `_SPEECH_GRAMMAR_ADDENDUM` in `prompt_assembler.py`).
+## P32. Concept maintenance and history growth
 
-**Sketched approach.** (a) **Measure** — **done**, see the status note
-above: `get_prompt_block_costs` ranks every block by tokens × tier, so
-the heaviest *volatile* (T5-T6) blocks — the ones paying full price past
-the cache prefix — are visible in one MCP call. (b) **Persona trim** —
-diff the persona's tag/grammar guidance against
-`_SPEECH_GRAMMAR_ADDENDUM` and collapse duplication (a persona-
-trim pass already shipped once; this is the follow-up now that
-more K-blocks exist). (c) **Lazy-render the occasional blocks** —
-several blocks render every turn but only carry signal rarely
-(day-colour tagline, routines, anniversary, upcoming-horizon when
-empty); gate them to render only when they actually have content,
-so an empty block costs 0 tokens instead of a boilerplate header.
-(d) **Tier hygiene** — confirm no volatile block accidentally
-sits in the stable prefix inflating cache-miss cost (cross-check
-against `_PROMPT_BLOCK_TIERS`).
+**Status: Partial.**
 
-**Open questions.** What's the floor we're willing to accept —
-is ~15k a realistic target without losing personality fidelity,
-or does the K-series richness genuinely need ~25k? Which blocks
-are safe to make *conditional* vs. which provide value every turn
-even when terse (affect, relationship, persona core)? Does moving
-occasional blocks behind a content-gate risk them silently never
-firing (the same audit-before-splitting caution as P16)?
+**Implemented / available:** Lifecycle work is bounded/batched and synthesis participates in demand
+scheduling; the old interval-only readiness claim is stale.
 
-**Effort.** ~~Small (a, measurement tool)~~ → Medium (b/c, per-block
-trim + lazy-render, one block family at a time) → the persona
-diff is a focused afternoon.
+**Remaining:** Measure actual scheduler contention and graph growth; define snapshot/event thinning
+and any remaining dirty-work refinements without discarding durable history. P34/P49 own retention
+decisions.
 
----
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p32).
 
-## P32. Concept layer — worker budget + unbounded graph growth
-
-**Motivation.** The concept layer (see
-[`concepts.md`](concepts.md), L-series) adds standing cost the P-series
-should size up front rather than discover in production. Three lines:
-(a) the **synthesis proposer** (L2) is another worker-LLM job competing
-for idle windows on the `IdleWorkerScheduler`; (b) the **lifecycle
-engine** (L3, incl. the L15/L16/L17 passes) walks the `concept_edges`
-graph every cycle — O(edges) work that grows as concepts accrue; (c)
-**snapshots** (L17/L19) and edges grow **without bound** by design (the
-autobiography is meant to be permanent), so storage + scan cost climb
-forever if left unmanaged.
-
-**Status per line (re-audited).**
-- (a) **Still true.** `ConceptSynthesisWorker` registers on the scheduler
-  at a 1800 s interval and issues `chat_stream` calls with up to 4096
-  tokens. Its `is_ready` is interval-only; the dirty check lives *inside*
-  `run()` (kv signatures short-circuit the LLM when nothing moved), so
-  the worker still occupies an idle slot to decide it has nothing to do.
-  The broader contention picture is now [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget).
-- (b) **No longer true.** L3 does *not* walk the graph. Each tick it
-  takes `list_stalest(batch_size)` (default 100) over the in-memory
-  concept set and does bounded per-concept SQL (`evidence_of` /
-  `edges_into` / `dependents_of`), so the cost is
-  O(batch × edges-per-concept) and full coverage happens over
-  `ceil(N/100)` ticks. `concept_edges` is already indexed on both
-  endpoints. What the sketch asked for is effectively in place — except
-  that it is round-robin rather than *dirty*-triggered, so a quiet graph
-  still pays a tick's worth of work forever.
-- (c) **Still true, and the sharpest edge is `concept_events`.** It is
-  strictly append-only — `ConceptEventStore` has `add` plus reads, no
-  delete or thin path — and L3 can emit several rows per concept per tick
-  (status change + `reinforced` + `confidence_sample` + `plasticity_shift`).
-  `concept_edges` only shrinks on concept/memory delete, consolidation
-  merge, or the integrity sweep. Note "snapshots" needs no thinning today
-  for a different reason than assumed: `concept_snapshot.py` builds
-  ephemeral API payloads, not a stored table. Folded into
-  [P34](#p34-unbounded-tables-messages-lance-mirror-concept_events).
-
-**Key files.**
-[`idle_worker_scheduler.py`](../../app/core/proactive/idle_worker_scheduler.py)
-(where the proposer + lifecycle engine register + their cadence),
-[`concept_lifecycle_worker.py`](../../app/core/concepts/concept_lifecycle_worker.py)
-(the batched round-robin, ~L219-220),
-[`concept_event_store.py`](../../app/core/concepts/concept_event_store.py)
-(append-only; no thinning API),
-the L1 `ConceptStore` (`concepts` + `concept_edges` tables),
-`app/mcp/server.py` (the L26 trace is also the perf-observability hook).
-
-**Sketched approach.** (a) **Cadence + budget** — run the proposer on a
-low, change-triggered cadence (weekly / on material cluster change, per
-L2), never every idle tick, and count it against the same idle-window
-budget as the other LLM workers (P8 queue visibility applies). Lifting
-its dirty check from `run()` up into `is_ready()` would also stop it
-consuming a slot to decide it has nothing to do. (b) **Bounded
-graph walks** — **done** via the batched round-robin above; the
-remaining refinement is making it dirty-triggered so an unchanging graph
-costs nothing. (c) **Snapshot thinning** — keep recent
-self-snapshots dense and **thin older ones** (monthly → quarterly →
-yearly) so L19 stays traversable without linear growth; retired concepts
-archive rather than delete (L19 durability) but drop out of the hot scan
-set. For `concept_events` specifically the cheapest honest thinning is
-"keep every status transition forever, thin the `confidence_sample` /
-`reinforced` noise past N months" — those are the high-volume, low-value
-rows. (d) **Hot-path guarantee** — nothing here runs on the turn stream;
-the only per-turn concept cost is L23 selection over the small `active`
-set, which reuses the shared user-text embed (P15).
-
-**Open questions.** Snapshot thinning schedule? A cap on `active` concepts
-(soft-merge via L20 when it's exceeded) to bound per-turn selection? Does
-the lifecycle engine share an idle slot with the memory decay/promotion
-workers or contend with them?
-
-**Effort.** Small-Medium (mostly cadence + indexing + a thinning sweep;
-cheap if designed in, expensive to retrofit once the graph is large).
-
----
+**Source check:** [idle_worker_scheduler.py](../../app/core/proactive/idle_worker_scheduler.py),
+[concept_lifecycle_worker.py](../../app/core/concepts/concept_lifecycle_worker.py),
+[concept_event_store.py](../../app/core/concepts/concept_event_store.py).
 
 ## P33. Inner-life providers walk the whole memory mirror every turn
 
-**Status: (a) shipped and the correctness bug fixed; (b)/(c) open.** The
-inline "**Fixed**" markers below are current. Tests:
-`tests/test_memory_tiers.py::TestKindFilteredListing`.
+**Status: Partial.**
 
-**Motivation.** P17 fixed the worst instance (the K22 callback
-detector's `list_recent(10_000)`) but the *pattern* is still spread
-across the provider set: a provider needs "the few rows of kind X"
-and gets there by copying the entire mirror. Two shapes, both
-per-turn:
+**Implemented / available:** Kind filtering precedes sorting in list_top/list_recent, with
+correctness regressions.
 
-- **Copy + double sort.** `MemoryStore.list_top()` / `list_recent()`
-  used to do `list(self._mirror.values())` and then sort the whole
-  thing, applying the `kind` filter *after* the copy. At the ~16k-row
-  ceiling (P30) that's a 16k-element sort to return 3 rows. **Fixed:**
-  both now filter by `kind` inside the lock, before the sort.
-- **Post-filtering the wrong rows** — a correctness bug, not a perf one.
-  Callers asked for the top N of *any* kind and filtered to their kind in
-  Python, so once N higher-salience rows of other kinds existed the
-  caller silently got nothing. **Fixed** in the four single-kind sites:
-  `_render_catchphrase_block` (running jokes stopped surfacing at all),
-  `_known_catchphrases` and `CatchphraseMiner._existing_catchphrase_phrases`
-  (both K80 dedupe guards — they could re-bless a bit already recorded),
-  and `_top_inner_life_contents` (the dream pass's seed rows). **Still
-  open:** `relationship_pulse._collect_bullets` and
-  `prepared_nudge._collect_candidates` have the same shape over a *set* of
-  kinds, which wants a `list_top(kinds=…)` variant rather than a one-line
-  change.
-- **Full-kind walks.** `iter_by_kind` is cheap per row but unbounded
-  in count: K9 curiosity seeds, K29 opinion injection
-  (`iter_by_kind("self")` plus an embed), and F9 knowledge grounding
-  (concatenates **every** `knowledge` + `curiosity_finding` row, then
-  cosine-scans) all run on qualifying turns.
+**Remaining:** Index genuinely unbounded iter_by_kind walks and replace whole-knowledge
+concatenation with bounded retrieval; keep add/update/delete/reload coherence.
 
-Individually each is single-digit milliseconds today. The reason to
-track it is P30: these are exactly the sweeps that become the new wall
-the moment the corpus cap lifts, and they're invisible in telemetry
-because `provider_ms` attributes them to the *provider*, not to the
-mirror.
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p33).
 
-**Key files.**
-[`app/core/memory/memory_store.py`](../../app/core/memory/memory_store.py)
-(`list_top` / `list_recent` ~L1585-1642, `iter_by_kind` ~L1644),
-[`app/core/session/inner_life_part3.py`](../../app/core/session/inner_life_part3.py)
-(K29 ~L112-120, curiosity seeds ~L1256-1272),
-[`app/core/session/inner_life_part2.py`](../../app/core/session/inner_life_part2.py)
-(F9 knowledge grounding ~L116-118).
-
-**Sketched approach.** (a) Make the cheap fix universal: filter by
-`kind` *inside* the lock before sorting, so a kind-scoped `list_top`
-sorts only candidate rows. (b) For the genuinely unbounded walks, add
-a kind-scoped index to the mirror (`dict[str, set[int]]` maintained on
-add/delete/update) so `iter_by_kind` is O(matching) rather than
-O(total). (c) For F9, stop concatenating the whole knowledge corpus —
-it should go through RAG ANN like every other retrieval path.
-
-**Effort.** Small (a) → Small-Medium (b, one index to keep coherent
-across add/update/delete/reload) → Medium (c, changes retrieval
-semantics).
-
----
+**Source check:** [memory_store.py](../../app/core/memory/memory_store.py),
+[inner_life_part3.py](../../app/core/session/inner_life_part3.py),
+[inner_life_part2.py](../../app/core/session/inner_life_part2.py).
 
 ## P34. Unbounded tables: `messages`, Lance mirror, `concept_events`
 
-**Motivation.** `memories` has caps and `prune()`; `beliefs` has
-`prune_to_cap`; `task_events` has a 30-day cleanup worker. Three of
-the highest-volume stores have **no** global bound:
+**Status: Open implementation.**
 
-- **`messages`** — deletable only per session (`clear_messages` /
-  `delete_session`). At ~2 rows per turn this is the fastest-growing
-  table in the app, and several queries scan it by time (see P10 and
-  the new indexes).
-- **The LanceDB `messages` mirror** — `MessageIndexer` indexes every
-  message and backfills all sessions on startup, so it tracks SQLite
-  row-for-row, each with a vector.
-- **`concept_events`** — append-only by construction (`add` plus
-  reads, no delete API), and L3 emits several rows per concept per
-  tick including the high-volume `confidence_sample` /
-  `reinforced` pair. See P32(c).
+**Implemented / available:** Transcript/session deletion and task/activity cleanup exist;
+message/concept history remains durable.
 
-None of this is urgent at current scale; the point is that "grows
-forever" is a design decision that should be made deliberately rather
-than by omission, and the retention story differs per table (chat
-history is arguably *meant* to be permanent; `confidence_sample` rows
-are noise after a few months).
+**Remaining:** Decide retention separately for authoritative messages, the Lance mirror and
+concept-event noise. Add reconciled index filtering/thinning only with explicit
+preservation/deletion semantics.
 
-**Key files.**
-[`app/core/infra/chat_database.py`](../../app/core/infra/chat_database.py)
-(`messages` schema + the per-session delete paths),
-[`app/core/rag/message_indexer.py`](../../app/core/rag/message_indexer.py)
-(~L283-309 startup backfill),
-[`app/core/concepts/concept_event_store.py`](../../app/core/concepts/concept_event_store.py),
-[`app/core/tasks/task_cleanup_worker.py`](../../app/core/tasks/task_cleanup_worker.py)
-(the existing retention worker to model a sweep on).
-
-**Sketched approach.** Decide a posture per table rather than a
-global policy. For `messages`, keep everything but confirm the time-
-range queries stay indexed as it grows. For the Lance mirror,
-consider indexing only messages above a length/substance threshold —
-"ok" and "haha" cost a vector and are never a useful retrieval hit.
-For `concept_events`, a thinning sweep that keeps all status
-transitions and drops sampling noise past N months, modelled on
-`task_cleanup_worker`.
-
-**Open questions.** Does anything read `confidence_sample` rows older
-than the L17b window? If not, thinning is free. Does dropping short
-messages from the Lance mirror hurt K-time verbatim recall (which
-reads SQLite, not Lance — probably not)?
-
-**Effort.** Small (per-table decision + one sweep worker) → Medium
-(if the Lance indexing threshold needs backfill reconciliation).
-
----
-
-## P35. The Lance ANN index is built once, never refreshed
-
-**Status: shipped — and the entry was understating it.** This was
-filed as "built once, never refreshed". Checking
-`list_indices()` against the live store found `[]` on **every**
-table: the index had never been built at all, and every retrieval
-in the app's history has been a flat scan.
-
-**Why it never fired.** `ensure_vector_index` carries its own
-`min_rows=256` threshold, which the corpus passed long ago. But
-its only caller was `topic_graph.rebuild()`, guarded by
-`_ANN_REBUILD_THRESHOLD = 2000` — a threshold about whether
-*clustering* should go dense or ANN, which has nothing to do with
-whether an index is worth having. The corpus sat at ~1,900
-memories, so the guard held and the index was never requested.
-Two unrelated thresholds, and the stricter one silently owned the
-decision.
-
-**What shipped.**
-- `ensure_vector_index` now covers `memories` **and** `messages`,
-  and returns a per-table report (`rows` / `indexed` /
-  `unindexed` / `action`) instead of a bool, so "is it there and
-  is it fresh?" is answerable rather than inferable — sketch (b)
-  and (c).
-- **The refresh is the substantive part.** Lance does not add new
-  rows to an existing IVF_PQ index; they accumulate as *unindexed*
-  rows that every query scans on top of the ANN probe. An index
-  built once therefore decays back into a flat scan at exactly the
-  rate the corpus grows, invisibly — results stay correct, only
-  slower. `ensure_vector_index` rebuilds with `replace=True` once
-  more than `refresh_ratio` (20%) of rows are unindexed.
-- Called from `RagMaintenanceWorker.run()`, after compaction:
-  same trigger (writes since last pass), same exclusive lock
-  already held, and the rebuild sees the compacted layout rather
-  than indexing fragments about to move — sketch (a).
-
-**Measured on a copy of the live store:** the worker builds both
-indexes in 1.3 s; memories search 11.6 → 5.4 ms (2.15×), messages
-15.7 → 5.5 ms (2.85×); a second run reports `fresh` and does
-nothing. The multiple grows with the corpus, since the flat side
-is linear and the ANN side is not.
-
-`documents` is deliberately excluded: it is empty, and
-`min_rows` would skip it anyway.
-
-**Key files.**
-[`app/core/rag/rag_store.py`](../../app/core/rag/rag_store.py)
-(`ensure_vector_index`, `_ensure_one_index`, `_index_stats`),
-[`app/core/rag/rag_maintenance_worker.py`](../../app/core/rag/rag_maintenance_worker.py)
-(the call site, after `optimize()`).
-
-**Left open.** The 2000-row `_ANN_REBUILD_THRESHOLD` call in
-`topic_graph.rebuild()` is now redundant but harmless — it
-requests an index that already exists. Worth deleting when that
-file is next touched.
-
----
-
-## P36. Idle-worker LLM pile-up under a 6 s soft budget
-
-**Motivation.** P8 gave the idle scheduler queue visibility and a
-multi-worker drain; it did not bound how much LLM work can queue up
-behind it. There are now **~55 worker registrations**, of which
-**~22-28 make LLM calls** when they fire (concept synthesis and
-consolidation, fact-checker, curiosity, knowledge, memory conflict
-detector, consolidation, belief, promise, topic label + digest, goal,
-pre-thought, thread resummary, curiosity seed, follow-up, diary,
-hobby, room evolution, associative wander, knowledge-map reflection,
-the L3-triggered belief reviser, …). They drain **sequentially**
-(concurrency 1) against a **6 s** soft per-tick budget with
-`idle_worker_max_per_tick: 0` (unlimited), and the anti-starvation
-rule runs at least one due worker even when it blows the budget. A
-single worker generation on a local 9B model can exceed the whole
-tick budget on its own.
-
-Each worker self-limits (hourly/daily caps, dirty flags, batch
-sizes), which is why this works in practice. But there is no global
-"LLM seconds per hour" ceiling, and the failure mode is invisible:
-workers that are perpetually deferred just never run, and nothing
-says so. Related: the default config points `main_chat` **and**
-`worker_default` at the same local model, so worker generations and
-the user's turn contend for the same Ollama slot. The
-`LlmPriorityGate` (`worker_llm_gate_enabled` /
-`worker_llm_max_concurrency`) mitigates this between workers, but a
-worker generation already in flight still delays the next user turn
-server-side.
-
-**Key files.**
-[`app/core/proactive/idle_worker_scheduler.py`](../../app/core/proactive/idle_worker_scheduler.py)
-(~L302-367, the ranked drain + budget skip + anti-starvation rule),
-[`app/core/session/idle_workers_init_mixin.py`](../../app/core/session/idle_workers_init_mixin.py)
-and [`app/core/session/speaking_workers_init_mixin.py`](../../app/core/session/speaking_workers_init_mixin.py)
-(the registration sites),
-[`app/llm/llm_gate.py`](../../app/llm/llm_gate.py)
-(the existing priority semaphore),
-[`config/default.json`](../../config/default.json)
-(`idle_worker_budget_ms` ~L458, `idle_worker_max_per_tick` ~L459).
-
-**Sketched approach.** (a) Report starvation: track per-worker
-"consecutive ticks deferred" and surface the worst offenders in
-`get_idle_worker_stats`, so "this worker hasn't run in two days" is
-visible. (b) An LLM-specific budget — at most N worker generations
-per tick / per hour, independent of the wall-clock tick budget, since
-one generation's cost is much lumpier than the 6 s estimate assumes.
-(c) Cheapest of all: move interval-only `is_ready` checks that are
-really dirty checks (P32(a)) into `is_ready`, so nothing spends a
-slot to conclude it has no work.
-
-**Open questions.** Is the right ceiling wall-time or generation
-count? Should the user's turn be able to *preempt* an in-flight
-worker generation (Ollama has no cancel-and-requeue, so this may mean
-not starting one when a turn looks imminent — the speaking-window
-scheduler already reasons about this).
-
-**Effort.** Small (a), Small-Medium (b), Small (c).
-
-### Status: phase 1 shipped — demand-driven scheduling
-
-Answered the open questions as: **neither ceiling alone**, and **no
-preemption**.
-
-- *Ceiling.* Wall-time, but split in two. The 6 s budget was never
-  really about time — it was about one local Ollama serving both the
-  chat path and the workers. So `idle_worker_tick_budget_ms` now governs
-  only the **LLM lane**, sized by a `classify_contention()` grade
-  (`none` / `queueing` / `swapping`) derived from comparing the
-  `main_chat` and `worker_default` routes. Everything else draws on a
-  separate **compute lane** that has no GPU to protect. Compute drains
-  first within a tick, so cheap arithmetic never queues behind a
-  generation. See [`llm_contention.py`](../../app/core/proactive/llm_contention.py).
-- *Preemption.* Rejected. A returning message queues behind whatever is
-  running rather than cancelling it, which made the in-flight worker's
-  duration the user's real worst-case wait. That exposed a bug in the
-  pre-existing anti-starvation rule: `ran >= 1` exempted the first
-  worker of every tick from the budget entirely, so a worker with a 45 s
-  average was admitted on every tick and `tick_budget_ms` bounded only
-  slots two onward. The exemption is now depth-aware — at `just_left`
-  slot 1 must fit its lane, from `away` on it need not — with two escape
-  valves (a never-run worker has no measured cost to budget against, and
-  three heartbeats overdue admits regardless).
-- *(a) starvation reporting* — shipped as `last_admit_reason` /
-  `last_pressure` / `last_urgency` / `last_lane` per worker in
-  `get_idle_workers_status`, plus a new `probe_idle_worker_demand` tool
-  that asks every worker what it thinks it has to do right now.
-- *(c) dirty checks out of `run()`* — shipped as the `demand()` probe,
-  which is the general form: a worker reports pending work *and* whether
-  servicing it needs the LLM, and the scheduler ranks by urgency (70%
-  pressure, 30% staleness) instead of by age. `interval_seconds` is
-  demoted from cadence to heartbeat.
-
-Nine workers migrated: the five world ones (`away_activity`,
-`garden_visit`, `plant_growth`, `circadian_settle`, `room_evolution`)
-and four thinking ones (`concept_lifecycle`, `concept_synthesis`,
-`concept_consolidation`, `memory_decay`). The remaining ~40 keep their
-old interval behaviour byte-for-byte, and
-`idle_worker_pressure_enabled: false` restores the old path wholesale.
-
-The mechanism itself is documented in
-[`docs/idle-workers.md`](../idle-workers.md); follow-ups are
-[P44](shipped/perf.md#p44-migrate-the-remaining-idle-workers-to-demand),
-[P45](shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
-and [P46](#p46-parallel-compute-lane-drain).
-
----
-
-## P37. Residual per-token and per-mic-frame React re-renders
-
-**Status: SHIPPED** (bucketed stream re-pin, `audioLevel` at the
-leaves, Virtuoso `itemContent` / Header / Footer identity). See
-[shipped/perf.md](shipped/perf.md#p37-residual-per-token-and-per-mic-frame-react-re-renders).
-
----
-
-## P38. Live2D channels allocate a store snapshot several times per frame
-
-**Status: SHIPPED.** One cached snapshot per engine tick; attach and
-dispatch stay live. See
-[shipped/perf.md](shipped/perf.md#p38-live2d-channels-allocate-a-store-snapshot-several-times-per-frame).
-
----
+**Source check:** [chat_database.py](../../app/core/infra/chat_database.py),
+[message_indexer.py](../../app/core/rag/message_indexer.py),
+[concept_event_store.py](../../app/core/concepts/concept_event_store.py),
+[task_cleanup_worker.py](../../app/core/tasks/task_cleanup_worker.py).
 
 ## P39. Concept snapshot + quality report N+1 the evidence edges
 
-**Status: still open, but no longer the thing that hurts.** Both callers
-are now bounded rather than batched —
-[P47](shipped/perf.md#p47-get-apiconcepts-returned-the-whole-graph-untruncated)
-pages the snapshot so evidence resolves for ~50 rows instead of all 822,
-and the quality report loads on request rather than on every visit to the
-tab. The N+1 is unchanged; N is. `evidence_for_many` is still the right
-fix and is now a tidy-up rather than a UI-latency one. The pairwise
-embedding walk in the quality report is the remaining real cost, and it
-is the half this entry already called out as the larger question.
+**Status: Open implementation.**
 
-**Motivation.** `build_concept_snapshot` loops `store.all()` and calls
-`store.evidence_of(concept_id)` inside the loop — one SQL query per
-concept, plus label resolution. `build_concept_quality` repeats the
-pattern and adds an **O(n²) pairwise embedding comparison** within
-each (kind, subject) group. Neither is on the turn path (they back
-`GET /api/concepts`, the settings UI, and the MCP debug tools), so
-this is a UI-latency and debug-ergonomics issue rather than a hot-path
-one — but it scales with concept count, which is the number the
-L-series is explicitly trying to grow.
+**Implemented / available:** Snapshot pagination and on-demand quality loading bound N; evidence
+resolution remains N+1.
 
-**Key files.**
-[`app/core/concepts/concept_snapshot.py`](../../app/core/concepts/concept_snapshot.py)
-(~L139-153),
-[`app/core/concepts/concept_quality.py`](../../app/core/concepts/concept_quality.py)
-(~L239-242 the N+1, ~L454-467 the pairwise walk),
-[`app/core/concepts/concept_store.py`](../../app/core/concepts/concept_store.py)
-(`evidence_of` ~L749-754 — add a batch sibling).
+**Remaining:** Add batched evidence lookup and measure the quality report's pairwise embedding cost
+before optimizing it.
 
-**Sketched approach.** Add `evidence_for_many(concept_ids)` returning
-a `dict[int, list[Edge]]` from a single `WHERE dst_id IN (…)` query
-(chunked to stay under SQLite's parameter limit) and have both callers
-use it. The pairwise embedding walk is a separate, larger question —
-it's doing a small clustering job and should probably borrow the ANN
-path the topic graph already uses.
-
-**Effort.** Small (batch evidence lookup), Medium (pairwise walk).
-
----
-
-
-## P42. The retrieval budget is the residual of everything else
-
-**Status: FOLDED INTO P43.** The diagnosis holds; the "small (floor +
-telemetry)" effort estimate below does not, and the reason is structural rather
-than a matter of tuning. A reservation is only a floor if someone yields to it,
-and by the time `_size_context_budget` runs there is nothing left to take from.
-`context_budget_min_tokens` already reads like the floor this entry asks for, but
-it is clamped by `hi = max(0, avail - history_floor)`, and `avail` is computed
-*after* the entire T4-T6 tail has been built and joined into `system_base`. So
-the min is honoured only when it happens to fit — a floor by convenience. Making
-it bind requires one of: shedding or trimming tail blocks, which is exactly
-P43's value-aware arbitration; or eating into `history_floor_tokens`, which has
-its own floor for its own reasons and just relocates the starvation. There is no
-third option that doesn't overcommit the window. Sequence this behind P43 rather
-than shipping a floor that silently doesn't hold, and see open question (3)
-below — the composition with `aggressive` is the same problem P43 is replacing.
-
-**Motivation.** Memories and concepts — the only blocks whose content is chosen
-*because it is relevant to this turn* — get whatever tokens are left after every
-other block has taken what it wants.
-
-The arithmetic is explicit in `assemble_with_budget`
-([`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)):
-`system_base` is the join of **every block except T3**, which means persona plus
-all of T1, T2, T4, T5 and the ~60 T6 detector blocks. That total is handed to
-`_size_context_budget`
-([`prompt_assembler_helpers_mixin.py`](../../app/core/session/prompt_assembler_helpers_mixin.py))
-as `system_base_tokens`, and the surfacing reservation is computed from what
-remains:
-
-```
-avail     = budget_tokens - system_base_tokens - user_tokens
-surfacing = min(fraction * ctx, max_tokens) clamped to [0, avail - history_floor]
-```
-
-So the T3 reservation is a *residual*, and two things follow. A turn where many
-T6 cues happen to fire directly shrinks the space available for memory and
-concept retrieval — routine ambient chrome outbids turn-relevant recall.  And
-the persona, at 77,940 chars (about 22k tokens at the cold-start 3.5 chars/token
-ratio, less once calibration settles), is subtracted first and is never capped
-or trimmed, so on a modest context window T3 can be squeezed toward its
-`context_budget_min_tokens` floor with only `history_floor_tokens` (default
-1024) standing between retrieval and the history.
-
-The `degrade_level=1` signal already reports when the floor forced the budget
-below target, so this is observable today — worth reading before changing
-anything, because the frequency in real sessions determines whether this is a
-theoretical concern or a daily one.
-
-**Key files.**
-[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py)
-(`assemble_with_budget` — the `system_base` join and the `t3_insert_index`
-insertion),
-[`prompt_assembler_helpers_mixin.py`](../../app/core/session/prompt_assembler_helpers_mixin.py)
-(`_size_context_budget`),
-[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
-(what the reservation is spent on).
-
-**Sketched approach.** Reserve the T3 slice against a *floor* rather than a
-residual: compute the reservation from the stable base (T0-T2, which is where
-persona lives and is genuinely non-negotiable) plus a floor for T3, and let the
-T4-T6 tail take what is left over instead of the other way around. The tail is
-overwhelmingly one-line cues, so this rarely changes anything on a quiet turn
-and only bites on exactly the turns where the current behaviour is worst.
-
-The minimal version does not need block arbitration (that is P43): a `min`
-reservation that the tail cannot eat into, plus telemetry when the tail is what
-forced the degrade, would capture most of the value. **This turned out not to be
-available** — see the status note above; the reservation has no slack to draw on,
-so only the telemetry half is separable.
-
-Worth measuring first with `get_prompt_block_costs` on a busy turn: if the whole
-T4-T6 tail is only a few hundred tokens in practice, this is a smaller problem
-than the code shape suggests and P31's persona trim is the better lever.
-
-**Open questions.** (1) Is a hard T3 floor right, or should it scale with how
-good the candidates are — a turn with no relevant memories should not reserve
-tokens it cannot use? The selector already knows this, but only *after* the
-reservation is chosen. (2) Does the `history_floor_tokens` default of 1024
-survive scrutiny — that is very little history to protect. (3) Interaction with
-`aggressive`, which already forces T3 to floors-only, so the two pressure paths
-need to compose sensibly rather than both firing.
-
-**Effort.** ~~Small (floor + telemetry)~~ — Medium, and not independently
-shippable: the floor half needs P43's arbitration to have anything to yield.
-Telemetry attributing a degrade to the tail is separable and small if it is
-wanted before then.
-
-**Depends on.** P43 (the arbitration that makes a floor enforceable). Measure
-with P31a's `get_prompt_block_costs` first.
-
----
+**Source check:** [concept_snapshot.py](../../app/core/concepts/concept_snapshot.py),
+[concept_quality.py](../../app/core/concepts/concept_quality.py),
+[concept_store.py](../../app/core/concepts/concept_store.py).
 
 ## P43. 105 blocks, no arbitration -- replace the aggressive denylist
 
-**23 Oct 2026 diagnostic pilot.** Assembly attempts and final claims now survive
-restart as bounded, content-free receipts joined to assistant message IDs.
-The read-only hypothesis-family report distinguishes final commits, focused
-placement, verified asks, delivery and answer/update stages, retaining unknown
-coverage and unverified legacy asks. This makes a one-family placement experiment
-inspectable offline; its behavioral comparison and general arbitration remain
-open. See the [trace pilot](../prompt-surfacing.md#s1-a-reasoned-trace-not-another-score).
+**Status: Partial.**
 
-**27 Sep 2026 scope update.** The registry now contains 125 names; the title
-below is the original audit label. K92 now stages pooled claims per assembly
-attempt and adds interest-drift/associative-wander admission to its curiosity-seed pilot,
-not general arbitration. The
-[prompt-surfacing map](../prompt-surfacing.md#implemented-pilots-and-remaining-scope)
-documents the current path. Extend the pilot with non-mutating candidates and
-final-assembly claims before applying a global allocator: an aggressive retry
-must not consume one-shot state or count an omitted cue as shown. Bundle
-essential handling with its admitted content, and keep owed repairs, current
-user requests, authoritative state and permission constraints protected.
-Evaluate with item-level evidence and explicit unknowns, not copied per-turn
-engagement labels as learned value. G6's remaining generic declines must stay
-distinguishable from healthy silence and provider errors.
+**Implemented / available:** Staged pooled admission, essential handling pilot and bounded persisted
+content-free assembly/final-claim traces exist, plus offline hypothesis reporting.
 
-**Motivation.** `_PROMPT_BLOCK_TIERS` registers 105 blocks, and the assembly
-rule for all of them is `if block: system_parts.append(block)`. There is no
-competition: whatever a provider returns goes in, in tier order, and the only
-value-aware selection anywhere in the system prompt is *inside* the T3 region,
-where `ContextBudgetSelector` weighs candidates against a budget.
+**Remaining:** Cover eager providers, protect owed/authoritative blocks, allocate complete
+evidence/handling bundles and record actual final inclusion/omissions before learning weights.
+RS1/RS4/RS5 and G6 refine the remaining scope.
 
-When the prompt overflows, the relief valves are history (oldest messages
-dropped) and a second `aggressive=True` assembly pass that skips a
-**hand-maintained list** of about thirty providers. That list is the de facto
-statement of what Aiko can afford to lose under pressure, and it has drifted
-into some hard-to-defend places — `belief_gaps_block` is dropped while its
-sibling `clarification_block` is kept; `wants_block` and `curiosity_seeds_block`
-go while several rarely-firing cues stay. Nobody chose those pairings against
-each other; they accumulated one item at a time.
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p43).
 
-The deeper problem is that the denylist encodes *importance* as a boolean fixed
-at authoring time, when the thing we actually want to shed is low **value per
-token** — which depends on the turn, and after L37 is something we can measure
-rather than assert.
-
-**Key files.**
-[`prompt_assembler.py`](../../app/core/session/prompt_assembler.py) (the
-cascade, `_PROMPT_BLOCK_TIERS`, and every `if not aggressive` guard scattered
-through the provider calls),
-[`prompt_support.py`](../../app/core/session/prompt_support.py)
-(`_safe_provider`, `PromptTelemetry.block_chars`),
-[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
-(the arbitration pattern to generalise — it already does floors, caps, weights
-and a greedy fill, which is most of what is needed).
-
-**Sketched approach.** Give each block a small policy record — tier, a value
-weight, and whether it is floor-protected — and run the same
-floors-then-weighted-greedy selection the T3 region already uses across the
-whole block set. `aggressive` then stops being a denylist and becomes a lower
-budget, which is both less code and much harder to let drift.
-
-The value weight starts as a hand-assigned constant (no worse than today's
-boolean, and strictly more expressive), and becomes learned once G4's cue
-outcome rates exist: a block whose cues consistently land keeps its slot under
-pressure, one that never lands sheds first. That is the point at which the
-prompt starts allocating itself according to what actually works.
-
-Two properties to preserve deliberately: the persona and grammar addenda stay
-privileged and uncapped (they are the contract the rest of the output depends
-on), and the tier order of what survives must not change, or the prompt-cache
-prefix ladder breaks — arbitration decides *whether* a block is included, never
-*where* it sits.
-
-Ship the telemetry before the behaviour: a per-block "would have been dropped"
-report under a simulated tighter budget makes the policy reviewable before it
-is load-bearing.
-
-**Open questions.** (1) Is 105 blocks the actual problem? A cheaper reading of
-this audit is that most blocks are empty most of the time and the real cost is
-the ~60 provider calls per turn, which is a different fix (P31's lazy-render).
-Measure before building an allocator. (2) How to keep a rarely-firing but
-critical block (rupture, clarification) from being shed just because its
-historical engaged rate is thin — floor-protection has to be explicit, not
-learned. (3) Whether `_safe_provider` swallowing exceptions into `""` needs
-fixing first: a permanently broken block currently looks identical to a gated
-one, which would poison any learned value estimate.
-
-**Effort.** Medium (policy records + generalised selection) / Large (with
-learned weights).
-
-**Depends on.** P42 (or supersedes it), G4 and L37 for the value signal.
-Related to P31 (lazy-render) — that reduces the *cost* side of the same ratio.
-
----
-
-
-## P45. Retire the per-hour / per-day caps in favour of satisfaction
-
-**Status: SHIPPED.** Remaining speaking daily-count caps retired in
-favour of demand + inventory targets + cooldowns; LLM/web spend caps
-kept. Satisfaction-from-engagement declined as redundant. See
-[shipped/perf.md](shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction).
-
----
+**Source check:** [surfacing_trace_store.py](../../app/core/memory/surfacing_trace_store.py),
+[hypothesis_surface_report.py](../../scripts/hypothesis_surface_report.py),
+[prompt_assembler.py](../../app/core/session/prompt_assembler.py),
+[prompt_support.py](../../app/core/session/prompt_support.py),
+[context_budget_selector.py](../../app/core/session/context_budget_selector.py).
 
 ## P46. Parallel compute-lane drain
 
-**Motivation.** [P36](#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
-drains compute-lane workers *before* LLM ones but still one at a time,
-which captures most of the benefit (a cheap worker no longer waits out a
-generation) without touching concurrency. Running the compute lane in
-parallel would be the next step — the lane is CPU-bound and its workers
-are mostly independent.
+**Status: Deferred / evidence or capability gate.**
 
-**Why it is not done.** An audit found enough shared mutable state to
-make it unsafe today, and none of it fails loudly:
+**Implemented / available:** Compute workers drain before LLM work but serially.
 
-- `WorldStore.list_items` returns **live references** into the in-memory
-  mirror, and `promote_stage` mutates `item.state` in place. (P36 added
-  a read-only `stage_promotion_due` for the probe path specifically
-  because of this.)
-- `ConceptStore._concepts` / `_vectors` and the cached active matrix are
-  unguarded.
-- `MemoryStore` and `WorldStore` use `threading.local()` connections, so
-  parallel writers get separate transactions against a WAL database with
-  no global write lock.
-- `EngagementClock` does a read-modify-write on `kv_meta` without one.
-- The scheduler's own `last_run_at` / record updates assume a single
-  drain thread.
+**Remaining:** Make shared WorldStore/ConceptStore/cache/SQLite state safe before parallel compute
+drain; do not add concurrency solely to reduce queue counters.
 
-**Prerequisite work.** Guard the in-memory mirrors, make
-`list_items` hand out copies (or make the mutating helpers explicit
-about ownership), and decide on a write-serialisation strategy for
-SQLite. `RagStore` is already thread-safe via a reader-writer lock and
-is the model to follow.
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p46).
 
-**Effort.** Medium-Large, and mostly prerequisite rather than scheduler
-work.
-
----
+**Source check:** [idle_worker_scheduler.py](../../app/core/proactive/idle_worker_scheduler.py),
+[world_store.py](../../app/core/world/world_store.py),
+[concept_store.py](../../app/core/concepts/concept_store.py).
 
 ## P49. The telemetry ledgers are the fastest-growing tables
 
-**Motivation.** A census of every table, taken while sizing P30,
-put the growth in a different place than expected. `memories` is
-small and slow-growing. What is actually accumulating is the
-observability we have been adding:
-
-| table | rows | +1 yr | +3 yr | pruned? |
-|---|---|---|---|---|
-| `surfacing_outcomes` | 45,286 | ~596k | ~1.70M | `prune()` exists, never called |
-| `concept_events` | 17,357 | ~214k | ~609k | never |
-| `turn_prompt_blocks` | 13,244 | ~174k | ~497k | `prune()` exists, never called |
-| `concept_edges` | 12,549 | ~143k | ~403k | has deletion paths |
-| `cue_decisions` | 5,288 | ~70k | ~198k | `prune()` exists, never called |
-| `messages` | 4,634 | ~22k | ~58k | never |
-| `concepts` | 2,563 | ~28k | ~78k | lifecycle retires |
-| `memories` | 1,829 | ~13k | ~35k | uncapped (P30) |
-
-`surfacing_outcomes` alone is growing ~25× faster than
-`memories`, and `concepts` about twice as fast.
-
-**The reassuring half, which is most of it.** SQLite absorbs this
-without complaint. Grown to 5M rows with realistic timestamps,
-`stats_for(200 concepts, 90d)` — the one the lifecycle worker
-runs — is **flat**: 5.2 ms at 45k, 6.3 ms at 5M. Every read takes
-a window, and the window predicate resolves through a covering
-index (`idx_surfacing_outcomes_created`), so total history costs
-nothing. This is the measurement behind "SQLite is fine, don't
-migrate" holding for the whole database and not just for
-`memories`.
-
-**What does drift.** `engaged_rate_by_cluster(window_days=90)`
-goes 32 ms → 63 ms → 256 ms across 45k → 600k → 5M total rows,
-despite the window holding a constant ~45k. So one of its arms is
-not window-selective. It runs on an idle worker, so a quarter
-second after eight years of use is not a problem — it is filed
-because it is the one query whose shape does not match the others,
-and that is usually worth knowing before it matters.
-
-Disk is the real consequence: 1.2 GB at 5M rows, versus 58 MB
-today.
-
-**Sketched approach.** (a) Schedule the three existing `prune()`
-methods from an existing maintenance worker with a generous
-retention (a year keeps every analysis currently run). (b) Find
-the non-selective arm of `engaged_rate_by_cluster`. (c) Decide
-whether `concept_events` and `messages` want retention at all —
-both are arguably history rather than telemetry, and `messages`
-is the transcript itself.
-
-**Key files.**
-[`app/core/memory/surfacing_outcome_store.py`](../../app/core/memory/surfacing_outcome_store.py),
-[`app/core/memory/cue_decision_store.py`](../../app/core/memory/cue_decision_store.py),
-[`app/core/memory/turn_prompt_block_store.py`](../../app/core/memory/turn_prompt_block_store.py),
-[`app/core/rag/rag_maintenance_worker.py`](../../app/core/rag/rag_maintenance_worker.py)
-(the obvious host — it already runs a slow maintenance cadence).
-
-**Effort.** Small (a), Small (b), Small (c, mostly a decision).
-
----
-
-## P50. The persona hoist has no cap, and it is the second-largest block
-
-> **Status: shipped, and the cap turned out to be the smaller half.**
-> Measuring first changed the fix. The hoist is not a many-small-cues
-> problem — it is **one block**. Scoring every note-eligible block by
-> `fire rate x section chars` over 942 instrumented turns:
->
-> | rate | chars | cost/turn | block |
-> | --- | --- | --- | --- |
-> | 88% | 3,113 | 2,730 | `emotion_episode_block` |
-> | 61% | 865 | 524 | `curiosity_seeds_block` |
-> | 30% | 593 | 179 | `style_signal_block` |
-> | … | | | 41 more, all under 155 |
-> | | | **5,444** | total |
->
-> That total lands within 1.3% of H52's independently measured 5,517-char
-> mean, which is the reason to trust the ranking. And `emotion_episode_block`
-> alone is **half of it** — a block that reads as textbook-conditional and
-> fires on 88% of turns, which is precisely the case `_STAYS_IN_T0` exists
-> to catch. It has moved there, so its two sections now ride in the
-> **cached** prefix instead of being re-sent uncached every turn.
->
-> The cap shipped too, as the guardrail it should have been rather than
-> the main event: `handling_notes_budget_chars` (default 5,000), dropping
-> **largest-note-first** so the most cues keep an explanation per
-> character spent, with render order restored to the tier ladder
-> afterwards.
->
-> | | before | after |
-> | --- | --- | --- |
-> | mean | 5,444 | ~2,500 |
-> | p90 | 8,026 | 5,000 |
-> | max | 18,501 | 5,000 |
->
-> **Left open deliberately.** `curiosity_seeds_block` at 61% is over the
-> same line and was *not* moved: it is a pooled cue, so its handling text
-> sits on `CuePolicy.handling_section` by the cue-pool contract, and
-> taking one cue out of that contract is a design decision rather than a
-> measurement. It is the obvious next 10%. The general lesson is written
-> into `_STAYS_IN_T0`: "is this conditional?" is answered by reading the
-> prose and was right here; "how often does it fire?" needs
-> `turn_prompt_blocks` and disagreed by a factor of nine.
-
-**Motivation.** `handling_notes_block` is the [persona
-hoist](../cue-pool.md#the-persona-hoist): conditional handling notes live
-outside the always-on persona and are pasted in only on the turns their cue
-actually renders. The design premise is stated in
-`data/persona/conditional_handling.txt` itself — each section is for a
-*minority* of turns.
-
-It is not behaving like a minority. H52 measured it at **5,517 chars mean,
-p90 8,017, max 18,446**, which makes it the largest block in the prompt
-after the T3 region. And the mechanism has no brake at all:
-
-```python
-# _render_handling_notes: walk every block with a registered header,
-# hoist the note of each one that rendered a non-empty string.
-for block in self._handling_headers():
-    ...
-    if note and note not in seen:
-        parts.append(note)
-```
-
-**There is no cap on how many sections can hoist on one turn.** With 56
-registered headers at a 961-char mean, the theoretical ceiling is **53,807
-chars** — larger than the persona. Deduplication is by full note text, so
-families that share a section (three style detectors → one "Style patterns
-I'm in:") collapse correctly; what does not collapse is a busy turn where a
-lull, a repair, two topic reads and a gap cue each contribute a distinct
-600–2,900 char section.
-
-The largest sections are the ones most likely to co-fire: "Style patterns
-I'm in:" (2,893), "Feelings at {user_name}:" (1,923, and its block pulls
-"The mask:" too, for ~3,113 together), "When you have your own take:"
-(1,748).
-
-**Why it matters beyond tokens.** This is instruction text, and the failure
-mode of hoisting fifteen sections is not cost — it is that she is handed a
-manual on the turn she most needs to be responsive. P31 argues the same
-thing about the resting persona floor; this is the acute version.
-
-**Key files.**
-[`prompt_assembler_helpers_mixin.py`](../../app/core/session/prompt_assembler_helpers_mixin.py)
-(`_render_handling_notes`, `_handling_headers`),
-[`prompt_support.py`](../../app/core/session/prompt_support.py)
-(`HANDLING_SECTIONS`, `_STAYS_IN_T0`),
-[`cue_accounting.py`](../../app/core/proactive/cue_accounting.py)
-(`CuePolicy.handling_section`),
-`data/persona/conditional_handling.txt` (the 56 sections).
-
-**Sketched approach.** A cap on hoisted sections per turn, spent by
-priority rather than by tier order — which is what the walk uses today, so a
-T4 note wins over a T6 note for no reason other than where it was
-registered. The priority signal already exists in two places: K92's stance
-arbiter already decides which *cue* leads the turn
-([`stance.py`](../../app/core/conversation/stance.py) `_OFFERS`), and L37's
-outcome rates already say which cues land. Hoisting the notes for the cues
-that won arbitration — rather than for all of them — is the same decision
-made once instead of twice.
-
-Instrument first: record hoisted section count and total chars per turn, so
-the cap is chosen against the real distribution instead of guessed.
-
-**Open questions.** Should a section whose cue lost arbitration hoist a
-*shortened* form rather than nothing — the cue is still in the prompt, so
-dropping its handling note entirely leaves an unexplained cue, which is the
-failure the hoist exists to prevent. Does the cap interact with
-`aggressive`, which currently drops cues but not their notes?
-
-**Related.** P43 (block arbitration — this is the same problem one level
-down, *inside* a single block), P31 (the resting persona floor),
-[cue-pool.md](../cue-pool.md#the-persona-hoist).
-
-**Effort.** Small (cap + telemetry), Medium (arbitration-driven selection).
-
----
-
-## P51. `relevant_context` and the summary do not know about each other
-
-> **Measured, and the premise did not survive. See "What the measurement
-> found" below before doing any of this.** The overlap this item is built
-> on is 18.7% and incidental; the dedup would recover almost nothing. What
-> the same measurement did find is a much larger and quite different
-> problem in the same block, filed as P52.
-
-**Motivation.** The T3 region is the most expensive block in the prompt at
-**17,480 chars/turn** (H52), and the rolling summary sits three tiers above
-it in T2. Nothing compares them.
-
-The dedup that *does* exist in the retrieval path is thorough, which is why
-the gap is easy to miss: exact-text dedup across merged hits, a
-cluster-aware diversity cap, a 6-hour recency penalty on
-recently-surfaced memories with a 7-day revival bonus, L23 habituation
-damping for concepts, `profile_block` overlap suppression, and an explicit
-exclusion of the *current session's messages* on the grounds that they are
-already in the recent window:
-
-```python
-if exclude_session_id and h.source == "message":
-    # Don't surface lines from the *current* session --
-    # they're already in the recent-window context.
-```
-
-That comment is the exact argument for the missing case. A memory whose
-content the summary already states is in the prompt twice, in two voices,
-and the second copy costs retrieval budget that P42 has already established
-is the scarcest in the assembly.
-
-**Key files.**
-[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)
-(`build_relevant_context`),
-[`rag_retriever.py`](../../app/core/rag/rag_retriever.py) (the existing
-dedup ladder and `exclude_session_id`),
-[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
-(where a penalty would apply).
-
-**Sketched approach.** The summary text is already available to the
-assembler when the T3 region is built, and the embedding machinery is
-already in hand — so a similarity penalty against the summary fits the
-selector's existing weight model without new infrastructure. Prefer a
-*penalty* over an exclusion: a memory the summary mentions in passing may
-still be worth surfacing in full, and hard-excluding it would make the
-summary suppress its own sources.
-
-Measure first. This is filed on the strength of the code shape, not of an
-observed overlap rate — the honest first step is to score the current T3
-selection against the current summary for a few hundred turns and find out
-whether the overlap is 2% or 30%.
-
-### What the measurement found
-
-Done, over the 1,184 turns in `surfacing_outcomes` joined against
-`session_summaries`. Three results, and the first one closes this item.
-
-**1. The overlap is 18.7%, and it is incidental.** Containment of each
-surfaced memory's vocabulary in the summary that was live at the time:
-mean 18.7%, p50 16.7%, p90 36.4%. Only **84 of 16,335** surfaced memory
-rows (0.5%) were 60% or more contained, and inspecting those shows why
-even that is generous — the top of the list is the three-word memory
-"thinking about it", whose entire vocabulary appears in any long summary
-by chance. There is no redundancy here to reclaim. A similarity penalty
-would fire on nothing, or on noise.
-
-The code-shape argument was sound and the conclusion was still wrong,
-which is worth noting on its own: the `exclude_session_id` comment
-generalises to the summary in principle, but memories and summaries are
-written by different workers from different windows and simply do not
-converge on the same sentences in practice.
-
-**2. The cost is not where this item points.** Estimating T3's chars from
-the items it actually selected:
-
-| Section | Items/turn | Est. chars/turn | Share |
-| --- | --- | --- | --- |
-| concepts, core lane | 14.6 | 4,428 | 38% |
-| concepts, flex lane | 14.6 | 4,033 | 35% |
-| memories | 15.2 | 1,907 | 16% |
-| clusters | 20.0 | 1,154 | 10% |
-| concepts, activation | 0.4 | 95 | 1% |
-
-Concepts are **73%** of the region. Memories — the only thing a
-summary-dedup could touch — are 16%. So even a dedup that worked
-perfectly would be aimed at the smallest quarter of the block.
-
-**3. The region is re-rolled from scratch every turn.** Over 1,160
-consecutive turn pairs in the same session:
-
-| Slice | Identical set | Mean Jaccard | New items each turn |
-| --- | --- | --- | --- |
-| concepts | **0.0%** | **0.00** | **100%** |
-| memories | 0.0% | 0.20 | 67% |
-| clusters | 1.8% | 0.71 | 18% |
-
-Concepts share **zero** items with the previous turn, on every one of
-1,160 pairs — including the `core` lane, which the ladder calls pinned.
-That is not a bug: it is L23/L40 habituation working as written. The core
-lane over-fetches `core_cap * 3` = 45 candidates for 15 slots and orders
-them most-rested-first, which is a round-robin with a period of about
-three turns. Concept ids are reused 15x across the corpus, so they do come
-back — just never on the next turn.
-
-**What that means for the cache.** The end-of-T3 breakpoint covers 66,355
-chars, 90% of the system prompt, and reads them on 5.6% of turns. It is
-tempting to call that the biggest prize on this page, and the first draft
-of this section did. But the three numbers above say T3 is *structurally*
-uncacheable rather than accidentally so: stopping the concept rotation
-would still leave memories 67% new per turn, driven by a query embedding
-that legitimately changes with every user message. Both would have to go,
-and the second one is retrieval doing its job. So the honest reading is
-that the prompt has ~43k of cacheable head, which is already cached, and
-~31k of genuinely per-turn content, of which T3 is the largest slice. The
-cache work is close to done; what is left is a *size* problem, not a
-stability one.
-
-**Status.** Closed as a dedup. The size finding and the rotation finding
-are carried forward as P52, which is where the remaining work is.
-
-**Open questions.** Does the same argument apply to `thread_note_text` and
-to `continuity_block`, which are also narrative restatements of stored
-material? Both are much smaller than the memory section, so the answer
-probably does not matter.
-
-**Related.** P52 (what this became), P42 (the T3 budget is a residual, so
-wasted T3 tokens are the expensive kind), P30.
-
-**Effort.** Measured. Nothing to apply.
-
----
-
-## P52. T3 spends 8.5k chars/turn on 30 concept lines it never repeats
-
-**Motivation.** Falls out of the P51 measurement. Two facts that are
-individually defensible and jointly expensive:
-
-- **Volume.** The two concept lanes render **29.6 lines per turn, ~8,461
-  chars**, which is 73% of the T3 region and roughly 1,900 tokens. The
-  caps are `context_budget_core_cap = 15` and
-  `context_budget_concept_cap = 15`. Note that `core_cap`'s default in
-  code is **2** — the live value is 15, and the surrounding logic
-  (`core_cap * 3` over-fetch, a 4-turn habituation window) was reasoned
-  about at the smaller number.
-- **Turnover.** Those 30 lines were **100% different from the previous
-  turn's 30 lines**, on all 1,160 measured pairs. So each turn spent
-  ~1,900 uncached tokens telling her thirty things about Jacob, and the
-  next turn spent ~1,900 more telling her thirty *different* things. Over
-  three turns she was told ninety. **Fixed** — see the draw-depth section
-  below.
-
-Neither number is wrong on its own terms. The rotation is L23/L40 working
-as designed — "surfacing rotates like a mind moving on, not a loop
-repeating" — and the cap is a deliberate breadth choice. The question this
-item raises is whether the *product* was ever intended: full replacement
-at cap 2 rotates 6 concepts across three turns, and at cap 15 it rotates
-90.
-
-There is a quality argument here as well as a cost one, and it may be the
-more interesting of the two. Thirty facts per turn with no carry-over is
-not obviously how attention works; a person mid-topic keeps two or three
-things in mind and lets the rest go. Whether the current setting reads as
-breadth or as a scattered searchlight is a listening question, not a
-measurable one, which is why this is filed rather than fixed.
-
-**Key files.**
-[`inner_life_part1.py`](../../app/core/session/inner_life_part1.py)
-(`build_relevant_context`, core lane at ~1780–1870, the fresh/stale split
-and rest-ranking at ~1825–1858),
-[`concept_surfacing.py`](../../app/core/concepts/concept_surfacing.py)
-(`habituation_factor`, `turns_since_surfaced`),
-[`context_budget_selector.py`](../../app/core/session/context_budget_selector.py)
-(the caps).
-
-### The draw depth turned out to be the whole mechanism — shipped
-
-The rotation is not governed by the habituation window, or by a policy, or
-by anything that reads the topic. It is governed by **how deep the core
-lane draws**, and the relationship is a cliff rather than a gradient.
-
-The lane keeps the `core_cap` most-rested of what it drew. So a pick
-survives to the next turn only while the draw stays *shallower* than the
-set habituation already marked stale — and what got marked is everything
-rendered last turn, **both lanes**, `core_cap + context_budget_concept_cap`
-rows. Carry-over is positive iff
-
-```
-core_cap * multiplier  <  2 * core_cap + concept_cap
-```
-
-which with the two caps equal is just "multiplier under 3". The multiplier
-was a hard-coded `3` and both live caps are `15`: a draw of 45 against 45
-stamped. **Exactly on the edge.** That is why the measurement came back at
-*precisely* zero rather than merely low — it was not a tuning choice that
-happened to be aggressive, it was a constant landing on a boundary nobody
-knew was there, put there when `core_cap` was 2 and never revisited when
-the gate tuner raised it to 15.
-
-Simulated at the live caps over 8 turns:
-
-| Multiplier | Draw | Carry-over/turn | Distinct pinned over 8 turns |
-| --- | --- | --- | --- |
-| 3.0 (was) | 45 | 2% | 41 |
-| 2.0 | 30 | 12% | 30 |
-| **1.5 (now)** | **22** | **53%** | **22** |
-| 1.0 | 15 | 100% (frozen) | 15 |
-
-Shipped as `memory.concept_core_overfetch`, default **1.5**: about 8 of the
-15 pinned concepts persist across a turn and 7 rotate. The trade is
-explicit — breadth drops from 41 distinct concepts across 8 turns to 22 —
-and the default buys continuity, because thirty facts a turn with nothing
-held over is not how attention works. `3.0` remains reachable to restore
-the old behaviour; note that raising it *above* 3 does not rotate more
-thoroughly, it only lengthens the cycle.
-
-**Still open.** This addressed the turnover half. The volume half is
-untouched: the two lanes still render 29.6 lines and ~8.5k chars per turn.
-Two remaining directions, in ascending invasiveness:
-
-1. **Trim the caps.** Purely a size play, no mechanism change. Halving
-   both concept caps recovers ~950 tokens/turn of full-price input. Needs
-   a listening check, not a test. Worth re-asking now that the pinned lane
-   is stable, since a stable 15 reads very differently from a rotating 15.
-2. **Make the carry-over topic-aware.** The current dial is unconditional:
-   it keeps the most-rested picks whether or not the subject moved. Reading
-   the arc / topic-cluster signals would let it hold concepts while she is
-   still on something and rotate deliberately when the subject turns. That
-   is the version with a quality story on both sides, and it is only worth
-   building if the flat 53% turns out to feel wrong in one direction or the
-   other.
-
-**Related.** P51 (where this came from), P42 (the T3 budget is a residual,
-so these are the expensive kind of tokens), P43 (105 blocks, no
-arbitration — the same "every lane fills its cap" pattern), L23 / L40 (the
-habituation and rest-ranking design this would be adjusting).
-
-**Effort.** Turnover: shipped. Volume: Small to trim the caps, Medium to
-make the carry-over topic-aware.
+**Status: Open implementation.**
+
+**Implemented / available:** Telemetry stores expose pruning APIs and bounded diagnostic receipts now exist.
+
+**Remaining:** Schedule appropriate ledger retention and fix remaining non-selective aggregates;
+decide transcript/concept-history preservation separately. Bound disk without confusing diagnostics
+with authoritative history.
+
+**Source check:** [surfacing_outcome_store.py](../../app/core/memory/surfacing_outcome_store.py),
+[cue_decision_store.py](../../app/core/memory/cue_decision_store.py),
+[turn_prompt_block_store.py](../../app/core/memory/turn_prompt_block_store.py),
+[rag_maintenance_worker.py](../../app/core/rag/rag_maintenance_worker.py).
+
+<a id="p50-the-persona-hoist-has-no-cap-and-it-is-the-second-largest-block"></a>
+
+## P50. Finish joint handling and content admission
+
+**Status: Partial.**
+
+**Implemented / available:** Conditional handling has a size budget and frequent emotion notes moved
+into cached T0; essential handling is bundled for the staged pilot.
+
+**Remaining:** Complete semantics-aware content/handling admission for other providers; decide
+frequent pooled-note placement and avoid admitting unexplained cues. The cap itself is already
+implemented (RS4).
+
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p50).
+
+**Source check:**
+[prompt_assembler_helpers_mixin.py](../../app/core/session/prompt_assembler_helpers_mixin.py),
+[prompt_support.py](../../app/core/session/prompt_support.py),
+[cue_accounting.py](../../app/core/proactive/cue_accounting.py),
+[stance.py](../../app/core/conversation/stance.py).
+
+<a id="p52-t3-spends-85k-charsturn-on-30-concept-lines-it-never-repeats"></a>
+
+## P52. Concept volume and topic-aware continuity
+
+**Status: Partial.**
+
+**Implemented / available:** concept_core_overfetch controls carry-over; the turnover fix is implemented.
+
+**Remaining:** Evaluate smaller concept caps and topic-aware carry-over with quality/token/cache
+controls. Historical 29.6-line/8.5k-char figures are snapshots, not current measurements; RS3/RS7
+own follow-up experiments.
+
+[Implemented slice](shipped/audit-2026-10-24.md#perf-p52).
+
+**Source check:** [inner_life_part1.py](../../app/core/session/inner_life_part1.py),
+[concept_surfacing.py](../../app/core/concepts/concept_surfacing.py),
+[context_budget_selector.py](../../app/core/session/context_budget_selector.py).
+
+## P24a. Repair the STT partial-read and recorder-lifetime contracts
+
+**Status: partial.**
+
+**Implemented / available:** Callback-fed nonblocking partial_text and per-service shutdown/phrase
+reuse exist.
+
+**Remaining:** Add phrase/generation/revision/audio-coverage identity, bound/cancel finalization and
+exercise a real recorder on isolated synthetic audio plus microphone checks.
+
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[session_text_utils.py](../../app/core/session/session_text_utils.py),
+[pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts).
+
+## P24b. Measure end of user speech to useful audio, not just TTFT
+
+**Status: open.**
+
+**Implemented / available:** Server stage timings and client clipStart/firstPcm diagnostics exist.
+
+**Remaining:** Join input end, endpoint, final transcript, brain/tool/prompt, first speakable chunk,
+synthesis/PCM and scheduled onset by IDs. Respect clock mapping, count failures/underruns and
+compare p50/p95 useful-answer onset rather than filler.
+
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[session_text_utils.py](../../app/core/session/session_text_utils.py),
+[pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts).
+
+## P24c. Make endpointing responsive without cutting off thinking pauses
+
+**Status: partial.**
+
+**Implemented / available:** Tiered endpointing exists; capture still uses a 1.5-second
+minimum-start window and 100 ms blocks.
+
+**Remaining:** Separate voiced evidence from elapsed capture time, derive thresholds from frame
+duration and replay short answers/negations/hesitations/noise against premature cuts, not just
+faster endpoint time.
+
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[session_text_utils.py](../../app/core/session/session_text_utils.py),
+[pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts).
+
+## P24d. Finalize the already-fed audio once; keep speculation reversible
+
+**Status: partial.**
+
+**Implemented / available:** WAV finalization calls perform_final_transcription on supplied samples
+without a second VAD feed; partials drive existing speculative retrieval.
+
+**Remaining:** Validate real-recorder two-phrase/PTT/concurrent-interim cancellation and cache
+freshness. In-memory finalization and speculative drafting remain experiments; provisional audio
+must not execute tools, consume cues, write memory or speak.
+
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[session_text_utils.py](../../app/core/session/session_text_utils.py),
+[pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts).
+
+## P24e. Release a useful first speech chunk before the whole answer
+
+**Status: partial.**
+
+**Implemented / available:** Sentence streaming, late/no-reaction completion fallback and an
+explicit pause-beat short-sentence boundary exist.
+
+**Remaining:** The normal streaming branch still requires a parsed mood; add safe provisional
+readiness and a bounded complete-first-chunk policy without leaking tags or truncating
+numbers/filenames/negation. Preserve shared offsets and cancellation.
+
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[session_text_utils.py](../../app/core/session/session_text_utils.py),
+[pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts).
+
+## P24f. Stream synthesis, not merely a completed waveform
+
+**Status: open.**
+
+**Implemented / available:** ClipCache/SynthesisGate prefetch and paced PCM playback exist; both
+engines still synthesize completed clips before playback.
+
+**Remaining:** Implement incremental synthesis with first-PCM/error/cancel semantics while
+preserving cache/gate, gain/brightness/tempo and pacing parity; emitted chunks of a finished
+waveform are not incremental generation.
+
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[session_text_utils.py](../../app/core/session/session_text_utils.py),
+[pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts).
+
+## P24g. Tune client buffering only with underrun evidence
+
+**Status: validation.**
+
+**Implemented / available:** AudioOutputManager schedules clips with a 0.15-second first-idle margin
+and analyser/ownership support.
+
+**Remaining:** Measure onset/underruns/device jitter before reducing or adapting buffering; test
+subsequent chained clips separately from the idle first clip.
+
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[session_text_utils.py](../../app/core/session/session_text_utils.py),
+[pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts).
+
+## P24h. Reduce recovery time after interruption, not just reply onset
+
+**Status: partial.**
+
+**Implemented / available:** Energy barge-in, overlap capture, playback draining and client audio
+flush exist.
+
+**Remaining:** Measure cancellation through mic/STT/model/TTS/sidecar/client and new-turn recovery;
+exercise false interrupts and overlap. Full duplex/AEC remains immersion H7c.
+
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[session_text_utils.py](../../app/core/session/session_text_utils.py),
+[pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts).
+
+## P24i. Benchmark model/prompt cost after exposing the actual waits
+
+**Status: validation.**
+
+**Implemented / available:** Tool-pass gating, route metrics and per-block/cache telemetry exist.
+
+**Remaining:** Benchmark warm/cold, tool/no-tool, short/long reply and cache conditions after stage
+tracing. Keep answer quality and interruption outcomes alongside latency; no automatic faster-model
+claim.
+
+**Source check:** [realtime_stt_service.py](../../app/stt/realtime_stt_service.py),
+[voice_capture_mixin.py](../../app/core/session/voice_capture_mixin.py),
+[turn_runner.py](../../app/core/session/turn_runner.py),
+[session_text_utils.py](../../app/core/session/session_text_utils.py),
+[pocket_tts_service.py](../../app/tts/pocket_tts_service.py),
+[AudioOutputManager.ts](../../web/src/audio/AudioOutputManager.ts).
+
+## Moved out of the active queue
+
+- **P35** — shipped: [record](shipped/audit-2026-10-24.md#perf-p35).
+- **P36** — shipped: [record](shipped/audit-2026-10-24.md#perf-p36).
+- **P37** — shipped: [record](shipped/audit-2026-10-24.md#perf-p37).
+- **P38** — shipped: [record](shipped/audit-2026-10-24.md#perf-p38).
+- **P42** — retired: [record](shipped/audit-2026-10-24.md#perf-p42).
+- **P45** — shipped: [record](shipped/audit-2026-10-24.md#perf-p45).
+- **P51** — retired: [record](shipped/audit-2026-10-24.md#perf-p51).

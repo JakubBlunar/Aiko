@@ -42,7 +42,7 @@ is not *what* they do but *when* they are allowed to.
 
 This document describes the scheduler as it works after P36. For the
 config values themselves see [`configuration.md`](configuration.md); for
-the backlog history see [P36](personality-backlog/perf.md#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget).
+the backlog history see [P36](personality-backlog/shipped/audit-2026-10-24.md#perf-p36).
 
 - [The problem the old design had](#the-problem-the-old-design-had)
 - [The quiet gate](#the-quiet-gate)

@@ -1,1887 +1,617 @@
 # Aiko personality backlog
 
-Ideas surfaced during the personality brainstorms that we didn't ship
-in the depth passes. Each open entry is short on purpose: motivation,
-key files, sketched approach, and one or two open questions. Pick any
-item up later as a standalone plan.
+**Reviewed 24 Oct 2026, checkout 8c666cf.** This index lists only unfinished implementation,
+explicit validation and deferred decisions. Completed write-ups live in [shipped](shipped.md); the
+[migration audit](shipped/audit-2026-10-24.md) records completed slices and source checks. [Dated
+review history](shipped/review-history.md) is reference, not a queue or current production
+measurement.
 
-The numbering matches the labels used during the brainstorms so chat
-history stays grep-able. Items that have already shipped live in
-[`shipped.md`](shipped.md), one paragraph each with a link to the
-implementation file or detail doc that owns them.
+**Status meanings:** open = proposed work absent; partial = named implemented slice plus a concrete
+remainder; validation = implementation exists but a specific acceptance check remains; deferred = a
+stated evidence/capability gate must be met. Opt-in or default-off implementation still counts as
+implemented.
 
-Three series didn't come from a brainstorm and read differently. The
-A-series in [`architecture.md`](architecture.md) is code-quality debt from
-a static audit — no user-visible behaviour in any of it. The P-series in
-[`perf.md`](perf.md) is the same idea for performance and observability.
-The H-series in [`health.md`](health.md) is **not a feature queue at all**:
-it is shipped work measured against the live graph and found to be doing
-something other than what its shipped entry claims. Read it before picking
-up anything new in the same area — several L-series items that read as
-"shipped" are latched, starved, or decorative in production. It carries a
-[status index](health.md#status-index) covering all 54 entries; the 43
-closed ones keep their full text in
-[`shipped/health.md`](shipped/health.md), so `health.md` itself is the open
-work plus the
-[recurring-shapes catalogue](health.md#recurring-shapes). Below, a bare
-[`health.md`](health.md) citation may point at either file — the status
-index resolves it.
+Implementation/test sources were inspected. No model calls, app startup, runtime settings changes or
+test runs were made in this documentation-only audit. SQLite observations are read-only dated
+aggregates, not a quality score. Earlier synthetic runs do not establish general naturalness or
+device behavior.
 
-The K-series in [`patterns.md`](patterns.md) is a separate beast —
-companion-AI design patterns we haven't tried yet, sketched at one
-paragraph each rather than fully scoped. Treat patterns.md as a
-prompt for the next brainstorm, not a queue.
+**Queue:** 172 tracked items/follow-ups (70 open, 83 partial, 9 validation, 10 deferred). IDs are
+namespaced: health H versus immersion H, concepts L versus Live L, and performance P versus plugin
+P.
 
-### Keeping it honest
+## Where to start
 
-Two conventions, because both have already been violated silently:
-
-- **When an entry ships, move the write-up to `shipped/` and leave the open file
-  a one-line status row.** An entry that ships in *halves* keeps its open half
-  where it was and links back. The failure this prevents is a shipped narrative
-  sitting in the open file, where the next reader treats it as work to do.
-- **When something ships, re-read what pointed at it.** A "still open" note
-  written at ship time is a snapshot, and nothing re-checks it: L30a claimed
-  L30b/L30c were open for as long as they had been shipped, and L32 said both
-  its consumers did not exist while one of them was live and consuming it.
-  The give-away is a dependency named in the present tense.
-
-[`scripts/check_backlog_links.py`](../../scripts/check_backlog_links.py) catches
-the mechanical half of this — broken paths and, more usefully, heading anchors
-that stopped resolving when a heading was reworded on its way into `shipped/`.
-Run it after any migration. It cannot catch a stale *claim*; only re-reading can.
-
-## 24 Oct 2026: selective context and grounded reasoning
-
-**Analysis and backlog only; all nine proposals remain open.** The
-[RS1-RS9 review](reasoning-surfacing.md) traces retrieval, concept evidence,
-cue competition, working state, speech and prompt-cache behavior against the
-current source. It distinguishes why an item was selected from why it is
-supported, applies now or explains a result. No current model-quality or live
-cache measurements are claimed.
-
-Start with end-to-end evaluation, accurate final-inclusion receipts and source-
-linked concept recall. Then compare smaller sufficient evidence sets and fewer
-competing optional steers. RS6 proposes a gated, bounded `reason_about` tool
-before speech, tested against selected context alone and selective reasoning
-effort. RS7 preserves prefix reuse with revision-aware evidence, and RS8/RS9
-extend existing causal-check and usefulness-learning owners. These are follow-up
-slices under L49-L55, K92/K96/K97/K101 and P43/P52, not duplicate cognition loops.
-No runtime, persona, settings or live memory changed.
-
-## 23 Oct 2026: reasoning, social meaning and companion expression
-
-The review added five patterns, [K102-K106](patterns.md#k102-pragmatic-frames-and-indirect-meaning):
-pragmatic frames, precise misunderstanding repair, cause-specific mixed feelings,
-meaningful voice/avatar delivery, and negotiated shared shorthand. Each has
-examples, a bounded experiment, existing owners and acceptance checks.
-
-The review also deepens L36 with outcome-grounded strategy transfer, J12 with
-explicit friend/flirty/romantic preferences, and T5 with paired social scenarios.
-Existing L49-L55 remain the reasoning roadmap; their bounded implementations
-are not reopened as new features. On 24 Oct, a current configured-model T5
-baseline and [bounded K102/K103 implementation](shipped/social-understanding.md)
-landed. Broader behavioral and listening comparisons remain open; no general
-improvement in naturalness is claimed. The implementation edits conditional
-handling and runtime code, with evaluation isolated from live conversations,
-memories, relationship state and settings.
-
-## 23 Oct 2026: model migration and learning provenance
-
-The DeepSeek follow-up review adds
-[K107](patterns.md#k107-provider-outcomes-are-not-character-evidence): provider
-outcomes must not become durable character evidence. Shared stream integrity,
-private-thinking and UTF-8 guards, structured turn provenance, delayed-memory
-source checks, tool argument validation and reasoning metrics are implemented.
-Ordinary text-only refusal attribution and broader behavioral validation remain
-open. The concise recommendation and implementation summary live in
-[LLM providers](../llm-providers.md#follow-up-review-stream-integrity-and-remaining-migration-checks).
-Only documentation and synthetic regression fixtures are retained.
-
-## 1 Oct 2026: conversation archive recall
-
-**In progress, 24 Oct 2026.** [D8](tools.md#d8-conversation-archive-recall-with-daily-overviews)
-now has a user-scoped, paged `conversation_history` tool and compute-only daily
-source outlines across sessions, with source drill-down, coverage reporting and
-transactional edit/deletion invalidation. Recent days collect during idle time;
-historical backfill is explicitly bounded. Generated topic summaries remain open.
-See [implementation and review commands](../conversation-archive.md). This adds
-no always-on prompt and does not replace memory extraction or session compaction.
-
-## 30 Sep 2026: immersion without changing models or Live2D
-
-**Backlog only; all eight proposals remain open.**
-[IM1-IM8](immersion.md#30-sep-2026-immersion-without-a-new-rig-or-model) add shared
-quiet sessions, explicit pointing/selection, a bounded shared reader,
-inspectable Aiko-made artifacts, joint creation, source-linked keepsakes,
-a small rules-driven game and opt-in ambient audio. Each has a first slice,
-current-model budget, existing owner and acceptance checks.
-
-**Start with IM1 and IM2:** shared presence and a concrete common referent,
-without extra inference. IM3 extends K62; IM4 extends H19/H28; IM6 builds on
-Together/H12/J2; IM8 scopes H27's audio idea. These do not replace Live
-L19-L24 delivery work or reopen shipped rituals/backchannels. No new model,
-fine-tuning, continuous audiovisual inference or rig changes are proposed.
-
-## 30 Sep 2026: Live field review
-
-**Analysis and backlog only.** The [dated field review](live-initiative.md#field-review-30-sep-2026)
-finds 384 retained policy results with no main-speech proposal, including 28
-idle reconsiderations that all choose nonverbal actions. Eight source cues
-behind the expired runtime urge tail remain pending and unexpired; C6 has
-only one newly drafted cue in the review window. Twelve idle decisions follow
-a zero-client record, but sixteen follow a connected-client record, so
-disconnection alone does not explain the sample.
-
-Prioritize joinable opportunity diagnostics and verified rollout identity
-(L19/L30), durable candidate resolution (L21/L22), and a temporally explicit
-policy menu (L23), then source freshness and capability-aware scheduling.
-The review preserves measurement limits, separates hypotheses from confirmed
-mechanisms, and gives bounded acceptance checks under the existing L19-L30
-owners. No runtime behavior, permissions or cadence were changed.
-
-**Implementation follow-up:** [phases 5-7](live-initiative.md#implementation-log)
-now add content-free decision traces, source-bounded candidate retries,
-eligibility-before-menu filtering, explicit quiet-opening prompt context and
-zero-client idle-wake suppression. These are partial implementations, not
-closure of L19-L30; restart-safe outcomes, real-model replay, source renewal
-and delivery settlement remain open. The running app was not restarted.
-
-## 28 Sep 2026: Live initiative architecture
-
-**Architecture evaluation followed by a limited Phase 1 code change.** The
-[Live initiative evaluation and plan](live-initiative.md) adds **Live L19-L31**
-with verified source findings, a read-only runtime snapshot, concrete ownership
-contracts, implementation steps, dependencies and acceptance tests.
-
-The snapshot recorded 74 attention/acknowledgement executions, no main-wake
-execution attempts, no active candidate urges and no scheduled wait, despite
-Live and unprompted speech being enabled. These bounded counters locate an
-investigation, not a lifetime failure rate or proof of one root cause.
-
-**Recommended start:** L19 diagnostics plus one L21/L22 candidate-lifecycle and
-wake path, then L20 availability and L24 delivery protection before real speech.
-Phase 1 has shipped a one-shot eligible-cue wake and removed the premature
-heartbeat opportunity mark; the broader candidate lifecycle, funnel diagnostics
-and delivery protection are still open. The plan's implementation log records
-the shortcut and validation.
-Build toward a small-model decision loop over grounded, durable candidates;
-reuse the brain, cue pool, curiosity, tasks, concepts and memory. Later items
-cover extensible worker/plugin impulses, bounded learning, desktop/mobile
-delivery and a deliberately deferred email integration pilot. Shipped L17/L18
-remain foundations; this is not a second implementation of those passes.
-
-## 27 Sep 2026: prompt surfacing and brain decisions
-
-**Implementation update:** initial pilots now cover content-free assembly
-traces, staged pooled claims and topical-share admission, essential handling
-bundles, two-writer evidence admission with retry checkpoints, strict read-only
-premise recall, and answer/delivery feedback attribution. Broader provider
-coverage, paraphrase entailment and multi-turn naturalness evaluation remain
-open. [Current boundaries](../prompt-surfacing.md#implemented-pilots-and-remaining-scope).
-
-The new [prompt-surfacing reference](../prompt-surfacing.md) maps all **125
-registered blocks**, source/refresh ownership, gates, conditional handling,
-stance, tool routing, Live handoff, delivery and memory writes. It complements
-[context-budget.md](../context-budget.md), which covers T3 rather than every
-route into the brain. This follow-up is documentation and proposals only.
-
-**Priorities:** make omissions and final claims traceable (G6/P43); introduce
-[K100 evidence-bound memory admission](patterns.md#k100-evidence-bound-memory-admission);
-extend K92's collect/choose/commit pilot; then test
-[K101 premise-to-action routing](patterns.md#k101-route-an-unresolved-premise-to-a-bounded-next-step).
-P50 needs semantics-aware handling selection, not another cap. H7/H44 and K99
-remain the owners of answer/delivery follow-through.
-
-The [fresh evidence table](../prompt-surfacing.md#evidence-from-the-running-installation)
-uses 394 recorded turns and 3,900 cue decisions over 14 days, with 528 generic
-`provider` declines. Only 12 of 1,044 surviving memory rows created in that
-window carry the scalar source-message link; other provenance was not fully
-audited. The live process reports 123 blocks versus 125 in the checkout, so
-these measurements are not an evaluation of the latest rollout. Earlier
-rolling snapshots below are preserved with their original denominators.
-
-## 27 Sep 2026: naturalness and cognitive continuity
-
-**Backlog only; no runtime behavior or settings changed.** This pass used
-read-only SQLite reports and the running app's MCP diagnostics. The goal
-is an individual companion with coherent interests, revisable understanding,
-and good timing, not a gender stereotype or a claim to replicate a human
-brain. More animation, questions, or hidden reasoning are not automatic
-improvements. All examples below are synthetic; measurements are aggregate
-software behavior, not personal profiles or transcript excerpts.
-
-### Evidence snapshot
-
-The audit date is local 27 Sep; the report clock was still 26 Sep UTC.
-Rolling windows below are relative to execution, not frozen datasets.
-
-| Scope | Observation | What it does not prove |
-| --- | --- | --- |
-| 14-day lead/follow report, 397 assistant turns | Median 33 words; 2.8% end in a question; 13% anaphoric openers; 65% lexical own-material share | Lexical novelty is not initiative, reasoning, or enjoyment |
-| 14-day prompt telemetry | Mean 33.3 nonempty blocks and 76,181 summed block characters per turn | Volume alone does not prove harmful competition; compare K92/P43 candidates at equal budgets |
-| 14-day cue report, 3,934 decisions | Hypothesis cues surface on 10/396 eligible decisions; 530 declines still say only `provider` | Low reach is not evidence to lower relevance or cooldown gates |
-| Current second-thought runtime | Enabled; 3 scheduled, 3 failed, 0 queued | A small process-local failure sample cannot identify the exception or measure thought quality |
-| Current Live runtime | 90 executions (74 attend, 9 remain-present, 7 acknowledge); 0 main-wake proposals; 11 retained cue urges expired | This bounded sample is not a longitudinal silence/expiry rate; silence can be correct |
-| Lifetime hypothesis snapshot | 75 rows; 12 ever asked; 1 of those has a verdict; 0 graduated | An unscored ask does not prove the user answered; H7/H44 remain the existing repair lane |
-| Lifetime belief snapshot | 393 beliefs; 365 checked; 118 with a gap stamp | Belief tracking is present; these counts do not establish its accuracy |
-
-Reproduce the offline portion with
-[`lead_follow_report.py`](../../scripts/lead_follow_report.py)
-(`--windows 7,14`),
-[`cue_reach_report.py`](../../scripts/cue_reach_report.py) (`--days 14`),
-and [`block_firing_report.py`](../../scripts/block_firing_report.py)
-(`--window-days 14`). Read-only MCP calls were
-`get_live_situation_frame` and `get_second_thought_state`; do not replay
-messages into the live relationship to reproduce the counts. Additional
-SQL aggregates used `mode=ro` plus `PRAGMA query_only=ON` over `beliefs`,
-`hypotheses`, `turn_prompt_blocks`, and `surfacing_outcomes`, with distinct
-assistant-message denominators. No memory text or personal details are
-needed to repeat those aggregates.
-
-### Recommended order
-
-| Priority | Item | Why it comes here |
-| --- | --- | --- |
-| First | [K96 operational follow-up](patterns.md#k96-one-shot-per-thought--in-turn-deliberation) | Diagnose the enabled post-reply pass's failures before adding more thinking |
-| First | [K92/K93](patterns.md#k92-conversational-stance--one-decision-per-turn-not-ten-permission-slips), [G6](workers.md), [H7/H44](health.md#h44-nothing-has-ever-graduated-and-at-this-calibration-nothing-can) | Finish candidate selection/attribution and close existing answer loops; these are not new features |
-| Shipped | [Live L18](live-mode.md#l18-preserve-why-a-cue-exists-before-choosing-how-to-say-it) | Purpose-aware admission and exact cue handoff; T5 behavior evaluation remains |
-| Shipped | [Live L17](live-mode.md#l17-a-deferred-thought-can-meet-a-later-opening) | One bounded reconsideration after a missed opening; T5 behavior evaluation remains |
-| Shipped | [K97](patterns.md#k97-a-small-causal-working-set-for-the-current-thread) | Evidence-linked working understanding; behavioral comparison remains open |
-| Shipped | [K98](patterns.md#k98-continue-an-interest-after-a-good-answer) | One answer-earned continuation without retaining the ask; behavioral comparison remains open |
-| Shipped | [K99](patterns.md#k99-common-ground-with-delivery-provenance) | Bounded generated/presented/played/acknowledged provenance; behavioral comparison remains open |
-| Across all | [T5 naturalness evaluation](testing.md#27-sep-2026-multi-turn-naturalness-track) | Measure continuity, appropriate silence, correction, and non-repetition with negative controls |
-
-**Existing polish to reuse, not duplicate:** Live L5/L9 cover delivery and
-listening manners; K42 covers texting bursts; K49 covers typed imperfection;
-K62 covers shared media. Test those against the same T5 scenarios after the
-content path works. Do not synthesize jealousy, random mistakes, or emotional
-dependency as a shortcut to feeling alive. Quiet companionship is a valid
-outcome, and a user ending a conversation is not a negative reward.
-
-## The surfacing-outcome spine (L37 and what hangs off it)
-
-One cluster of open items is worth calling out because it shares a single
-prerequisite. An audit of how concepts, memories and worker cues reach the
-prompt found that the system has a great deal of machinery for *producing*
-inner content and almost none for learning **which of it was worth
-surfacing**. There are two reinforcement signals in the whole codebase —
-the keyword-overlap revival bump and the K22 callback detector — and both
-ask "did Aiko echo this?" rather than "did the user care?". Concepts don't
-even get that: surfacing writes a habituation timestamp and nothing else,
-so a concept surfaced two hundred times to no effect is indistinguishable
-from one that lands every time. Aiko can grow her knowledge but not her
-judgement; her selection policy is hand-tuned constants that will be
-identical after a year of use.
-
-**L37** (surfacing outcome ledger) was the missing join, and it was cheap
-because the outcome signal already existed — `EngagementTracker` computes
-the user's reaction per turn and nothing read it for this. **It has now
-shipped as a recorder**, along with the `get_surfacing_outcomes` half of DT5:
-one row per surfaced item per turn, keyed by `assistant_message_id` and settled
-with the *following* turn's engagement label. It shipped with nothing consuming
-the rates, deliberately — the point of measuring first is that the items below
-get designed against real data instead of guesses. **Three consumers have since
-been built** and this list is the reason to check before assuming a fourth is
-free: `concept_lifecycle_worker` reads `stats_for("concept", …)` for L38 earned
-standing, `concept_synthesis_worker` reads it for proposal quality, and
-`gate_tuner_worker` takes it as a tuning input. Read the ledger *and* those
-three before building any of them:
-
-- **L38** ✅ **shipped** — earned standing now turns the ledger's
-  relationship-calibrated outcomes into a bounded concept surfacing prior.
-- **L42** ✅ **shipped** — weekly concentration, neglect, and fixation findings
-  become ordinary Aiko conduct concepts and counterbalance K81 taste steering.
-- **L42b** neglect-guided curiosity is open pending enough real L42 findings to
-  evaluate detector quality safely.
-- **F12** ✅ **semantic half shipped** — revival no longer credits only what she
-  quotes, and the same detector now decides L37's `echoed` column, which was
-  the weakest part of the ledger as shipped. The *user-side credit* half is
-  still open. Two corrections came out of building it: the cosine is measured
-  on an already-topically-filtered candidate set (so it partly measures "was
-  on topic"), and full credit would have switched scratchpad TTL off, since
-  its gate was an exact `revival_score == 0.0`. Whether the resulting discount
-  is right is **F17**, which is waiting on ledger data rather than on code.
-- **G4** ✅ **shipped** — the armed-to-surfaced ratio now exists per cue, via
-  `get_cue_outcomes`. Three of the sketch's assumptions were wrong and are
-  worth carrying into the follow-ups: the gap-cue "one-of lottery" is a
-  deterministic priority order (so the same cue loses every time, which is a
-  bias rather than noise — and **H32**: attributing that loss also has to check
-  the winner *outranks* the loser, or the mutex explains defeats it cannot
-  cause); "surfaced" needed no provider instrumentation
-  because `PromptTelemetry.block_chars` already had it; and declines could
-  **not** reuse `surfacing_outcomes`, since every aggregate over that table
-  means "of the times this reached the prompt" and admitting rows that never
-  did would inflate its own denominator. Cues in the ledger are name-keyed
-  (`item_key`, v28) because `item_id` is `INTEGER NOT NULL` and a cue has no
-  integer identity anywhere. Left open: **G5** self-tuning cooldowns (wants a
-  few weeks of data first) and **G6** per-provider decline attribution (~100
-  edit sites, worth spending per cue once the rates say which need it).
-- **P43** value-aware block arbitration instead of the hand-kept denylist.
-- **K81** ✅ **shipped** — taste formation (topics she likes, not topics she's
-  seen). The ledger's `engaged_rate_by_cluster` read-model feeds a new
-  `subject="aiko"` `taste` concept kind through the normal proposer/lifecycle
-  path, surfaced as T3 first-person impressions and a rare T6 "lean toward what
-  you love" steer. See
-  [shipped/patterns-k31-k60.md](shipped/patterns-k31-k60.md#k81-taste-formation--topics-she-likes-not-just-topics-shes-seen).
-- **DT5** the rest of the debug surface (the ledger view itself has shipped).
-
-Independent of the spine, the same audit found four verified defects worth
-picking up on their own. Three are now closed: **L39** shipped both halves —
-T3 now skips whatever the T0 profile block claimed in all three lanes, and the
-repetition half took the cheaper lever (`profile_concept_max_lines` 10 → 4)
-because rotating the profile block would have made a third volatile T0 block
-and cost prompt-cache stability;
-**L40** shipped, though the audit had it wrong — pinned candidates are admitted
-by `order` and their relevance is never read, so the real defect was
-habituation being consumed as a *boolean* and the stale group staying in
-confidence order. **L41** shipped too — the L35 surface reason now picks each
-T3 impression line's framing (settled / freshly-changed / primed / unsettled)
-without ever being narrated. Still open: **P42** (the retrieval budget is the
-residual of all 105 blocks — now folded into P43, since a floor needs someone
-to yield to it).
-
-### The same shape, one layer out: loops that end in a write
-
-A follow-up pass found the surfacing gap is an instance of a broader
-pattern — information the system works hard to produce, which then
-terminates in a database write instead of becoming conversation:
-
-- **F13.** ✅ **Shipped** — the user *explicitly correcting her* is the
-  highest-quality evidence available and now has a detector + supersede path,
-  joining F5, K29 and K38 as the fourth corner of the contradiction family.
-- **F14.** ✅ **Shipped** — the fact-checker's own research can now reverse a
-  claim she surfaced and bring it back unprompted ("I looked into that and had
-  it wrong"), gated on the L37 surfaced ledger and suppressed when F13 already
-  handled it, rather than terminating in a silent UI list refresh.
-- **F15.** Decay makes her progressively vaguer and never prompts her to
-  ask, so a fading memory can only be refreshed if he happens to raise it.
-- **F16.** ✅ **Shipped** — a real `provenance` column (v30, `stated` /
-  `inferred`) now labels each user-fact by how it was learned, so an
-  inference renders with an `(inferred)` hedge and ranks just below equal-
-  cosine testimony instead of being asserted as something he said.
-- **L43.** Engagement history is accumulated and never aggregated into a model
-  of how she's being received.
-- **L44.** ⛔ **Blocked on supply** — the intended twin of L43, and the
-  exception that proves the rule below. Her error record turned out not to be
-  accumulated at all: 1 belief row, 0 corrections, 0 fact-check verdicts over
-  12 weeks. Counted in [`concepts.md`](concepts.md#l44-knowing-where-shes-usually-wrong----per-domain-self-calibration).
-
-Four of those five need no new data collection — only a bar, a cue, and a
-cooldown on information already being gathered. L44 was assumed to be the
-fifth and is not: check the row counts before assuming a source that *exists*
-is a source that *fires*.
-
----
+- Source-to-answer reliability: H7/H44, K100/K107, L49-L52 and RS1/RS2/RS5.
+- One competing optional contribution: K92/K93, G6 and P43/P50; preserve required repairs and permissions.
+- Live lifecycle: L19-L24 before broader autonomy; source freshness and queue success are not delivery.
+- User-visible new experiences: IM1/IM2 first; existing reading/research notes do not close IM3/IM4.
+- Evaluate with T5/L55 alongside implementation. K97-K99/K102/K103 are shipped implementations with
+  named checks under T5.
 
 ## Open items at a glance
 
-### A. Architecture + code quality — [`architecture.md`](architecture.md)
-
-Structural findings from the audit that adopted ruff. Unlike every other
-series here, an A-item buys no behaviour — it buys the next twenty items
-being cheaper to build, so it competes on that basis and usually loses.
-Pick one when it is actively in your way. The mechanical half of that
-audit already shipped: LF everywhere via `.gitattributes`, ruff green on
-`F`/`E`/`W`/`B`, and `npm run lint` wired up.
-
-- **A1.** A real facade for `web/` and `mcp/` — 294 call sites reach into
-  `session._*` across 68 distinct private names, with no signal when a
-  rename breaks one. The 14 `_force_*` MCP debug slots are a legitimate
-  sub-case needing a different answer from the REST routes. Largest item,
-  and the only one where partial adoption helps.
-- **A2.** Connection ownership — 15 stores reach through
-  `ChatDatabase._get_conn()`, usually with a `# type: ignore` beside the
-  call, so every connection-config change has 15 unaudited callers.
-- **A3.** The 23 Python and 3 TS files over the declared budget, listed
-  with line counts — and the observation that the four settings files are
-  long for a different reason than `prompt_assembler.py` is, so one
-  blanket split pass would be the wrong shape.
-- **A4.** Two layering inversions: `app/core/infra/` imports upward into
-  `session` / `proactive` at module level, and `app/core/` imports
-  `app/mcp/` (deferred, so harmless — but undecided). The audit's claim
-  of 3 static import cycles did **not** survive re-measurement; there are
-  zero.
-- **A5.** What should gate a commit now that ruff is green — a staged-only
-  ruff hook, then CI, then a narrow ESLint for `web/`'s 196 files
-  (currently `tsc -b` only), then the deliberately-deferred `I` / `UP` /
-  `SIM` rule sets.
-- **A6.** 107 `_render_*_block` methods hand-copy the same gate /
-  override / try-except frame (88 settings-gate `getattr`s, 52 identical
-  except blocks). The cost isn't the line count — it's that a swallowed
-  render is indistinguishable from a gated one, which is how three blocks
-  went 253 turns without firing and nothing said so.
-- **A7.** *Shipped except the guard.* Six `AgentSettings` fields parsed
-  and then did nothing — four now wired, one deleted, one labelled
-  reserved. `persona_task_banner_enabled` was a user-visible dead
-  toggle, and the frontend test was **enforcing** the gap by matching
-  the self-closing tag. Still open: a test that every settings field is
-  read somewhere, which is what stops the next six.
-
-### B. Avatar + expressiveness — [`avatar.md`](avatar.md)
-
-- **B3.** Blink-rate modulation by arousal (deferred follow-up to B1).
-- **B7.** Open-vocabulary touch gestures — let Aiko invent new
-  `[[touch:...]]` kinds (model-supplied, no config, emoji optional).
-
-### C. Proactive + presence — [`proactive.md`](proactive.md)
-
-- **C2.** Window-title-aware activity — subsumed; titles now collected
-  behind an allowlist in C6 phases 1–2.
-- **C3.** Persisting last-fired typed-proactive cooldown to disk.
-- **C4.** TTS-on-typed-proactive toggle.
-- **C6.** Companion mode — *phases 1–5 shipped* (collectors + event
-  store + Level-1 aggregation + Level-2 interpretation + Level-3
-  companion cue). Still open: memories-on-repeat, UIA. See
-  [`proactive.md`](proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel).
-- **C7.** Live activity pull / `get_activity` tool — *shipped Pass 18*.
-  Forced sample on the existing ingest + redact path; timeout returns
-  the last stored session. UIA remains deferred.
-- **C8.** OS idle as a gap-cue qualifier — *shipped Pass 14* on
-  `sleep_return` only.
-- **C9.** Activity duration as wellbeing evidence — *shipped into K72*
-  (Pass 11). OS small-hours sessions union into `detect_late_nights`.
-  Daytime long-focus shipped Pass 16 (`detect_long_focus`, same door).
-
-### Live mode architecture — [`live-mode.md`](live-mode.md)
-
-- Event-driven presence runtime: impulse generation, current-situation
-  assembly, concept-aware behavior, deterministic action arbitration, hybrid
-  speech, local policy-model evaluation, and staged rollout.
-- Builds on C6 perception and H27 co-presence without making either subsystem
-  a second behavioral controller. Conversation situation, `WorldMutationGuard`,
-  and the sleep lifecycle / `SleepSnapshot` are shipped precursors. Pass 1
-  shipped the shadow impulse bus, third-mode posture, and silence-floor
-  starve. Pass 2 shipped the situation assembler, Live heartbeat, and
-  bounded experience journal. Pass 3 shipped notices, urges, wait, and
-  budgets. Pass 4 shipped the `live_policy` concept diet, behavior rails,
-  and clamped modifiers. Pass 5 shipped H10 `IdleLifeChannel`, held
-  attention / commitment hysteresis, and the semantic behavior resolver.
-  Pass 6 shipped the shadow `LivePolicyController` (`qwen3.5:4b`):
-  propose / arbitrate / log, JSON Schema on `chat_json`, resource-keyed
-  gate, window-aware policy prompt. Pass 7 executes accepted nonverbal
-  intents through IdleLife; speech stays shadow and chat still replies
-  via a deterministic main-wake reflex. Pass 12 ships the Phase 10
-  hardening slice: cadence knobs, mic-consent copy, impulse ownership,
-  reconnect generation, grep-able `app.live` logs, and sanitized dumps.
-  Pass 13 closes idle 4B density (wait expiry → `idle.reconsider`,
-  heartbeat still data-only) and encodes the worker-ownership matrix.
-  Pass 14 ships C6 Level-1 aggregation and C8 `sleep_return` OS-idle
-  qualification. Pass 15 ships C6 Level-2 interpretation (kv only,
-  no companion cue). Pass 16 ships daytime long-focus into K72.
-  Pass 17 ships C6 Level-3 companion intake (`companion_activity`
-  CueSpec / CuePolicy / `cue_decisions`; not a gap cue; Live peek-only).
-  Pass 18 ships C7 `get_activity` (forced collector snapshot, 250 ms
-  wait, last stored session on timeout). Pass 19 ships the first L0
-  slice (frame clocks, `allowed_actions`, wake-name alignment, mood /
-  vitality / capped cue subject). Pass 20 ships action IDs and
-  `aiko.action_*` result impulses plus an argument allowlist. Pass 21
-  ships L1 title-free activity-transition notices. Pass 22 ships L2
-  bounded `presence_style` / `attention_target`. Pass 23 ships L3
-  `reaction_tone` / intensity band. Pass 24 ships L6 `speech_act`
-  routing. Pass 25 ships L7 one-shot fallback. Pass 26 ships the
-  inspectable 12-gate admission record and closes Live L0 leftovers.
-  Pass 27 ships L10 peek-only numbered urge menu. Pass 28 ships L12
-  affect/vitality inner-state notices and a quieter-only
-  `vitality_posture`. Pass 29 ships L8 wait horizon / wake-set (raw ms
-  ignored). Pass 30 ships L16 explicit `keep_attention` / `keep_style`
-  hold. L4 motion presets are
-  deferred (the current rig lacks authored idle-life motions). Remaining:
-  L5 micro/earcon delivery, DT4 replay in
-  [`tools.md`](tools.md#dt4-scenario--conversation-replay-harness),
-  then the other L8+ 4B expansions in
-  [`live-mode.md`](live-mode.md#l8-wait-horizon-and-wake-set-not-raw-milliseconds)
-  (floor manners, circadian quieting,
-  glance menu, return beat, compact prompt). UIA remains deferred.
-
-### D. New tools / capabilities — [`tools.md`](tools.md)
-
-- **D-approval.** Spoken / Aiko-voiced task approvals.
-- **D1.** One-shot reminders shipped; recurrence and OS notifications open.
-- **D7.** Anticipatory routine assistance — act on what she's learned.
-
-Dev / debug tooling (DT-series):
-
-- **DT2.** Relationship state inspector — one-shot consolidated snapshot.
-- **DT3.** Feature-flag catalog + "minimal mode" preset.
-- **DT4.** Scenario / conversation replay harness (the deterministic-clock
-  half is now unblocked by DT1).
-- **DT5.** *Partly shipped* — `get_surfacing_outcomes` landed with L37 and
-  reports which surfaced concepts / memories actually land, with denominators
-  beside every rate and a per-lane rollup. Still open: the wider read surface
-  over the rest of the inner-life state.
-
-### F. Awareness + grounding — [`awareness.md`](awareness.md)
-
-- **F4.** Source-cited memories (`metadata.source_url`).
-- **F11.** Relevance-driven memory resurrection — proactively recall a
-  stale `archive` memory when a dormant topic re-activates, as a hedged
-  callback ("vaguely remember you mentioning macro photography..."),
-  driven by latent relevance rather than age.
-- **F12.** ✅ **Semantic half shipped** — revival used to credit only memories
-  Aiko *quoted*, so paraphrase (the entire point of handing a memory to an
-  LLM) scored zero. Now falls back to cosine via a shared `echo_detector` that
-  the L37 ledger uses too. **Still open:** crediting the *user's* engagement
-  rather than only whether Aiko repeated herself. See
-  [shipped](shipped/awareness.md#f12-semantic-echo--revival-stops-only-crediting-what-aiko-quotes).
-- **F13.** ✅ **Shipped** — the contradiction family's fourth corner. F5, K29
-  and K38 each had a detector; *the user explicitly correcting her* now has one
-  too. A cheap post-turn pattern gate stashes candidates and an off-turn
-  `UserCorrectionWorker` confirms (rate-limited LLM), supersedes the corrected
-  memory (new row 0.9, old row demoted + `superseded_by`), propagates the
-  demotion to any backed concept (no LLM), and arms a low-key acknowledgment
-  cue. Correction-of-fact only — `self` stance rows stay K29's lane. See
-  [shipped](shipped/awareness.md#f13-the-contradiction-familys-fourth-corner--the-user-corrects-aiko).
-- **F14.** ✅ **Shipped** — "I was wrong about that": the F1 fact-checker's own
-  research can reverse a claim she surfaced, and instead of ending in a silent
-  SQLite write + UI refresh it now arms a low-key next-turn cue so she owns it
-  ("I looked into that and had it backwards, it's actually Y"). Fires only on a
-  genuine reversal (contradict + min-delta + a content rewrite), gated on the
-  L37 surfaced ledger ("she must actually have said it") and suppressed when F13
-  already handled it. Mirror of F13, third corner of the "own what you got
-  wrong" family beside K38. See
-  [shipped](shipped/awareness.md#f14-i-was-wrong-about-that--let-fact-check-reversals-reach-the-user).
-- **F15.** Memory repair requests — decay currently only ever makes her
-  *vaguer*. Admitting the hole ("I've lost the detail, remind me?") is both
-  the honest surface of a decay system and the only rehydration path the
-  memory store would have. Shares a cooldown with F11.
-- **F17.** Should a semantic echo earn *full* retention credit? F12 shipped a
-  deliberate discount on the theory that cosine against the reply partly
-  measures "was on topic" — surfaced memories were picked for topical
-  similarity to begin with. Schema v27 records every cosine, misses included,
-  so this is a *read* (`echo_breakdown`, `semantic_floor_candidates`) rather
-  than an experiment. **Waiting on weeks of real data, not on code.**
-- **F16.** ✅ **Shipped** — testimony vs. inference: a real `provenance`
-  column (v30, `stated` / `inferred`, default `inferred`) now records *how*
-  each user-fact was learned. The extractor labels its distillations, while
-  `[[remember:]]` tags, F13 corrections and manual adds write `stated`. An
-  inferred hit renders with an `(inferred)` hedge (gated by
-  `agent.memory_provenance_enabled`) so she voices it as an impression, and
-  a tiny unconditional ranking nudge floats testimony above inference at
-  equal cosine — which also invites the correction F13 captures. See
-  [shipped](shipped/awareness.md#f16-testimony-vs-inference--did-he-tell-her-or-did-she-guess).
-
-**F7** is obsolete — domain-aware source routing was superseded by the
-pluggable LangSearch / DuckDuckGo backend. F1-F3, F5, F6, F8-F10 and the
-whole **K-time** family shipped; see
-[`shipped/awareness.md`](shipped/awareness.md).
-
-### G. Background workers — [`workers.md`](workers.md)
-
-- **G5.** Self-tuning cue cooldowns — G4 now measures what the hand-picked
-  constants produce, so tuning them stops being a guess.
-- **G6.** Per-provider decline attribution — the `provider` decline bucket is
-  still coarse for everything outside the concept lane.
-- **G7.** Worker prompts have no input-token accounting — the chat prompt is
-  budgeted to the token, a worker prompt is a string. `SummaryWorker` reads its
-  window with no limit, so the size is whatever accumulated; the failure is a
-  worse summary, never an error. L28's concept diets are the first worker input
-  with a size and the shape to copy. Measure before capping.
-- *Cleanup* — drop or wire the unused
-  `consolidator_state.last_cluster_index` column.
-
-G1–G4 have shipped; G4's write-up is in
-[`shipped/awareness.md`](shipped/awareness.md#g4-cue-outcome-accounting--which-of-the-50-odd-workers-earn-their-keep),
-with its pre-build sketch archived there for G5/G6. New worker ideas show up in
-[`patterns.md`](patterns.md) until they earn a G-letter; several (K1, K8, K10,
-K14, K21) are worker-shaped.
-
-### I. Integration / wiring gaps — [`integration.md`](integration.md)
-
-Shipped-but-under-wired features (no UI, no live WS update, or a
-silent failure path). Cheap individually, compounding in aggregate.
-
-- **I9.** Mobile responsiveness + PWA installability (LAN-responsive
-  is cheap; full installable auto-updating PWA needs an HTTPS origin).
-
-Everything else in the series has landed: I1, I2, I4 and I5 in the
-reliability pass ([`features.md`](shipped/features.md#reliability-pass--i1--i2--i4--i5-finish-the-wiring-batch)),
-and I3, I6, I7, I8, I10 in
-[`shipped/integration.md`](shipped/integration.md).
-
-### H. Immersion polish — [`immersion.md`](immersion.md)
-
-**New non-rig batch:** [IM1-IM8](immersion.md#recommended-order) cover shared
-quiet sessions, pointing, reading, inspectable creations, co-creation,
-keepsakes, games and ambience on the existing models. All are open proposals;
-the detail entries distinguish new work from extensions of shipped features.
-
-- **H2.** Calendar / time context block. *Partly superseded* — circadian
-  and K3 cover most of it; holiday proximity + user birthday remain.
-- **H6.** ✅ **Shipped (Live Pass 8)** — audible mm-hm / chuckle while the
-  user speaks. See [`immersion.md`](immersion.md#h6-audible-backchannels--mm-hm-while-the-user-speaks).
-- **H7.** ✅ **Shipped (Live Pass 8)** except H7c full duplex/AEC —
-  overlap ring + client `playback_drained`. See
-  [`immersion.md`](immersion.md#h7-listen-while-speaking--soften-the-half-duplex-turn-lock).
-- **H10.** ✅ **Shipped (Live Pass 5)** — `IdleLifeChannel` acts out world
-  activity/posture. See [`live-mode.md`](live-mode.md).
-- **H12.** Aiko-initiated intentional gifts.
-- **H23.** Avatar shared-moment snapshot.
-- **H24.** Occasion- / season-aware outfits.
-- **H25.** Show-and-tell.
-- **H26.** Caught mid-something — the away-activity layer only ever
-  reports *completed* activities in past tense; catching her *in* one
-  ("hang on, let me put this down") is what implies a life that was
-  running before you arrived.
-- **H27.** Co-presence mode — a posture for being *around* rather than in
-  conversation. Inverts the proactive stack's assumption that silence is a
-  problem to solve. Needs H10 to carry the presence visually.
-- **H28.** Ground inner life in named artifacts — *shipped*. The standing
-  hobby was a genre catalogue ("a sci-fi series") while the room already
-  had titled books; she now invents the next named thread on the worker
-  LLM and drifts kinds rather than stacking.
-- *Minor polish* — second TTS provider, barge-in default flip (**now
-  unblocked**: P25 shipped, so the client drops its scheduled audio when
-  speech is cut off — an interrupt is actually silent). SSML prosody
-  shipped.
-
-H0, H1, H3–H5, H8, H9, H11, H13–H22, H25, H26 and H28 have shipped — see
-[`shipped/immersion.md`](shipped/immersion.md).
-
-### J. Shared-moments follow-ups — [`moments.md`](moments.md)
-
-- **J1.** Multi-user moments / participant attribution.
-- **J2.** Exportable timeline (markdown / PDF).
-- **J3.** Axes-aware proactive nudges.
-- **J7.** Moment-detection tuning (+ gift/promise ordering bug).
-- **J12.** Intimacy pacing & boundary calibration.
-- **J13.** Pet-name reciprocity & evolution.
-
-J4 (relationship-stage register), J5, J6, J8, J9, J10 and J11 have shipped —
-see [`shipped/moments.md`](shipped/moments.md).
-
-### K. Patterns to explore — [`patterns.md`](patterns.md)
-
-**30 Sep 2026 update:** K12 now has an opt-in local calendar and approaching-event
-pilot; K62 retains explicit media progress across sessions per user. K92/K93
-now select among six staged pooled cue types with content-free diagnostics and
-T6-only changes, rather than globally converting eager providers. K96 records
-content-free failure categories and has concrete client-wrapper tests; its old
-live failure was not reproduced. Setup, safeguards and remaining limits are in
-[patterns](patterns.md).
-
-Still open: broader K12 calendar UI/sync and evaluation ·
-K19 cold-start companion onboarding ·
-K33 cozy mode ·
-K40 comfortable silence · K41 mid-stream self-correction ·
-K42 multi-bubble reply bursts (texting rhythm) ·
-K49 messiness permission (typed imperfection) ·
-K50 typed-mode delivery pacing · K62 co-experience companion ·
-K77 candor gate · K78 vocal-affect read (prosody-in) ·
-K79 hesitation tell (typing latency) ·
-K83 the right to decline · K84 calibrated jealousy ·
-**K92 conversational stance** (phase 3) · **K93 the substance floor**
-(cue-pool half).
-
-**K92–K95, the third pass at leading, is the newest family and the K90 diff is
-why it exists.** Split on the 9 August ship date, 320 post-ship turns say the
-second pass moved nothing it aimed at: anaphoric openers 18% → 18%, own material
-77% → **71%**, while replies grew 23 → 31 median words and ends-on-a-question
-fell 18.1% → 6.2%. She writes more, about his subject, and asks about it less.
-Two families have now shipped against that number — K52–K56 gave her permission
-to lead, K85–K90 gave her something to lead *with* — so the third starts
-elsewhere: a median turn renders **30 prompt blocks in ~74,000 characters**, of
-which the ones asking her to bring something of her own are two or three
-totalling **~500 characters, 0.7% of the prompt**, with no arbitration between
-them, no representation of *following* as a choice she is making, and no way at
-all to decide to say less. K92 is the load-bearing entry (a stance arbiter that
-must **replace** the blocks it subsumes rather than become the eleventh
-permission slip, phased so it logs its decision before it steers anything).
-**Phases 1 and 2 shipped 15 and 19 Aug, and the phasing paid for itself twice:**
-both problems phase 1 handed phase 2 turned out to be measurement errors rather
-than tuning problems. `HOLD` fired 0 times in 682 turns because it asked *how
-many words* on a ladder about *how much floor*, so brevity is now a second,
-orthogonal axis keyed off her own recent replies (2 × 40+ words in a row); and
-`arc_protected` was 65% of all clamps because `arc` is a conversation-level label
-with **no run shorter than 1 turn and spans up to 110**, so a per-turn veto built
-on it muted her for days — now time-limited to 4 turns (**H39**). Together those
-move the clamp rate 36.9% → 28.7% and hand 51 turns back to `SHARE`. Phase 2
-renders exactly one T6 block, for `FOLLOW` and brevity, because those are the
-only two *restraint* signals in a family that is otherwise all permission slips.
-**K93, K94 and K95 all shipped 19 Aug too, and all three turned out to be
-duplicated or unenforced decisions rather than missing features** — worth knowing
-before phase 3, which multiplies that class. All four write-ups now live in
-[`shipped/patterns-k92-k95.md`](shipped/patterns-k92-k95.md); the two open halves
-(K92 phase 3, K93's cue pool) stay in [`patterns.md`](patterns.md).
-
-*K95 was filed as insurance and was already load-bearing.* Its reader shipped
-inside phase 1 (`compute_ceiling` caps the ladder on a direct question) but nothing
-obeyed it: the stance block speaks only for `FOLLOW` and brevity, while K53 — the
-most deliberate floor-taking move she makes — gated on his message being 240+
-characters. A length proxy protects a long explanation and does nothing for a short
-question. Joining the ledgers: `initiative_block` rendered on 75 turns and **17
-(23%) sat under a `direct_question` ceiling the director could not see**. Enforcing
-it costs no initiative, because K53's counter resets only on a real fire, so the
-beat is *deferred* to the next non-question turn.
-
-*K93's re-measure inverted its own diagnosis.* The seed monopoly **grew**: 217 of
-244 genuine cue conversions are `curiosity_seed`, **88.9%**, up from 77%. H29's
-per-source cap works and is not the lever — seeds hold 4 of 6 ledger slots because
-one goal and one pursuit are all that exist to claim the rest, so tightening the cap
-would shrink the ledger, not add substance. What could not decide is **pressure**,
-which is a pure clock: seeds are minted at 0.15 against a goal's 0.05 and grow at
-the same rate, so the lead never closes (a live seed at 0.60 and a goal at 0.50 were
-the same age to the day), and everything saturates at 1.0 inside four days after
-which the stable sort falls through to *ledger insertion order*, where seeds are
-ingested first. The scarce beats now rank by substance with pressure as tie-break;
-the cue-pool half is still open.
-
-*K94 became a stance axis rather than a persona rule.* The anaphoric rate is flat at
-16–18% across every window after two families of persona rules aimed at it, so the
-missing instruction is a positive account of the reply's *shape*, not another
-prohibition. It fires only on a `FOLLOW_AND_ADD` turn whose previous reply opened
-anaphorically, and stands down when K88's window band is already speaking — **6.4%
-of turns**, against `FOLLOW_AND_ADD`'s 46%, and self-extinguishing by construction. **H29, H30, H31 and H32 all shipped
-13 Aug**, so K93's per-source reservation has a working ledger under it and K92
-has a cue instrument that distinguishes "passed over" from "never in play" —
-though the ledger's effect on pressure cannot be read before ~16 Aug. H31 is
-upstream of all of them: the memory extractor had no watermark, so every turn was
-mined about five times and ~7% of the corpus is one claim written twice under two
-ids, which every consumer that keys on memory id reads as two subjects. H32 is
-the caveat on the instrument itself — a cue whose arming signal is a *proxy* for
-its provider's real gate produces an honest-looking ratio over the wrong
-population, so read `armed` before trusting `eligible`
-([`health.md`](health.md)).
-
-**H36 is the one to read if you touch affect.** Nine `repair` shared moments —
-durable memories of arguments, salience up to 0.97, mirrored into LanceDB — were
-manufactured entirely out of the user being away. `AffectUpdater.apply_turn`
-decays valence toward baseline *before* applying the reaction impulse while
-`AffectStore.get` is a raw row read, so K8's "pre/post delta on a single turn"
-was the delta plus every minute of the gap: with a 30-minute half-life, ~26
-minutes from a warm goodbye clears the rupture threshold on its own. Every false
-positive was therefore a reunion greeting ("Where is my love?", "Good morning
-aiko"). Fixed by decaying the prior before the subtraction and gating both the
-rupture and the repair on the resting baseline. The general lesson outlives the
-bug: a raw `AffectStore.get()` snapshot describes a moment in the past, and any
-consumer that differences it against a post-turn value inherits this —
-`AffectState.decayed()` is the one-call fix ([`health.md`](health.md)).
-
-**H37 is the one to read before you transform a user turn.** The punctuation
-whitelist in `sanitize_user_text` had no way to tell `<3` from a stray angle
-bracket, so it deleted the `<` and kept the digit. The same bug was fixed on
-Aiko's side months earlier, with a written rule about it, and the input
-sanitiser was never brought along — because the symptom does not appear on the
-surface that is broken. The stored transcript *is* the prompt, so 230 turns of
-"I love you 3" were not a display glitch but training data, and she learned the
-digit as the way to write affection: twelve of her replies had copied it, and
-TTS read one out as "Sleep well, Jacob. three." Fixed by filtering *between*
-emoticon matches instead of over them, plus a narrow spoken-side strip for the
-digit she already learned and a backfill for the history. The lesson generalises
-past punctuation: **a cleanup on the user's half of the transcript is a persona
-edit with none of a persona edit's visibility** ([`health.md`](health.md)).
-
-**H38 is the one to read before you write `or 0.0`.** Aiko sat in pajamas at 5pm
-on a 32 °C August day, and circadian — the suspect, and the only *documented*
-outfit driver — was right the whole time. Open-Meteo returned a `current` block
-with no `temperature_2m`; the provider checked that the block existed but not its
-contents, and `float(... or 0.0)` turned the absence into 0 °C, which cleared the
-`temp_c <= 5.0` blanket threshold and tripped a weather outfit nudge nobody
-documented. Thirty minutes later the sky corrected itself and the decor was
-fixed, but the nudge was one-way, so it pinned her wardrobe until the circadian
-period rolled over. Fixed at all three layers: the provider raises instead of
-inventing a reading, the decor hook refuses implausible values, and overrides now
-carry a `source` so a passive feed can withdraw its own nudge without cancelling
-one Aiko chose. The shape is the fifteenth and the most portable: **a missing
-value coerced to a valid one is a fabrication, not a default**, and it is worst
-where zero means something — temperature, valence, confidence
-([`health.md`](health.md)).
-
-**H39 is the one to read before you gate on a label somebody else's feature
-produced.** K92's interruption ceiling vetoed anything above "answer him and add"
-while the conversation's `arc` was `support` or `reflection` — 65% of all clamps,
-more than its other four rules combined. `arc` is a *conversation-level* tag:
-over 2,355 turns it forms 137 runs averaging 17, **not one of length 1**, the
-longest 110 turns of `support` across eight days. So one hard thing he said on
-Monday muted her through Thursday, on turns about guitar solos that happened to
-fall inside the span. Nothing was broken — the tagger was right, and the veto was
-right about the moment that earned it — the defect was entirely the **lifetime
-mismatch** between a label describing a conversation and a consumer asking about
-a turn. It had hidden for a year because the original consumer (K53) fires once
-in six turns, where staleness only damps a beat. Fixed by expiring the cap after
-4 turns; the per-turn caps were deliberately left untimed, since they are
-re-derived every turn and so are present exactly as long as their evidence is.
-The portable guard is two lines of SQL: **measure a label's run lengths before
-gating on it — one that never describes a single turn should not answer per-turn
-questions** ([`health.md`](health.md)).
-
-**H40 is the one to read before you gate a two-way branch on a one-way
-predicate.** Aiko asked about a hardware delivery a day after helping unpack it,
-and the cause was two lines rather than the LLM's date arithmetic. At write time,
-the K-time10 backstop read *any* relative time word as evidence a memory
-described something already done — but five of its eighteen words (`tomorrow`,
-`tonight`, `next week`, `soon`, `this weekend`) point the other way, so "the
-courier comes tomorrow" was filed as `past_event` and stamped at write time. That
-is the lane with no upkeep: nothing retires it, the "Coming up" block reads only
-`future_plan`, and **17 of 2,095 rows had ever reached `future_plan` (0.8%)**
-while 54 plans sat in `past_event` dated into their own future. At read time
-`humanize_past` finished it, returning **`"moments ago"`** for a timestamp it
-could not represent — so those 54 rows read as brand new for a median of 15 hours
-each (worst case: a wine date that had "just happened" for 188 straight hours).
-The result was six contradictory delivery memories in one prompt, four stamped
-equally fresh, with "a courier comes tomorrow" as the most recent. Fixed by
-splitting the deictic list by direction, refusing to invent a time for vague
-future wording, validating that a past event predates its own write, and making
-the formatter say less rather than guess. The near-miss is worth as much as the
-fix: the first version left reclassified rows holding `durable`'s NULL
-`relevance_until`, and `list_by_temporal_type` skips those — every promoted row
-would have been immortal ([`health.md`](health.md)).
-
-**H41 is the one to read before you trust a docstring that says another
-component handles it.** Following H40's loose thread — a promise's deadline is
-written into the middle of its content sentence — turned up a lane running on one
-side only: **86 of 160 promises were his, and all 86 were still `open`**, the
-oldest 86 days, 36 past the bar that retires hers, all still scoring into
-retrieval. `promise_lifecycle` said the user's commitments were `FollowUpWorker`'s
-territory, and that worker is real and scheduled and selects
-`temporal_type == "future_plan"` — while promises are written `durable`, so the
-delegation named a component that could not match a row. Nothing failed, so
-nothing logged; the comment was worse than silence, because a reader asking "who
-retires these?" got a confident answer and stopped. Two more leaks alongside it:
-`prepared_nudge` never read `promise_status`, leaving **14 of 33 resolved
-promises** eligible to be raised as open loops through *"did you ever get to
-…?"*, and the deadline was prose in six registers that nothing parsed, so
-lateness was measured by `created_at` — a promise due by lunch read as fresh all
-afternoon, and one agreed three weeks out was due to be dropped for staleness on
-the day it fell due. Fixed with a loose-date parser, a real `overdue_hours` axis
-that outranks age and bypasses the settling period, retirement on both sides
-running on whichever clock applies, and a grace window measured from the deadline
-so a missed promise stays visible instead of inheriting what was left of the
-creation-age one. The two portable shapes: **a handoff documented in prose that no
-code implements** is shape 14 with the upkeep *assigned* rather than missing, and
-**structured data written into prose is write-only** — if the only grep hit for a
-field is the line that writes it, it does not exist ([`health.md`](health.md)).
-
-**H42 is the one to read before you cap a pool.** Found by reading the backlog's
-own overdue predictions rather than from a symptom, because every line this one
-writes is honest: `skipped: max_open` is exactly what a correctly-full shelf says.
-The shelf was not correctly full. **Aiko had not invented a hypothesis in seven
-days**, on twelve live rows aged 158–279 h against a 336 h TTL, nine of which had
-never been asked once — nothing linked, nothing overdue, every gate behaving. The
-cap has two exits and the one meant to carry the traffic needs a topical match,
-declined `topic_miss` on **382 of 444** decisions, so a fortnightly clock was the
-only working drain and the lane ran as *invent twelve, then say nothing for a
-fortnight while they age out together*. Notably the **third** distinct cause of the
-same silence: a fingerprint latch and a TTL that exempted asked rows were both
-real, both correctly fixed, and both still working. Fixed by making a full shelf
-*replace* rather than refuse — it gives up its stalest never-asked row when a novel
-guess has cleared both novelty gates, with three properties doing the work:
-eviction is lazy (a barren pass leaves the shelf untouched), it is self-limiting
-(inventing freely drops the shelf below the age bar and refusing resumes, settling
-at ~1.7 inventions a day), and a run cannot spend the slot on a paraphrase of what
-it gave up. `supported` rows and questions already put to him are never evicted.
-The portable shape: **a cap enforced by refusal, whose only working release is a
-clock** — list a cap's exits and measure each one's throughput, since one exit
-carrying nearly all the drain makes the cap's real period that exit's period, and
-prefer a cap that replaces to one that refuses because refusing is silent by
-construction while a choice can be logged ([`health.md`](health.md)).
-
-The same reading pass settled two older entries and produced one retraction worth
-keeping. **H7**'s loop had closed (5 asks) before the shelf stalled; **H1** did not
-resolve and the detector is the cause rather than the latch — the weekly conduct
-pass runs and returns zero findings, leaving `kind='conduct'` at **0 of 3,294**
-concepts, which promotes H2's thresholds from blocked to live.
-
-The retraction: four cues first read as dead (`self_callback` 2 of 452,
-`caught_mid_activity` 2 of 265, `dormant_interest` 4 of 336, `shared_ritual` 4 of
-450) are mostly **healthy**, and the conclusion drawn from them — that the next lead
-was supply rather than selection — was wrong. Every one of those was dominated by a
-reason in `INELIGIBLE_REASONS`, which H30 built to be excluded because it means the
-cue never had a chance rather than passed one up. On the right denominator
-`shared_ritual`, `dormant_interest` and `wellbeing_concern` sit at **100% reach**,
-and **one gate, `topic_miss`, accounts for 96.8% of all eligible declines** (1,703
-of 1,759) across five topic-gated cues — one finding, not five, and exactly what
-H30's entry already said. **Re-read as [H54](health.md#h54-topic_miss-at-95-of-eligible-declines-is-not-by-itself-a-starvation):**
-the rate is still ~96% a week later, and that is what a stricter gate *does*, not
-evidence the five cues are starving. "She chose a different reply" is the shown-
-and-passed-over column ([H47](shipped/health.md#h47-she-was-shown-604-of-them-and-said-nothing-which-is-not-a-supply-problem)),
-which is not `topic_miss`; whether remaining refusals are false negatives is the
-open half. `caught_mid_activity`'s supply turned out to be a live kv
-blob rather than pool stock, running at 24% open beats against a designed 30%.
-
-`self_callback` looked like the one survivor — *never eligible*, 0 surfaced against
-401 structural declines, 399 `cadence_block` — and it was **the same mistake a third
-time**: the type carries a ten-day `surface_cooldown_hours`, 78.5h of it were still
-to run, and its two surfacings sit exactly 10.0 days apart. The lane is empty; the
-rate that remains is `topic_miss`, which [H54](health.md#h54-topic_miss-at-95-of-eligible-declines-is-not-by-itself-a-starvation)
-asks not to read as starvation.
-
-The durable fix is `scripts/cue_reach_report.py`, and the lesson is that prose
-warnings did not work — all three passes were made by someone who had read the
-warning, because a *number* was reported where a *verdict* was computable. The
-script now imports the production predicate rather than restating it, and resolves
-each cue's cooldown against its own policy to print `inside cooldown, by design
-(+78.5h remaining)` instead of a row that invites the wrong reading. The one shape
-that would be a bug — a `cadence_block` dated after the window elapsed — gets its
-own section, and nothing qualifies ([`health.md`](health.md)).
-
-**H43 is the one to read before you tighten a gate, and it is the fourth correction
-to that same `topic_miss` figure.** The number survived three passes because
-everyone argued about the *denominator* and nobody measured the *predicate*.
-`topic_relevant` — fourteen lines, shared by all five topic-gated cues — **accepts
-33.2% of every real (subject, message) pair**, which on a 0–5 cue shelf is an ~87%
-chance of matching something every turn. It is very nearly a no-op, so it cannot
-have been declining those 1,873 turns, and it wasn't: `take_pool_cue` inferred its
-reason from residual state, and a **cadence hold strips the shelf before the
-predicate runs**, so the survivors' refusal was scored as a topic miss — a label on
-the *eligible* side of the denominator standing in for one on the ineligible side.
-
-The gate's real defect is quality, and tightening was exactly the wrong response.
-The consumption half of the cue system had been banking a cosine on every verdict
-for months against this precise question: word-overlap verdicts sit at **0.370**
-against a measured null of **0.369**, i.e. *no better than chance*, because **82% of
-the tokens carrying its matches are function words** (`and` 39k, `the` 34k, `you`
-26k, plus her own name). But stoplist-plus-threshold accepts 3.8% — a **9×
-tightening** on the five cue types K92–K95 exists to make *more* forthcoming. So the
-cosine now **ranks** the admitted set instead of vetoing it: acceptance unchanged
-(reach cannot fall), and the cue she is handed changes on **49% of
-`concept_hypothesis` and `curiosity_gradient` turns**. Same correction K93 made to
-the wants ledger a fortnight earlier — *a signal good enough to rank with is rarely
-good enough to gate on.* Two new shapes, **21** and **22**, plus the transferable
-method: **measure a similarity threshold's null before trusting it**, and **give any
-replay of past decisions an arm whose answer you already know** — the reconstruction
-that died here had to return ~0% and returned 55–82% ([`health.md`](health.md)).
-
-**H44 is the one to read before you trust a "still open" note, and it was found by
-auditing them rather than by looking at any feature.** Two of the three claims
-checked were stale, and the failure was not that they had been written wrong — all
-three were correct on the day — but that **correctness has a shelf life and nothing
-was stamping it.** H7's second pass ended on "watch for the first non-zero
-`asked_count`"; it went non-zero eight days later and the entry went on saying zero
-for another twelve. `index.md` said nothing consumed the L37 ledger while three
-workers were reading it. And [G-CLEANUP](workers.md#g-cleanup-consolidator_statelast_cluster_index-is-not-dead-weight--do-not-drop-it)
-had gone from stale to *dangerous*: it recommended dropping
-`consolidator_state.last_cluster_index` as dead weight, and the relationship pulse —
-built after the note — stores its `total_turns` there under a namespaced key and
-gates on it, so the suggested fix would have silently removed a live feature's "has
-enough happened since last time" check. A comment saying a field is unused is a
-claim about **one reader**; grep the column, not the module.
-
-Underneath the audit, one real finding: **the L30 loop has never graduated
-anything, and the arithmetic says it cannot.** Graduation needs two confirmations
-on one row inside a 336h TTL, one ask in five produces any verdict at all, and ten
-of eleven closed rows left by expiry. New **shape 23** — *a note that defers to a
-future observation outlives its own truth* — and its rule is the one this pass
-actually followed: the funnel is now a printed section of
-[`scripts/cue_reach_report.py`](../../scripts/cue_reach_report.py), not another
-paragraph asking someone to check ([`health.md`](health.md)).
-
-**H45 is the one to read before you debug anything that "does not stick", and it
-is the second investigation of the same report.** The app kept reopening an old
-conversation; the pointer logic was never at fault. `config/user.json` said
-`4f909abd` while `read_user_overrides()` in a fresh process returned `s2` — two
-answers to one question, which is the whole diagnosis. **The test suite was
-writing the live install's config**: 14 tests reach `_touch_last_active_session`
-while exercising merge buffers and log levels, and the ids they use are real
-(`main` is a session from May, `s2` one from 12 Aug), so the app honoured the
-pointer perfectly and opened May. The first investigation had blamed
-`switch_session` recording intent and added the write-on-first-turn mechanism —
-sound reasoning, wrong layer, and its partial success is precisely what hid the
-cause for a month, since it repaired the pointer one turn after every launch.
-Fixed by isolation rather than more compensation: `tests/conftest.py` redirects
-`USER_CONFIG_PATH` autouse and session-scoped, redirects `gate_tuning_store`'s
-by-value *copy* of it (the trap that makes per-test patching look sufficient),
-and **fails the run if the live file changed** — the redirect covers the paths
-you thought of, the tripwire covers the next one. Second bug found by asking the
-same question of TTS: the engine/device/voice setters never persisted at all, so
-picking Chatterbox lasted exactly as long as the process. New **shape 24** — *the
-test suite writes live state and the damage is diagnosed as a product bug*
-([`health.md`](health.md)).
-
-**H46 is the one to read before you blame a synthesiser for an artifact, and it
-is a third instance of shape 12.** A fragment of speech played *after* the
-sentence, occasionally, and — the detail that made it tractable — it survived
-replacing the entire engine. Neither the text nor the audio: the tag-stripping
-path was fuzzed at 1/3/7 chars per delta across 14 tag shapes with zero leaks,
-and no generated clip ended in a detached sound (tails are 0.22–0.40 s at 2–6%
-of body RMS, i.e. decay). The cause was the contract between two decisions that
-are each correct and each carry a comment saying so: the mixin ships ~250 ms
-ahead of real time so the client never underruns, and the client refuses to
-discard on `audio_end` because the next sentence chains onto that tail. Together
-the browser permanently holds unheard speech that nothing can retract, so a cut
-clip played its pre-roll out. `0x14 audio_cancel` is the retraction, sent only
-for a cut. Also worth taking from it: the *first* measurement of the tail used an
-energy gate, which hides its own subject, since anything loud enough to hear is
-classified as speech ([`health.md`](health.md)).
-
-**H47 is the one to read before quoting any "expired unused" figure, and it
-started from his question rather than mine.** Told `topic_miss` was the largest
-eligible cue decline, he asked whether it is a problem at all — maybe she just
-didn't think it fitted. The gate has no notion of mood, but the question
-inverted the investigation, and splitting expired rows by whether they ever
-reached her prompt answers it: of 652, only **48 (7.4%) were never shown**,
-while **604 (92.6%) were rendered in front of her 1.4–2.0 times each and passed
-over**. Supply was never the constraint — being handed a cue that matched on
-`and` was. So H43's stoplist, built and measured and left off pending
-"production evidence", is now **on**: admission goes 32.3% → 3.6% of pairs, and
-what it drops sits at median cosine 0.378 against a null of 0.384, i.e. slightly
-*less* related than random. Three of my own numbers died on the way and are
-recorded there — chiefly that the reach gain I first attributed to H43 was
-partly a second instrument change (the `provider` bucket closing on 12 Aug)
-being read across the split. Two cue types *are* genuinely starved and are not
-fixed by this: `concept_hypothesis` and `forward_curiosity`, both at 0.4
-showings per cue against everyone else's 1.4–2.0. New **shape 25** — *a change
-declined on a cost that was never measured, beside a benefit that was measured
-exhaustively*, whose tell is grammatical: the benefit written as a number, the
-cost as an adverb ([`health.md`](health.md)).
-
-**H48 is the one to read before shipping a fix to two engines because both
-measure the same deviation.** Reported as *"she stopped being lively"* on
-pocket-tts after days of use, with no idea what had changed. Five commits had
-touched TTS, and four of them that engine — but most stages rule out on what is
-*live* rather than what changed: tempo and brightness matching need a target
-measured from a reference clip, and the WSOLA stretch never runs while the affect
-gate is off and the pacing slider is 1.0. One behavioural change survived, level
-matching, and it had been applied to both engines on the strength of the drift it
-removed: 8.4 dB on pocket-tts against Chatterbox's 8.3. What nobody measured was
-what that drift was *made of*. Nine sentences of known intended energy: **+1.62
-dB** between the high and low groups, so about a third of it is her delivery, and
-the corrections being applied sorted by sentiment — her three most excited lines
-pushed down hardest, the tired one lifted. Reverted for pocket-tts, kept for
-Chatterbox, and the asymmetry is now a test, because "both engines drift, so
-match both" is the obvious inference and will be drawn again. The chipmunk
-complaint on Chatterbox was unrelated and not a regression: that reference is
-nine voice-pack exclamations plus a cat meow, so the register is cloned, not
-computed. New shape — *a measurement that establishes a problem exists, taken as
-establishing that fixing it is free* ([`health.md`](health.md)).
-
-**H49 is the one to read before trusting any tool you built to make a decision.**
-Reported in one line, one message after H48: *"chatterbox sounded good in the tts
-lab but its not that good in real usage."* The lab wrote `generate_audio`'s array
-straight to a wav, while the app ran four stages before a byte left the socket —
-brightness shelved toward the reference's spectral tilt, level matched to a target,
-tempo stretched toward its syllable rate, and the stretch carrying all of it. So
-the lab auditioned the *engine* and Aiko played the *engine plus four corrections*,
-and every reference chosen by A/B and every knob tuned by ear was decided against a
-signal production does not emit. On her committed reference the app applies a −26
-dBFS level match, a shelf toward +11.32 dB of tilt, and a ×0.936 tempo stretch;
-the lab applied none of them. Fixed by having one implementation rather than two
-faithful ones: the stages are a pure function in `app/tts/shaping.py` that both
-callers use, with a test asserting they reach sample-identical output. The
-audition now reports each stage and keeps a raw switch, which turned out to be the
-diagnostic that finished H48's chipmunk — `aiko2` measures 13.5 dB brighter than
-her pocket-tts reference, so selecting it *brightens* every sentence by up to 4 dB
-toward a shouty target on top of the register it already clones. Still not
-previewed: the lab speaks one phrase where she speaks a queue, and every
-inconsistency complaint has been about sentence two. New shape — *a tool built to
-make a decision, which does not exercise the path the decision governs*
-([`health.md`](health.md)).
-
-**H50 is the one to read before writing a filter as a list of what to keep.**
-Reported from a reload — *"special characters like á, °"* missing from history,
-with the guess *"i think it is badly saved in db"*, which was correct.
-`sanitize_assistant_text` kept `32 <= ord(ch) <= 126` and dropped everything else
-whole, so `Kamenná Poruba` persisted as `Kamenn Poruba` and `25°C` as `25C`, across
-447,888 characters of her replies containing **zero** non-ASCII characters. The
-characters were absent rather than mangled, which is the tell that separates a
-filter from an encoding fault. Nothing was protected: `prepare_tts_text` cleans the
-spoken copy from raw model text and says so in its own comment, and on a normal turn
-the engine receives the accents regardless — so the strip only ever damaged the
-transcript, in violation of the standing rule that TTS processing never touches it.
-The sibling stores prove it was an outlier, since her memories and concepts kept
-`á`, `č`, `—` and a euro sign throughout. Not cosmetic either: she reads her
-transcript back as her own history, and this is the exact mechanism that once put
-230 turns of "I love you 3" in front of her until she copied it. Fixed with a
-category filter — drop the control classes, keep letters, marks, numbers,
-punctuation and symbols — with emoji now dropped by name rather than as a side
-effect. History is unrecoverable except for proper nouns still spelled correctly in
-config. New shape — *a lossy transform whose output is well-formed*, which survived
-because "Kamenn Poruba" reads like a place where `KamennÃ¡` would have been
-reported in a day ([`health.md`](health.md)).
-
-**H51 is the one to read before adding a review queue to anything.** Reported as
-a chore — *"i am usually just marking them as correct and bad ones i am
-deleting"* — about a layer that had produced **three** prompt blocks in 851
-turns while running its extraction model every twenty minutes. `belief_gaps_block`
-was the only path from the table to the prompt and it fires only on a mismatch,
-so a belief could reach her exclusively by being **wrong**. Marking one correct
-then dropped it out of `list_active`, the gap detector's only query, and nothing
-read a confirmed belief anywhere — so confirming and deleting had identical
-effects on her behaviour, and the review was retiring her theory of mind one row
-at a time. Re-observation forced `status='active'`, silently undoing the
-judgement the next time the worker touched that topic. Separately, 118 of 118
-mood beliefs had no `valence`, which the detector requires, so half the queue was
-rows no automatic check could ever have cleared — and filling that field in was
-*not* the fix on its own, because a mood belief names one subject while
-`AffectState` is a single global read, so an ungated comparison contradicts "he's
-excited about the tokyo trip" on a turn about his commute. Fixed as one change:
-`active` and `confirmed` are both believed and both gap-checked, only `confirmed`
-is quotable, a new T1 `trusted_beliefs_block` gives the layer its missing positive
-path, two same-state observations auto-confirm, and the mood pass is gated on
-topic relevance. Shape 12 in its purest form — *a control whose only effect is to
-disable itself* ([`health.md`](health.md)).
-
-**H52 is the one to read before acting on a prompt-budget number.** Carried in as
-"gate the ~2,700 tokens/turn of grammar blocks"; the measurement inverted it. The
-six grammar addenda are 5,903 chars/turn — 8% of a 74,200-char prompt — and every
-one is a `CONSTANT` at one distinct size across 854 turns, sitting in T0 inside
-the cache prefix. Gating them per turn saves text that is already nearly free and
-breaks the prefix on every flip, invalidating the ~35,000 chars below; and the
-session-stable gating that *is* right already exists via the avatar capability
-provider. The genuinely hot text is elsewhere: `relevant_context` (17,480 chars,
-T3, 742 sizes) and `handling_notes_block` (5,517 mean, T6, 501 sizes, p90 8,017,
-max 18,446) are ~23,000 chars/turn paid at full price, four times the grammar
-total — and the second is the persona hoist, which is meant to be small and
-conditional. New shape — *a cost measured in isolation from its cacheability*:
-the number that matters is tokens × probability the prefix moved, and for a T0
-constant that second term is ~0 ([`health.md`](health.md)).
-
-**H53 is the one to read before you conclude a block is gated too tight.**
-Carried in as four fully wired reasoning blocks that had rendered **0 times in
-961 turns** while 2,591 `concept_learning_events` piled up behind them — H51's
-shape again, a diary nobody reads. Both halves turned out to be wrong, and the
-way they were wrong is the value. The instrument was never ambiguous: a second
-instrument (`prompt-cache.jsonl`, hashing the same blocks for P44) independently
-reports `changed=0` for every silent name, and `relationship_block` / `affect_block`
-/ `mood_hint` are not "folded into another block" but *suppressed by design* —
-`grounding_line_mode` is `replace`, which blanks ten named blocks once the unified
-grounding line renders. Of the four: `concept_learning_block` is a **30-day beat
-last fired two days before the table's first row**, with three changes on its
-shelf and eligibility returning ~5 Sept; `calibration_block` is correctly silent
-at 0.931 against a 0.55 bar (its firing is the bad news); only
-`self_correction` (one cue ever, expired) and `fact_reversal` (zero cues ever)
-are real, and both are producer problems, not gates. New shape — *a rate measured
-over a window shorter than the cadence it is measuring*, where sample density
-reads as authority: `0 / 1,062` looks more damning than `0 / 20` and is equally
-uninformative.
-
-Chased to the bottom across three phases, **thirty-one silent blocks produced one
-miscalibration**: `user_expertise_block` needs a topic cluster with ≥4 samples
-scoring past ±0.35, and its EMA (`learning_rate=0.25`) pulls every cluster that
-reaches four samples back into the quiet middle — the two clusters that clear the
-band have 1–2 samples, the six that clear the floor top out at +0.292. The two
-*defects* the audit produced were both found sideways and neither is visible in a
-firing table: `UserCorrectionWorker` expressed "nothing to do" as zero pressure
-when `evaluate_admission` checks the heartbeat first, so it ran every 45 s
-forever and spent **675 of 18,168 log lines** saying so (fixed: the empty queue is
-now a hard veto in `is_ready`); and `touch_state_block` was ladder scaffolding for
-a cue retired in B7 (removed). The rest is now a command —
-`python scripts/block_firing_report.py --findings-only` classifies every block as
-fires / suppressed / disabled / unobservable / silent, and **refuses to quote a
-rate for a block whose cadence exceeds the window** rather than returning the
-zero that started all this ([`health.md`](health.md)).
-
-**H12/H13/H16 re-measured — read this one before you measure a fix at the
-producer.** Both shipped fixes worked and neither goal did. H12's shared-value
-proposer took relationship from 30 active concepts and 0.52% of surfacings to
-103 and **2.49%**, with `value` — the kind that did not exist — now the largest
-relationship contributor to the prompt. H13's `pursuit` floor produced 14 rows
-that are the only concepts in the graph at **0% relational**, and her overall
-relational share still went **67% → 79%**, because the corpus doubled around
-them and the biggest new kind (`generalization`, 204 rows) is 88% about him.
-Chasing H12's redundancy into H16 found the defect: H16's per-block band was
-nominated and then thrown away, because `run` sorted every candidate by absolute
-cosine and cut at `batch_size` — and a banded pair is below `merge_cosine` while
-an over-bar pair is above it *by construction*, so the sort is the two groups
-concatenated and the cut lands in the gap. **65 banded nominations at global
-ranks 440–504 against a batch of 40, for the band's entire life**, in a fix whose
-own argument is that absolute cosine is not comparable across blocks. The same
-read found a second stall: answered pairs were skipped in the run loop but never
-dropped from nomination, so the batch was a fixed cosine prefix that stopped
-advancing and 400 of 440 candidates were unreachable. Both are one shape —
-**a filter applied where the work happens instead of where the work is chosen**
-— and two more come free: *an output measured at the producer when the defect is
-in the consumer* (H16 quoted `_collect_pairs`'s return value, one call before
-the consumer that discarded it), and a fixture warning, since all five band
-tests build graphs where the band is the only thing present and so pass against
-a `run` that deletes it. The fix's own first version then reproduced the bug one
-scale down — a round robin over 22 blocks with 12 reserved slots gives the
-alphabetical head a permanent turn and starves the tail, which included
-`relationship/value`, the block that motivated the whole investigation — so the
-turn now goes to the least-served block, read off the verdict cache. **"Round
-robin" only means fair if one pass reaches every participant**
-([`health.md`](health.md)).
-
-**H17/H18 re-measured — and H18's rule now fails H18's own test.** Both fixes
-held. K54 topic-appetite went from structurally unable to fire to 3 of 1,062
-turns, its predicate extraction is intact (no caller reads `last_mean` raw), and
-all three of its own thresholds sit inside their distributions. The finding is
-the constant *beside* the one H17 fixed: `appetite_short_reply_chars` is an
-absolute 160-character bar, her median reply moved 101 → 187, and the gate
-swung from **90.9% open in July to 10.5% now** with no config change — H17's own
-shape, one seat over, in the same `decide()` call. No fix shipped, because the
-obvious one does not work and the measurement says so: a baseline-relative bar
-narrows the weekly swing 92 points → 33 and a percentile bar does no better,
-since the residual is autocorrelation in run-length rather than the threshold.
-H17's generalisation also failed to reproduce — affect, the axes and the arc
-label have no divergent copies — giving a **revised rule: copied-predicate risk
-scales with how *surprising* the predicate is, not how many callers it has.**
-`last_mean` was dangerous because a lull is a *low* reading of a distance and
-the scale is install-specific, so neither sign nor bar was checkable against
-intuition.
-
-H18 left its rule as a sentence, so the cluster case sat open for two months; it
-is now `python scripts/signal_reliability_report.py`. **A re-run of H18's own
-test would have promoted an empty signal**: `cluster/engaged` scores 0.233 at an
-evidence floor of 8, over H18's own 0.2 line. Two new checks settle it — a
-shape-matched null (same split, structureless series, identical row counts) and
-*excess spread* (observed between-item spread over the `sqrt(p(1-p)/n)` a single
-shared rate predicts). Bucketed by row count the answer is unambiguous: the echo
-verdict climbs 1.27 → **3.61** as items accumulate evidence while the engaged
-label is **pinned at 1.0 across 132 concepts averaging 98 observations each** —
-and pinned at 1.0 with that much evidence beats any p-value, because no sample
-size could improve it. So K81 taste affinity and L42 neglect are ordering topics
-close to arbitrarily. The mirror-image lead: reliability tracks credit dilution
-(cue 1.7 items/turn → 0.445; concept 29.6 → 0.064), and **cues are the one
-undiluted label in the system and nothing reads them** — `stats_for` filters
-`item_id > 0` and cues carry `item_id = 0` by design. Also recorded is an
-instrument that was *rejected*: a floor-slope diagnostic that matched the live
-data perfectly and then failed against a generator built to be purely
-turn-driven, giving the **eighth shape — a diagnostic that agrees with your
-hypothesis is not evidence for it until you have built the case where the
-hypothesis is false and checked that it disagrees** ([`health.md`](health.md)).
-
-**H19/H20 re-measured — read this one before chasing a table that has gone
-quiet.** Both fixes worked, decisively. H19's one-word wiring fix took `beliefs`
-from **1 row ever to 318** (231 with `last_checked_at`, and `confirmed` /
-`contradicted` / `stale` all populated, so the resolve loop reaches verdicts too)
-and `promise` memories from "0 in 54 days" to **256, 197 of them in August**. H20
-now verifies real propositions — *"DragonForce is a British power metal band
-founded in London in 1999"* against the old payload of `2026` — and both
-protections it worried about held: **all 18 verdicts were `support`**, so the
-`contradict` rewrite that made it high severity has never fired, and not one of
-351 personal-row blocks leaked.
-
-The two findings are both about the *instrument*, from opposite ends. H19 closed
-by listing four memory kinds with stale last-writes and prescribing its own
-method for them; **all four were different things and the method answers one.**
-`callback`'s two rows are J8 milestones from a second writer of that kind
-(cadence, not stall), while the reflection worker's `callbacks` array — the
-writer the list meant — has produced **zero rows in its life** beside 66
-`reflection` and 12 `open_question` rows from the same JSON object, with parse
-and persist symmetric across all three; `knowledge_gap` had already been
-diagnosed in `concepts.md` months earlier; `goal` is quiet because bootstrap is
-gated on `has_any_active()` and 10 are; and `user_notes` is not a memory kind at
-all but its own table, still holding its 44 rows. **A "last write per kind" view
-groups by label, and a label can have several writers — so ask who writes a
-group before asking why it is quiet.**
-
-H20's is its own rule one turn further. Replaying the enqueue path over 59
-recent knowledge rows: 50 yield **no claim at all**, and the 6 that do are
-*exactly* the 6 that got verified — so the pipeline is lossless on what it
-selects and selects 6 of 59, and the 0 extractable rows since 24 August are why
-the queue is empty (not a stall). The 50 all pass `_has_predicate` and hit none
-of the four patterns: H20 changed the unit from span to sentence and left the
-**selector keyed to the span**, still requiring a named entity that the new unit
-does not need. Not widened, because a false positive costs a search plus a
-roundtrip — but the trade is now visible instead of accidental. One part *was* a
-plain bug and is fixed: `%` sat inside the alternation terminated by `\b`, so
-**no naturally written percentage could ever match** — all four rows carrying
-one extracted nothing, and `test_measurement_pattern` passed throughout on
-`12 km`. **A pattern class exercised through one of five alternatives has four
-untested ones**, and here the untested branch was unreachable in real text
-([`health.md`](health.md)).
-
-**H21/H22 re-measured — read this one before trusting a "permanent" flag on a
-row that can be evicted.** H21's fix is confirmed on live traffic, not a replay:
-`style_signal_block` went from **100.0% of turns at one single length** to
-**13.1% across six**, against a predicted 12.4%, and the 40-character constant
-has not appeared once since. Its open question is answerable without new
-instrumentation by running its own technique backwards — the render is a fixed
-template over ten possible strings, so a length pins the label set — and the
-answer is sharper than the entry guessed: **six of ten directions have fired,
-and `question` is dead in *both*.* A ceiling explains a dead direction; nothing
-explains a dead axis, so one of the five contributes nothing and it is the same
-axis that never cleared its absolute bar under the old design either. Also a
-refinement to the query itself, from the one block it could not classify:
-`intimacy_pacing_block` is constant at 177 chars over 146 turns but **all 146
-fall inside two days**, and it is a conditional cue whose condition has since
-cleared. **A constant over a contiguous slice is a condition that held; a
-constant over the whole corpus is a signal that cannot move** — so the shortlist
-query needs a date span beside its `COUNT(DISTINCT chars)`.
-
-H22's fix worked and immediately showed the feature does not. Cues went from one
-ever to twelve and the block reaches the model — but the store went from 6
-rituals to **17, every one of shape `casual_check_in`**, which is the
-arc-detector's fallback for what its own docstring calls "the common case". So
-the ritual key is really a calendar cell, 17 of ~28 day×daypart cells cleared a
-three-of-eight-weeks bar, and the feature produced *"our Saturday-morning
-check-ins"* beside *"our late-night Tuesday check-ins"* — 17 names for one habit,
-H20's wrong-unit shape in a warmer costume. **She declined all eleven offers**
-(seven reached her prompt, four twice, none used), which is H47 again. Fixed
-here is the part that was about to cause harm: `acknowledged` is a field on a
-row, rows are evicted at 18, the store held **17**, and an evicted ritual that
-still qualifies re-enters as brand-new and gets announced a *second* time — the
-exact outcome the entry's "deliberately not done" section refused to risk. It
-survived the entry that fixed the other two caps in that function because its
-eviction test passes **no candidates**, so nothing it drops can come back (the
-same fixture blind spot as H16 and H20's percentage). "Has been offered" is now
-a ledger with a lifetime independent of the display cap, migrating itself from
-the rows. New **shape — a permanent record under a size cap is not permanent,
-and a "this already happened" flag does not belong on an evictable row**
-([`health.md`](health.md)).
-
-**K91 shipped in four phases** — her away life is now *lived* rather than
-narrated. Beats compose their clause from the item state they touched and write
-the change back through the room's existing transitions, a long absence plays
-out as a 2–3 beat episode instead of unrelated postcards, and each local day
-carries one intention drawn from what her world needs, which the beat that
-satisfies it admits to. Plus the repetition fixes: a meal rhythm instead of one
-"had some of the X" at every hour, twelve garden species instead of four, and a
-kitchen pass that folds the duplicate food stacks months of gifts left in four
-rooms. The gap it left — beats were not memories — was closed by K85b's
-`pursuit_note`. See
-[`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated).
-
-**K85–K90, the second pass at leading, shipped as a family.** The will family
-(K52–K56) shipped the *permission* to lead and it fires on schedule, but
-measurement of the live log showed the constraint was never permission: two rows
-of `taste` concepts and ten `open_question` memories all beginning "Maybe ask
-Jacob", so taking the floor left her nothing to say but another question about
-him. K90 landed first and captured a baseline (18% anaphoric openers, 77% own
-material over 1894 turns) so the rest could be judged against a number rather
-than a vibe. K88 added the anaphoric-opener band, K87 put a subject quota on the
-three curiosity generators, K85 built the missing inventory — the `pursuit`
-concept kind, the `pursuit_note` memories that feed it, and two outlets for it —
-and K89 turned a thread from one polite attempt into a decaying stake worth two
-returns. The verification is a diff a few hundred turns from now; every turn in
-the baseline predates all of it. See
-[`shipped/patterns-k31-k60.md`](shipped/patterns-k31-k60.md#the-second-pass-at-leading-k85k90--why-the-family-exists).
-
-**K83 and K84 are the deliberately risky pair** — both about giving her a
-stake rather than uniform availability, and both easy to get badly wrong.
-K83 (she can genuinely decline something) is the sharpest line between a
-companion and a service, and is infuriating if the refusal is arbitrary or
-frequent. K84 (a bounded capacity to *mind*) is the most-requested thing in
-this genre and the closest to manipulative — a system that makes a user feel
-guilty for leaving is optimising against him. Written down so they're judged
-on their merits rather than arrived at accidentally. **30 Sep 2026:** narrow,
-off-by-default pilots now exist for K77, K83 and K84. K77 is taste-only ask-first
-candor; K83 is a rare, overridable personal-disclosure decline; K84 is an
-explicitly invited one-turn response about another assistant, never absence or
-real people. These are partial implementations, not the broader proposals:
-see [patterns](patterns.md#k77-candor-gate--can-i-be-real-with-you) for gates,
-prerequisites and unverified model-level behavior.
-
-**Default-on gate for K77/K83/K84 (open):** Keep all three opt-in until a
-real-model replay of invited and near-miss requests checks the actual replies,
-not just eligibility. Confirm that K77 asks then waits for consent, K83 never
-refuses practical help and honors an immediate re-ask, and K84 never adds guilt,
-exclusivity or an uninvited callback. Track offer versus delivered response,
-false positives and cooldown/override behavior across sessions; resolve any
-failures and update the default-contract test before flipping a shipped flag.
-
-K39 (energy / spoons) was absorbed by the shipped K68 embodied vitality —
-same mechanic, broader framing.
-
-**The "will" family (K52–K56)** — Aiko follows every topic the user
-sets and never opens her own; every initiative cue is hedged into
-silence and nothing structurally counters the assistant prior.
-**ALL SHIPPED**: K56 persona counterweight ("leading vs following"
-rewrite) · K52 wants ledger (desire with growing pressure) ·
-K53 initiative turns (deterministic floor-taking — the "may" →
-"must, occasionally" flip) ·
-K55 thread ownership (one circle-back to a thread she opened) ·
-K54 Aiko-side topic appetite (she's allowed to be bored and
-negotiate the topic — once per conversation, with an offer).
-
-**The directed-emotions family (K57–K60)** — Aiko's moods were
-objectless scalars: she could be "sad" in general but never
-*miffed at {user_name} because he broke a promise*.
-**ALL SHIPPED**: K57 directed emotion episodes (lonely / miffed /
-warm_glow / smug / playful_jealous / hurt — cause line, intensity,
-decay, acknowledgment-driven resolution + visible thaw) ·
-K58 emotion speech weighting (smug/pouty/sulky/mischievous minted
-end-to-end; register recipes; intensity-banded imperative +
-prosody hints) ·
-K59 tease economy (payback ledger — banked on pushback / light
-miffed, collected as a callback tease conversations later) ·
-K60 tsundere mask (expression policy over K57: warmth expressed
-through denial, caught-caring beat, budgeted dere-slips,
-closeness-eroded mask — `agent.expression_mask` dial, off by
-default).
-
-- **K96.** One shot per thought — in-turn deliberation. Every reply is a single
-  forward pass at `reasoning_effort: 'low'`, and the model's own thinking is
-  stripped and discarded rather than carried forward, so she can never have a
-  *second* thought. Note which cost actually changed: reasoning tokens are
-  **output** and the cache discounts **input**, so the affordable shape is a
-  *separate* think-pass reusing the cached prefix — which
-  `_maybe_run_tool_pass` already is — not a higher effort setting on the reply
-  pass, where reasoning and visible output share one budget. Latency is the real
-  constraint, not tokens.
-
-(K1 long-term goals, K2 theory-of-mind, K3 routine awareness,
-K4 dialogue-act tagging, K5 mood-shell tilt, K6 novelty
-detector, K7 forgetting protocol, K8 affect rupture-and-repair,
-K9 topic-graph browser, K13 stylometric mirror,
-K14 implicit engagement signals,
-K15 vulnerability budget,
-K16 unified ambient grounding line, K17 clarification-repair,
-K18 topic stagnation, K20 metacognitive calibration,
-K22 callback / inside-joke detector, K23 subtle misattunement
-detection, K24 sensory anchoring layer, K25 memory
-confidence time-decay, K27 day colour, K28 "what I've been
-turning over", K29 opinion injection, K30 self-noticing cues,
-K31 + K32 soft physicality, K34 forward curiosity worker,
-K35 memory consolidation worker, K36 "things I did
-while you were away", K38 self-correction cue,
-K82 dropped-sub-topic cue,
-K43 promise follow-through, K44 felt-language affect
-block, K45 mood inertia, K46 stance persistence,
-K47 question/share balance, K48 tease rhythm,
-K51 cue-register rotation, K61 knowledge grounding,
-K63 long-arc callbacks, K64 freedom of thought,
-K65 worker modernization, and K66-K76 — earned familiarity,
-dormant-interest re-opener, embodied vitality, implicit-need
-reading, growth witness, self-callback, wellbeing concern,
-shared ritual formation, humor-style calibration,
-user-expertise calibration and flashbulb encoding —
-have shipped; see [`shipped.md`](shipped.md).)
-
-### L. Higher-order concepts — [`concepts.md`](concepts.md)
-
-A new abstraction layer *above* topic clusters: cross-cluster
-**concepts** that link semantically-distant clusters the proximity-only
-topic graph can't ("Home Server + Mechanical Keyboard + Self-hosting +
-Virtual AI"). The LLM *proposes* candidates; they *auto-promote* to real
-concepts as confidence accrues (recurs + spans >=2 evidence + stable),
-mirroring the `beliefs` lifecycle one level up. Sits on top of the F10
-topic-graph work. Built **kind-parameterized** from day one: a shared
-store + lifecycle + a `ConceptKind` registry (subject x evidence-model),
-so new kinds are a registry entry, not a migration. Two substrate
-decisions are locked in up front because they are pervasive: **one typed
-influence graph** (`concept_edges`: every evidence / reference /
-contradiction / influence link is a typed, signed edge — a new linkage is
-a new `relation` value, not a new table) and **one lifecycle engine** (the
-single writer of `confidence` / `plasticity` / `status`; L3/L15/L16/L17
-are passes of it, not competing workers). v1 ships identity end-to-end;
-every other kind is a stub.
-
-**The layer is built.** L1-L16, L18, L20, L21 and L23-L28 have all
-shipped: the store and typed edge graph, the per-kind proposers, the
-single-writer lifecycle engine, ten concept kinds across three subjects
-(including the two meta kinds), plasticity, belief revision, the UI and
-MCP debug surface, and the trace. It ships **off** by default
-(`agent.concepts_enabled`) because synthesis is a recurring
-maintenance-LLM cost that wants a mature topic graph behind it. The
-finished write-ups live in [`shipped/concepts.md`](shipped/concepts.md);
-[`concepts.md`](concepts.md) keeps the design preamble plus the items
-that still carry open work. What follows is only what is still open.
-
-**Concept default-on gate (open):** Finish L22's offline quality evaluation
-on fresh and mature histories, then measure maintenance calls/latency and
-concept intake, promotion, reinforcement and spurious-concept rates over a
-representative observation window. Set an explicit resource budget and
-quality threshold, check that background synthesis does not degrade chat or
-inflate unsupported beliefs, and provide a rollback path before enabling
-`agent.concepts_enabled` for new installs. Existing opt-in users are unaffected.
-
-Open — quality and pruning:
-
-- **L22.** Concept-quality evaluation. *Partly shipped.* The measurement
-  half exists: `concept_quality.py`, `GET /api/concepts/quality`, the
-  `get_concept_quality` MCP tool, and the layer-health strip in the
-  Concepts panel, covering production / promotion / reinforcement rates,
-  the confidence and evidence distributions, near-duplicate pairs, and
-  per-(kind, subject) label-register rates. The three spurious-concept
-  signals are computed but **advisory only** — nothing is demoted on
-  them yet. **Tuning pass 1 (intake) shipped:** `identity` was the only
-  kind with no promotion floors of its own and the largest kind in the
-  graph, so it got `identity_evidence_gate` (3 sources + a real stability
-  delay); the engaged-age anchor now lands before the gate reads it, so an
-  offline gap can no longer mature a candidate on idle time; and the
-  pruning section grew intake-*rate* metrics plus
-  `scripts/concept_intake_report.py`, since the standing never-reinforced
-  count is far too slow to show whether a threshold change worked.
-  **Tuning pass 2 (the sweep + decay) shipped:** 293 bootstrap-era concepts —
-  promoted before `reinforced` had ever fired, sitting `active` at ~0.8 —
-  were parked to `dormant` by `scripts/concept_sweep_unreinforced.py`, and
-  the base half-life went 45 → 7.5 engaged days, because at the old rate
-  clearing one unearned concept took ~18 months of conversation. That took
-  the graph from 602 active / 428 never-reinforced to 309 / 135.
-  Both steps had to wait on one invariant, since by then L17 and L19 read
-  *from* concept status: **a belief she never held cannot be lost.** A `loss`
-  finding now requires the concept to have been reinforced at least once
-  (succession stays exempt — a fade matched to a rising replacement proves
-  itself), the self-history arc omits a faded belief with no recorded loss
-  rather than narrating an invented regret, and learning events are dated by
-  *when the change happened* rather than when the classifier noticed — without
-  which the backfill filed five weeks of history under one afternoon.
-  Still open: the offline eval harness (deliberately last: hand-authoring
-  goldens before the register settles would enshrine the output we are
-  fixing), and re-reading pass 1's intake gates now that the stock is cleared
-  and the rate (92 promotions in 3 days) is no longer hidden behind it.
-
-Shipped — self-history (all of it, in
-[`shipped/concepts.md`](shipped/concepts.md)):
-
-- **L17.** Self-drift noticing — Aiko notices her own change by comparing
-  self-concept snapshots over time ("I think you've corrupted me... I ask
-  for cookies more than I used to"). L17a-f all shipped: the trajectory read
-  with banded `confidence_sample`, the succession-first change-salience
-  classifier, the append-only `concept_learning_events` record plus
-  `concept_aliases` for identity continuity across merges, the
-  history-of-thought debugger with its rare T6 reflection, the **evolution
-  diary** (L17f), and the **self-correction rules** (L17d) that turn a
-  pattern in her own mistakes into a `communication_style` concept that
-  actually steers behaviour. Concept labels are genuinely updatable, with the
-  drift worker as their single writer and every change recorded immutably.
-  Building the readers exposed the one real bug in the engine: a bounded pass
-  advancing a global watermark had written off five weeks of history as
-  processed, fixed with a concept-id sweep cursor.
-- **L19.** Aiko's autobiography (the capstone) — her self-history as a
-  durable, traversable timeline, read through `recall_self_history` and
-  inspectable at Settings → Memory → Story. It came in well under its "Large"
-  estimate because L17c had already paid for the hard parts: learning history
-  is permanent and snapshot-truthful, and concept identity survives merges.
-  The remaining care went into `thin_record` — the builder, not the prompt,
-  decides when the trail is too sparse to narrate, because the failure mode of
-  a self-history feature is a confident invented past.
-
-Open — later kinds and refinements (L29b-L36, all detailed in
-[`concepts.md`](concepts.md)): the meta-narrative over concepts, uncertainty
-zones to aim curiosity at, concept fission, introspective reflection, a richer
-edge taxonomy, and a strategy layer.
-**L35 (surface-reason labels) is shipped** — every concept in the L26 trace
-now names the signal that put it in the prompt.
-
-**L30a (the hypothesis lane) is shipped** — see
-[`shipped/concepts.md`](shipped/concepts.md#l30a-hypothesis-surfacing-lane).
-The concept layer now speaks in two registers: settled beliefs, and the things
-Aiko is still working out. Every other read path filters to `status="active"`,
-which hid `candidate` rows rather than hedging them; one new
-`ConceptView.hypotheses` lane reads them, capped at a single strongly-hedged
-line in its own budget source. The sketch's selection rule did not survive
-contact with a real graph and had to be replaced: candidate confidence turned
-out to be *high* (median 0.82, so it cannot be the filter), and **most
-candidates were held back only by the promotion age floor** (144 of 261
-against each kind's own gate) — so `unsettledness` reads evidence breadth and
-conviction and deliberately ignores age, because being young is not the same as
-being doubted. Ranking multiplies that by L32 importance, which is what the
-axis was built for.
-
-**L30b/L30c (the testing loop) are shipped** — see
-[`shipped/concepts.md`](shipped/concepts.md#l30bl30c-the-hypothesis-testing-loop----ask-then-learn-from-the-answer).
-Aiko can now close an open question instead of only holding it: a
-`concept_hypothesis` cue raises one untested hunch — riding a topic she is
-already on, or out of a long lull — and a post-turn adjudicator folds the reply
-back onto that specific belief. Three decisions carried the design. Selection
-excludes the age-blocked rows, because an answer adds a *source* and those are
-waiting on a clock. The adjudicator returns **four** verdicts, not two: *"not
-really, it's more that I hate being still"* is the most valuable reply a hunch
-can get, and both halves of a confirm/deny split throw it away. And the four
-paths are asymmetric — a false confirm promotes a wrong belief where a false
-deny only costs re-earnable confidence, so confirming needs positive evidence
-from the model and every failure path lands on "unclear". Still open: L30d
-(uncertainty zones).
-
-**L30 Phase B (inventing a hypothesis) is shipped** — see
-[`shipped/concepts.md`](shipped/concepts.md#l30-phase-b-inventing-a-hypothesis----the-forward-direction),
-with [`docs/hypotheses.md`](../hypotheses.md) as the canonical reference for the
-whole layer. Every other part of the concept stack runs *backwards* from
-evidence, so it can only ever resolve a question already implicit in Aiko's
-inputs; the proposer runs forwards — it speculates, files the guess to its **own
-`hypotheses` table**, and the L30b/L30c loop tests it. Three decisions did the
-work. The guess lives in a separate table rather than as a `speculative` concept
-status, because a status makes safety depend on every concept read filtering
-correctly forever, and one miss puts a made-up sentence into the T0 profile block
-as something Aiko asserts. `credence` is *asserted* and never recomputed where
-`confidence` is *derived* and re-derived every tick, and every asymmetry with the
-concept side follows from that one fact — most visibly that a denial closes an
-invented row outright. And the "duplicate race" turned out to be the **normal**
-ending rather than an edge case: a confirmation becomes a memory, L2 clusters it
-and proposes the same concept knowing nothing about the hypothesis, and L2 needs
-one confirmation where graduation needs two — so linking runs after *every*
-confirmation and graduation takes a distinct `merged` exit instead of forking a
-near-twin. A confirmed guess enters the graph as an ordinary `candidate` at the
-default confidence: being right twice is not evidence beyond the two answers,
-which L3 counts like any others.
-
-**L29a (episodic shared arcs) is shipped** — see
-[`shipped/concepts.md`](shipped/concepts.md#l29a-episodic-shared-arcs--the-both-of-us-narrative-shipped).
-L8 gave each subject arcs over their own memories; this is the third subject, a
-closed *joint* project ("the month they rebuilt the memory system") cut out of
-the `shared_moment` stream. The interesting part was that the backlog's sketch —
-"the same `sequence` machinery, just a third subject" — rested on an assumption
-that did not survive contact with the data. Shared moments were being embedded
-with their `"Shared moment (<vibe>): "` prefix, identical on every row, so the
-topic graph clustered them by **vibe word**: of five clusters holding three or
-more of the 145 moments, one was 77 moments and 76 of them were `tender`.
-Cluster-sourced arcs would have been vibe-arcs, and the same collapse is the
-likeliest reason L7 had produced a single ritual concept from that whole corpus.
-Vibe never needed to be in the vector — it is a structured field every consumer
-already reads by exact match — so the store now embeds the bare summary, with a
-backfill script for existing rows. Even with clean vectors, clusters stayed the
-wrong source because they carry no time axis, so arcs are cut by a seed-and-sweep
-that requires topical coherence *and* temporal contiguity, and holds an episode
-back until it has been quiet long enough to actually be finished. The other half
-of the old L29, the meta-narrative over concepts, is now tracked as **L29b**; it
-is no longer population-blocked (388 active concepts) but is a different build in
-every part except the ordinal plumbing.
-
-**L32 (importance as a second axis) is shipped** — see
-[`shipped/concepts.md`](shipped/concepts.md#l32-concept-importance----a-second-axis-distinct-from-confidence).
-A concept now carries a stake as well as a probability, so an
-uncertain-but-weighty belief can outrank a certain-but-trivial one. The
-design question the sketch left open ("stored field or derived each turn?")
-turned out to decide everything: making it **derived** — a pure function of
-the kind's prior and the emotional charge of the topics the concept is
-grounded in — removed the migration, the writer, the plasticity interaction
-and the decay policy in one move, and left the axis status-agnostic so the
-L30 hypothesis lane can rank `candidate` rows with the same context. Two
-invariants hold it in place: the affect component only ever *lifts* (46% of
-the graph has no affect at all, so a symmetric blend would read "no data" as
-"trivial"), and it never reaches `ConceptView._stable_rank`, which feeds the
-T0 profile block and must stay prompt-cache stable. The measurement it left
-for L30a — **no active concept sits below 0.6 confidence**, so "important but
-uncertain" lives in the candidate pool — is what pointed that lane at
-candidates rather than at low-confidence actives.
-
-The surfacing-outcome group (L38-L42, from the surfacing audit; see the spine
-section at the top of this file). **L37, L38, and L42 are shipped** — the ledger
-records what was surfaced and what happened next, and earned standing now feeds
-that relationship-local signal back into concept ranking:
-
-- **L38.** ✅ **Shipped.** Earned standing is a seventh `surface_score` term
-  fed by L37, with baseline calibration, shrinkage, safety floors, protected
-  kinds, and off-turn cache refresh.
-- **L39.** ✅ *Shipped, both halves* — see
-  [`shipped/concepts.md`](shipped/concepts.md#l39-identity-concepts-surfaced-twice-a-turn-and-one-copy-ignored-habituation).
-  The dedupe landed (T3 skips whatever the T0 profile block claimed, across the
-  core, flex and activation lanes), and the repetition half took the cheaper
-  lever rather than the designed one: giving the profile copy its own
-  habituation would have made a third volatile T0 block, so
-  `profile_concept_max_lines` went **10 → 4** on the measured prompt load
-  (~620 cache-prefix tokens of un-rotated assertion, drawn from 170 eligible
-  rows). The one remainder is the general "already surfaced this turn" set
-  across *all* blocks, which is **P43**, not a concept problem.
-- **L40.** *Shipped* — see [`shipped/concepts.md`](shipped/concepts.md#l40-habituation-reaches-the-core-lane-through-order-not-relevance).
-  The premise was wrong (a pinned candidate's relevance is never read); the
-  real defect was habituation collapsing to a boolean, leaving the stale group
-  ranked by confidence so a just-shown belief outranked a rested one.
-- **L41.** *Shipped* — see [`shipped/concepts.md`](shipped/concepts.md#l41-reason-conditioned-phrasing----use-the-l35-signal-without-narrating-it).
-  The already-computed L35 reason now picks each T3 impression line's framing
-  (settled / freshly-changed / primed / unsettled), while keeping the debug-only
-  rule that she never narrates her own machinery.
-- **L42.** ✅ A self-model of her own surfacing conduct mined weekly from the
-  ledger, normalized against the user's topics, and stored as Aiko concepts.
-- **L42b.** Open follow-up: use repeated neglect findings as a cautious idle
-  curiosity prior only after real-data evaluation.
-- **L43.** How she thinks *he* sees her — the second-order self-model. She
-  models him and she models herself; she has no model of his model of her,
-  which is the substrate for adjusting because of how she's landing and for
-  "am I too much sometimes?". Needs floors on the negative side or it
-  becomes a doom spiral.
-- **L44.** ⛔ **Blocked — but on L47 now, not on emptiness.** Per-domain
-  self-calibration: confidence is always per *claim*, never per *class of her own
-  judgements*. Still the right idea and still a precondition for K77's candor
-  gate. The supply that blocked it has partly arrived — `beliefs` went from 1 row
-  to **267 with 109 resolved outcomes** after H51 — so the blocker moved from
-  "nothing to aggregate" to "the outcomes are unattributable". The other three
-  sources (corrections, fact-check verdicts, hypothesis adjudications) are still
-  near-empty, and the L37 engagement ledger cannot stand in because its label is
-  self-normalizing. Numbers in [`concepts.md`](concepts.md).
-- **L46.** Abstraction never stacks — the concept graph is two layers deep, and
-  by *one filter clause*. 905 meta-concepts exist over 635 bases (fan-in 5.1),
-  but exactly **1 node of 4,613** is both a source and a target, so the longest
-  chain is 2 edges and the `sequence` kind has zero rows. The cause is
-  `_active_tension_bases()` offering the proposer active *non-meta* concepts, so
-  the 346 active abstractions can never be evidence for a higher one. This is the
-  missing prerequisite for **L34** (propagation over edges) and **L29b**
-  (meta-narrative over concept nodes) — a propagation rule over a graph of height
-  one propagates nothing.
-- **L47.** Belief outcomes are unattributable — the ledger L44 has been waiting
-  for. 267 beliefs with 109 resolutions, but after H51 a `confirmed` row cannot be
-  told apart from a rule firing on repetition, and there is no resolution
-  timestamp; a hit rate over that mixture would measure the auto-confirm
-  threshold and report it as her accuracy. Wants `resolved_at` / `resolved_by` /
-  evidence id before anything aggregates. Two side findings: `[[predict:]]` has
-  produced **0 of 267** rows in 2,867 turns despite being wired, and only 22% of
-  mood beliefs carry the `valence`/`arousal` that auto-verification needs.
-- **L48.** Refused evidence already mints a new concept, and what it mints is a
-  twin. The evidence ceiling (24 sources) binds on **75 concepts**, and on the
-  *good* ones — mean confidence 0.664 there against 0.404 below 8 sources. The
-  fall-through-to-creation path has produced **4** beanbag-anime rituals at 27-32
-  sources each, **7** pre-sleep hand-lacing rituals, ~**13** near-identical
-  wind-down `tension` rows and **44** concepts whose label mentions "wind-down".
-  Off-topic refusal is a red herring at 2.0% of inflow, by design. So the minting
-  works and the **roll-up** is missing, which is L46 — and the duplicate families
-  are a candidate answer to **P52's volume half**.
-
-### P. Performance + observability — [`perf.md`](perf.md)
-
-Cross-cutting gaps that aren't features in their own right but
-compound across every K-series entry:
-
-- **P7.** Typed-mode prefetch parity with voice.
-- **P11.** Reclaim background-worker `num_predict` from reasoning
-  leakage (try `/no_think` on qwen3-family workers).
-- **P16.** Post-turn inner-life blocks the brain loop — now
-  **measurable** (`post_turn_ms`); collect numbers before attempting
-  the Large fast/slow-lane split.
-- **P24.** [Speech-pipeline latency audit](perf.md#p24-voice-latency-batch-reaction-tag-tts-gate-double-stt-pass-first-chunk-threshold)
-  (2026-09-30): repair blocking STT partial reads / recorder teardown first;
-  measure end-of-speech to useful audio, then endpointing, single finalization,
-  first-chunk release, incremental synthesis and interrupt recovery. Source
-  findings and benchmark proposals; the initial STT adapter repair is in
-  code, without a measured live latency result.
-- **P26.** Lip-sync rides the server clock, not the playback clock —
-  **partly shipped**: the client-side analyser path exists but is
-  wired for mobile audio-owners only; extend it to desktop.
-- **P30.** Raise / disable the `memory.max_memories` cap — **the cap
-  is gone** (all three tier caps ship at `0` = never evict), and the
-  matmul fix with it — `search` and the per-write dedupe pass are
-  ~55× faster at 50k rows. SQLite is nowhere near the limit. What
-  remains is `decay()`'s full mirror re-read and `_reload_mirror`'s
-  `fetchall()`; growth costs RSS and startup, not query time.
-- **P31.** Audit + trim the baseline system prompt (~25-30k resting
-  floor). The **measurement shipped as P31a** — `get_prompt_block_costs`
-  ranks blocks by tokens × tier — and its first finding is that the
-  persona (~19.5k estimated tokens) dominates everything else, so the
-  remaining work is the persona/grammar trim and lazy-rendering the
-  occasional blocks.
-- **P32.** Concept layer (L-series) worker budget + unbounded graph
-  growth — proposer cadence in the idle budget, snapshot thinning,
-  per-turn cost limited to L23 selection. The "dirty-subgraph-only
-  lifecycle walk" line is **already satisfied** by L3's batched
-  round-robin; what's left is making it dirty-*triggered*.
-- **P33.** Inner-life providers walk the whole memory mirror every
-  turn — the kind-filtered `list_top` / `list_recent` fix **shipped**
-  (along with the correctness bug it was hiding: catchphrase blocks
-  silently never surfaced). Still open: a kind index for the unbounded
-  `iter_by_kind` walks, and F9's whole-corpus concatenation. Becomes the
-  wall the moment P30 lifts the cap.
-- **P34.** Unbounded tables — `messages`, its LanceDB mirror, and the
-  append-only `concept_events`; retention posture per table.
-- **P35.** ~~The Lance ANN index is built once and never refreshed.~~
-  **Shipped**, and it was worse than filed: the index had never been
-  built at all, because its only caller sat behind an unrelated
-  2000-row clustering threshold. Now built *and* refreshed from the
-  RAG maintenance worker, for `messages` as well as `memories`.
-- **P49.** The telemetry ledgers (`surfacing_outcomes` at 45k and
-  ~600k/yr, `concept_events`, `turn_prompt_blocks`, `cue_decisions`)
-  are the fastest-growing tables by far, and three of them have a
-  `prune()` nobody calls. Queries stay flat to 5M rows; disk does not.
-- **P50.** *Shipped.* The persona hoist had no cap, but measuring first
-  changed the fix: it was not many small cues, it was **one block**.
-  `emotion_episode_block` fired on 88% of turns and was half the entire
-  hoist — textbook-conditional prose, nine times more frequent than it
-  reads. Moved to T0 (so it is cached now), plus a largest-first budget
-  as the guardrail. Mean 5,444 → ~2,500, max 18,501 → 5,000.
-- **P51 — measured, closed.** `relevant_context` never dedupes against the
-  rolling summary, and it turns out not to need to: overlap is 18.7% and
-  incidental (84 of 16,335 surfaced rows are 60%+ contained, led by the
-  three-word memory "thinking about it"). Memories are also only 16% of
-  the block, so a perfect dedup would have been aimed at its smallest
-  quarter.
-- **P52 — what P51 became; turnover half shipped.** The same measurement
-  found the concept lanes are **73% of T3** (29.6 lines, ~8.5k chars/turn)
-  and were **100% different from the previous turn** on all 1,160 pairs.
-  Cause: the core lane's draw depth *is* its rotation policy, with a cliff
-  at `multiplier × core_cap = 2 × core_cap + concept_cap`. The multiplier
-  was a hard-coded `3` and both caps are `15` — a draw of 45 against 45
-  stamped, landing **exactly on the edge**, which is why carry-over
-  measured at precisely zero. Put there when `core_cap` was 2 and never
-  revisited when the gate tuner raised it. Now `concept_core_overfetch`,
-  default 1.5: 8 of 15 pinned concepts persist, 7 rotate. The volume half
-  (30 lines a turn) is still open.
-- **P36.** Idle-worker LLM pile-up — **phase 1 shipped**: workers report
-  pending work via a `demand()` probe, the scheduler ranks by urgency
-  instead of age, and the budget splits into a compute lane and an LLM
-  lane sized by idle depth and chat-vs-worker GPU contention. Nine of
-  ~50 workers migrated. See [`idle-workers.md`](../idle-workers.md).
-- **P37.** Residual React re-renders — **shipped** (bucketed streaming
-  signature, `audioLevel` at the leaves, stable Virtuoso `itemContent` /
-  Header / Footer). See
-  [`shipped/perf.md`](shipped/perf.md#p37-residual-per-token-and-per-mic-frame-react-re-renders).
-- **P38.** Live2D per-tick store snapshot cache — **shipped**. See
-  [`shipped/perf.md`](shipped/perf.md#p38-live2d-channels-allocate-a-store-snapshot-several-times-per-frame).
-- **P39.** Concept snapshot + quality report N+1 the evidence edges
-  (and the quality report is O(n²) pairwise on embeddings).
-- **P42.** The T3 retrieval budget is the *residual* after all 105 other
-  blocks: `system_base` includes persona plus the whole T4-T6 tail before
-  the surfacing reservation is sized, so routine ambient chrome outbids
-  turn-relevant recall. **Folded into P43** — `context_budget_min_tokens`
-  already reads like the floor this asks for but is clamped by what the tail
-  left, and nothing can yield to it without P43's arbitration.
-- **P43.** 105 blocks and no arbitration — the overflow path is a
-  hand-maintained denylist of ~30 providers that has drifted (belief_gaps
-  dropped, its sibling clarification kept). Generalise the T3 selector
-  across the whole block set; learned weights once G4 exists.
-- **P44.** All fifty-five idle workers now report demand — the compute
-  batch moved out of the LLM lane, the LLM batch gained ranking, and the
-  four mis-rated probes the first log turned up are fixed. Remaining:
-  none of it has been read back off a real log, which is the only place
-  a miscalibrated probe shows up.
-- **P45.** Remaining speaking daily-count caps retired in favour of
-  demand + inventory targets + cooldowns — **shipped**. LLM/web
-  `per_hour`/`per_day` spend caps kept. See
-  [`shipped/perf.md`](shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction).
-- **P46.** Drain the compute lane in parallel — blocked on shared
-  mutable state (the `WorldStore` mirror, `ConceptStore` caches,
-  `threading.local()` SQLite connections).
-
-(P1-P6, P8-P10, P12-P15, P17-P23, P25, P27-P29, P31a, P37, P38, P40, P41 and P45 have
-shipped — the embed budget and prompt-build telemetry, the slice-cache
-and RAG batch-lookup work, the Lance scan push-downs, the streaming
-accumulator and the streaming-draft rework, the RAG reader-writer lock,
-async compaction, the heuristic tool-pass gate, then the memory pass:
-lazy STT loading behind `stt.enabled`, TTS gated on `tts.enabled` with a
-real release path, the `get_memory_breakdown` and
-`get_prompt_block_costs` measurement tools, client audio flush on abort,
-and the two missing `messages` indexes. See
-[`shipped/perf.md`](shipped/perf.md).)
-
-The two measurement tools are the load-bearing part of that list: most of
-what remains open here (P16's split, P30's cap raise, P31's trim, P36's
-worker ceiling) was being argued from static code reading, and the audit
-that produced P33-P41 found several such arguments to be wrong. Measure
-first.
-
-### T. Testing + evaluation — [`testing.md`](testing.md)
-
-How we keep the behavioural system regression-safe as the concept work
-(L-series) piles on. Organising idea: **bracket the LLM** — test the
-deterministic prompt-build (before) and tag-parse / post-turn (after)
-halves with a scripted LLM double; treat model *content quality* as a
-separate eval track, never a red/green unit gate. The offline pytest
-counterpart to the live DT-series debug tooling.
-
-- **T1.** Shared `FakeChatClient` + `BehaviorHarness` (the missing seam;
-  kills per-file stub duplication; unblocks T2/T3).
-- **T2.** End-to-end behavioural chain tests (worker -> cue -> prompt ->
-  reply -> post-turn -> state delta).
-- **T3.** Worker registry conformance + smoke + LLM fault injection
-  (parametrized over all ~51 workers).
-- **T4.** Prompt-build + tag-parse contract (golden) tests (pins the
-  T0->T6 cache ladder + the inline-tag grammar).
-- **T5.** LLM behavioural eval suite — a scoreboard, not a CI gate
-  (umbrella over K10 persona regression + L22 concept eval).
-- **T6.** Determinism seams (seeded RNG; the `Clock` half landed with DT1 —
-  `timephrase.now` / `utcnow` is now the single process-wide "now").
-
----
-
-## How to pick one up
-
-1. Re-read the relevant domain file. Each entry is small enough that
-   the file itself is your context.
-2. Spin up a plan with `CreatePlan`. Most items fit in a single plan;
-   nothing here needs a multi-phase rollout.
-3. Validate the same way the depth passes did: focused suite ->
-   full `pytest -q` -> spot-check the running app.
-4. When the work lands, move the entry out of its domain file into the
-   matching [`shipped/<area>.md`](shipped/) and add a bullet for it in the
-   [`shipped.md`](shipped.md) index. Keep the body verbatim and add one
-   `../` to its relative links — the file sits a directory deeper. Then
-   update any inbound links in [`AGENTS.md`](../../AGENTS.md), the
-   relevant `docs/` detail doc, or code comments.
-
----
-
-## Related docs
-
-- [plugin-system.md](plugin-system.md) - detailed capability-platform and durable
-  agent-job guide: scoped hooks, workers, LLM lanes, storage, bounded tool
-  discovery, restart-safe MCP jobs, email/source-code pilots and P3-P8 milestones.
-- [docs/plugins.md](../plugins.md) - the shipped SDK-primary plugin format.
-- [`docs/memory-tiers.md`](../memory-tiers.md) — schema v8 memory
-  tiers + `IdleWorkerScheduler`.
-- [`docs/aiko-room.md`](../aiko-room.md) — world / room / garden.
-- [`docs/shared-moments-and-relationship.md`](../shared-moments-and-relationship.md)
-  — schema v7 shared moments + relationship axes.
-- [`docs/presence-and-activity.md`](../presence-and-activity.md) —
-  C1 typed-mode proactive + presence + activity awareness.
-- [`docs/alexia-model-notes.md`](../alexia-model-notes.md) — Alexia
-  rig audit; B4 + B5 reference.
+### Architecture and code quality
+
+- [A1](architecture.md#a1-typed-public-access-for-remaining-mcp-consumers) — **partial**: Migrate
+  remaining MCP subsystem reads to typed public handles and ratchet the actual guard budget; the
+  historical reach counts are stale.
+- [A2](architecture.md#a2-public-database-connection-and-transaction-ownership) — **open**: Define a
+  public connection/transaction contract and migrate private _get_conn consumers.
+- [A3](architecture.md#a3-the-files-over-the-declared-budget--and-the-fact-that-they-grow) —
+  **partial**: Continue splitting oversized owners when touched, especially prompt assembly,
+  inner-life providers, concept synthesis and settings. Recount current files rather than reusing
+  the historical inventory.
+- [A4](architecture.md#a4-the-two-layering-inversions) — **open**: Resolve upward infra
+  text/scheduling imports and decide the intended core-to-MCP protocol boundary before refactoring.
+- [A5](architecture.md#a5-what-should-actually-gate-a-commit) — **partial**: Decide and implement
+  hooks/CI and narrow React hook linting. Further Ruff rules remain optional. AGENTS.md supersedes
+  the old full-suite-after-every-change proposal.
+- [A6](architecture.md#a6-shared-provider-gate-and-error-frames) — **partial**: Standardize
+  remaining provider gate/error frames while preserving distinct decline reasons, staging, protected
+  blocks and prompt tiers.
+- [A7](architecture.md#a7-general-settings-use-regression-guard) — **partial**: Add a general
+  settings-use guard with explicit reserved/compatibility exemptions. Do not reopen the six resolved
+  wiring bugs.
+
+### Avatar and expressiveness
+
+- [B3](avatar.md#b3-blink-rate-modulation-by-arousal-deferred-follow-up-to-b1) — **deferred**: Own
+  or extend a safe blink interval setter, then modulate arousal without fighting wink gestures; no
+  implemented arousal-controlled driver was found.
+
+### Proactive and presence
+
+- [C3](proactive.md#c3-persisting-last-fired-typed-cooldown-to-disk) — **open**: Persist a
+  wall-clock last-fired stamp and safely restore remaining cooldown after restart; keep runtime
+  interval math monotonic.
+- [C6](proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel) — **partial**: Retain
+  memories only after corroborated repeating patterns with a retention/redaction contract. UIA
+  remains deferred pending process/performance/privacy design. Later grounded impulses and
+  route-aware disclosure belong with Live L25/L27/L29.
+
+### Awareness and grounding
+
+- [F4](awareness.md#f4-source-cited-memories) — **partial**: Carry usable citation provenance
+  through fact-check rewrites and remaining tool/document writers; add the general Memory-tab source
+  badge/link. Metadata existence is not end-to-end citation coverage.
+- [F11](awareness.md#f11-relevance-driven-memory-resurrection-latent-recall-from-the-archive) —
+  **open**: Add topic-return-triggered archive nomination, relevance/staleness checks and a hedged
+  callback sharing F15 cadence. Existing age callbacks are not this archive resurrection path.
+- [F12](awareness.md#f12-attributable-user-side-memory-retention-credit) — **partial**: Design
+  attributable user-side retention credit and decide tiers-disabled recording. Shared following-turn
+  engagement is not item-level usefulness; coordinate H34/RS9. F17 owns semantic-credit calibration.
+- [F17](awareness.md#f17-should-a-semantic-echo-earn-full-retention-credit) — **validation**:
+  Separate real paraphrase use from topical leakage using source/item-level outcomes before changing
+  credit. Similar shared-turn engagement does not establish usefulness. No credit policy was changed
+  in this audit.
+- [F15](awareness.md#f15-memory-repair-requests----admit-the-hole-instead-of-getting-vaguer) —
+  **open**: Nominate low-stakes degraded-but-important memories, ask once, capture a source-linked
+  answer and refresh the right row. Share F11 cadence and exclude sensitive losses. The old claim
+  that L32 is unbuilt is stale.
+
+### Shared moments and boundaries
+
+- [J1](moments.md#j1-multi-user-moments--participant-attribution) — **open**: Add participant
+  attribution, scoped reads/UI and migration for implicitly attributed historical moments.
+- [J2](moments.md#j2-exportable-timeline) — **open**: Implement a source-faithful Markdown/PDF
+  export endpoint and UI action, preserving participant scope and deletion behavior.
+- [J3](moments.md#j3-axes-aware-proactive-nudges) — **open**: Wire axes into proactive topic
+  selection when another reason already permits a nudge; axis movement must not independently
+  trigger speech.
+- [J7](moments.md#j7-moment-signal-expansion-and-detector-statistics) — **partial**: Evaluate
+  first-time and resolved-reaction signals and expose consolidated detector statistics. Current
+  scheduling still derives reaction signals from raw tags; broaden without fabricating milestones.
+- [J12](moments.md#j12-explicit-relationship-preferences-and-boundary-propagation) — **partial**:
+  Implement the 23 Oct extension: independent friend/flirty/romantic and affection-kind preferences,
+  same-turn de-escalation, queued gesture/cue invalidation across clients, restart and paired
+  checks. B7 removed touch dispatch gates, so the dial does not prove a universal hard touch cap.
+- [J13](moments.md#j13-learned-nickname-adoption-and-reciprocity) — **partial**: Persist explicitly
+  adopted names for Aiko, handle changes/reciprocity and let unused names fade within J12
+  boundaries. Phase-based permission is not learned nickname adoption.
+
+### Integration and wiring
+
+- [I9](integration.md#i9-mobile-and-pwa-acceptance-checks) — **validation**: Verify installed
+  mobile/HTTPS update, offline fallback, keyboard/safe-area and voice behavior on target devices.
+  Source/config and layout-state tests are not device E2E proof. Do not rebuild the mobile/PWA
+  foundation.
+- [I11](integration.md#i11-graduate-a-corroborated-belief-into-a-concept) — **open**: Define
+  evidence-spanning graduation, post-promotion ownership and contradiction/retraction routing, then
+  implement belief-to-concept promotion. Mood/repetition outcomes are not factual accuracy.
+
+### Background workers
+
+- [G5](workers.md#g5-self-tuning-cue-cooldowns) — **open**: Validate an attributable usefulness
+  signal and armed denominators before bounded opt-in cooldown adaptation. Do not tune away topic
+  mismatch or use copied turn engagement as item reward.
+- [G6](workers.md#g6-per-provider-decline-attribution) — **partial**: Instrument remaining generic
+  provider bailouts by failing family; preserve supply-versus-gate and error-versus-silence
+  distinctions. Accurate final inclusion precedes learned selection.
+- [G7](workers.md#g7-worker-prompt-budget-adoption-beyond-the-first-three-writers) — **partial**:
+  Roll out to other worker builders with their actual route/output limits and worker-owned reduction
+  rules. The helper and summary cursor repair are already implemented.
+-
+  [G-CLEANUP](workers.md#g-cleanup-consolidator_statelast_cluster_index-is-not-dead-weight--do-not-drop-it)
+  — **open**: Move pulse state to a dedicated key or migrate both users to a correctly named field;
+  correct the misleading consolidator comment. Do not delete a column with a real reader.
+
+### Higher-order concepts and reasoning
+
+- [L4](concepts.md#l4-cluster-co-activation-signal) — **partial**: Optional window/gap-session axes
+  and evidence-backed mood/arc/world joins remain. A sticky T1 day clause needs measured prefix
+  stability.
+- [L22](concepts.md#l22-concept-quality-evaluation--observability) — **partial**: Build held-out
+  concept-quality cases and a repeatable precision/duplicate/register/promotion scoreboard;
+  remeasure post-fix cohorts. Accounting fixtures do not establish concept extraction quality.
+- [L29b](concepts.md#l29b-meta-narrative----an-arc-whose-steps-are-concepts) — **open**: Implement a
+  source-linked temporal arc over concept changes, with alias/revision handling, lifecycle evidence
+  and bounded rendering. A generalization is not a meta-narrative.
+- [L30a](concepts.md#l30a-a-grounded-reason-for-hypothesis-uncertainty) — **partial**: Expose a
+  concise source-grounded reason for uncertainty. RS2 owns evidence-preserving recall; H7/H44 own
+  actual ask/answer quality.
+- [L30d](concepts.md#l30d-uncertainty-zones----explicit-known-unknowns-to-aim-curiosity-at) —
+  **deferred**: Measure throughput, then trial important known-unknown inflow through the existing
+  gap store. Empty kind/subject cells do not establish gaps; do not add supply to an unverified
+  consumer.
+- [L30e](concepts.md#l30e-invented-hypotheses----a-place-to-make-guesses-up-phase-b) — **partial**:
+  Validate targeting, origin/kind outcomes and novelty after refutation; decide consistent
+  multi-user/export/wipe semantics with concepts and disabled-invention TTL. The old
+  universally-free/unread-origin claim is stale. H7/H44 own evidence quality.
+- [L32](concepts.md#l32-behavioral-evidence-in-concept-importance) — **partial**: Evaluate
+  attributable behavioral contribution to importance. L30d may reuse the existing context; its
+  absence does not reopen the importance axis.
+- [L33](concepts.md#l33-introspective-reflection----structured-self-questioning-that-feeds-concepts)
+  — **partial**: Evaluate admissible outcomes and proposed hypothesis quality before broadening
+  reflective probes. Eligibility is not correctness; alternative prose is not L53 causal testing.
+- [L34](concepts.md#l34-concept-relation-taxonomy----edges-beyond-support--tension) — **partial**:
+  Define proposed/exposed explains, exemplifies and conditional semantics end to end. Reuse L52
+  rather than adding a second dependency truth store; source-linked why recall remains RS2.
+- [L36](concepts.md#l36-strategy-layer----learned-approaches-distinct-from-beliefs) — **open**:
+  Pilot source-linked strategy transfer with situation/constraints/approach/result/exception
+  evidence and held-out contrasts. Engagement is not success; L52 must invalidate unsupported reuse.
+  New kind/schema depends on need.
+- [L42b](concepts.md#l42b-neglect-guided-curiosity) — **deferred**: Inspect real neglect false
+  positives before a bounded curiosity prior; retain relevance/privacy gates and do not ship from
+  synthetic findings alone.
+- [L43](concepts.md#l43-how-she-thinks-he-sees-her----the-second-order-self-model) — **open**:
+  Design a revisable contextual model of received behavior, resolve overlap with axes and guard
+  negative spirals/reassurance fishing. Silence/latency alone cannot establish another person's
+  appraisal.
+- [L44](concepts.md#l44-outcome-grounded-per-domain-calibration) — **deferred**: Validate
+  independent source-grounded outcomes and per-domain coverage before calibration. The ledger
+  blocker is resolved; repetition/mood checks cannot be reported as factual accuracy.
+- [L45](concepts.md#l45-remaining-gate-tuning-rollout) — **partial**: Complete staged
+  lifecycle/generative rollout: align dormant/contradicted revival with kind gates, validate
+  write-gate changes, then consider per-kind floors, coupled cosine bands and relevance telemetry.
+  Global-floor revival branches remain.
+- [L46](concepts.md#l46-validate-useful-depth-2-abstractions) — **validation**: Verify grounded
+  depth-2 concepts actually reach T3 and inspect representative label quality. Structural depth
+  tests do not establish useful abstraction.
+- [L48](concepts.md#l48-validate-evidence-routing-and-duplicate-control) — **validation**: Evaluate
+  deployed duplicate/reconsideration quality. The historical causal heading is retained for links,
+  not as a verified mechanism; do not raise the evidence cap on that premise.
+- [L49](concepts.md#l49-independent-evidence-and-protection-against-self-confirmation) —
+  **partial**: Audit a consistent deployment, cover remaining writers/mutable sources, preserve
+  observations lost by dedupe and distinguish independent episodes/upstream sources. Unknown history
+  stays unknown; shadow is not enforcement.
+- [L50](concepts.md#l50-context-scoped-claims-and-temporal-validity) — **partial**: Evaluate model
+  behavior, arbitrary contexts, erased quotation framing, scoped revival, historical coverage and
+  temporal queries. Lexical support is not general entailment.
+- [L51](concepts.md#l51-a-bounded-working-model-for-the-current-problem) — **partial**: Measure
+  extraction-to-reply entailment, disconfirmation and resumption through corrections/topic changes
+  before expansion beyond the pilot.
+- [L52](concepts.md#l52-dependency-aware-revision-and-retraction) — **partial**: Extract
+  semantically sufficient supports, cover other writers and decide historical backfill. Structural
+  conjunctions/alternatives do not establish semantic sufficiency/independence; legacy claims remain
+  untracked.
+- [L53](concepts.md#l53-causal-explanations-and-counterfactual-checks) — **open**: Trial competing
+  mechanisms with assumptions, differing predictions and a permitted disconfirming check; revise
+  failed explanations and evaluate matched contrasts.
+- [L54](concepts.md#l54-choose-evidence-by-how-much-it-can-change-a-decision) — **open**: Rank
+  checks by discrimination and decision value, including retrieval/wait/silence; compare equal
+  latency/conversation budgets rather than generating more questions.
+- [L55](concepts.md#l55-evaluate-reasoning-independently-of-eloquence) — **partial**: Run repeated
+  held-out extraction-to-reply, causal/counterfactual and post-guard fictional-testimony comparisons
+  when inference is available. Count timeouts/failures; synthetic correctness is not naturalness.
+
+### Companion patterns
+
+- [K12](patterns.md#k12-calendar-linked-anticipation) — **partial**: UI, recurrence/all-day events,
+  cancelled-event restoration, sync/alarms, automatic extraction and real-model anticipation checks
+  remain.
+- [K19](patterns.md#k19-cold-start-companion-onboarding) — **open**: Implement a short
+  conversational onboarding arc with explicit preferences/boundaries and evaluated cold-start
+  exploration; shared-turn engagement is not cue-level approval.
+- [K33](patterns.md#k33-cozy-mode--persistent-register-softening) — **open**: Add explicit
+  persistent cozy-register state, controls and bounded auto-entry/exit across prompt/cadence/UI.
+- [K40](patterns.md#k40-comfortable-silence--dont-always-fill-space) — **partial**: Evaluate
+  inferred comfortable silence separately; brevity, elapsed silence or low engagement do not
+  establish completion. Preserve owed repairs/results.
+- [K41](patterns.md#k41-same-reply-mid-stream-self-correction-embedding-variant) — **open**: Add a
+  validated stream-time contradiction check and bounded abort/continuation splice across
+  transcript/TTS; measure cost/detection first.
+- [K42](patterns.md#k42-multi-bubble-reply-bursts--texting-rhythm) — **open**: Implement opt-in
+  bounded bursts with shared turn identity, delayed-bubble cancellation and delivery/memory
+  attribution.
+- [K49](patterns.md#k49-rare-earned-self-edit-cues) — **partial**: Evaluate a rare earned self-edit
+  cue. Do not manufacture mistakes or claim markup is missing; over-polish detection was
+  deliberately deferred after disfluency overuse.
+- [K50](patterns.md#k50-typed-mode-delivery-pacing--the-missing-read--pause--type-beat) — **open**:
+  Implement opt-in context-sensitive read/pause/type presentation and typed delivery metadata; test
+  responsiveness without forced delay on urgent practical replies.
+- [K62](patterns.md#k62-co-experience-companion--follow-a-showalbumbook-with-the-user) —
+  **partial**: Canonical prefix-limited retrieval, albums, concurrent titles, implicit progress, UI
+  and real-model spoiler tests remain; IM3 owns the shared reader.
+- [K77](patterns.md#k77-candor-gate--can-i-be-real-with-you) — **partial**: Evaluate generated
+  consent and offer-versus-delivery behavior. Broader concern/relationship candor needs
+  evidence/calibration, which L44 does not yet supply.
+- [K79](patterns.md#k79-hesitation-tell--typing-latency-as-a-signal) — **open**: Define
+  privacy-preserving compose timing/baselines and evaluate a rare leave-space cue. Delay plus
+  brevity cannot establish concealed feelings; timing need not transmit draft text.
+- [K83](patterns.md#k83-the-right-to-decline--she-always-answers-and-thats-the-tell) — **partial**:
+  Evaluate generated adherence, alternatives and asking again. Broader emotional requests, affect
+  triggers and repair arc remain absent; distinguish chosen boundary from provider refusal.
+- [K84](patterns.md#k84-calibrated-jealousy--the-risky-one-written-down-honestly) — **partial**:
+  Evaluate no-guilt/no-carryover and boundary behavior. Unsolicited/absence-based jealousy is
+  deliberately excluded, not planned missing work.
+- [K92](patterns.md#k92-conversational-stance--one-decision-per-turn-not-ten-permission-slips) —
+  **partial**: Convert eager legacy providers to non-mutating candidates; arbitrate essential
+  handling with content and evaluate final inclusion/real-route quality. Judgment shadow is not
+  activated; global arbitration is unfinished.
+- [K93](patterns.md#k93-expand-substance-ranking-coverage-and-validation) — **partial**: Extend
+  provider coverage and compare useful content at equal budgets. Coarse priors are not semantic
+  quality or causal engagement credit.
+- [K96](patterns.md#k96-one-shot-per-thought--in-turn-deliberation) — **partial**: Diagnose deployed
+  NONE/valid-thought behavior, then measure admission/expression/answer and next-turn interference.
+  In-turn effort selection and other experiments remain unimplemented; adapter tests do not prove
+  the live failure fixed.
+- [K100](patterns.md#k100-evidence-bound-memory-admission) — **partial**: Cover other writers;
+  evaluate paraphrase entailment, useful retention and false durable writes. Two guarded writers are
+  not graph-wide evidence admission.
+- [K101](patterns.md#k101-route-an-unresolved-premise-to-a-bounded-next-step) — **partial**:
+  Evaluate decisions/latency and consider bounded ask/tool/wait choices beyond recall;
+  empty/disabled subsets stay closed.
+- [K104](patterns.md#k104-cause-specific-feelings-and-mixed-emotions) — **partial**: Semantic cause
+  matching, generalized correction/resolution and paired conversational evaluation remain; unrelated
+  positive turns are not resolution evidence.
+- [K105](patterns.md#k105-expression-follows-communicative-intent) — **partial**: Run
+  semantic-selection/listening and interruption/timing comparisons including neutral controls;
+  general intent-to-expression selection and new laughter synthesis are not implemented.
+- [K106](patterns.md#k106-shared-shorthand-with-negotiated-meaning) — **open**: Implement explicitly
+  negotiated term/referent meaning with correction/scope/expiry/deletion checks; a proposed name is
+  not user adoption.
+- [K107](patterns.md#k107-provider-outcomes-are-not-character-evidence) — **partial**: Establish
+  origin for ordinary text-only refusal, audit downstream promotion and evaluate route swaps/partial
+  audio/cancellation/tool effects; streamed audio cannot be retracted and tool replay is not
+  authorized.
+
+### Performance and observability
+
+- [P7](perf.md#p7-typed-mode-prefetch-parity-with-voice) — **open**: Add bounded cancellable
+  typed-draft prewarm with explicit privacy/opt-out behavior. Composing status alone is not draft
+  prefetch.
+- [P11](perf.md#p11-measure-worker-reasoning-token-overhead-on-the-actual-route) — **partial**:
+  Measure reasoning-token leakage on the actual worker model/provider and compare native controls
+  before prompt suffixes or model changes; the historic qwen route is not assumed current.
+- [P16](perf.md#p16-post-turn-inner-life-blocks-the-brain-loop) — **partial**: Collect current
+  cost/ordering evidence, then split only safe eventual work with stale-turn guards; next-turn
+  repair/answer state must remain timely.
+- [P24](perf.md#p24-remaining-speech-latency-contracts-and-benchmarks) — **partial**: Complete the
+  benchmark and targeted contracts below: useful-audio onset, safe endpointing,
+  generation/audio-coverage identity, bounded cancellable finalization, first-chunk release,
+  incremental synthesis, buffering and interruption recovery. No live mic timing was measured here.
+- [P26](perf.md#p26-lip-sync-rides-the-server-clock-not-the-playback-clock) — **partial**: Extend
+  the same path to desktop/Tauri audio owners, keep WS metering for non-owners and retune smoothing
+  with measured lag.
+- [P30](perf.md#p30-memory-mirror-reload-and-growth-costs) — **partial**: Remove decay's full mirror
+  reload if measured worthwhile; stream reload instead of fetchall and evaluate mirror memory/LRU
+  architecture. SQLite query speed was not the original bottleneck.
+- [P31](perf.md#p31-audit--trim-the-baseline-system-prompt-25-30k-resting-floor) — **partial**:
+  Remeasure the actual route/cache, then trim duplicate grammar, gate empty blocks and audit tier
+  hygiene where evidence warrants. P43/P52 own volatile-tail/context work.
+- [P32](perf.md#p32-concept-maintenance-and-history-growth) — **partial**: Measure actual scheduler
+  contention and graph growth; define snapshot/event thinning and any remaining dirty-work
+  refinements without discarding durable history. P34/P49 own retention decisions.
+- [P33](perf.md#p33-inner-life-providers-walk-the-whole-memory-mirror-every-turn) — **partial**:
+  Index genuinely unbounded iter_by_kind walks and replace whole-knowledge concatenation with
+  bounded retrieval; keep add/update/delete/reload coherence.
+- [P34](perf.md#p34-unbounded-tables-messages-lance-mirror-concept_events) — **open**: Decide
+  retention separately for authoritative messages, the Lance mirror and concept-event noise. Add
+  reconciled index filtering/thinning only with explicit preservation/deletion semantics.
+- [P39](perf.md#p39-concept-snapshot--quality-report-n1-the-evidence-edges) — **open**: Add batched
+  evidence lookup and measure the quality report's pairwise embedding cost before optimizing it.
+- [P43](perf.md#p43-105-blocks-no-arbitration----replace-the-aggressive-denylist) — **partial**:
+  Cover eager providers, protect owed/authoritative blocks, allocate complete evidence/handling
+  bundles and record actual final inclusion/omissions before learning weights. RS1/RS4/RS5 and G6
+  refine the remaining scope.
+- [P46](perf.md#p46-parallel-compute-lane-drain) — **deferred**: Make shared
+  WorldStore/ConceptStore/cache/SQLite state safe before parallel compute drain; do not add
+  concurrency solely to reduce queue counters.
+- [P49](perf.md#p49-the-telemetry-ledgers-are-the-fastest-growing-tables) — **open**: Schedule
+  appropriate ledger retention and fix remaining non-selective aggregates; decide
+  transcript/concept-history preservation separately. Bound disk without confusing diagnostics with
+  authoritative history.
+- [P50](perf.md#p50-finish-joint-handling-and-content-admission) — **partial**: Complete
+  semantics-aware content/handling admission for other providers; decide frequent pooled-note
+  placement and avoid admitting unexplained cues. The cap itself is already implemented (RS4).
+- [P52](perf.md#p52-concept-volume-and-topic-aware-continuity) — **partial**: Evaluate smaller
+  concept caps and topic-aware carry-over with quality/token/cache controls. Historical
+  29.6-line/8.5k-char figures are snapshots, not current measurements; RS3/RS7 own follow-up
+  experiments.
+- [P24a](perf.md#p24a-repair-the-stt-partial-read-and-recorder-lifetime-contracts) — **partial**:
+  Add phrase/generation/revision/audio-coverage identity, bound/cancel finalization and exercise a
+  real recorder on isolated synthetic audio plus microphone checks.
+- [P24b](perf.md#p24b-measure-end-of-user-speech-to-useful-audio-not-just-ttft) — **open**: Join
+  input end, endpoint, final transcript, brain/tool/prompt, first speakable chunk, synthesis/PCM and
+  scheduled onset by IDs. Respect clock mapping, count failures/underruns and compare p50/p95
+  useful-answer onset rather than filler.
+- [P24c](perf.md#p24c-make-endpointing-responsive-without-cutting-off-thinking-pauses) —
+  **partial**: Separate voiced evidence from elapsed capture time, derive thresholds from frame
+  duration and replay short answers/negations/hesitations/noise against premature cuts, not just
+  faster endpoint time.
+- [P24d](perf.md#p24d-finalize-the-already-fed-audio-once-keep-speculation-reversible) —
+  **partial**: Validate real-recorder two-phrase/PTT/concurrent-interim cancellation and cache
+  freshness. In-memory finalization and speculative drafting remain experiments; provisional audio
+  must not execute tools, consume cues, write memory or speak.
+- [P24e](perf.md#p24e-release-a-useful-first-speech-chunk-before-the-whole-answer) — **partial**:
+  The normal streaming branch still requires a parsed mood; add safe provisional readiness and a
+  bounded complete-first-chunk policy without leaking tags or truncating numbers/filenames/negation.
+  Preserve shared offsets and cancellation.
+- [P24f](perf.md#p24f-stream-synthesis-not-merely-a-completed-waveform) — **open**: Implement
+  incremental synthesis with first-PCM/error/cancel semantics while preserving cache/gate,
+  gain/brightness/tempo and pacing parity; emitted chunks of a finished waveform are not incremental
+  generation.
+- [P24g](perf.md#p24g-tune-client-buffering-only-with-underrun-evidence) — **validation**: Measure
+  onset/underruns/device jitter before reducing or adapting buffering; test subsequent chained clips
+  separately from the idle first clip.
+- [P24h](perf.md#p24h-reduce-recovery-time-after-interruption-not-just-reply-onset) — **partial**:
+  Measure cancellation through mic/STT/model/TTS/sidecar/client and new-turn recovery; exercise
+  false interrupts and overlap. Full duplex/AEC remains immersion H7c.
+- [P24i](perf.md#p24i-benchmark-modelprompt-cost-after-exposing-the-actual-waits) — **validation**:
+  Benchmark warm/cold, tool/no-tool, short/long reply and cache conditions after stage tracing. Keep
+  answer quality and interruption outcomes alongside latency; no automatic faster-model claim.
+
+### Health checks of shipped behavior
+
+- [H4](health.md#h4-the-cue-shelf-produces-well-and-spends-badly) — **partial**: Remeasure
+  producer/renderer usefulness and echo-floor calibration with correct eligible/shown/used
+  denominators. Do not lower gates merely to turn genuine misses into hits.
+- [H7](health.md#h7-validate-the-grounded-hypothesis-answer-loop) — **partial**: Sample verified ask
+  -> actual answer -> resolver reason -> applied update on a consistent deployment, including
+  fictional/quoted/unclear negatives. An unscored ask does not prove an answer was missed.
+- [H11](health.md#h11-the-prompt-tells-her-what-she-wont-do-45-more-than-how-she-feels) —
+  **partial**: Compare instruction register/ratio and total volume on matching contexts; retain real
+  boundaries. Do not pin unrelated affect merely to change the mix.
+- [H14](health.md#h14-verify-negative-affect-concepts-reach-matching-context) — **validation**:
+  Verify a genuinely negative user affective is created and reaches T3 on a matching-topic turn. Do
+  not mint tender/tired context as dislike or lower global floors to manufacture a success.
+- [H17](health.md#h17-calibrate-the-remaining-short-reply-gate) — **partial**: Decide and measure
+  absolute-versus-relative short-reply calibration; no demonstrated shared-predicate defect remains
+  beyond that follow-up.
+- [H34](health.md#h34-echo-is-a-reliable-measure-and-it-is-not-a-measure-of-him) — **open**:
+  Establish an item-level user outcome/reaction signal with message-length/confound controls;
+  coordinate F12/RS9. Reweighting two unsuitable signals does not solve attribution.
+- [H35](health.md#h35-a-third-of-the-surfacing-ledger-cannot-be-scored-by-either-signal) —
+  **partial**: Join cue settlement with ledger views and define cluster echo or explicitly label
+  affinity as weaker evidence. Correct judged/surfaced/settled denominators must survive any change.
+- [H44](health.md#h44-validate-graduation-evidence-after-the-loop-repairs) — **validation**: Verify
+  source-linked independent confirmations and a valid graduated/merged result. A recorded exit alone
+  cannot close this: an earlier audit found unrelated confirmations. Keep H7 evidence review and
+  post-guard model revalidation; do not lower support bars.
+- [H54](health.md#h54-topic_miss-at-95-of-eligible-declines-is-not-by-itself-a-starvation) —
+  **validation**: Hand-check genuine same-subject near-misses with per-turn shelf/eligibility
+  context. Separate never-shown, shown/ignored and true semantic misses; a dominant topic_miss
+  percentage is not starvation.
+- [H22-followup](health.md#h22-followup-distinguish-a-shared-ritual-from-a-timing-habit) —
+  **deferred**: Decide and evaluate evidence that makes a repeated calendar slot a shared ritual; do
+  not lower thresholds to manufacture names. Historical counts are not current.
+- [H21-followup](health.md#h21-followup-decide-the-question-style-axis) — **deferred**: Measure
+  whether the question axis carries useful variation before retaining, retiring or recalibrating it;
+  do not label a current stream dead from the old snapshot.
+- [H20-followup](health.md#h20-followup-fact-check-claim-selection-coverage) — **deferred**: Measure
+  source-grounded sentence coverage and false-positive search cost, then decide whether to widen
+  named-entity/measurement/date heuristics.
+
+### Tools and developer diagnostics
+
+- [D8](tools.md#d8-conversation-archive-recall-with-daily-overviews) — **partial**: Generated
+  topic/event summaries with citation/coverage controls, real-model overview-to-source scenarios and
+  lookup/token benchmarks remain. Reuse the implemented dedicated tool; the
+  extend-recall-versus-new-tool decision is resolved.
+- [D-approval](tools.md#d-approval-spoken--aiko-voiced-task-approvals) — **open**: Add opt-in
+  conversational approval wording and unambiguous routing back to the pending task, preserving one
+  decision across voice/UI. Do not resurrect timed escalation without a separate explicit policy.
+- [DT2](tools.md#dt2-relationship-state-inspector--one-shot-consolidated-snapshot) — **open**:
+  Implement one bounded consolidated snapshot and decide a read-only UI surface; do not duplicate
+  store ownership.
+- [DT3](tools.md#dt3-feature-flag-catalog--minimal-mode-preset) — **open**: Add a catalog with
+  current/default/purpose and a reversible minimal-mode preset with explicit restore semantics.
+- [DT4](tools.md#dt4-scenario--conversation-replay-harness) — **open**: Implement shared live-app
+  replay with isolated state, seeded scenarios and block assertions; exact/model replay is not
+  supplied by the short Live action tail.
+- [DT5](tools.md#dt5-get_surfacing_outcomes--did-what-she-brought-up-land) — **partial**: Expose a
+  consolidated per-turn trace, explicit whole-store coverage and wider inner-life read surface with
+  denominators/shrunk estimates. Existing bounded receipts are a partial trace, not full coverage.
+- [D7](tools.md#d7-anticipatory-routine-assistance--act-on-what-shes-learned) — **open**: Join
+  high-confidence learned slots to one bounded routine-specific offer/preparation, with
+  ignore/dismiss behavior and shared C6 intake; destructive work still needs normal approval.
+- [D1-R](tools.md#d1-r-reminder-recurrence-and-os-notification-delivery) — **open**: Add explicit
+  recurring rules and OS delivery/cancellation/dedupe. Keep recurrence/timezone policy and
+  notification permissions separate from the one-shot tool.
+
+### Testing and evaluation
+
+- [T1](testing.md#t1-shared-fakechatclient--behaviorharness) — **open**: Build a reusable
+  ChatClient-protocol fake and minimal real-collaborator BehaviorHarness. Do not assume no shared
+  fixtures or no integration tests exist.
+- [T2](testing.md#t2-end-to-end-behavioural-chain-tests) — **partial**: Add reusable worker -> cue
+  -> final prompt -> parsed reply -> post-turn state chains through T1; existing local tests do not
+  cover every behavioral chain.
+- [T3](testing.md#t3-worker-registry-conformance--smoke--fault-injection) — **partial**: Add
+  registry-wide uniqueness/readiness purity, seeded/empty-store repeat runs and LLM fault injection
+  without booting live install state.
+- [T4](testing.md#t4-prompt-build--tag-parse-contract-golden-tests) — **partial**: Build a
+  deliberate compact cross-feature golden contract layer for both assembled prompt and parsed
+  output; avoid duplicating implementation-only unit tests.
+- [T5](testing.md#t5-llm-behavioural-eval-suite-separate-track-not-a-ci-gate) — **partial**:
+  Complete repeated held-out/blinded multi-turn and listening comparisons listed below, with equal
+  budgets, source correctness, silence/decline/failure controls and no live relationship mutation.
+- [T6](testing.md#t6-determinism-seams-for-flake-free-chain-tests) — **partial**: Standardize seeded
+  RNG injection across remaining workers and advance-clock/scheduler chain tests; keep narrative
+  clock separate from real runtime timing.
+
+### Immersion and shared activities
+
+- [H2](immersion.md#h2-calendar--time-context-block) — **partial**: Add holiday proximity and
+  explicit user-birthday anticipation through existing owners; do not build a second calendar or
+  circadian clock.
+- [H7](immersion.md#h7-listen-while-speaking--soften-the-half-duplex-turn-lock) — **partial**: H7c
+  full duplex/software AEC and actual microphone/playback validation remain. Coordinate P24; the
+  overlap ring is not full duplex.
+- [H12](immersion.md#h12-aiko-initiated-intentional-gifts--she-leaves-you-something) — **open**:
+  Implement intentional Aiko-to-user gifts with a real saved output/source, permission and rare
+  grounded delivery; a narrated gift is not an artifact.
+- [H23](immersion.md#h23-avatar-shared-moment-snapshot--she-sends-you-a-selfie) — **open**:
+  Implement deliberate source-linked avatar snapshots, file lifecycle and user-visible sending; do
+  not claim unseen or generated real-world photos.
+- [H24](immersion.md#h24-occasion---season-aware-outfits) — **open**: Add explicit occasion/season
+  mapping with user override, ownership and no repeated changes; do not confuse existing
+  sleep/weather changes with occasion-aware selection.
+- [H27](immersion.md#h27-co-presence-mode--in-the-room-not-in-conversation) — **partial**: Evaluate
+  coherent quiet co-presence and add explicit joined-activity state via IM1; optional ambience is
+  IM8. Live availability/delivery gaps stay L20/L24, not a second controller.
+- [IM1](immersion.md#im1-shared-quiet-sessions) — **open**: Implement explicit
+  start/pause/resume/leave/checkpoint state with zero inference during silence, restart-as-paused
+  and no invented work or attendance reward.
+- [IM2](immersion.md#im2-point-at-the-same-thing) — **open**: Attach one explicit text selection
+  with source/revision/range, removable preview, bounded context and server-side
+  scope/deletion/revision validation.
+- [IM3](immersion.md#im3-a-shared-reading-place) — **open**: Build a shared-reader UI and
+  permitted-prefix retrieval with IM2 selection, rewind invalidation and actual-route spoiler
+  contrasts. Grounded idle reading alone is not shared reading.
+- [IM4](immersion.md#im4-aiko-can-show-what-she-made) — **partial**: Add a stable versioned creation
+  with draft/ready/failed state, exact referenced-revision opening, cancellation preservation and
+  cross-session comparison. Research notes alone are not the full creation contract.
+- [IM5](immersion.md#im5-make-something-together) — **open**: Implement a jointly edited bounded
+  document with proposed versus accepted revisions, authorship, undo and stale-write protection;
+  discussion does not authorize edits.
+- [IM6](immersion.md#im6-keepsakes-with-a-real-origin) — **open**: Add explicit pin/open/delete with
+  exact origins, scoped excerpts and source-deletion invalidation. Optional revisit needs
+  consent/K12; export stays J2.
+- [IM7](immersion.md#im7-a-small-game-at-the-same-table) — **open**: Implement one deterministic
+  legal-move game with pause/resign/reconnect/reset and no-model play; commentary is optional and
+  cannot invent engine reasoning.
+- [IM8](immersion.md#im8-a-quiet-acoustic-setting) — **open**: Add an explicitly selected
+  local/licensed loop with independent gain/mute/fades/ducking, single-owner playback and STT echo
+  checks. No inference is needed.
+
+### Live mode: remaining runtime work
+
+- [L4](live-mode.md#l4-authored-ambient-motion-presets) — **deferred**: Wait for a real authored
+  idle-life motion group before a preset menu. This is a rig capability limit, not policy prompt
+  work.
+- [L5](live-mode.md#l5-bounded-micro-and-earcon-delivery) — **open**: Add validated
+  delivery_style/backchannel_delivery enums mapped through shared TTS/earcon controls, rejecting
+  invalid text before synthesis.
+- [L9](live-mode.md#l9-floor-manners-while-the-user-owns-the-floor) — **open**: Add listen_posture
+  as a bounded mapping to existing intents; typing cannot speak and sleep/DND/floor ownership still
+  win.
+- [L11](live-mode.md#l11-circadian-quieting-from-a-period-token) — **open**: Add deterministic
+  period-token policy quieting with timephrase; night cannot increase intensity or speech authority.
+- [L13](live-mode.md#l13-glance-targets-from-an-allowlisted-present-set) — **open**:
+  Construct/validate an allowlisted menu from present frame entities; absent/unknown targets drop
+  and private titles never enter policy context.
+- [L14](live-mode.md#l14-return-and-reconnect-companion-beat) — **open**: Connect one bounded return
+  beat with source/generation/dedupe checks and existing speech acts; no automatic greeting or
+  second speech loop.
+- [L15](live-mode.md#l15-compact-policy-prompt-v2-keep-the-4b-reliable) — **partial**: Measure a
+  compact actual-route prompt at equal decision quality, preserving schema/rails/menu. Temporal
+  context is implemented; smaller sufficient input is not validated.
+
+### Live initiative: remaining lifecycle work
+
+- [L19](live-initiative.md#l19-explain-silence-across-the-entire-funnel) — **partial**: Add
+  persistent/reportable pre-policy omissions, complete build/route identity and
+  candidate-to-delivery joins with unknown states.
+- [L20](live-initiative.md#l20-availability-is-not-window-focus) — **partial**: Add explicit
+  away/DND, per-device capability/evidence/expiry and source-aware interruptibility; connection is
+  not physical presence.
+- [L21](live-initiative.md#l21-durable-intentions-short-lived-action-attempts) — **partial**:
+  Persist intention/attempt/outcome ownership across reset, paginate fairly beyond bounded intake
+  and model quiet/withdrawn/consumed states without renewing sources.
+- [L22](live-initiative.md#l22-event-and-deadline-scheduling-with-a-liveness-guarantee) —
+  **partial**: Provide restart-safe event/deadline scheduling with a demonstrated liveness/fairness
+  guarantee; no policy call on every heartbeat.
+- [L23](live-initiative.md#l23-a-compact-4b-deliberator-with-useful-choices) — **partial**: Run
+  paired actual-route choices, compact input and useful alternatives; prompt fixtures do not prove
+  the model chooses appropriate speech.
+- [L24](live-initiative.md#l24-transactional-brain-handoff-and-honest-completion) — **partial**:
+  Settle reservation/claim/dispatch/presentation/playback transactionally, preserve outcomes across
+  restart/cancellation and handle consumed-but-undelivered cues. Queue success is not delivery.
+- [L25](live-initiative.md#l25-grounded-impulses-and-a-connected-curiosity-ledger) — **partial**:
+  Connect fresh result/source renewal and answer/use outcomes with explicit purpose; reuse
+  K97-K99/H7 rather than creating a second curiosity ledger.
+- [L26](live-initiative.md#l26-background-work-during-real-co-presence) — **open**: Use actual
+  capture/inference load and declared worker cost/interruptibility to schedule bounded preparation
+  during co-presence; an open mic is not GPU ownership.
+- [L27](live-initiative.md#l27-an-extension-contract-for-producers-and-behaviors) — **open**: Define
+  a small producer/behavior contract with ownership/freshness/purpose/cost and two real adapters;
+  plugin worker/context lifecycle remains platform work.
+- [L28](live-initiative.md#l28-learn-timing-and-interests-without-rewarding-pestering) — **open**:
+  Learn only from attributable more/less/not-now/dismissal and source-linked use; separate
+  unavailable/undelivered/unknown from disinterest and never optimize chat duration.
+- [L29](live-initiative.md#l29-desktop-and-mobile-delivery-are-different-capabilities) —
+  **partial**: Add per-device delivery capabilities/leases and cross-device attempt/presentation
+  dedupe; explicit deployment posture is required and reachability is not audibility.
+- [L30](live-initiative.md#l30-replay-and-rollout-are-part-of-the-architecture) — **partial**: Build
+  shared DT4/T5 replay, actual-route comparisons and verified whole-build/route rollout identity;
+  rotating logs alone are not a reproducible evaluation corpus.
+- [L31](live-initiative.md#l31-later-pilot-permissioned-email-assistance) — **deferred**: After
+  platform/durable-job work, pilot permissioned read-only email with explicit account/data/operation
+  scope; provider integration and sends are not implemented.
+
+### Reasoning Surfacing
+
+- [RS1](reasoning-surfacing.md#rs1-establish-an-end-to-end-reasoning-attention-and-cost-baseline) —
+  **open**: Establish an end-to-end reasoning, attention and cost baseline
+-
+  [RS2](reasoning-surfacing.md#rs2-preserve-evidence-identity-through-concept-recall-and-compact-context)
+  — **open**: Preserve evidence identity through concept recall and compact context
+- [RS3](reasoning-surfacing.md#rs3-select-a-sufficient-working-set-for-the-current-question) —
+  **open**: Select a sufficient working set for the current question
+- [RS4](reasoning-surfacing.md#rs4-admit-optional-cues-jointly-with-their-handling) — **open**:
+  Admit optional cues jointly with their handling
+- [RS5](reasoning-surfacing.md#rs5-commit-t3-accounting-from-complete-final-evidence-bundles) —
+  **open**: Commit T3 accounting from complete final evidence bundles
+- [RS6](reasoning-surfacing.md#rs6-trial-a-bounded-automatic-reasoning-tool-before-speech) —
+  **open**: Trial a bounded automatic reasoning tool before speech
+- [RS7](reasoning-surfacing.md#rs7-reuse-stable-evidence-without-freezing-stale-conclusions) —
+  **open**: Reuse stable evidence without freezing stale conclusions
+- [RS8](reasoning-surfacing.md#rs8-compare-explanations-through-discriminating-evidence) — **open**:
+  Compare explanations through discriminating evidence
+-
+  [RS9](reasoning-surfacing.md#rs9-learn-usefulness-without-rewarding-repetition-or-confidence-theatre)
+  — **open**: Learn usefulness without rewarding repetition or confidence theatre
+
+### Plugin System
+
+- [P3](plugin-system.md#14-implementation-roadmap) — **open**: Versioned descriptors,
+  disposal/ownership and scoped grants
+- [P4](plugin-system.md#14-implementation-roadmap) — **open**: Bounded discovery, exact selected
+  schemas and no full-menu fallback
+- [P5](plugin-system.md#14-implementation-roadmap) — **open**: Durable steps/leases/waits/budgets,
+  effect journal and result outbox
+- [P6](plugin-system.md#14-implementation-roadmap) — **open**: Hosted worker/model/storage lifecycle
+- [P7](plugin-system.md#14-implementation-roadmap) — **open**: Read-only source and mail capability pilots
+- [P8](plugin-system.md#14-implementation-roadmap) — **open**: Supervised processes, packaging and
+  approved external writes
+
+## Keeping it current
+
+Move completed narratives to shipped and leave only a short pointer in the domain file. A partial
+item must name its implemented slice and exact remainder; put shared validation in T5/L55 with the
+affected IDs. Retired proposals are not shipped features. Re-read dependencies at closure, preserve
+stable links and run [check_backlog_links.py](../../scripts/check_backlog_links.py) over docs and
+rules. Use focused/affected tests for code changes and run npm run lint; a full suite is not the
+default completion gate.

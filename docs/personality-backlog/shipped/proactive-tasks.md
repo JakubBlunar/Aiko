@@ -39,7 +39,7 @@ interpretation, kv only) shipped Pass 15; phase 5 (pool-only
 shipped Pass 18 ([C7](#c7-live-activity-pull--get_activity-tool)).
 Still open: memories only if a pattern repeats, and phase 6 UIA.
 OS-idle as a gap-cue qualifier
-([C8](../proactive.md#c8-os-idle-as-a-gap-cue-qualifier)) shipped
+([C8](audit-2026-10-24.md#proactive-c8)) shipped
 Pass 14. Duration as K72 evidence
 ([C9](#c9-activity-duration-as-wellbeing-evidence-k72)) shipped in
 Pass 11.

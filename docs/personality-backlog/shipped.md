@@ -1,5 +1,9 @@
 # Shipped (kept for reference)
 
+## 24 Oct 2026 backlog audit
+
+[Implemented slices and retired proposals](shipped/audit-2026-10-24.md) now hold the completed work removed from the active queue, including B7, C2/C4/C7-C9, concept foundations, vocal-tone input and staged scheduling/performance work. Partial slices link back to concrete remaining work. Mobile/PWA implementation is archived there while its device/deployment checks remain I9. [Live baseline/design](shipped/live-mode.md), [initiative phases](shipped/live-initiative.md), [historical review evidence](shipped/live-initiative-review.md), [pattern catalogue](shipped/pattern-status-history.md), [health patterns](shipped/health-patterns.md) and [dated front-page reviews](shipped/review-history.md) are reference records, not new open tasks. Retained target designs do not imply every target shipped.
+
 Completed work, split by family so each file stays small (the combined log had grown past 4k lines). One paragraph per entry; detail lives in the linked implementation files. This page is the index — the entries themselves live under [`shipped/`](shipped/).
 
 When an entry lands, move its write-up here and leave the open file only a one-line status row. An entry that ships *in halves* keeps the open half where it was and links back. Run [`scripts/check_backlog_links.py`](../../scripts/check_backlog_links.py) afterwards — the anchors are what break, silently.
@@ -220,13 +224,12 @@ than renamed, because every inbound link in the backlog points at it.)*
 
 ## [Closed — health-audit entries (H-series, the *other* one)](shipped/health.md)
 
-**43 closed entries** from [`health.md`](health.md), not enumerated here on
-purpose: unlike every other family on this page, a health entry's value is the
-*measurement* rather than the feature, so the list that matters is the
-[status index](health.md#status-index) — it carries severity and open/closed
-state for all 54 in one table, which a set of bullets here would only go stale
-against. The [recurring-shapes catalogue](health.md#recurring-shapes) stays in
-the live file for the same reason: it is the part you read *before* shipping.
+The original 43 closed findings remain in [the health archive](shipped/health.md).
+H2 and H8 were additionally retired in the [24 Oct audit](shipped/audit-2026-10-24.md).
+The [active health queue](health.md#status-index) contains only remaining work,
+including follow-ups carried from closed entries. The
+[recurring-shapes catalogue](shipped/health-patterns.md#recurring-shapes) is reference
+material to read before implementing a related change.
 
 **The H numbers collide with the immersion section above**, and always have:
 immersion H0-H28 are features, health H1-H54 are audit findings. They are

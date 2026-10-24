@@ -1,5 +1,13 @@
 # Plugin platform and durable agent jobs
 
+## Current implementation boundary: 24 Oct 2026
+
+**Implemented:** P1/P2 discovery/enable gating, SDK-primary MCP/skill/middleware registration, bundled plugins and existing task orchestration. These are the foundation in [plugins.md](../plugins.md), not the platform proposed below.
+
+**Remaining by milestone:** P3 descriptors/ownership/grants; P4 exact-set bounded disclosure; P5 durable leases/steps/waits/budgets/effect journal/outbox; P6 hosted workers/model broker/namespaced storage; P7 read-only code/mail capabilities; P8 supervised processes, packaging and approved writes. All six remain open. Existing task persistence does not establish restart-safe side-effect execution. The roadmap's acceptance gates remain authoritative. Plugin P numbers are distinct from performance P numbers.
+
+**Source check:** [SDK](../../app/plugins/sdk.py), [runtime](../../app/plugins/runtime.py), [workflow handler](../../app/core/tasks/workflow/goal_workflow_handler.py), [recovery](../../app/core/tasks/recovery.py), [plugin regressions](../../tests/test_plugin_runtime.py).
+
 Status: design and implementation guide, reviewed against source on 2026-09-28.
 P1/P2 are historical shipped milestones; P3 onward below is proposed, not an
 available API. [The current plugin manual](../plugins.md) remains the reference

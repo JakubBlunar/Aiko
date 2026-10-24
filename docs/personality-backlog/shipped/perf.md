@@ -1091,7 +1091,7 @@ saturation that pins the probe at 1.0: `goal` divided by its own
 numerator and `thread_resummary` saturated at the value that triggers
 the redraft. Both were fixed before shipping.
 
-**Motivation.** [P36](../perf.md#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
+**Motivation.** [P36](audit-2026-10-24.md#perf-p36)
 shipped the mechanism and migrated nine workers. Workers that schedule
 on `interval_seconds` alone spend a slot to discover they have nothing
 to do, and — because the scheduler cannot know whether they are cheap —
@@ -1184,7 +1184,7 @@ declined.
 **Kept.** `FactCheckRateLimiter` `*_per_hour_cap` / `*_per_day_cap`
 on fact-check, idle curiosity searches, consolidation, conflict, and
 the belief/promise/goal workers. Those bound LLM and web-search
-spend. [P36](../perf.md#p36-idle-worker-llm-pile-up-under-a-6-s-soft-budget)
+spend. [P36](audit-2026-10-24.md#perf-p36)
 lane budgets are per-tick wall-clock, not a daily API ceiling, so
 they do not replace them. K31/K32 touch `daily_cap` is a different
 job (gesture / axis movement) and was not touched.
