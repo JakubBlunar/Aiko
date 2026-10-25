@@ -32,6 +32,7 @@ function stripMetaMarkers(s: string): string {
 export interface ChatSlice {
   // Chat transcript
   messages: ChatMessage[];
+  deletedMessageIds: ReadonlySet<number>;
   /** P9: per-turn draft for the active assistant bubble. Streamed tokens
    * land here (one O(1) write per chunk) instead of cloning ``messages``
    * per token. ``finishAssistantBubble`` commits it; any transcript wipe
@@ -49,6 +50,9 @@ export interface ChatSlice {
   historyHasMore: boolean;
   setHistoryHasMore: (value: boolean) => void;
   appendUserMessage: (content: string) => void;
+  stampUserBackendId: (backendId: number, content?: string) => void;
+  removeMessages: (backendIds: number[]) => void;
+  replaceReplyAfter: (userBackendId: number) => void;
   appendAssistantBubble: () => string; // returns id
   appendAssistantToken: (chunk: string) => void;
   finishAssistantBubble: () => void;
@@ -76,10 +80,13 @@ export interface ChatSlice {
 
 export const createChatSlice: SliceCreator<ChatSlice> = (set) => ({
   messages: [],
+  deletedMessageIds: new Set(),
   streamingDraft: null,
   setMessages: (msgs) =>
-    set({
-      messages: msgs.map((m) =>
+    set((state) => ({
+      messages: msgs.filter((m) =>
+        m.backendId == null || !state.deletedMessageIds.has(m.backendId),
+      ).map((m) =>
         m.role === "assistant"
           ? { ...m, content: stripMetaMarkers(m.content) }
           : m,
@@ -88,7 +95,7 @@ export const createChatSlice: SliceCreator<ChatSlice> = (set) => ({
       // referenced is gone, and a fresh ``setMessages`` always lands
       // outside a turn.
       streamingDraft: null,
-    }),
+    })),
   prependMessages: (msgs) =>
     set((state) => {
       if (msgs.length === 0) return state;
@@ -98,7 +105,8 @@ export const createChatSlice: SliceCreator<ChatSlice> = (set) => ({
           .filter((id): id is number => id != null),
       );
       const fresh = msgs
-        .filter((m) => m.backendId == null || !known.has(m.backendId))
+        .filter((m) => m.backendId == null ||
+          (!known.has(m.backendId) && !state.deletedMessageIds.has(m.backendId)))
         .map((m) =>
           m.role === "assistant"
             ? { ...m, content: stripMetaMarkers(m.content) }
@@ -121,6 +129,45 @@ export const createChatSlice: SliceCreator<ChatSlice> = (set) => ({
         },
       ],
     })),
+  stampUserBackendId: (backendId, content) =>
+    set((state) => {
+      if (state.messages.some((m) => m.backendId === backendId)) return state;
+      const index = state.messages.findIndex(
+        (m) => m.role === "user" && m.backendId == null &&
+          (content === undefined || m.content === content),
+      );
+      if (index < 0) return state;
+      const messages = state.messages.slice();
+      messages[index] = { ...messages[index], backendId };
+      return { messages };
+    }),
+  removeMessages: (backendIds) =>
+    set((state) => {
+      const ids = new Set(backendIds);
+      const deletedMessageIds = new Set([...state.deletedMessageIds, ...ids]);
+      const messages = state.messages.filter(
+        (m) => m.backendId == null || !ids.has(m.backendId),
+      );
+      if (
+        messages.length === state.messages.length &&
+        deletedMessageIds.size === state.deletedMessageIds.size
+      ) return state;
+      return {
+        messages: messages.length === state.messages.length ? state.messages : messages,
+        deletedMessageIds,
+        streamingDraft: messages.some((m) => m.id === state.streamingDraft?.id)
+          ? state.streamingDraft : null,
+      };
+    }),
+  replaceReplyAfter: (userBackendId) =>
+    set((state) => {
+      const index = state.messages.findIndex(
+        (m) => m.role === "user" && m.backendId === userBackendId,
+      );
+      if (index < 0) return state;
+      const messages = state.messages.filter((m, i) => i <= index || m.role !== "assistant");
+      return { messages, streamingDraft: null };
+    }),
   appendAssistantBubble: () => {
     const id = nextId();
     set((state) => ({
@@ -242,7 +289,7 @@ export const createChatSlice: SliceCreator<ChatSlice> = (set) => ({
     })),
   clearMessages: () => {
     resetIdCounter();
-    set({ messages: [], streamingDraft: null });
+    set({ messages: [], streamingDraft: null, deletedMessageIds: new Set() });
   },
   applyMessageReactions: (backendId, reactions) =>
     set((state) => ({

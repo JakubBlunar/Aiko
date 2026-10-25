@@ -135,6 +135,10 @@ class _FakeChatDb:
     def get_message_signals(self, _ids: Any) -> dict[int, Any]:
         return {}
 
+    def get_existing_message_ids(self, ids) -> set[int]:
+        existing = {row["message_id"] for row in self._rows}
+        return existing.intersection(ids)
+
 
 def _row(content: str, created: datetime, *, sid: str = "u:old", mid: int = 1) -> dict[str, Any]:
     return {

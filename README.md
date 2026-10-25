@@ -197,6 +197,20 @@ The Python process boots:
 
 In dev mode Vite proxies `/api` and `/ws` to the Python server.
 
+### Recovering a chat reply
+
+Finished messages have a **Delete** action (with confirmation). The latest
+user message also has **Resend latest**: it removes Aiko's responses after
+that message and generates a replacement, keeping the original user message,
+timestamp and attachments. Stop an active reply before using either action.
+Changes persist and are synchronized across connected windows.
+
+Deletion also invalidates that session's summaries and thread note, updates
+the archive, and removes the selected messages from search. In-flight summary
+and indexing jobs cannot restore the deleted text. It does not undo
+tool actions, delete attachment files, or erase separately learned long-term
+memories.
+
 ## Configure
 
 User-editable defaults live in `config/default.json`; personal overrides go in `config/user.json` and are deep-merged on top (the Settings drawer in the UI writes `config/user.json` for you). Every knob — LLM routing, voice, memory tiers, the personality/worker toggles, tools, weather, avatar — is documented in the **[configuration reference](docs/configuration.md)**, which stays in lock-step with `app/core/infra/settings.py`.

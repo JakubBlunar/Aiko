@@ -1961,6 +1961,7 @@ export interface AvatarMotionState {
 }
 
 export interface MetricsSnapshot {
+  user_message_id?: number;
   mode?: string;
   capture_ms?: number;
   stt_ms?: number;
@@ -2355,9 +2356,14 @@ export type WsServerEvent =
       type: "audio_owner_changed";
       owner_id: string | null;
     }
-  | { type: "token"; chunk: string }
+  | { type: "turn_started"; session: string }
+  | { type: "user_message_saved"; session: string; message_id: number; text: string }
+  | { type: "messages_deleted"; session: string; message_ids: number[] }
+  | { type: "reply_replacing"; session: string; user_message_id: number }
+  | { type: "token"; chunk: string; session?: string }
   | {
       type: "turn_done";
+      session?: string;
       metrics: MetricsSnapshot;
       delivery_id?: string;
       /** K32: persisted SQLite ``messages.id`` of the assistant reply,
@@ -2420,8 +2426,8 @@ export type WsServerEvent =
     }
   | { type: "session_changed"; session: string }
   | { type: "history_cleared"; session: string }
-  | { type: "status"; message: string }
-  | { type: "error"; message: string }
+  | { type: "status"; message: string; session?: string }
+  | { type: "error"; message: string; session?: string }
   | { type: "memory_added"; memory: Memory }
   | { type: "memory_updated"; memory: Memory }
   | { type: "memory_deleted"; id: number }

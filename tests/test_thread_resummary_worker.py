@@ -94,9 +94,15 @@ class _FakeDB:
     def get_latest_summary(self, session_id: str):
         return None
 
-    def save_thread_note(self, session_id, title, note, messages_at) -> None:
+    def get_history_edit_revision(self, session_id: str) -> int:
+        return 0
+
+    def save_thread_note(
+        self, session_id, title, note, messages_at, *, expected_history_revision=None,
+    ) -> bool:
         self.saved.append((session_id, title, note, messages_at))
         self._note = _Note(title, note, messages_at, _now().isoformat())
+        return True
 
 
 class _FakeClient:

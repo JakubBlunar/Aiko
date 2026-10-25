@@ -179,6 +179,20 @@ class MessageIndexer:
 
     def _index_one(self, row: MessageRow, attempt: int = 0) -> None:
         try:
+            source = self._db.get_message_row(row.id)
+        except Exception:
+            log.exception("message index source check failed: message=%d", row.id)
+            self._handle_failure(row, attempt, stage="source")
+            return
+        if source is None or source.session_id != row.session_id:
+            try:
+                self._rag.delete_messages(row.session_id, [row.id])
+            except Exception:
+                log.exception("deleted message index cleanup failed: message=%d", row.id)
+                self._handle_failure(row, attempt, stage="delete")
+            return
+        row = source
+        try:
             if self._rag.has_message(row.session_id, row.id):
                 self._bump("already_present")
                 return
@@ -196,6 +210,8 @@ class MessageIndexer:
             self._handle_failure(row, attempt, stage="embed")
             return
         try:
+            if self._db.get_message_row(row.id) is None:
+                return
             self._rag.add_message(
                 session_id=row.session_id,
                 message_id=row.id,
@@ -204,6 +220,10 @@ class MessageIndexer:
                 embedding=vec,
                 created_at=row.created_at,
             )
+            # Deletion can commit while the embedding or Lance write is running.
+            if self._db.get_message_row(row.id) is None:
+                self._rag.delete_messages(row.session_id, [row.id])
+                return
         except Exception:
             self._bump("write_failures")
             log.debug(

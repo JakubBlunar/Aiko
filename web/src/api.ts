@@ -427,6 +427,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pinned }),
     }),
+  deleteChatMessage: (sessionKey: string, messageId: number) =>
+    jsonFetch<{ session: string; message_ids: number[] }>(
+      `/api/sessions/${encodeURIComponent(sessionKey)}/messages/${messageId}`,
+      { method: "DELETE" },
+    ),
+  retryChatMessage: (sessionKey: string, messageId: number) =>
+    jsonFetch<{ session: string; message_id: number }>(
+      `/api/sessions/${encodeURIComponent(sessionKey)}/messages/${messageId}/retry`,
+      { method: "POST" },
+    ),
   // ── Knowledge gaps (F2) ──────────────────────────────────────────
   listKnowledgeGaps: (includeResolved: boolean = false) =>
     jsonFetch<{ gaps: Memory[]; total: number }>(

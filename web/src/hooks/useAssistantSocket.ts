@@ -133,6 +133,12 @@ export function useAssistantSocket(): {
       debugLog.log({ source: "ws", kind: evt.type, payload: evt });
     }
 
+    if (
+      ["turn_started", "user_message_saved", "messages_deleted", "reply_replacing",
+        "token", "turn_done", "status", "error"].includes(evt.type) &&
+      "session" in evt && evt.session !== undefined && evt.session !== store.sessionKey
+    ) return;
+
     switch (evt.type) {
       case "hello":
         store.setSessionKey(evt.session);
@@ -227,6 +233,24 @@ export function useAssistantSocket(): {
         store.pushSystemMessage("History cleared.");
         break;
 
+      case "turn_started":
+        store.setTurnInProgress(true);
+        store.setStatus("Preparing reply...");
+        break;
+
+      case "user_message_saved":
+        store.stampUserBackendId(evt.message_id, evt.text);
+        break;
+
+      case "messages_deleted":
+        store.removeMessages(evt.message_ids);
+        break;
+
+      case "reply_replacing":
+        store.replaceReplyAfter(evt.user_message_id);
+        store.clearToolActivity();
+        break;
+
       case "message":
         // System messages (status events from background workers, etc.)
         // are pushed inline. User messages from the backend's
@@ -267,7 +291,7 @@ export function useAssistantSocket(): {
         break;
 
       case "token":
-        if (!store.turnInProgress) {
+        if (store.streamingDraft === null) {
           store.setTurnInProgress(true);
           store.appendAssistantBubble();
         }
@@ -276,6 +300,9 @@ export function useAssistantSocket(): {
 
       case "turn_done":
         store.finishAssistantBubble();
+        if (typeof evt.metrics?.user_message_id === "number") {
+          store.stampUserBackendId(evt.metrics.user_message_id);
+        }
         // K32: stamp the just-finished bubble with its persisted id so
         // the reaction tray + "mark as moment" enable without a reload.
         store.stampAssistantBackendId(evt.assistant_message_id);

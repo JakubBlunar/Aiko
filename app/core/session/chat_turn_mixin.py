@@ -20,6 +20,7 @@ from app.core.session.merge_buffer import _MergeBuffer
 from app.llm.token_utils import estimate_tokens
 import json
 from app.core.session.session_text_utils import sanitize_user_text
+from app.core.session.message_history import notify_history, serialized_history_turn
 import time
 from app.core.infra import timephrase
 
@@ -66,6 +67,7 @@ class ChatTurnMixin:
     def chat_once(self, user_text: str) -> str:
         return self.chat_once_streaming(user_text=user_text, mode="typed")
 
+    @serialized_history_turn
     def chat_once_streaming(
         self,
         *,
@@ -78,8 +80,13 @@ class ChatTurnMixin:
         stt_ms: float = 0.0,
         user_vocal_tone: str | None = None,
         _resume_message_id: int | None = None,
+        _retry_message_id: int | None = None,
         attachments: "list[dict] | None" = None,
     ) -> str:
+        if _retry_message_id is not None:
+            source, attachments = self.prepare_chat_retry(_retry_message_id)
+            user_text = source.content
+            _resume_message_id = source.id
         _ = user_vocal_tone  # not used in v1; reserved for prosody hints
         cleaned = sanitize_user_text(user_text or "")
         # D2 Part B — normalise the turn's attachments and stash them so
@@ -142,8 +149,9 @@ class ChatTurnMixin:
 
         # If chat history is disabled, replay the message into a transient key
         # so we never persist it across restarts.
+        public_session_key = self.session_key
         session_key = (
-            self.session_key if self._remember_history else f"{self.session_key}:noremember"
+            public_session_key if self._remember_history else f"{public_session_key}:noremember"
         )
 
         # ── Voice merge bookkeeping ────────────────────────────────────
@@ -178,6 +186,11 @@ class ChatTurnMixin:
                 token_count=estimate_tokens(cleaned),
                 attachments=attachments_json,
             )
+
+        notify_history(self, {
+            "type": "user_message_saved", "session": public_session_key,
+            "message_id": user_message_id, "text": user_text,
+        })
 
         # Schema v43: capture the durable lifecycle after the user row exists
         # but before either prompt pass. An asleep message is an interruption,
@@ -410,6 +423,7 @@ class ChatTurnMixin:
             # ``backendId`` and enable the reaction tray without waiting
             # for a history reload. ``None`` for empty / aborted turns
             # (no row was written).
+            "user_message_id": user_message_id,
             "assistant_message_id": (
                 int(result.assistant_message_id)
                 if getattr(result, "assistant_message_id", None) is not None

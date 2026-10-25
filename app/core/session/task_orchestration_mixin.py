@@ -1418,6 +1418,10 @@ class TaskOrchestrationMixin:
         stt_ms = float(getattr(event, "stt_ms", 0.0) or 0.0)
         attachments = list(getattr(event, "attachments", ()) or ())
         try:
+            retry_kwargs = (
+                {"_retry_message_id": event.retry_message_id}
+                if event.retry_message_id is not None else {}
+            )
             reply = self.chat_once_streaming(  # type: ignore[attr-defined]
                 user_text=text,
                 mode=chat_mode,
@@ -1428,6 +1432,7 @@ class TaskOrchestrationMixin:
                 stt_ms=stt_ms,
                 _resume_message_id=resume_message_id,
                 attachments=attachments,
+                **retry_kwargs,
             )
         except Exception as exc:
             log.exception(
@@ -1476,6 +1481,7 @@ class TaskOrchestrationMixin:
         stop_requested: Any = None,
         callbacks: ProducerCallbacks | None = None,
         resume_message_id: int | None = None,
+        retry_message_id: int | None = None,
         capture_ms: float = 0.0,
         stt_ms: float = 0.0,
         attachments: "list[dict] | tuple[dict, ...] | None" = None,
@@ -1583,6 +1589,8 @@ class TaskOrchestrationMixin:
                         )
                 if resume_message_id is not None:
                     direct_kwargs["_resume_message_id"] = int(resume_message_id)
+                if retry_message_id is not None:
+                    direct_kwargs["_retry_message_id"] = int(retry_message_id)
                 if capture_ms:
                     direct_kwargs["capture_ms"] = float(capture_ms)
                 if stt_ms:
@@ -1615,6 +1623,7 @@ class TaskOrchestrationMixin:
             skip_tts=bool(skip_tts),
             callbacks=effective_callbacks,
             resume_message_id=int(resume_message_id) if resume_message_id is not None else None,
+            retry_message_id=int(retry_message_id) if retry_message_id is not None else None,
             capture_ms=float(capture_ms or 0.0),
             stt_ms=float(stt_ms or 0.0),
             attachments=attachment_tuple,

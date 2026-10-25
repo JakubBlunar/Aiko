@@ -39,9 +39,10 @@ def _activity_title_allowlist(agent: Any) -> list[str]:
 
 def register(app, session, hub, _broadcast_context_window, live_session) -> None:
     """REST routes: sessions settings routes."""
-    from app.web.rest import provider_usage_routes
+    from app.web.rest import message_history_routes, provider_usage_routes
 
     provider_usage_routes.register(app, session)
+    message_history_routes.register(app, session, hub)
 
     @app.get("/api/sessions")
     def list_sessions() -> JSONResponse:
@@ -1480,5 +1481,4 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         return JSONResponse(session.get_last_system_prompt())
 
     # ── REST: long-term memories ────────────────────────────────────
-
 

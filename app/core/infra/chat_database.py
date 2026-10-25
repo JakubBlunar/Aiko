@@ -2440,6 +2440,56 @@ class ChatDatabase(MessageOutcomesMixin):
             return None
         return MessageRow(*row)
 
+    def get_latest_user_message_id(self, session_id: str) -> int | None:
+        row = self._get_conn().execute(
+            "SELECT id FROM messages WHERE session_id = ? AND role = 'user' "
+            "ORDER BY id DESC LIMIT 1", (session_id,),
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    def get_message_ids_after(self, session_id: str, after_id: int) -> list[int]:
+        return [int(row[0]) for row in self._get_conn().execute(
+            "SELECT id FROM messages WHERE session_id = ? AND id > ? ORDER BY id",
+            (session_id, after_id),
+        ).fetchall()]
+
+    def get_existing_message_ids(self, message_ids: Iterable[int]) -> set[int]:
+        ids = list(dict.fromkeys(int(mid) for mid in message_ids))
+        if not ids:
+            return set()
+        placeholders = ",".join("?" for _ in ids)
+        return {int(row[0]) for row in self._get_conn().execute(
+            f"SELECT id FROM messages WHERE id IN ({placeholders})", ids,
+        ).fetchall()}
+
+    def delete_message_rows(self, session_id: str, message_ids: Iterable[int]) -> list[int]:
+        """Delete selected rows and invalidate summaries that may quote them."""
+        conn = self._get_conn()
+        deleted: list[int] = []
+        with conn:
+            for mid in dict.fromkeys(int(mid) for mid in message_ids):
+                cursor = conn.execute(
+                    "DELETE FROM messages WHERE session_id = ? AND id = ?", (session_id, mid),
+                )
+                if cursor.rowcount:
+                    deleted.append(mid)
+            if deleted:
+                self._bump_history_edit_revision(session_id)
+                conn.execute("DELETE FROM session_summaries WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM thread_notes WHERE session_id = ?", (session_id,))
+        return deleted
+
+    def get_history_edit_revision(self, session_id: str) -> int:
+        return int(self.kv_get(f"history.edit_revision:{session_id}") or "0")
+
+    def _bump_history_edit_revision(self, session_id: str) -> None:
+        self._get_conn().execute(
+            "INSERT INTO kv_meta (key, value, updated_at) VALUES (?, '1', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = CAST(kv_meta.value AS INTEGER) + 1, "
+            "updated_at = excluded.updated_at",
+            (f"history.edit_revision:{session_id}", _now_iso()),
+        )
+
     def update_message_content(
         self,
         message_id: int,
@@ -2776,6 +2826,7 @@ class ChatDatabase(MessageOutcomesMixin):
         conn.execute(
             "DELETE FROM thread_notes WHERE session_id = ?", (session_id,)
         )
+        self._bump_history_edit_revision(session_id)
         conn.commit()
         return cursor.rowcount
 
@@ -2833,14 +2884,23 @@ class ChatDatabase(MessageOutcomesMixin):
         messages_summarized: int,
         *,
         keep_latest: int = 3,
-    ) -> None:
+        expected_history_revision: int | None = None,
+    ) -> bool:
         conn = self._get_conn()
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO session_summaries (session_id, summary, "
             "summary_tokens, messages_summarized, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, summary, summary_tokens, messages_summarized, _now_iso()),
+            "SELECT ?, ?, ?, ?, ? WHERE ? IS NULL OR COALESCE("
+            "(SELECT CAST(value AS INTEGER) FROM kv_meta WHERE key = ?), 0) = ?",
+            (
+                session_id, summary, summary_tokens, messages_summarized, _now_iso(),
+                expected_history_revision, f"history.edit_revision:{session_id}",
+                expected_history_revision,
+            ),
         )
+        if not cursor.rowcount:
+            conn.commit()
+            return False
         if keep_latest and keep_latest > 0:
             conn.execute(
                 "DELETE FROM session_summaries WHERE session_id = ? AND id NOT IN "
@@ -2849,6 +2909,7 @@ class ChatDatabase(MessageOutcomesMixin):
                 (session_id, session_id, keep_latest),
             )
         conn.commit()
+        return True
 
     # ── K21 fresh-eyes thread notes ──
 
@@ -2893,18 +2954,26 @@ class ChatDatabase(MessageOutcomesMixin):
         title: str,
         note: str,
         messages_at: int,
-    ) -> None:
+        *,
+        expected_history_revision: int | None = None,
+    ) -> bool:
         """Upsert the latest fresh-eyes note for a session."""
         conn = self._get_conn()
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO thread_notes (session_id, title, note, messages_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "SELECT ?, ?, ?, ?, ? WHERE ? IS NULL OR COALESCE("
+            "(SELECT CAST(value AS INTEGER) FROM kv_meta WHERE key = ?), 0) = ? "
             "ON CONFLICT(session_id) DO UPDATE SET "
             "title = excluded.title, note = excluded.note, "
             "messages_at = excluded.messages_at, updated_at = excluded.updated_at",
-            (session_id, title, note, int(messages_at), _now_iso()),
+            (
+                session_id, title, note, int(messages_at), _now_iso(),
+                expected_history_revision, f"history.edit_revision:{session_id}",
+                expected_history_revision,
+            ),
         )
         conn.commit()
+        return bool(cursor.rowcount)
 
     # ── Session management ──
 

@@ -173,6 +173,7 @@ class UserMessageEvent:
     skip_tts: bool = False
     callbacks: ProducerCallbacks | None = None
     resume_message_id: int | None = None
+    retry_message_id: int | None = None
     capture_ms: float = 0.0
     stt_ms: float = 0.0
     # D2 Part B — in-chat attachments the user added to this message.

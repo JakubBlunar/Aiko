@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.core.infra.settings import persist_user_overrides
+from app.core.session.message_history import MessageHistoryMixin
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.core.infra.settings import AppSettings
@@ -72,7 +73,7 @@ class TaskHandles:
         return self.store is not None
 
 
-class WebFacadeMixin:
+class WebFacadeMixin(MessageHistoryMixin):
     """Public accessors and settings-with-sync operations for the web layer."""
 
     # ── configuration ────────────────────────────────────────────────

@@ -648,6 +648,8 @@ def create_web_app(session: "SessionController") -> FastAPI:
             payload["message_id"] = int(message_id)
         hub.broadcast(payload)
 
+    session.add_history_listener(hub.broadcast)
+
     def _on_tts_state(event: str, **payload: Any) -> None:
         hub.broadcast({"type": "tts_state", "event": event, **payload})
 
@@ -1641,6 +1643,8 @@ def _spawn_chat_turn(
     text: str,
     done_event: threading.Event,
     attachments: list[dict] | None = None,
+    *,
+    retry_message_id: int | None = None,
 ) -> None:
     """Run a chat turn on a worker thread, streaming tokens via the hub.
 
@@ -1665,9 +1669,13 @@ def _spawn_chat_turn(
     is already thread-safe so this works without further locking.
     """
 
+    turn_session = session.session_key
+
     def _run() -> None:
         try:
-            session.notify_user_message("You", text)
+            hub.broadcast({"type": "turn_started", "session": turn_session})
+            if retry_message_id is None:
+                session.notify_user_message("You", text)
             # D2 Part B: the user bubble is created from the
             # ``notify_user_message`` broadcast above (which has no
             # attachment channel); follow it with a dedicated event so
@@ -1681,14 +1689,17 @@ def _spawn_chat_turn(
 
             def on_token(chunk: str) -> None:
                 if chunk:
-                    hub.broadcast({"type": "token", "chunk": chunk})
+                    hub.broadcast({"type": "token", "chunk": chunk, "session": turn_session})
 
             def on_status(status: str) -> None:
-                hub.broadcast({"type": "status", "message": status})
+                hub.broadcast({"type": "status", "message": status, "session": turn_session})
 
             def stop_requested() -> bool:
                 return done_event.is_set()
 
+            retry_kwargs = (
+                {"retry_message_id": retry_message_id} if retry_message_id is not None else {}
+            )
             reply = session.enqueue_user_message(
                 text=text,
                 mode="typed",
@@ -1701,11 +1712,13 @@ def _spawn_chat_turn(
                 on_generation_status=on_status,
                 stop_requested=stop_requested,
                 attachments=attachments,
+                **retry_kwargs,
             )
             session.notify_user_message("Assistant", reply or "")
             _metrics = session.get_last_metrics() or {}
             hub.broadcast({
                 "type": "turn_done",
+                "session": turn_session,
                 "metrics": _metrics,
                 # K32: lift the persisted assistant row id so the client
                 # can stamp the live bubble's backendId and enable the
@@ -1717,8 +1730,10 @@ def _spawn_chat_turn(
             })
         except Exception as exc:
             log.exception("chat turn failed")
-            hub.broadcast({"type": "error", "message": str(exc)})
+            hub.broadcast({"type": "error", "message": str(exc), "session": turn_session})
         finally:
+            if retry_message_id is not None:
+                session.finish_chat_retry(retry_message_id)
             done_event.set()
 
     threading.Thread(target=_run, daemon=True, name="web-chat-turn").start()

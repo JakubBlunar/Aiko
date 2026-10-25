@@ -1333,6 +1333,8 @@ class RagRetriever:
             except Exception:
                 log.debug("document search failed", exc_info=True)
 
+        self._drop_deleted_message_hits(merged)
+
         # H1 + K4: apply the conversation-arc / dialogue-act alignment
         # boost. Combined cap is +0.05 so a hit matching on both never
         # gets the full additive +0.06; misaligned hits stay at 0. The
@@ -2086,6 +2088,21 @@ class RagRetriever:
 
     # ── alignment boost (H1 + K4) ───────────────────────────────────────
 
+    def _drop_deleted_message_hits(self, hits: list[RagHit]) -> None:
+        if self._chat_db is None:
+            return
+        ids = [
+            mid for hit in hits if hit.source == "message"
+            if (mid := self._extract_message_id(hit)) is not None
+        ]
+        if not ids:
+            return
+        existing = self._chat_db.get_existing_message_ids(ids)
+        hits[:] = [
+            hit for hit in hits
+            if hit.source != "message" or self._extract_message_id(hit) in existing
+        ]
+
     def _apply_alignment_boost(
         self, hits: list[RagHit], *, query_text: str,
     ) -> None:
@@ -2589,5 +2606,4 @@ def _memory_recency_adjust(
     if days >= _MEMORY_REVIVAL_DAYS and use_count > 0:
         return _MEMORY_REVIVAL_BONUS
     return 0.0
-
 

@@ -1263,6 +1263,14 @@ class RagStore:
         )
         return result
 
+    def delete_messages(self, session_id: str, message_ids: Iterable[int]) -> None:
+        ids = ", ".join(str(int(mid)) for mid in message_ids)
+        if not ids:
+            return
+        safe = session_id.replace("'", "''")
+        with self._lock.write():
+            self._messages.delete(f"session_id = '{safe}' AND message_id IN ({ids})")
+
     def delete_messages_for_session(self, session_id: str) -> None:
         safe = session_id.replace("'", "''")
         with self._lock.write():

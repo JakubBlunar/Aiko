@@ -36,6 +36,9 @@ def _row(msg_id: int = 1, content: str = "a reasonably long message body") -> Me
 
 
 class _FakeDb:
+    def get_message_row(self, message_id: int) -> MessageRow | None:
+        return _row(message_id)
+
     def add_message_listener(self, _cb) -> None:
         pass
 
@@ -179,6 +182,7 @@ class StatsTests(unittest.TestCase):
         rag = _FakeRag()
         embedder = _FakeEmbedder()
         indexer = _make(rag, embedder)
+        indexer._db.get_message_row = lambda _mid: _row(content="hi")
         indexer._index_one(_row(content="hi"), attempt=0)  # below min length
         stats = indexer.stats()
         self.assertEqual(stats["skipped_short"], 1)

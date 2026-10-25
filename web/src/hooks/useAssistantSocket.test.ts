@@ -8,6 +8,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(resolve(here, "useAssistantSocket.ts"), "utf-8");
 
 describe("sleep socket hydration", () => {
+  it("routes scoped recovery events without making a second user bubble", () => {
+    expect(source).toContain('case "user_message_saved":');
+    expect(source).toContain("store.stampUserBackendId(evt.message_id, evt.text)");
+    expect(source).toContain("store.removeMessages(evt.message_ids)");
+    expect(source).toContain("store.replaceReplyAfter(evt.user_message_id)");
+    expect(source).toContain("evt.session !== store.sessionKey");
+    expect(source).toContain("store.streamingDraft === null");
+  });
   it("keeps text delivery bound to a visible message and the receiving connection", () => {
     expect(source).toContain("data-delivery-message");
     expect(source).toContain('document.visibilityState !== "visible"');

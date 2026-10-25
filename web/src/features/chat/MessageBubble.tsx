@@ -8,6 +8,7 @@ import {
   USER_REACTION_KINDS,
 } from "@/types";
 import { attachmentUrl, formatTime } from "./chatFormat";
+import { MessageActions } from "./MessageActions";
 
 interface BubbleProps {
   id: string;
@@ -382,6 +383,9 @@ function MessageBubbleImpl({
         {!isUser && liveReaction && liveReaction !== "neutral"
           ? ` · ${liveReaction}`
           : ""}
+        {!streaming && backendId != null ? (
+          <MessageActions backendId={backendId} isUser={isUser} />
+        ) : null}
       </div>
     </div>
   );

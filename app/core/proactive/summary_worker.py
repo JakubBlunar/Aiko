@@ -182,6 +182,7 @@ class SummaryWorker:
         self, session_key: str, *, min_msgs_override: int | None = None,
     ) -> bool:
         threshold = self._min_msgs if min_msgs_override is None else int(min_msgs_override)
+        history_revision = self._db.get_history_edit_revision(session_key)
         backlog_key = f"summary.budget_backlog:{session_key}"
         try:
             if self._db.kv_get(backlog_key):
@@ -288,12 +289,16 @@ class SummaryWorker:
             log.info("summary returned empty for %s", session_key[:8])
             return False
 
-        self._db.save_summary(
+        saved = self._db.save_summary(
             session_id=session_key,
             summary=text,
             summary_tokens=estimate_tokens(text),
             messages_summarized=messages_summarized,
+            expected_history_revision=history_revision,
         )
+        if not saved:
+            log.info("summary discarded after transcript edit: session=%s", session_key)
+            return False
         try:
             self._db.kv_set(backlog_key, "1" if messages_summarized < total else "")
         except Exception:

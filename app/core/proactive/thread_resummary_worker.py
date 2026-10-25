@@ -257,6 +257,7 @@ class ThreadResummaryWorker:
         now = self._clock()
         session_key = self._session_key()
         try:
+            history_revision = self._chat_db.get_history_edit_revision(session_key)
             msg_count = self._chat_db.get_message_count(session_key)
         except Exception:
             log.warning("thread_resummary message count failed", exc_info=True)
@@ -308,10 +309,17 @@ class ThreadResummaryWorker:
             title = _trim(" ".join(note.split()[:6]), max_chars=_MAX_TITLE_CHARS)
 
         try:
-            self._chat_db.save_thread_note(session_key, title, note, msg_count)
+            saved = self._chat_db.save_thread_note(
+                session_key, title, note, msg_count,
+                expected_history_revision=history_revision,
+            )
         except Exception:
             log.warning("thread_resummary save failed", exc_info=True)
             return {"errored": True, "reason": "save"}
+
+        if not saved:
+            log.info("thread note discarded after transcript edit: session=%s", session_key)
+            return {"wrote": False, "reason": "history_changed"}
 
         if self._notify_thread_note is not None:
             try:
