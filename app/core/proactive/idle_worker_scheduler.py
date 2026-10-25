@@ -188,6 +188,7 @@ class IdleWorkerScheduler:
         self._idle_depth_provider = idle_depth_provider
         self._contention_provider = contention_provider
         self._sleep_state_provider = sleep_state_provider
+        self._last_depth_name: str | None = None
         self._workers: dict[str, IdleWorker] = {}
         self._records: dict[str, IdleWorkerRecord] = {}
         self._lock = threading.Lock()
@@ -744,6 +745,14 @@ class IdleWorkerScheduler:
             LANE_COMPUTE: float(self._compute_budget_ms) * depth_mult,
             LANE_LLM: float(self._tick_budget_ms) * llm_mult,
         }
+        if depth_name != self._last_depth_name:
+            log.info(
+                "idle_workers depth: %s -> %s idle_s=%.0f contention=%s "
+                "compute_ms=%.0f llm_ms=%.0f sleep=%s",
+                self._last_depth_name or "initial", depth_name, idle_s, grade,
+                lanes[LANE_COMPUTE], lanes[LANE_LLM], self._sleep_status(),
+            )
+            self._last_depth_name = depth_name
 
         with self._lock:
             items = list(self._workers.items())

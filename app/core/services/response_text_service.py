@@ -706,10 +706,10 @@ _ACTIVITY_OPEN_TAIL_PATTERN = re.compile(r"\[\[activity:[^\]]*\Z", re.IGNORECASE
 _META_TAG_NAMES: tuple[str, ...] = (
     "reaction", "remember", "agenda", "moment", "diary", "arc", "gap",
     "conflict", "goal", "predict", "overlay", "outfit", "motion",
-    "touch", "activity", "prosody",
+    "touch", "activity", "prosody", "sleep",
 )
-#: Backstop for the whole family: a closed ``[[name:anything]]`` whose body
-#: the interpreting pattern above refused.
+#: Backstop for the whole family, including single or mismatched brackets
+#: emitted by models that do not follow the canonical ``[[name:body]]`` grammar.
 #:
 #: Stripping and interpreting are different jobs with opposite risk
 #: profiles — an unrecognised body should cost a side-effect, never a
@@ -722,7 +722,13 @@ _META_TAG_NAMES: tuple[str, ...] = (
 #: too — a stray character, a wrong-cased name, a body no taxonomy
 #: knows — without weakening any interpreter.
 _META_TAG_BACKSTOP_PATTERN = re.compile(
-    r"\[\[[ \t]*(?:" + "|".join(_META_TAG_NAMES) + r")[ \t]*:[^\]\n]*\]\]",
+    r"\[{1,2}[ \t]*(?:" + "|".join(_META_TAG_NAMES) + r")[ \t]*:[^\]]*\]{1,2}",
+    flags=re.IGNORECASE,
+)
+# Apply the same vocabulary and whitespace tolerance to unfinished tags.
+# These tails are private even when no interpreter accepts their body.
+_META_TAG_BACKSTOP_OPEN_TAIL_PATTERN = re.compile(
+    r"\[{1,2}[ \t]*(?:" + "|".join(_META_TAG_NAMES) + r")[ \t]*:[^\]]*\Z",
     flags=re.IGNORECASE,
 )
 
@@ -873,15 +879,16 @@ def strip_all_meta_tags(text: str, *, streaming: bool = False) -> str:
       - any other *closed* ``[[name:body]]`` from :data:`_META_TAG_NAMES`
         whose body no interpreter accepted: removed by
         ``_META_TAG_BACKSTOP_PATTERN``. A tag we cannot parse must still
-        never be visible.
+        never be visible. Single or mismatched brackets are stripped too,
+        without making malformed tags eligible for control side-effects.
 
     Bare leading history clock labels are also removed. ``streaming=True``
     holds unresolved prefixes until they can be distinguished from literal
     brackets and Markdown links.
 
     Does NOT call ``.strip()`` on ordinary prose, so streaming callers can keep
-    monotonic ``len(visible)`` offsets across deltas. Partial (unclosed)
-    tags pass through unchanged -- callers are expected to use
+    monotonic ``len(visible)`` offsets across deltas. Recognized colon-style
+    openers suppress an unclosed tail too. Shorter, ambiguous prefixes need
     :func:`safe_visible_prefix` for streaming display.
     """
     s = str(text or "")
@@ -981,6 +988,7 @@ def strip_all_meta_tags(text: str, *, streaming: bool = False) -> str:
     # had a body no interpreter above accepted. Drop it rather than let
     # it reach the bubble, the transcript or TTS.
     s = _META_TAG_BACKSTOP_PATTERN.sub("", s)
+    s = _META_TAG_BACKSTOP_OPEN_TAIL_PATTERN.sub("", s)
     return strip_history_age_prefix(s, streaming=streaming)
 
 
@@ -1079,6 +1087,15 @@ def _looks_like_partial_opener(suffix: str) -> bool:
     # Single ``[`` or ``[[`` could be the start of any opener.
     if lowered in {"[", "[["}:
         return True
+    if lowered.startswith("[") and not lowered.startswith("[["):
+        candidate = lowered[1:].lstrip(" \t")
+        name, colon, _body = candidate.partition(":")
+        if colon:
+            return name.rstrip(" \t") in _META_TAG_NAMES and "]" not in candidate
+        return any(
+            known.startswith(name) or name.rstrip(" \t") == known
+            for known in _META_TAG_NAMES
+        )
     for opener in _META_OPENERS:
         if opener.startswith(lowered):
             return True

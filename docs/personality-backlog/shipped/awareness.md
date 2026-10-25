@@ -514,9 +514,16 @@ independence test in `tests/test_fact_check_rate_limiter.py`.
 (`reformulate_query_for_search` + `make_reformulator`). The local worker
 model rewrites a personal claim into a neutral, name-free topic query;
 the deterministic `scrub_claim_for_search` runs as a hard **post-filter**
-on the LLM output so a hallucinated name can never slip through, and the
-deterministic scrub of the original is the fallback when the model
-returns `NONE` / fails / fails the post-filter. Threaded into all three
+on the LLM output. **2026-10-25 correction:** outbound queries must pass
+with `require_intact=True`; deleting private tokens is not evidence that
+the remaining words ask a useful question. An explicit `NONE` stops the
+search. Transport / invalid-output failures fall back only when the
+original passes intact. The prompt preserves the information need,
+relevant public names, complete titles, versions and public dates, and
+declines private-only feelings, plans and conversation cues rather than
+inventing research from them. The direct chat search tool requests a
+rewrite on private framing; local transcript processing retains redaction.
+Possessives and contractions also go through the token guard. Threaded into all three
 workers' scrub methods (`idle_fact_checker._scrub_claim`,
 `idle_curiosity_worker._scrub`, `idle_knowledge_worker._scrub`) via an
 optional `query_reformulator` closure built by

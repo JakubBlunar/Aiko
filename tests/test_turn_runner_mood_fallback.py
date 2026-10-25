@@ -191,6 +191,70 @@ class MoodFallbackTtsTests(unittest.TestCase):
         self.assertNotIn("[[motion:", result.text)
 
 
+class InlineSleepTagTests(unittest.TestCase):
+    def test_sleep_state_tag_never_reaches_ui_speech_or_persistence(self) -> None:
+        for reaction in ("", "[[reaction:sleepy]]\n"):
+            raw = reaction + "Mm. [[sleep:woken]]I'm here."
+            runner = _build_runner(stream_tokens=list(raw))
+            ui_parts: list[str] = []
+            tts_parts: list[str] = []
+            result = runner.run(
+                session_key="default:main",
+                user_text="are you awake?",
+                on_token=ui_parts.append,
+                on_tts_chunk=lambda text, mood, parts=tts_parts: parts.append(text),
+            )
+            with self.subTest(reaction=reaction):
+                self.assertEqual("".join(ui_parts), "Mm. I'm here.")
+                self.assertEqual(result.text, "Mm. I'm here.")
+                self.assertTrue(tts_parts)
+                self.assertNotIn("sleep", " ".join(tts_parts))
+                self.assertEqual(
+                    runner._db.add_message.call_args.kwargs["content"], "Mm. I'm here.",
+                )
+                self.assertEqual(result.raw_text, raw)
+
+
+class MalformedReactionTagTests(unittest.TestCase):
+    def test_malformed_reaction_never_reaches_ui_speech_or_persistence(self) -> None:
+        for tag in (
+            "[reaction:cheerful]",
+            "[[reaction:cheerful]",
+            "[reaction:cheerful]]",
+            "[ ReAcTiOn : cheerful! ]",
+        ):
+            for raw in (
+                f"{tag}Hello. Still here.",
+                f"{tag}\nHello. Still here.",
+                f"Hello.{tag} Still here.",
+            ):
+                tokenizations = [[raw], list(raw)]
+                if raw.startswith(tag):
+                    tokenizations.extend([raw[:split], raw[split:]] for split in range(len(raw)))
+                for tokens in tokenizations:
+                    with self.subTest(raw=raw, tokens=tokens):
+                        runner = _build_runner(stream_tokens=tokens)
+                        ui_parts: list[str] = []
+                        tts_parts: list[str] = []
+                        result = runner.run(
+                            session_key="default:main",
+                            user_text="hi",
+                            on_token=ui_parts.append,
+                            on_tts_chunk=lambda text, mood, parts=tts_parts: parts.append(text),
+                        )
+                        expected = raw.replace(tag, "")
+                        self.assertEqual("".join(ui_parts), expected)
+                        self.assertEqual(result.text, expected.strip())
+                        self.assertTrue(tts_parts)
+                        self.assertEqual(" ".join(tts_parts), expected.strip())
+                        self.assertEqual(
+                            runner._db.add_message.call_args.kwargs["content"], expected.strip(),
+                        )
+                        self.assertEqual(result.raw_text, raw)
+                        self.assertEqual(result.reaction, "neutral")
+                        self.assertTrue(result.mood_fallback)
+
+
 class ReactionLeadingNewlineFlushTests(unittest.TestCase):
     """Regression: a reaction tag followed by a newline made the streamed
     body one char shorter than ``strip_all_meta_tags(full_raw)`` (which

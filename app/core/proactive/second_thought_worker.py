@@ -238,7 +238,11 @@ class SecondThoughtWorker:
         out["last_error_category"] = self._last_error_category
         return out
 
-    def update_runtime(self, *, model: str | None = None) -> None:
+    def update_runtime(
+        self, *, client: ChatClient | None = None, model: str | None = None,
+    ) -> None:
+        if client is not None:
+            self._ollama = client
         if model:
             self._model = str(model)
 

@@ -42,6 +42,14 @@ class DependencyLedger:
             "FROM memories WHERE id = ?", (int(node[1]),),
         ).fetchone()
 
+    def _has_dependency_edge(self, kind, ident, concept_id):
+        return self.db._get_conn().execute(
+            "SELECT 1 FROM concept_edges WHERE src_type = ? AND src_id = ? "
+            "AND dst_type = 'concept' AND dst_id = ? "
+            "AND relation = 'depends_on' AND polarity > 0 LIMIT 1",
+            (str(kind), str(ident), str(concept_id)),
+        ).fetchone() is not None
+
     def fingerprint(self, node):
         kind, ident = node
         if kind == "concept":
@@ -154,6 +162,13 @@ class DependencyLedger:
 
     def assess(self, concept_id, *, max_nodes=MAX_NODES):
         """Read current support; no cached verdict can outlive a source change."""
+        return self._assess(concept_id, max_nodes=max_nodes, first_valid=False)
+
+    def is_viable(self, concept_id, *, max_nodes=MAX_NODES):
+        """Check live support, stopping after one complete sufficient set."""
+        return self._assess(concept_id, max_nodes=max_nodes, first_valid=True)["viable"]
+
+    def _assess(self, concept_id, *, max_nodes, first_valid):
         remaining = max(1, min(MAX_NODES, int(max_nodes)))
         visited = 0
 
@@ -177,14 +192,16 @@ class DependencyLedger:
                         break
                     visited += 1
                     reason = ""
-                    current = self.fingerprint((kind, ident))
+                    if kind == "concept":
+                        current = self.fingerprint((kind, ident))
+                    else:
+                        row = self._memory((kind, ident))
+                        current = revision_hash(list(row[:3])) if row else None
                     if current is None:
                         reason = "source_missing"
                     elif current != fingerprint:
                         reason = "source_revision_changed"
-                    elif not any(edge.relation == "depends_on" and edge.dst_type == "concept"
-                                 and edge.dst_id == str(cid) and edge.polarity > 0
-                                 for edge in self.store.edges_from(kind, ident)):
+                    elif not self._has_dependency_edge(kind, ident, cid):
                         reason = "dependency_edge_removed"
                     elif kind == "concept":
                         base = self.store.get(int(ident))
@@ -205,7 +222,6 @@ class DependencyLedger:
                                 reason = nested["reason"]
                             bounds.append(min(base.confidence, nested.get("confidence_bound", 1.0)))
                     else:
-                        row = self._memory((kind, ident))
                         metadata = json.loads(row[3] or "{}")
                         if metadata.get("superseded_by") or metadata.get("superseded_reason"):
                             reason = "source_superseded"
@@ -236,6 +252,8 @@ class DependencyLedger:
                     invalid.append({"set": index, "failures": failures})
                 else:
                     valid.append({"set": index, "confidence_bound": min(bounds, default=1.0)})
+                    if first_valid:
+                        break
             return {"tracked": True, "viable": bool(valid),
                     "reason": "remaining_support" if valid else "no_valid_support_set",
                     "valid_sets": [item["set"] for item in valid], "invalid_sets": invalid,

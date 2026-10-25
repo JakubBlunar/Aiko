@@ -19,24 +19,57 @@ class ReformulateQueryTests(unittest.TestCase):
         )
         self.assertEqual(out, "best currently airing anime summer 2026")
 
-    def test_hallucinated_name_is_post_filtered(self) -> None:
+    def test_rewrite_with_a_name_is_refused_instead_of_mutilated(self) -> None:
         # The model leaves the user's name in; the deterministic
-        # post-filter must strip it before the query is returned.
+        # post-filter must refuse it rather than search the remaining words.
         out = reformulate_query_for_search(
             "Jacob likes shoegaze bands",
             reformulate_fn=lambda _t: "Jacob favourite shoegaze bands",
             user_names=["Jacob"],
         )
-        self.assertIsNotNone(out)
-        self.assertNotIn("jacob", (out or "").lower())
-        self.assertIn("shoegaze", (out or "").lower())
+        self.assertIsNone(out)
 
-    def test_none_falls_back_to_deterministic_scrub(self) -> None:
+    def test_explicit_decline_never_falls_back_to_the_original(self) -> None:
+        for reply in ("NONE", 'Query: "none"', "\n`NONE`\n"):
+            with self.subTest(reply=reply):
+                out = reformulate_query_for_search(
+                    "Maybe bring up how the plot goblin's appetite for time "
+                    "correlates with cuddle intensity.",
+                    reformulate_fn=lambda _t, reply=reply: reply,
+                )
+                self.assertIsNone(out)
+
+    def test_failure_cannot_search_a_personal_fragment(self) -> None:
+        for reply in (None, "", "Jacob", "contact jacob@example.com"):
+            with self.subTest(reply=reply):
+                out = reformulate_query_for_search(
+                    "Does Jacob like cuddling with Aiko?",
+                    reformulate_fn=lambda _t, reply=reply: reply,
+                    user_names=["Jacob"], assistant_name="Aiko",
+                )
+                self.assertIsNone(out)
+
+    def test_rewrite_preserves_a_public_question_from_personal_framing(self) -> None:
+        query = "basil leaf apparent color changes with viewing angle"
         out = reformulate_query_for_search(
-            "the violin practice routine",
-            reformulate_fn=lambda _t: "NONE",
+            "Why does my basil look lighter when I tilt its leaf?",
+            reformulate_fn=lambda _t: query,
         )
-        self.assertEqual(out, "the violin practice routine")
+        self.assertEqual(out, query)
+
+    def test_public_titles_versions_and_dates_survive(self) -> None:
+        query = "The Iceblade Sorcerer Shall Rule the World premiere January 5 2023"
+        self.assertEqual(
+            reformulate_query_for_search("anime premiere", reformulate_fn=lambda _t: query),
+            query,
+        )
+
+    def test_name_generator_is_reused_for_fallback(self) -> None:
+        self.assertIsNone(reformulate_query_for_search(
+            "Jacob likes shoegaze bands",
+            reformulate_fn=lambda _t: "Jacob likes shoegaze bands",
+            user_names=iter(["Jacob"]),
+        ))
 
     def test_llm_failure_falls_back(self) -> None:
         def _boom(_t: str) -> str:
@@ -108,9 +141,7 @@ class ContextTests(unittest.TestCase):
             context="Jacob is going to Back Camp with me in 2026",
             user_names=["Jacob"],
         )
-        self.assertIsNotNone(out)
-        self.assertNotIn("jacob", (out or "").lower())
-        self.assertNotIn("2026", out or "")
+        self.assertIsNone(out)
 
     def test_a_leak_in_the_rewrite_is_still_caught(self) -> None:
         # Feeding the model private context gives it more to echo back, so
@@ -121,9 +152,7 @@ class ContextTests(unittest.TestCase):
             context="Jacob has practised violin since 2010",
             user_names=["Jacob"],
         )
-        self.assertIsNotNone(out)
-        self.assertNotIn("jacob", (out or "").lower())
-        self.assertIn("violin", (out or "").lower())
+        self.assertIsNone(out)
 
     def test_a_single_argument_callable_still_works(self) -> None:
         # Older callables and test doubles take only the claim.
@@ -192,8 +221,7 @@ class AlreadyNeutralTests(unittest.TestCase):
             already_neutral=True,
             user_names=["Jacob"],
         )
-        self.assertIsNotNone(out)
-        self.assertNotIn("jacob", (out or "").lower())
+        self.assertIsNone(out)
 
     def test_an_unsafe_neutral_query_is_still_refused(self) -> None:
         out = reformulate_query_for_search(

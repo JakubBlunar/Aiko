@@ -458,6 +458,9 @@ class MetaTagBackstopTests(unittest.TestCase):
         "[[diary: today felt good]]",
         "[[agenda: 0.7: ask about the castle]]",
         "[[predict: mood: tokyo trip: excited: 0.8]]",
+        "[[sleep:woken]]",
+        "[[ Sleep : unknown_state ]]",
+        "[[sleep:\nwoken\n]]",
     )
 
     def test_no_malformed_tag_survives_the_strip(self) -> None:
@@ -483,6 +486,61 @@ class MetaTagBackstopTests(unittest.TestCase):
         # being fixed here is exactly "it ended up in the reply".
         out = strip_all_meta_tags("hi [[remember: Jacob likes mochi]] bye")
         self.assertNotIn("mochi", out)
+
+    def test_unclosed_known_tags_are_hidden_even_with_spacing(self) -> None:
+        for tag in ("[[ Sleep : woken", "[[reaction : unknown\nbody"):
+            with self.subTest(tag=tag):
+                self.assertEqual(strip_all_meta_tags(f"Hello. {tag}"), "Hello. ")
+
+    def test_sleep_tags_at_every_position_and_delta_boundary(self) -> None:
+        for tag in ("[[sleep:woken]]", "[[ Sleep : woken ]]", "[[sleep:\nwoken\n]]"):
+            for raw in (f"{tag}Hello.", f"Hello.{tag} Still here.", f"Hello.{tag}"):
+                expected = raw.replace(tag, "")
+                for split in range(len(raw) + 1):
+                    with self.subTest(raw=raw, split=split):
+                        first = safe_visible_prefix(raw[:split])
+                        final = strip_all_meta_tags(raw)
+                        self.assertTrue(expected.startswith(first))
+                        self.assertEqual(safe_visible_prefix(raw), expected)
+                        self.assertEqual(final, expected)
+
+    def test_single_and_mixed_brackets_at_every_position_and_stream_split(self) -> None:
+        for canonical in ("[[reaction:cheerful]]", *self._BODIES):
+            for opening, closing in (("[", "]"), ("[[", "]"), ("[", "]]")):
+                tag = opening + canonical[2:-2] + closing
+                for raw in (f"{tag}Hello.", f"Hello.{tag} Still here.", f"Hello.{tag}"):
+                    expected = raw.replace(tag, "")
+                    self.assertEqual(strip_all_meta_tags(raw), expected)
+                    for split in range(len(raw) + 1):
+                        with self.subTest(tag=tag, raw=raw, split=split):
+                            first = safe_visible_prefix(raw[:split])
+                            self.assertTrue(expected.startswith(first), repr(first))
+                            self.assertEqual(safe_visible_prefix(raw), expected)
+
+    def test_single_bracket_unclosed_private_tails_are_suppressed(self) -> None:
+        for tag in (
+            "[reaction:cheerful",
+            "[ ReAcTiOn : cheerful!\n",
+            "[ remember : private note",
+            "[sleep:unknown_state",
+        ):
+            for prefix in ("", "Hello. "):
+                with self.subTest(tag=tag, prefix=prefix):
+                    self.assertEqual(strip_all_meta_tags(prefix + tag), prefix)
+                    self.assertEqual(safe_visible_prefix(prefix + tag), prefix)
+
+    def test_ordinary_single_brackets_and_markdown_are_left_alone(self) -> None:
+        for text in (
+            "array[0] is fine",
+            "a [not_a_tag: body] b",
+            "a [reaction time] b",
+            "[reaction]",
+            "[reactionary: an ordinary label]",
+            "[read docs](https://example.com)",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(strip_all_meta_tags(text), text)
+                self.assertEqual(safe_visible_prefix(text), text)
 
     def test_ordinary_double_brackets_are_left_alone(self) -> None:
         # The backstop keys on the known tag vocabulary, so prose and
@@ -558,6 +616,19 @@ class SafeVisiblePrefixTests(unittest.TestCase):
         emitted = self._stream(["array", "[", "0", "]", " is fine"])
         joined = "".join(emitted)
         self.assertIn("array[0] is fine", joined)
+
+    def test_single_and_mixed_bracket_tags_never_leak_character_by_character(self) -> None:
+        for tag in (
+            "[reaction:cheerful]",
+            "[[reaction:cheerful]",
+            "[reaction:cheerful]]",
+            "[ ReAcTiOn : cheerful + blush ]",
+            "[remember:private note]",
+            "[sleep:\nwoken\n]",
+        ):
+            for raw in (f"{tag}Hello.", f"Hello.{tag} Still here.", f"Hello.{tag}"):
+                with self.subTest(raw=raw):
+                    self.assertEqual("".join(self._stream(list(raw))), raw.replace(tag, ""))
 
 
 if __name__ == "__main__":

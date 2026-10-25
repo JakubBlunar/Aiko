@@ -133,21 +133,7 @@ class SleepLifecycleWorker:
                 wind_down_minutes=float(
                     getattr(settings, "sleep_wind_down_minutes", 5.0)
                 ),
-                nap_max_hours=float(
-                    getattr(settings, "sleep_nap_max_hours", 2.0)
-                ),
-                overnight_wake_hour=float(
-                    getattr(settings, "sleep_overnight_wake_hour", 7.0)
-                ),
-                overnight_wake_minute=int(
-                    getattr(settings, "sleep_overnight_wake_minute", 0)
-                ),
-                overnight_min_hours=float(
-                    getattr(settings, "sleep_overnight_min_hours", 5.0)
-                ),
-                overnight_max_hours=float(
-                    getattr(settings, "sleep_overnight_max_hours", 10.0)
-                ),
+                **self._sleep_limits(settings),
             )
             if prior_status == ASLEEP and state.status == WOKEN:
                 self._set_woken_world()
@@ -322,6 +308,16 @@ class SleepLifecycleWorker:
         self._set_sleep_world()
         return {"status": updated.status, "episode_id": updated.current_episode_id}
 
+    @staticmethod
+    def _sleep_limits(settings: Any) -> dict[str, Any]:
+        return {
+            "nap_max_hours": float(getattr(settings, "sleep_nap_max_hours", 2.0)),
+            "overnight_wake_hour": float(getattr(settings, "sleep_overnight_wake_hour", 7.0)),
+            "overnight_wake_minute": int(getattr(settings, "sleep_overnight_wake_minute", 0)),
+            "overnight_min_hours": float(getattr(settings, "sleep_overnight_min_hours", 5.0)),
+            "overnight_max_hours": float(getattr(settings, "sleep_overnight_max_hours", 10.0)),
+        }
+
     def _advance_woken(
         self, state: Any, now: datetime, settings: Any,
     ) -> dict[str, Any]:
@@ -330,25 +326,35 @@ class SleepLifecycleWorker:
         minutes = max(0.0, (now - timephrase.to_aware(entered)).total_seconds() / 60.0)
         episode = self._sleep_store.current_episode()
         interruptions = len(episode.interruptions) if episode is not None else 0
-        if should_finish_waking(
+        limits = self._sleep_limits(settings)
+        max_woken = float(getattr(settings, "sleep_max_woken_minutes", 45.0))
+        started = timephrase.parse_iso(episode.started_at) if episode is not None else None
+        max_sleep_hours = limits[
+            "nap_max_hours" if state.sleep_kind == "nap" else "overnight_max_hours"
+        ]
+        # Repair episodes already older than both the sleep cap and the entire
+        # waking grace (including after a restart). Do not reset vitality.
+        episode_expired = started is not None and (
+            now - timephrase.to_aware(started)
+        ).total_seconds() >= max(0.25, max_sleep_hours) * 3600 + max(0.0, max_woken) * 60
+        if episode_expired or should_finish_waking(
             energy=energy,
             woken_minutes=minutes,
             engaged_turns=max(0, interruptions - 1),
             energy_threshold=float(
                 getattr(settings, "sleep_wake_energy_threshold", 0.48)
             ),
-            max_woken_minutes=float(
-                getattr(settings, "sleep_max_woken_minutes", 45.0)
-            ),
+            max_woken_minutes=max_woken,
         ):
             updated = self._sleep_store.transition(
                 "fully_awake",
                 expected_generation=state.generation,
                 now=now,
-                outcome="gradual_wake",
+                outcome="episode_timeout" if episode_expired else "gradual_wake",
             )
             self._clear_rest_world()
-            return {"status": updated.status, "reason": "recovered"}
+            return {"status": updated.status,
+                    "reason": "episode_timeout" if episode_expired else "recovered"}
 
         back_minutes = float(
             getattr(settings, "sleep_back_to_sleep_minutes", 20.0)
@@ -357,6 +363,7 @@ class SleepLifecycleWorker:
             minutes >= back_minutes
             and float(self._idle_depth_provider()) >= back_minutes * 60.0
             and energy < float(getattr(settings, "sleep_wake_energy_threshold", 0.48))
+            and not self._sleep_store.wake_due(state=state, now=now, **limits)
         ):
             updated = self._sleep_store.transition(
                 "back_to_sleep",

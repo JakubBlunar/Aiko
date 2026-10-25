@@ -111,7 +111,10 @@ The old message-gap inference in
 [`sleep_return.py`](../../../app/core/world/sleep_return.py) is retired from
 narrative authority: only recorded episodes may be described as sleep. Waking
 life/world workers and proactive speech pause while asleep, while maintenance
-continues. Dreams are sleep-only and once per episode; a separate post-sleep
+continues. Concept synthesis also continues as consolidation, while away activity
+remains paused. Expired episodes cannot settle back into an immediate wake loop;
+episodes older than the sleep cap plus waking grace are closed without resetting
+vitality. Dreams are sleep-only and once per episode; a separate post-sleep
 pass may write one dated diary memory for a notable completed episode. WebSocket
 snapshots, World settings/status, and the capability-safe Live2D sleep channel
 all read the same durable state. MCP diagnostics expose state, recent episodes,

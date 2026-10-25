@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import unittest
 import pytest
+import ast
+import inspect
+import textwrap
 from types import SimpleNamespace
 
 from app.core.proactive.second_thought_worker import (
@@ -140,6 +143,41 @@ def test_concrete_chat_wrapper_contract(adapter, response):
     assert call.args[0][0][CACHE_BREAKPOINT_KEY] == (8,)
     assert call.kwargs["options"]["prompt_cache_key"] == "test:session"
     assert call.kwargs["surface"] == "second_thought"
+
+
+def test_bootstrap_uses_chat_provider_with_chat_model():
+    from app.core.proactive.cue_accounting import policy_for
+    from app.core.session.speaking_workers_init_mixin import SpeakingWorkersInitMixin
+
+    source = textwrap.dedent(inspect.getsource(
+        SpeakingWorkersInitMixin._init_speaking_workers,
+    ))
+    constructor = next(
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "SecondThoughtWorker"
+    )
+    chat = _FakeClient("NONE")
+    local_worker = _FakeClient("NONE")
+    host = SimpleNamespace(
+        _chat_client=chat, _ollama=local_worker,
+        _effective_chat_model="deepseek-v4-1-flash-uncensored",
+        _effective_worker_model="local-worker", _settings=_settings(),
+        user_display_name="Test User",
+    )
+    worker = eval(
+        compile(ast.fix_missing_locations(ast.Expression(body=constructor)),
+                "<second thought bootstrap>", "eval"),
+        {"SecondThoughtWorker": SecondThoughtWorker, "self": host,
+         "_policy": policy_for("second_thought")},
+    )
+    worker.maybe_run(
+        system_prompt="cached chat prefix", user_text=_LONG_USER, assistant_text=_LONG_REPLY,
+    )
+    assert worker.stats()["declined"] == 1
+    assert chat.calls[0]["model"] == host._effective_chat_model
+    assert local_worker.calls == []
 
 
 # ── 1. parsing ────────────────────────────────────────────────────────

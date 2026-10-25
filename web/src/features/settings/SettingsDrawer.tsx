@@ -12,6 +12,7 @@ import { useAssistantStore } from "@/store";
 import { useWeatherStore } from "@/stores/useWeatherStore";
 import { IdentitySection } from "./IdentitySection";
 import { LlmProvidersListSection } from "./LlmProvidersListSection";
+import { ProviderUsageSection } from "./ProviderUsageSection";
 import { LlmRoutesSection } from "./LlmRoutesSection";
 import { VoiceTab } from "./VoiceTab";
 import { AvatarTab } from "./AvatarTab";
@@ -480,6 +481,8 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
                   <LlmRoutesSection />
 
                   <LlmProvidersListSection />
+
+                  <ProviderUsageSection />
 
                   <DiagnosticsSection
                     metrics={metrics}

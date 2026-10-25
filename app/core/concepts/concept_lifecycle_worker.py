@@ -1136,7 +1136,7 @@ class ConceptLifecycleWorker(RevivalMixin):
         rather than a bug fix, so it stays out of this path for now.
         """
         if concept.concept_id in self._store.dependencies.records:
-            return self._store.dependencies.assess(concept.concept_id)["viable"]
+            return self._store.dependencies.is_viable(concept.concept_id)
         return int(concept.distinct_source_count) > 0
 
     def _graph_mature(self) -> bool:

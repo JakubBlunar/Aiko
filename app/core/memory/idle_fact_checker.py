@@ -436,6 +436,7 @@ class IdleFactChecker:
             claim.claim_text,
             user_names=user_names,
             assistant_name=assistant_name,
+            require_intact=True,
         )
 
     def _search(

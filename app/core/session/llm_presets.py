@@ -110,6 +110,19 @@ _PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "default_reasoning_effort": "low",
     },
     {
+        "id": "venice",
+        "label": "Venice",
+        "provider": "openai_compatible",
+        "base_url": "https://api.venice.ai/api/v1",
+        "recommended_models": [],  # Discover current models from the catalogue.
+        "env_hint": "VENICE_API_KEY",
+        "api_key_required": True,
+        "free_tier": "Usage-based API billing",
+        "docs_url": "https://venice.ai/settings/api",
+        "default_context_window": None,
+        "api_style": "chat_completions",
+    },
+    {
         "id": "openai",
         "label": "OpenAI",
         "provider": "openai_compatible",

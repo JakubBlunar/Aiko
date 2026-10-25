@@ -483,37 +483,48 @@ class SleepStore:
                 expected_generation=state.generation,
                 now=when,
             )
-        if state.status == ASLEEP:
-            episode = self.get_episode(state.current_episode_id)
-            started = (
-                timephrase.parse_iso(episode.started_at)
-                if episode is not None
-                else entered
+        if state.status == ASLEEP and self.wake_due(
+            state=state, now=when, nap_max_hours=nap_max_hours,
+            overnight_wake_hour=overnight_wake_hour,
+            overnight_wake_minute=overnight_wake_minute,
+            overnight_min_hours=overnight_min_hours,
+            overnight_max_hours=overnight_max_hours,
+        ):
+            return self.transition(
+                "wake", expected_generation=state.generation, now=when,
             )
-            anchor = timephrase.to_aware(started or entered)
-            sleep_age = max(timedelta(0), when - anchor)
-            if state.sleep_kind == NAP:
-                if sleep_age >= timedelta(hours=max(0.25, float(nap_max_hours))):
-                    return self.transition(
-                        "wake",
-                        expected_generation=state.generation,
-                        now=when,
-                    )
-            elif state.sleep_kind == OVERNIGHT:
-                if should_wake_overnight(
-                    now_local=when.astimezone(),
-                    sleep_started_local=anchor.astimezone(),
-                    wake_hour=float(overnight_wake_hour),
-                    wake_minute=int(overnight_wake_minute),
-                    min_sleep_hours=float(overnight_min_hours),
-                    max_sleep_hours=float(overnight_max_hours),
-                ):
-                    return self.transition(
-                        "wake",
-                        expected_generation=state.generation,
-                        now=when,
-                    )
         return state
+
+    def wake_due(
+        self,
+        *,
+        state: SleepState,
+        now: datetime,
+        nap_max_hours: float = 2.0,
+        overnight_wake_hour: float = 7.0,
+        overnight_wake_minute: int = 0,
+        overnight_min_hours: float = 5.0,
+        overnight_max_hours: float = 10.0,
+    ) -> bool:
+        """Whether this episode's sleep window has ended, regardless of state.
+
+        The wake fallback and the decision to settle back must use the same
+        episode anchor. Otherwise an expired episode immediately wakes again
+        after settling back, resetting the groggy timeout indefinitely.
+        """
+        when = timephrase.to_aware(now)
+        episode = self.get_episode(state.current_episode_id)
+        started = timephrase.parse_iso(episode.started_at if episode else state.entered_at)
+        anchor = timephrase.to_aware(started or when)
+        if state.sleep_kind == NAP:
+            return when - anchor >= timedelta(hours=max(0.25, float(nap_max_hours)))
+        if state.sleep_kind == OVERNIGHT:
+            return should_wake_overnight(
+                now_local=when.astimezone(), sleep_started_local=anchor.astimezone(),
+                wake_hour=overnight_wake_hour, wake_minute=overnight_wake_minute,
+                min_sleep_hours=overnight_min_hours, max_sleep_hours=overnight_max_hours,
+            )
+        return False
 
     def snapshot(self, *, state: SleepState | None = None) -> dict[str, Any]:
         current = state or self.get_state()

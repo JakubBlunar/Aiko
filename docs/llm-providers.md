@@ -7,13 +7,16 @@ roles like `main_chat` and `worker_default` to them through
 single underlying connection through the shared client cache.
 
 Switch between providers at runtime from **Settings → Chat** — no
-restart required. The chat tab has two sections:
+restart required. The chat tab includes these provider sections:
 
 1. **Role assignments** — the role → provider/model table. One row
    per active role; pick a provider, a model, a context window, a
    max-tokens budget. Saving rebuilds the live clients immediately.
 2. **Saved providers** — the catalogue list: add from a template,
    edit, test credentials, delete entries.
+3. **Provider usage** — Venice account tokens, prompt caching, billed request
+   counts, spend, balances and current prices. Billing access requires a separate
+   Admin key; see [Provider usage](provider-usage.md) for setup and accounting scope.
 
 Each role targets a provider independently, so a Gemini free-tier
 quota survives a long conversation by keeping `worker_default` on
@@ -634,9 +637,11 @@ Inspect the live cache state from MCP with `get_client_cache_stats()`:
 `SessionController` keeps two `ChatClient` references side by side:
 
 - `self._chat_client` — used by `TurnRunner` (the live chat path) and
-  `ProactiveDirector` (typed/voice proactive nudges). Built from
+  `ProactiveDirector` (typed/voice proactive nudges), plus
+  `SecondThoughtWorker` (the post-reply pass, which reuses the chat
+  prompt's cached prefix). Built from
   `routes.main_chat` and the matching `LlmProvider`.
-- `self._worker_client` — used by every background worker
+- `self._worker_client` — used by the other background workers
   (`ReflectionWorker`, `DreamWorker`, `MemoryExtractor`,
   `BeliefInferenceWorker`, `MemoryConflictWorker`,
   `IdleFactChecker`, `CuriosityWorker`, `CuriositySeedWorker`,

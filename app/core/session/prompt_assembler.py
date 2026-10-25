@@ -1409,6 +1409,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         context_window: int,
         response_budget: int,
         aggressive: bool = False,
+        current_user_message_id: int | None = None,
     ) -> tuple[list[dict[str, Any]], PromptTelemetry]:
         """Compose the full message list and return per-block telemetry.
 
@@ -1511,7 +1512,15 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         persona = slices.persona
         summary = slices.summary_row
         already_summarized = slices.already_summarized
-        history_msgs = slices.history_msgs
+        # The runner persists the current input before assembly. It is
+        # appended separately below, so exclude that exact row from history.
+        # Use identity rather than text: a real repeated message must survive.
+        # Keep the cached slices intact for previews and later turns.
+        history_msgs = [
+            row for row in slices.history_msgs
+            if not (user_text and current_user_message_id is not None
+                    and row.id == current_user_message_id)
+        ]
         ambient = slices.ambient
         mood_hint = slices.mood_hint
         affect_block = slices.affect_block

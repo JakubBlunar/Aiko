@@ -392,7 +392,7 @@ class ConceptStore:
             and (kind is None or c.kind == kind)
             and (user_id is _UNSET or c.user_id == user_id)
             and (status not in {"active", "candidate"}
-                 or self.dependencies.assess(c.concept_id)["viable"])
+                 or self.dependencies.is_viable(c.concept_id))
         ]
 
     def is_assertable(self, concept_id: int) -> bool:
@@ -400,7 +400,7 @@ class ConceptStore:
         concept = self.get(concept_id)
         return bool(concept and concept.status == "active"
                     and (concept_id not in self.dependencies.records
-                         or self.dependencies.assess(concept_id)["viable"]))
+                         or self.dependencies.is_viable(concept_id)))
 
     def count(self) -> int:
         return len(self._concepts)
@@ -551,7 +551,7 @@ class ConceptStore:
         if status in {"active", "candidate"}:
             viable = []
             for index in order:
-                if self.dependencies.assess(ids[index])["viable"]:
+                if self.dependencies.is_viable(ids[index]):
                     viable.append(index)
                     if len(viable) >= k:
                         break

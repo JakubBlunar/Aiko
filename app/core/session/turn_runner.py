@@ -673,6 +673,7 @@ class TurnRunner:
             cleaned_user,
             context_window=self._context_window,
             response_budget=self._max_tokens,
+            current_user_message_id=outcome.user_message_id,
         )
 
         # On projected overflow: fit *this* turn with an aggressive
@@ -718,6 +719,7 @@ class TurnRunner:
                 context_window=self._context_window,
                 response_budget=self._max_tokens,
                 aggressive=True,
+                current_user_message_id=outcome.user_message_id,
             )
 
         # Per plan: "turn start" is tweaking-only telemetry, redundant with the

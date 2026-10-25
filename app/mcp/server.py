@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import Settings as FastMCPSettings
 
 
 if TYPE_CHECKING:
@@ -31,6 +32,10 @@ def create_mcp_server(
     """
     global _session_ref
     _session_ref = session
+    # MCP v1 defines Settings before FastMCP, leaving its lifespan forward
+    # reference unresolved. Rebuild after import, before settings sources read
+    # it (pydantic-settings >=2.15 warns on the incomplete field).
+    FastMCPSettings.model_rebuild()
     mcp = FastMCP("assistant", host=host, port=port)
 
     # ── Tools ────────────────────────────────────────────────────────

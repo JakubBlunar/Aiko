@@ -113,7 +113,8 @@ in the conservative continue allow-list.
   circadian settle, hobbies, outings, garden visits, room evolution/notices,
   and proactive cue generation.
 - `continue` is for non-experiential upkeep such as vitality, retention, RAG,
-  memory/concept lifecycle, weather observation, plant time, and day color.
+  memory/concept lifecycle and concept synthesis, weather observation, plant
+  time, and day color. Synthesis still obeys its normal demand and lane budget.
 - `sleep_only` currently owns episode-bound dream generation.
 
 `SleepLifecycleWorker` itself is compute-only and continues so it can advance
@@ -251,6 +252,12 @@ throw away exactly the window worth using.
 
 `idle_worker_depth_max_multiplier` caps the whole table; set it to 1.0 to
 disable depth scaling without touching anything else.
+
+Depth changes emit an INFO `idle_workers depth:` line even when no workers are
+due. It reports the tier transition, effective budgets, contention, and sleep
+state. Routine tick summaries remain DEBUG; a quiet INFO log does not mean the
+idle clock stopped. Only conversation turns reset this clock, not window focus
+or desktop activity frames.
 
 ## LLM contention grades
 

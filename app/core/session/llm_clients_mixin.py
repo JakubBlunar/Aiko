@@ -500,3 +500,8 @@ class LlmClientsMixin:
         worker_model = self._effective_worker_model
         self._cascade_worker_model(worker_model)
         self._proactive.update_runtime(model=normalized)
+        # Second thought reuses the chat prefix, so both its provider and
+        # model must follow main_chat, including after a route rebuild.
+        thinker = getattr(self, "_second_thought_worker", None)
+        if thinker is not None:
+            thinker.update_runtime(client=self._chat_client, model=normalized)

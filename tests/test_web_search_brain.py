@@ -95,20 +95,20 @@ class OutboundPrivacyTests(unittest.TestCase):
             provider.last_query, "Dandadan season 2 episode count",
         )
 
-    def test_first_person_tokens_are_dropped(self) -> None:
+    def test_personal_framing_requires_a_rewrite(self) -> None:
         tool, provider = _build([_hit()])
-        tool.run({"query": "my favourite anime Dandadan season 2 release"})
-        sent = (provider.last_query or "").lower()
-        self.assertNotIn("my ", sent)
-        # The searchable topic has to survive the redaction, or the
-        # scrub has cost us the whole point of the lookup.
-        self.assertIn("dandadan", sent)
+        with self.assertRaises(ToolError) as ctx:
+            tool.run({"query": "my favourite anime Dandadan season 2 release"})
+        self.assertIn("preserving what you need to learn", str(ctx.exception))
+        self.assertEqual(provider.calls, 0)
+        tool.run({"query": "Dandadan season 2 release"})
+        self.assertEqual(provider.last_query, "Dandadan season 2 release")
 
-    def test_user_name_is_dropped(self) -> None:
+    def test_user_name_requires_a_rewrite(self) -> None:
         tool, provider = _build([_hit()])
-        tool.run({"query": "Jacob asked about Frieren season 2 release date"})
-        self.assertNotIn("Jacob", provider.last_query or "")
-        self.assertIn("Frieren", provider.last_query or "")
+        with self.assertRaises(ToolError):
+            tool.run({"query": "Jacob asked about Frieren season 2 release date"})
+        self.assertEqual(provider.calls, 0)
 
     def test_url_in_query_refuses_and_never_searches(self) -> None:
         tool, provider = _build([_hit()])
@@ -133,8 +133,9 @@ class OutboundPrivacyTests(unittest.TestCase):
         # Providers are optional; the first-person rules must still apply.
         provider = _FakeProvider([_hit()])
         tool = BrainWebSearchTool(provider)
-        tool.run({"query": "my favourite anime Dandadan release date"})
-        self.assertNotIn("my ", (provider.last_query or "").lower())
+        with self.assertRaises(ToolError):
+            tool.run({"query": "my favourite anime Dandadan release date"})
+        self.assertEqual(provider.calls, 0)
 
     def test_raising_name_provider_does_not_break_the_search(self) -> None:
         def _boom() -> list[str]:
@@ -202,18 +203,21 @@ class FailureTests(unittest.TestCase):
 
 
 class ResultsSinkTests(unittest.TestCase):
-    def test_sink_receives_the_scrubbed_query_and_hits(self) -> None:
+    def test_sink_receives_only_the_successful_rewrite_and_hits(self) -> None:
         seen: list[tuple[str, list[dict[str, str]]]] = []
         tool, _ = _build(
             [_hit(title="Wiki", url="https://w.org", snippet="12 episodes")],
             sink=lambda q, r: seen.append((q, r)),
         )
-        tool.run({"query": "my show Dandadan season 2 episode count"})
+        with self.assertRaises(ToolError):
+            tool.run({"query": "my show Dandadan season 2 episode count"})
+        self.assertEqual(seen, [])
+        tool.run({"query": "Dandadan season 2 episode count"})
         self.assertEqual(len(seen), 1)
         query, results = seen[0]
         # What the sink stores must be what actually went out, not the
         # model's original personal phrasing.
-        self.assertNotIn("my ", query.lower())
+        self.assertEqual(query, "Dandadan season 2 episode count")
         self.assertEqual(results[0]["snippet"], "12 episodes")
 
     def test_sink_not_called_when_there_are_no_hits(self) -> None:

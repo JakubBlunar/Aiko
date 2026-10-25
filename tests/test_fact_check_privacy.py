@@ -175,6 +175,40 @@ class TestClassifyByContent(unittest.TestCase):
 
 
 class TestScrubClaim(unittest.TestCase):
+    def test_outbound_query_requires_an_intact_question(self) -> None:
+        for text in ("cuddling with Aiko", "romantic intimacy with Aiko energizes Jacob"):
+            with self.subTest(text=text):
+                self.assertIsNone(scrub_claim_for_search(
+                    text, user_names=["Jacob"], assistant_name="Aiko", require_intact=True,
+                ))
+                # Local-only consumers still have their redaction contract.
+                self.assertIsNotNone(scrub_claim_for_search(
+                    text, user_names=["Jacob"], assistant_name="Aiko",
+                ))
+
+    def test_outbound_public_query_is_unchanged(self) -> None:
+        query = "Howl's Moving Castle release date"
+        self.assertEqual(scrub_claim_for_search(query, require_intact=True), query)
+
+    def test_possessives_and_contractions_cannot_hide_personal_tokens(self) -> None:
+        for text in (
+            "Jacob's favourite anime release date",
+            "Aiko\u2019s favourite anime release date",
+            "I'm checking anime release dates",
+            "we\u2019re checking anime release dates",
+        ):
+            with self.subTest(text=text):
+                cleaned = scrub_claim_for_search(
+                    text, user_names=["Jacob"], assistant_name="Aiko",
+                )
+                self.assertIsNotNone(cleaned)
+                self.assertNotIn(text.split()[0], cleaned or "")
+                self.assertIn("anime release", cleaned or "")
+
+    def test_public_possessive_is_preserved(self) -> None:
+        query = "Howl's Moving Castle release date"
+        self.assertEqual(scrub_claim_for_search(query), query)
+
     def test_neutral_year_claim_passes_through(self) -> None:
         # Bare years are rejected by the alphabetic-survivor rule;
         # add a verifiable noun so the claim has fact-checkable
@@ -623,7 +657,7 @@ class TestIdleFactCheckerHonoursPrivacyGate(unittest.TestCase):
         # name absolutely doesn't appear.
         self.assertNotIn("Jacob", query)
 
-    def test_claim_with_name_in_middle_is_redacted(self) -> None:
+    def test_personal_claim_cannot_be_fact_checked_by_deleting_its_name(self) -> None:
         world = _build_world(user_names=["Jacob"])
         memory_store: MemoryStore = world["memory_store"]
         embedder = world["embedder"]
@@ -641,20 +675,18 @@ class TestIdleFactCheckerHonoursPrivacyGate(unittest.TestCase):
             claim_kind="proper_noun",
         )
         result = world["worker"].run()
-        self.assertEqual(result.get("verdict"), "support")
-        self.assertEqual(len(world["web_search"].calls), 1)
-        query = world["web_search"].calls[0]["query"]
-        self.assertNotIn("Jacob", query)
-        # The rest of the claim should still be searchable.
-        self.assertIn("violin", query)
+        self.assertEqual(result.get("reason"), "privacy_gate")
+        self.assertEqual(world["web_search"].calls, [])
+        self.assertEqual(world["ollama"].chat_calls, [])
 
-    def test_distil_call_also_sees_scrubbed_claim(self) -> None:
+    def test_reformulated_public_query_reaches_search_and_distil(self) -> None:
         world = _build_world(user_names=["Jacob"])
+        world["worker"]._query_reformulator = lambda _t: "Python 3.12 release date"
         memory_store: MemoryStore = world["memory_store"]
         embedder = world["embedder"]
-        emb = embedder.embed("Jacob practices violin since 2010")
+        emb = embedder.embed("Jacob asked when Python 3.12 was released")
         mem = memory_store.add(
-            "Jacob practices violin since 2010",
+            "Jacob asked when Python 3.12 was released",
             "fact",
             emb,
             salience=0.5,
@@ -662,16 +694,18 @@ class TestIdleFactCheckerHonoursPrivacyGate(unittest.TestCase):
         assert mem is not None
         world["queue"].enqueue(
             memory_id=int(mem.id),
-            claim_text="Jacob practices violin since 2010",
+            claim_text="Jacob asked when Python 3.12 was released",
             claim_kind="proper_noun",
         )
         world["worker"].run()
+        self.assertEqual(world["web_search"].calls[0]["query"], "Python 3.12 release date")
         chat_calls = world["ollama"].chat_calls
         self.assertEqual(len(chat_calls), 1)
         user_msg = next(
             m for m in chat_calls[0]["messages"] if m["role"] == "user"
         )
         self.assertNotIn("Jacob", user_msg["content"])
+        self.assertIn("Python 3.12 release date", user_msg["content"])
 
 
 # ── enqueue payload shape ──────────────────────────────────────────────

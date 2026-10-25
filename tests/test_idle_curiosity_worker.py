@@ -518,6 +518,18 @@ class TestRunInconclusive(unittest.TestCase):
 
 
 class TestRunPrivacy(unittest.TestCase):
+    def test_rewriter_decline_preserves_source_and_skips_search(self) -> None:
+        world = _build_world()
+        world["worker"]._query_reformulator = lambda _t: "NONE"
+        original = "Does Jacob enjoy spending quiet evenings with Aiko?"
+        question_id = _seed_open_question(world["memory_store"], world["embedder"], original)
+        result = world["worker"].run()
+        self.assertEqual(result.get("reason"), "privacy_gate")
+        self.assertEqual(world["web_search"].calls, [])
+        source = world["memory_store"].get(question_id)
+        self.assertEqual(source.content, original)
+        self.assertEqual(source.metadata.get("curiosity_skipped"), "privacy")
+
     def test_email_in_question_marked_skipped(self) -> None:
         # The privacy scrubber hard-rejects emails (no safe redaction
         # exists for "what was X about"-style questions where the

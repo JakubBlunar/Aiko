@@ -80,7 +80,7 @@ from app.core.concepts.surfacing_conduct import (
     save_conduct_snapshot,
 )
 from app.core.infra import timephrase
-from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
+from app.core.proactive.idle_worker import SLEEP_CONTINUE, WorkSignal, pressure_from_count
 
 if TYPE_CHECKING:
     from app.core.concepts.concept_event_store import ConceptEventStore
@@ -211,6 +211,8 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
     """Idle worker that proposes candidate identity concepts."""
 
     name = "concept_synthesis"
+    # Consolidation can continue during sleep; it does not invent waking activity.
+    sleep_policy = SLEEP_CONTINUE
 
     def __init__(
         self,

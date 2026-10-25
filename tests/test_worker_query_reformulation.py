@@ -21,6 +21,11 @@ def _wire(worker, reformulator) -> None:
 
 
 class KnowledgeWorkerScrubTests(unittest.TestCase):
+    def test_no_reformulator_refuses_personal_fragment(self) -> None:
+        w = IdleKnowledgeWorker.__new__(IdleKnowledgeWorker)
+        _wire(w, None)
+        self.assertIsNone(w._scrub("romantic intimacy with Aiko energizes Jacob"))
+
     def test_uses_reformulator_when_present(self) -> None:
         w = IdleKnowledgeWorker.__new__(IdleKnowledgeWorker)
         _wire(w, lambda _t: "neutral topic query")
@@ -35,6 +40,21 @@ class KnowledgeWorkerScrubTests(unittest.TestCase):
 
 
 class CuriosityWorkerScrubTests(unittest.TestCase):
+    def test_no_reformulator_refuses_personal_fragment(self) -> None:
+        w = IdleCuriosityWorker.__new__(IdleCuriosityWorker)
+        _wire(w, None)
+        self.assertIsNone(w._scrub("Does Jacob enjoy cuddling with Aiko?"))
+
+    def test_declined_private_question_never_becomes_a_search(self) -> None:
+        w = IdleCuriosityWorker.__new__(IdleCuriosityWorker)
+        _wire(w, lambda _t: "NONE")
+        self.assertIsNone(w._scrub("Does Jacob enjoy spending quiet evenings with Aiko?"))
+
+    def test_failed_rewrite_does_not_leave_a_dangling_question(self) -> None:
+        w = IdleCuriosityWorker.__new__(IdleCuriosityWorker)
+        _wire(w, lambda _t: None)
+        self.assertIsNone(w._scrub("Does Jacob enjoy cuddling with Aiko?"))
+
     def test_uses_reformulator_when_present(self) -> None:
         w = IdleCuriosityWorker.__new__(IdleCuriosityWorker)
         _wire(w, lambda _t: "neutral topic query")
@@ -53,6 +73,11 @@ class _Claim:
 
 
 class FactCheckerScrubTests(unittest.TestCase):
+    def test_no_reformulator_refuses_personal_fragment(self) -> None:
+        w = IdleFactChecker.__new__(IdleFactChecker)
+        _wire(w, None)
+        self.assertIsNone(w._scrub_claim(_Claim("Jacob practices violin since 2010")))
+
     def test_uses_reformulator_when_present(self) -> None:
         w = IdleFactChecker.__new__(IdleFactChecker)
         _wire(w, lambda _t: "neutral topic query")

@@ -121,10 +121,9 @@ class BrainWebSearchTool:
 
         The scrubber is the enforcement half of the schema's instruction:
         the description asks the model for a clean query, this makes a
-        slip non-fatal. Names and first-person tokens are dropped and the
-        rest of the query survives (search engines treat a placeholder
-        like ``<user>`` as a literal term, so removal beats substitution);
-        hard identifiers — a URL, an email, an address — refuse outright.
+        slip recoverable. Ask the author to rewrite a personal query;
+        deleting its words cannot establish that the same question survives.
+        Hard identifiers also refuse outright.
         """
         from app.core.memory.fact_check_privacy import scrub_claim_for_search
 
@@ -145,13 +144,15 @@ class BrainWebSearchTool:
 
         safe = scrub_claim_for_search(
             query, user_names=user_names, assistant_name=assistant_name,
+            require_intact=True,
         )
         if not safe:
             raise ToolError(
                 "web_search: that query can't be sent to a search engine "
                 "because it carries personal details. Rewrite it as a "
-                "standalone topic query — name the thing itself, with no "
-                "names, no 'my'/'we', and no personal context — or answer "
+                "standalone public question preserving what you need to "
+                "learn; keep relevant public names, titles and dates, "
+                "but remove private identities and personal context — or answer "
                 "from what you already know."
             )
         return safe

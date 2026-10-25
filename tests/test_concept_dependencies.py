@@ -430,3 +430,94 @@ def test_memory_change_filters_unchanged_cached_matrix_before_top_k(model):
     model.db._get_conn().commit()
     assert unsupported.status == "active"
     assert [row.concept_id for row, _ in model.store.nearest(query, k=1)] == [other.concept_id]
+
+
+@pytest.mark.parametrize("consumer", ["assertable", "list", "nearest", "candidate"])
+def test_hot_reads_stop_after_one_complete_valid_support_set(model, consumer):
+    child = model.concept("supported", status="candidate" if consumer == "candidate" else "active")
+    model.store.dependencies.add(child.concept_id, [[model.memory(i)] for i in range(1, 17)])
+    queries = []
+    conn = model.db._get_conn()
+    conn.set_trace_callback(queries.append)
+    try:
+        if consumer == "assertable":
+            assert model.store.is_assertable(child.concept_id)
+        elif consumer == "list":
+            assert model.store.list_by(status="active") == [child]
+        else:
+            status = "candidate" if consumer == "candidate" else "active"
+            assert [row for row, _ in model.store.nearest(np.ones(3), status=status)] == [child]
+    finally:
+        conn.set_trace_callback(None)
+    memory_reads = [query for query in queries if "FROM memories WHERE id =" in query]
+    edge_reads = [query for query in queries if "FROM concept_edges" in query]
+    assert len(memory_reads) == 1
+    assert len(edge_reads) == 1
+
+
+def test_dependency_membership_does_not_materialize_source_fanout(model, monkeypatch):
+    source = model.memory(1)
+    child = model.concept("supported")
+    model.store.dependencies.add(child.concept_id, [[source]])
+    conn = model.db._get_conn()
+    conn.executemany(
+        "INSERT INTO concept_edges "
+        "(src_type, src_id, dst_type, dst_id, relation, created_at) "
+        "VALUES ('memory', '1', 'concept', ?, 'evidence', ?)",
+        [(str(1000 + i), NOW.isoformat()) for i in range(1000)],
+    )
+    conn.commit()
+
+    def no_fanout(*args):
+        pytest.fail("dependency membership must use an exact indexed existence query")
+
+    monkeypatch.setattr(model.store, "edges_from", no_fanout)
+    assert model.store.dependencies.assess(child.concept_id)["viable"]
+    assert model.store.is_assertable(child.concept_id)
+
+
+@pytest.mark.parametrize("mutation", ["delete", "negative", "wrong_relation", "wrong_target"])
+def test_boolean_support_gate_rechecks_exact_edge_on_every_read(model, mutation):
+    source = model.memory(1)
+    child = model.concept("supported")
+    model.store.dependencies.add(child.concept_id, [[source]])
+    assert model.store.is_assertable(child.concept_id)
+    conn = model.db._get_conn()
+    if mutation == "delete":
+        conn.execute("DELETE FROM concept_edges WHERE relation = 'depends_on'")
+    elif mutation == "negative":
+        conn.execute("UPDATE concept_edges SET polarity = -1 WHERE relation = 'depends_on'")
+    elif mutation == "wrong_relation":
+        conn.execute("UPDATE concept_edges SET relation = 'evidence' WHERE relation = 'depends_on'")
+    else:
+        conn.execute("UPDATE concept_edges SET dst_id = '999' WHERE relation = 'depends_on'")
+    conn.commit()
+    assert not model.store.is_assertable(child.concept_id)
+    report = model.store.dependencies.assess(child.concept_id)
+    assert report["invalid_sets"][0]["failures"][0]["reason"] == "dependency_edge_removed"
+
+
+def test_short_circuit_requires_every_conjunct_and_keeps_work_budget(model):
+    a, b, c, d = [model.concept(label) for label in ("a", "b", "c", "d")]
+    child = model.concept("supported")
+    model.store.dependencies.add(child.concept_id, [[node(a), node(b)], [node(c), node(d)]])
+    b.status = "retired"
+    model.store.update(b)
+    assert model.store.dependencies.is_viable(child.concept_id)
+    assert not model.store.dependencies.is_viable(child.concept_id, max_nodes=1)
+    d.status = "retired"
+    model.store.update(d)
+    assert not model.store.dependencies.is_viable(child.concept_id)
+
+
+def test_full_assessment_still_reports_all_sets_and_strongest_confidence(model):
+    first, second = model.concept("first"), model.concept("second")
+    first.confidence, second.confidence = 0.6, 0.95
+    model.store.update(first)
+    model.store.update(second)
+    child = model.concept("supported")
+    model.store.dependencies.add(child.concept_id, [[node(first)], [node(second)]])
+    assert model.store.dependencies.is_viable(child.concept_id)
+    report = model.store.dependencies.assess(child.concept_id)
+    assert report["valid_sets"] == [0, 1]
+    assert report["confidence_bound"] == 0.95

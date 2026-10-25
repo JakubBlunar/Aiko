@@ -962,6 +962,7 @@ class IdleKnowledgeWorker:
             topic_text,
             user_names=user_names,
             assistant_name=assistant_name,
+            require_intact=True,
         )
 
     def _search(self, safe_query: str) -> list[dict[str, str]]:

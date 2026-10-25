@@ -70,7 +70,7 @@ class SpeakingWorkersInitMixin:
 
             _policy = policy_for("second_thought")
             self._second_thought_worker = SecondThoughtWorker(
-                ollama=self._ollama,
+                ollama=self._chat_client,
                 model=self._effective_chat_model,
                 # Bound lazily: the cue store is not wired yet at this
                 # point in __init__, and a worker holding None forever is

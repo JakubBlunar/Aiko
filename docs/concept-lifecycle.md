@@ -173,6 +173,17 @@ buys one normal confidence step, not repeated accrual until it passes.
 
 ### Dependency re-evaluation
 
+Prompt-time boolean checks use `DependencyLedger.is_viable()`: they stop after
+one **complete** valid support set, not after one member of a conjunction.
+Full `assess()` reports still inspect the alternatives for diagnostics and
+the strongest confidence bound. Both paths retain the 256-node / eight-level
+traversal limits and read current sources on every call; there is no cached
+verdict to outlive a deletion, revision, disproof or applicability change.
+Dependency-edge membership uses an exact indexed existence query, never a
+materialized list of all edges leaving a shared source. A memory's fingerprint
+and validity checks use the same fetched row. These bounds keep validation
+independent of unrelated source fan-out without pruning the memory/context pool.
+
 A base's status change marks its dependents due in separate, content-free
 `concept.lifecycle_due:<id>` KV rows. It **does not clear** `last_lifecycle_at`,
 `last_lifecycle_engagement`, or the evidence-age anchor. Rechecking a dependency

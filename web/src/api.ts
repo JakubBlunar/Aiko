@@ -2,6 +2,7 @@
 
 import { addBreadcrumb } from "./crashBreadcrumbs";
 import { backendBase } from "./desktop/runtime";
+import type { ProviderUsage } from "./features/settings/providerUsage";
 import type {
   AccessoryCatalogue,
   AgendaItem,
@@ -266,6 +267,8 @@ export const api = {
   /** List the saved provider catalogue with credentials masked. */
   listLlmProviders: () =>
     jsonFetch<{ providers: LlmProvider[] }>("/api/llm/providers"),
+  getProviderUsage: (providerId: string, days: number) =>
+    jsonFetch<ProviderUsage>(`/api/llm/providers/${encodeURIComponent(providerId)}/usage?days=${days}`),
   /** Create a new provider entry. ``template_id`` (optional) seeds
    *  from a row of ``_PROVIDER_PRESETS``; ``draft`` overrides any
    *  field. 409 when the id is taken. */

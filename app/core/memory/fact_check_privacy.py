@@ -17,7 +17,8 @@ Three checkpoints are exposed:
    claim text, or ``None`` when even the redacted version would leak
    personal context (e.g. the only words in the claim are the user's
    name or first-person pronouns). Use it when the scrubbed string is
-   actually **consumed** — as an outbound query, or as the opt-in
+   actually **consumed** — as an outbound query (with
+   ``require_intact=True``), or as the opt-in
    ``belief_worker_scrub_transcript`` prompt transform. It is the only
    entry point that logs a loud ``REDACT`` audit line.
 
@@ -333,6 +334,7 @@ def scrub_claim_for_search(
     *,
     user_names: Iterable[str] | None = None,
     assistant_name: str | None = None,
+    require_intact: bool = False,
 ) -> str | None:
     """Return a search-safe variant of ``claim_text``.
 
@@ -354,10 +356,17 @@ def scrub_claim_for_search(
     * After redaction, the result must contain at least one non-tokenized
       alphabetic word and be ``_MIN_SAFE_CLAIM_CHARS`` characters or
       more.
+
+    ``require_intact`` is for outbound queries: refuse when token deletion
+    would be needed. Only the author / reformulator can supply a complete
+    neutral question. Local transcript processing keeps the default.
     """
     outcome = _scrub(
         claim_text, user_names=user_names, assistant_name=assistant_name,
     )
+    if require_intact and outcome.dropped and not outcome.block_reason:
+        log.info("privacy scrub BLOCK reason=query_needs_rewrite")
+        return None
     if outcome.block_reason:
         # Logged at INFO so the privacy audit shows every refused claim
         # with its reason; the preview goes alongside so the patterns can
@@ -476,8 +485,11 @@ def _scrub(
     for raw_token in text.split():
         # Strip surrounding punctuation for the comparison only.
         bare = re.sub(r"^\W+|\W+$", "", raw_token).lower()
-        if bare in strip_tokens:
-            dropped_tokens.append(bare)
+        # Possessives and contractions carry the same identity as the
+        # bare word: Aiko's / Jacob's / I'm / we're must not bypass this.
+        base = re.sub(r"['\u2019](?:s|m|re|ve|ll|d)$", "", bare)
+        if base in strip_tokens:
+            dropped_tokens.append(base)
             continue
         out_tokens.append(raw_token)
 

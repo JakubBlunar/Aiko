@@ -87,6 +87,7 @@ class PursuitResearch:
             raise ValueError("pursuit researcher returned an invalid question")
         safe = scrub_claim_for_search(
             question, user_names=[self._user_name()], assistant_name="Aiko",
+            require_intact=True,
         )
         if not safe:
             log.info("pursuit research blocked by privacy: key=%s", state.get("key"))

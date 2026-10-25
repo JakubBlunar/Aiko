@@ -314,6 +314,52 @@ class UpdateRouteTests(unittest.TestCase):
         self.assertEqual(controller._effective_chat_model, "llama3.1:70b")
         controller._turn_runner.update_runtime.assert_called()
 
+    def test_second_thought_follows_chat_provider_and_model(self) -> None:
+        from app.core.proactive.second_thought_worker import SecondThoughtWorker
+
+        controller = _make_controller()
+        controller._settings.agent.second_thought_enabled = True
+        controller._chat_client = MagicMock()
+        thinker = SecondThoughtWorker(
+            ollama=controller._chat_client, model=controller._effective_chat_model,
+            queue_cue=lambda *_args: True, settings_provider=lambda: controller._settings,
+        )
+        controller._second_thought_worker = thinker
+        # Switch chat provider, edit the model directly, then rebuild after
+        # a worker route edit. None may send a chat model to the worker.
+        edits = (
+            (LLM_ROLE_MAIN_CHAT, {
+                "provider_id": "local_ollama", "model": "local-chat",
+            }),
+            (LLM_ROLE_MAIN_CHAT, {"provider_id": "openai", "model": "remote-chat"}),
+            (None, {"model": "remote-chat-v2"}),
+            (LLM_ROLE_WORKER_DEFAULT, {"model": "local-worker-v2"}),
+        )
+        for role, draft in edits:
+            with self.subTest(role=role, draft=draft):
+                if role is None:
+                    controller.set_chat_model(draft["model"])
+                else:
+                    with patch.object(OllamaClient, "list_models", return_value=[]):
+                        self._update(controller, role, draft)
+                self.assertIsNot(controller._chat_client, controller._worker_client_inner)
+                with patch.object(
+                    controller._chat_client, "chat", return_value="NONE",
+                ) as chat_call, patch.object(
+                    controller._worker_client_inner, "chat",
+                    side_effect=AssertionError("second thought reached worker provider"),
+                ) as worker_call:
+                    thinker.maybe_run(
+                        system_prompt="cached prefix", user_text="Test exchange",
+                        assistant_text="Test reply", force=True,
+                    )
+                chat_call.assert_called_once()
+                self.assertEqual(
+                    chat_call.call_args.kwargs["model"], controller._effective_chat_model,
+                )
+                worker_call.assert_not_called()
+                self.assertEqual(thinker.stats()["failed"], 0)
+
     def test_partial_draft_keeps_untouched_fields(self) -> None:
         # A model-only edit must not silently reset the context window
         # back to auto-detect.
