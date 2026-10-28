@@ -1,4 +1,4 @@
-"""Bounded, source-cited communication-style applicability (L50 pilot)."""
+"""Bounded, source-cited applicability, including explicitly named activities."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any
 
 from app.core.infra import timephrase
+from app.core.concepts.concept_support import memory_revision
 
 
 SCOPE_PREFIX = "concept.applicability:"
@@ -33,10 +34,19 @@ _NONASSERTION = re.compile(
 _CONDITION = re.compile(r"\b(when|while|during|unless|except|for)\b", re.I)
 
 
-def context_names(text: str) -> set[str]:
+def _context_name(name: Any) -> bool:
+    return (isinstance(name, str) and bool(re.fullmatch(r"[a-z][a-z0-9 -]{1,59}", name))
+            and name not in {"all", "always", "everything", "anything", "any context", "unknown"})
+
+
+def context_names(text: str, *, names=()) -> set[str]:
     if _NONASSERTION.search(text or ""):
         return set()
-    return {name for name, pattern in _CONTEXTS.items() if pattern.search(text or "")}
+    found = {name for name, pattern in _CONTEXTS.items() if pattern.search(text or "")}
+    for name in names:
+        if _context_name(name) and re.search(r"\b" + re.escape(name) + r"\b", text or "", re.I):
+            found.add(name)
+    return found
 
 
 def asserted_style_source(memory: Any) -> bool:
@@ -74,7 +84,8 @@ def parse_applicability(value: Any, memories: dict[int, Any]) -> dict[str, Any] 
             for item in items:
                 memory, quote = citation(item)
                 name = item.get("name")
-                if name not in context_names(quote) or not _CONDITION.search(quote):
+                if (not _context_name(name) or name not in context_names(quote, names=[name])
+                        or not _CONDITION.search(quote)):
                     return None
                 content = str(memory.content)
                 prefix = content[: content.find(quote)].rstrip()
@@ -91,6 +102,7 @@ def parse_applicability(value: Any, memories: dict[int, Any]) -> dict[str, Any] 
                         "quote": quote,
                         "observed_at": str(getattr(memory, "event_time", None) or ""),
                         "source_recorded_at": str(getattr(memory, "created_at", "") or ""),
+                        "source_revision": memory_revision(memory),
                     }
                 )
             result[field] = qualifiers
@@ -130,7 +142,7 @@ def scope_key(scope: Any) -> tuple:
         if not fields[0] or any(not isinstance(items, list) or len(items) > 3 for items in fields):
             return ()
         if any(
-            not isinstance(item, dict) or item.get("name") not in _CONTEXTS
+            not isinstance(item, dict) or not _context_name(item.get("name"))
             for items in fields
             for item in items
         ):
@@ -182,7 +194,9 @@ class ApplicabilityLedger:
             self._db.kv_set(SCOPE_PREFIX + str(int(old_id)), json.dumps(scope))
 
 
-def current_contexts(user_text: str, snapshot: Any = None) -> set[str]:
+def current_contexts(user_text: str, snapshot: Any = None, *, scope: Any = None) -> set[str]:
+    names = [item["name"] for field in ("contexts", "exceptions")
+             for item in (scope or {}).get(field, [])] if scope_key(scope) else []
     if re.search(
         r"\b(?:not|stop|done|finished|no longer)\b.*"
         r"\b(?:learning|debugging|troubleshooting)\b",
@@ -190,7 +204,10 @@ def current_contexts(user_text: str, snapshot: Any = None) -> set[str]:
         re.I,
     ):
         return set()
-    direct = context_names(user_text)
+    direct = context_names(user_text, names=names)
+    if any(re.search(r"\b(?:not|stop|done|finished|no longer)\b[^.!?]{0,35}\b"
+                     + re.escape(name) + r"\b", user_text or "", re.I) for name in names):
+        return set()
     if "casual" in direct and re.search(
         r"\b(?:not|stop|done|finished|no longer)\b", user_text or "", re.I,
     ):
@@ -205,7 +222,24 @@ def current_contexts(user_text: str, snapshot: Any = None) -> set[str]:
         or not getattr(snapshot, "world_compatible", False)
     ):
         return set()
-    return context_names(str(getattr(state, "shared_activity", "") or ""))
+    return context_names(str(getattr(state, "shared_activity", "") or ""), names=names)
+
+
+def scope_sources_valid(scope: Any, memories: Any) -> bool:
+    """A deleted or edited qualifier cannot keep authorizing a scoped rule."""
+    if not scope_key(scope) or memories is None:
+        return False
+    citations = [item for field in ("contexts", "exceptions") for item in scope.get(field, [])]
+    if scope.get("validity"):
+        citations.append(scope["validity"])
+    for citation in citations:
+        row = memories.get(citation.get("memory_id"))
+        if (row is None or not asserted_style_source(row)
+                or citation.get("quote", "") not in row.content
+                or (citation.get("source_revision")
+                    and citation["source_revision"] != memory_revision(row))):
+            return False
+    return True
 
 
 def applicability_state(scope: Any, contexts: set[str]) -> str:

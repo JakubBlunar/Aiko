@@ -176,10 +176,12 @@ class ConceptContradictionDetector:
                 continue
             if applicability is not None:
                 from app.core.concepts.concept_applicability import (
-                    applicability_state, context_names,
+                    applicability_state, current_contexts,
                 )
 
-                if applicability_state(applicability, context_names(content)) != "matched":
+                if applicability_state(
+                    applicability, current_contexts(content, scope=applicability),
+                ) != "matched":
                     continue
             # Recompute the raw cosine for band-filtering: MemoryStore.search
             # returns a salience-adjusted score, not the plain cosine.

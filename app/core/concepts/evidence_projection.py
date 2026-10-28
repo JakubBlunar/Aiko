@@ -31,6 +31,12 @@ def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
         pass
     ledger = getattr(store, "applicability", None)
     packet["applicability"] = ledger.get(cid) if ledger is not None else None
+    if packet["applicability"]:
+        from app.core.concepts.concept_applicability import scope_sources_valid
+
+        packet["applicability_sources_valid"] = scope_sources_valid(
+            packet["applicability"], memories,
+        )
     clusters = {}
     if graph is not None:
         clusters = {int(c.representative_id): c for c in graph.topic_clusters()}

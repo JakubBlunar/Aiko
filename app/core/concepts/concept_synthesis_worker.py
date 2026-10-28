@@ -3469,7 +3469,8 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
                 or scope_key(proposal.applicability)[:2] != scope_key(old_scope)[:2]
                 or old_scope.get("superseded_by")
                 or not proposal.applicability.get("correction")
-                or context_names(proposal.applicability["correction"].get("quote", ""))
+                or context_names(proposal.applicability["correction"].get("quote", ""),
+                                 names=scope_key(proposal.applicability)[0])
                 != set(scope_key(proposal.applicability)[0])
             ):
                 return

@@ -25,3 +25,19 @@ excerpts. A grounded hypothesis receives one short basis and an unresolved
 point; the selector budgets that extra text without increasing T3 capacity.
 Existing hypothesis trace rows record basis IDs and the uncertainty reason.
 Stored rationale remains an interpretation, separate from supporting excerpts.
+
+## Phase 2
+
+Scoped communication patterns now accept literal, source-cited activity names
+alongside learning, troubleshooting and casual conversation. The existing
+proposer, correction, contradiction and T3 paths share these names. A fresh,
+compatible situation can resolve a short follow-up; stale situations cannot.
+Changed/deleted qualifying sources suppress the rule. Exceptions and validity
+windows remain enforced. This extends communication-style learning for both
+subjects; arbitrary factual concept scoping remains future work.
+
+Validation: phase 1 focused affected selection passed 197 tests; phase 2 passed
+211 tests plus 72 subtests. The import selector reaches shared session hubs, so
+these runs explicitly select recall, context-budget, hypothesis, applicability,
+contradiction and dependency behavior rather than unrelated UI/voice tests.
+`npm run lint` passed for both phases.

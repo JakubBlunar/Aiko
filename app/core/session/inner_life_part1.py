@@ -1761,7 +1761,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         )
         score_components: dict[int, dict] = {}
         from app.core.concepts.concept_applicability import (
-            applicability_state, current_contexts, scope_hint,
+            applicability_state, current_contexts, scope_hint, scope_sources_valid,
         )
 
         snapshot = None
@@ -1937,7 +1937,12 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             style_cost = 0
             if getattr(concept, "kind", "") == "communication_style":
                 scope = applicability.get(cid) if applicability is not None else None
-                state = applicability_state(scope, style_contexts)
+                contexts = current_contexts(user_text, snapshot, scope=scope)
+                state = applicability_state(scope, contexts)
+                memory_store = getattr(self, "_memory_store", None)
+                if (scope and memory_store is not None
+                        and not scope_sources_valid(scope, memory_store)):
+                    state = "source_changed"
                 style_states[cid] = state
                 style_scopes[cid] = scope
                 if state not in {"matched", "unknown", "unknown_context"}:

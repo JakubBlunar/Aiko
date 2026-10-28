@@ -861,13 +861,15 @@ def propose_communication_style(
     system += (
         "\nL50 applicability pilot: for each new or reinforced scoped line "
         "include 'applicability': "
-        "{'contexts': [{'name': 'learning'|'troubleshooting'|'casual', 'memory_id': int, "
+        "{'contexts': [{'name': str, 'memory_id': int, "
         "'quote': str}], 'exceptions': [same shape], 'validity': optional "
         "{'from': 'YYYY-MM-DD', 'until': 'YYYY-MM-DD', 'memory_id': int, 'quote': str}}. "
         "Each quote must be an EXACT span of a cited remembered note, naming when/while/"
         "during/for/unless/except the context applies; never invent a qualifier or date. "
         "Omit validity when no explicit absolute dates were stated (until is exclusive). "
-        "Unsupported/other contexts remain unqualified; do not force them into these names. "
+        "Use learning/troubleshooting/casual when those words describe the source. Otherwise "
+        "use a short lowercase activity phrase appearing literally in the qualifier, such as "
+        "code review or painting. Never broaden a narrow activity to all conversations. "
         "Quoted, hypothetical and role-play preferences are not personal traits. "
         "Different contexts can coexist: never reinforce a different scoped line. "
         "For an explicit changed preference in the SAME context, propose a new label and "
@@ -919,7 +921,7 @@ def propose_communication_style(
                 or correction["quote"] not in offered_memories[correction["memory_id"]].content
                 or not any(word in correction["quote"].lower()
                            for word in ("instead", "no longer", "changed preference"))
-                or context_names(correction["quote"])
+                or context_names(correction["quote"], names=[i["name"] for i in scope["contexts"]])
                 != {item["name"] for item in scope["contexts"]}
             ):
                 continue
