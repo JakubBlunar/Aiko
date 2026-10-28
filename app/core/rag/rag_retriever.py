@@ -1337,7 +1337,7 @@ class RagRetriever:
         # Structured meanings have their own source/scope validation in T3.
         # A vector match alone must never expose an expired or different meaning.
         merged = [hit for hit in merged
-                  if getattr(hit.record, "kind", "") != "shared_term"]
+                  if getattr(hit.record, "kind", "") not in {"shared_term", "strategy"}]
 
         # H1 + K4: apply the conversation-arc / dialogue-act alignment
         # boost. Combined cap is +0.05 so a hit matching on both never
@@ -2240,11 +2240,11 @@ class RagRetriever:
         now = timephrase.utcnow()
         for hit in hits:
             text = (hit.text or "").strip()
-            if (getattr(hit.record, "kind", "") == "shared_term"
+            if (getattr(hit.record, "kind", "") in {"shared_term", "strategy"}
                     and getattr(hit, "memory_provenance", "") != "validated_pattern"):
                 continue
-            if getattr(hit.record, "kind", "") == "shared_term":
-                user_lines.append("- " + text[:600])
+            if getattr(hit.record, "kind", "") in {"shared_term", "strategy"}:
+                user_lines.append("- " + text[:1000])
                 continue
             if not text:
                 continue

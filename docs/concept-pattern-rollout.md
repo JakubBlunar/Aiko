@@ -61,3 +61,25 @@ echo remain different from helpfulness. No additional model call is added.
 
 Validation: 197 affected tests passed, followed by a 144-test focused run
 including an actual extractor-to-SQLite round trip. Lint passed.
+
+## Phase 4
+
+Learned approaches use source-cited goal, approach, constraints, exceptions and
+an explicit user-reported result. Success/failed outcomes are separate records;
+an explicit source-linked failure correction suppresses the earlier strategy.
+Edited/deleted premises invalidate reuse. This pilot stores evidence through
+MemoryStore and does not create a second concept/dependency truth store.
+
+At most one strategy competes in the existing memory budget. Transfer requires
+matching goal words and every recorded constraint; exceptions veto it. A fresh
+working-set question/constraints can resolve a short follow-up, while substantial
+new requests and explicit pivots stand alone. This conservative lexical matcher
+does not claim semantic entailment or causal proof from one reported outcome.
+
+Both optional extractor schemas are included only when the offered transcript
+has a corresponding naming/outcome signal. They share the existing call and
+output budget; routine extraction retains its original context capacity.
+
+Validation: 310 focused affected tests passed, including goal contrasts,
+exception/failure/retraction behavior, prompt budgeting and extractor-to-SQLite
+strategy intake. `npm run lint` passed.

@@ -1606,7 +1606,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     log.debug("relevant_context: memory candidates failed", exc_info=True)
                     hits = []
             for i, hit in enumerate(hits):
-                if getattr(getattr(hit, "record", None), "kind", "") == "shared_term":
+                if getattr(getattr(hit, "record", None), "kind", "") in {"shared_term", "strategy"}:
                     continue
                 text = (getattr(hit, "text", "") or "").strip()
                 if not text:
@@ -1621,6 +1621,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 mem_cands.append(cand)
 
             from app.core.memory.shared_shorthand import fresh_activity, shorthand_hits
+            from app.core.memory.learned_strategies import fresh_goal_context, strategy_hits
 
             try:
                 shared_hits = shorthand_hits(
@@ -1628,6 +1629,11 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     user_text=user_text, session_key=session_key,
                     owner=getattr(self, "_user_id", "default"),
                     activity=fresh_activity(self, user_text),
+                )
+                shared_hits += strategy_hits(
+                    getattr(self, "_memory_store", None), getattr(self, "_chat_db", None), rag,
+                    user_text=user_text, owner=getattr(self, "_user_id", "default"),
+                    goal_context=fresh_goal_context(self, user_text),
                 )
                 for hit in shared_hits:
                     mem_cands.append(ContextCandidate(

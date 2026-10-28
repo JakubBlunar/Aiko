@@ -539,8 +539,14 @@ class MemoryExtractor:
             max_memories=self._max_new_per_run,
         )
         from app.core.memory.shared_shorthand import EXTRACTION_RULE
+        from app.core.memory.learned_strategies import EXTRACTION_RULE as STRATEGY_RULE
 
-        system_content += "\n" + EXTRACTION_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
+        offered_text = "\n".join(row.content for row in [*context_rows, *rows])
+        if re.search(r"\b(?:call|calling|mean|means|rename)\b", offered_text, re.I):
+            system_content += "\n" + EXTRACTION_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
+        if re.search(r"\b(?:worked|helped|fixed|solved|succeeded|failed|didn'?t work)\b",
+                     offered_text, re.I):
+            system_content += "\n" + STRATEGY_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
         try:
             context_window = self._context_window()
         except Exception:
@@ -687,6 +693,16 @@ class MemoryExtractor:
 
         admitted = []
         for cand in candidates:
+            if cand.get("strategy") is not None or cand["kind"] == "strategy":
+                from app.core.memory.learned_strategies import admit_strategy
+
+                pattern = admit_strategy(
+                    cand, rows, context_rows, session_key=session_key,
+                    owner=self._user_id_provider(), memories=self._store, db=self._db,
+                )
+                if pattern is not None:
+                    admitted.append(pattern)
+                continue
             if cand.get("shorthand") is not None or cand["kind"] == "shared_term":
                 from app.core.memory.shared_shorthand import admit_shorthand
 
@@ -722,10 +738,11 @@ class MemoryExtractor:
         for cand in batch["candidates"]:
             if cand.get("applied"):
                 continue
-            if cand["kind"] == "shared_term":
+            if cand["kind"] in {"shared_term", "strategy"}:
                 from app.core.memory.shared_shorthand import sources_current
 
-                if not sources_current(cand["metadata"]["shared_shorthand"], self._db):
+                key = "shared_shorthand" if cand["kind"] == "shared_term" else "learned_strategy"
+                if not sources_current(cand["metadata"][key], self._db):
                     cand["applied"] = True
                     continue
             content_text = cand["content"]
@@ -753,7 +770,7 @@ class MemoryExtractor:
                 source_session=session_key,
                 source_message_id=cand.get("source_message_id"),
                 metadata=cand.get("metadata"),
-                skip_dedupe=cand["kind"] == "shared_term",
+                skip_dedupe=cand["kind"] in {"shared_term", "strategy"},
                 # Schema v8: LLM-distilled observations are speculative.
                 # Land them in scratchpad so the promotion worker can
                 # either confirm them via retrieval / revival or sweep
@@ -770,7 +787,7 @@ class MemoryExtractor:
             if memory is not None:
                 inserted += 1
                 self._notify(memory)
-                if cand["kind"] == "shared_term":
+                if cand["kind"] in {"shared_term", "strategy"}:
                     log.info("pattern admitted: kind=%s memory_id=%s", cand["kind"],
                              getattr(memory, "id", "unknown"))
             cand["applied"] = True
@@ -934,6 +951,7 @@ class MemoryExtractor:
                     "destination": entry.get("destination", "memory"),
                     "supersedes_memory_id": entry.get("supersedes_memory_id"),
                     "shorthand": entry.get("shorthand"),
+                    "strategy": entry.get("strategy"),
                 }
             )
         return out

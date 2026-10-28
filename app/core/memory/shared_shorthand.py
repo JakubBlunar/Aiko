@@ -13,7 +13,7 @@ from app.core.concepts.concept_support import revision_hash
 from app.core.infra import timephrase
 
 log = logging.getLogger("app.conversation_patterns")
-PATTERN_KINDS = frozenset({"shared_term"})
+PATTERN_KINDS = frozenset({"shared_term", "strategy"})
 EXTRACTION_RULE = """
 K106 optional shared definitions: only after explicit USER adoption, a memory
 may have kind 'shared_term' and a 'shorthand' object:
