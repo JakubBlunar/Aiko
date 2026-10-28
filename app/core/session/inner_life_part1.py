@@ -2285,7 +2285,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 # still needs to know is only how on-topic the question is.
                 hyp_cands.append(ContextCandidate(
                     source="hypothesis", relevance=cos,
-                    tokens=estimate_tokens(label) + 24, order=i,
+                    tokens=estimate_tokens(label) + 164, order=i,
                     payload=concept, key=f"h{cid or i}",
                 ))
                 hyp_components[cid] = trace
@@ -3172,6 +3172,17 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             )
             lead = leads[abs(cid) % len(leads)]
             bullet = f"- {lead} {label}"
+            basis_packet = {}
+            if not is_invented and getattr(self, "_concept_store", None) is not None:
+                from app.core.concepts.evidence_projection import compact_basis, project_evidence
+
+                basis_packet = project_evidence(
+                    self._concept_store, getattr(self, "_memory_store", None),
+                    getattr(self, "_topic_graph", None), c, limit=1,
+                )
+                basis = compact_basis(basis_packet)
+                if basis:
+                    bullet += "\n  " + basis
             if is_invented:
                 invented.append(bullet)
             else:
@@ -3186,6 +3197,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     getattr(c, "distinct_source_count", 0) or 0
                 ),
                 "lead": lead,
+                "basis_memory_ids": [r["memory_id"] for r in basis_packet.get("evidence", [])],
+                "uncertainty": basis_packet.get("uncertainty", "invented; no observation"),
             }
             if is_invented:
                 entry["origin"] = ORIGIN_INVENTED

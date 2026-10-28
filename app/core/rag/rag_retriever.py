@@ -1649,7 +1649,7 @@ class RagRetriever:
         if not matches:
             return None
         concept, sim = matches[0]
-        cap = max(1, int(limit))
+        cap = min(16, max(1, int(limit)))
 
         # Split the concept's evidence into memory ids + cluster reps.
         try:
@@ -1658,7 +1658,7 @@ class RagRetriever:
             edges = []
         memory_ids: list[int] = []
         cluster_reps: list[int] = []
-        for e in edges:
+        for e in edges[:64]:
             try:
                 node_id = int(e.src_id)
             except (TypeError, ValueError):
@@ -1688,34 +1688,23 @@ class RagRetriever:
                     cluster_labels.append(label)
                 memory_ids.extend(int(m) for m in cluster.member_ids)
 
-        # Hydrate memory snippets (dedup, cap unless all_evidence).
-        evidence: list[dict[str, Any]] = []
-        seen_ids: set[int] = set()
-        for mid in memory_ids:
-            if mid in seen_ids:
-                continue
-            seen_ids.add(mid)
-            if not all_evidence and len(evidence) >= cap:
-                break
-            mem = None
-            if self._memory_store is not None:
-                try:
-                    mem = self._memory_store.get(mid)
-                except Exception:
-                    mem = None
-            if mem is None:
-                continue
-            evidence.append({"text": (mem.content or "")[:280]})
-
         # Higher-order links this concept participates in, so the "why" can
         # reach past raw memories to the concepts it connects to: meta concepts
         # that reference it (a tension it sits in, an L20 generalization that
         # abstracts it), and its own base concepts when it is itself a meta.
         # Bounded so the bundle stays compact.
         related = self._concept_related_links(concept, edges, limit=6)
+        from app.core.concepts.evidence_projection import project_evidence
+
+        packet = project_evidence(
+            self._concept_store, self._memory_store, self._topic_graph, concept,
+            limit=16 if all_evidence else cap,
+        )
 
         return {
             "concept": {
+                "concept_id": concept.concept_id,
+                "revision": packet["revision"],
                 "label": concept.label,
                 "kind": concept.kind,
                 "subject": concept.subject,
@@ -1724,8 +1713,13 @@ class RagRetriever:
                 "rationale": (concept.rationale or "")[:500],
             },
             "score": round(float(sim), 3),
-            "evidence": evidence,
-            "clusters": cluster_labels,
+            "evidence": packet["evidence"],
+            "support": packet["support"],
+            "support_validity": packet["validity"],
+            "applicability": packet.get("applicability"),
+            "uncertainty": packet.get("uncertainty", "Support unknown."),
+            "evidence_truncated": packet["truncated"],
+            "clusters": cluster_labels[:8],
             "related": related,
         }
 

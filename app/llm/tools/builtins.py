@@ -236,9 +236,10 @@ class RecallConceptTool:
             description=(
                 "Explain WHY Aiko thinks/feels/believes something -- pull up "
                 "one higher-order concept she has formed (a trait, value, or "
-                "pattern) together with its reasoning ('rationale'), the "
+                "pattern) together with its interpretation ('rationale'), the "
                 "memories that support it, the topic areas it spans, AND the "
-                "related concepts it connects to (tensions it sits in, "
+                "source IDs, revisions, source authority, uncertainty and related "
+                "concepts (tensions, "
                 "concepts it generalises), all in one call. Reach for this "
                 "whenever: the user asks *why* she thinks/feels/believes "
                 "something about them or herself; asks her to explain or "
