@@ -378,16 +378,19 @@ valid controls, not failures to be made more expressive.
 
 ## K106. Shared shorthand with negotiated meaning
 
-**Status: Open implementation.**
+**Status: Partial; live validation remains (28 Oct 2026).**
 
-**Implemented / available:** Catchphrases, inside jokes and source-linked situation/memory state exist.
+**Implemented / available:** Explicitly adopted definitions are stored through MemoryStore by the
+existing extraction call. Source receipts, owner/session/activity/relationship scope, expiry,
+corrections and retirement gate reference resolution in the existing T3 memory budget. Proposals
+and unclear replies cannot establish adoption. Current-source checks prevent stale vector recall
+from bypassing the contract. Intake counters and inclusion traces support the live trial.
 
-**Remaining:** Implement explicitly negotiated term/referent meaning with
-correction/scope/expiry/deletion checks; a proposed name is not user adoption.
+**Remaining:** Evaluate natural adoption/paraphrases, referent accuracy, corrections and unwanted
+callbacks on the current model. The conservative literal matcher is not general semantic agreement.
 
-**Source check:** [catchphrase_miner.py](../../app/core/memory/catchphrase_miner.py),
-[conversation_situation.py](../../app/core/conversation/conversation_situation.py),
-[memory_store.py](../../app/core/memory/memory_store.py).
+**Source check:** [shared_shorthand.py](../../app/core/memory/shared_shorthand.py),
+[test_shared_shorthand.py](../../tests/test_shared_shorthand.py).
 
 <details>
 <summary>Retained acceptance constraints for further work</summary>

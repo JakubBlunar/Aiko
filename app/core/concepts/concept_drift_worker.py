@@ -134,6 +134,7 @@ class ConceptDriftWorker:
             Callable[[int], list[str]] | None
         ) = None,
         clock: Callable[[], datetime] | None = None,
+        learning_receipt_writer: Callable[[Any], None] | None = None,
     ) -> None:
         self._store = concept_store
         self._events = concept_event_store
@@ -149,6 +150,7 @@ class ConceptDriftWorker:
         self._kv_set = kv_set
         self._evidence_labels = evidence_labels_provider
         self._clock = clock or _utcnow
+        self._learning_receipt_writer = learning_receipt_writer
         self._negative_cache: dict[tuple[int, str], datetime] = {}
 
     # ── settings helpers ──────────────────────────────────────────────
@@ -772,6 +774,8 @@ class ConceptDriftWorker:
             try:
                 if self._learning.add(event) > 0:
                     recorded += 1
+                    if self._learning_receipt_writer is not None:
+                        self._learning_receipt_writer(event)
             except Exception:
                 log.debug("learning event persist failed", exc_info=True)
         return recorded

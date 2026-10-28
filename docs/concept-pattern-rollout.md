@@ -83,3 +83,70 @@ output budget; routine extraction retains its original context capacity.
 Validation: 310 focused affected tests passed, including goal contrasts,
 exception/failure/retraction behavior, prompt budgeting and extractor-to-SQLite
 strategy intake. `npm run lint` passed.
+
+## Phase 5
+
+Understanding arcs are read projections of connected learning events and their
+concept versions. They cover the user, Aiko and the relationship. The drift
+worker captures bounded source-revision receipts when it records a new change;
+the read path checks original dialogue, memories, frozen cluster members,
+supporting concepts and the exact lifecycle event. Adding later cluster members
+does not rewrite an earlier observation set. A missing, edited or deleted
+premise, an unrecorded label revision or a broken chain leaves a thin record.
+Legacy learning events without receipts are not retroactively certified.
+
+At least two verified changes are required. At most three changes render per
+arc. The current endpoint comes through ConceptView. User-requested retrospective
+context and concept recall can include the arc, costed inside the existing T3
+budget. The record distinguishes an earlier belief from a fact about a person:
+changing Aiko's understanding does not prove that the user or relationship
+changed. These are request-responsive context, not unsolicited cues or stance
+offers. No new named prompt block or model call is introduced.
+
+The final review also tightened source-quote validation for hypothesis bases,
+literal activity-scope admission, explicit term retirement, in-flight owner
+identity and short-follow-up strategy context. Structured feature assembly lives
+in its own module rather than expanding the large inner-life provider.
+
+## The ordinary-use trial
+
+Restart the backend to load the implementation. Existing extraction/concept/
+history settings continue to govern their respective paths; no user settings
+or live memories were modified by implementation or tests.
+
+Use Aiko normally for several days. Useful observations include a hunch that
+fits or misses, a context-specific preference, an adopted shared expression,
+a correction to its meaning, and a genuinely helpful/failed approach. Definitions
+default to session scope; an explicitly permanent shared name can use language
+such as "let's always call small experiments lab mode". Activities and expiry
+must be stated, not guessed. Historical arcs accumulate from newly verified
+changes and can remain thin during a short trial.
+
+Read-only debug tools:
+
+- `get_pattern_learning_state`: content-free, owner-scoped schema/proposal/
+  admission/rejection counters, bounded record/source-validity counts and the
+  last turn's structured-pattern/arc inclusion.
+- `get_last_concept_trace`: hypothesis basis IDs, uncertainty reasons and the
+  selected/included structured-pattern and arc receipts.
+- `get_understanding_arcs(subject="all", limit=3)`: explicit inspection of
+  personal historical belief text; default results rotate across the three
+  subjects. Unsupported records remain counted as thin.
+- `get_surfacing_outcomes`: existing subsequent-use/echo evidence. Interpret
+  this separately from user-confirmed helpfulness or causal attribution.
+
+The literal admission and goal/constraint matchers are deliberately conservative.
+The trial should establish missed opportunities as well as unwanted callbacks,
+incorrect references and unsupported certainty before broadening them. No live
+model-quality claim follows from deterministic tests.
+
+## Final validation
+
+The final behavior-focused affected selection passed 1,141 tests and 99 subtests,
+including prompt/cache, extraction, retrieval, lifecycle/history, source
+dependencies, diagnostics and session setup. A subsequent 61-test run covered
+the final owner-scoping and durable-definition intake adjustments. Explicitly
+adopted shared terms enter long-term memory; conditional strategy records retain
+the existing scratchpad/promotion policy. `npm run lint`, documentation link
+checks (83 files), whitespace and LF checks passed. No full-suite or live-model
+run was performed. Managed test scratch was cleaned up.

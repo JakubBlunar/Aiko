@@ -116,6 +116,25 @@ def build_report(
 
 def register(mcp, session: "SessionController") -> None:
     @mcp.tool()
+    def get_pattern_learning_state() -> str:
+        """Read aggregate shorthand/strategy intake and last-turn inclusion; no dialogue text.
+
+        Use alongside get_surfacing_outcomes for subsequent use and
+        get_understanding_arcs for explicit historical evidence inspection.
+        """
+        return json.dumps(session.pattern_learning_snapshot(), indent=2, default=str)
+
+    @mcp.tool()
+    def get_understanding_arcs(subject: str = "all", limit: int = 3) -> str:
+        """Read source-verified concept-change arcs for user, aiko or relationship.
+
+        Contains personal historical belief labels. Thin/unverified records
+        are counted, never turned into an invented life story. Read-only.
+        """
+        return json.dumps(session.understanding_arcs(subject=subject, limit=limit),
+                          indent=2, default=str)
+
+    @mcp.tool()
     def get_surfacing_outcomes(
         window_days: int = 30,
         min_settled: int = 1,

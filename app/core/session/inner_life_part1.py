@@ -1620,27 +1620,13 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 mem_hit_by_id[id(cand)] = hit
                 mem_cands.append(cand)
 
-            from app.core.memory.shared_shorthand import fresh_activity, shorthand_hits
-            from app.core.memory.learned_strategies import fresh_goal_context, strategy_hits
+            from app.core.session.pattern_context import pattern_candidates
 
             try:
-                shared_hits = shorthand_hits(
-                    getattr(self, "_memory_store", None), getattr(self, "_chat_db", None), rag,
-                    user_text=user_text, session_key=session_key,
-                    owner=getattr(self, "_user_id", "default"),
-                    activity=fresh_activity(self, user_text),
-                )
-                shared_hits += strategy_hits(
-                    getattr(self, "_memory_store", None), getattr(self, "_chat_db", None), rag,
-                    user_text=user_text, owner=getattr(self, "_user_id", "default"),
-                    goal_context=fresh_goal_context(self, user_text),
-                )
-                for hit in shared_hits:
-                    mem_cands.append(ContextCandidate(
-                        source="memory", relevance=hit.score,
-                        tokens=estimate_tokens(hit.text) + 12, order=-1,
-                        payload=hit, key=f"shared:{hit.record.id}",
-                    ))
+                mem_cands.extend(pattern_candidates(
+                    self, rag, user_text=user_text, session_key=session_key,
+                    estimate_tokens=estimate_tokens,
+                ))
             except Exception:
                 log.debug("shared shorthand context unavailable", exc_info=True)
 
@@ -2335,6 +2321,10 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         if concept_cands:
             concept_cands = self._suppress_generalized_children(concept_cands)
 
+        from app.core.session.pattern_context import prepare_arcs
+
+        arc_blocks = prepare_arcs(self, concept_cands, user_text, estimate_tokens)
+
         # ── budgeted selection ──────────────────────────────────────────
         selector = ContextBudgetSelector({
             "memory": SourceBudget(
@@ -2458,6 +2448,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             }
         if concept_block:
             sections.append(concept_block)
+        selected_arcs = [arc_blocks[c.concept_id] for c in concept_pairs
+                         if c.concept_id in arc_blocks]
+        sections.extend(block for block, _packet in selected_arcs)
 
         cluster_rows = [c.payload for c in sorted(
             selection.source("cluster").chosen, key=lambda c: c.order,
@@ -2507,6 +2500,12 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             {"memory_id": hit.record.id, "kind": hit.record.kind, "included": hit.text in text}
             for hit in chosen_hits
             if getattr(hit, "memory_provenance", "") == "validated_pattern"
+        ]
+        concept_trace["understanding_arcs"] = [
+            {"concept_id": packet["concept_id"], "subject": packet["subject"],
+             "event_ids": [s["learning_event_id"] for s in packet["steps"]],
+             "included": block in text}
+            for block, packet in selected_arcs
         ]
 
         # Mark only the budgeted memory subset used (recency / revival).
@@ -3215,7 +3214,10 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 basis_packet = project_evidence(
                     self._concept_store, getattr(self, "_memory_store", None),
                     getattr(self, "_topic_graph", None), c, limit=1,
+                    db=getattr(self, "_chat_db", None),
                 )
+                if basis_packet.get("source_issues"):
+                    continue
                 basis = compact_basis(basis_packet)
                 if basis:
                     bullet += "\n  " + basis

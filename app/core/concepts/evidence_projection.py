@@ -13,12 +13,13 @@ from app.core.concepts.concept_support import memory_revision
 
 
 def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
-                     *, limit: int = 3) -> dict:
+                     *, limit: int = 3, db: Any = None) -> dict:
     cap = max(1, min(16, int(limit)))
     cid = int(concept.concept_id)
     packet: dict = {"concept_id": cid, "revision": str(getattr(concept, "updated_at", "")),
                     "evidence": [], "support": {"complete": False},
-                    "validity": {"tracked": False, "reason": "unknown"}, "truncated": False}
+                    "validity": {"tracked": False, "reason": "unknown"}, "truncated": False,
+                    "source_issues": []}
     if store is None:
         packet["uncertainty"] = uncertainty_reason(concept, packet)
         return packet
@@ -51,11 +52,33 @@ def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
             row = memories.get(ident) if memories is not None else None
             if row is None:
                 continue
+            metadata = getattr(row, "metadata", None) or {}
+            admission = metadata.get("admission", {})
+            source_check = "unknown"
+            get_message = getattr(db, "get_message_row", None)
+            if callable(get_message):
+                citations = admission.get("evidence", [])[:4]
+                source_ids = {getattr(row, "source_message_id", None)} - {None}
+                source_ids.update(c.get("message_id") for c in citations)
+                originals = {mid: get_message(mid) for mid in source_ids}
+                changed = any(original is None for original in originals.values())
+                for citation in citations:
+                    original = originals.get(citation.get("message_id"))
+                    quote = " ".join(str(citation.get("quote", "")).casefold().split())
+                    if (original is None
+                            or quote not in " ".join(original.content.casefold().split())):
+                        changed = True
+                if changed:
+                    packet["source_issues"].append({"memory_id": ident, "reason": "source_changed"})
+                    continue
+                if citations:
+                    source_check = "quoted_source_present"
             lineages = memory_lineages(row)
             packet["evidence"].append({
                 "memory_id": ident, "revision": memory_revision(row),
                 "text": str(row.content or "")[:280],
-                "subject": (getattr(row, "metadata", None) or {}).get("subject", "unknown"),
+                "subject": metadata.get("subject", admission.get("subject", "unknown")),
+                "source_check": source_check,
                 "authority": lineages[0].category,
                 "source_message_id": getattr(row, "source_message_id", None),
                 "source_session": getattr(row, "source_session", None),
@@ -92,6 +115,8 @@ def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
 def uncertainty_reason(concept: Any, packet: dict) -> str:
     validity = packet.get("validity", {})
     support = packet.get("support", {})
+    if packet.get("source_issues"):
+        return "A cited observation changed or was removed; the old interpretation needs review."
     if validity.get("tracked") and not validity.get("viable"):
         return "The recorded support has changed or is no longer sufficient."
     if not packet.get("evidence"):

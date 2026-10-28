@@ -150,6 +150,13 @@ class ConceptEventStore:
             created_at=str(r[12] or ""),
         )
 
+    def get(self, event_id: int) -> ConceptEvent | None:
+        """One immutable lifecycle receipt by primary key, including old events."""
+        row = self._db._get_conn().execute(
+            f"SELECT {_EVENT_COLS} FROM concept_events WHERE id = ?", (int(event_id),),
+        ).fetchone()
+        return self._row_to_event(row) if row is not None else None
+
     def list(
         self,
         *,

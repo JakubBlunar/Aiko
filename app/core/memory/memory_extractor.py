@@ -531,8 +531,9 @@ class MemoryExtractor:
         if window is None:
             return 0
         context_rows, rows = window
+        pattern_owner = self._user_id_provider()
 
-        existing = self._format_existing()
+        existing = self._format_existing(owner=pattern_owner)
         now = timephrase.utcnow().astimezone()
         system_content = _build_system_prompt(
             self._resolve_user_name(), today=now,
@@ -542,11 +543,15 @@ class MemoryExtractor:
         from app.core.memory.learned_strategies import EXTRACTION_RULE as STRATEGY_RULE
 
         offered_text = "\n".join(row.content for row in [*context_rows, *rows])
+        from app.core.memory.pattern_accounting import count_intake
+
         if re.search(r"\b(?:call|calling|mean|means|rename)\b", offered_text, re.I):
             system_content += "\n" + EXTRACTION_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
+            count_intake(self._db, pattern_owner, shorthand_schema_batches=1)
         if re.search(r"\b(?:worked|helped|fixed|solved|succeeded|failed|didn'?t work)\b",
                      offered_text, re.I):
             system_content += "\n" + STRATEGY_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
+            count_intake(self._db, pattern_owner, strategy_schema_batches=1)
         try:
             context_window = self._context_window()
         except Exception:
@@ -698,8 +703,11 @@ class MemoryExtractor:
 
                 pattern = admit_strategy(
                     cand, rows, context_rows, session_key=session_key,
-                    owner=self._user_id_provider(), memories=self._store, db=self._db,
+                    owner=pattern_owner, memories=self._store, db=self._db,
                 )
+                count_intake(self._db, pattern_owner, strategy_proposed=1,
+                             strategy_admitted=int(pattern is not None),
+                             strategy_rejected=int(pattern is None))
                 if pattern is not None:
                     admitted.append(pattern)
                 continue
@@ -708,8 +716,11 @@ class MemoryExtractor:
 
                 pattern = admit_shorthand(
                     cand, rows, context_rows, session_key=session_key,
-                    owner=self._user_id_provider(),
+                    owner=pattern_owner, memories=self._store, db=self._db,
                 )
+                count_intake(self._db, pattern_owner, shorthand_proposed=1,
+                             shorthand_admitted=int(pattern is not None),
+                             shorthand_rejected=int(pattern is None))
                 if pattern is not None:
                     admitted.append(pattern)
                 continue
@@ -775,7 +786,7 @@ class MemoryExtractor:
                 # Land them in scratchpad so the promotion worker can
                 # either confirm them via retrieval / revival or sweep
                 # them away after the TTL.
-                tier="scratchpad",
+                tier="long_term" if cand["kind"] == "shared_term" else "scratchpad",
                 temporal_type=cand["temporal_type"],
                 # F16: the extractor distils memories from a transcript, so
                 # each is testimony or inference per the LLM's classification
@@ -812,7 +823,7 @@ class MemoryExtractor:
             for row in rows
         )
 
-    def _format_existing(self) -> str:
+    def _format_existing(self, *, owner: str | None = None) -> str:
         """The "do NOT re-emit these" block: salient rows *and* fresh ones.
 
         This used to be ``list_top(20)`` alone, which is ranked by salience
@@ -827,9 +838,17 @@ class MemoryExtractor:
         """
         seen: set[int] = set()
         merged: list = []
+        pattern_owner = owner if owner is not None else self._user_id_provider()
         for mem in list(self._store.list_recent(limit=12)) + list(
             self._store.list_top(limit=20)
         ):
+            pattern_key = {"shared_term": "shared_shorthand", "strategy": "learned_strategy"}.get(
+                getattr(mem, "kind", ""),
+            )
+            if pattern_key:
+                metadata = (getattr(mem, "metadata", None) or {}).get(pattern_key, {})
+                if metadata.get("owner") != pattern_owner:
+                    continue
             mem_id = getattr(mem, "id", None)
             if mem_id is not None:
                 if mem_id in seen:

@@ -87,6 +87,11 @@ def parse_applicability(value: Any, memories: dict[int, Any]) -> dict[str, Any] 
                 if (not _context_name(name) or name not in context_names(quote, names=[name])
                         or not _CONDITION.search(quote)):
                     return None
+                if name not in _CONTEXTS and not re.search(
+                    r"\b(?:when|while|during|for|unless|except)\s+(?:during\s+)?"
+                    + re.escape(name) + r"\s*(?:[,;:.!?]|$)", quote, re.I,
+                ):
+                    return None
                 content = str(memory.content)
                 prefix = content[: content.find(quote)].rstrip()
                 negative = bool(

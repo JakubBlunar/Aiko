@@ -43,6 +43,41 @@ def test_direct_naming_and_scope_require_literal_evidence():
     assert admit_shorthand(cand, [row], session_key="s", owner="u") is None
 
 
+def test_user_can_name_the_immediately_preceding_shared_approach():
+    definition = message(1, "assistant", "We could try small experiments.")
+    adopter = message(2, "user", "Let's call that lab mode.")
+    assert admit_shorthand(candidate(definition, adopter), [definition, adopter],
+                           session_key="s", owner="u")
+
+
+def test_explicit_retirement_inherits_the_existing_relationship_scope(tmp_path):
+    db = ChatDatabase(tmp_path / "memory.db")
+    store = MemoryStore(tmp_path / "memory.db")
+    source = message(1, "user", "Let's always call small experiments lab mode.")
+    retire = message(2, "user", "Stop calling it lab mode.")
+    reader = NS(get_message_row={1: source, 2: retire}.get)
+    first = admit_shorthand(
+        candidate(source, source, scope="relationship", scope_quote=source.content),
+        [source], session_key="s", owner="u",
+    )
+    try:
+        row = store.add(first["content"], kind="shared_term", embedding=np.array([1., 0.]),
+                        metadata=first["metadata"], source_session="s", source_message_id=1)
+        cand = candidate(retire, retire, meaning="")
+        cand["shorthand"]["revises_memory_id"] = row.id
+        value = admit_shorthand(cand, [retire], session_key="s", owner="u",
+                                memories=store, db=reader)
+        assert value["metadata"]["shared_shorthand"]["scope"] == "relationship"
+        store.add(value["content"], kind="shared_term", embedding=np.array([1., 0.]),
+                  metadata=value["metadata"], source_session="s", source_message_id=2,
+                  skip_dedupe=True)
+        assert not shorthand_hits(store, reader, RagRetriever,
+                                  user_text="lab mode", session_key="other", owner="u")
+    finally:
+        store.close()
+        db._get_conn().close()
+
+
 def test_reuse_correction_source_edit_deletion_and_session_scope(tmp_path):
     db = ChatDatabase(tmp_path / "memory.db")
     store = MemoryStore(tmp_path / "memory.db")
@@ -99,23 +134,27 @@ def test_existing_extraction_call_writes_an_adopted_meaning(tmp_path):
                 get_messages=lambda *a, **k: [source, reply],
                 get_message_row=lambda ident: {1: source, 2: reply}.get(ident))
     calls = []
+    identity = {"owner": "u"}
 
     def chat(messages, **kwargs):
         calls.append(messages)
+        identity["owner"] = "other"
         return json.dumps({"memories": [candidate(source, source)]}), NS(
             prompt_tokens=30, completion_tokens=50, done_reason="stop")
 
     extractor = MemoryExtractor(
         reader, store, NS(embed=lambda _: np.array([1., 0.])), NS(chat_json=chat),
         model="test", think=False, min_window_messages=2, context_window=lambda: 8192,
-        user_id_provider=lambda: "u", user_display_name_provider=lambda: "Jacob",
+        user_id_provider=lambda: identity["owner"], user_display_name_provider=lambda: "Jacob",
     )
     try:
         assert extractor.extract_for_session("s") == 1
         assert len(calls) == 1
         row = store.list_recent(kind="shared_term")[0]
         assert row.metadata["shared_shorthand"]["owner"] == "u"
+        assert row.tier == "long_term"
         assert "small experiments" in row.content
+        assert json.loads(kv["concept.pattern_intake:u"])["shorthand_admitted"] == 1
     finally:
         store.close()
         db._get_conn().close()

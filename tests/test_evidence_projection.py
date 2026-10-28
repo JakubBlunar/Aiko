@@ -47,3 +47,20 @@ def test_negative_edges_never_supply_the_supporting_excerpt():
     store = NS(get=lambda _: concept, evidence_of=lambda _: [
         NS(src_type="memory", src_id="1", polarity=-1, strength=1)])
     assert project_evidence(store, NS(get=lambda _: memory(1)), None, concept)["evidence"] == []
+
+
+def test_deleted_or_edited_original_testimony_cannot_supply_a_hypothesis_basis():
+    row = memory(1)
+    row.metadata = {"admission": {"subject": "user", "evidence": [
+        {"message_id": 10, "quote": "I prefer experiments when learning systems"}]}}
+    concept = NS(concept_id=1, confidence=.8)
+    store = NS(get=lambda _: concept, evidence_of=lambda _: [
+        NS(src_type="memory", src_id="1", polarity=1, strength=1)])
+    source = NS(content="I prefer experiments when learning systems")
+    reader = NS(get_message_row=lambda _: source)
+    packet = project_evidence(store, NS(get=lambda _: row), None, concept, db=reader)
+    assert packet["evidence"][0]["subject"] == "user"
+    source.content = "I retract that preference."
+    packet = project_evidence(store, NS(get=lambda _: row), None, concept, db=reader)
+    assert not packet["evidence"]
+    assert "changed or was removed" in packet["uncertainty"]

@@ -1,6 +1,7 @@
 # Grounded reasoning with selective context (RS-series)
 
-**24 Oct 2026. Analysis and backlog proposals only. All RS items are open.**
+**24 Oct 2026 analysis; 28 Oct update: RS2 has a bounded implemented first slice.**
+Other RS items remain open. See the [concept/pattern rollout](../concept-pattern-rollout.md).
 This review inspected checkout `b8a651e`, including retrieval, concept rendering,
 prompt assembly, cue admission, tool dispatch, the situation working set and the
 post-reply second thought. It did not inspect personal conversation content, run
@@ -197,7 +198,11 @@ No personal transcripts or live relationship mutations belong in the fixture set
 
 ### RS2. Preserve evidence identity through concept recall and compact context
 
-**24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.
+**28 Oct: partial implementation.** Bounded recall now carries source IDs/revisions, authority,
+timestamps, applicability, support coverage and validity; grounded hunches receive a compact
+basis and unresolved point. The excerpt/full-depth caps are 1 and 16 respectively. These
+contracts have deterministic regression coverage; semantic sufficiency, historical coverage
+and real-model quality remain unvalidated. The broader proposal below is retained.
 
 **Priority: first. Effort: medium. Owners: L24/L49/L50/L52 and existing recall.**
 

@@ -17,10 +17,11 @@ PATTERN_KINDS = frozenset({"shared_term", "strategy"})
 EXTRACTION_RULE = """
 K106 optional shared definitions: only after explicit USER adoption, a memory
 may have kind 'shared_term' and a 'shorthand' object:
+The kind catalogue additionally permits 'shared_term' only with this structure.
 {term: str, meaning: str, definition: {message_id: int, quote: str},
  adoption: {message_id: int, quote: str}, scope: 'session'|'relationship'|str,
  expires_on: 'YYYY-MM-DD' or null, scope_quote: str or ''}.
-Copy term and meaning literally from the exact definition quote. Adoption must
+Copy meaning literally from the definition, and term from definition or adoption. Adoption must
 be the user's explicit naming statement or direct agreement to the immediately
 preceding assistant definition. A suggestion, question, joke or silence is not
 adoption. Default to session scope. A relationship-wide meaning needs the user's
@@ -29,6 +30,8 @@ the user's scope_quote. Omit dates without an exact stated ISO expiry date.
 For correction, record the new adopted meaning. For explicit retirement, set
 meaning to '' and cite the user's 'stop calling' / 'don't call' statement as
 definition and adoption. Do not convert a declined name into a definition.
+Set optional revises_memory_id to a listed shared-term memory when correcting
+or retiring it; its established scope is inherited without broadening it.
 These entries share the existing memory count/output budget; emit none when
 the exchange does not establish a useful shared meaning.
 """
@@ -58,7 +61,8 @@ def sources_current(metadata, db):
     return True
 
 
-def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner):
+def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner,
+                     memories=None, db=None):
     value = candidate.get("shorthand")
     if not isinstance(value, dict):
         return None
@@ -82,7 +86,7 @@ def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner):
         if (not isinstance(term, str) or not 2 <= len(term) <= 60
                 or not isinstance(meaning, str) or len(meaning) > 180
                 or adopter.role != "user" or adopter.id not in {row.id for row in rows}
-                or term.casefold() not in quote.casefold() or "?" in agreement):
+                or term.casefold() not in (quote + " " + agreement).casefold() or "?" in agreement):
             return None
         retired = not meaning and bool(_RETIRE.search(agreement))
         if not retired:
@@ -90,13 +94,24 @@ def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner):
                 return None
             if definition.role == "assistant":
                 previous = max((i for i in offered if i < adopter.id), default=0)
-                if previous != definition.id or not _YES.search(agreement):
+                explicit_name = term.casefold() in agreement.casefold() and _ADOPT.search(agreement)
+                if previous != definition.id or not (_YES.search(agreement) or explicit_name):
                     return None
             elif definition.id != adopter.id or not _ADOPT.search(agreement):
                 return None
         scope = value.get("scope", "session")
         scope_quote = value.get("scope_quote", "")
-        if scope != "session":
+        prior_scope = None
+        revises = value.get("revises_memory_id")
+        if revises is not None:
+            prior = memories.get(revises) if memories is not None and type(revises) is int else None
+            prior_scope = (prior.metadata or {}).get("shared_shorthand", {}) if prior else {}
+            if (not prior_scope or prior_scope.get("owner") != owner
+                    or prior_scope.get("term", "").casefold() != term.casefold()
+                    or not sources_current(prior_scope, db)):
+                return None
+            scope = prior_scope["scope"]
+        if scope != "session" and prior_scope is None:
             if (not isinstance(scope, str) or not 2 <= len(scope) <= 60
                     or not isinstance(scope_quote, str) or not scope_quote
                     or scope_quote not in adopter.content):
@@ -113,10 +128,13 @@ def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner):
             expiry = date.fromisoformat(expiry).isoformat()
             if not re.search(r"\b(?:until|before) " + re.escape(expiry), adopter.content, re.I):
                 return None
+        elif prior_scope is not None:
+            expiry = prior_scope.get("expires_on")
         if timephrase.has_relative_deictic(term + " " + meaning):
             return None
         metadata = {"version": 1, "owner": owner, "term": term, "meaning": meaning,
                     "scope": scope, "expires_on": expiry, "retired": retired,
+                    "revises_memory_id": revises,
                     "sources": [source_receipt(definition, quote),
                                 source_receipt(adopter, agreement)]}
         content = (f"Shared term {term!r}: {meaning}" if meaning
@@ -137,6 +155,7 @@ def shorthand_hits(memories, db, rag, *, user_text, session_key, owner, activity
     # Order by actual adoption, not pinned display order or extraction time.
     rows.sort(key=lambda m: int(m.source_message_id or 0), reverse=True)
     seen = set()
+    preferred = {}
     hits = []
     for row in rows:
         value = (row.metadata or {}).get("shared_shorthand", {})
@@ -153,6 +172,8 @@ def shorthand_hits(memories, db, rag, *, user_text, session_key, owner, activity
         if key in seen:
             continue
         seen.add(key)
+        priority = (2 if scope == "session" else 0 if scope == "relationship" else 1)
+        preferred[term.casefold()] = max(preferred.get(term.casefold(), -1), priority)
         if (not sources_current(value, db) or value.get("retired")
                 or (value.get("expires_on") or "9999-12-31")
                 <= timephrase.now().date().isoformat()):
@@ -180,7 +201,8 @@ def shorthand_hits(memories, db, rag, *, user_text, session_key, owner, activity
             by_term[term] = (priority, hit)
         elif priority == old[0]:
             by_term[term] = (priority, None)
-    return [item[1] for item in by_term.values() if item[1] is not None][:2]
+    return [item[1] for term, item in by_term.items()
+            if item[1] is not None and item[0] == preferred[term]][:2]
 
 
 def fresh_activity(host, user_text):

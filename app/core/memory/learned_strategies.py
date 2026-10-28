@@ -16,6 +16,7 @@ EXTRACTION_RULE = """
 L36 optional learned approaches: after an explicit USER report that a concrete
 approach worked/helped/fixed the stated problem (or failed/didn't work), a memory
 may have kind 'strategy' and a 'strategy' object:
+The kind catalogue additionally permits 'strategy' only with this structure.
 {goal: citation, approach: citation, constraints: [citation], exceptions: [citation],
  outcome: {text: str, message_id: int, quote: str, success: bool}}.
 Every citation is {text: str, message_id: int, quote: str}; text must be a literal
@@ -159,6 +160,11 @@ def fresh_goal_context(host, user_text):
     # Substantial new requests and explicit pivots must stand on their own.
     if len(user_text) > 120 or re.search(
         r"\b(?:instead|new task|different|actually)\b", user_text, re.I,
+    ):
+        return ""
+    if len(words(user_text)) > 3 or not re.search(
+        r"^(?:yes|yeah|okay|ok|and|then|what next|how about|can we try|let'?s try|"
+        r"that|this|it|why|go on|continue|which one)\b", user_text.strip(), re.I,
     ):
         return ""
     reader = getattr(host, "conversation_situation_snapshot", None)

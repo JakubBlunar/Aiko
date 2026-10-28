@@ -48,14 +48,19 @@ do not establish concept extraction quality.
 
 ## L29b. Meta-narrative -- an arc whose steps are concepts
 
-**Status: Open implementation.**
+**Status: Partial; live validation remains (28 Oct 2026).**
 
-**Implemented / available:** Memory/moment-backed narratives and generalization/depth machinery exist.
+**Implemented / available:** Bounded temporal paths through recorded concept changes cover user,
+Aiko and relationship subjects. Connected labels, alias resolution, lifecycle receipts and source
+revision/deletion checks gate rendering. Read-only arcs reach explicit retrospective requests in
+T3 and concept recall; historical events without captured source receipts remain unverified.
 
-**Remaining:** Implement a source-linked temporal arc over concept changes, with alias/revision
-handling, lifecycle evidence and bounded rendering. A generalization is not a meta-narrative.
+**Remaining:** Evaluate chronology, natural narration and coverage over ordinary use. Broader arcs
+beyond connected recorded changes and an unsolicited cue policy require separate evidence.
 
-**Source check:** [concept_view.py](../../app/core/concepts/concept_view.py).
+**Source check:** [understanding_arcs.py](../../app/core/concepts/understanding_arcs.py),
+[test_understanding_arcs.py](../../tests/test_understanding_arcs.py),
+[rollout](../concept-pattern-rollout.md).
 
 <a id="l30a-hypothesis-surfacing-lane-the-read--render-side"></a>
 
@@ -65,9 +70,11 @@ handling, lifecycle evidence and bounded rendering. A generalization is not a me
 
 **Implemented / available:** T3 hypothesis surfacing, importance/unsettledness ranking, origin split
 and question-budget coupling exist; L30b/c shipped.
+The 28 Oct slice adds a compact source-linked basis, an explicit unresolved point and
+evidence-preserving bounded recall without increasing T3 capacity.
 
-**Remaining:** Expose a concise source-grounded reason for uncertainty. RS2 owns evidence-preserving
-recall; H7/H44 own actual ask/answer quality.
+**Remaining:** Evaluate whether the basis supports useful, appropriately tentative contributions
+on the current model. RS2 retains broader evidence-projection work; H7/H44 own ask/answer quality.
 
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l30a).
 
@@ -156,15 +163,20 @@ Reuse L52 rather than adding a second dependency truth store; source-linked why 
 
 ## L36. Strategy layer -- learned approaches, distinct from beliefs
 
-**Status: Open implementation.**
+**Status: Partial; live validation remains (28 Oct 2026).**
 
-**Implemented / available:** Self-correction styles, L50 applicability and L51 working-model state exist.
+**Implemented / available:** The existing memory extractor admits source-cited goal, approach,
+constraints, exceptions and explicit user-reported outcomes. Bounded lexical transfer requires
+the goal and all constraints, respects exceptions and invalidates revised/deleted sources or a
+source-linked failed outcome. MemoryStore owns these records; no additional concept truth store
+or model call was added.
 
-**Remaining:** Pilot source-linked strategy transfer with
-situation/constraints/approach/result/exception evidence and held-out contrasts. Engagement is not
-success; L52 must invalidate unsupported reuse. New kind/schema depends on need.
+**Remaining:** Evaluate extraction, useful transfer and corrections with real conversation data.
+Broader semantic matching and outcome attribution are unvalidated. Engagement is not success;
+the existing L52 contract remains authoritative for derived concepts.
 
-**Source check:** [concept_kinds.py](../../app/core/concepts/concept_kinds.py).
+**Source check:** [learned_strategies.py](../../app/core/memory/learned_strategies.py),
+[test_learned_strategies.py](../../tests/test_learned_strategies.py).
 
 <details>
 <summary>Retained acceptance constraints for further work</summary>
@@ -328,8 +340,10 @@ boundaries still work after one statement; independence must not weaken them.
 
 **Implemented / available:** Bounded communication-style applicability has source/context admission,
 correction/consolidation/lifecycle guards and synthetic contrasts.
+The 28 Oct extension accepts literal, source-cited activity names, checks qualifier source
+revisions and preserves the existing exception/correction paths.
 
-**Remaining:** Evaluate model behavior, arbitrary contexts, erased quotation framing, scoped
+**Remaining:** Evaluate model behavior, broader factual claim scoping, erased quotation framing, scoped
 revival, historical coverage and temporal queries. Lexical support is not general entailment.
 
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l50).

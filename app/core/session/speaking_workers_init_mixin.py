@@ -877,7 +877,7 @@ class SpeakingWorkersInitMixin:
                     self._embedder,
                     self._ollama,
                     model=self._effective_worker_model,
-                    user_id_provider=lambda: self._user_id,
+                    user_id_provider=lambda: getattr(self, "_user_id", "default"),
                     max_tokens=self._memory_settings.memory_extractor_max_tokens,
                     think=self._memory_settings.memory_extractor_think,
                     min_window_messages=(
@@ -1749,6 +1749,13 @@ class SpeakingWorkersInitMixin:
                             exc_info=True,
                         )
                         self._concept_learning_store = None
+
+                    history_setter = getattr(
+                        getattr(self, "_rag_retriever", None), "set_concept_history_provider", None,
+                    )
+                    history_provider = getattr(self, "_understanding_arc", None)
+                    if callable(history_setter) and callable(history_provider):
+                        history_setter(history_provider)
 
                     # L17f: the evolution diary's own append-only log. A
                     # plain store here; the worker that fills it is
@@ -2655,6 +2662,9 @@ class SpeakingWorkersInitMixin:
                             kv_get=self._chat_db.kv_get,
                             kv_set=self._chat_db.kv_set,
                             evidence_labels_provider=_drift_evidence_labels,
+                            learning_receipt_writer=getattr(
+                                self, "_record_learning_arc_receipt", None,
+                            ),
                         )
                         self._idle_scheduler.register(
                             self._concept_drift_worker

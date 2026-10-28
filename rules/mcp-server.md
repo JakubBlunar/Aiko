@@ -100,6 +100,14 @@ Reading them:
 
 ### Outcome measurement (L37 / G4)
 
+The 28 Oct concept/pattern trial also exposes `get_pattern_learning_state`
+(content-free intake counters, current source validity and last-turn inclusion)
+and `get_understanding_arcs(subject="all"|"user"|"aiko"|"relationship", limit=3)`
+(explicit personal historical-belief inspection). Pair these with the existing
+surfacing outcomes. A source-valid record is not necessarily selected or used;
+an echo is not evidence that a strategy helped. See
+[`docs/concept-pattern-rollout.md`](../docs/concept-pattern-rollout.md).
+
 Both answer "did any of this inner life *do* anything", which was unanswerable before them — surfacing left no trace but a habituation timestamp, and a worker cue left none at all.
 
 | Tool | Args | Returns |

@@ -48,6 +48,6 @@ def test_source_change_and_deletion_invalidate_a_scoped_rule():
 
 def test_custom_names_must_be_literal_source_qualifiers():
     row, _ = scoped()
-    for name in ("all", "debugging", "Code Review", "painting.*"):
+    for name in ("all", "debugging", "Code Review", "painting.*", "code"):
         assert parse_applicability({"contexts": [{"name": name, "memory_id": 1,
                                                    "quote": "When code review"}]}, {1: row}) is None

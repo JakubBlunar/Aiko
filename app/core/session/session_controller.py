@@ -45,6 +45,7 @@ from app.core.persona.avatar_profile import (
 )
 from app.core.session.debug_overrides import DebugOverrides
 from app.core.session.prompt_assembler import PromptAssembler
+from app.core.session.concept_patterns_mixin import ConceptPatternsMixin
 from app.core.session import (
     AvatarMixin,
     ChatTurnMixin,
@@ -230,6 +231,7 @@ def _seed_avatar_root_if_empty(avatar_root: Path) -> None:
 class SessionController(
     AvatarMixin,
     MemoryFacadeMixin,
+    ConceptPatternsMixin,
     HypothesisDebugMixin,
     SecondThoughtDebugMixin,
     ConversationSituationMixin,

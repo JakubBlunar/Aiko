@@ -786,6 +786,10 @@ class RagRetriever:
         """
         self._concept_store = store
 
+    def set_concept_history_provider(self, provider) -> None:
+        """Attach the bounded L29b read projection after the history stores boot."""
+        self._concept_history_provider = provider
+
     def set_topic_digest_provider(
         self, provider: "Callable[[int], int | None] | None"
     ) -> None:
@@ -1626,8 +1630,8 @@ class RagRetriever:
         cluster-typed (each evidence cluster is expanded into its member
         memories); aiko-identity evidence is memory-typed (included directly).
         ``limit`` caps the returned memory snippets; ``all_evidence=True``
-        lifts that cap for the full picture (still bounded by the concept's
-        own evidence, not a global search). Returns ``None`` when the store
+        expands to at most 16 excerpts under the projection's traversal cap.
+        This is the concept's own evidence, not a global search. Returns ``None`` when the store
         isn't wired or nothing clears ``min_concept_sim``.
         """
         text = (query or "").strip()
@@ -1660,16 +1664,14 @@ class RagRetriever:
             edges = self._concept_store.evidence_of(concept.concept_id)
         except Exception:
             edges = []
-        memory_ids: list[int] = []
         cluster_reps: list[int] = []
         for e in edges[:64]:
             try:
                 node_id = int(e.src_id)
             except (TypeError, ValueError):
                 continue
-            if e.src_type == "memory":
-                memory_ids.append(node_id)
-            elif e.src_type == "cluster":
+            if (e.src_type == "cluster" and getattr(e, "polarity", 1) > 0
+                    and getattr(e, "strength", 1) > 0):
                 cluster_reps.append(node_id)
 
         # Resolve cluster labels + expand each evidence cluster into its
@@ -1690,7 +1692,6 @@ class RagRetriever:
                 label = (cluster.summary or "").strip()
                 if label and label not in cluster_labels:
                     cluster_labels.append(label)
-                memory_ids.extend(int(m) for m in cluster.member_ids)
 
         # Higher-order links this concept participates in, so the "why" can
         # reach past raw memories to the concepts it connects to: meta concepts
@@ -1703,7 +1704,12 @@ class RagRetriever:
         packet = project_evidence(
             self._concept_store, self._memory_store, self._topic_graph, concept,
             limit=16 if all_evidence else cap,
+            db=getattr(self, "_chat_db", None),
         )
+        history = {"status": "unavailable", "steps": []}
+        history_provider = getattr(self, "_concept_history_provider", None)
+        if callable(history_provider):
+            history = history_provider(concept)
 
         return {
             "concept": {
@@ -1723,6 +1729,7 @@ class RagRetriever:
             "applicability": packet.get("applicability"),
             "uncertainty": packet.get("uncertainty", "Support unknown."),
             "evidence_truncated": packet["truncated"],
+            "understanding_arc": history,
             "clusters": cluster_labels[:8],
             "related": related,
         }

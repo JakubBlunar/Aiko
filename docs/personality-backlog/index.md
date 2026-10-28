@@ -6,6 +6,9 @@ explicit validation and deferred decisions. Completed write-ups live in [shipped
 review history](shipped/review-history.md) is reference, not a queue or current production
 measurement.
 
+28 Oct implementation update: L29b, L30a/RS2, L36, L50 and K106 now have the
+[bounded concept/pattern rollout](../concept-pattern-rollout.md). Live-model evaluation remains.
+
 **Status meanings:** open = proposed work absent; partial = named implemented slice plus a concrete
 remainder; validation = implementation exists but a specific acceptance check remains; deferred = a
 stated evidence/capability gate must be met. Opt-in or default-off implementation still counts as
@@ -16,7 +19,7 @@ test runs were made in this documentation-only audit. SQLite observations are re
 aggregates, not a quality score. Earlier synthetic runs do not establish general naturalness or
 device behavior.
 
-**Queue:** 172 tracked items/follow-ups (70 open, 83 partial, 9 validation, 10 deferred). IDs are
+**Queue:** 172 tracked items/follow-ups (67 open, 86 partial, 9 validation, 10 deferred). IDs are
 namespaced: health H versus immersion H, concepts L versus Live L, and performance P versus plugin
 P.
 
@@ -144,12 +147,12 @@ P.
 - [L22](concepts.md#l22-concept-quality-evaluation--observability) — **partial**: Build held-out
   concept-quality cases and a repeatable precision/duplicate/register/promotion scoreboard;
   remeasure post-fix cohorts. Accounting fixtures do not establish concept extraction quality.
-- [L29b](concepts.md#l29b-meta-narrative----an-arc-whose-steps-are-concepts) — **open**: Implement a
-  source-linked temporal arc over concept changes, with alias/revision handling, lifecycle evidence
-  and bounded rendering. A generalization is not a meta-narrative.
-- [L30a](concepts.md#l30a-a-grounded-reason-for-hypothesis-uncertainty) — **partial**: Expose a
-  concise source-grounded reason for uncertainty. RS2 owns evidence-preserving recall; H7/H44 own
-  actual ask/answer quality.
+- [L29b](concepts.md#l29b-meta-narrative----an-arc-whose-steps-are-concepts) — **partial**: Validate
+  source-verified temporal arcs for user, Aiko and relationship subjects in ordinary use; broader
+  arcs and unsolicited surfacing remain separate work.
+- [L30a](concepts.md#l30a-a-grounded-reason-for-hypothesis-uncertainty) — **partial**: Evaluate the
+  new source-linked basis and uncertainty reason with the current model. RS2 retains broader
+  evidence work; H7/H44 own actual ask/answer quality.
 - [L30d](concepts.md#l30d-uncertainty-zones----explicit-known-unknowns-to-aim-curiosity-at) —
   **deferred**: Measure throughput, then trial important known-unknown inflow through the existing
   gap store. Empty kind/subject cells do not establish gaps; do not add supply to an unverified
@@ -167,10 +170,9 @@ P.
 - [L34](concepts.md#l34-concept-relation-taxonomy----edges-beyond-support--tension) — **partial**:
   Define proposed/exposed explains, exemplifies and conditional semantics end to end. Reuse L52
   rather than adding a second dependency truth store; source-linked why recall remains RS2.
-- [L36](concepts.md#l36-strategy-layer----learned-approaches-distinct-from-beliefs) — **open**:
-  Pilot source-linked strategy transfer with situation/constraints/approach/result/exception
-  evidence and held-out contrasts. Engagement is not success; L52 must invalidate unsupported reuse.
-  New kind/schema depends on need.
+- [L36](concepts.md#l36-strategy-layer----learned-approaches-distinct-from-beliefs) — **partial**:
+  Validate the implemented source-cited, outcome-backed strategy pilot. Broader semantic transfer
+  and outcome attribution remain unvalidated; engagement is not success.
 - [L42b](concepts.md#l42b-neglect-guided-curiosity) — **deferred**: Inspect real neglect false
   positives before a bounded curiosity prior; retain relevance/privacy gates and do not ship from
   synthetic findings alone.
@@ -196,7 +198,7 @@ P.
   observations lost by dedupe and distinguish independent episodes/upstream sources. Unknown history
   stays unknown; shadow is not enforcement.
 - [L50](concepts.md#l50-context-scoped-claims-and-temporal-validity) — **partial**: Evaluate model
-  behavior, arbitrary contexts, erased quotation framing, scoped revival, historical coverage and
+  behavior, broader factual scoping, erased quotation framing, scoped revival, historical coverage and
   temporal queries. Lexical support is not general entailment.
 - [L51](concepts.md#l51-a-bounded-working-model-for-the-current-problem) — **partial**: Measure
   extraction-to-reply entailment, disconfirmation and resumption through corrections/topic changes
@@ -278,9 +280,9 @@ P.
 - [K105](patterns.md#k105-expression-follows-communicative-intent) — **partial**: Run
   semantic-selection/listening and interruption/timing comparisons including neutral controls;
   general intent-to-expression selection and new laughter synthesis are not implemented.
-- [K106](patterns.md#k106-shared-shorthand-with-negotiated-meaning) — **open**: Implement explicitly
-  negotiated term/referent meaning with correction/scope/expiry/deletion checks; a proposed name is
-  not user adoption.
+- [K106](patterns.md#k106-shared-shorthand-with-negotiated-meaning) — **partial**: Validate natural
+  adoption, reference resolution and unwanted callbacks using the implemented scoped, source-linked
+  shorthand path. Literal guards are not general semantic agreement.
 - [K107](patterns.md#k107-provider-outcomes-are-not-character-evidence) — **partial**: Establish
   origin for ordinary text-only refusal, audit downstream promotion and evaluate route swaps/partial
   audio/cancellation/tool effects; streamed audio cannot be retracted and tool replay is not
