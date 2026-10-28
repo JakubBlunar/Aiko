@@ -877,6 +877,7 @@ class SpeakingWorkersInitMixin:
                     self._embedder,
                     self._ollama,
                     model=self._effective_worker_model,
+                    user_id_provider=lambda: self._user_id,
                     max_tokens=self._memory_settings.memory_extractor_max_tokens,
                     think=self._memory_settings.memory_extractor_think,
                     min_window_messages=(

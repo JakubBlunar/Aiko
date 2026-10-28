@@ -360,9 +360,11 @@ class MemoryExtractor:
         think: bool = True,
         timeout_seconds: float = 120.0,
         user_display_name_provider: "Callable[[], str] | None" = None,
+        user_id_provider: "Callable[[], str] | None" = None,
         context_window: "Callable[[], int | None] | None" = None,
     ) -> None:
         self._db = db
+        self._user_id_provider = user_id_provider or (lambda: "default")
         self._store = store
         self._embedder = embedder
         self._ollama = ollama
@@ -536,6 +538,9 @@ class MemoryExtractor:
             self._resolve_user_name(), today=now,
             max_memories=self._max_new_per_run,
         )
+        from app.core.memory.shared_shorthand import EXTRACTION_RULE
+
+        system_content += "\n" + EXTRACTION_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
         try:
             context_window = self._context_window()
         except Exception:
@@ -682,6 +687,16 @@ class MemoryExtractor:
 
         admitted = []
         for cand in candidates:
+            if cand.get("shorthand") is not None or cand["kind"] == "shared_term":
+                from app.core.memory.shared_shorthand import admit_shorthand
+
+                pattern = admit_shorthand(
+                    cand, rows, context_rows, session_key=session_key,
+                    owner=self._user_id_provider(),
+                )
+                if pattern is not None:
+                    admitted.append(pattern)
+                continue
             admission = admit_memory(
                 cand, rows, session_key=session_key, writer="extractor",
                 proposal_message_id=rows[-1].id,
@@ -707,6 +722,12 @@ class MemoryExtractor:
         for cand in batch["candidates"]:
             if cand.get("applied"):
                 continue
+            if cand["kind"] == "shared_term":
+                from app.core.memory.shared_shorthand import sources_current
+
+                if not sources_current(cand["metadata"]["shared_shorthand"], self._db):
+                    cand["applied"] = True
+                    continue
             content_text = cand["content"]
             try:
                 emb = self._embedder.embed(content_text)
@@ -732,6 +753,7 @@ class MemoryExtractor:
                 source_session=session_key,
                 source_message_id=cand.get("source_message_id"),
                 metadata=cand.get("metadata"),
+                skip_dedupe=cand["kind"] == "shared_term",
                 # Schema v8: LLM-distilled observations are speculative.
                 # Land them in scratchpad so the promotion worker can
                 # either confirm them via retrieval / revival or sweep
@@ -748,6 +770,9 @@ class MemoryExtractor:
             if memory is not None:
                 inserted += 1
                 self._notify(memory)
+                if cand["kind"] == "shared_term":
+                    log.info("pattern admitted: kind=%s memory_id=%s", cand["kind"],
+                             getattr(memory, "id", "unknown"))
             cand["applied"] = True
             self._db.kv_set(pending_key, json.dumps(batch))
         if self._write_watermark(session_key, batch["through"]):
@@ -908,6 +933,7 @@ class MemoryExtractor:
                     "evidence": entry.get("evidence"),
                     "destination": entry.get("destination", "memory"),
                     "supersedes_memory_id": entry.get("supersedes_memory_id"),
+                    "shorthand": entry.get("shorthand"),
                 }
             )
         return out

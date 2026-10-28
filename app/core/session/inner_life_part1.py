@@ -1606,6 +1606,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     log.debug("relevant_context: memory candidates failed", exc_info=True)
                     hits = []
             for i, hit in enumerate(hits):
+                if getattr(getattr(hit, "record", None), "kind", "") == "shared_term":
+                    continue
                 text = (getattr(hit, "text", "") or "").strip()
                 if not text:
                     continue
@@ -1617,6 +1619,24 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 )
                 mem_hit_by_id[id(cand)] = hit
                 mem_cands.append(cand)
+
+            from app.core.memory.shared_shorthand import fresh_activity, shorthand_hits
+
+            try:
+                shared_hits = shorthand_hits(
+                    getattr(self, "_memory_store", None), getattr(self, "_chat_db", None), rag,
+                    user_text=user_text, session_key=session_key,
+                    owner=getattr(self, "_user_id", "default"),
+                    activity=fresh_activity(self, user_text),
+                )
+                for hit in shared_hits:
+                    mem_cands.append(ContextCandidate(
+                        source="memory", relevance=hit.score,
+                        tokens=estimate_tokens(hit.text) + 12, order=-1,
+                        payload=hit, key=f"shared:{hit.record.id}",
+                    ))
+            except Exception:
+                log.debug("shared shorthand context unavailable", exc_info=True)
 
         # Clusters + concepts are cold-start gated by graph maturity (L21),
         # matching the retired interest_map / concept blocks.
@@ -2477,6 +2497,11 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             original_length = len(text)
             text = clip_text_to_tokens(text, budget_tokens)
             concept_trace["rendering_clipped"] = len(text) < original_length
+        concept_trace["patterns"] = [
+            {"memory_id": hit.record.id, "kind": hit.record.kind, "included": hit.text in text}
+            for hit in chosen_hits
+            if getattr(hit, "memory_provenance", "") == "validated_pattern"
+        ]
 
         # Mark only the budgeted memory subset used (recency / revival).
         if rag is not None and chosen_hits:

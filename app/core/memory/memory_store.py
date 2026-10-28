@@ -164,6 +164,7 @@ def _coerce_provenance(value: str | None) -> str:
 
 
 VALID_KINDS = {
+    "shared_term",
     "fact",
     "preference",
     "event",

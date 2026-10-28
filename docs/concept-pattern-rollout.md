@@ -41,3 +41,23 @@ Validation: phase 1 focused affected selection passed 197 tests; phase 2 passed
 these runs explicitly select recall, context-budget, hypothesis, applicability,
 contradiction and dependency behavior rather than unrelated UI/voice tests.
 `npm run lint` passed for both phases.
+
+## Phase 3
+
+The existing memory extractor can emit explicitly adopted shared terms. Exact
+definition/adoption spans and message revisions are validated before writing
+through MemoryStore; queued writes recheck sources. Names default to session
+scope. Explicit relationship-wide or named-activity scope and ISO expiry are
+supported. New adopted meanings supersede earlier meanings in the same scope;
+retirement, edited/deleted sources, other users/sessions and ambiguous equal
+scopes do not yield a meaning. Definitions are capped at 256 recent records.
+
+Validated definitions compete inside the existing T3 memory budget only when
+the user uses the term. They provide referent context and offer no stance or
+unsolicited topic. Generic vector retrieval cannot bypass their validation.
+The existing concept trace records structured-pattern IDs and actual text
+inclusion; the memory outcome ledger records subsequent use. Inclusion and
+echo remain different from helpfulness. No additional model call is added.
+
+Validation: 197 affected tests passed, followed by a 144-test focused run
+including an actual extractor-to-SQLite round trip. Lint passed.
