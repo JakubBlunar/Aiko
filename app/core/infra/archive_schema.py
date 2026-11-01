@@ -29,6 +29,21 @@ CREATE TABLE IF NOT EXISTS conversation_daily_overviews (
 CREATE INDEX IF NOT EXISTS idx_daily_overviews_range
 ON conversation_daily_overviews(user_id, start_at, end_at);
 
+-- Content-free requests survive restarts. Summaries themselves live inside the
+-- overview row, so the existing source-invalidation triggers remove them too.
+CREATE TABLE IF NOT EXISTS archive_summary_jobs (
+    user_id TEXT NOT NULL,
+    timezone TEXT NOT NULL,
+    local_day TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(user_id, timezone, local_day)
+);
+CREATE INDEX IF NOT EXISTS idx_archive_jobs_pending
+ON archive_summary_jobs(user_id, state, updated_at);
+
 CREATE TRIGGER IF NOT EXISTS archive_message_insert AFTER INSERT ON messages BEGIN
     DELETE FROM conversation_daily_overviews
     WHERE user_id=substr(NEW.session_id, 1, instr(NEW.session_id, ':') - 1)

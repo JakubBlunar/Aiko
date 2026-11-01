@@ -14,10 +14,14 @@ recurrence and OS notifications remain open follow-ups, not part of the one-shot
 
 **Implemented / available:** User-scoped paged conversation_history, daily source outlines across
 sessions, drill-down/coverage and transactional edit/deletion invalidation are implemented.
+The [28 October slice](../conversation-archive.md#archive-review-and-generated-summaries-28-october-2026)
+adds the Archive review UI, explicit durable idle-time summary requests, typed source-cited
+discussion bullets and original-message drill-down, with bounded context and source invalidation.
 
-**Remaining:** Generated topic/event summaries with citation/coverage controls, real-model
-overview-to-source scenarios and lookup/token benchmarks remain. Reuse the implemented dedicated
-tool; the extend-recall-versus-new-tool decision is resolved.
+**Remaining:** Real-model recap faithfulness and overview-to-source scenarios, end-to-end
+latency/token measurements, semantic topic search, cross-day correction links and an explicit cost
+policy for automatic historical generation. Reuse the implemented dedicated tool; the
+extend-recall-versus-new-tool decision is resolved.
 
 [Implemented slice](shipped/audit-2026-10-24.md#tools-d8).
 

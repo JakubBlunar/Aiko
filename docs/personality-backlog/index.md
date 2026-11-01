@@ -417,10 +417,10 @@ P.
 
 ### Tools and developer diagnostics
 
-- [D8](tools.md#d8-conversation-archive-recall-with-daily-overviews) — **partial**: Generated
-  topic/event summaries with citation/coverage controls, real-model overview-to-source scenarios and
-  lookup/token benchmarks remain. Reuse the implemented dedicated tool; the
-  extend-recall-versus-new-tool decision is resolved.
+- [D8](tools.md#d8-conversation-archive-recall-with-daily-overviews) — **partial**: Archive review UI
+  and source-cited generated discussion summaries are implemented. Real-model recap/tool-selection
+  checks, end-to-end latency/token measurements, semantic search, cross-day correction links and
+  a cost policy for automatic historical generation remain.
 - [D-approval](tools.md#d-approval-spoken--aiko-voiced-task-approvals) — **open**: Add opt-in
   conversational approval wording and unambiguous routing back to the pending task, preserving one
   decision across voice/UI. Do not resurrect timed escalation without a separate explicit policy.

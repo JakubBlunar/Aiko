@@ -122,27 +122,77 @@ insertion watermark, mutation revision and a hash of the source metadata plus
 revision. This fingerprint is for change detection, not a content checksum.
 An outline built under a different system-zone boundary is treated as missing.
 
-## Next D8 slice
+## Archive review and generated summaries (28 October 2026)
 
-Generated topic/event bullets remain open. They should cite source IDs, separate
-user statements from assistant suggestions, age-tag prompts with `timephrase`,
-include `today_anchor` and `STORED_TEXT_TIME_RULE`, and retain the same coverage
-and deletion contracts. Exact timestamps should accompany age tags when
-resolving relative wording against the message's date. Source quotes in this
-version preserve relative wording verbatim and are explicitly stamped quotes,
-not generated stored narrative.
+Open **Settings > Archive**. Pick a date range and browse source days, including
+days without a saved outline. Open a day to review its selected quotes, read
+the paged transcript, or explicitly request **Generate summary**. Search finds
+literal phrases in the original dialogue, ignoring case, with separately labelled
+neighboring context. **Open source** retrieves the original message, including
+continuation pages for long messages. It does not switch or modify the active chat.
 
-Also open: demand-queued historical generation from an overview miss, richer
-topic search, a dedicated archive review UI, and real-model scenarios that
-choose overview then drill down. Current validation is deterministic/synthetic;
-it does not demonstrate natural model tool selection or a packaged UI flow.
+Summary requests are durable, content-free rows serviced by `archive_summaries`
+in the existing idle scheduler's LLM lane, one day per admission. This works for
+historical source days outside the automatic seven-day outline window. Requests
+need tools, daily overviews and the idle scheduler enabled; transcript browsing
+does not. Generation uses the current `worker_default` model and maintenance
+client, resolving the route again for each run. It adds no calls to a chat turn
+and does not create memories or proactive cues. Reads through the brain tool
+remain synchronous and read-only; an overview miss never silently enqueues work.
 
-Two useful constraints for the generated-summary slice: classify bullets as
-discussion, user statement, assistant suggestion, plan, decision or correction;
-and keep the conversation date separate from any event date mentioned in it.
-An overview should be able to say a plan was discussed without claiming it
-happened. Later corrections should link their source IDs instead of silently
-rewriting an earlier quotation.
+Each request considers a bounded chronological prefix: at most 100 messages and
+16,000 source characters, with per-message excerpt limits and actual route context
+packing. A single model call has a 90-second timeout and a 1,400-token output
+reservation. Shortened sources and context reductions are reported; a summary
+must not imply the entire day was considered when it was not. The panel refreshes
+pending requests only while visible. It offers cancellation, explicit retry and
+dismissal of failed requests. A running lease can recover after five minutes;
+recovery/source-change retries are bounded to two attempts. At most 32 pending,
+running or failed requests are retained per user.
+
+Generated bullets distinguish discussion, user statement, assistant suggestion,
+plan, decision and correction. Discussion date and optional event date remain
+separate. Worker prompts contain exact source IDs/timestamps, `format_transcript`,
+`today_anchor` and `STORED_TEXT_TIME_RULE`. Stored generated text rejects bare
+relative deictics; exact source quotations preserve their original wording.
+Every bullet must carry one to three literal quotes from the supplied messages.
+Attribution checks reject user claims based only on assistant text and assistant
+suggestions without assistant evidence. These checks establish provenance,
+**not semantic entailment**: the UI and tool explicitly label the output as a
+generated interpretation, and plans/suggestions are not proof of events.
+
+The summary is stored inside the existing overview row. Insertion, editing,
+deletion, ownership, role or timestamp changes invalidate that row through the
+existing triggers. Generation compare-and-saves against the original source
+hash/revision and a claimed job receipt, so cancellation, requeue or in-flight
+source changes cannot resurrect old text. Regenerating a summary also expires
+directory cursors. Multi-day directories return one shortened summary point per
+day; open one day for the complete generated summary and exact source drill-down.
+Explicit outline rebuilding through the maintenance script replaces any summary
+for the rebuilt day.
+
+REST: `GET /api/archive` supports `overviews`, `messages` and `message` with the
+existing bounded filters/cursors. `POST /api/archive/summary` queues one local
+`day` and optional `timezone`; `DELETE` with the same body cancels/removes it.
+User ownership always comes from the session facade, never a request field.
+The additive job table is installed at normal backend startup. Restart the
+backend and refresh the frontend (or rebuild a packaged desktop frontend) to
+load this slice.
+
+Remaining: semantic topic search, automatic historical requests with an explicit
+cost policy, cross-day correction links, and real-model comparisons of recap
+faithfulness and overview-to-source tool selection. Validation uses synthetic
+sources and fake model responses; it does not establish current-model quality.
+
+Validation for this slice: 79 archive/REST/lifecycle tests and 96 related frontend
+tests passed; Chrome checks covered day navigation, source continuation,
+generation/cancellation, literal search, stale/deleted sources, deletion-event
+invalidation and 390px/320px layouts. Lint, the production web build and documentation
+link checks passed. A representative shared database/scheduler/session/REST set
+had 139 passing tests; its private-access guard reports two existing budget
+failures (web: 1 versus 0, MCP: 471 versus 466), confirmed unchanged in committed
+HEAD. No live inference, personal-history generation or live settings changes
+were used for validation.
 
 ## Initial validation, 24 October 2026
 

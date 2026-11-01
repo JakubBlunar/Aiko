@@ -2,6 +2,7 @@
 
 import { addBreadcrumb } from "./crashBreadcrumbs";
 import { backendBase } from "./desktop/runtime";
+import type { ArchiveQuery, ArchiveResponse } from "./features/settings/archive/types";
 import type { ProviderUsage } from "./features/settings/providerUsage";
 import type {
   AccessoryCatalogue,
@@ -188,6 +189,19 @@ export const api = {
   cancelReminder: (id: number) =>
     jsonFetch<{ reminder: Reminder }>(`/api/reminders/${id}`, { method: "DELETE" }),
   listSessions: () => jsonFetch<SessionListResponse>("/api/sessions"),
+  getArchive: (query: ArchiveQuery) => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value != null && value !== "") params.set(key, String(value));
+    }
+    return jsonFetch<ArchiveResponse>(`/api/archive?${params}`);
+  },
+  requestArchiveSummary: (day: string, timezone: string, cancel = false) =>
+    jsonFetch<{ status: string }>("/api/archive/summary", {
+      method: cancel ? "DELETE" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ day, timezone }),
+    }),
   newSession: () =>
     jsonFetch<{ session_id: string; session_key: string }>(
       "/api/sessions/new",

@@ -19,6 +19,7 @@ import { AvatarTab } from "./AvatarTab";
 import { DiagnosticsSection } from "./DiagnosticsSection";
 import { MemoryTab } from "./MemoryTab";
 import { DiaryTab } from "./DiaryTab";
+import { ArchiveTab } from "./archive/ArchiveTab";
 import { WorldTab } from "./WorldTab";
 import { TogetherTab } from "./TogetherTab";
 import { TasksTab } from "./TasksTab";
@@ -42,6 +43,7 @@ type SettingsTabId =
   | "avatar"
   | "memory"
   | "diary"
+  | "archive"
   | "world"
   | "together"
   | "knowledge"
@@ -60,6 +62,7 @@ const SETTINGS_TABS: ReadonlyArray<TabSpec> = [
   { id: "avatar", label: "Avatar", icon: "🌸" },
   { id: "memory", label: "Memory", icon: "📒" },
   { id: "diary", label: "Diary", icon: "📓" },
+  { id: "archive", label: "Archive", icon: "" },
   { id: "world", label: "World", icon: "🏠" },
   { id: "together", label: "Together", icon: "💞" },
   { id: "knowledge", label: "Knowledge", icon: "📚" },
@@ -591,6 +594,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
               ) : null}
 
               {activeTab === "diary" ? <DiaryTab /> : null}
+              {activeTab === "archive" ? <ArchiveTab /> : null}
 
               {activeTab === "world" ? (
                 <WorldTab

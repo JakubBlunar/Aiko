@@ -442,7 +442,8 @@ class ConversationArchive:
                 }
             )
             metadata = conn.execute(
-                "SELECT local_day, source_hash, updated_at, start_at, end_at "
+                "SELECT local_day, source_hash, updated_at, start_at, end_at, "
+                "json_extract(overview_json, '$.summary.receipt') "
                 "FROM conversation_daily_overviews "
                 "WHERE user_id=? AND timezone=? AND start_at>=? AND end_at<=? "
                 "AND generator_version=? ORDER BY local_day",
@@ -472,7 +473,7 @@ class ConversationArchive:
             # Multi-day lookups are a small day directory. Open one day for
             # excerpts; original messages remain separately available for quotes.
             entries = []
-            for day, _, updated_at, _, _ in selected_days:
+            for day, _, updated_at, _, _, _ in selected_days:
                 raw = conn.execute(
                     "SELECT overview_json FROM conversation_daily_overviews "
                     "WHERE user_id=? AND timezone=? AND local_day=?",
@@ -491,6 +492,17 @@ class ConversationArchive:
                 ):
                     entry.pop("excerpts", None)
                     entry["excerpts_omitted"] = True
+                    summary = entry.get("summary")
+                    if summary:
+                        # Broad lookups are navigation directories. Open one day
+                        # for the full summary rather than returning 84 bullets.
+                        summary["bullet_count"] = len(summary["bullets"])
+                        summary["bullets_omitted"] = len(summary["bullets"]) > 1
+                        summary["bullets"] = summary["bullets"][:1]
+                        for bullet in summary["bullets"]:
+                            bullet["text"] = bullet["text"][:200]
+                            for citation in bullet["sources"]:
+                                citation["quote"] = citation["quote"][:80]
                 entries.append(entry)
             missing = sorted(set(days) - {row[0] for row in metadata})
             next_offset = offset + len(selected_days)

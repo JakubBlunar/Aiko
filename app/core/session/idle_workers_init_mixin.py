@@ -52,15 +52,9 @@ class IdleWorkersInitMixin:
 
     def _init_idle_workers(self, settings: AppSettings) -> None:
         if self._idle_scheduler is not None and getattr(self, "_chat_db", None) is not None:
-            from app.core.proactive.daily_overview_worker import DailyOverviewWorker
+            from app.core.proactive.archive_summary_worker import register_archive_workers
 
-            self._idle_scheduler.register(DailyOverviewWorker(
-                self._chat_db, self._user_id,
-                enabled=lambda: bool(
-                    self._settings.tools.enabled and self._settings.tools.daily_overviews
-                ),
-                timezone_provider=lambda: self._settings.tools.archive_timezone,
-            ))
+            register_archive_workers(self)
         if self._idle_scheduler is not None and getattr(self, "_chat_db", None) is not None:
             from app.core.goals.calendar import CalendarStore
             from app.core.proactive.calendar_anticipation import CalendarAnticipationWorker
