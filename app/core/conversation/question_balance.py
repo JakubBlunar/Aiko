@@ -19,6 +19,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 
+CURIOSITY_CUE_TYPES = frozenset({
+    "curiosity_seed", "curiosity_gradient", "forward_curiosity",
+    "knowledge_gap_notice", "concept_hypothesis", "dormant_interest",
+})
+
+
 def is_question_turn(text: str) -> bool:
     """True when an assistant reply contains a question.
 
@@ -71,10 +77,23 @@ def render_share_first_cue(user_name: str | None = None) -> str:
     return SHARE_FIRST_CUE.format(name=name)
 
 
+def render_curiosity_pacing_cue() -> str:
+    return (
+        "Curiosity pacing: you asked a question in your last reply. Stay with "
+        "the answer or the subject the user chooses now; let it land before "
+        "opening another topic. A genuinely relevant follow-up is fine, but "
+        "do not append a different question from your backlog or announce "
+        "that you have been curious again. Pending curiosity is not a debt "
+        "to collect. An observation or simply listening is enough."
+    )
+
+
 __all__ = [
+    "CURIOSITY_CUE_TYPES",
     "is_question_turn",
     "compute_ratio",
     "should_suppress",
     "render_share_first_cue",
+    "render_curiosity_pacing_cue",
     "SHARE_FIRST_CUE",
 ]

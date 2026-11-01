@@ -226,6 +226,28 @@ pooled claims commit. Same-rung tie order remains policy-defined, not a new
 semantic utility score. Other offers remain independent. This does not make
 all providers side-effect-free or the whole prompt transactional.
 
+### Adaptive curiosity pacing
+
+The existing `question_balance_block` also gives a single question room to
+land, before the rolling question-ratio brake needs to fire. It reads the
+latest assistant reply from the active session's saved history, so restart or
+session switching cannot accidentally reset the pacing.
+
+After a question, pooled curiosity seeds, forward curiosity, gradients,
+knowledge-gap notices, concept hypotheses and dormant interests may surface
+only when their subject matches the current user message. The mandatory
+row-level check uses the shared lexical/cosine topic matcher and runs before
+claims, including retries: unrelated stock remains pending and unspent, with
+a `question_balance` decline. Topical follow-ups and answer-earned
+observations remain available. The prompt says to stay with the answer, not
+append another backlog question or repeatedly announce curiosity.
+
+This is not a fixed cooldown or an output rewrite: a question-free reply
+releases the single-turn brake, and the existing rolling ratio can still
+hold a longer question-heavy streak. `question_balance_enabled=false` or
+`question_balance_suppress_turns=0` disables the adaptive brake. Explicit
+debug forcing bypasses its topical check, but not rolling-ratio suppression.
+
 ### Conditional handling
 
 [prompt_assembler_helpers_mixin.py](../app/core/session/prompt_assembler_helpers_mixin.py)

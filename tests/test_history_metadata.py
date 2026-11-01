@@ -22,6 +22,11 @@ def test_real_history_age_formats_are_removed(minutes):
     "[just now] Hello there.",
     "  [just now]\n\t Hello there.",
     "[just now] [2 min ago] Hello there.",
+    "[neutral]\nHello there.",
+    "  [Neutral] Hello there.",
+    "[[warm]] Hello there.",
+    "[thoughtful+warm] Hello there.",
+    "[just now] [neutral] Hello there.",
     "[[reaction:cheerful]]\n[just now] Hello there.",
     "[[reaction:cheerful]]\n[[prosody:soft]] [today 13:32 (2h 3m ago)] Hello there.",
 ])
@@ -47,6 +52,10 @@ def test_every_stream_split_keeps_ui_speech_and_storage_aligned(raw):
 
 @pytest.mark.parametrize("raw", [
     "[just now] Hello there.",
+    "[neutral]\nHello there.",
+    "[neutral] [warm] Hello there.",
+    "[neutral](https://example.com) is a link.",
+    "[neutral] [reference] is a link.",
     "[[reaction:cheerful]]\n[just now] Hello there.",
     "[just now](https://example.com) is a link.",
     "[just now] [reference] is a link.",
@@ -73,6 +82,15 @@ def test_character_stream_is_monotonic_and_matches_final_text(raw):
     "[just now]: https://example.com",
     "The label [just now] means recent.",
     "[weather] Hello.",
+    '"[neutral]" is a mood label.',
+    "`[neutral]` is a mood label.",
+    "```text\n[neutral] Hello\n```",
+    "[neutral](https://example.com)",
+    "[neutral][reference]",
+    "[neutral] [reference]",
+    "[neutral]: https://example.com",
+    "The label [neutral] is a mood.",
+    "[ordinary label] Hello.",
     "[12:34] Hello.",
     "Just now I was reading.",
     "Hello.\n[just now] is a history label.",
@@ -86,3 +104,13 @@ def test_whitespace_after_closed_label_waits_for_body():
     assert safe_visible_prefix("[just now]  \n ") == ""
     assert safe_visible_prefix("[just now]  \n H") == "H"
     assert strip_all_meta_tags("[just now]") == ""
+
+
+def test_bare_mood_does_not_become_a_control_tag():
+    from app.core.services.response_text_service import parse_reaction_at_start
+
+    assert parse_reaction_at_start("[neutral] Hello.") == (None, "[neutral] Hello.")
+    assert safe_visible_prefix("[neutral]") == ""
+    assert safe_visible_prefix("[neutral] \n ") == ""
+    assert safe_visible_prefix("[neutral] \n H") == "H"
+    assert strip_all_meta_tags("[neutral]") == ""

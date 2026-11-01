@@ -34,6 +34,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from app.core.infra import timephrase
+from app.core.conversation.question_balance import CURIOSITY_CUE_TYPES
 from app.core.memory import echo_detector
 from app.core.proactive.cue_accounting import (
     CUE_POLICIES,
@@ -43,6 +44,7 @@ from app.core.proactive.cue_accounting import (
     MATCH_SCOPE_TURN,
     REASON_CADENCE_BLOCK,
     REASON_NO_STOCK,
+    REASON_QUESTION_BALANCE,
     REASON_TOPIC_MISS,
     CuePolicy,
     note_decline,
@@ -184,12 +186,42 @@ class CuePoolMixin:
                 )
 
             force = False
+        balance = getattr(self, "_question_balance_suppressed", None)
+        if cue_type in CURIOSITY_CUE_TYPES and balance is not None and balance():
+            note_decline(self, cue_type, REASON_QUESTION_BALANCE)
+            return None
         blocked = self._cadence_blocked(cue_type)
+        pacing = getattr(self, "_curiosity_pacing_active", None)
+        paced = bool(
+            not force and cue_type in CURIOSITY_CUE_TYPES
+            and pacing is not None and pacing()
+        )
+        if paced and not user_text:
+            recent_messages = getattr(self, "_inner_life_recent_messages", None)
+            if recent_messages is not None:
+                for message in reversed(recent_messages(2)):
+                    if message.role == "user":
+                        user_text = message.content
+                        break
         user_vec, min_cosine = self._topic_rank_inputs(user_text)
+        row_relevant: Callable[["CueRow"], bool] | None = None
+        if paced:
+            options = self._topic_gate_options()
+
+            def row_relevant(row: "CueRow") -> bool:
+                return topic_match.topical(
+                    row.subject, user_text,
+                    topic_vec=row.embedding, user_vec=user_vec,
+                    min_cosine=min_cosine,
+                    extra_stop=options.extra_stop,
+                    drop_stopwords=options.drop_stopwords,
+                )[0]
+
         pick = pick_pool_cue(
             store,
             cue_type,
             relevant=relevant,
+            row_relevant=row_relevant,
             force=force,
             allow_first_claim=force or not blocked,
             user_vec=user_vec,
@@ -199,7 +231,9 @@ class CuePoolMixin:
         row = pick.row
         if row is None or store is None:
             if note_as is not None:
-                if pick.held_for_cadence:
+                if pick.filtered:
+                    reason = REASON_QUESTION_BALANCE
+                elif pick.held_for_cadence:
                     # The hold shrank the shelf before the gate ran, so
                     # whatever the gate then said is downstream of it.
                     reason = REASON_CADENCE_BLOCK
@@ -215,12 +249,13 @@ class CuePoolMixin:
             # thin-shelf problem is otherwise indistinguishable from a
             # gate problem when read back later.
             log.debug(
-                "cue pick empty: type=%s shelf=%d held=%d rejected=%d "
+                "cue pick empty: type=%s shelf=%d held=%d rejected=%d filtered=%d "
                 "blocked=%s",
                 cue_type,
                 pick.considered,
                 pick.held_for_cadence,
                 pick.rejected,
+                pick.filtered,
                 blocked,
             )
             return None

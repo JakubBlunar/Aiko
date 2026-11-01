@@ -3859,13 +3859,34 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         armed. Pairs with the suppression of the question-pushing
         providers so the turn reads as "offer something of yours" rather
         than another interview question."""
-        if not self._question_balance_suppressed():
-            return ""
         from app.core.conversation.question_balance import (
+            render_curiosity_pacing_cue,
             render_share_first_cue,
         )
 
-        return render_share_first_cue(self.user_display_name)
+        if self._question_balance_suppressed():
+            return render_share_first_cue(self.user_display_name)
+        if self._curiosity_pacing_active():
+            return render_curiosity_pacing_cue()
+        return ""
+
+    def _curiosity_pacing_active(self) -> bool:
+        """Give the answer to her last question room before a new subject."""
+        agent = self._settings.agent
+        if not bool(getattr(agent, "question_balance_enabled", True)):
+            return False
+        if int(getattr(agent, "question_balance_suppress_turns", 2)) <= 0:
+            return False
+        db = getattr(self, "_chat_db", None)
+        if db is not None and hasattr(db, "get_messages"):
+            from app.core.conversation.question_balance import is_question_turn
+
+            for row in reversed(self._inner_life_recent_messages(2)):
+                if row.role == "assistant":
+                    return is_question_turn(row.content)
+            return False
+        flags = getattr(self, "_question_turn_flags", ())
+        return bool(flags and flags[-1])
 
     def _render_tease_rhythm_block(self) -> str:
         """K48: surface the pending banter-rhythm cue (ease off / one
@@ -3919,5 +3940,4 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             )
         except Exception:
             return ""
-
 

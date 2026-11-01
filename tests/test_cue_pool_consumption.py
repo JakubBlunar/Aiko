@@ -20,11 +20,13 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from app.core.infra import timephrase
+from app.core.conversation.question_balance import CURIOSITY_CUE_TYPES
 from app.core.infra.chat_database import ChatDatabase
 from app.core.proactive.cue_accounting import (
     REASON_CADENCE_BLOCK,
     REASON_IMPORTANCE_FLOOR,
     REASON_NO_STOCK,
+    REASON_QUESTION_BALANCE,
     REASON_TOPIC_MISS,
     take_decline_notes,
 )
@@ -90,6 +92,91 @@ class _Fixture(unittest.TestCase):
 
 
 class SurfacingTests(_Fixture):
+    def test_saved_question_paces_seed_provider_without_losing_topical_seed(self) -> None:
+        from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
+
+        class PacingHost(_Host, InnerLifeProvidersMixin):
+            pass
+
+        host = PacingHost(self.store)
+        host._settings = SimpleNamespace(agent=SimpleNamespace())
+        host.session_key = "first"
+        messages = [
+            SimpleNamespace(role="assistant", content="Do you fold your laundry?"),
+            SimpleNamespace(role="user", content="My mum folds the laundry."),
+        ]
+        host._chat_db = SimpleNamespace(get_messages=lambda session, limit: messages)
+        related = self.store.add("curiosity_seed", "laundry folding", "Laundry question")
+        unrelated = self.store.add("curiosity_seed", "fish shaped cookies", "Cookie question")
+        block = host._render_curiosity_seeds_block()
+        self.assertIn("laundry folding", block)
+        self.assertNotIn("cookies", block)
+        self.assertEqual(self._row(related).surfaced_count, 1)
+        self.assertEqual(self._row(unrelated).surfaced_count, 0)
+        self.assertIn("Stay with the answer", host._render_question_balance_block())
+
+    def test_pacing_holds_unrelated_curiosity_without_spending_stock(self) -> None:
+        self.host._curiosity_pacing_active = lambda: True
+        for cue_type in sorted(CURIOSITY_CUE_TYPES):
+            with self.subTest(cue_type=cue_type):
+                cue_id = self.store.add(cue_type, "fish shaped cookies", "A question")
+                self.assertIsNone(self.host.take_pool_cue(
+                    cue_type, user_text="My mum folds the laundry.",
+                ))
+                self.assertEqual(self._row(cue_id).surfaced_count, 0)
+                self.assertEqual(self._state(cue_id), STATE_PENDING)
+                self.assertEqual(
+                    take_decline_notes(self.host)[cue_type], REASON_QUESTION_BALANCE,
+                )
+
+    def test_pacing_skips_unrelated_candidate_but_allows_topical_followup(self) -> None:
+        self.host._curiosity_pacing_active = lambda: True
+        related = self.store.add("curiosity_seed", "laundry folding", "Laundry question")
+        unrelated = self.store.add("curiosity_seed", "fish shaped cookies", "Cookie question")
+        row = self.host.take_pool_cue(
+            "curiosity_seed", user_text="My mum folds the laundry.",
+        )
+        self.assertIsNotNone(row)
+        self.assertEqual(row.id, related)
+        self.assertEqual(self._row(related).surfaced_count, 1)
+        self.assertEqual(self._row(unrelated).surfaced_count, 0)
+
+    def test_pacing_does_not_block_answer_earned_observations(self) -> None:
+        self.host._curiosity_pacing_active = lambda: True
+        cue_id = self.store.add(
+            "interest_continuation", "laundry folding", "An observation",
+            payload={"session_id": "first"},
+        )
+        self.host.session_key = "first"
+        row = self.host.take_pool_cue(
+            "interest_continuation", user_text="My mum folds the laundry.",
+        )
+        self.assertIsNotNone(row)
+        self.assertEqual(row.id, cue_id)
+
+    def test_ratio_suppression_also_covers_notice_and_gradient(self) -> None:
+        self.host._question_balance_suppressed = lambda: True
+        for cue_type in ("knowledge_gap_notice", "curiosity_gradient"):
+            with self.subTest(cue_type=cue_type):
+                cue_id = self.store.add(cue_type, "laundry folding", "A question")
+                self.assertIsNone(self.host.take_pool_cue(
+                    cue_type, user_text="My mum folds the laundry.",
+                ))
+                self.assertEqual(self._row(cue_id).surfaced_count, 0)
+                self.assertEqual(
+                    take_decline_notes(self.host)[cue_type], REASON_QUESTION_BALANCE,
+                )
+
+    def test_pacing_releases_after_statement_and_debug_force_can_bypass(self) -> None:
+        cue_id = self.store.add("curiosity_seed", "fish shaped cookies", "A question")
+        self.host._curiosity_pacing_active = lambda: True
+        self.assertIsNone(self.host.take_pool_cue("curiosity_seed"))
+        self.host._curiosity_pacing_active = lambda: False
+        self.assertEqual(self.host.take_pool_cue("curiosity_seed").id, cue_id)
+        forced_id = self.store.add("curiosity_seed", "coffee brewing", "Another question")
+        self.host._curiosity_pacing_active = lambda: True
+        self.assertEqual(self.host.take_pool_cue("curiosity_seed", force=True).id, forced_id)
+
     def test_same_text_in_another_block_does_not_commit_omitted_cue(self) -> None:
         from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
 

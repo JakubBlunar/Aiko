@@ -882,7 +882,7 @@ def strip_all_meta_tags(text: str, *, streaming: bool = False) -> str:
         never be visible. Single or mismatched brackets are stripped too,
         without making malformed tags eligible for control side-effects.
 
-    Bare leading history clock labels are also removed. ``streaming=True``
+    Bare leading history clock and known mood labels are also removed. ``streaming=True``
     holds unresolved prefixes until they can be distinguished from literal
     brackets and Markdown links.
 

@@ -165,6 +165,50 @@ class _ProviderHost(InnerLifeProvidersMixin):
 
 
 class ProviderTests(unittest.TestCase):
+    def test_pacing_starts_after_one_question_without_ratio_suppression(self) -> None:
+        host = _ProviderHost()
+        host._question_turn_flags = deque([True], maxlen=10)
+        self.assertFalse(host._question_balance_suppressed())
+        self.assertTrue(host._curiosity_pacing_active())
+        cue = host._render_question_balance_block()
+        self.assertIn("Stay with the answer", cue)
+        self.assertIn("relevant follow-up is fine", cue)
+        host._question_turn_flags.append(False)
+        self.assertFalse(host._curiosity_pacing_active())
+        self.assertEqual(host._render_question_balance_block(), "")
+
+    def test_pacing_reads_saved_history_after_restart_and_session_switch(self) -> None:
+        host = _ProviderHost()
+        host._question_turn_flags = deque([], maxlen=10)
+        histories = {
+            "first": [
+                SimpleNamespace(role="assistant", content="Do you fold your laundry?"),
+                SimpleNamespace(role="user", content="Yes, I fold it."),
+            ],
+            "second": [
+                SimpleNamespace(role="assistant", content="That makes sense."),
+                SimpleNamespace(role="user", content="Hello."),
+            ],
+        }
+        host._chat_db = SimpleNamespace(
+            get_messages=lambda session, limit: histories[session],
+        )
+        host.session_key = "first"
+        self.assertTrue(host._curiosity_pacing_active())
+        host.session_key = "second"
+        self.assertFalse(host._curiosity_pacing_active())
+
+    def test_pacing_respects_existing_disable_switches(self) -> None:
+        for overrides in (
+            {"question_balance_enabled": False},
+            {"question_balance_suppress_turns": 0},
+        ):
+            with self.subTest(overrides=overrides):
+                host = _ProviderHost(agent=_agent(**overrides))
+                host._question_turn_flags = deque([True], maxlen=10)
+                self.assertFalse(host._curiosity_pacing_active())
+                self.assertEqual(host._render_question_balance_block(), "")
+
     def test_share_first_cue_only_when_armed(self) -> None:
         self.assertEqual(
             _ProviderHost(suppress_remaining=0)._render_question_balance_block(),

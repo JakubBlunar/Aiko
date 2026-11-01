@@ -238,6 +238,8 @@ class CuePick:
     held_for_cadence: int = 0
     # Rows the provider's own predicate looked at and refused.
     rejected: int = 0
+    # Mandatory row-level relevance, before debug/provider/cosine admission.
+    filtered: int = 0
     # How many cleared admission, i.e. the set the winner was chosen from.
     admitted: int = 0
     # Which arm admitted the winner, and how close it was to the live
@@ -254,6 +256,7 @@ def pick_pool_cue(
     cue_type: str,
     *,
     relevant: Callable[[dict[str, Any]], bool] | None = None,
+    row_relevant: Callable[["CueRow"], bool] | None = None,
     force: bool = False,
     limit: int = 8,
     allow_first_claim: bool = True,
@@ -263,6 +266,8 @@ def pick_pool_cue(
 ) -> CuePick:
     """The best pending cue of this type that fits the moment.
 
+    ``row_relevant`` is a mandatory gate on the whole row, applied before
+    the provider's predicate or additive cosine arm can admit it.
     ``relevant`` is the provider's own gate, applied to the cue's payload
     -- the topic-overlap tests these providers already run. ``force``
     bypasses it for the MCP debug surfaces, which is the same escape hatch
@@ -322,10 +327,14 @@ def pick_pool_cue(
         return CuePick()
     held = 0
     rejected = 0
+    filtered = 0
     # (row, arm, cosine) for everything that cleared admission, kept in
     # shelf order because that is the tie-break.
     admitted: list[tuple["CueRow", str, float | None]] = []
     for row in rows:
+        if row_relevant is not None and not row_relevant(row):
+            filtered += 1
+            continue
         if not allow_first_claim and row.surfaced_count <= 0:
             held += 1
             continue
@@ -344,6 +353,7 @@ def pick_pool_cue(
     if not admitted:
         return CuePick(
             considered=len(rows), held_for_cadence=held, rejected=rejected,
+            filtered=filtered,
         )
     # ``max`` returns the *first* maximal element, so with every cosine
     # absent this is the shelf's own first admitted row -- the previous
@@ -357,6 +367,7 @@ def pick_pool_cue(
         considered=len(rows),
         held_for_cadence=held,
         rejected=rejected,
+        filtered=filtered,
         admitted=len(admitted),
         arm=best[1],
         cosine=best[2],
