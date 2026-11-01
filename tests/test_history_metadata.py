@@ -19,6 +19,13 @@ def test_real_history_age_formats_are_removed(minutes):
 
 
 @pytest.mark.parametrize("raw", [
+    "[now] Hello there.",
+    "[NOW]\nHello there.",
+    "  [ now ]\n\t Hello there.",
+    "[[now]] Hello there.",
+    "[now]] Hello there.",
+    "[now] [neutral] Hello there.",
+    "[[reaction:cheerful]]\n[now] Hello there.",
     "[just now] Hello there.",
     "  [just now]\n\t Hello there.",
     "[just now] [2 min ago] Hello there.",
@@ -51,6 +58,12 @@ def test_every_stream_split_keeps_ui_speech_and_storage_aligned(raw):
 
 
 @pytest.mark.parametrize("raw", [
+    "[now] Hello there.",
+    "[[now]] Hello there.",
+    "[now] [neutral] Hello there.",
+    "[now](https://example.com) is a link.",
+    "[now] [reference] is a link.",
+    "[now",
     "[just now] Hello there.",
     "[neutral]\nHello there.",
     "[neutral] [warm] Hello there.",
@@ -73,6 +86,16 @@ def test_character_stream_is_monotonic_and_matches_final_text(raw):
 
 
 @pytest.mark.parametrize("raw", [
+    '"[now]" is metadata.',
+    "`[now]` is metadata.",
+    "```text\n[now] Hello\n```",
+    "[now](https://example.com)",
+    "[now][reference]",
+    "[now] [reference]",
+    "[now]: https://example.com",
+    "The label [now] means current.",
+    "Now I was reading.",
+    "Hello.\n[now] is a history label.",
     '"[just now]" is metadata.',
     "`[just now]` is metadata.",
     "```text\n[just now] Hello\n```",
@@ -99,11 +122,12 @@ def test_literal_brackets_code_links_and_natural_time_survive(raw):
     assert strip_all_meta_tags(raw) == raw
 
 
-def test_whitespace_after_closed_label_waits_for_body():
-    assert safe_visible_prefix("[just now]") == ""
-    assert safe_visible_prefix("[just now]  \n ") == ""
-    assert safe_visible_prefix("[just now]  \n H") == "H"
-    assert strip_all_meta_tags("[just now]") == ""
+@pytest.mark.parametrize("label", ["[just now]", "[now]", "[[now]]", "[ now ]"])
+def test_whitespace_after_closed_label_waits_for_body(label):
+    assert safe_visible_prefix(label) == ""
+    assert safe_visible_prefix(label + "  \n ") == ""
+    assert safe_visible_prefix(label + "  \n H") == "H"
+    assert strip_all_meta_tags(label) == ""
 
 
 def test_bare_mood_does_not_become_a_control_tag():

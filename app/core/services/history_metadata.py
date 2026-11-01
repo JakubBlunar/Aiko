@@ -11,9 +11,9 @@ _CLOCK = r"(?:[01]\d|2[0-3]):[0-5]\d"
 _DAY = r"(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
 _MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
 _REPLY_LABEL = re.compile(
-    r"\[(?:just now|\d{1,4} (?:min|minutes?|hours?|days?) ago|"
+    r"\[{1,2}[ \t]*(?:(?:just )?now|\d{1,4} (?:min|minutes?|hours?|days?) ago|"
     rf"(?:today|yesterday|{_DAY}|{_MONTH} \d{{2}}) {_CLOCK}"
-    r"(?: \(\d{1,2}h(?: \d{1,2}m)? ago\))?)\]"
+    r"(?: \(\d{1,2}h(?: \d{1,2}m)? ago\))?)[ \t]*\]{1,2}"
     r"|\[{1,2}[ \t]*(?:" + "|".join(REACTIONS) + r")"
     r"(?:[ \t]*\+[ \t]*(?:" + "|".join(REACTIONS) + r"))*[ \t]*\]{1,2}",
     re.IGNORECASE,
@@ -25,7 +25,7 @@ def strip_history_age_prefix(text: str, *, streaming: bool = False) -> str:
 
     Quoted examples, inline mentions, code and Markdown links keep their text.
     During streaming, defer an unresolved leading bracket (at most 80 chars)
-    and whitespace after a removed label. Otherwise a split ``[just now]``
+    and whitespace after a removed label. Otherwise a split ``[now]``
     leaks before it can be recognized, or changing offsets duplicates speech.
     A closed label at the very end waits for the next character so a following
     ``(url)`` can still establish that it is a Markdown link.
