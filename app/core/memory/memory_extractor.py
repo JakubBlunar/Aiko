@@ -698,16 +698,21 @@ class MemoryExtractor:
 
         admitted = []
         for cand in candidates:
+            rejection_reasons = []
             if cand.get("strategy") is not None or cand["kind"] == "strategy":
                 from app.core.memory.learned_strategies import admit_strategy
 
                 pattern = admit_strategy(
                     cand, rows, context_rows, session_key=session_key,
                     owner=pattern_owner, memories=self._store, db=self._db,
+                    rejections=rejection_reasons,
                 )
                 count_intake(self._db, pattern_owner, strategy_proposed=1,
                              strategy_admitted=int(pattern is not None),
                              strategy_rejected=int(pattern is None))
+                count_intake(self._db, pattern_owner, **{
+                    "strategy_rejected_" + reason: 1 for reason in rejection_reasons
+                })
                 if pattern is not None:
                     admitted.append(pattern)
                 continue
@@ -717,10 +722,14 @@ class MemoryExtractor:
                 pattern = admit_shorthand(
                     cand, rows, context_rows, session_key=session_key,
                     owner=pattern_owner, memories=self._store, db=self._db,
+                    rejections=rejection_reasons,
                 )
                 count_intake(self._db, pattern_owner, shorthand_proposed=1,
                              shorthand_admitted=int(pattern is not None),
                              shorthand_rejected=int(pattern is None))
+                count_intake(self._db, pattern_owner, **{
+                    "shorthand_rejected_" + reason: 1 for reason in rejection_reasons
+                })
                 if pattern is not None:
                     admitted.append(pattern)
                 continue
@@ -754,6 +763,12 @@ class MemoryExtractor:
 
                 key = "shared_shorthand" if cand["kind"] == "shared_term" else "learned_strategy"
                 if not sources_current(cand["metadata"][key], self._db):
+                    from app.core.memory.pattern_accounting import count_intake
+
+                    prefix = "shorthand" if cand["kind"] == "shared_term" else "strategy"
+                    count_intake(self._db, cand["metadata"][key]["owner"], **{
+                        prefix + "_write_rejected_source_changed": 1,
+                    })
                     cand["applied"] = True
                     continue
             content_text = cand["content"]

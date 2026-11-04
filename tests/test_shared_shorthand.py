@@ -43,6 +43,16 @@ def test_direct_naming_and_scope_require_literal_evidence():
     assert admit_shorthand(cand, [row], session_key="s", owner="u") is None
 
 
+def test_rejection_reason_does_not_contain_private_definition():
+    row = message(1, "user", "Let's call our private experiment lab mode.")
+    cand = candidate(row, row, meaning="private experiment")
+    cand["shorthand"]["definition"]["quote"] = "Invented private definition"
+    reasons = []
+    assert admit_shorthand(cand, [row], session_key="s", owner="u", rejections=reasons) is None
+    assert reasons == ["quote"]
+    assert "private" not in json.dumps(reasons)
+
+
 def test_user_can_name_the_immediately_preceding_shared_approach():
     definition = message(1, "assistant", "We could try small experiments.")
     adopter = message(2, "user", "Let's call that lab mode.")

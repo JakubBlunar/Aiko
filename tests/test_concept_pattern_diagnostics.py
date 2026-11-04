@@ -31,6 +31,12 @@ def test_aggregate_diagnostics_expose_counts_and_ids_without_private_content():
     assert report["last_turn_patterns"][0]["memory_id"] == "7"
     assert source.content not in json.dumps(report)
     assert intake_snapshot(reader, "other") == {}
+    assert report["rejection_reasons"]["shorthand"]["historical_reason_unknown"] == 1
+    count_intake(reader, "u", shorthand_rejected_quote=1)
+    report = Host().pattern_learning_snapshot()
+    assert report["rejection_reasons"]["shorthand"] == {
+        "counts": {"quote": 1}, "historical_reason_unknown": 0,
+    }
 
 
 def test_debug_tools_use_the_public_facade():

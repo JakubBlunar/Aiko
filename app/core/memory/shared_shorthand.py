@@ -62,10 +62,15 @@ def sources_current(metadata, db):
 
 
 def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner,
-                     memories=None, db=None):
+                     memories=None, db=None, rejections=None):
+    def reject(reason):
+        if rejections is not None:
+            rejections.append(reason)
+        return None
+
     value = candidate.get("shorthand")
     if not isinstance(value, dict):
-        return None
+        return reject("payload_shape")
     offered = {row.id: row for row in [*context_rows, *rows] if row.session_id == session_key}
 
     def citation(field):
@@ -87,18 +92,18 @@ def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner,
                 or not isinstance(meaning, str) or len(meaning) > 180
                 or adopter.role != "user" or adopter.id not in {row.id for row in rows}
                 or term.casefold() not in (quote + " " + agreement).casefold() or "?" in agreement):
-            return None
+            return reject("definition_or_adoption_invalid")
         retired = not meaning and bool(_RETIRE.search(agreement))
         if not retired:
             if not meaning or meaning not in quote or _NO.search(agreement):
-                return None
+                return reject("meaning_or_negated_adoption")
             if definition.role == "assistant":
                 previous = max((i for i in offered if i < adopter.id), default=0)
                 explicit_name = term.casefold() in agreement.casefold() and _ADOPT.search(agreement)
                 if previous != definition.id or not (_YES.search(agreement) or explicit_name):
-                    return None
+                    return reject("direct_agreement_missing")
             elif definition.id != adopter.id or not _ADOPT.search(agreement):
-                return None
+                return reject("explicit_naming_missing")
         scope = value.get("scope", "session")
         scope_quote = value.get("scope_quote", "")
         prior_scope = None
@@ -109,29 +114,29 @@ def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner,
             if (not prior_scope or prior_scope.get("owner") != owner
                     or prior_scope.get("term", "").casefold() != term.casefold()
                     or not sources_current(prior_scope, db)):
-                return None
+                return reject("prior_definition_invalid")
             scope = prior_scope["scope"]
         if scope != "session" and prior_scope is None:
             if (not isinstance(scope, str) or not 2 <= len(scope) <= 60
                     or not isinstance(scope_quote, str) or not scope_quote
                     or scope_quote not in adopter.content):
-                return None
+                return reject("scope_not_cited")
             if scope == "relationship":
                 if not re.search(r"\b(?:always|from now on)\b", scope_quote, re.I):
-                    return None
+                    return reject("relationship_scope_not_adopted")
             elif not re.search(r"\b" + re.escape(scope) + r"\b", scope_quote, re.I):
-                return None
+                return reject("activity_scope_not_literal")
         expiry = value.get("expires_on")
         if expiry is not None:
             from datetime import date
 
             expiry = date.fromisoformat(expiry).isoformat()
             if not re.search(r"\b(?:until|before) " + re.escape(expiry), adopter.content, re.I):
-                return None
+                return reject("expiry_not_cited")
         elif prior_scope is not None:
             expiry = prior_scope.get("expires_on")
         if timephrase.has_relative_deictic(term + " " + meaning):
-            return None
+            return reject("relative_time")
         metadata = {"version": 1, "owner": owner, "term": term, "meaning": meaning,
                     "scope": scope, "expires_on": expiry, "retired": retired,
                     "revises_memory_id": revises,
@@ -144,8 +149,8 @@ def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner,
                 "metadata": {"shared_shorthand": metadata,
                              "source_message_ids": sorted({definition.id, adopter.id}),
                              "admission_key": revision_hash(["shared_term", owner, metadata])}}
-    except (ValueError, TypeError, AttributeError):
-        return None
+    except (ValueError, TypeError, AttributeError) as error:
+        return reject(str(error) if str(error) in {"citation", "quote"} else "invalid_payload")
 
 
 def shorthand_hits(memories, db, rag, *, user_text, session_key, owner, activity=""):

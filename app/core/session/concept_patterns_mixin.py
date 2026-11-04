@@ -59,6 +59,17 @@ class ConceptPatternsMixin:
         if memories is None or db is None:
             return result
         result["intake"] = intake_snapshot(db, owner)
+        result["rejection_reasons"] = {}
+        for name in ("shorthand", "strategy"):
+            prefix = name + "_rejected_"
+            reasons = {key.removeprefix(prefix): count
+                       for key, count in result["intake"].items() if key.startswith(prefix)}
+            result["rejection_reasons"][name] = {
+                "counts": reasons,
+                "historical_reason_unknown": max(
+                    0, result["intake"].get(name + "_rejected", 0) - sum(reasons.values()),
+                ),
+            }
         for kind, key in (("shared_term", "shared_shorthand"), ("strategy", "learned_strategy")):
             rows = [r for r in memories.list_recent(limit=256, kind=kind)
                     if (r.metadata or {}).get(key, {}).get("owner") == owner]

@@ -41,6 +41,14 @@ def test_strategy_requires_an_actual_user_outcome_and_explicit_conditions():
     assert admit_strategy(candidate, rows, session_key="s", owner="u") is None
 
 
+def test_strategy_reports_missing_conditions_without_relaxing_admission():
+    rows, candidate = episode()
+    candidate["strategy"]["constraints"] = []
+    reasons = []
+    assert admit_strategy(candidate, rows, session_key="s", owner="u", rejections=reasons) is None
+    assert reasons == ["conditions_or_goal_invalid"]
+
+
 def test_matching_goal_conditions_exception_and_retraction(tmp_path):
     db = ChatDatabase(tmp_path / "memory.db")
     store = MemoryStore(tmp_path / "memory.db")

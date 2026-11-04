@@ -45,10 +45,16 @@ def words(text):
     return {w for w in re.findall(r"[a-z0-9]+", text.casefold()) if w not in _STOP}
 
 
-def admit_strategy(candidate, rows, context_rows=(), *, session_key, owner, memories=None, db=None):
+def admit_strategy(candidate, rows, context_rows=(), *, session_key, owner, memories=None, db=None,
+                   rejections=None):
+    def reject(reason):
+        if rejections is not None:
+            rejections.append(reason)
+        return None
+
     value = candidate.get("strategy")
     if not isinstance(value, dict):
-        return None
+        return reject("payload_shape")
     offered = {row.id: row for row in [*context_rows, *rows] if row.session_id == session_key}
     sources = []
 
@@ -75,14 +81,14 @@ def admit_strategy(candidate, rows, context_rows=(), *, session_key, owner, memo
                 or (success and (not _SUCCESS.search(result)
                                  or re.search(r"\b(?:not|never|didn'?t)\b", result, re.I)))
                 or (not success and not _FAILURE.search(result))):
-            return None
+            return reject("explicit_outcome_missing")
         revises = value.get("revises_memory_id")
         if revises is not None:
             prior = memories.get(revises) if memories is not None and type(revises) is int else None
             old = (prior.metadata or {}).get("learned_strategy", {}) if prior else {}
             if (not old or old.get("owner") != owner or success or not sources_current(old, db)
                     or len(words(old.get("approach", "")) & words(result_row.content)) < 2):
-                return None
+                return reject("prior_strategy_invalid")
             goal, approach = old["goal"], old["approach"]
             constraints, exceptions = old["constraints"], old["exceptions"]
             sources.extend(old["sources"])
@@ -90,19 +96,19 @@ def admit_strategy(candidate, rows, context_rows=(), *, session_key, owner, memo
             goal, _ = citation(value.get("goal"))
             approach, approach_row = citation(value.get("approach"), user=False)
             if approach_row.id >= result_row.id:
-                return None
+                return reject("outcome_precedes_approach")
             constraints, exceptions = [], []
             for field, target in (("constraints", constraints), ("exceptions", exceptions)):
                 items = value.get(field, [])
                 if not isinstance(items, list) or len(items) > 3:
-                    return None
+                    return reject("conditions_shape")
                 target.extend(citation(item)[0] for item in items)
         if (not constraints or len(words(goal)) < 2
                 or sum(map(len, [goal, approach, result, *constraints, *exceptions])) > 500
                 or re.search(r"\b(?:engagement|keep.{0,20}(?:talking|chatting))\b", goal, re.I)
                 or timephrase.has_relative_deictic(
                     " ".join([goal, approach, *constraints, *exceptions]))):
-            return None
+            return reject("conditions_or_goal_invalid")
         metadata = {"version": 1, "owner": owner, "goal": goal, "approach": approach,
                     "constraints": constraints, "exceptions": exceptions,
                     "outcome": result, "success": success, "sources": sources,
@@ -115,8 +121,8 @@ def admit_strategy(candidate, rows, context_rows=(), *, session_key, owner, memo
                 "metadata": {"learned_strategy": metadata,
                              "source_message_ids": sorted({s["message_id"] for s in sources}),
                              "admission_key": revision_hash(["strategy", owner, metadata])}}
-    except (ValueError, TypeError, AttributeError, KeyError):
-        return None
+    except (ValueError, TypeError, AttributeError, KeyError) as error:
+        return reject("citation_shape" if str(error) == "citation" else "unsupported_source")
 
 
 def strategy_hits(memories, db, rag, *, user_text, owner, goal_context=""):

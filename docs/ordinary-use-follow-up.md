@@ -88,3 +88,18 @@ A forward question delivered through wants/initiative is attributed to its real
 cue family. Omitted/retried/failed claims do not count as delivery, and an
 alternative route is not treated as winning the separate gap-cue mutex.
 No topic gate or cooldown was relaxed from aggregate rates.
+
+## 4. Structured-pattern intake
+
+The initial shared-term rejection had no stored reason; it cannot be diagnosed
+retroactively from its counter. Strategy schema offerings without a proposal
+also do not establish a validator failure. Their explicit outcome/condition and
+adoption requirements remain intact.
+
+Admissions now emit content-free reason codes for quotation/citation failures,
+missing explicit adoption or outcomes, unsupported scope, invalid conditions,
+and relative time. Queued writes separately count source changes after admission.
+The public diagnostic groups these reasons and labels historical rejected rows
+without an explanation as unknown. Private meanings, outcomes and raw model
+responses are not added to the counters. Existing extractor-to-store and
+correction/retraction tests still govern successful intake.
