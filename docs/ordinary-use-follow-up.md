@@ -69,3 +69,22 @@ explicitly added an unstated assumption about minimizing words. These are useful
 held-out contrast families for the next proposer evaluation. No existing concept,
 threshold or personal memory was automatically rewritten from this small review.
 L22's general model-quality acceptance remains open.
+
+## 3. Cue-delivery baseline and alternative routes
+
+`python scripts/cue_delivery_report.py --since YYYY-MM-DD` joins content-free
+final assembly claims, cue decisions and retained ask/feedback receipts. Retry
+attempts do not count as final delivery. Missing receipts remain unknown, and
+stage counters explicitly have different units rather than forming a conversion
+funnel or a usefulness score.
+
+The first post-rollout baseline had 180 measured turns and 128 retained final
+traces; 52 older turns were outside trace retention. It showed both omitted
+optional claims and committed cues without verified ask receipts. Historical
+block reach therefore cannot establish that an answerable question was asked.
+
+G4 accounting now reads final committed claims as well as canonical block names.
+A forward question delivered through wants/initiative is attributed to its real
+cue family. Omitted/retried/failed claims do not count as delivery, and an
+alternative route is not treated as winning the separate gap-cue mutex.
+No topic gate or cooldown was relaxed from aggregate rates.

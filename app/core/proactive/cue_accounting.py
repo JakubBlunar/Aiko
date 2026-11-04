@@ -1316,6 +1316,7 @@ def decisions_from_block_chars(
     *,
     question_balance_suppressed: bool = False,
     provider_reasons: dict[str, str] | None = None,
+    final_claims: list[dict] | None = None,
 ) -> CueTurnDecisions:
     """Turn an armed set plus rendered sizes into a decision record.
 
@@ -1353,9 +1354,17 @@ def decisions_from_block_chars(
                 return int(chars.get(key) or 0) > 0
         return False
 
-    surfaced = {cue for cue in CUE_SPECS if _rendered(cue)}
+    direct = {cue for cue in CUE_SPECS if _rendered(cue)}
+    claims = final_claims or []
+    tracked = {claim.get("cue_type") for claim in claims}
+    committed = {
+        claim.get("cue_type") for claim in claims
+        if claim.get("state") == "committed"
+        and any(chars.get(block, 0) > 0 for block in claim.get("blocks", []))
+    } & set(CUE_SPECS)
+    surfaced = (direct - tracked) | committed
     gap_winner = next(
-        (cue for cue in GAP_CUE_ORDER if cue in surfaced), "",
+        (cue for cue in GAP_CUE_ORDER if cue in surfaced & direct), "",
     )
     winner_rank = _gap_rank(gap_winner) if gap_winner else len(GAP_CUE_ORDER)
 

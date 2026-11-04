@@ -2089,6 +2089,7 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
                 block_chars,
                 question_balance_suppressed=suppressed,
                 provider_reasons=reasons,
+                final_claims=attempts[-1].get("claims", []) if attempts else None,
             )
         except Exception:
             log.debug("cue decision derivation failed", exc_info=True)
