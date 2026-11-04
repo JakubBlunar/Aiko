@@ -37,6 +37,11 @@ evidence/applicability/working-model tests.
 precision/duplicate/register/promotion scoreboard; remeasure post-fix cohorts. Accounting fixtures
 do not establish concept extraction quality.
 
+4 Nov follow-up: a [read-only cohort reviewer](../../scripts/review_concept_cohort.py)
+now samples fresh subjects/kinds/statuses with source-linked evidence and explicit
+annotation denominators. A first review found unsupported developmental and conflict
+interpretations; held-out proposer comparisons and broad quality validation remain.
+
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l22).
 
 **Source check:** [concept_quality.py](../../app/core/concepts/concept_quality.py),

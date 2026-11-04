@@ -49,3 +49,23 @@ Situation extraction keeps rejecting unknown citations. Feedback on the next
 already-scheduled call now covers the observed nested evidence_id and
 evidence_shape reasons as well as top-level IDs and missing user evidence. No
 extra inference retry or guessed replacement citation is introduced.
+
+## 2. Source-grounded concept review
+
+`python scripts/review_concept_cohort.py --since YYYY-MM-DD --output <private.json>`
+exports a deterministic round-robin sample by subject/kind/status with separate
+claims, rationales and direct evidence. The recorded cutoff and seed allow the
+cohort selection to be reproduced. Cluster evidence uses representative memory
+IDs, not database cluster IDs; cached cluster names are explicitly not historical
+membership proof. Original source messages retain their speaker attribution.
+
+Optional annotations report judged denominators for support, distinctness, scope
+and register. Unreviewed items remain unknown. Balanced sample rates do not
+estimate the prevalence of errors in the full graph.
+
+The ordinary-use review identified concrete cases of repetition interpreted as
+development and compatible preferences interpreted as conflict. One rationale
+explicitly added an unstated assumption about minimizing words. These are useful
+held-out contrast families for the next proposer evaluation. No existing concept,
+threshold or personal memory was automatically rewritten from this small review.
+L22's general model-quality acceptance remains open.
