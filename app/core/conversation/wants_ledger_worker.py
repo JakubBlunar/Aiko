@@ -183,6 +183,12 @@ class WantsLedgerWorker:
         # Aiko to re-ask a question she'd already had answered. Self-heal
         # every tick.
         state, dropped, dead_refs = self._prune_dead_seed_wants(state)
+        from app.core.conversation.cue_wants import refresh_forward_wants
+
+        previous = state
+        state = refresh_forward_wants(state, self._cue_store())
+        forward_dropped = {w.id for w in previous.wants} - {w.id for w in state.wants}
+        dropped = [*dropped, *forward_dropped]
         state, gone, gone_refs = self._prune_dead_pursuit_wants(state)
         dropped = list(dropped) + gone
         dead_refs = list(dead_refs) + gone_refs
@@ -468,6 +474,19 @@ class WantsLedgerWorker:
             log.debug("wants: forward-curiosity load failed", exc_info=True)
             ring = []
             is_hers = lambda _e: False  # noqa: E731 - one-line degradation
+        pool = self._cue_store()
+        if pool is not None:
+            from app.core.conversation.cue_wants import forward_text
+
+            try:
+                for row in pool.pending("forward_curiosity", limit=_MAX_FORWARD_PER_RUN):
+                    if getattr(row, "cue_type", "") != "forward_curiosity":
+                        continue
+                    out.append((forward_text(row), "share" if is_hers(row.payload) else "ask",
+                                "forward_curiosity", f"cue:{row.id}", 0.15))
+            except Exception:
+                log.debug("wants: forward-curiosity pool read failed", exc_info=True)
+            ring = []
         for entry in list(reversed(ring))[:_MAX_FORWARD_PER_RUN]:
             question = str(entry.get("question") or "").strip()
             if not question:

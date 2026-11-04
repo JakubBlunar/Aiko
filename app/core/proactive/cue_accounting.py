@@ -677,6 +677,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             # Something in the user's life she has been wondering about,
             # fired on a conversational gap rather than on topic.
             fulfilment=FULFILMENT_ANSWERED,
+            max_asks=1,
             match_mode=MATCH_LEXICAL_OR_COSINE,
             inventory_target=2,
             ttl_hours=72.0,

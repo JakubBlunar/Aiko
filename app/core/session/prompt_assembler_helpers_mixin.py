@@ -1139,11 +1139,25 @@ class PromptAssemblerHelpersMixin:
         return core, sections
 
     def _essential_handling(self, local_vars: dict[str, Any]) -> dict[str, str]:
+        from app.core.session.surfacing_attempt import current_attempt
+
         notes = dict(_PROTECTED_HANDLING)
         notes.update({
             policy.block: policy.essential_handling
             for policy in CUE_POLICIES.values() if policy.essential_handling
         })
+        attempt = current_attempt.get()
+        if attempt is not None:
+            for claim in attempt.claims.values():
+                policy = CUE_POLICIES.get(claim.cue_type)
+                if policy is None or not policy.handling_section:
+                    continue
+                for block in claim.blocks - {policy.block}:
+                    rendered = local_vars.get(block, "")
+                    if rendered and claim.text in rendered:
+                        note = self.persona_handling_notes(policy.block)
+                        if note:
+                            notes[block] = note
         return {name: text for name, text in notes.items() if local_vars.get(name)}
 
     def _handling_bundle_omissions(self, local_vars: dict[str, Any]) -> set[str]:

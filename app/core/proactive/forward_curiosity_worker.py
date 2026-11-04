@@ -230,7 +230,19 @@ def render_question_cue(entry: dict[str, Any]) -> str:
             "Offer it if there's room -- it's yours to say, not his to "
             "answer."
         )
-    return f"You've been wondering {question}."
+    context = source_context(entry)
+    return f"You've been wondering {question}." + ("\n" + context if context else "")
+
+
+def source_context(entry: dict[str, Any]) -> str:
+    """Preserve the concrete referent even when the drafted question is vague."""
+    topic = str(entry.get("topic") or "").strip()
+    if not topic:
+        return ""
+    stamp = str(entry.get("source_at") or "").strip()
+    topic = timephrase.resolve_deictics(topic, stamp)
+    when = f" (source recorded {stamp})" if stamp else ""
+    return f"Specific source{when}: {topic}"
 
 
 class ForwardCuriosityWorker:
@@ -341,6 +353,7 @@ class ForwardCuriosityWorker:
             "source_id": candidate.source_id,
             "source_at": candidate.source_at,
             "hers": candidate.hers,
+            "topic": candidate.topic,
         }
         append_question(
             self._kv_get, self._kv_set, entry, max_entries=self._journal_max,

@@ -1457,6 +1457,9 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                     state = _wl.deserialize(
                         chat_db.kv_get(_wl.KV_WANTS_LEDGER)
                     )
+                    from app.core.conversation.cue_wants import refresh_forward_wants
+
+                    state = refresh_forward_wants(state, getattr(self, "_cue_store", None))
                     if state.wants:
                         substance_first = bool(
                             getattr(
@@ -1541,6 +1544,11 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             )
             if not decision.fire:
                 return ""
+            if want_text and pick is not None:
+                from app.core.conversation.cue_wants import claim_forward_wants
+
+                if not claim_forward_wants(self, (pick,), block="initiative_block"):
+                    return ""
             log.info(
                 "initiative-turn fire: period=%d arc=%s want=%s",
                 decision.effective_period,
@@ -1717,6 +1725,9 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                     getattr(agent, "wants_reentry_cooldown_days", 5.0)
                 ),
             )
+            from app.core.conversation.cue_wants import refresh_forward_wants
+
+            matured = refresh_forward_wants(matured, getattr(self, "_cue_store", None))
             try:
                 chat_db.kv_set(_wl.KV_WANTS_LEDGER, _wl.serialize(matured))
             except Exception:
@@ -1729,8 +1740,20 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             substance_first = bool(
                 getattr(agent, "wants_substance_ordering", True)
             )
+            from app.core.conversation.cue_wants import claim_forward_wants
+
+            strongest = _wl.strongest_for_floor(
+                matured.wants, min_pressure=threshold, substance_first=substance_first,
+            )
+            shown = (strongest,) if strongest else tuple(
+                sorted(matured.wants, key=lambda w: w.pressure, reverse=True)[:2]
+            )
+            rendered = _wl.LedgerState(
+                wants=claim_forward_wants(self, shown, block="wants_block"),
+                recently_acted=matured.recently_acted,
+            )
             block = _wl.render_block(
-                matured, now,
+                rendered, now,
                 user_display_name=self.user_display_name,
                 imperative_threshold=threshold,
                 substance_first=substance_first,

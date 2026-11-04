@@ -122,6 +122,7 @@ class CuePoolMixin:
         note_as: str | None = REASON_TOPIC_MISS,
         user_text: str = "",
         cue_id: int | None = None,
+        claim_block: str | None = None,
         still_valid: Callable[[dict[str, Any]], bool] | None = None,
     ) -> "CueRow | None":
         """Claim one pending cue for the prompt, or ``None``.
@@ -276,7 +277,10 @@ class CuePoolMixin:
             attempt.stage(
                 self, row, commit_claim,
                 block=(
-                    "live_talk_about_block" if cue_id is not None else getattr(policy, "block", "")
+                    claim_block or (
+                        "live_talk_about_block" if cue_id is not None
+                        else getattr(policy, "block", "")
+                    )
                 ),
             )
         else:
@@ -487,6 +491,17 @@ class CuePoolMixin:
             )
             evidence = self._verdict_evidence(verdict)
             asked_text = assistant_text[:1000]
+            if row.cue_type == "forward_curiosity" and not row.payload.get("hers"):
+                from app.core.concepts.hypothesis_expression import question_span
+
+                asked_text = question_span(row.subject, assistant_text)
+                if not asked_text:
+                    store.record_feedback(
+                        row.id, "not_asked", assistant_message_id=assistant_message_id,
+                        reason="no_specific_question",
+                    )
+                    self._retire_or_retry(store, row, policy, evidence="not_asked")
+                    continue
             if row.cue_type == "concept_hypothesis":
                 from app.core.concepts.hypothesis_expression import question_span
 
@@ -518,7 +533,7 @@ class CuePoolMixin:
                     "asked_message_id": assistant_message_id,
                     "asked_session_id": getattr(self, "session_key", None),
                     "asked_text": asked_text,
-                    "ask_verified": row.cue_type == "concept_hypothesis",
+                    "ask_verified": row.cue_type in {"concept_hypothesis", "forward_curiosity"},
                 })
                 store.record_feedback(
                     row.id, "no_answer_yet", assistant_message_id=assistant_message_id,
