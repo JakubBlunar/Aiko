@@ -52,6 +52,33 @@ def test_failure_category_is_private_and_clears_after_healthy_decline(caplog):
     assert worker.stats()["failed"] == 1
 
 
+@pytest.mark.parametrize("base_url,expected", [
+    ("https://api.venice.ai/api/v1", "none"), ("http://localhost:11434", None),
+    ("https://api.example.com/v1", None),
+])
+def test_small_second_thought_does_not_spend_venice_budget_on_reasoning(base_url, expected):
+    client = _FakeClient("NONE")
+    client.base_url = base_url
+    worker = _worker(client)
+    worker.maybe_run(system_prompt="P", user_text=_LONG_USER, assistant_text=_LONG_REPLY)
+    assert client.calls[0]["options"].get("reasoning_effort") == expected
+    assert client.calls[0]["options"]["num_predict"] == 160
+    assert worker.stats()["declined"] == 1
+
+
+def test_truncated_thought_is_not_queued_even_when_fields_parse():
+    client = _FakeClient(_GOOD)
+    client.last_usage = SimpleNamespace(done_reason="length", completion_tokens=160,
+                                        reasoning_tokens=140)
+    queued = []
+    worker = _worker(client, queued=queued)
+    worker.maybe_run(system_prompt="P", user_text=_LONG_USER, assistant_text=_LONG_REPLY)
+    assert queued == []
+    assert worker.stats()["output_truncated"] == 1
+    assert worker.stats()["last_error_category"] == "output_truncated"
+    assert worker.stats()["last_output"]["reasoning_tokens"] == 140
+
+
 class _FakeClient:
     def __init__(self, response: str = "") -> None:
         self.response = response

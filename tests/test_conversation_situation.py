@@ -838,6 +838,7 @@ def test_evidence_scope_excludes_old_ids_and_separates_speaker_roles(tmp_path):
 
 @pytest.mark.parametrize("cause", [
     "evidence_id_unknown", "working_set.question.user_evidence_missing",
+    "working_set.question.evidence_id", "successor.change.evidence_shape",
 ])
 def test_validation_feedback_repairs_next_scheduled_call_without_extra_generation(tmp_path, cause):
     db = ChatDatabase(tmp_path / "repair-scope.db")
@@ -849,13 +850,23 @@ def test_validation_feedback_repairs_next_scheduled_call_without_extra_generatio
     )
     store.upsert(previous)
     bad = {"operation": "keep", "evidence_message_ids": [99999]}
-    if cause.startswith("working_set"):
+    if cause == "working_set.question.user_evidence_missing":
         bad = {
             "operation": "keep", "evidence_message_ids": [assistant_id],
             "working_set": {"question": {
                 "text": "Compare the lens weights.", "evidence_message_ids": [assistant_id],
             }},
         }
+    elif cause == "working_set.question.evidence_id":
+        bad = {"operation": "keep", "evidence_message_ids": [user_id],
+               "working_set": {"question": {
+                   "text": "Compare the lenses.", "evidence_message_ids": [99999],
+               }}}
+    elif cause == "successor.change.evidence_shape":
+        bad = {"operation": "keep", "evidence_message_ids": [user_id],
+               "successor": {"kind": "comparison", "subject": "lens weights",
+                             "change": {"text": "Compare the lenses.",
+                                        "evidence_message_ids": user_id}}}
     good = {"operation": "replace", "summary": "Comparing two lenses.",
             "evidence_message_ids": [user_id], "working_set": None}
     client = _FakeSituationClient([json.dumps(bad), json.dumps(good)])

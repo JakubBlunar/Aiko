@@ -51,6 +51,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -222,10 +223,12 @@ class SecondThoughtWorker:
             "unparsed": 0,
             "queued": 0,
             "failed": 0,
+            "output_truncated": 0,
         }
         self._last_thought: SecondThought | None = None
         self._last_ms = 0.0
         self._last_error_category = ""
+        self._last_output: dict[str, Any] = {}
 
     # ── public ──────────────────────────────────────────────────────────
 
@@ -236,6 +239,7 @@ class SecondThoughtWorker:
         out["last_thought"] = last.thought if last is not None else ""
         out["last_ms"] = round(self._last_ms, 1)
         out["last_error_category"] = self._last_error_category
+        out["last_output"] = dict(self._last_output)
         return out
 
     def update_runtime(
@@ -392,6 +396,13 @@ class SecondThoughtWorker:
         max_tokens = max(32, int(getattr(agent, "second_thought_max_tokens", 160)))
         started = time.monotonic()
         self._last_error_category = ""
+        self._last_output = {}
+        options = {"num_predict": max_tokens, "prompt_cache_key": session_key}
+        # This provider counts hidden reasoning against the tiny output cap.
+        # A measured call spent all 160 tokens before emitting a single byte.
+        # Keep other providers' configured effort vocabularies untouched.
+        if urlsplit(str(getattr(self._ollama, "base_url", ""))).hostname == "api.venice.ai":
+            options["reasoning_effort"] = "none"
         try:
             raw = self._ollama.chat(
                 self._messages(
@@ -400,13 +411,7 @@ class SecondThoughtWorker:
                     assistant_text=assistant_text,
                     cache_breakpoints=cache_breakpoints,
                 ),
-                options={
-                    "num_predict": max_tokens,
-                    # Shares the turn's cache affinity key on purpose: the
-                    # prefix is the same prefix, so routing it to the same
-                    # place is what makes the read land.
-                    "prompt_cache_key": session_key,
-                },
+                options=options,
                 model=self._model,
                 surface="second_thought",
             )
@@ -421,6 +426,17 @@ class SecondThoughtWorker:
         finally:
             self._last_ms = (time.monotonic() - started) * 1000.0
 
+        usage = getattr(self._ollama, "last_usage", None)
+        self._last_output = {
+            "visible_chars": len(raw or ""),
+            "completion_tokens": getattr(usage, "completion_tokens", None),
+            "reasoning_tokens": getattr(usage, "reasoning_tokens", None),
+            "done_reason": getattr(usage, "done_reason", None),
+        }
+        if self._last_output["done_reason"] == "length":
+            self._stats["output_truncated"] += 1
+            self._last_error_category = "output_truncated"
+            return None
         thought = parse_second_thought(raw)
         if thought.is_empty():
             # Declining and failing to parse are counted apart because the

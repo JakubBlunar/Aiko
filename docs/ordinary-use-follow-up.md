@@ -33,3 +33,19 @@ not guaranteed model adherence on every live turn. Backend restart is needed.
 3. Surfacing and cue-delivery baseline.
 4. Shared-term and learned-strategy intake diagnostics.
 5. Understanding-arc coverage and source-receipt diagnostics.
+
+## 1. Model-output contracts
+
+An isolated synthetic probe on the configured Venice chat route reproduced the
+second-thought failure: all 160 completion tokens were hidden reasoning, with
+zero visible characters and a length stop. Disabling reasoning on that call
+produced a valid two-field draft using 80 visible tokens. Second thought now
+overrides effort only for this provider, retaining the configured output cap,
+cache affinity and other providers' effort settings. Truncated drafts are never
+queued, even when partial fields parse; content-free output metrics distinguish
+truncation from malformed text and legitimate NONE declines.
+
+Situation extraction keeps rejecting unknown citations. Feedback on the next
+already-scheduled call now covers the observed nested evidence_id and
+evidence_shape reasons as well as top-level IDs and missing user evidence. No
+extra inference retry or guessed replacement citation is introduced.

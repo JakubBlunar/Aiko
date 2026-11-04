@@ -1052,7 +1052,7 @@ Two facts about the shape are worth knowing before tuning it, because they are w
 Settings (all under `agent`):
 
 - `second_thought_enabled` *(bool, `false`)* — master switch, and the one-line revert. Off → no call is ever made and the block never renders. Deliberately dark on a fresh install: this is the only worker that spends on the main chat route.
-- `second_thought_max_tokens` *(int, `160`, min `32`)* — output ceiling, and effectively the whole cost dial since the input is a cache read. The floor matters: below roughly 32 the draft truncates mid-sentence and lands in `unparsed` rather than declining cleanly.
+- `second_thought_max_tokens` *(int, `160`, min `32`)* — output ceiling. Second thought disables hidden reasoning on Venice calls so it cannot consume this small budget before visible output; other providers retain their configured effort. Length-stopped output is counted as `output_truncated` and never queued. Diagnostics include visible character and token counts without the private response text.
 - `second_thought_min_gap_seconds` *(int, `180`, min `0`)* — floor between calls. The pass can decline, but declining still costs a call, so the cheap clock runs first. Raise to spend less; `0` allows one per turn (bounded then only by the shelf).
 - `second_thought_min_user_chars` *(int, `80`, min `0`)* / `second_thought_min_reply_chars` *(int, `120`, min `0`)* — length floors. "ok" / "thanks" / "lol" turns have nothing to have a second thought about, and these are what keep the spend sane.
 

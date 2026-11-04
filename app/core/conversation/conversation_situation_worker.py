@@ -613,8 +613,20 @@ class ConversationSituationWorker:
             ),
         }
         repair = ""
-        if validation_reason == "evidence_id_unknown":
-            repair = "The last output cited an unavailable ID. Copy only IDs from EVIDENCE SCOPE."
+        if validation_reason == "evidence_id_unknown" or validation_reason.endswith(".evidence_id"):
+            repair = (
+                "The last output cited an unavailable ID. Copy integer message IDs exactly "
+                "from EVIDENCE SCOPE, not transcript positions, remembered IDs or strings. "
+                "Every nested citation must also appear in top-level evidence_message_ids. "
+                "Omit an unsupported note; never guess a replacement ID."
+            )
+        elif validation_reason.endswith(".evidence_shape"):
+            repair = (
+                "The last evidence_message_ids had an invalid shape. Each note needs a JSON "
+                "array of 1-3 integer IDs from EVIDENCE SCOPE, also included in top-level "
+                "evidence_message_ids. Do not use a scalar, string, object or empty array. "
+                "Use null for an unsupported optional note or successor."
+            )
         elif validation_reason.startswith("working_set.") and validation_reason.endswith(
             "user_evidence_missing"
         ):
