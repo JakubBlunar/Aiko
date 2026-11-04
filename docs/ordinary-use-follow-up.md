@@ -103,3 +103,23 @@ The public diagnostic groups these reasons and labels historical rejected rows
 without an explanation as unknown. Private meanings, outcomes and raw model
 responses are not added to the counters. Existing extractor-to-store and
 correction/retraction tests still govern successful intake.
+
+## 5. Understanding-arc coverage
+
+Backward arc traversal now reads at most three bounded pages for the connected
+belief endpoints, rather than one latest-128 page shared by an entire subject.
+Chronology, alias matching, lifecycle proof, source revisions and the requirement
+for at least two verified changes remain enforced. A regression places 140
+unrelated newer events after a valid chain and still recovers the same arc.
+
+The public diagnostic now counts sampled failure reasons and specific missing,
+incomplete or revised source receipts. New incomplete receipts retain only
+content-free issue counts. Older receipts are not retroactively certified.
+
+A read-only evaluation of the same eight-core-per-subject sample still found
+no supported arc: 11 endpoints encountered incomplete receipts, 10 encountered
+missing receipts, one a revised source, and two insufficient connected changes.
+This identifies the remaining source-history limitation; widening narrative
+permission or inventing missing steps would not resolve it. The sample is not
+an exhaustive assertion about the full graph. Backend restart is required to
+activate the new reader and diagnostics.

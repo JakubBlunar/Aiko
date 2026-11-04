@@ -63,6 +63,11 @@ T3 and concept recall; historical events without captured source receipts remain
 **Remaining:** Evaluate chronology, natural narration and coverage over ordinary use. Broader arcs
 beyond connected recorded changes and an unsolicited cue policy require separate evidence.
 
+4 Nov follow-up: bounded history now follows each connected endpoint instead of
+the subject-wide latest page; diagnostics distinguish missing/incomplete/revised
+receipts and insufficient changes. The ordinary-use core sample remains thin;
+natural narration is still unvalidated. See [the follow-up](../ordinary-use-follow-up.md).
+
 **Source check:** [understanding_arcs.py](../../app/core/concepts/understanding_arcs.py),
 [test_understanding_arcs.py](../../tests/test_understanding_arcs.py),
 [rollout](../concept-pattern-rollout.md).

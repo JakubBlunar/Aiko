@@ -403,25 +403,27 @@ class ConceptLearningEventStore:
         return [self._row_to_event(r) for r in rows]
 
     def history_for(
-        self, concept_id: int, *, limit: int = 100
+        self, concept_id: int, *, limit: int = 100, newest_first: bool = False,
     ) -> list[LearningEvent]:
         """One belief's learning events **oldest-first** -- read as a story.
 
         Follows the alias chain first, so asking about a concept that was
         merged away still returns the history that continued under its
-        canonical row.
+        canonical row. ``newest_first`` is for bounded backward traversal
+        from the current endpoint; the default preserves story order.
         """
         resolved = self.resolve_alias(concept_id)
         ids = {int(concept_id), int(resolved)}
         placeholders = ",".join("?" * len(ids))
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         params: list[object] = [*ids, *ids, max(1, int(limit))]
+        order = "DESC" if newest_first else "ASC"
         try:
             rows = conn.execute(
                 f"SELECT {_COLS} FROM concept_learning_events "
                 f"WHERE concept_id IN ({placeholders}) "
                 f"   OR prior_concept_id IN ({placeholders}) "
-                "ORDER BY created_at ASC, id ASC LIMIT ?",
+                f"ORDER BY created_at {order}, id {order} LIMIT ?",
                 tuple(params),
             ).fetchall()
         except Exception:

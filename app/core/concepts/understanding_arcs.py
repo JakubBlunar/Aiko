@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 
 from app.core.concepts.concept_support import memory_revision, revision_hash
 from app.core.concepts.concept_evidence_lineage import memory_lineages
+from app.core.infra import timephrase
 
 PREFIX = "concept.learning_sources:"
+_SOURCE_ISSUES = frozenset({"source_missing", "source_concept_not_held",
+                            "cluster_missing_or_over_budget", "unknown_source"})
 _REFLECTION = re.compile(r"\b(?:changed|grown|used to|at first|over time|since we|"
                          r"understanding|understand me|understand us|understand yourself)\b", re.I)
 
@@ -75,6 +79,7 @@ def record_learning_sources(db, event, store, memories, graph):
     if not event.event_id:
         return
     nodes, roots, complete = [], set(), True
+    issues = Counter()
     clusters = {}
     refs = list(dict.fromkeys(event.evidence_refs))
     for kind, ident in refs[:32]:
@@ -86,8 +91,9 @@ def record_learning_sources(db, event, store, memories, graph):
                 clusters[str(ident)] = sorted(cluster.member_ids)
             nodes.append([kind, str(ident), fingerprint])
             roots.update(origins)
-        except (ValueError, TypeError, AttributeError):
+        except (ValueError, TypeError, AttributeError) as error:
             complete = False
+            issues[str(error) if str(error) in _SOURCE_ISSUES else "source_unavailable"] += 1
     messages = []
     for root in sorted(roots)[:64]:
         row = db.get_message_row(int(root.split(":", 1)[1]))
@@ -95,36 +101,55 @@ def record_learning_sources(db, event, store, memories, graph):
             r"\b(?:role.?play|fictional|hypothetical)\b", row.content, re.I,
         ):
             complete = False
+            issues["message_missing_or_nonliteral"] += 1
         else:
             messages.append([row.id, revision_hash([row.role, row.content, row.session_id])])
     receipt = {"event_revision": _event_hash(event), "nodes": nodes, "messages": messages,
                "cluster_members": clusters,
-               "complete": complete and bool(nodes) and len(refs) <= 32 and len(roots) <= 64}
+               "complete": complete and bool(nodes) and len(refs) <= 32 and len(roots) <= 64,
+               "issues": dict(issues)}
     db.kv_set(PREFIX + str(event.event_id), json.dumps(receipt))
 
 
-def _sources_valid(db, event, store, memories, graph):
+def source_validation_reason(db, event, store, memories, graph):
     raw = db.kv_get(PREFIX + str(event.event_id))
     try:
-        receipt = json.loads(raw) if raw else {}
-        if not receipt.get("complete") or receipt.get("event_revision") != _event_hash(event):
-            return False
+        if not raw:
+            return "missing_receipt"
+        receipt = json.loads(raw)
+        if not receipt.get("complete"):
+            return "incomplete_receipt"
+        if receipt.get("event_revision") != _event_hash(event):
+            return "event_revised"
         if not 1 <= len(receipt.get("nodes", [])) <= 32 or len(receipt.get("messages", [])) > 64:
-            return False
+            return "receipt_bounds"
         for kind, ident, fingerprint in receipt["nodes"]:
             current, _roots = _node(
                 kind, ident, store, memories, graph,
                 frozen_members=receipt.get("cluster_members", {}).get(str(ident)),
             )
             if current != fingerprint:
-                return False
+                return "source_revised"
         for ident, fingerprint in receipt["messages"]:
             row = db.get_message_row(ident)
-            if row is None or revision_hash([row.role, row.content, row.session_id]) != fingerprint:
-                return False
-        return True
-    except (ValueError, TypeError, KeyError, AttributeError):
-        return False
+            if row is None:
+                return "message_missing"
+            if revision_hash([row.role, row.content, row.session_id]) != fingerprint:
+                return "message_revised"
+        return ""
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        return str(error) if str(error) in _SOURCE_ISSUES else "invalid_receipt_or_source"
+
+
+def _sources_valid(db, event, store, memories, graph):
+    return not source_validation_reason(db, event, store, memories, graph)
+
+
+def _precedes(event, later):
+    earlier_at = timephrase.parse_iso(event.created_at)
+    later_at = timephrase.parse_iso(later.created_at)
+    return bool(earlier_at and later_at and
+                (earlier_at, event.event_id) < (later_at, later.event_id))
 
 
 def understanding_arc(concept, *, store, learning, lifecycle, db, memories=None, graph=None):
@@ -134,22 +159,27 @@ def understanding_arc(concept, *, store, learning, lifecycle, db, memories=None,
     if (learning is None or lifecycle is None or db is None
             or concept.status != "active" or not store.is_assertable(concept.concept_id)):
         return packet
-    # One bounded page, shared across successive endpoints. Never scan the graph.
-    events = learning.list(limit=128, subject=concept.subject)
+    # At most three bounded endpoint pages. Unrelated subject activity must
+    # not evict the earlier step of an otherwise provable chain.
     cursor, label = concept.concept_id, concept.label
     selected, seen = [], set()
     lifecycle_cache = {}
-    for event in events:
-        if len(selected) >= 3:
+    for _ in range(3):
+        events = learning.history_for(cursor, limit=128, newest_first=True)
+        event = next((event for event in events if (
+            event.shape in {"succession", "relabel", "emergence", "revival"}
+            and event.subject == concept.subject and event.new_label == label
+            and event.concept_id and event.created_at
+            and learning.resolve_alias(event.concept_id) == learning.resolve_alias(cursor)
+            and event.event_id not in seen
+            and (not selected or _precedes(event, selected[-1]))
+        )), None)
+        if event is None:
             break
-        if (event.shape not in {"succession", "relabel", "emergence", "revival"}
-                or event.subject != concept.subject or event.new_label != label
-                or not event.concept_id or not event.created_at
-                or learning.resolve_alias(event.concept_id) != learning.resolve_alias(cursor)
-                or event.event_id in seen):
-            continue
-        if not _sources_valid(db, event, store, memories, graph):
+        reason = source_validation_reason(db, event, store, memories, graph)
+        if reason:
             packet["reason"] = "missing_or_revised_source_receipt"
+            packet["source_reason"] = reason
             break
         # The classified change must still resolve to a structural lifecycle event.
         ids = {event.concept_id, event.prior_concept_id} - {None}
@@ -174,6 +204,7 @@ def understanding_arc(concept, *, store, learning, lifecycle, db, memories=None,
             break
         label = event.old_label
         cursor = event.prior_concept_id or event.concept_id
+    packet["verified_changes"] = len(selected)
     if len(selected) < 2:
         return packet
     selected.reverse()

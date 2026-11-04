@@ -81,6 +81,45 @@ def test_chronological_arc_covers_every_subject(history, subject):
     assert "not proof a person changed" in render_arc(packet)
 
 
+def test_unrelated_recent_changes_do_not_evict_connected_history(history):
+    concepts, _, kwargs = make_arc(history, "user")
+    learning = history[3]
+    for index in range(140):
+        learning.add(LearningEvent(
+            shape="emergence", subject="user", concept_id=1000 + index,
+            new_label="An unrelated belief", fingerprint=f"unrelated-{index}",
+            created_at="2026-11-01T12:00:00+00:00",
+        ))
+    assert not any(event.concept_id == concepts[-1].concept_id
+                   for event in learning.list(limit=128, subject="user"))
+    packet = understanding_arc(concepts[-1], **kwargs)
+    assert packet["status"] == "supported"
+    assert packet["verified_changes"] == 2
+
+
+def test_source_failures_are_distinguished_without_inventing_an_arc(history):
+    concepts, sources, kwargs = make_arc(history, "user")
+    history[1].update(sources[-1], content="Revised qualification")
+    packet = understanding_arc(concepts[-1], **kwargs)
+    assert packet["status"] == "thin_record"
+    assert packet["source_reason"] == "source_revised"
+    event = history[3].list(limit=1)[0]
+    history[0].kv_set("concept.learning_sources:" + str(event.event_id), "")
+    assert understanding_arc(concepts[-1], **kwargs)["source_reason"] == "missing_receipt"
+
+
+def test_new_incomplete_receipt_records_a_content_free_source_issue(history):
+    import json
+
+    _, sources, kwargs = make_arc(history, "user")
+    history[1].delete(sources[-1])
+    event = history[3].list(limit=1)[0]
+    record_learning_sources(history[0], event, history[2], history[1], None)
+    receipt = json.loads(history[0].kv_get("concept.learning_sources:" + str(event.event_id)))
+    assert receipt["complete"] is False
+    assert receipt["issues"] == {"source_missing": 1}
+
+
 def test_deleted_revised_sources_and_missing_lifecycle_proof_block_a_story(history):
     concepts, source_ids, kwargs = make_arc(history, "relationship")
     assert understanding_arc(concepts[-1], **kwargs)["status"] == "supported"

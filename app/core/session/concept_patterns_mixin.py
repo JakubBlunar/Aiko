@@ -34,18 +34,23 @@ class ConceptPatternsMixin:
         if view is None:
             return {"enabled": False, "arcs": []}
         subjects = ("user", "aiko", "relationship") if subject == "all" else (subject,)
-        arcs_by_subject, counts = {}, Counter()
+        arcs_by_subject, counts, reasons, source_reasons = {}, Counter(), Counter(), Counter()
         for name in subjects:
             arcs_by_subject[name] = []
             for concept in view.core(subject=name, limit=8):
                 packet = self._understanding_arc(concept)
                 counts[name + ":" + packet["status"]] += 1
+                reasons[name + ":" + packet.get("reason", "unknown")] += 1
+                if packet.get("source_reason"):
+                    source_reasons[name + ":" + packet["source_reason"]] += 1
                 if packet["status"] == "supported":
                     arcs_by_subject[name].append(packet)
         arcs = [arcs_by_subject[name][index] for index in range(8) for name in subjects
                 if index < len(arcs_by_subject[name])]
         return {"enabled": True, "inspected_per_subject_cap": 8,
-                "sample_counts": dict(counts), "arcs": arcs[:max(1, min(9, int(limit)))]}
+                "sample_counts": dict(counts), "sample_reasons": dict(reasons),
+                "source_reasons": dict(source_reasons),
+                "arcs": arcs[:max(1, min(9, int(limit)))]}
 
     def pattern_learning_snapshot(self):
         memories = getattr(self, "_memory_store", None)
