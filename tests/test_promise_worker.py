@@ -98,6 +98,7 @@ class _FakeMemoryStore:
     ):
         self.calls.append({
             "content": content,
+            "source_message_id": source_message_id,
             "kind": kind,
             "salience": salience,
             "tier": tier,
@@ -384,7 +385,7 @@ class DeadlineTests(unittest.TestCase):
         # has to become a date before it is stored -- the same rule H40
         # applied to memory content.
         _, text = self._parse("tomorrow")
-        self.assertEqual(text, "Thu Aug 20")
+        self.assertEqual(text, "Thu Aug 20, 2026")
 
     def test_unparseable_wording_survives_only_if_it_stays_true(self) -> None:
         # Wording that names no moment but will still read the same next
@@ -402,14 +403,14 @@ class DeadlineTests(unittest.TestCase):
         when, text = self._parse("this week")
         assert when is not None
         self.assertEqual(when.astimezone().date().isoformat(), "2026-08-23")
-        self.assertEqual(text, "Sun Aug 23")
+        self.assertEqual(text, "Sun Aug 23, 2026")
 
     def test_the_display_form_carries_a_weekday(self) -> None:
         # The model getting weekday arithmetic wrong is one of the ways
         # H40 happened, so the stored sentence answers it outright rather
         # than leaving a raw ISO date to be worked out at read time.
         _, text = self._parse("2026-08-19")
-        self.assertEqual(text, "Wed Aug 19")
+        self.assertEqual(text, "Wed Aug 19, 2026")
 
     def test_an_impossible_date_is_refused_not_rounded(self) -> None:
         when, _ = self._parse("Feb 30, 2026")
@@ -521,7 +522,8 @@ class AttributionTests(unittest.TestCase):
 class RunTests(unittest.TestCase):
     def test_run_persists_clean_promise(self) -> None:
         payload = json.dumps([
-            {"who": "user", "what": "call the dentist about the filling", "deadline": None},
+            {"who": "user", "what": "call the dentist about the filling", "deadline": None,
+             "source_message_id": 1, "source_quote": "meaning to call the dentist"},
         ])
         worker, store, ollama, _ = _build_world(responses=[payload])
         result = worker.run()
@@ -532,17 +534,19 @@ class RunTests(unittest.TestCase):
         self.assertEqual(call["kind"], "promise")
         self.assertEqual(call["tier"], "long_term")
         self.assertEqual(call["confidence"], 0.85)
-        self.assertEqual(
-            call["metadata"],
-            {"promise_who": "user", "promise_status": "open"},
-        )
+        self.assertEqual(call["metadata"]["promise_who"], "user")
+        self.assertEqual(call["metadata"]["promise_status"], "open")
+        self.assertEqual(call["source_message_id"], 1)
+        self.assertEqual(call["metadata"]["source_quote"], "meaning to call the dentist")
         self.assertIn("Jacob promised", call["content"])
 
     def test_run_drops_low_quality(self) -> None:
         payload = json.dumps([
-            {"who": "user", "what": "never know", "deadline": None},
+            {"who": "user", "what": "never know", "deadline": None,
+             "source_message_id": 1, "source_quote": "I'll never know"},
         ])
-        worker, store, _, _ = _build_world(responses=[payload])
+        worker, store, _, _ = _build_world(responses=[payload],
+                                           messages=[("user", "I'll never know")])
         result = worker.run()
         self.assertEqual(result["persisted"], 0)
         self.assertEqual(result["dropped_low_quality"], 1)
@@ -551,10 +555,12 @@ class RunTests(unittest.TestCase):
     def test_run_dedupes_against_existing(self) -> None:
         existing = [_seed_promise("Jacob promised: fix the deploy script")]
         payload = json.dumps([
-            {"who": "user", "what": "fix the deploy script", "deadline": None},
+            {"who": "user", "what": "fix the deploy script", "deadline": None,
+             "source_message_id": 1, "source_quote": "I'll fix the deploy script"},
         ])
         worker, store, _, _ = _build_world(
             responses=[payload], existing=existing,
+            messages=[("user", "I'll fix the deploy script")],
         )
         result = worker.run()
         self.assertEqual(result["persisted"], 0)
@@ -573,12 +579,14 @@ class RunTests(unittest.TestCase):
             "water the office plants",
         ]
         payload = json.dumps([
-            {"who": "user", "what": what, "deadline": None}
-            for what in distinct
+            {"who": "user", "what": what, "deadline": None,
+             "source_message_id": index + 1, "source_quote": "I'll " + what}
+            for index, what in enumerate(distinct)
         ])
         worker, store, _, _ = _build_world(
             responses=[payload],
             memory_settings=_StubMemorySettings(promise_worker_max_per_run=3),
+            messages=[("user", "I'll " + what) for what in distinct],
         )
         result = worker.run()
         self.assertEqual(result["persisted"], 3)
@@ -625,10 +633,13 @@ class RunTests(unittest.TestCase):
                     "who": "assistant",
                     "what": "investigate the auth handler",
                     "deadline": None,
+                    "source_message_id": 1,
+                    "source_quote": "I'll investigate the auth handler",
                 },
             ],
         })
-        worker, store, _, _ = _build_world(responses=[payload])
+        worker, store, _, _ = _build_world(responses=[payload],
+            messages=[("assistant", "I'll investigate the auth handler")])
         result = worker.run()
         self.assertEqual(result["persisted"], 1)
         self.assertIn("investigate the auth handler", store.calls[-1]["content"])

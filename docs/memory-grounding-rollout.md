@@ -109,9 +109,34 @@ Validation: 213 affected tests passed with 2,940 deselected, plus focused final
 moment/date checks; lint passed. Dynamic scheduling and long-input age retention
 have explicit regression coverage.
 
+## 4. Source-grounded promises
+
+The extractor now requests a message ID and literal quote alongside each action.
+Only IDs in the actual bounded offered transcript, a matching speaker and a
+matching quoted span can populate the source pointer. Missing/invented citations
+and floating relative wording cannot be persisted by this worker. This checks
+attribution, not full semantic entailment of the paraphrased commitment.
+
+Relative deadlines resolve against the cited message's timestamp rather than
+the later extraction time. Stored deadline labels always include their year.
+Promise status/deadline remain the lifecycle authority, separate from ordinary
+event-expiry fields. Duplicate detection is scoped by actor and known deadline;
+the same action promised by Aiko and the user cannot suppress one another.
+
+The privacy gate still checks actual conversation text, before infrastructure
+timestamps/IDs: ISO stamps can resemble phone numbers to the PII detector.
+Standalone legacy JSON parsing remains tolerant; production extraction requires
+the source map. No old promise was retroactively assigned a fabricated citation.
+
+Validation: 117 focused tests and 25 subtests passed. The broad affected run in
+the project's environment passed 1,657 tests and 147 subtests, with one unrelated
+audio timing failure; the focused follow-up (including that audio file) passed.
+The system Python initially lacked the declared timezone-data dependency; the
+project environment supplied it. Lint passed.
+
 ## Remaining slices
 
-- Promise source-message/quote validation and remaining producer/mutation boundaries.
+- Remaining producer/mutation boundaries and role-based evaluation.
 - Source-to-concept evaluation and fresh ordinary-use review after activation.
 
 Backend restart is required to activate implementation changes. These checks

@@ -131,6 +131,8 @@ _SYSTEM_PROMPT = (
     "made. Reply with ONE JSON object (no prose, no markdown) shaped "
     '{"promises": [...]} holding zero or more promise objects. Each '
     "object in that array has these fields:\n"
+    "  - source_message_id: the numeric ID of the message making the commitment.\n"
+    "  - source_quote: an exact quote from that message showing the commitment.\n"
     "  - who: 'user' (the human committed) or 'assistant' (Aiko "
     "committed).\n"
     "  - what: a SELF-CONTAINED action phrase, 4-160 chars, that names "
@@ -269,10 +271,8 @@ def _format_deadline(when: datetime, *, anchor: datetime | None = None) -> str:
     one.
     """
     local = when.astimezone()
-    ref = (anchor or timephrase.now()).astimezone()
     stamp = local.strftime("%a %b %d").replace(" 0", " ")
-    if local.year != ref.year:
-        stamp = f"{stamp}, {local.year}"
+    stamp = f"{stamp}, {local.year}"  # Stored text must remain absolute across years.
     if (local.hour, local.minute) != (23, 59):
         stamp = f"{stamp} {local.strftime('%H:%M')}"
     return stamp
@@ -446,8 +446,10 @@ class PromiseExtractionWorker:
             return {"skipped": True, "reason": "lookback_zero"}
 
         now = self._clock()
+        source_rows: dict[int, dict[str, Any]] = {}
         transcript = self._snapshot_transcript(
             session_key=session_key, lookback_turns=lookback_turns,
+            source_rows=source_rows,
         )
         if not transcript:
             # An empty window is normal; a session key that matches *no*
@@ -492,8 +494,11 @@ class PromiseExtractionWorker:
             if self._assistant_name_provider
             else None
         )
+        # Gate the actual conversation, not our ISO timestamps/message IDs
+        # (numeric stamps can resemble phone numbers to the PII detector).
+        privacy_text = "\n".join(row["content"] for row in source_rows.values()) or transcript
         publishable = web_safe_probe(
-            transcript,
+            privacy_text,
             user_names=user_names,
             assistant_name=assistant_name,
         )
@@ -516,7 +521,7 @@ class PromiseExtractionWorker:
         )
 
         t0 = time.monotonic()
-        promises, failure = self._extract_with_llm(transcript)
+        promises, failure = self._extract_with_llm(transcript, source_rows=source_rows)
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         if promises is None:
             log.info(
@@ -554,14 +559,15 @@ class PromiseExtractionWorker:
                 dropped_quality += 1
                 continue
             body_words = _content_words(_tokenize(p.text))
-            if self._is_duplicate(body_words, existing):
+            scope = (p.who, p.deadline)
+            if self._is_duplicate(body_words, existing.get(scope, [])):
                 dropped_dup += 1
                 continue
             if self._persist(p, session_key=session_key):
                 persisted += 1
                 # Keep the in-run dedupe set fresh so two near-identical
                 # promises in one batch don't both land.
-                existing.append(body_words)
+                existing.setdefault(scope, []).append(body_words)
 
         result = {
             "promises_returned": len(promises),
@@ -588,6 +594,7 @@ class PromiseExtractionWorker:
         *,
         session_key: str,
         lookback_turns: int,
+        source_rows: dict[int, dict[str, Any]] | None = None,
     ) -> str:
         """Join the last N turns (both sides) into one prompt block.
 
@@ -645,13 +652,17 @@ class PromiseExtractionWorker:
                 continue
             if len(text) > max_msg_chars:
                 text = text[: max_msg_chars - 1] + "\u2026"
-            speaker = user_name if row.role == "user" else "Aiko"
-            age = timephrase.age_prefix(getattr(row, "created_at", None), now)
-            stamp = f"[{age}] " if age else ""
-            line = f"{stamp}{speaker}: {text}"
+            created = getattr(row, "created_at", None)
+            line = timephrase.format_transcript([{
+                "role": row.role, "content": text, "created_at": created,
+            }], now, role_labels={"user": user_name, "assistant": "Aiko"})
+            mid = getattr(row, "id", None)
+            line = f"[message_id={mid}; role={row.role}; said_at={created}] {line}"
             if total + len(line) > max_transcript_chars and lines:
                 break
             lines.append(line)
+            if source_rows is not None and type(mid) is int:
+                source_rows[mid] = {"role": row.role, "content": text, "created_at": created}
             total += len(line) + 1
         lines.reverse()
         return "\n".join(lines)
@@ -659,7 +670,7 @@ class PromiseExtractionWorker:
     # ?? LLM extractor ????????????????????????????????????????????????
 
     def _extract_with_llm(
-        self, transcript: str,
+        self, transcript: str, *, source_rows: dict[int, dict[str, Any]] | None = None,
     ) -> tuple[list[Promise] | None, str]:
         """Run one extraction call: ``(promises, failure_reason)``.
 
@@ -745,6 +756,7 @@ class PromiseExtractionWorker:
                 if self._assistant_name_provider else None
             ),
             anchor=self._clock(),
+            source_rows=source_rows if source_rows is not None else {},
         )
         if parsed is None:
             log.info(
@@ -762,6 +774,7 @@ class PromiseExtractionWorker:
         user_names: list[str] | None = None,
         assistant_name: str | None = None,
         anchor: datetime | None = None,
+        source_rows: dict[int, dict[str, Any]] | None = None,
     ) -> list[Promise] | None:
         """Parse the LLM's JSON answer into typed promises.
 
@@ -804,10 +817,27 @@ class PromiseExtractionWorker:
             what = str(item.get("what") or "").strip()
             if len(what) < 4:
                 continue
+            mid = item.get("source_message_id")
+            quote = str(item.get("source_quote") or "").strip()
+            source = source_rows.get(mid) if source_rows is not None and type(mid) is int else None
+            item_anchor = anchor
+            if source_rows is not None:
+                # Only the exact offered message, same speaker and literal span
+                # can authorize a source pointer. A plausible model-supplied ID cannot.
+                if (source is None or source["role"] != who or len(quote) < 8
+                        or " ".join(quote.split()) not in " ".join(source["content"].split())):
+                    log.info("promise-worker refused source: missing/mismatched message or quote")
+                    continue
+                item_anchor = timephrase.parse_iso(source["created_at"])
+                if timephrase.has_relative_deictic(what):
+                    continue  # The prompt must anchor the stored action, not just its deadline.
             deadline_raw = item.get("deadline")
+            if (source_rows is not None and item_anchor is None
+                    and timephrase.has_relative_deictic(str(deadline_raw or ""))):
+                continue
             when, when_text = _read_deadline(
                 deadline_raw if isinstance(deadline_raw, str) else None,
-                anchor=anchor,
+                anchor=item_anchor,
             )
             out.append(
                 Promise(
@@ -815,6 +845,8 @@ class PromiseExtractionWorker:
                     text=what[:200],
                     source="llm",
                     confidence=0.8,
+                    source_turn_id=mid if source is not None else None,
+                    raw_match=quote[:2000] if source is not None else "",
                     deadline=when,
                     deadline_text=when_text,
                 )
@@ -823,9 +855,11 @@ class PromiseExtractionWorker:
 
     # ?? dedupe + persistence ?????????????????????????????????????????
 
-    def _existing_promise_word_sets(self) -> list[set[str]]:
+    def _existing_promise_word_sets(self) -> dict[tuple[str, datetime | None], list[set[str]]]:
         """Content-word sets of existing still-active promise bodies."""
-        out: list[set[str]] = []
+        from app.core.memory.memory_origin import memory_origin
+
+        out: dict[tuple[str, datetime | None], list[set[str]]] = {}
         try:
             rows = self._memory_store.iter_by_kind("promise")
         except Exception:
@@ -839,7 +873,12 @@ class PromiseExtractionWorker:
             except Exception:
                 continue
             if words:
-                out.append(words)
+                subject = memory_origin(mem).subject
+                who = "assistant" if subject == "aiko" else "user" if subject == "user" else ""
+                raw_deadline = (mem.metadata or {}).get("promise_deadline")
+                deadline = timephrase.parse_iso(raw_deadline)
+                if who and not (raw_deadline and deadline is None):
+                    out.setdefault((who, deadline), []).append(words)
         return out
 
     @staticmethod
@@ -861,6 +900,8 @@ class PromiseExtractionWorker:
         embedder = self._embedder
         if store is None or embedder is None:
             return False
+        if promise.source == "llm" and (promise.source_turn_id is None or not promise.raw_match):
+            return False
         display_name = (
             (self._user_display_name_provider() or "Jacob")
             if self._user_display_name_provider
@@ -875,6 +916,8 @@ class PromiseExtractionWorker:
         metadata: dict[str, Any] = {
             "promise_who": promise.who,
             "promise_status": "open",
+            "source_quote": promise.raw_match,
+            "source_scope": "validated_message_quote",
         }
         # The deadline lives here and nowhere else. ``event_time`` was the
         # obvious alternative and is the wrong shape: it means "when this
