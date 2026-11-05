@@ -17,3 +17,20 @@ Profiles are exposed in topic-graph snapshots and appended to the actual focus
 packets in concept synthesis, including reconsideration. They are context, not
 additional citeable evidence, and do not change promotion gates or confidence.
 No model call or live-data rewrite is needed to compute them.
+
+## Source-backed situations and outcomes
+
+The ordinary extractor can attach optional `observation` receipts for a context,
+action, explicit reported outcome and exceptions. Every field cites a literal
+span in a newly offered message from the memory's actual owner. Quotes retain
+their source timestamp and role. Unknown facets remain absent; an empty object
+does not manufacture context. Outcome quotes preserve their full clause,
+including qualifications and negation; predicted benefits do not count.
+
+Receipts are checked again before queued writes and when new concept evidence
+or topic-summary inputs are admitted. Source edits/deletion invalidate them.
+The original qualifiers remain in content and are also rendered in memory source
+annotations. Differently scoped facets cannot collapse through cosine dedupe or
+consolidation. The semantic revision includes these fields only when present,
+so ordinary legacy hashes do not all change on upgrade. This adds no confidence
+formula, model call, or compulsory extra memory.

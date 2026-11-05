@@ -143,4 +143,9 @@ def origin_annotation(memory) -> str:
         parts.append(f"promise_status={meta.get('promise_status', 'unknown')}")
         if meta.get("promise_deadline"):
             parts.append(f"deadline={meta['promise_deadline']}")
+    from app.core.memory.observation_receipts import observation_context
+
+    observation = observation_context(memory)
+    if observation:
+        parts.append(observation)
     return "; ".join(parts)

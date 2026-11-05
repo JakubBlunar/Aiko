@@ -87,6 +87,16 @@ def admit_memory(
         },
         "admission_key": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
     }
+    if candidate.get("observation") is not None:
+        from app.core.memory.observation_receipts import admit_observation
+
+        try:
+            observation = admit_observation(candidate["observation"], rows,
+                                            session_key=session_key, subject=subject)
+        except ValueError:
+            return MemoryAdmission(False, "inferred", "scratchpad", None, {})
+        if observation is not None:
+            metadata["observation"] = observation
     return MemoryAdmission(
         accepted=accepted, provenance="stated" if stated else "inferred",
         tier=(

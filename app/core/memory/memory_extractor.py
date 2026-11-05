@@ -539,6 +539,9 @@ class MemoryExtractor:
             self._resolve_user_name(), today=now,
             max_memories=self._max_new_per_run,
         )
+        from app.core.memory.observation_receipts import EXTRACTION_RULE as OBSERVATION_RULE
+
+        system_content += "\n" + OBSERVATION_RULE
         from app.core.memory.shared_shorthand import EXTRACTION_RULE
         from app.core.memory.learned_strategies import EXTRACTION_RULE as STRATEGY_RULE
 
@@ -759,6 +762,13 @@ class MemoryExtractor:
         for cand in batch["candidates"]:
             if cand.get("applied"):
                 continue
+            observation = (cand.get("metadata") or {}).get("observation")
+            if observation is not None:
+                from app.core.memory.shared_shorthand import sources_current
+
+                if not sources_current(observation, self._db):
+                    cand["applied"] = True
+                    continue
             if cand["kind"] in {"shared_term", "strategy"}:
                 from app.core.memory.shared_shorthand import sources_current
 
@@ -987,6 +997,7 @@ class MemoryExtractor:
                     "supersedes_memory_id": entry.get("supersedes_memory_id"),
                     "shorthand": entry.get("shorthand"),
                     "strategy": entry.get("strategy"),
+                    **({"observation": entry["observation"]} if "observation" in entry else {}),
                 }
             )
         return out

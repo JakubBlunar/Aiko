@@ -30,6 +30,10 @@ def compatible_memories(first, second, *, consolidation=False):
         return False
     if getattr(first, "provenance", "inferred") != getattr(second, "provenance", "inferred"):
         return False
+    from app.core.memory.observation_receipts import facet_scope
+
+    if facet_scope(first) != facet_scope(second):
+        return False
     if getattr(first, "temporal_type", "durable") != getattr(second, "temporal_type", "durable"):
         return False
     first_time, second_time = (getattr(m, "event_time", None) for m in (first, second))

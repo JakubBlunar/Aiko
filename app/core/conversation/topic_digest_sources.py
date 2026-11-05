@@ -8,6 +8,7 @@ from app.core.concepts.concept_support import memory_revision, revision_hash
 from app.core.conversation.topic_memory_policy import topic_member_eligible
 from app.core.infra import timephrase
 from app.core.memory.memory_origin import memory_origin, origin_annotation
+from app.core.memory.observation_receipts import longitudinal_sources_current
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,8 @@ def capture_sources(cluster, store, *, limit=16):
         )})
         origin = memory_origin(row)
         eligible = (topic_member_eligible(row) and origin.subject != "unknown"
-                    and origin.mode not in {"hypothetical", "question", "summary", "unknown"})
+                    and origin.mode not in {"hypothetical", "question", "summary", "unknown"}
+                    and longitudinal_sources_current(row, store))
         signature = revision_hash([memory_revision(row), asdict(origin), row.temporal_type,
                                    row.provenance, eligible])
         if eligible:

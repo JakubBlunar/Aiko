@@ -36,7 +36,10 @@ def select_memory_batch(
                     getattr(row, "kind", ""),
                     getattr(row, "event_time", None),
                     getattr(row, "created_at", ""),
-                    {key: (getattr(row, "metadata", None) or {}).get(key) for key in metadata_keys},
+                    {key: (getattr(row, "metadata", None) or {}).get(key)
+                     for key in dict.fromkeys([*metadata_keys,
+                         *[name for name in ("observation",)
+                           if name in (getattr(row, "metadata", None) or {})]])},
                 ],
                 default=str,
             ).encode("utf-8")
