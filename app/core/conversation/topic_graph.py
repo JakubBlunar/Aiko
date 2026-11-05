@@ -64,6 +64,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from app.core.conversation.topic_memory_policy import NON_CLUSTERING_KINDS, topic_member_eligible
+from app.core.conversation.topic_evidence import topic_evidence_profile
 from app.core.conversation.topic_graph_updates import TopicGraphUpdatesMixin
 from app.core.infra import timephrase
 
@@ -2278,6 +2279,7 @@ def build_topic_graph_snapshot(
             "representative_id": int(cluster.representative_id),
             "kind_counts": kind_counts,
             "members": members,
+            "evidence_profile": topic_evidence_profile(cluster, memory_store),
         })
 
     clusters_out.sort(key=lambda c: c["size"], reverse=True)

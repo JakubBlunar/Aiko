@@ -340,9 +340,14 @@ class SynthesisRoutingMixin:
         def propose(ctx: ProposerContext, **kwargs: Any) -> list[CandidateProposal]:
             outputs: list[dict[str, Any]] = []
             self._synthesis_call_failed = False
+            from app.core.conversation.topic_evidence import focus_evidence_context
+
+            profile_context = focus_evidence_context(
+                kwargs.get("focus_clusters", []), self._topic_graph, self._memory_store,
+            )
 
             def call(system: str, user: str) -> list[dict[str, Any]]:
-                raw = ctx.call_llm(system, user)
+                raw = ctx.call_llm(system, user + profile_context)
                 outputs.extend(raw)
                 return raw
 

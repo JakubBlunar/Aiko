@@ -37,6 +37,18 @@ from test_concept_synthesis_worker import (
 
 
 class SynthesisRoutingTests(unittest.TestCase):
+    def test_actual_focus_profiles_reach_the_generation_prompt(self):
+        prompts = []
+
+        def answer(system, user):
+            prompts.append(user)
+            return {"concepts": []}
+
+        harness = WorkerHarness(answer, clusters=_user_clusters(2), self_memories=[])
+        harness.worker.run(force=True)
+        assert any("TOPIC EVIDENCE PROFILES" in prompt for prompt in prompts)
+        assert any("recorded_observation_groups" in prompt for prompt in prompts)
+
     def _harness(self, *, relation="unspecified", off_topic=False):
         harness = WorkerHarness(
             lambda system, user: {"concepts": []},
