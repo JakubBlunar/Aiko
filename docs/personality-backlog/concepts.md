@@ -276,8 +276,10 @@ now uses the existing kind gate, preserving delayed supporting evidence and disp
 
 5 Nov [lifecycle review](../strategy-lifecycle-review.md) found 29 dormant-to-revival
 sequences below the kind confidence floor, plus a large weak candidate population
-kept past TTL by the two-source expiry condition. Gate alignment and a separately
-specified stale-candidate retirement policy are the next bounded slices.
+kept past TTL by the two-source expiry condition. Both bounded slices are now
+implemented: kind-gated revival and age/quiet/confidence-based candidate expiry,
+with retained evidence/history and a read-only eligibility report. Ordinary-use
+validation remains; these status decisions do not certify semantic truth.
 
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l45).
 

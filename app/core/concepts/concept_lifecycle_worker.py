@@ -99,6 +99,7 @@ from app.core.concepts.concept_surfacing import (
     save_standing,
 )
 from app.core.infra import timephrase
+from app.core.concepts.concept_candidate_retirement import candidate_retirement_reason
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 
 if TYPE_CHECKING:
@@ -908,7 +909,7 @@ class ConceptLifecycleWorker(RevivalMixin):
         if status == "candidate":
             if self._gate(concept, now, conf):
                 return "active", "promoted"
-            if self._is_stale_candidate(concept, now):
+            if self._is_stale_candidate(concept, now, confidence=conf):
                 return "retired", "retired"
             return "candidate", ""
 
@@ -1153,13 +1154,20 @@ class ConceptLifecycleWorker(RevivalMixin):
             log.debug("graph_mature_provider raised", exc_info=True)
             return True
 
-    def _is_stale_candidate(self, concept: "Concept", now: datetime) -> bool:
-        ttl = self._f("concept_candidate_ttl_days", 21.0)
-        min_sources = self._i("concept_promote_min_sources", 2)
-        return (
-            self._age_days(concept, now) >= ttl
-            and concept.distinct_source_count < min_sources
-        )
+    def _is_stale_candidate(self, concept: "Concept", now: datetime,
+                            *, confidence: float | None = None) -> bool:
+        last_support = _parse_iso(concept.last_reinforced_at) or _parse_iso(concept.created_at)
+        quiet_days = ((now - last_support).total_seconds() / 86400.0
+                      if last_support is not None else None)
+        return candidate_retirement_reason(
+            age_days=self._age_days(concept, now),
+            ttl_days=self._f("concept_candidate_ttl_days", 21.0),
+            sources=concept.distinct_source_count,
+            min_sources=self._i("concept_promote_min_sources", 2),
+            confidence=concept.confidence if confidence is None else confidence,
+            retire_floor=self._f("concept_retire_confidence_floor", 0.15),
+            quiet_wall_days=quiet_days,
+        ) is not None
 
     def _is_stale_dormant(self, concept: "Concept", now: datetime) -> bool:
         """Has a faded belief gone unreinforced long enough to retire?
@@ -1519,8 +1527,9 @@ class ConceptLifecycleWorker(RevivalMixin):
                     "stretch."
                 )
             return (
-                f"Retired stale candidate: only {distinct} source(s) after "
-                f"{age:.0f}d."
+                f"Retired stale candidate: support has not established this "
+                f"interpretation ({distinct} source(s), confidence {conf:.2f}, "
+                f"age {age:.0f}d). Supporting memories and history are retained."
             )
         if event_type == "demoted":
             return (

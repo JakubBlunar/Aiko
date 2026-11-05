@@ -525,7 +525,7 @@ class TransitionTests(unittest.TestCase):
         h = _harness()
         c = _add(
             h.store, status="candidate", distinct_source_count=1,
-            first_evidence_at=_iso(30), last_lifecycle_at=_iso(1),
+            first_evidence_at=_iso(30), created_at=_iso(30), last_lifecycle_at=_iso(1),
             last_lifecycle_engagement=0.0,
         )
         h.kv.set("engagement.total_units", "0.0")

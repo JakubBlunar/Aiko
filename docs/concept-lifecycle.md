@@ -270,13 +270,13 @@ stateDiagram-v2
     [*] --> candidate: L2 proposes
     [*] --> candidate: L30 hypothesis graduates (confirmed twice)
     candidate --> active: distinct_sources >= min AND age >= min_age AND confidence >= min_conf
-    candidate --> retired: stale (age >= candidate_ttl, still < min sources)
+    candidate --> retired: old and quiet, with insufficient sources or very low confidence
     active --> candidate: demoted — evidence reconciled away to zero sources
     active --> dormant: confidence < dormant_floor
     active --> contradicted: counter-evidence AND confidence < contradicted_floor (L9)
-    contradicted --> active: revived — support, confidence, explicit disproof resolution
+    contradicted --> active: revived — support, kind gate, explicit disproof resolution
     contradicted --> retired: confidence < retire_floor
-    dormant --> active: revived — reinforced AND confidence >= promote_min_confidence
+    dormant --> active: revived — fresh support AND kind promotion gate
     dormant --> retired: confidence < retire_floor
     retired --> active: revived — L2 reattached evidence, clears the gate
     retired --> dormant: revived, clears the confidence floor but not the gate (was active before)
@@ -284,6 +284,13 @@ stateDiagram-v2
 ```
 
 ### Transition triggers (and the setting that governs each)
+
+`python scripts/concept_candidate_retirement_report.py` reports current candidate
+expiry eligibility using the production predicate, opening SQLite read-only.
+It does not apply transitions or certify semantic support. Later reinforcement,
+confidence accrual or source validation may change the decision before a worker
+evaluates it. Retirement retains the interpretation, evidence links and source
+memories; it neither marks the claim false nor changes memory confidence.
 
 All settings live on `MemorySettings`
 ([`memory_settings.py`](../app/core/infra/memory_settings.py)); the L3
@@ -294,7 +301,7 @@ worker is also gated by `agent.concepts_enabled`.
 | `[*] → candidate` (L2) | a synthesis proposal cleared the dedupe bar | `concept_dedupe.DEDUPE_COS` |
 | `[*] → candidate` (L30) | a hypothesis Aiko *invented* was confirmed twice and matched no existing concept, so [`hypothesis_graduation`](../app/core/concepts/hypothesis_graduation.py) minted it with the answer memories as `evidence` edges. It enters at the **default** confidence with no head start: having been guessed right is not evidence beyond those answers, which L3 counts like any others. A match instead folds into the existing concept and closes the guess as `merged`. See [`hypotheses.md`](hypotheses.md) | `hypothesis_graduate_min_support`, `hypothesis_graduate_min_credence` |
 | `candidate → active` | `distinct_source_count >= min_sources` **and** `age_days >= min_age_days` **and** `confidence >= min_confidence` — evaluated by the kind's own `promotion_gate`, which floors each of the three at its `_X_MIN_*` constant via `max`. `set_evidence_gate` is the fallback for a kind that declares none, but every shipped kind declares its own. | `concept_promote_min_sources`, `concept_promote_min_age_days`, `concept_promote_min_confidence` (raise the floor for *all* kinds; per-kind constants live in `concept_lifecycle.py`) |
-| `candidate → retired` | `age_days >= candidate_ttl` **and** `distinct_source_count < min_sources` | `concept_candidate_ttl_days`, `concept_promote_min_sources` |
+| `candidate → retired` | Age past candidate TTL **and** no reinforcement for at least that many calendar days, **and** either insufficient sources or confidence below the retirement floor. Age uses engaged time when enabled. A newly inferred concept gets the quiet grace period even when its source memories are old. TTL at zero disables this route. | `concept_candidate_ttl_days`, `concept_promote_min_sources`, `concept_retire_confidence_floor` |
 | `active → candidate` | `distinct_source_count == 0` — every supporting edge was deleted or repointed away (L25), so the belief rests on nothing. Checked **before** the confidence floors, because confidence decays far too slowly to notice on its own. It keeps its confidence and re-promotes normally once evidence returns. | (none — structural) |
 | `active → dormant` | `confidence < dormant_floor` (and **not** contradicted this tick) | `concept_dormant_confidence_floor` |
 | `active → contradicted` | **L9** — the detector confirmed counter-evidence this tick **and** the plasticity-damped penalty drove `confidence < contradicted_floor`. Above the floor it stays `active` but weakened. | `concept_contradiction_*` (detector), `concept_contradiction_penalty`, `concept_contradicted_confidence_floor` |

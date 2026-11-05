@@ -128,3 +128,22 @@ the same support is not reopened. The existing bounded disproof review remains
 required before activation; historical concepts and source memories are retained.
 Validation: 165 affected lifecycle/dependency/evidence tests and `npm run lint`
 passed. This addresses the gate discrepancy, not semantic support quality.
+
+## Subsequent implementation: stale candidates
+
+Candidate expiry now requires both the existing age floor (21 engaged days by
+default) and a quiet window of that many calendar days since reinforcement or
+creation. With both windows satisfied, insufficient sources or confidence below
+the existing retirement floor can retire it. A new interpretation of an old
+memory receives a grace period; fresh support protects old candidates too.
+Strong candidates are not retired solely for being old. No memory, source link
+or concept history is deleted, and genuinely new support can revive it normally.
+
+The new read-only `scripts/concept_candidate_retirement_report.py` imports this
+predicate. The snapshot found 1,466 eligible weak candidates out of 1,954; this
+is eligibility from stored state, not a full lifecycle replay or a claim that
+all those interpretations are false. No live retirement sweep was forced.
+Validation: 161 affected tests and `npm run lint` passed, including protection
+for newly inferred/recently supported candidates and retirement followed by
+successful evidence-backed revival. The revival slice's separate regressions
+also remain applicable.
