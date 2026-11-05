@@ -270,9 +270,9 @@ accuracy.
 **Implemented / available:** Gate solver/specs, population observation, read-side application, trend
 diagnostics and seeded adoption exist.
 
-**Remaining:** Complete staged lifecycle/generative rollout: align dormant/contradicted revival with
-kind gates, validate write-gate changes, then consider per-kind floors, coupled cosine bands and
-relevance telemetry. Global-floor revival branches remain.
+**Remaining:** Validate staged lifecycle/write-gate changes over ordinary use, then consider
+per-kind floors, coupled cosine bands and relevance telemetry. Dormant/contradicted revival
+now uses the existing kind gate, preserving delayed supporting evidence and disproof review.
 
 5 Nov [lifecycle review](../strategy-lifecycle-review.md) found 29 dormant-to-revival
 sequences below the kind confidence floor, plus a large weak candidate population

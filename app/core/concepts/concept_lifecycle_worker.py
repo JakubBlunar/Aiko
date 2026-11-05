@@ -602,6 +602,9 @@ class ConceptLifecycleWorker(RevivalMixin):
                 reviewed = False
             if not reviewed:
                 new_status, event_type = old_status, ""
+        if (old_status in {"dormant", "contradicted", "retired"}
+                and new_status != "active" and self._has_revival_support(concept)):
+            self._retain_revival_support(concept)
         status_changed = new_status != old_status
         if status_changed:
             concept.status = new_status
@@ -935,10 +938,9 @@ class ConceptLifecycleWorker(RevivalMixin):
             # Revivable: fresh reinforcing evidence that clears the
             # promote bar brings the belief back; sustained decay retires
             # it. Otherwise it stays disproven and quiet (never surfaced).
-            promote_min_conf = self._f("concept_promote_min_confidence", 0.6)
             if (
                 self._has_revival_support(concept)
-                and conf >= promote_min_conf
+                and self._gate(concept, now, conf)
             ):
                 return "active", "revived"
             if conf < retire_floor:
@@ -959,10 +961,9 @@ class ConceptLifecycleWorker(RevivalMixin):
             # nothing on the decay path (a faded concept that recovers has
             # by definition been reinforced) and makes `dormant` mean
             # "quiet until something actually reinforces you".
-            promote_min_conf = self._f("concept_promote_min_confidence", 0.6)
             if (
                 self._has_revival_support(concept)
-                and conf >= promote_min_conf
+                and self._gate(concept, now, conf)
             ):
                 return "active", "revived"
             if conf < retire_floor:

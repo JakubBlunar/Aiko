@@ -62,6 +62,21 @@ class RevivalMixin:
             })
         )
 
+    def _retain_revival_support(self, concept) -> None:
+        """Keep a fresh observation available while activation gates delay it.
+
+        Consuming a lifecycle tick is not consuming the supporting memory.
+        Do not reopen a review of the same support that already rejected it.
+        """
+        ledger = self._store.support
+        review = ledger.review(concept.concept_id)
+        if review.get("support_at") == concept.last_reinforced_at:
+            return
+        review.update(support_at=concept.last_reinforced_at, pending=True,
+                      outcome="not_assessed", reason="activation_gate_pending")
+        ledger.record_review(concept.concept_id, review)
+        ledger.set_state(concept.concept_id, "supported_pending", "activation_gate_pending")
+
     def _review_revival(self, concept, now: datetime, stats) -> bool:
         negatives = [
             edge

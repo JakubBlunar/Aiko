@@ -118,3 +118,13 @@ Owners: [lifecycle transitions and expiry](../app/core/concepts/concept_lifecycl
 
 No production code changed in this review, so no pytest or lint run was needed.
 The findings identify implementable follow-ups rather than close L22/L36/L45.
+
+## Subsequent implementation: revival
+
+Dormant and contradicted activation now calls the same kind gate as initial
+promotion. Fresh support delayed by a gate remains pending in the existing
+support ledger across evaluations/restarts. A rejected or invalidated review of
+the same support is not reopened. The existing bounded disproof review remains
+required before activation; historical concepts and source memories are retained.
+Validation: 165 affected lifecycle/dependency/evidence tests and `npm run lint`
+passed. This addresses the gate discrepancy, not semantic support quality.
