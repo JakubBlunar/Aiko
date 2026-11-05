@@ -48,6 +48,8 @@ from app.core.proactive.curiosity_subject import (
     wants_subject,
 )
 from app.core.session.session_text_utils import resolve_user_name
+from app.core.infra import timephrase
+from app.core.concepts.worker_question_context import question_context_from
 
 if TYPE_CHECKING:
     from app.core.memory.memory_store import Memory, MemoryStore
@@ -207,11 +209,13 @@ class CuriosityWorker:
         quiet_min_days: float = 7.0,
         subject_quota: float = 0.4,
         mode_history: int = 10,
+        concept_view_provider: Callable[[], Any] | None = None,
     ) -> None:
         self._ollama = ollama
         self._memory_store = memory_store
         self._embedder = embedder
         self._model = model
+        self._concept_view_provider = concept_view_provider
         self._min_turns_between = max(1, int(min_turns_between))
         self._min_seconds_between = max(0.0, float(min_seconds_between))
         self._max_words = max(1, int(max_user_word_count))
@@ -252,6 +256,8 @@ class CuriosityWorker:
             "completed": 0,
             "failed": 0,
             "memories_written": 0,
+            "skipped_context_changed": 0,
+            "skipped_relative_time": 0,
         }
 
     def stats(self) -> dict[str, int]:
@@ -353,17 +359,20 @@ class CuriosityWorker:
             quiet_interest=quiet_interest,
         )
         user_name = resolve_user_name(self._user_display_name_provider)
+        context = question_context_from(self._concept_view_provider, self._embedder,
+            "conversation_curiosity", "\n".join((quiet_interest or "", user_text, assistant_text)))
+        prompt_user += context.render()
         try:
             t0 = time.monotonic()
             raw = self._ollama.chat(
                 [
                     {
                         "role": "system",
-                        "content": _build_curiosity_prompt(
+                        "content": timephrase.today_anchor() + "\n" + _build_curiosity_prompt(
                             user_name,
                             quiet_interest=quiet_interest,
                             mode=mode,
-                        ),
+                        ) + "\n" + timephrase.STORED_TEXT_TIME_RULE,
                     },
                     {"role": "user", "content": prompt_user},
                 ],
@@ -385,6 +394,12 @@ class CuriosityWorker:
         )
         if not cleaned:
             self._stats["skipped_no_topic"] += 1
+            return None
+        if timephrase.has_relative_deictic(cleaned):
+            self._stats["skipped_relative_time"] += 1
+            return None
+        if not context.is_current():
+            self._stats["skipped_context_changed"] += 1
             return None
         if mode == MODE_SUBJECT and is_person_directed(cleaned, user_name):
             # The model drifted back to interviewing under a "bring up"
@@ -408,9 +423,15 @@ class CuriosityWorker:
                 salience=self._salience,
                 source_session=session_key,
                 source_message_id=None,
+                tier="scratchpad",
+                confidence=.5,
                 metadata={
                     "curiosity_mode": mode,
                     "curiosity_purpose": "ask_user" if mode == MODE_PERSON else "subject",
+                    "memory_origin": {"subject": "aiko", "mode": "question"
+                        if mode == MODE_PERSON else "intention", "writer": "curiosity_worker",
+                        "domain": "conversation", "version": 1},
+                    **context.metadata(),
                 },
             )
         except Exception:
@@ -446,8 +467,11 @@ class CuriosityWorker:
         user_name = resolve_user_name(self._user_display_name_provider)
         parts = [
             f"Conversation arc: {arc_label}",
-            f"{user_name} just said: \"{(user_text or '').strip()[:400]}\"",
-            f"You replied: \"{(assistant_text or '').strip()[:400]}\"",
+            "Exchange message dates unavailable; do not invent event dates.",
+            timephrase.format_transcript([
+                {"role": "user", "content": (user_text or "").strip()[:400]},
+                {"role": "assistant", "content": (assistant_text or "").strip()[:400]},
+            ], role_labels={"user": user_name, "assistant": "You replied"}),
         ]
         if quiet_interest:
             parts.append(

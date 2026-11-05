@@ -777,6 +777,7 @@ class ConceptView:
 
     def for_consumer(
         self, consumer: str, *, subject: str | None = None,
+        candidate_filter: "Callable[[Concept], bool] | None" = None,
     ) -> list["Concept"]:
         """The concepts one worker is allowed to think with.
 
@@ -823,6 +824,8 @@ class ConceptView:
             )
             for name in diet.kinds
         }
+        if candidate_filter is not None:
+            pool = {kind: [c for c in rows if candidate_filter(c)] for kind, rows in pool.items()}
         importance = importance_lookup(
             {
                 int(getattr(c, "concept_id", 0) or 0)
@@ -970,6 +973,12 @@ class ConceptView:
         return out[: max(0, int(limit))]
 
     # ── grounding resolution ──────────────────────────────────────────
+
+    def question_context(self, consumer: str, embedding):
+        """Small, relevant and revalidated interpretations for hypothetical/question workers."""
+        from app.core.concepts.worker_question_context import build_question_context
+
+        return build_question_context(self, consumer, embedding)
 
     def evidence_independence(self, concept_id: int, *, max_nodes: int = 256) -> dict:
         """L49 shadow counts only; does not alter confidence, diets or promotion."""

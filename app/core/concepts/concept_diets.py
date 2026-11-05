@@ -551,6 +551,18 @@ register_diet(
 )
 
 
+for _consumer in ("pre_thought", "conversation_curiosity"):
+    register_diet(ConceptDiet(
+        consumer=_consumer,
+        kinds=("identity", "value", "taste", "pursuit", "aspiration"),
+        min_confidence=.65, weight=.25, max_concepts=3, per_kind_cap=1,
+        rationale=("Relevant source-backed understanding helps anticipate useful questions and "
+                   "avoid re-asking settled basics. It guides preparation or curiosity, "
+                   "never factual extraction or independent evidence. Generative kinds keep "
+                   "the context open to a new angle rather than only established constraints."),
+    ))
+
+
 __all__ = [
     "CONCEPT_DIETS",
     "DEFAULT_DIET_TUNING",

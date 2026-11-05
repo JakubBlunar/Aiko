@@ -40,6 +40,7 @@ class _FakeMemoryStore:
         source_session: str | None = None,
         source_message_id: int | None = None,
         metadata: dict[str, Any] | None = None,
+        **_extra,
     ) -> _FakeMemory | None:
         mem = _FakeMemory(
             id=self._next_id,
@@ -279,7 +280,7 @@ class ClusterAnchorTests(unittest.TestCase):
 
     def test_anchors_on_quiet_interest(self) -> None:
         worker, ollama, _ = _make(
-            ollama_output="Maybe ask Jacob if he's still rock climbing lately.",
+            ollama_output="Maybe ask Jacob what he enjoys about rock climbing.",
             interest_rows=[_FakeInterest("rock climbing", days_since=30.0)],
         )
         result = worker.maybe_run(

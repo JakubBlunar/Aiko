@@ -37,6 +37,8 @@ def test_legacy_reflection_callback_is_not_user_testimony_and_bare_callbacks_sta
                           "writer": "legacy_kind:callback", "version": 1},
     })
     assert memory_origin(row).subject == "aiko"
+    row.metadata["admission"] = {"subject": "user"}
+    assert memory_origin(row).subject == "user"
     row.metadata = {}
     assert memory_origin(row).subject == "unknown"
     row.metadata = {"admission": {"subject": "user"}}

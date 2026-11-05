@@ -62,3 +62,41 @@ subtests, with 6,744 deselected. Label/update follow-up passed 84 tests, with
 6,366 deselected. Additional source/edit-race/pin contrasts passed; lint passed.
 These tests use real SQLite stores and controlled model responses, not live
 generation or a full-suite run.
+
+## Concepts as question guidance
+
+Prepared answers and conversational curiosity now consume small, relevant
+concept diets through `ConceptView`. Selection filters for active/assertable
+concepts with directly resolvable role-compatible memory support before spending
+the kind/token budget. Missing, superseded, incompatible or concept-only support
+defers this context. Cold/sparse concept stores fall back to the existing worker
+behavior. Complete labels and their qualifications are retained.
+
+The concept text is explicitly an interpretation that may guide a useful new
+angle or prevent re-asking a settled basic question. It is not fresh exchange
+evidence. Both question generation and hypothetical answer preparation receive
+the same bounded context, and source/label/status changes during generation
+discard the affected output. Stored `context_concepts` record IDs and source
+fingerprints under `question_guidance` scope, separate from observation roots.
+These outputs remain hypothetical prepared answers or Aiko-owned unanswered
+questions/intentions. They cannot supply independent user observations or feed
+the topic graph as imagined episodes. Factual extraction and concept synthesis
+do not receive this new context.
+
+Curiosity also receives the current date/storage rule, refuses unanchored stored
+relative wording and retains speculative questions in scratchpad. Content-free
+skip counters distinguish changed concept context from relative-time rejection.
+No extra generation call was added; relevance lookup uses the existing local
+embedding/store path. Direct source resolution is deliberately conservative and
+does not prove a concept label is semantically entailed by its evidence.
+
+Validation: 886 affected tests and 86 subtests passed in the representative
+integration selection. The final worker/label/source contrasts passed 114 tests;
+the final pinned-summary follow-up passed 46. Lint passed. Tests cover relevant
+positive context, wrong-source exclusion before budget selection, full details,
+source deletion/edit, concept retirement/relabel, and stale generation races.
+
+Restart is needed to load the changes. The next live check should inspect fresh
+worker cohorts for usefulness, omissions, repetition, actor/time fidelity and
+source support before treating these structural checks as language-quality
+improvements. No worker was forced and no live source memory was modified.

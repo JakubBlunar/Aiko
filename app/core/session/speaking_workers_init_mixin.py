@@ -23,6 +23,7 @@ from app.core.infra import timephrase
 from pathlib import Path
 from app.core.voice.speaking_window_scheduler import SpeakingWindowScheduler
 from app.core.proactive.summary_worker import SummaryWorker
+from app.core.concepts.concept_view import concept_view_from as _worker_concept_view
 from app.core.session.turn_runner import TurnRunner
 import threading
 import time
@@ -191,6 +192,7 @@ class SpeakingWorkersInitMixin:
                 from app.core.proactive.curiosity_worker import CuriosityWorker
 
                 self._curiosity_worker = CuriosityWorker(
+                    concept_view_provider=lambda: _worker_concept_view(self),
                     ollama=self._ollama,
                     memory_store=self._memory_store,
                     embedder=self._embedder,
@@ -3001,6 +3003,7 @@ class SpeakingWorkersInitMixin:
                             state_key="pre_thought.rate_state",
                         )
                         self._pre_thought_worker = PreThoughtWorker(
+                            concept_view_provider=lambda: _worker_concept_view(self),
                             memory_store=self._memory_store,
                             embedder=self._embedder,
                             # Idle-scheduler worker → maintenance tier.

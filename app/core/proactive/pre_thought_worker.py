@@ -47,6 +47,7 @@ from app.core.proactive.idle_worker import (
 )
 from app.core.services.response_text_service import strip_all_meta_tags
 from app.core.infra import timephrase
+from app.core.concepts.worker_question_context import question_context_from
 
 if TYPE_CHECKING:
     from app.core.infra.settings import AgentSettings, MemorySettings
@@ -188,6 +189,7 @@ class PreThoughtWorker:
         assistant_display_name_provider: Callable[[], str] | None = None,
         notify_memory_added: Callable[[dict[str, Any]], None] | None = None,
         clock: Callable[[], datetime] | None = None,
+        concept_view_provider: Callable[[], Any] | None = None,
     ) -> None:
         self._memory_store = memory_store
         self._embedder = embedder
@@ -204,6 +206,7 @@ class PreThoughtWorker:
         self._assistant_display_name_provider = assistant_display_name_provider
         self._notify_memory_added = notify_memory_added
         self._clock = clock or _utcnow
+        self._concept_view_provider = concept_view_provider
 
     # ── IdleWorker protocol ───────────────────────────────────────────
 
@@ -311,6 +314,8 @@ class PreThoughtWorker:
         persona_text = self._persona_block()
         summary_text = self._summary_block()
         active_text = self._active_block(active)
+        context = question_context_from(self._concept_view_provider, self._embedder,
+                                        "pre_thought", summary_text)
 
         t0 = time.monotonic()
         try:
@@ -319,6 +324,7 @@ class PreThoughtWorker:
                 summary_text=summary_text,
                 active_text=active_text,
                 candidate_cap=candidate_cap,
+                concept_context=context.render(),
             )
         except Exception:
             log.warning("pre_thought question call raised", exc_info=True)
@@ -338,6 +344,7 @@ class PreThoughtWorker:
         rejected_novelty = 0
         rejected_dup = 0
         rejected_empty = 0
+        rejected_context = 0
         user_name = self._resolve_user_name()
 
         for question in questions:
@@ -355,10 +362,13 @@ class PreThoughtWorker:
                 rejected_novelty += 1
                 continue
 
-            thought = self._draft_reply(question)
+            thought = self._draft_reply(question, concept_context=context.render())
             if not thought:
                 rejected_empty += 1
                 continue
+            if not context.is_current():
+                rejected_context += 1
+                break
 
             mem = self._write_pre_thought(
                 question=question,
@@ -366,6 +376,7 @@ class PreThoughtWorker:
                 user_name=user_name,
                 embedding=q_vec,
                 now=now,
+                context_metadata=context.metadata(),
             )
             if mem is None:
                 rejected_dup += 1
@@ -392,6 +403,7 @@ class PreThoughtWorker:
             "memory_ids": wrote,
             "rejected_novelty": rejected_novelty,
             "rejected_empty": rejected_empty,
+            "rejected_context": rejected_context,
             "rejected_dedupe": rejected_dup,
             "pruned": pruned,
             "llm_ms": int(llm_ms),
@@ -487,6 +499,7 @@ class PreThoughtWorker:
         summary_text: str,
         active_text: str,
         candidate_cap: int,
+        concept_context: str = "",
     ) -> list[str]:
         # K-time10: the drafted answer is stored as a pre_thought memory
         # and leaned on turns (or days) later, so it must not be written
@@ -505,7 +518,7 @@ class PreThoughtWorker:
             summary=summary_text or "(no recent summary)",
             active=active_text or "(none)",
             user_name=self._resolve_user_name(),
-        )
+        ) + concept_context
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user_payload},
@@ -524,7 +537,7 @@ class PreThoughtWorker:
 
     # ── LLM: stage 2 (draft reply) ────────────────────────────────────
 
-    def _draft_reply(self, question: str) -> str:
+    def _draft_reply(self, question: str, *, concept_context: str = "") -> str:
         try:
             messages = self._persona_messages_builder(question)
         except Exception:
@@ -532,6 +545,12 @@ class PreThoughtWorker:
             return ""
         if not messages:
             return ""
+        messages = [dict(message) for message in messages]
+        messages.insert(max(0, len(messages) - 1), {"role": "system", "content": (
+            timephrase.today_anchor() + "\nThis is a hypothetical answer, not a conversation "
+            "that has occurred. Do not invent private facts beyond the supplied context.\n"
+            + timephrase.STORED_TEXT_TIME_RULE + concept_context
+        )})
         try:
             raw = self._ollama.chat(
                 messages,
@@ -554,6 +573,7 @@ class PreThoughtWorker:
         user_name: str,
         embedding: Any,
         now: datetime,
+        context_metadata: dict | None = None,
     ) -> "Memory | None":
         try:
             return self._memory_store.add(
@@ -568,6 +588,7 @@ class PreThoughtWorker:
                     "thought": thought,
                     "source": "pre_thought_worker",
                     "generated_at": now.isoformat(),
+                    **(context_metadata or {}),
                 },
             )
         except Exception:

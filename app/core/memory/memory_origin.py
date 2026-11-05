@@ -38,7 +38,9 @@ def memory_origin(memory) -> MemoryOrigin:
                 in {"conversation", "virtual", "external"}):
             if (getattr(memory, "kind", "") == "callback"
                     and explicit.get("writer") == "legacy_kind:callback"
-                    and isinstance(meta.get("turn_outcome"), dict)):
+                    and isinstance(meta.get("turn_outcome"), dict)
+                    and not (isinstance(meta.get("admission"), dict)
+                             and meta["admission"].get("subject") == "user")):
                 return MemoryOrigin("aiko", "intention", "reflection_worker")
             return MemoryOrigin(**{key: explicit[key] for key in
                                   ("subject", "mode", "writer", "domain", "version")
