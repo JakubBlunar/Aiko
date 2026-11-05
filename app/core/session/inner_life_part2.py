@@ -1629,6 +1629,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         try:
             from app.core.proactive.forward_curiosity_worker import (
                 load_questions,
+                render_question_cue,
             )
         except Exception:
             log.debug("forward_curiosity import failed", exc_info=True)
@@ -1688,7 +1689,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         log.info(
             "forward-curiosity fire: at=%s source=%s", at, newest.get("source"),
         )
-        return f"You've been wondering {question}."
+        return render_question_cue(newest)
 
     def _render_concept_hypothesis_block(self, user_text: str) -> str:
         """L30b: surface one untested hunch so Aiko can actually ask.

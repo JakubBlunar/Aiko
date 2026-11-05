@@ -123,3 +123,19 @@ This identifies the remaining source-history limitation; widening narrative
 permission or inventing missing steps would not resolve it. The sample is not
 an exhaustive assertion about the full graph. Backend restart is required to
 activate the new reader and diagnostics.
+
+## Compatibility and validation
+
+The final cue pass also retains details on the no-pool legacy renderer and
+consumes Aiko's own subject offerings as spoken shares, including older records
+without the explicit `hers` flag. Such a share does not create an unanswered
+question receipt.
+
+Each implementation slice passed `npm run lint` and its focused regression
+selection, followed by the affected-test selector narrowed to the changed
+behavior. Shared session owners select many unrelated voice/UI tests; the
+representative sets cover final prompt staging/handling, cue consumption,
+initiative, provider output, evidence/source validation, extractor intake,
+learning events and arc chronology. The full suite was not run. Live model
+evidence consists of the two small synthetic output-budget probes; ordinary-use
+naturalness and the deployed changes still require observation after restart.

@@ -40,6 +40,7 @@ from app.core.proactive.cue_accounting import (
     CUE_POLICIES,
     FULFILMENT_ANSWERED,
     FULFILMENT_EITHER,
+    FULFILMENT_SPOKEN,
     MATCH_LEXICAL_OR_COSINE,
     MATCH_SCOPE_TURN,
     REASON_CADENCE_BLOCK,
@@ -491,7 +492,14 @@ class CuePoolMixin:
             )
             evidence = self._verdict_evidence(verdict)
             asked_text = assistant_text[:1000]
-            if row.cue_type == "forward_curiosity" and not row.payload.get("hers"):
+            if row.cue_type == "forward_curiosity":
+                from app.core.proactive.forward_curiosity_worker import is_hers
+
+                if is_hers(row.payload):
+                    # A subject of her own is an offer, not a question waiting
+                    # for an answer. This also covers pre-hers journal rows.
+                    policy = replace(policy, fulfilment=FULFILMENT_SPOKEN)
+            if row.cue_type == "forward_curiosity" and policy.fulfilment == FULFILMENT_ANSWERED:
                 from app.core.concepts.hypothesis_expression import question_span
 
                 asked_text = question_span(row.subject, assistant_text)

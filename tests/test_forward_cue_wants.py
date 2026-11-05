@@ -158,3 +158,16 @@ def test_final_prompt_claims_want_with_its_handling(setup_cue, tmp_path):
     assert "Name the specific activity." in messages[0]["content"]
     assert store.get(ident).state == "surfaced"
     assert metrics.surfacing_trace[-1]["claims"][0]["state"] == "committed"
+
+
+def test_aikos_own_subject_is_consumed_as_a_share_even_without_legacy_hers_flag(setup_cue):
+    _, store, ident, state = setup_cue
+    store.patch_payload(ident, {"source": "wondering"})
+    host = Host(store)
+    shown = refresh_forward_wants(state, store)
+    claim_forward_wants(host, shown.wants, block="wants_block")
+    host._settle_pool_cues(user_text="hello", assistant_text=(
+        "I tried having morning coffee together after waking on 3 November."
+    ), assistant_message_id=10)
+    assert store.get(ident).state == "used"
+    assert store.get(ident).ask_count == 0

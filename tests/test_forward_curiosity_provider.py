@@ -96,6 +96,15 @@ class MasterSwitchTests(unittest.TestCase):
 
 
 class PendingSlotTests(unittest.TestCase):
+    def test_legacy_delivery_keeps_concrete_source_details(self) -> None:
+        question = {**_q(), "question": "Did that morning activity happen?",
+                    "topic": "Have coffee together on 9 June",
+                    "source_at": "2026-06-08T12:00:00Z"}
+        host = _Host(questions=[question], pending_seconds=5 * 3600.0)
+        out = host._render_forward_curiosity_block()
+        self.assertIn("coffee together on 9 June", out)
+        self.assertIn("2026-06-08T12:00:00Z", out)
+
     def test_no_pending_value_silent(self) -> None:
         host = _Host(questions=[_q()], pending_seconds=None)
         self.assertEqual(host._render_forward_curiosity_block(), "")

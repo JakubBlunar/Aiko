@@ -224,13 +224,13 @@ def render_question_cue(entry: dict[str, Any]) -> str:
     # possibly months back. Resolved here, at render, so the journal
     # entry keeps the original phrasing.
     question = timephrase.resolve_deictics(question, entry.get("source_at"))
+    context = source_context(entry)
     if is_hers(entry):
         return (
             f"Something of your own you've been chewing on: {question} "
             "Offer it if there's room -- it's yours to say, not his to "
             "answer."
-        )
-    context = source_context(entry)
+        ) + ("\n" + context if context else "")
     return f"You've been wondering {question}." + ("\n" + context if context else "")
 
 
