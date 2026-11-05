@@ -148,4 +148,9 @@ def origin_annotation(memory) -> str:
     observation = observation_context(memory)
     if observation:
         parts.append(observation)
+    from app.core.memory.plan_reports import report_annotation
+
+    report = report_annotation(memory)
+    if report:
+        parts.append(report)
     return "; ".join(parts)

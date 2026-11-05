@@ -34,3 +34,26 @@ annotations. Differently scoped facets cannot collapse through cosine dedupe or
 consolidation. The semantic revision includes these fields only when present,
 so ordinary legacy hashes do not all change on upgrade. This adds no confidence
 formula, model call, or compulsory extra memory.
+
+## Reported follow-through
+
+The extractor can link a new report to one of eight explicitly offered intentions.
+The target is snapshotted before generation, removed from admission if its context
+did not fit the prompt, and rechecked before persistence. The report must come
+from the same actor, name the specific action and preserve its literal clause.
+Known original message IDs must precede the report. Unknown original provenance
+is marked as unknown rather than supplying an invented chronology.
+
+States distinguish planned, reported action, reported completion, cancellation,
+changed plan and explicitly unknown. Started/tried cannot become completion;
+predictions, negated completion and an ambiguous "did it" cannot close a plan.
+Original intentions are retained unchanged. The latest valid source-backed report
+is a read model over indexed links; an edited report becomes unknown. These are
+reports, not independent verification of execution or causal progress.
+
+Topic profiles and source annotations expose those distinctions. Follow-up and
+forward-curiosity production skip explicitly resolved old plans, and queued
+forward questions cannot bypass that check even through a forced pool claim.
+There is no extra model call, new proactive question or automatic promise
+fulfilment based on elapsed time. Indexed reference lookup avoids rescanning the
+whole memory table for every intention.

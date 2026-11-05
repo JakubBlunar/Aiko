@@ -354,6 +354,10 @@ class FollowUpWorker:
         forced = self._forced_source_id
         due = stale = 0
         for mem in candidates:
+            from app.core.memory.plan_reports import plan_progress, CLOSED
+
+            if plan_progress(mem, self._memory_store)["status"] in CLOSED:
+                continue
             if forced is not None and str(mem.id) == forced:
                 due += 1
                 continue
@@ -404,6 +408,11 @@ class FollowUpWorker:
             if fired >= self._max_per_run:
                 break
             considered += 1
+            from app.core.memory.plan_reports import plan_progress, CLOSED
+
+            if plan_progress(mem, self._memory_store)["status"] in CLOSED:
+                skipped_already_fired += 1
+                continue
             is_forced = forced is not None and str(mem.id) == forced
             metadata = mem.metadata or {}
             if not is_forced and metadata.get("followup_fired_at"):

@@ -1333,6 +1333,9 @@ _DEPENDENT_MEMORY_INDICES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier)",
     "CREATE INDEX IF NOT EXISTS idx_memories_event_time ON memories(event_time)",
     "CREATE INDEX IF NOT EXISTS idx_memories_temporal_type ON memories(temporal_type)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_plan_report "
+    "ON memories(json_extract(metadata, '$.follow_through.prior_memory_id')) "
+    "WHERE json_valid(metadata)",
 )
 
 # Same problem, different tables, and it needs its own list rather than a

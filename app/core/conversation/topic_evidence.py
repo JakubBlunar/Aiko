@@ -28,6 +28,7 @@ def topic_evidence_profile(cluster, store, *, limit=256):
         else:
             rows.append(row)
     roles, temporal = Counter(), Counter()
+    report_statuses, plan_states = Counter(), Counter()
     observations, plans, unknown = [], [], 0
     lineages = []
     for row in rows:
@@ -35,6 +36,13 @@ def topic_evidence_profile(cluster, store, *, limit=256):
         roles[f"{origin.subject}/{origin.mode}"] += 1
         scope = getattr(row, "temporal_type", "unknown")
         temporal[scope] += 1
+        from app.core.memory.plan_reports import plan_progress
+
+        report = (getattr(row, "metadata", None) or {}).get("follow_through")
+        if isinstance(report, dict) and report.get("version") == 1:
+            report_statuses[str(report.get("status", "unknown"))] += 1
+        if scope == "future_plan" or getattr(row, "kind", "") == "promise":
+            plan_states[plan_progress(row, store)["status"]] += 1
         sources = memory_lineages(row)
         if origin.subject == "unknown" or not any(source.roots for source in sources):
             unknown += 1
@@ -57,6 +65,8 @@ def topic_evidence_profile(cluster, store, *, limit=256):
         "observed_event_span": _span(observations), "planned_event_span": _span(plans),
         "question_notes": sum(memory_origin(row).mode == "question" for row in rows),
         "question_resolution": "not_assessed",
+        "reported_follow_through": dict(sorted(report_statuses.items())),
+        "intention_states": dict(sorted(plan_states.items())),
         "complete": not (missing or len(ids) > cap or support["unknown_sources"]),
         "meaning": "Source groups record separation, not independence, truth or recurrence. "
                    "Recording dates are not event dates; plans are not completed actions.",

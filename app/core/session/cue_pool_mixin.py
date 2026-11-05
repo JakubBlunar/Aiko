@@ -190,6 +190,25 @@ class CuePoolMixin:
                 )
 
             force = False
+        if cue_type == "forward_curiosity":
+            original_source_valid = still_valid
+
+            def still_valid(payload):
+                if original_source_valid is not None and not original_source_valid(payload):
+                    return False
+                if payload.get("source") != "future_plan":
+                    return True
+                from app.core.memory.plan_reports import plan_progress, CLOSED
+
+                memories = getattr(self, "_memory_store", None)
+                if memories is None:
+                    return True  # No owner available on legacy lightweight hosts.
+                try:
+                    prior = memories.get(int(payload.get("source_id")))
+                except (TypeError, ValueError):
+                    return False
+                return (prior is not None
+                        and plan_progress(prior, memories)["status"] not in CLOSED)
         if cue_type in {"knowledge_gap_notice", "curiosity_gradient"}:
             from app.core.proactive.topic_exploration import payload_explorable
 

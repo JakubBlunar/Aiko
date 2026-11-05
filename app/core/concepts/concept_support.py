@@ -43,8 +43,9 @@ def memory_revision(memory: Any) -> str:
                     "support_observations_truncated",
                     "memory_origin",
                     "observation",
+                    "follow_through",
                 )
-                if key not in {"memory_origin", "observation"} or key in metadata
+                if key not in {"memory_origin", "observation", "follow_through"} or key in metadata
             },
         ]
     )

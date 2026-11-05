@@ -103,9 +103,13 @@ def observation_context(memory):
 
 
 def facet_scope(memory):
-    value = (getattr(memory, "metadata", None) or {}).get("observation") or {}
+    metadata = getattr(memory, "metadata", None) or {}
+    report = metadata.get("follow_through")
+    value = metadata.get("observation") or {}
     if not isinstance(value, dict) or value.get("version") != 1:
-        return None
+        return json.dumps(report, sort_keys=True) if report else None
+    if report:
+        return json.dumps({"observation": value, "follow_through": report}, sort_keys=True)
     return json.dumps({key: ([row.get("quote") for row in value[key]] if key == "exceptions"
                             else value[key].get("quote"))
                        for key in ("context", "action", "outcome", "exceptions") if value.get(key)},
@@ -115,7 +119,16 @@ def facet_scope(memory):
 def longitudinal_sources_current(memory, store):
     """Verify preserved quotes against SQLite before using enriched evidence."""
     metadata = getattr(memory, "metadata", None) or {}
-    value = metadata.get("observation")
+    if not receipt_sources_current(metadata.get("observation"), store):
+        return False
+    if metadata.get("follow_through") is not None:
+        from app.core.memory.plan_reports import report_current
+
+        return report_current(metadata["follow_through"], store)
+    return True
+
+
+def receipt_sources_current(value, store):
     if value is None:
         return True
     if not isinstance(value, dict) or value.get("version") != 1 or not value.get("sources"):

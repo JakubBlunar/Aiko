@@ -534,6 +534,14 @@ class MemoryExtractor:
         pattern_owner = self._user_id_provider()
 
         existing = self._format_existing(owner=pattern_owner)
+        from app.core.memory.plan_reports import (
+            offer_intentions, render_intentions, RULE as PLAN_RULE,
+        )
+
+        intentions = offer_intentions(self._store)
+        if intentions:
+            existing += ("\n\nAVAILABLE INTENTIONS (context, not new evidence):\n"
+                         + render_intentions(intentions))
         now = timephrase.utcnow().astimezone()
         system_content = _build_system_prompt(
             self._resolve_user_name(), today=now,
@@ -542,6 +550,8 @@ class MemoryExtractor:
         from app.core.memory.observation_receipts import EXTRACTION_RULE as OBSERVATION_RULE
 
         system_content += "\n" + OBSERVATION_RULE
+        if intentions:
+            system_content += "\n" + PLAN_RULE
         from app.core.memory.shared_shorthand import EXTRACTION_RULE
         from app.core.memory.learned_strategies import EXTRACTION_RULE as STRATEGY_RULE
 
@@ -623,6 +633,8 @@ class MemoryExtractor:
                 len(context_rows),
             )
         context_rows = selected_context
+        if not selected_existing:
+            intentions = {}
         has_more = packed.item_count < len(rows) or len(rows) == self._max_window
         rows = rows[:packed.item_count]
 
@@ -743,6 +755,18 @@ class MemoryExtractor:
             )
             if not admission.accepted:
                 continue
+            if cand.get("follow_through") is not None:
+                from app.core.memory.plan_reports import admit_report
+
+                try:
+                    admission.metadata["follow_through"] = admit_report(
+                        cand["follow_through"], rows, intentions, self._store,
+                        session_key=session_key,
+                        subject="assistant" if cand["kind"] == "self" else "user",
+                        temporal_type=cand["temporal_type"],
+                    )
+                except ValueError:
+                    continue
             admitted.append({
                 **cand, "provenance": admission.provenance,
                 "source_message_id": admission.source_message_id,
@@ -767,6 +791,13 @@ class MemoryExtractor:
                 from app.core.memory.shared_shorthand import sources_current
 
                 if not sources_current(observation, self._db):
+                    cand["applied"] = True
+                    continue
+            report = (cand.get("metadata") or {}).get("follow_through")
+            if report is not None:
+                from app.core.memory.plan_reports import report_current
+
+                if not report_current(report, self._store):
                     cand["applied"] = True
                     continue
             if cand["kind"] in {"shared_term", "strategy"}:
@@ -807,7 +838,7 @@ class MemoryExtractor:
                 source_session=session_key,
                 source_message_id=cand.get("source_message_id"),
                 metadata=cand.get("metadata"),
-                skip_dedupe=cand["kind"] in {"shared_term", "strategy"},
+                skip_dedupe=cand["kind"] in {"shared_term", "strategy"} or report is not None,
                 # Schema v8: LLM-distilled observations are speculative.
                 # Land them in scratchpad so the promotion worker can
                 # either confirm them via retrieval / revival or sweep
@@ -998,6 +1029,8 @@ class MemoryExtractor:
                     "shorthand": entry.get("shorthand"),
                     "strategy": entry.get("strategy"),
                     **({"observation": entry["observation"]} if "observation" in entry else {}),
+                    **({"follow_through": entry["follow_through"]}
+                       if "follow_through" in entry else {}),
                 }
             )
         return out
