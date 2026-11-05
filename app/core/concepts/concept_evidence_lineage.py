@@ -7,6 +7,7 @@ import json
 from typing import Iterable
 from types import SimpleNamespace
 from urllib.parse import urlsplit
+from app.core.memory.memory_origin import memory_origin
 
 
 @dataclass(frozen=True)
@@ -55,8 +56,8 @@ def _memory_lineage(memory) -> SourceLineage:
     metadata = getattr(memory, "metadata", None) or {}
     if not isinstance(metadata, dict):
         return SourceLineage(frozenset(), "unknown", complete=False)
-    kind = getattr(memory, "kind", "")
-    if kind == "knowledge":
+    origin = memory_origin(memory)
+    if origin.mode == "world_fact":
         urls = metadata.get("source_urls", [])
         urls = urls if isinstance(urls, list) else []
         roots = set()
@@ -72,7 +73,7 @@ def _memory_lineage(memory) -> SourceLineage:
         return SourceLineage(frozenset(roots), "external_observation", complete=bool(roots))
     admission = metadata.get("admission")
     category = "testimony" if getattr(memory, "provenance", "") == "stated" else "model_inference"
-    if kind in {"self", "reflection", "diary", "pre_thought", "goal_progress"}:
+    if (origin.subject == "aiko" or origin.mode in {"hypothetical", "question", "summary"}):
         category = "model_reflection"
     if isinstance(admission, dict):
         source_ids = _ids(admission.get("source_message_ids"))

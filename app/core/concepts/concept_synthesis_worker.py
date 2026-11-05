@@ -61,6 +61,7 @@ from app.core.concepts.concept_evidence_admission import (
     save_fit_sample,
 )
 from app.core.concepts.concept_event_store import ConceptEvent
+from app.core.concepts.concept_source_policy import ConceptSourcePolicyMixin
 from app.core.concepts.concept_kinds import core_lane_kinds
 from app.core.concepts.concept_meta_depth import (
     descendant_ids,
@@ -207,7 +208,7 @@ def _salvage_concepts(text: str) -> list[dict[str, Any]]:
     return out
 
 
-class ConceptSynthesisWorker(SynthesisRoutingMixin):
+class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
     """Idle worker that proposes candidate identity concepts."""
 
     name = "concept_synthesis"
@@ -1105,6 +1106,10 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
         force: bool = False,
     ) -> list[CandidateProposal]:
         clusters = self._dominant_clusters("user")
+        sources = {int(c.representative_id): c for c in self._topic_graph.topic_clusters()}
+        clusters = [c for c in clusters if self._cluster_source_refusal(
+            sources[c[0]], subject=spec.subject, kind=spec.kind,
+        ) is None]
         if not clusters:
             return []
         cluster_index = [
@@ -1233,6 +1238,10 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
         pop = self._memory_store.iter_by_kinds(AIKO_SELF_KINDS)
         mem_count = len(pop)
         aiko_clusters = self._dominant_clusters("aiko")
+        sources = {int(c.representative_id): c for c in self._topic_graph.topic_clusters()}
+        aiko_clusters = [c for c in aiko_clusters if self._cluster_source_refusal(
+            sources[c[0]], subject=spec.subject, kind=spec.kind,
+        ) is None]
         if mem_count == 0 and not aiko_clusters:
             stats["aiko_dirty"] = False
             return []
@@ -2270,7 +2279,10 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
             cluster = by_rep.get(int(rep))
             if cluster is None:
                 continue
-            mems = self._ordered_memories(cluster.member_ids)
+            from app.core.memory.memory_origin import claim_source_refusal
+
+            mems = [m for m in self._ordered_memories(cluster.member_ids)
+                    if claim_source_refusal(m, subject=subject, kind=spec.kind) is None]
             if len(mems) < min_chain:
                 # Too short to be a chain yet -- still marked processed below so
                 # it doesn't re-run until it actually grows.
@@ -3451,6 +3463,11 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
             self._routing_begin(stats)
         if not proposal.evidence:
             return
+        source_refusal = self._claim_source_refusal(proposal)
+        if source_refusal:
+            reasons = stats.setdefault("source_policy_refusals", {})
+            reasons[source_refusal] = reasons.get(source_refusal, 0) + 1
+            return
         if any(
             node in proposal.evidence
             and self._concept_store.dependencies.fingerprint(node) != revision
@@ -4151,30 +4168,28 @@ class ConceptSynthesisWorker(SynthesisRoutingMixin):
         """Return ``(rep, label, size, member_kinds)`` for the clusters that
         belong to ``subject``.
 
-        The single topic graph clusters *all* memories together; a cluster's
-        subject is decided by whether its members are majority aiko-self
-        kinds (``self`` / ``reflection`` / ``diary``). ``subject="user"``
-        keeps clusters with ``aiko_share <= 0.5`` (including clusters with no
-        kind labels, treated as user); ``subject="aiko"`` keeps clusters with
-        ``aiko_share > 0.5``. This is what lets the user pass exclude her
-        self-themes while the aiko pass (L11) mines exactly those."""
+        Subject follows the resolved personal source roles, not a short list
+        of self-memory kind names. World-only and unresolved clusters have no
+        personal subject. Evidence admission separately checks every cited row;
+        majority membership cannot authorize an incompatible source."""
         try:
             clusters = self._topic_graph.topic_clusters()
         except Exception:
             log.warning("topic_clusters failed", exc_info=True)
             return []
-        aiko_kinds = set(AIKO_SELF_KINDS)
+        from app.core.memory.memory_origin import memory_origin
+
         want_aiko = subject == "aiko"
         out: list[tuple[int, str, int, tuple[str, ...]]] = []
         for c in clusters:
             kinds = tuple(c.member_kinds or ())
-            if kinds:
-                aiko_share = sum(1 for k in kinds if k in aiko_kinds) / len(
-                    kinds
-                )
-                is_aiko = aiko_share > 0.5
-            else:
-                is_aiko = False
+            rows = self._memory_store.get_many(c.member_ids)
+            actors = [memory_origin(m).subject for m in rows.values()]
+            aiko_count = actors.count("aiko")
+            user_count = actors.count("user") + actors.count("relationship")
+            if not aiko_count and not user_count:
+                continue
+            is_aiko = aiko_count > user_count
             if is_aiko != want_aiko:
                 continue
             label = (c.summary or "").strip()

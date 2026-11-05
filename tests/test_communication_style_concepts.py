@@ -468,6 +468,7 @@ class ApplicabilityTests(unittest.TestCase):
     def setUp(self):
         self.memory = types.SimpleNamespace(
             id=500, content="When troubleshooting, keep it brief except while learning.",
+            kind="preference",
             created_at="2026-10-01T12:00:00+00:00",
         )
         self.payload = {

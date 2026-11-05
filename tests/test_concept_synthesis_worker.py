@@ -50,8 +50,9 @@ class ClusterStub:
         self.summary = summary
         self.size = size
         self.member_ids = (
-            list(member_ids) if member_ids is not None else list(range(size))
+            list(member_ids) if member_ids is not None else list(range(rep, rep + size))
         )
+        self.synthetic_members = member_ids is None
         self.member_kinds = tuple(kinds)
 
 
@@ -246,6 +247,15 @@ class WorkerHarness:
             earliest=earliest,
             extra_memories=shared_moments,
         )
+        # Default clusters represent real source rows. Explicit member lists
+        # remain untouched so missing/changed-source tests can exercise them.
+        for cluster in self.topic.topic_clusters():
+            if cluster.synthetic_members:
+                for mid in cluster.member_ids:
+                    self.mem._by_id.setdefault(mid, MemStub(
+                        mid, cluster.summary, cluster.member_kinds[0] if cluster.member_kinds
+                        else "fact", .5,
+                    ))
         self.ollama = FakeOllama(responder)
         self.worker = ConceptSynthesisWorker(
             concept_store=self.store,

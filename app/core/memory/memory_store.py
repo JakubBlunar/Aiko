@@ -1220,6 +1220,9 @@ class MemoryStore:
                     event_time=timephrase.parse_iso(event_time_clean),
                     created_at=written,
                 )
+        from app.core.memory.memory_origin import stamp_origin
+
+        metadata = stamp_origin(kind, cleaned, metadata, temporal_type_normalized)
         meta_json = _encode_metadata(metadata)
         pinned_int = 1 if pinned else 0
         cursor = conn.execute(

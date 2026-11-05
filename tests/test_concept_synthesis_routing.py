@@ -152,6 +152,9 @@ class SynthesisRoutingTests(unittest.TestCase):
         harness, ident = self._harness(relation="same")
         self._run(harness)
         harness.topic._clusters[0].member_ids.append(1000)
+        harness.mem._by_id[1000] = harness_tests.MemStub(
+            1000, "A fresh user observation", "fact", .6,
+        )
         with patch("app.core.concepts.concept_synthesis_worker.CONCEPT_PROPOSERS", (SPEC,)):
             stats = harness.worker.run(force=True)
         self.assertGreater(stats["routing"]["fresh_support"], 0)

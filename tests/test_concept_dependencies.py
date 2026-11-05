@@ -265,6 +265,9 @@ def test_l2_creation_and_complete_reinforcement_record_real_sources(model):
     harness = WorkerHarness(lambda system, user: {"concepts": []})
     harness.worker._concept_store = model.store
     nodes = [model.memory(1), model.memory(2)]
+    for ident in (1, 2):
+        memory = harness.mem._by_id[ident]
+        memory.kind, memory.content = "fact", f"Observation {ident}"
     proposal = CandidateProposal(label="A grounded claim", rationale="Observations",
                                  confidence=0.7, evidence=nodes, kind="identity", subject="user")
     stats = {"added": 0, "reinforced": 0, "by_subject": {}}
@@ -273,6 +276,8 @@ def test_l2_creation_and_complete_reinforcement_record_real_sources(model):
     claim = model.store.all()[0]
     assert len(model.store.dependencies.records[claim.concept_id]) == 2
     proposal.evidence = [model.memory(3)]
+    harness.mem._by_id[3].kind = "fact"
+    harness.mem._by_id[3].content = "Observation 3"
     proposal.reinforces_id = claim.concept_id
     harness.worker._persist(proposal, stats)
     assert stats["reinforced"] == 1
@@ -390,6 +395,9 @@ def test_source_edit_during_generation_rejects_stale_l2_proposal(model):
     harness = WorkerHarness(lambda system, user: {"concepts": []})
     harness.worker._concept_store = model.store
     nodes = [model.memory(1), model.memory(2)]
+    for ident in (1, 2):
+        memory = harness.mem._by_id[ident]
+        memory.kind, memory.content = "fact", f"Observation {ident}"
     stats = {"added": 0, "reinforced": 0, "by_subject": {}}
     harness.worker._routing_begin(stats)
 

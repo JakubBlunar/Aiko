@@ -223,7 +223,9 @@ def mem_line(mem: Any, now: datetime | None = None) -> str:
     created_at = str(getattr(mem, "created_at", "") or "")
     if timephrase.parse_iso(created_at) is not None:
         body = f"{body} ({timephrase.humanize_past(created_at, when)})"
-    return f"[{int(mem.id)}] {body}"
+    from app.core.memory.memory_origin import origin_annotation
+
+    return f"[{int(mem.id)}] {body} [{origin_annotation(mem)}]"
 
 
 def resolve_reinforces(raw: Any, existing_ids: set[int]) -> int | None:

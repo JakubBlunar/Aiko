@@ -41,7 +41,9 @@ def memory_revision(memory: Any) -> str:
                     "superseded_reason",
                     "support_observations",
                     "support_observations_truncated",
+                    "memory_origin",
                 )
+                if key != "memory_origin" or key in metadata
             },
         ]
     )
