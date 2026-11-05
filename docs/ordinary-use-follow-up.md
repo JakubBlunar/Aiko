@@ -70,6 +70,13 @@ held-out contrast families for the next proposer evaluation. No existing concept
 threshold or personal memory was automatically rewritten from this small review.
 L22's general model-quality acceptance remains open.
 
+The subsequent [concept-grounding comparison](concept-grounding-evaluation.md)
+adds source-first aspiration/tension generation, visible promise status, and
+typed/subject admission checks. The small synthetic comparison reduced
+unsupported admissions while retaining all positive controls. Compatible
+preferences still produced three false tensions in the final repeated run;
+ordinary-use semantic quality and existing concepts remain review work.
+
 ## 3. Cue-delivery baseline and alternative routes
 
 `python scripts/cue_delivery_report.py --since YYYY-MM-DD` joins content-free

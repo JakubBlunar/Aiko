@@ -42,6 +42,12 @@ now samples fresh subjects/kinds/statuses with source-linked evidence and explic
 annotation denominators. A first review found unsupported developmental and conflict
 interpretations; held-out proposer comparisons and broad quality validation remain.
 
+5 Nov follow-up: [source-first proposer grounding and a bounded comparison](../concept-grounding-evaluation.md)
+now distinguish repeated observations, plans and completed progress, and require
+specific shared-context conflict. The final synthetic run retained all positive
+controls but still admitted three false tensions in 36 trials. L22 remains partial;
+fresh ordinary-use cohorts and independent paraphrases are the next quality gate.
+
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l22).
 
 **Source check:** [concept_quality.py](../../app/core/concepts/concept_quality.py),

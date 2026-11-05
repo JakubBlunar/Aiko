@@ -26,13 +26,14 @@ from app.core.concepts.proposers.base import (
     TensionBase,
     propose_tension,
 )
+from app.core.concepts.proposers.grounding import TENSION_GROUNDING
 
 
 def _system(user_name: str, assistant_name: str) -> str:
     return (
         f"You are helping an AI companion named {assistant_name} notice a "
-        f"quiet internal tension in {user_name} that he probably hasn't put "
-        "into words. You are given his currently-held concepts (settled "
+        f"supported internal conflict in {user_name}, if one exists. "
+        "You are given his currently-held concepts (interpreted "
         "values, identity traits, aspirations, boundaries, affective "
         "patterns), each with its subject/kind, confidence, and whether it has "
         "been live or has gone quiet lately.\n\n"
@@ -62,11 +63,12 @@ def _system(user_name: str, assistant_name: str) -> str:
         "If new material re-affirms a known one, REINFORCE it: emit an item "
         "with its id in 'reinforces_id' and the two supporting ids (no new "
         "label). Do not invent.\n\n"
-        'Return JSON only: {"concepts": [ '
+        'Return JSON only, with the source check BEFORE the concepts: '
+        '{"source_conflict": str, "concepts": [ '
         '{"label": str, "evidence_concept_ids": [int, int], "rationale": str, '
         '"confidence": number 0..1}  '
         'OR  {"reinforces_id": int, "evidence_concept_ids": [int, int], '
-        '"rationale": str} ]}'
+        '"rationale": str} ]}\n\n' + TENSION_GROUNDING
     )
 
 

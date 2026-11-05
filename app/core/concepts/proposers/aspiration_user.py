@@ -23,19 +23,18 @@ from app.core.concepts.proposers.base import (
     ProposerSpec,
     propose_ordered_concept,
 )
+from app.core.concepts.proposers.grounding import ASPIRATION_GROUNDING
 
 
 def _system(user_name: str, assistant_name: str) -> str:
     return (
-        f"You find ASPIRATIONS -- directions of travel -- in {user_name}'s "
-        "life: the way a run of related memories, read in order, shows him "
-        "moving from one place toward another. You are given numbered "
+        f"Audit whether the evidence supports an ASPIRATION for {user_name}. "
+        "First establish a specific observed change; only then consider a "
+        "direction label. Most related observations need no such concept. "
+        "You are given numbered "
         "DIRECTIONS (each a theme's memories in time order) and the "
         "aspirations already known. Name any that show a genuine, sustained "
         "direction.\n\n"
-        "Examples: 'building toward a fully self-hosted, private setup', "
-        "'moving from hobby tinkering toward actually shipping', 'getting "
-        "steadily more deliberate about his health'.\n\n"
         "Hard rules:\n"
         f"- Write every aspiration ABOUT {user_name} (third person). Name the "
         "DIRECTION (where he's heading, from roughly where), short and "
@@ -59,11 +58,17 @@ def _system(user_name: str, assistant_name: str) -> str:
         "in the known list.\n"
         "- If no theme shows a genuine direction, return an empty list. Do not "
         "invent.\n\n"
-        'Return JSON only: {"concepts": [ '
+        'Return JSON only, with the source check BEFORE the concepts: '
+        '{"source_change": str, "concepts": [ '
         '{"label": str, "arc_index": int, "evidence_memory_ids": [int], '
         '"directional": bool, "rationale": str, "confidence": number 0..1}  '
         'OR  {"reinforces_id": int, "arc_index": int, '
-        '"evidence_memory_ids": [int], "rationale": str} ]}'
+        '"evidence_memory_ids": [int], "rationale": str} ]}\n\n'
+        + ASPIRATION_GROUNDING
+        + "\nIn source_change, briefly state the earlier and later facts that "
+        "demonstrate change, or 'none: repetition/waiting only'. This is a "
+        "factual check, not a proposed label. If no supported change, concepts "
+        "must be empty. Do not reinterpret repetition as increasing commitment."
     )
 
 

@@ -1,9 +1,9 @@
 """Aiko tension proposer (subject=aiko, kind=tension).
 
 Names an internal push/pull in Aiko herself -- two of her own active
-self-concepts in friction, phrased first-person: "I want to be honest with him
-but I also want to protect how he feels", "I value giving him room yet I keep
-wanting to step in", "I tell myself I'm easy-going but I get restless when we go
+self-concepts in friction, phrased first-person: "I refuse to fake agreement
+but keep agreeing with claims I believe false", "I value giving him room yet I
+keep taking over his problems", "I tell myself I'm easy-going but I get restless when we go
 quiet". This is her noticing her own contradictions, which is what makes a
 self-model feel lived-in rather than scripted.
 
@@ -23,6 +23,7 @@ from app.core.concepts.proposers.base import (
     TensionBase,
     propose_tension,
 )
+from app.core.concepts.proposers.grounding import TENSION_GROUNDING
 
 
 def _system(user_name: str, assistant_name: str) -> str:
@@ -34,10 +35,8 @@ def _system(user_name: str, assistant_name: str) -> str:
         "each with its kind and confidence.\n\n"
         "A tension holds TWO of her own concepts in genuine friction, phrased "
         "in first person, e.g. 'I want to be honest with him but I also want "
-        "to protect how he feels', 'I value giving him room yet I keep wanting "
-        "to step in', 'I think of myself as easy-going but I get restless when "
-        "we go quiet', 'I hold a line about not faking agreement, yet I value "
-        "keeping things warm between us'.\n\n"
+        "to protect how he feels by pretending to agree', 'I value letting him "
+        "solve a problem unaided yet I keep taking over that same problem'.\n\n"
         "Hard rules:\n"
         "- Write each line in FIRST PERSON ('I ...'). Name BOTH sides of the "
         f"pull. When it involves him, name him as '{user_name}'.\n"
@@ -56,11 +55,12 @@ def _system(user_name: str, assistant_name: str) -> str:
         "If new material re-affirms a known one, REINFORCE it: emit an item "
         "with its id in 'reinforces_id' and the two supporting ids (no new "
         "label). Do not invent.\n\n"
-        'Return JSON only: {"concepts": [ '
+        'Return JSON only, with the source check BEFORE the concepts: '
+        '{"source_conflict": str, "concepts": [ '
         '{"label": str, "evidence_concept_ids": [int, int], "rationale": str, '
         '"confidence": number 0..1}  '
         'OR  {"reinforces_id": int, "evidence_concept_ids": [int, int], '
-        '"rationale": str} ]}'
+        '"rationale": str} ]}\n\n' + TENSION_GROUNDING
     )
 
 

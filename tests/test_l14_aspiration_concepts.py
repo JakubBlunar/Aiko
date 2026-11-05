@@ -148,7 +148,7 @@ def _aiko_direction(n: int = 3, step_days: float = 8.0):
 
 
 def _user_responder(system, user):
-    if "ASPIRATIONS" in system and "OWN inner life" not in system:
+    if "CANDIDATE DIRECTIONS" in user and "self-theme" not in system:
         return {"concepts": [{
             "label": "Building toward a self-hosted life",
             "arc_index": 0,
@@ -161,7 +161,7 @@ def _user_responder(system, user):
 
 
 def _aiko_responder(system, user):
-    if "ASPIRATIONS" in system and "OWN inner life" in system:
+    if "CANDIDATE DIRECTIONS" in user and "self-theme" in system:
         return {"concepts": [{
             "label": "Growing into someone he can rely on",
             "arc_index": 0,

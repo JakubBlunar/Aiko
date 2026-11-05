@@ -1,10 +1,8 @@
 """Relationship tension proposer (subject=relationship, kind=tension).
 
 Names a cross-subject friction between a concept the USER holds and one AIKO
-holds -- most often a value clash ("he values blunt directness; she values
-softening the hard truths", "he wants her to lead; she holds back to leave him
-room"). An aligned pair is a *shared* value (bonding, not a tension); a clashing
-pair is exactly where a real relationship lives -- so this is delivered as a
+holds -- for example, he asks for candid feedback but she gives false agreement.
+Compatible preferences do not establish a clash. A supported tension is delivered as a
 gentle, held observation, NEVER as a grievance or an accusation.
 
 The shared :func:`propose_tension` body is given BOTH subjects' active base
@@ -23,6 +21,7 @@ from app.core.concepts.proposers.base import (
     TensionBase,
     propose_tension,
 )
+from app.core.concepts.proposers.grounding import TENSION_GROUNDING
 
 
 def _system(user_name: str, assistant_name: str) -> str:
@@ -34,11 +33,10 @@ def _system(user_name: str, assistant_name: str) -> str:
         "confidence.\n\n"
         "A relationship tension pairs ONE user concept with ONE aiko concept "
         "that pull against each other, e.g. "
-        f"'{user_name} wants the unvarnished truth; {assistant_name} leans "
-        "toward softening it', 'he likes to be left room to figure things out; "
-        f"she wants to jump in and help', '{user_name}'d rather not be pushed "
-        f"to open up; {assistant_name} values drawing him out'. This is the "
-        "texture of a real relationship, not a problem to fix.\n\n"
+        f"'{user_name} asks for candid feedback; {assistant_name} gives false "
+        "agreement instead', 'he asks to solve a problem unaided; she keeps "
+        "taking over that same problem'. Only name a clash supported by both "
+        "claims; a pair may have no conflict.\n\n"
         "Hard rules:\n"
         "- The pair MUST be cross-subject: exactly one user concept and one "
         f"aiko concept. Name both sides, {user_name} by name and "
@@ -58,11 +56,12 @@ def _system(user_name: str, assistant_name: str) -> str:
         "If new material re-affirms a known one, REINFORCE it: emit an item "
         "with its id in 'reinforces_id' and the two supporting ids (no new "
         "label). Do not invent.\n\n"
-        'Return JSON only: {"concepts": [ '
+        'Return JSON only, with the source check BEFORE the concepts: '
+        '{"source_conflict": str, "concepts": [ '
         '{"label": str, "evidence_concept_ids": [int, int], "rationale": str, '
         '"confidence": number 0..1}  '
         'OR  {"reinforces_id": int, "evidence_concept_ids": [int, int], '
-        '"rationale": str} ]}'
+        '"rationale": str} ]}\n\n' + TENSION_GROUNDING
     )
 
 

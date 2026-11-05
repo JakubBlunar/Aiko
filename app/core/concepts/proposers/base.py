@@ -419,7 +419,8 @@ def propose_aiko_hybrid(
 _MAX_STEPS_SHOWN = 12
 
 
-def _ordered_block(index: int, cand: "NarrativeCandidate", block_word: str) -> str:
+def _ordered_block(index: int, cand: "NarrativeCandidate", block_word: str,
+                   *, source_status: bool = False) -> str:
     """Render one candidate chain as a numbered, temporally-ordered block."""
     mems = cand.memories
     lines: list[str] = []
@@ -437,7 +438,12 @@ def _ordered_block(index: int, cand: "NarrativeCandidate", block_word: str) -> s
                 f"  ... ({len(mems) - _MAX_STEPS_SHOWN} step(s) elided) ..."
             )
             continue
-        lines.append(f"  {pos + 1}. {mem_line(mem)}")
+        status = ""
+        if source_status:
+            from app.core.concepts.proposers.grounding import aspiration_source_status
+
+            status = aspiration_source_status(mem)
+        lines.append(f"  {pos + 1}. {mem_line(mem)}{status}")
     return f'{block_word} [{index}] -- theme "{cand.label}":\n' + "\n".join(lines)
 
 
@@ -492,7 +498,8 @@ def propose_ordered_concept(
     user = (
         f"CANDIDATE {block_word}S (each theme's memories in time order):\n"
         + "\n\n".join(
-            _ordered_block(i, c, block_word) for i, c in by_index.items()
+            _ordered_block(i, c, block_word, source_status=kind == "aspiration")
+            for i, c in by_index.items()
         )
         + f"\n\nALREADY-KNOWN {block_word}S:\n"
         + format_existing(existing)
@@ -545,7 +552,9 @@ def propose_ordered_concept(
         # A NEW concept must clear the kind's gate flag and be long enough.
         if ai in seen_new:
             continue
-        if not bool(item.get(gate_flag)):
+        gate_value = item.get(gate_flag)
+        if ((kind == "aspiration" and gate_value is not True)
+                or (kind != "aspiration" and not bool(gate_value))):
             continue
         label = str(item.get("label") or "").strip()
         if not label or len(ordered_ids) < max(int(min_chain), 1):
@@ -1003,17 +1012,18 @@ def propose_tension(
     the offered set (this is the arity the L3 :func:`tension_evidence_gate`
     floors at 2). Because only non-meta actives are ever offered, a tension can
     never reference another tension (the meta depth cap) and cannot form a
-    cycle. ``subject`` shapes the prompt lens only.
+    cycle. ``subject`` also constrains which subjects the cited pair can contain.
     """
-    valid_ids = {int(b.id) for b in concepts}
+    by_id = {int(b.id): b for b in concepts}
+    valid_ids = set(by_id)
     if not valid_ids:
         return []
     existing_ids = {int(e.id) for e in existing}
 
     base_lines = [_tension_base_line(b) for b in concepts]
     sections = [
-        "ACTIVE CONCEPTS (each already an established, settled belief -- cite "
-        "their ids):\n" + "\n".join(base_lines),
+        "ACTIVE CONCEPTS (currently held interpretations, not new independent "
+        "observations; preserve their qualifiers and cite their ids):\n" + "\n".join(base_lines),
         "ALREADY-KNOWN TENSIONS:\n" + format_existing(existing),
         "Name a NEW tension ONLY when two of the concepts above are genuinely "
         "in friction (cite exactly two ids in 'evidence_concept_ids'), or "
@@ -1035,6 +1045,11 @@ def propose_tension(
             )
         )
         rationale = str(item.get("rationale") or "").strip()
+
+        subjects = {by_id[cid].subject for cid in cids}
+        if (len(cids) != 2 or (subjects != {"user", "aiko"} if subject == "relationship"
+                              else subjects != {subject})):
+            continue
 
         reinforces = resolve_reinforces(item.get("reinforces_id"), existing_ids)
         if reinforces is not None:
