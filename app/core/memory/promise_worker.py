@@ -69,8 +69,8 @@ log = logging.getLogger("app.promise_worker")
 _LOG_PREVIEW_CHARS = 200
 
 # Cap on the LLM response so a malformed answer can't run away with the
-# budget. ~5 promises * ~60 chars each, plus JSON scaffolding.
-_EXTRACT_MAX_TOKENS = 400
+# budget. Five actions plus literal source quotes, IDs and JSON scaffolding.
+_EXTRACT_MAX_TOKENS = 800
 
 # A promise body must carry at least this many content words to be
 # usable. "resolve them" has one ("resolve"); "fix the deploy script"
@@ -132,7 +132,7 @@ _SYSTEM_PROMPT = (
     '{"promises": [...]} holding zero or more promise objects. Each '
     "object in that array has these fields:\n"
     "  - source_message_id: the numeric ID of the message making the commitment.\n"
-    "  - source_quote: an exact quote from that message showing the commitment.\n"
+    "  - source_quote: the shortest exact quote showing the commitment, at most 160 chars.\n"
     "  - who: 'user' (the human committed) or 'assistant' (Aiko "
     "committed).\n"
     "  - what: a SELF-CONTAINED action phrase, 4-160 chars, that names "

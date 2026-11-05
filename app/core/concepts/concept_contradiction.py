@@ -171,6 +171,11 @@ class ConceptContradictionDetector:
             if self._cancelled():
                 return None
             mem = hit.memory
+            from app.core.memory.memory_origin import claim_source_refusal
+
+            if claim_source_refusal(mem, subject=getattr(concept, "subject", "user"),
+                                    kind=getattr(concept, "kind", "identity")):
+                continue
             content = (getattr(mem, "content", "") or "").strip()
             if not content:
                 continue
@@ -216,7 +221,11 @@ class ConceptContradictionDetector:
                     cos,
                 )
                 continue
-            verdict = self._verify_with_llm(belief_text, content)
+            from app.core.memory.memory_origin import origin_annotation
+
+            verdict = self._verify_with_llm(
+                belief_text, timephrase.format_memory_line(mem) + " " + origin_annotation(mem),
+            )
             if verdict is None or verdict.verdict != "YES":
                 continue
             log.info(
@@ -318,7 +327,9 @@ class ConceptContradictionDetector:
             belief=belief_text or "", memory=memory_text or ""
         )
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": timephrase.today_anchor() + "\n" + _SYSTEM_PROMPT
+             + " Respect source roles and distinguish recording age from event time.\n"
+             + timephrase.STORED_TEXT_TIME_RULE},
             {"role": "user", "content": user_content},
         ]
         chunks: list[str] = []

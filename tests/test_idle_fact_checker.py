@@ -206,8 +206,8 @@ def _build_world(
     )
     web_search = _StubWebSearch()
     ollama = _StubOllamaClient(
-        verdict_json=verdict_json
-        or {"verdict": "support", "delta": 0.1, "rewrite": None},
+        verdict_json={"scope": "world", "supporting_source_indices": [0],
+                      **(verdict_json or {"verdict": "support", "delta": 0.1, "rewrite": None})},
         cancel_during_stream=cancel_during_stream,
     )
     cancel_event = threading.Event()
@@ -257,7 +257,7 @@ def _build_world(
 def _add_fact(memory_store: MemoryStore, embedder: Any, text: str) -> int:
     """Insert a vanilla fact memory and return its id."""
     emb = embedder.embed(text)
-    mem = memory_store.add(text, "fact", emb, salience=0.6)
+    mem = memory_store.add(text, "knowledge", emb, salience=0.6)
     assert mem is not None
     return int(mem.id)
 
@@ -690,7 +690,7 @@ class TestVerdictApplication(unittest.TestCase):
         emb = embedder.embed("Python 3.12 was released in 2022.")
         seeded = memory_store.add(
             "Python 3.12 was released in 2022.",
-            "fact",
+            "knowledge",
             emb,
             salience=0.6,
             confidence=0.9,
@@ -890,19 +890,20 @@ class TestGapResolution(unittest.TestCase):
             verdict_json={
                 "verdict": "support",
                 "delta": 0.2,
-                "rewrite": "Jacob plays the violin for about ten years",
+                "rewrite": "Python 3.12 was released in October 2023",
+                "scope": "world", "supporting_source_indices": [0],
             },
         )
         memory_store: MemoryStore = world["memory_store"]
         gap_store: KnowledgeGapStore = world["knowledge_gap_store"]
         gap = gap_store.add_gap(
-            topic="music", question="how long has Jacob played violin",
+            topic="python", question="when was Python 3.12 released",
         )
         assert gap is not None
         gap_id = int(gap.id)
         world["queue"].enqueue(
             memory_id=gap_id,
-            claim_text="how long has Jacob played violin",
+            claim_text="when was Python 3.12 released",
             claim_kind="knowledge_gap",
         )
         result = world["worker"].run()
@@ -921,7 +922,9 @@ class TestGapResolution(unittest.TestCase):
         answer = memory_store.get(int(answer_id))
         assert answer is not None
         self.assertAlmostEqual(answer.confidence, 0.85, places=2)
-        self.assertEqual(answer.kind, "fact")
+        self.assertEqual(answer.kind, "knowledge")
+        self.assertEqual(answer.metadata["resolved_gap_id"], gap_id)
+        self.assertEqual(answer.metadata["supporting_source_indices"], [0])
 
 
 # ── safety: missing memory just no-ops ─────────────────────────────────

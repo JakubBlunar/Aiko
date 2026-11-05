@@ -186,11 +186,15 @@ def _add_fact(
     *,
     confidence: float = 0.7,
     kind: str = "fact",
+    provenance: str = "inferred",
+    source_message_id: int | None = None,
 ) -> int:
     emb = embedder.embed(content)
     mem = memory_store.add(
         content=content,
         kind=kind,
+        provenance=provenance,
+        source_message_id=source_message_id,
         embedding=emb,
         salience=0.6,
         confidence=confidence,
@@ -212,6 +216,7 @@ class HeuristicDefinitePathTests(unittest.TestCase):
             w["memory_store"], w["embedder"],
             "Bea loves spicy food deeply and often",
             confidence=0.9,
+            provenance="stated", source_message_id=42,
         )
         id_b = _add_fact(
             w["memory_store"], w["embedder"],
@@ -269,12 +274,13 @@ class HeuristicBorderlinePathTests(unittest.TestCase):
         )
         _add_fact(
             w["memory_store"], w["embedder"],
-            "Bob is 35 years old and currently single",
+            "Bob's manuscript contains 35 numbered chapters in total",
             confidence=0.9,
+            provenance="stated", source_message_id=42,
         )
         id_b = _add_fact(
             w["memory_store"], w["embedder"],
-            "Bob is 60 years old and currently single",
+            "Bob's manuscript contains 60 numbered chapters in total",
             confidence=0.5,
         )
         result = w["worker"].run()
@@ -294,12 +300,12 @@ class HeuristicBorderlinePathTests(unittest.TestCase):
         )
         _add_fact(
             w["memory_store"], w["embedder"],
-            "Bob is 35 years old and currently single",
+            "Bob's manuscript contains 35 numbered chapters in total",
             confidence=0.9,
         )
         id_b = _add_fact(
             w["memory_store"], w["embedder"],
-            "Bob is 60 years old and currently single",
+            "Bob's manuscript contains 60 numbered chapters in total",
             confidence=0.5,
         )
         result = w["worker"].run()
@@ -323,12 +329,12 @@ class HeuristicBorderlinePathTests(unittest.TestCase):
         )
         _add_fact(
             w["memory_store"], w["embedder"],
-            "Bob is 35 years old and currently single",
+            "Bob's manuscript contains 35 numbered chapters in total",
             confidence=0.7,
         )
         _add_fact(
             w["memory_store"], w["embedder"],
-            "Bob is 60 years old and currently single",
+            "Bob's manuscript contains 60 numbered chapters in total",
             confidence=0.7,
         )
         result = w["worker"].run()
@@ -341,12 +347,12 @@ class RateLimitDeferTests(unittest.TestCase):
         w = _build_world(per_hour_cap=0, per_day_cap=0)
         _add_fact(
             w["memory_store"], w["embedder"],
-            "Bob is 35 years old and currently single",
+            "Bob's manuscript contains 35 numbered chapters in total",
             confidence=0.9,
         )
         _add_fact(
             w["memory_store"], w["embedder"],
-            "Bob is 60 years old and currently single",
+            "Bob's manuscript contains 60 numbered chapters in total",
             confidence=0.5,
         )
         result = w["worker"].run()
@@ -585,7 +591,8 @@ class ClusterScopingTests(unittest.TestCase):
         result = w["worker"].run()
         self.assertTrue(result.get("cluster_scoped"))
         self.assertEqual(result.get("definite"), 1)
-        self.assertEqual(result.get("auto_resolved"), 1)
+        self.assertEqual(result.get("auto_resolved"), 0)
+        self.assertEqual(result.get("opened"), 1)  # Confidence alone cannot choose truth.
 
     def test_different_clusters_skips_pair(self) -> None:
         w = _build_world()
@@ -610,7 +617,8 @@ class ClusterScopingTests(unittest.TestCase):
         w["worker"]._topic_graph_provider = lambda: _FakeGraph({ma: 1, mb: 2})
         result = w["worker"].run()
         self.assertFalse(result.get("cluster_scoped"))
-        self.assertEqual(result.get("auto_resolved"), 1)
+        self.assertEqual(result.get("auto_resolved"), 0)
+        self.assertEqual(result.get("opened"), 1)
 
 
 if __name__ == "__main__":

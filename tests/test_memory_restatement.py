@@ -224,21 +224,16 @@ class ContradictionGuardTests(_Base):
             )
             self.assertEqual(store.count(), 2)
 
-    def test_the_global_gate_is_not_softened_by_the_guard(self) -> None:
-        """Above ``dedupe_threshold`` the old behaviour is untouched.
-
-        The guard narrows the *new* gate only. Changing what the 0.92
-        threshold does would be a silent behaviour change to every
-        existing caller.
-        """
+    def test_even_the_global_gate_preserves_a_contradiction(self) -> None:
+        """High vector similarity cannot erase the changed meaning."""
         with _Fixture() as store:
             self._stated(store, "Jacob loves spicy food.")
-            self.assertIsNone(
+            self.assertIsNotNone(
                 self._contradict(
                     store, "Jacob does not love spicy food.", cosine=0.95,
                 )
             )
-            self.assertEqual(store.count(), 1)
+            self.assertEqual(store.count(), 2)
 
 
 class SwitchTests(_Base):

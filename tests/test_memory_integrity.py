@@ -1,10 +1,12 @@
 """Adversarial source/scope checks with a real SQLite memory store."""
 from dataclasses import asdict
+from datetime import timedelta
 
 import numpy as np
 import pytest
 
 from app.core.infra.chat_database import ChatDatabase
+from app.core.infra import timephrase
 from app.core.memory.memory_consolidator import MemoryConsolidator
 from app.core.memory.memory_origin import MemoryOrigin, memory_origin
 from app.core.memory.memory_store import MemoryStore
@@ -51,6 +53,13 @@ def test_different_or_unknown_event_dates_do_not_collapse(store):
     assert store.count() == 4
 
 
+def test_a_new_undated_plan_cannot_be_absorbed_by_an_old_plan(store):
+    first = add(store, "Noah plans a quiet walk", temporal_type="future_plan")
+    first.created_at = (timephrase.utcnow() - timedelta(days=2)).isoformat()
+    second = add(store, "Noah plans a quiet walk", temporal_type="future_plan")
+    assert second is not None and second.id != first.id
+
+
 def test_rewrites_keep_original_but_dont_inherit_testimony(store):
     row = add(store, provenance="stated", source_message_id=42)
     store.update(row.id, salience=.9)
@@ -65,6 +74,8 @@ def test_rewrites_keep_original_but_dont_inherit_testimony(store):
     for n in range(4):
         store.update(row.id, content=f"Noah enjoys quiet walks near river {n}")
     assert len(row.metadata["content_versions"]) == 2
+    assert row.metadata["original_content"]["content"] == "Noah enjoys quiet walks"
+    assert row.metadata["original_content"]["provenance"] == "stated"
     store.update(row.id, content="Noah prefers forest walks", provenance="stated")
     assert row.provenance == "stated"
     assert memory_origin(row).writer == "manual_edit"

@@ -25,9 +25,9 @@ K35 is the periodic cleanup pass. One tick = one :meth:`run`:
    rate-limited worker-LLM call, with the primary's own content as the
    deterministic fallback on any failure.
 4. **Commit** — update the primary in place (merged content, re-embedded
-   only if the text actually changed, ``salience``/``confidence`` lifted
-   to the cluster max, ``tier='long_term'``, ``metadata.source_ids``
-   provenance), then **archive** the absorbed duplicates
+   only if the text actually changed, salience lifted to the cluster max,
+   synthesized confidence bounded by the weakest input, ``tier='long_term'``,
+   ``metadata.source_ids`` provenance), then **archive** the absorbed duplicates
    (``tier='archive'``, ``metadata.consolidated_into=primary_id``).
    Archiving is reversible and mirrors how F5 demotes a conflict loser.
 
@@ -451,6 +451,9 @@ class MemoryConsolidationWorker:
                 # Never fuse a contradiction — that's F5's job.
                 if classify_pair(anchor.content, cand.content).label != HEURISTIC_NO:
                     continue
+                if any(classify_pair(candidates[k].content, cand.content).label != HEURISTIC_NO
+                       for k in member_idx):
+                    continue
                 member_idx.append(j)
             if len(member_idx) + 1 < min_cluster:
                 continue
@@ -611,7 +614,7 @@ class MemoryConsolidationWorker:
             log.debug("memory-consolidation: LLM merge raised", exc_info=True)
             return (fallback, False)
         merged = self._parse_merged(content)
-        if not merged:
+        if not merged or timephrase.has_relative_deictic(merged):
             return (fallback, False)
         return (merged, True)
 
@@ -626,7 +629,10 @@ class MemoryConsolidationWorker:
             return ""
         if not isinstance(parsed, dict):
             return ""
-        return str(parsed.get("merged", "")).strip()
+        value = parsed.get("merged")
+        if not isinstance(value, str) or value.strip().lower() in {"null", "none"}:
+            return ""
+        return value.strip()
 
     # ── helpers ──────────────────────────────────────────────────────
 

@@ -1092,6 +1092,7 @@ class MemoryStore:
             content=cleaned, kind=kind, metadata=metadata,
             provenance=provenance_normalized, temporal_type=temporal_type_normalized,
             event_time=event_time_clean,
+            created_at=now,
         )
 
         # Dedupe pass against in-memory mirror. Pinned writes bypass dedupe
@@ -1113,7 +1114,7 @@ class MemoryStore:
                     mem = self._mirror.get(mid)
                     if mem is None:
                         continue
-                    opposition = classify_pair(cleaned, mem.content) if admission_key else None
+                    opposition = classify_pair(cleaned, mem.content)
                     if opposition is not None and opposition.label != HEURISTIC_NO:
                         intended = (metadata or {}).get("admission", {}).get("supersedes_memory_id")
                         if (

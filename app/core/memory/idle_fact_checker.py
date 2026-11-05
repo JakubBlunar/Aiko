@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
+from app.core.memory.memory_origin import memory_origin, origin_annotation
+from app.core.memory.research_evidence import evidence_metadata, source_indices
 
 if TYPE_CHECKING:
     from app.core.memory.fact_check_queue import ClaimItem, FactCheckQueue
@@ -68,7 +70,11 @@ _SYSTEM_PROMPT = (
     "claim. Use 'contradict' when an excerpt directly disagrees. "
     "Use 'inconclusive' otherwise. ``delta`` is positive for support, "
     "negative for contradict, zero for inconclusive. ``rewrite`` is the "
-    "corrected claim text on a contradict verdict; leave null otherwise."
+    "corrected claim text on a contradict verdict, or the direct public answer "
+    "when a knowledge-gap question has a support verdict; leave null otherwise."
+    " Also return scope: 'world' | 'personal' | 'unknown', and supporting_source_indices: "
+    "[zero-based excerpt indices]. World means public information, not private user "
+    "experience or Aiko's inner life. A public excerpt cannot establish a private event."
 )
 
 _USER_TEMPLATE = (
@@ -93,6 +99,8 @@ class Verdict:
     kind: str  # "support" / "contradict" / "inconclusive"
     delta: float  # additive change to confidence (clamped to [-0.3, 0.3])
     rewrite: str | None  # optional corrected claim text
+    scope: str = "unknown"
+    supporting_source_indices: tuple[int, ...] = ()
 
 
 class IdleFactChecker:
@@ -339,7 +347,7 @@ class IdleFactChecker:
             _preview(verdict.rewrite) if verdict.rewrite else None,
         )
 
-        applied = self._apply_verdict(claim, verdict) or {}
+        applied = self._apply_verdict(claim, verdict, snippets=snippets) or {}
         log.info(
             "fact-check apply done: memory_id=%s verdict=%s "
             "confidence %.2f -> %.2f rewrote=%s resolved_gap=%s",
@@ -487,8 +495,8 @@ class IdleFactChecker:
         if not snippets:
             return Verdict(kind="inconclusive", delta=0.0, rewrite=None)
         excerpts_text = "\n".join(
-            f"- {s['title']} ({s['url']}): {s['snippet']}"
-            for s in snippets[:_MAX_EXCERPTS]
+            f"[{i}] {s['title']} ({s['url']}): {s['snippet']}"
+            for i, s in enumerate(snippets[:_MAX_EXCERPTS])
         )
         # Always feed the *scrubbed* version of the claim to the LLM
         # too. The model is local so this is belt-and-braces, but it
@@ -498,12 +506,28 @@ class IdleFactChecker:
         # Prefer the enclosing sentence: the bare span is not a
         # proposition, so a verdict on it is uninterpretable.
         prompt_claim = safe_claim or claim.claim_sentence or claim.claim_text
+        from types import SimpleNamespace
+
+        original = self._memory_store.get(claim.memory_id)
+        prompt_claim = timephrase.format_memory_line(SimpleNamespace(
+            content=prompt_claim, created_at=getattr(original, "created_at", claim.enqueued_at),
+            temporal_type=getattr(original, "temporal_type", None),
+            event_time=getattr(original, "event_time", None),
+        )) + " " + origin_annotation(original)
         user_content = _USER_TEMPLATE.format(
             claim=prompt_claim,
             excerpts=excerpts_text,
         )
+        if claim.claim_kind == "knowledge_gap":
+            user_content = ("This is a knowledge-gap QUESTION, not a proposition. "
+                "Use support only if an excerpt directly answers it; put that public "
+                "answer in rewrite and cite its index. An unanswered or personal question "
+                "is inconclusive, never its own answer.\n" + user_content)
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": timephrase.today_anchor() + "\n" + _SYSTEM_PROMPT
+             + " Search results were retrieved now; their publication dates may be unknown. "
+             "Retrieval time is not an event date or proof of a current state.\n"
+             + timephrase.STORED_TEXT_TIME_RULE},
             {"role": "user", "content": user_content},
         ]
         # The full prompt only goes to the LLM (local) and to DEBUG
@@ -590,12 +614,17 @@ class IdleFactChecker:
             cleaned = rewrite_raw.strip()
             if cleaned and 4 <= len(cleaned) <= 240:
                 rewrite = cleaned
-        return Verdict(kind=kind, delta=delta, rewrite=rewrite)
+        scope = str(parsed.get("scope") or "unknown").lower()
+        return Verdict(kind=kind, delta=delta, rewrite=rewrite,
+                       scope=scope if scope in {"world", "personal"} else "unknown",
+                       supporting_source_indices=source_indices(
+                           parsed.get("supporting_source_indices")))
 
     def _apply_verdict(
         self,
         claim: "ClaimItem",
         verdict: Verdict,
+        *, snippets: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         memory = self._memory_store.get(int(claim.memory_id))
         if memory is None:
@@ -604,6 +633,9 @@ class IdleFactChecker:
             return {"memory_missing": True}
         now_iso = timephrase.utcnow().isoformat()
         metadata = dict(memory.metadata) if memory.metadata else {}
+        receipt = evidence_metadata((snippets or [])[:_MAX_EXCERPTS],
+                                    verdict.supporting_source_indices, timephrase.utcnow())
+        metadata["fact_check_evidence"] = receipt
         flags = dict(metadata.get("flags") or {}) if isinstance(metadata.get("flags"), dict) else {}
 
         current_conf = float(memory.confidence)
@@ -636,6 +668,30 @@ class IdleFactChecker:
         else:  # inconclusive
             metadata["last_checked_at"] = now_iso
 
+        # Search can check public assertions; it cannot overrule a private
+        # observation, a question, or a curated record about a person.
+        origin = memory_origin(memory)
+        if (origin.subject != "world" or origin.mode != "world_fact" or verdict.scope != "world"
+                or getattr(memory, "pinned", False)
+                or not receipt["supporting_source_indices"]):
+            new_conf, new_content = current_conf, memory.content
+            details["rewrote"] = False
+            details["source_scope_preserved"] = True
+            metadata.pop("last_verified_at", None)
+            metadata["last_checked_at"] = now_iso
+            old_flags = (memory.metadata or {}).get("flags")
+            flags = dict(old_flags) if isinstance(old_flags, dict) else {}
+
+        embedding = None
+        if new_content != memory.content:
+            try:
+                if self._embedder is None or timephrase.has_relative_deictic(new_content):
+                    raise ValueError("rewrite requires a fresh vector and anchored wording")
+                embedding = self._embedder.embed(new_content)
+            except Exception:
+                new_content = memory.content
+                details["rewrote"] = False
+
         if flags:
             metadata["flags"] = flags
         elif "flags" in metadata:
@@ -645,6 +701,7 @@ class IdleFactChecker:
             updated = self._memory_store.update(
                 int(claim.memory_id),
                 content=new_content if new_content != memory.content else None,
+                embedding=embedding,
                 metadata=metadata,
                 metadata_merge=True,
                 confidence=new_conf,
@@ -672,6 +729,8 @@ class IdleFactChecker:
             and claim.claim_kind == "knowledge_gap"
             and verdict.kind == "support"
             and self._embedder is not None
+            and verdict.scope == "world"
+            and receipt["supporting_source_indices"]
         ):
             answer_text = self._pick_answer_text(verdict, claim)
             answer_memory_id: int | None = None
@@ -680,16 +739,23 @@ class IdleFactChecker:
                     emb = self._embedder.embed(answer_text)
                     answer_mem = self._memory_store.add(
                         content=answer_text,
-                        kind="fact",
+                        kind="knowledge",
                         embedding=emb,
                         salience=0.7,
                         confidence=0.85,
                         tier="long_term",
+                        metadata={**receipt, "resolved_gap_id": int(claim.memory_id),
+                                  "memory_origin": {"subject": "world", "mode": "world_fact",
+                                  "writer": "fact_checker_gap", "domain": "external",
+                                  "version": 1}},
                     )
                     if answer_mem is not None:
                         answer_memory_id = int(answer_mem.id)
                 except Exception:
                     log.debug("gap answer write failed", exc_info=True)
+            if answer_memory_id is None:
+                details["resolution_deferred"] = True
+                return details
             try:
                 gap_store.mark_resolved(
                     int(claim.memory_id),
@@ -804,10 +870,9 @@ class IdleFactChecker:
     def _pick_answer_text(verdict: Verdict, claim: "ClaimItem") -> str | None:
         """Best-effort short answer text for a resolved gap.
 
-        Prefer the model's ``rewrite`` (already a clean restatement);
-        fall back to the original claim text so something gets written
-        even when the model didn't bother with a rewrite.
+        A question is not its own answer. Require an actual anchored
+        answer from this completion instead of storing the query as a fact.
         """
-        if verdict.rewrite:
+        if verdict.rewrite and not timephrase.has_relative_deictic(verdict.rewrite):
             return verdict.rewrite
-        return (claim.claim_text or "").strip() or None
+        return None

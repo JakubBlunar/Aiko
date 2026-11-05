@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import threading
 import unittest
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -35,7 +35,7 @@ from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
 class _Row:
     id: int
     content: str
-    kind: str = "fact"
+    kind: str = "knowledge"
     confidence: float = 0.85
     tier: str = "long_term"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -108,6 +108,7 @@ def _checker(
         web_search_tool=SimpleNamespace(),
         rate_limiter=SimpleNamespace(),
         cancel_event=threading.Event(),
+        embedder=SimpleNamespace(embed=lambda text: [1., 0.]),
         arm_reversal=_arm,
         was_surfaced=lambda _mid: surfaced,
     )
@@ -120,7 +121,13 @@ def _apply(
     verdict: Verdict,
 ) -> None:
     claim = SimpleNamespace(memory_id=memory_id, claim_kind="fact")
-    worker._apply_verdict(claim, verdict)  # noqa: SLF001
+    # This file tests the surfaced reversal bar after an attributed public
+    # check. Missing/wrong-role source cases are covered by grounding tests.
+    worker._apply_verdict(claim, replace(verdict, scope="world", supporting_source_indices=(0,)),
+                         snippets=[{
+        "title": "Planet reference", "url": "https://example.org/planets",
+        "snippet": "Jupiter is the largest planet.",
+    }])
 
 
 # ── the reversal bar ───────────────────────────────────────────────────

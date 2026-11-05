@@ -2,8 +2,8 @@
 
 Periodic background worker that scans pairs of memories with high
 cosine similarity but lexically contradicting content (``loves X`` vs
-``hates X``). Auto-demotes the loser when the F3 confidence delta is
-clear; surfaces ambiguous pairs in the Conflicts sub-tab of the
+``hates X``). Respects source authority and event scope before resolution;
+surfaces ambiguous pairs in the Conflicts sub-tab of the
 Memory drawer for the user to resolve.
 
 Pipeline (one tick = one ``run`` call):
@@ -30,9 +30,11 @@ Pipeline (one tick = one ``run`` call):
    with ``state_key='conflict_detector.rate_state'``. The prompt asks
    for a one-line JSON verdict (``YES`` / ``NO`` / ``UNRELATED``).
    Only ``YES`` proceeds to resolve.
-5. **Resolve.** Compute ``delta = |conf_winner - conf_loser|``. When
-   ``delta >= auto_resolve_delta`` (default 0.30), the
-   higher-confidence side wins; the loser is demoted (confidence
+5. **Resolve.** A stated source takes precedence over inference. Automatic
+   resolution requires either an explicit stated correction or a cited stated
+   source whose higher confidence clears ``auto_resolve_delta`` (default 0.30).
+   Confidence alone never supplies authority; a pinned record is never demoted.
+   With compatible actor/time scopes the loser is demoted (confidence
    clamped to 0.20, tier -> ``archive``,
    ``metadata.superseded_by`` stamped) and the row is written with
    ``status='auto_resolved'``. Otherwise the row is written with
@@ -502,6 +504,10 @@ class MemoryConflictWorker:
                 j = i + 1 + int(offset_j)
                 mem_b = group[j]
                 state.pairs_scanned += 1
+                from app.core.memory.memory_integrity import conflict_scope_compatible
+
+                if not conflict_scope_compatible(mem_a, mem_b):
+                    continue
                 similarity = float(sims[offset_j])
 
                 if self._conflict_store.has_pair(mem_a.id, mem_b.id):
@@ -560,7 +566,12 @@ class MemoryConflictWorker:
                     continue
 
                 t0 = time.monotonic()
-                verdict = self._verify_with_llm(mem_a.content, mem_b.content)
+                from app.core.memory.memory_origin import origin_annotation
+
+                verdict = self._verify_with_llm(
+                    timephrase.format_memory_line(mem_a) + " " + origin_annotation(mem_a),
+                    timephrase.format_memory_line(mem_b) + " " + origin_annotation(mem_b),
+                )
                 elapsed_ms = (time.monotonic() - t0) * 1000.0
                 state.llm_total_ms += elapsed_ms
                 if verdict is None:
@@ -640,7 +651,11 @@ class MemoryConflictWorker:
     ) -> _ResolutionPlan:
         conf_a = float(getattr(mem_a, "confidence", 0.7))
         conf_b = float(getattr(mem_b, "confidence", 0.7))
-        if conf_a > conf_b:
+        stated_a = getattr(mem_a, "provenance", "inferred") == "stated"
+        stated_b = getattr(mem_b, "provenance", "inferred") == "stated"
+        if stated_a != stated_b:
+            winner, loser = (mem_a, mem_b) if stated_a else (mem_b, mem_a)
+        elif conf_a > conf_b:
             winner, loser = mem_a, mem_b
         elif conf_b > conf_a:
             winner, loser = mem_b, mem_a
@@ -650,8 +665,25 @@ class MemoryConflictWorker:
             older = mem_b if newer is mem_a else mem_a
             winner, loser = newer, older
         delta = abs(conf_a - conf_b)
+        from app.core.memory.memory_integrity import conflict_scope_compatible
+
+        metadata = getattr(winner, "metadata", None) or {}
+        admission = metadata.get("admission") or {}
+        prior_ids = metadata.get("supersedes_memory_ids")
+        if not isinstance(prior_ids, (list, tuple, set)):
+            prior_ids = []
+        corrected = (loser.id in prior_ids
+                     or (isinstance(admission, dict)
+                         and admission.get("supersedes_memory_id") == loser.id))
+        source_authority = (getattr(winner, "provenance", "inferred") == "stated"
+                            and getattr(loser, "provenance", "inferred") != "stated")
+        authorized = source_authority and (corrected or (
+            delta >= auto_resolve_delta and conf_a != conf_b
+            and winner.confidence > loser.confidence
+            and getattr(winner, "source_message_id", None) is not None))
         return _ResolutionPlan(
-            auto_resolve=delta >= auto_resolve_delta,
+            auto_resolve=(authorized and conflict_scope_compatible(winner, loser)
+                          and not getattr(loser, "pinned", False)),
             winner=winner,
             loser=loser,
             delta=delta,
@@ -766,7 +798,9 @@ class MemoryConflictWorker:
         """
         user_content = _USER_TEMPLATE.format(a=text_a or "", b=text_b or "")
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": timephrase.today_anchor() + "\n" + _SYSTEM_PROMPT
+             + " Different subjects, episodes or contexts can both be true.\n"
+             + timephrase.STORED_TEXT_TIME_RULE},
             {"role": "user", "content": user_content},
         ]
         if log.isEnabledFor(logging.DEBUG):

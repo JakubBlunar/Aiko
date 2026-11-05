@@ -50,11 +50,14 @@ class _Mem:
         self.temporal_type = temporal_type
         self.relevance_until = relevance_until
         self.metadata: dict = {}
+        self.kind = "fact"
+        self.created_at = "2026-07-01T12:00:00+00:00"
 
 
 class _MemoryStore:
     def __init__(self, mems) -> None:
         self._mems = {m.id: m for m in mems}
+        self._mems.setdefault(99, _Mem(99, _COUNTER))
         self.update_calls: list[tuple] = []
         self.reclassify_calls: list[tuple] = []
         self.notified: list[int] = []

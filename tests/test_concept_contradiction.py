@@ -59,6 +59,8 @@ class _Mem:
         self.id = mem_id
         self.content = content
         self.embedding = np.asarray(embedding, dtype=np.float32)
+        self.kind = "fact"
+        self.created_at = "2026-10-01T12:00:00+00:00"
 
 
 class _MemoryStore:

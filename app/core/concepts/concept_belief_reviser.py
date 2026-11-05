@@ -135,6 +135,7 @@ class RevisionOutcome:
     kept: int = 0
     skipped_pinned: int = 0
     deferred_rate_limit: int = 0
+    skipped_source_scope: int = 0
 
 
 class ConceptBeliefReviser:
@@ -196,6 +197,16 @@ class ConceptBeliefReviser:
         belief_text = self._belief_text(concept)
         if not counter_text or not belief_text:
             return out
+        from app.core.memory.memory_integrity import conflict_scope_compatible
+        from app.core.memory.memory_origin import claim_source_refusal, origin_annotation
+
+        counter_mem = self._memory_store.get(getattr(verdict, "memory_id", 0))
+        if (counter_mem is None or claim_source_refusal(
+                counter_mem, subject=getattr(concept, "subject", "user"),
+                kind=getattr(concept, "kind", "identity"))):
+            out.skipped_source_scope += 1
+            return out
+        counter_text = counter_mem.content
         for mem in self._supporting_memories(concept):
             if self._cancelled():
                 break
@@ -206,6 +217,14 @@ class ConceptBeliefReviser:
                 # Observations Aiko was told to always keep are never
                 # auto-revised -- the user curated them.
                 out.skipped_pinned += 1
+                continue
+            if getattr(mem, "provenance", "inferred") == "stated":
+                # A generated concept losing support cannot revoke a person's
+                # actual statement. Explicit corrections have their own path.
+                out.kept += 1
+                continue
+            if not conflict_scope_compatible(mem, counter_mem):
+                out.skipped_source_scope += 1
                 continue
             content = (getattr(mem, "content", "") or "").strip()
             if not content:
@@ -227,7 +246,10 @@ class ConceptBeliefReviser:
                     getattr(mem, "id", "?"),
                 )
                 continue
-            arb = self._arbitrate(belief_text, counter_text, content)
+            counter_input = timephrase.format_memory_line(counter_mem) + " " + origin_annotation(
+                counter_mem)
+            arb = self._arbitrate(belief_text, counter_input,
+                                 timephrase.format_memory_line(mem) + " " + origin_annotation(mem))
             if arb is None:
                 out.kept += 1
                 continue
@@ -435,7 +457,10 @@ class ConceptBeliefReviser:
             support=support_text or "",
         )
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": timephrase.today_anchor() + "\n" + _SYSTEM_PROMPT
+             + " Different subjects, dates or contexts can both be true. Keep the memory "
+             "when the derived concept overstates it; uncertainty is not falsity.\n"
+             + timephrase.STORED_TEXT_TIME_RULE},
             {"role": "user", "content": user_content},
         ]
         chunks: list[str] = []

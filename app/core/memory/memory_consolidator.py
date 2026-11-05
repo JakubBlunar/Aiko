@@ -47,6 +47,7 @@ from app.core.session.session_text_utils import resolve_user_name
 from app.core.infra import timephrase
 from app.core.memory.memory_integrity import compatible_memories
 from app.core.memory.memory_origin import origin_annotation
+from app.core.memory.conflict_heuristics import classify_pair, HEURISTIC_NO
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -247,6 +248,8 @@ class MemoryConsolidator:
             except Exception:
                 log.debug("apply_merge raised", exc_info=True)
                 continue
+            if archived is None:
+                continue
             result.merges_applied += 1
             result.archived += archived
         self._record_run(user_id, now_utc=now_utc)
@@ -340,10 +343,10 @@ class MemoryConsolidator:
         survivor: "Memory",
         victims: list["Memory"],
         merged_content: str,
-    ) -> int:
+    ) -> int | None:
         # Boost salience: average of the cluster + small bonus, clipped.
         if survivor is None:
-            return 0
+            return None
         boost = 0.05 + 0.03 * len(victims)
         peak = max(m.salience for m in [survivor, *victims])
         new_salience = min(1.0, max(survivor.salience, peak) + boost)
@@ -355,6 +358,8 @@ class MemoryConsolidator:
         # pinned coercion logic for free.
         new_revival = max(float(m.revival_score) for m in [survivor, *victims])
         cleaned_text = (merged_content or survivor.content).strip()[:4000]
+        if timephrase.has_relative_deictic(cleaned_text) and cleaned_text != survivor.content:
+            cleaned_text = survivor.content
         embedding = None
         if cleaned_text != survivor.content:
             try:
@@ -385,7 +390,7 @@ class MemoryConsolidator:
             )
         except Exception:
             log.debug("survivor update failed", exc_info=True)
-            return 0
+            return None
         archived = 0
         for victim in victims:
             try:
@@ -473,6 +478,11 @@ def _cluster_memories(
     def union(a: int, b: int) -> None:
         ra, rb = find(a), find(b)
         if ra != rb:
+            left = [i for i in range(n) if find(i) == ra]
+            right = [i for i in range(n) if find(i) == rb]
+            if any(classify_pair(items[i].content, items[j].content).label != HEURISTIC_NO
+                   for i in left for j in right):
+                return  # A neutral bridge must not fuse contradictory endpoints.
             parent[ra] = rb
 
     embeddings = [np.asarray(m.embedding, dtype=np.float32) for m in items]
@@ -519,7 +529,7 @@ def _clean_merge_output(raw: str) -> str:
     if len(text) > 600:
         text = text[:600].rsplit(" ", 1)[0].rstrip(",;: ") + "…"
     text = text.strip().strip("\"'`")
-    return text
+    return "" if text.lower() in {"null", "none", "n/a"} else text
 
 
 __all__ = [
