@@ -191,6 +191,10 @@ or model call was added.
 Broader semantic matching and outcome attribution are unvalidated. Engagement is not success;
 the existing L52 contract remains authoritative for derived concepts.
 
+5 Nov [data review](../strategy-lifecycle-review.md): no admitted strategies yet;
+schema offerings are not an opportunity denominator. A natural-result phrase is
+a useful missed-opportunity contrast, while useful transfer remains unvalidated.
+
 **Source check:** [learned_strategies.py](../../app/core/memory/learned_strategies.py),
 [test_learned_strategies.py](../../tests/test_learned_strategies.py).
 
@@ -269,6 +273,11 @@ diagnostics and seeded adoption exist.
 **Remaining:** Complete staged lifecycle/generative rollout: align dormant/contradicted revival with
 kind gates, validate write-gate changes, then consider per-kind floors, coupled cosine bands and
 relevance telemetry. Global-floor revival branches remain.
+
+5 Nov [lifecycle review](../strategy-lifecycle-review.md) found 29 dormant-to-revival
+sequences below the kind confidence floor, plus a large weak candidate population
+kept past TTL by the two-source expiry condition. Gate alignment and a separately
+specified stale-candidate retirement policy are the next bounded slices.
 
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l45).
 
