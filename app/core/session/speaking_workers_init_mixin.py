@@ -430,6 +430,7 @@ class SpeakingWorkersInitMixin:
                     use_llm_merge=settings.agent.consolidator_use_llm_merge,
                     user_display_name_provider=lambda: self.user_display_name,
                     repoint_memory_edges=self._repoint_concept_memory_edges,
+                    embedder=self._embedder,
                 )
             except Exception:
                 log.warning("MemoryConsolidator init failed", exc_info=True)

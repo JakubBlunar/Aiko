@@ -25,6 +25,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterable
 
 import numpy as np
@@ -1073,12 +1074,32 @@ class MemoryStore:
             else None
         )
 
+        from app.core.memory.memory_integrity import compatible_memories, normalize_memory_time
+        from app.core.memory.memory_origin import stamp_origin
+
+        now = _now_iso()
+        original_time = (temporal_type_normalized, event_time_clean)
+        temporal_type_normalized, event_time_clean = normalize_memory_time(
+            cleaned, temporal_type_normalized, event_time_clean, now,
+        )
+        if original_time != (temporal_type_normalized, event_time_clean):
+            relevance_until_clean = derive_relevance_until(
+                temporal_type_normalized, event_time=timephrase.parse_iso(event_time_clean),
+                created_at=timephrase.parse_iso(now),
+            )
+        metadata = stamp_origin(kind, cleaned, metadata, temporal_type_normalized)
+        candidate = SimpleNamespace(
+            content=cleaned, kind=kind, metadata=metadata,
+            provenance=provenance_normalized, temporal_type=temporal_type_normalized,
+            event_time=event_time_clean,
+        )
+
         # Dedupe pass against in-memory mirror. Pinned writes bypass dedupe
         # so user-curated moments are never silently merged into a fuzzy
         # nearby row (matters most for shared_moment).
         dup_id: int | None = None
         if not pinned and not skip_dedupe:
-            written_at = timephrase.utcnow()
+            written_at = timephrase.parse_iso(now)
             # Neither gate can fire below the lower of the two thresholds
             # (``_is_restatement`` returns early under ``_restate_threshold``),
             # so one matmul plus a walk of whatever cleared that floor
@@ -1107,6 +1128,8 @@ class MemoryStore:
                                 }),
                             }
                         continue
+                    if not compatible_memories(mem, candidate):
+                        continue
                     if score >= self._dedupe_threshold or self._is_restatement(
                         mem,
                         score,
@@ -1133,96 +1156,8 @@ class MemoryStore:
                 self._touch_existing(dup_id, salience_clipped)
             return None
 
-        # Real insert.
+        # Real insert. Time/origin have already been normalized before dedupe.
         conn = self._get_conn()
-        now = _now_iso()
-        # K-time10 backstop. A note worded "today" / "currently" is only
-        # true on the day it was written, but ``durable`` is the *default*
-        # temporal type and renders with no time tag at all -- so such a
-        # row keeps reaching the prompt months later still asserting the
-        # present. Re-reading it as an event anchored at write time is the
-        # honest interpretation, and it makes retrieval tag the bullet
-        # "(N days ago)" instead of leaving it bare.
-        #
-        # This lives at the store rather than in each producer's prompt on
-        # purpose: every long-term write funnels through here, so one
-        # branch covers all ~35 producers and anything added later.
-        # Prompts should still be taught not to write the phrase (that is
-        # the K-time worker toolkit's job); this only catches what slips
-        # past. The text itself is never rewritten -- editing what was
-        # recorded to satisfy a regex would be worse than mis-tagging it.
-        #
-        # H40 split it by direction. The original read *any* deictic as
-        # evidence of a past event, but five of the eighteen words point
-        # the other way, so "the courier comes tomorrow" was filed as
-        # something that had already happened and stamped at write time.
-        # That is the worst available outcome: no upkeep pass looks at
-        # ``past_event``, the upcoming-horizon block only reads
-        # ``future_plan``, and the bullet rendered as though the courier
-        # had just been. Note the asymmetry in what each branch may
-        # invent -- a past deictic licenses "it happened when this was
-        # written", which is true by construction, while a future one
-        # licenses no timestamp at all: "soon" and "next week" do not
-        # name a moment, and guessing one is the same fabrication in a
-        # different costume. A clockless ``future_plan`` is handled: the
-        # decay worker retires it on ``relevance_until``.
-        type_before = temporal_type_normalized
-        direction = timephrase.deictic_direction(cleaned)
-        if temporal_type_normalized in ("durable", "preference") and direction:
-            if direction == timephrase.FUTURE:
-                temporal_type_normalized = "future_plan"
-            else:
-                temporal_type_normalized = "past_event"
-                if event_time_clean is None:
-                    event_time_clean = now
-            log.debug(
-                "memory reclassified %s -> %s (%s wording): %s",
-                temporal_type,
-                temporal_type_normalized,
-                direction,
-                cleaned[:80],
-            )
-
-        # Direction validation, which nothing did before H40: a
-        # ``past_event`` dated after the moment it was recorded is not a
-        # tolerable rounding error, it is two fields disagreeing about
-        # whether the thing has happened. Believe ``event_time`` -- it is
-        # the more specific claim, and the label is the field producers
-        # get wrong (only 17 of 2,095 rows ever reached ``future_plan``,
-        # while 54 plans sat in ``past_event`` dated into their own
-        # future). Deliberately compares against the write time and not
-        # against "now", so replaying an old row cannot re-decide it.
-        if (
-            temporal_type_normalized == "past_event"
-            and event_time_clean is not None
-        ):
-            stamped = timephrase.parse_iso(event_time_clean)
-            written = timephrase.parse_iso(now)
-            if stamped is not None and written is not None and stamped > written:
-                log.info(
-                    "memory past_event dated after its own write -> "
-                    "future_plan (event_time=%s written=%s): %s",
-                    event_time_clean, now, cleaned[:80],
-                )
-                temporal_type_normalized = "future_plan"
-
-        # A type carries an expiry rule, so changing the type invalidates
-        # whatever the caller derived from the old one. Recomputing is not
-        # optional bookkeeping: ``list_by_temporal_type`` skips rows whose
-        # ``relevance_until`` is NULL, and ``durable`` derives NULL -- so a
-        # row promoted out of ``durable`` without this would be invisible
-        # to every upkeep pass that could ever retire it.
-        if temporal_type_normalized != type_before:
-            written = timephrase.parse_iso(now)
-            if written is not None:
-                relevance_until_clean = derive_relevance_until(
-                    temporal_type_normalized,
-                    event_time=timephrase.parse_iso(event_time_clean),
-                    created_at=written,
-                )
-        from app.core.memory.memory_origin import stamp_origin
-
-        metadata = stamp_origin(kind, cleaned, metadata, temporal_type_normalized)
         meta_json = _encode_metadata(metadata)
         pinned_int = 1 if pinned else 0
         cursor = conn.execute(
@@ -1491,6 +1426,7 @@ class MemoryStore:
         tier: str | None = None,
         revival_score: float | None = None,
         confidence: float | None = None,
+        provenance: str | None = None,
         event_time: object | None = _UNSET,
         temporal_type: str | None = None,
         relevance_until: object | None = _UNSET,
@@ -1599,11 +1535,35 @@ class MemoryStore:
             else:
                 new_relevance_until = None
 
+        from app.core.memory.memory_integrity import normalize_memory_time, rewrite_metadata
+
+        content_changed = new_content != mem.content
+        new_provenance = ("inferred" if content_changed else mem.provenance)
+        if provenance is not None:
+            new_provenance = _coerce_provenance(provenance)
+        if content_changed:
+            new_metadata = rewrite_metadata(mem, new_metadata, at=_now_iso(),
+                                            curated=provenance == "stated")
+            metadata_changed = True
+        if content_changed or temporal_type is not None or event_time is not self._UNSET:
+            previous_time = (new_temporal_type, new_event_time)
+            new_temporal_type, new_event_time = normalize_memory_time(
+                new_content, new_temporal_type, new_event_time, _now_iso(),
+            )
+            time_changed = ((new_temporal_type, new_event_time)
+                            != (mem.temporal_type, mem.event_time))
+            if (previous_time != (new_temporal_type, new_event_time)
+                    or (relevance_until is self._UNSET and time_changed)):
+                new_relevance_until = derive_relevance_until(
+                    new_temporal_type, event_time=timephrase.parse_iso(new_event_time),
+                    created_at=timephrase.utcnow(),
+                )
+
         conn = self._get_conn()
         conn.execute(
             "UPDATE memories SET content = ?, kind = ?, salience = ?, embedding = ?, "
             "metadata = ?, tier = ?, revival_score = ?, confidence = ?, "
-            "event_time = ?, temporal_type = ?, relevance_until = ? WHERE id = ?",
+            "event_time = ?, temporal_type = ?, relevance_until = ?, provenance = ? WHERE id = ?",
             (
                 new_content,
                 new_kind,
@@ -1616,6 +1576,7 @@ class MemoryStore:
                 new_event_time,
                 new_temporal_type,
                 new_relevance_until,
+                new_provenance,
                 int(memory_id),
             ),
         )
@@ -1634,6 +1595,7 @@ class MemoryStore:
             mem.tier = new_tier
             mem.revival_score = new_revival
             mem.confidence = new_confidence
+            mem.provenance = new_provenance
             mem.event_time = new_event_time
             mem.temporal_type = new_temporal_type
             mem.relevance_until = new_relevance_until

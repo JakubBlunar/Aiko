@@ -221,6 +221,7 @@ class MemoryFacadeMixin:
             embedding=new_embedding,
             tier=tier,
             confidence=confidence,
+            provenance="stated" if content is not None else None,
         )
         if updated is None:
             return None

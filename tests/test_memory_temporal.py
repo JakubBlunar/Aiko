@@ -102,7 +102,7 @@ class DeicticWriteGuardTests(unittest.TestCase):
         )
         self.assertIsNotNone(mem)
         self.assertEqual(mem.temporal_type, "past_event")
-        self.assertTrue(mem.event_time)
+        self.assertIsNone(mem.event_time)  # Recording time is not an observed event time.
 
     def test_the_text_itself_is_left_alone(self) -> None:
         # Mis-tagging is recoverable; rewriting what was recorded is not.
@@ -240,7 +240,7 @@ class DeicticDirectionGuardTests(unittest.TestCase):
             temporal_type="durable",
         )
         self.assertEqual(mem.temporal_type, "past_event")
-        self.assertTrue(mem.event_time)
+        self.assertIsNone(mem.event_time)
         self.assertTrue(mem.relevance_until)
 
     def test_a_promoted_past_event_is_also_retirable(self) -> None:

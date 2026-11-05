@@ -55,6 +55,8 @@ from app.core.memory.cluster_scope import partition_by_cluster
 from app.core.memory.conflict_heuristics import HEURISTIC_NO, classify_pair
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
+from app.core.memory.memory_integrity import compatible_memories
+from app.core.memory.memory_origin import origin_annotation
 
 if TYPE_CHECKING:
     from app.core.infra.settings import AgentSettings, MemorySettings
@@ -444,6 +446,8 @@ class MemoryConsolidationWorker:
                 cand = candidates[j]
                 if cand.kind != anchor.kind:
                     continue
+                if not compatible_memories(anchor, cand, consolidation=True):
+                    continue
                 # Never fuse a contradiction — that's F5's job.
                 if classify_pair(anchor.content, cand.content).label != HEURISTIC_NO:
                     continue
@@ -486,7 +490,7 @@ class MemoryConsolidationWorker:
 
         source_ids = sorted({int(m.id) for m in group})
         salience_max = max(float(getattr(m, "salience", 0.5)) for m in group)
-        confidence_max = max(float(getattr(m, "confidence", 0.7)) for m in group)
+        confidence_min = min(float(getattr(m, "confidence", 0.7)) for m in group)
 
         new_embedding = None
         if text_changed:
@@ -503,16 +507,19 @@ class MemoryConsolidationWorker:
                 merged_text = primary.content
                 text_changed = False
 
+        from app.core.concepts.concept_support import memory_revision
+
         try:
             self._memory_store.update(
                 primary.id,
                 content=merged_text if text_changed else None,
                 embedding=new_embedding,
                 salience=salience_max,
-                confidence=confidence_max,
+                confidence=confidence_min if text_changed else primary.confidence,
                 tier="long_term",
                 metadata={
                     "source_ids": source_ids,
+                    "source_revisions": {str(m.id): memory_revision(m) for m in group},
                     "consolidated_at": when_iso,
                 },
                 metadata_merge=True,
@@ -579,12 +586,15 @@ class MemoryConsolidationWorker:
         # K-time9: age-tag each note so the merge LLM can prefer the
         # freshest detail when two notes disagree (the system prompt tells
         # it to). format_memory_block appends "(N days ago)" / temporal tags.
-        notes = timephrase.format_memory_block(group, now)
+        notes = "\n".join(timephrase.format_memory_line(m, now) + " " + origin_annotation(m)
+                          for m in group)
         user_content = f"Notes to merge:\n{notes}"
         try:
             content, _usage = self._ollama.chat_json(
                 [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": timephrase.today_anchor(now) + "\n"
+                     + _SYSTEM_PROMPT + " Preserve each subject and source role.\n"
+                     + timephrase.STORED_TEXT_TIME_RULE},
                     {"role": "user", "content": user_content},
                 ],
                 model=self._chat_model,

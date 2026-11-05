@@ -53,9 +53,36 @@ Older fake clusters were corrected to contain actual source rows instead of
 accidentally citing Aiko notes as user sources. No full-suite or live model-quality
 claim follows. Private audit artifacts remain in the ignored audit directory.
 
+## 2. Preserve source scope through storage and merging
+
+Insert-time dedupe now compares subject, mode, domain, provenance and temporal
+scope before cosine similarity. Known event dates must agree; undated past
+events/ongoing episodes cannot be collapsed just because their wording matches.
+Recent undated plan restatements retain their existing dedupe behavior. Explicit
+user correction links still survive across different provenance labels.
+
+Automatic content rewrites become inferred interpretations, preserve their
+original subject and retain two bounded prior wording/revision receipts. Metadata
+edits do not downgrade testimony. Manual edits explicitly retain curated stated
+authority. Insert and update share temporal validation; relative wording no
+longer manufactures an event timestamp equal to the recording timestamp.
+
+Both consolidators require compatible source roles, authority and time scopes.
+Reflective journals, hypothetical drafts and intentions are not merge candidates.
+The older consolidator now archives original sources instead of deleting them,
+keeps their concept edges attached to the original evidence and stops counting a
+merge as an actual use. Changed text requires re-embedding, and synthesized
+confidence does not exceed the weakest input. Merge receipts retain source IDs
+and revisions. Archival remains retention policy, not a truth judgment.
+
+Validation: 188 focused tests passed, then 557 affected tests passed with 6,908
+deselected; lint passed. The affected selection exercises storage, consolidation,
+temporal/provenance rules and concept dependencies; it is intentionally bounded
+despite the store's broad static import reach. These are synthetic regressions,
+not a claim that all historical rewrites have been repaired.
+
 ## Remaining slices
 
-- Compatible dedupe/merge boundaries and safe content-rewrite provenance/time.
 - High-risk producer inputs: goals, diary/dream/moments, promises and pulse actor.
 - Source-to-concept evaluation and fresh ordinary-use review after activation.
 

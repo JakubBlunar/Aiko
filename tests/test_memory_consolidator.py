@@ -209,7 +209,9 @@ class ConsolidatorRunTests(unittest.TestCase):
             self.assertIsNotNone(result)
             assert result is not None
             self.assertGreaterEqual(result.merges_applied, 1)
-            self.assertGreaterEqual(result.deletions, 1)
+            self.assertEqual(result.deletions, 0)
+            self.assertGreaterEqual(result.archived, 1)
+            self.assertTrue(all(m.use_count == 0 for m in f.store.list_recent(limit=50)))
             # Survivor still in mirror.
             self.assertGreater(f.store.count(), 0)
         finally:
@@ -222,6 +224,7 @@ class ConsolidatorRunTests(unittest.TestCase):
             ollama = _FakeOllama(response="Jacob is steadily building his topic 0 chops.")
             consolidator = MemoryConsolidator(
                 ollama=ollama,
+                embedder=type("Embedder", (), {"embed": lambda _, text: _normed([1, 0, 0, 0])})(),
                 memory_store=f.store,
                 chat_db=f.db,
                 model="m",

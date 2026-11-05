@@ -12,8 +12,8 @@ worker periodically scans the store, groups near-cosine clusters above a
   * (when ``use_llm_merge=True``) asks the chat model for ONE consolidated
     sentence summarising the whole cluster.
 
-In either case the duplicates are deleted (cascading through the RAG
-mirror) and the surviving memory inherits a salience boost. Results are
+In either case the source notes are archived with their original wording
+and the surviving memory inherits a salience boost. Results are
 counted in :meth:`stats` and exposed via MCP for quick "did the
 consolidator do anything useful last night?" inspection.
 
@@ -45,6 +45,8 @@ import numpy as np
 
 from app.core.session.session_text_utils import resolve_user_name
 from app.core.infra import timephrase
+from app.core.memory.memory_integrity import compatible_memories
+from app.core.memory.memory_origin import origin_annotation
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -62,6 +64,7 @@ class ConsolidationResult:
     clusters_found: int = 0
     merges_applied: int = 0
     deletions: int = 0
+    archived: int = 0
     llm_calls: int = 0
     failed_llm: int = 0
     elapsed_seconds: float = 0.0
@@ -72,15 +75,15 @@ def _build_merge_prompt(user_display_name: str = "the user") -> str:
     name = user_display_name or "the user"
     return (
         "You are Aiko's memory librarian. You'll receive 2-6 short notes "
-        f"about {name} that say overlapping things. Write ONE consolidated "
+        f"that say overlapping things ({name} is the user). Write ONE consolidated "
         "note (<= 30 words) that preserves the strongest specifics and "
-        f"drops the redundant phrasing. Keep first-person facts in "
-        f"third-person about {name}.\n"
+        "drops the redundant phrasing. Preserve each note's actual subject and "
+        "source role; Aiko's words or public knowledge are not user experiences.\n"
         "\n"
         "Rules:\n"
         "- Output only the consolidated note. No prose, no bullets, no quotes.\n"
         "- Stay concrete. Don't invent facts not present in the inputs.\n"
-        "- If the inputs disagree, take the most recent / specific one.\n"
+        "- If the inputs disagree, return an empty answer; do not resolve a conflict here.\n"
         "- Each input ends with how long ago it was recorded. Use that to "
         "pick the fresher claim, and never carry a stale one forward as "
         "though it were current.\n"
@@ -110,16 +113,16 @@ class MemoryConsolidator:
         max_llm_tokens: int = 80,
         user_display_name_provider: "Callable[[], str] | None" = None,
         repoint_memory_edges: "Callable[[int, int], int] | None" = None,
+        embedder=None,
     ) -> None:
         self._ollama = ollama
         self._mem = memory_store
         self._db = chat_db
         self._model = model
+        self._embedder = embedder
         self._user_display_name_provider = user_display_name_provider
-        # L25: optional hook to repoint concept edges from a hard-deleted
-        # victim onto the surviving memory *before* the victim is deleted,
-        # so a destructively-merged evidence memory keeps supporting its
-        # concept. ``None`` => no concept layer wired (a plain no-op).
+        # Kept for constructor compatibility. Archived originals retain
+        # their concept edges; a rewrite is not equivalent source evidence.
         self._repoint_memory_edges = repoint_memory_edges
         self._chunk_size = max(8, int(chunk_size))
         self._sim = max(0.5, min(0.99, float(similarity_threshold)))
@@ -135,6 +138,7 @@ class MemoryConsolidator:
             "failed": 0,
             "merges_applied": 0,
             "deletions": 0,
+            "archived": 0,
             "llm_calls": 0,
             "failed_llm": 0,
         }
@@ -239,17 +243,18 @@ class MemoryConsolidator:
                 continue
             survivor, victims = _split_survivor(cluster)
             try:
-                self._apply_merge(survivor, victims, merged_content)
+                archived = self._apply_merge(survivor, victims, merged_content)
             except Exception:
                 log.debug("apply_merge raised", exc_info=True)
                 continue
             result.merges_applied += 1
-            result.deletions += len(victims)
+            result.archived += archived
         self._record_run(user_id, now_utc=now_utc)
         result.elapsed_seconds = time.monotonic() - t0
         self._stats["completed"] += 1
         self._stats["merges_applied"] += result.merges_applied
         self._stats["deletions"] += result.deletions
+        self._stats["archived"] += result.archived
         log.info(
             "consolidator: clusters=%d merges=%d deletions=%d elapsed=%.1fs",
             result.clusters_found,
@@ -267,7 +272,9 @@ class MemoryConsolidator:
             return []
         # Drop pure self/reflection memories from clustering — those are
         # narrative artifacts that we want to keep distinct.
-        return [m for m in recent if (m.kind or "fact") not in {"self", "reflection"}]
+        return [m for m in recent if not m.pinned and m.tier != "archive"
+                and not (m.metadata or {}).get("consolidated_into")
+                and (m.kind or "fact") not in {"self", "reflection"}]
 
     # ── merging ────────────────────────────────────────────────────────
 
@@ -284,7 +291,7 @@ class MemoryConsolidator:
         # recent one" was in the prompt long before the model was given
         # any way to tell which that was.
         bullets = [
-            timephrase.format_memory_line(m)
+            timephrase.format_memory_line(m) + " " + origin_annotation(m)
             for m in cluster
             if (m.content or "").strip()
         ]
@@ -333,10 +340,10 @@ class MemoryConsolidator:
         survivor: "Memory",
         victims: list["Memory"],
         merged_content: str,
-    ) -> None:
+    ) -> int:
         # Boost salience: average of the cluster + small bonus, clipped.
         if survivor is None:
-            return
+            return 0
         boost = 0.05 + 0.03 * len(victims)
         peak = max(m.salience for m in [survivor, *victims])
         new_salience = min(1.0, max(survivor.salience, peak) + boost)
@@ -348,50 +355,48 @@ class MemoryConsolidator:
         # pinned coercion logic for free.
         new_revival = max(float(m.revival_score) for m in [survivor, *victims])
         cleaned_text = (merged_content or survivor.content).strip()[:4000]
+        embedding = None
+        if cleaned_text != survivor.content:
+            try:
+                if self._embedder is None:
+                    cleaned_text = survivor.content
+                else:
+                    embedding = self._embedder.embed(cleaned_text)
+            except Exception:
+                log.debug("merge re-embed failed; keeping original text", exc_info=True)
+                cleaned_text = survivor.content
+        from app.core.concepts.concept_support import memory_revision
+
+        group = [survivor, *victims]
+        source_revisions = {str(m.id): memory_revision(m) for m in group}
         try:
             self._mem.update(
                 int(survivor.id),
                 content=cleaned_text,
+                embedding=embedding,
+                confidence=(min(m.confidence for m in group)
+                            if cleaned_text != survivor.content else survivor.confidence),
                 salience=new_salience,
                 revival_score=new_revival,
                 tier=getattr(survivor, "tier", "long_term"),
+                metadata={"source_ids": [m.id for m in group],
+                          "source_revisions": source_revisions},
+                metadata_merge=True,
             )
         except Exception:
             log.debug("survivor update failed", exc_info=True)
-            return
-        # Bump use_count + last_used_at directly (MemoryStore.update
-        # doesn't expose either field; the consolidator counts as a
-        # use signal). The SQL UPDATE here is intentionally narrow.
-        try:
-            conn = self._mem._get_conn()  # noqa: SLF001 — internal access by design
-            now = timephrase.utcnow().isoformat()
-            conn.execute(
-                "UPDATE memories SET last_used_at = ?, use_count = use_count + 1 "
-                "WHERE id = ?",
-                (now, int(survivor.id)),
-            )
-            conn.commit()
-            with self._mem._lock:  # noqa: SLF001
-                mem = self._mem._mirror.get(int(survivor.id))  # noqa: SLF001
-                if mem is not None:
-                    mem.last_used_at = now
-                    mem.use_count += 1
-        except Exception:
-            log.debug("consolidator use_count bump failed", exc_info=True)
-        # Delete the victims (which also detaches them from the RAG mirror).
-        # L25: repoint any concept edges onto the survivor first, so the
-        # merge preserves concept support instead of the delete listener
-        # dropping it.
+            return 0
+        archived = 0
         for victim in victims:
-            if self._repoint_memory_edges is not None:
-                try:
-                    self._repoint_memory_edges(int(victim.id), int(survivor.id))
-                except Exception:
-                    log.debug("victim edge repoint failed", exc_info=True)
             try:
-                self._mem.delete(int(victim.id))
+                self._mem.update(int(victim.id), tier="archive", metadata={
+                    "consolidated_into": int(survivor.id),
+                    "consolidated_at": timephrase.utcnow().isoformat(),
+                }, metadata_merge=True)
+                archived += 1
             except Exception:
-                log.debug("victim delete failed", exc_info=True)
+                log.debug("source archive failed", exc_info=True)
+        return archived
 
     # ── state IO ───────────────────────────────────────────────────────
 
@@ -481,7 +486,7 @@ def _cluster_memories(
                 continue
             ej = embeddings[j] / norms[j]
             sim = float(np.dot(ei, ej))
-            if sim >= similarity:
+            if sim >= similarity and compatible_memories(items[i], items[j], consolidation=True):
                 union(i, j)
 
     groups: dict[int, list["Memory"]] = {}

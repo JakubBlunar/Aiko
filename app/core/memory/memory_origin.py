@@ -20,7 +20,7 @@ class MemoryOrigin:
 
 _SUBJECTS = {"user", "aiko", "relationship", "world", "unknown"}
 _MODES = {"observation", "declaration", "reflection", "intention", "hypothetical",
-          "question", "summary", "world_fact", "virtual_event", "unknown"}
+          "question", "summary", "world_fact", "virtual_event", "interpretation", "unknown"}
 
 
 def memory_origin(memory) -> MemoryOrigin:

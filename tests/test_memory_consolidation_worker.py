@@ -235,7 +235,7 @@ class PrimaryAndCommitTests(unittest.TestCase):
         self.assertEqual(absorbed.tier, "archive")
         self.assertEqual(absorbed.metadata["consolidated_into"], 1)
 
-    def test_salience_and_confidence_lifted_to_max(self) -> None:
+    def test_salience_can_rise_but_synthesis_uses_conservative_confidence(self) -> None:
         rows = [
             _FakeMemory(1, "trip a", confidence=0.95, salience=0.4, embedding=_DUP_A),
             _FakeMemory(2, "trip b", confidence=0.7, salience=0.9, embedding=_DUP_B),
@@ -245,7 +245,7 @@ class PrimaryAndCommitTests(unittest.TestCase):
         worker.run()
         primary = store._rows[1]
         self.assertAlmostEqual(primary.salience, 0.9)
-        self.assertAlmostEqual(primary.confidence, 0.95)
+        self.assertAlmostEqual(primary.confidence, 0.7)
 
     def test_notify_fires_for_primary_and_absorbed(self) -> None:
         notified: list[int] = []
