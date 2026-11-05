@@ -30,11 +30,13 @@ import logging
 import re
 import time
 from dataclasses import asdict, dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.affect.affect_state import felt_phrase
 from app.core.infra import timephrase
 from app.core.session.session_text_utils import resolve_user_name
+from app.core.memory.memory_origin import MemoryOrigin, memory_origin, origin_annotation
 
 if TYPE_CHECKING:
     from app.core.affect.affect_state import AffectState
@@ -63,7 +65,15 @@ def _build_reflection_prompt(user_display_name: str = "the user") -> str:
         "- Keep \"observation\" under 25 words.\n"
         "- 0-3 items per array. Empty arrays are fine.\n"
         f"- Each item: short, first-person, plain text. No quoting {name} verbatim.\n"
-        "- If nothing notable happened, return empty arrays and a one-line observation.\n"
+        "- Preserve a meaningful new detail, change or uncertainty from this exchange; "
+        "do not write a generic appreciation of the conversation.\n"
+        "- Prior private notes are dedupe context, not evidence of a new event.\n"
+        "- Your feelings and interpretations belong to you. Do not infer the user's "
+        "motives, stable traits or completed actions from your own reply or mood.\n"
+        "- Questions must remain genuinely unanswered; callbacks must name a specific "
+        "unresolved thread from this exchange, not a generic wish to check in.\n"
+        '- If nothing new is worth keeping, return {"observation":"",'
+        '"open_questions":[],"callbacks":[]}.\n'
         "- Do NOT include any prose outside the JSON object."
     )
 
@@ -111,7 +121,8 @@ def _parse_reflection_payload(raw: str) -> Reflection:
         return Reflection()
     if not isinstance(data, dict):
         return Reflection()
-    observation = str(data.get("observation") or "").strip()
+    observation = data.get("observation")
+    observation = observation.strip() if isinstance(observation, str) else ""
     open_qs = data.get("open_questions") or []
     callbacks = data.get("callbacks") or []
 
@@ -122,7 +133,9 @@ def _parse_reflection_payload(raw: str) -> Reflection:
         for item in items:
             if len(out) >= max_len:
                 break
-            txt = str(item or "").strip()
+            if not isinstance(item, str):
+                continue
+            txt = item.strip()
             if not txt or len(txt) < 4:
                 continue
             # Strip surrounding quotes the model sometimes emits.
@@ -288,7 +301,7 @@ class ReflectionWorker:
                         user_display_name=resolve_user_name(
                             self._user_display_name_provider,
                         ),
-                    ),
+                    ) + self._recent_notes_block(),
                 },
             ]
             raw = self._ollama.chat(
@@ -350,8 +363,17 @@ class ReflectionWorker:
                     source_message_id=(
                         turn_outcome.assistant_message_id if turn_outcome is not None else None
                     ),
-                    **({"metadata": {"turn_outcome": asdict(turn_outcome)}}
-                       if turn_outcome is not None else {}),
+                    metadata={
+                        "memory_origin": asdict(MemoryOrigin("aiko", {
+                            "reflection": "reflection", "open_question": "question",
+                            "callback": "intention",
+                        }[kind], "reflection_worker")),
+                        **({"turn_outcome": asdict(turn_outcome), "source_scope": "context_window",
+                            "source_message_ids": [mid for mid in (
+                                turn_outcome.user_message_id, turn_outcome.assistant_message_id,
+                            ) if type(mid) is int and mid > 0]}
+                           if turn_outcome is not None else {}),
+                    },
                     # Schema v8: reflections / open questions /
                     # callbacks are speculative LLM-journal output.
                     # Scratchpad so they decay fast unless they prove
@@ -378,6 +400,28 @@ class ReflectionWorker:
         for c in reflection.callbacks:
             _write(c, "callback", self._sal_c)
 
+    def _recent_notes_block(self) -> str:
+        """Bounded, dated dedupe context; never a source of new observations."""
+        try:
+            rows = self._memory_store.list_recent(limit=24)
+        except Exception:
+            return ""
+        lines = []
+        for row in rows:
+            if (row.kind not in {"reflection", "open_question", "callback"}
+                    or memory_origin(row).subject != "aiko"):
+                continue
+            trimmed = SimpleNamespace(
+                content=row.content[:160], created_at=getattr(row, "created_at", None),
+                temporal_type=getattr(row, "temporal_type", None),
+                event_time=getattr(row, "event_time", None),
+            )
+            lines.append(timephrase.format_memory_line(trimmed) + " " + origin_annotation(row))
+            if len(lines) >= 6:
+                break
+        return ("\n\nEarlier private notes (avoid repeating; not new evidence):\n"
+                + "\n".join(lines)) if lines else ""
+
 
 def _format_turn_block(
     *,
@@ -398,8 +442,11 @@ def _format_turn_block(
             f"{felt_phrase(affect.valence, affect.arousal)})"
         )
     name = user_display_name or "the user"
-    lines.append(f"{name}: {(user_text or '').strip()[:1200]}")
-    lines.append(f"You ({reaction or 'neutral'}): {(assistant_text or '').strip()[:1200]}")
+    lines.append("Exchange message dates are unavailable; do not invent event dates.")
+    lines.append(timephrase.format_transcript([
+        {"role": "user", "content": (user_text or "").strip()[:1200]},
+        {"role": "assistant", "content": (assistant_text or "").strip()[:1200]},
+    ], role_labels={"user": name, "assistant": f"You ({reaction or 'neutral'})"}))
     return "\n".join(lines)
 
 

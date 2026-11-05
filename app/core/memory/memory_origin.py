@@ -36,6 +36,10 @@ def memory_origin(memory) -> MemoryOrigin:
                 and isinstance(explicit.get("domain", "conversation"), str)
                 and explicit.get("domain", "conversation")
                 in {"conversation", "virtual", "external"}):
+            if (getattr(memory, "kind", "") == "callback"
+                    and explicit.get("writer") == "legacy_kind:callback"
+                    and isinstance(meta.get("turn_outcome"), dict)):
+                return MemoryOrigin("aiko", "intention", "reflection_worker")
             return MemoryOrigin(**{key: explicit[key] for key in
                                   ("subject", "mode", "writer", "domain", "version")
                                   if key in explicit})
@@ -74,13 +78,19 @@ def memory_origin(memory) -> MemoryOrigin:
         return MemoryOrigin("aiko", mode, writer)
     if kind == "shared_moment":
         return MemoryOrigin("relationship", "observation", writer)
+    if kind == "callback":
+        # A cue to revisit a subject is not an observation about the user.
+        # Validated user admission above remains authoritative.
+        if isinstance(meta.get("turn_outcome"), dict):
+            return MemoryOrigin("aiko", "intention", "reflection_worker")
+        return MemoryOrigin("unknown", "intention", writer)
     if kind == "self_tagged" and str(getattr(memory, "content", "")).startswith(("I ", "My ")):
         return MemoryOrigin("unknown", "reflection", writer)
     if kind == "catchphrase":
         who = meta.get("origin")
         return MemoryOrigin("aiko" if who == "assistant" else "user" if who == "user"
                             else "relationship", "declaration", writer)
-    if kind in {"fact", "event", "preference", "relationship", "self_tagged", "callback"}:
+    if kind in {"fact", "event", "preference", "relationship", "self_tagged"}:
         mode = ("intention" if getattr(memory, "temporal_type", None) == "future_plan"
                 else "observation")
         return MemoryOrigin("user", mode, writer)

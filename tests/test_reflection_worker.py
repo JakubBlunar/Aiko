@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import asdict
+from types import SimpleNamespace
 from dataclasses import dataclass
 
 import numpy as np
@@ -10,6 +12,52 @@ from app.core.proactive.reflection_worker import (
     ReflectionWorker,
     _parse_reflection_payload,
 )
+from app.core.memory.memory_origin import memory_origin, claim_source_refusal
+from app.llm.turn_outcome import TurnOutcome
+
+
+def test_generated_callbacks_keep_aikos_intention_and_both_exchange_sources():
+    worker, _, store, _ = ReflectionWorkerTests()._make_worker(
+        '{"observation":"", "callbacks":["Ask how the garden planting went"]}')
+    outcome = TurnOutcome(status="completed", user_message_id=41, assistant_message_id=42)
+    worker.maybe_run(session_key="s", user_text="I planted the garden", assistant_text="Nice!",
+                     reaction="warm", turn_outcome=outcome)
+    saved = store.calls[0]
+    row = SimpleNamespace(kind="callback", content=saved["content"], metadata=saved["metadata"])
+    assert memory_origin(row).subject == "aiko"
+    assert memory_origin(row).mode == "intention"
+    assert claim_source_refusal(row, subject="user", kind="identity") == "different_subject"
+    assert saved["metadata"]["source_message_ids"] == [41, 42]
+
+
+def test_legacy_reflection_callback_is_not_user_testimony_and_bare_callbacks_stay_unknown():
+    row = SimpleNamespace(kind="callback", content="Check how the garden went", metadata={
+        "turn_outcome": asdict(TurnOutcome(status="completed")),
+        "memory_origin": {"subject": "user", "mode": "observation",
+                          "writer": "legacy_kind:callback", "version": 1},
+    })
+    assert memory_origin(row).subject == "aiko"
+    row.metadata = {}
+    assert memory_origin(row).subject == "unknown"
+    row.metadata = {"admission": {"subject": "user"}}
+    assert memory_origin(row).subject == "user"
+
+
+def test_nontext_reflection_fields_are_not_saved_as_python_representations():
+    parsed = _parse_reflection_payload(
+        '{"observation":{"invented":"fact"}, "callbacks":[null, 1234, {"text":"fake"}]}')
+    assert parsed.is_empty()
+
+
+def test_reflection_receives_bounded_dated_dedupe_context():
+    row = SimpleNamespace(id=1, kind="reflection", content="An old private note " * 40,
+        metadata={}, created_at="2026-01-01T12:00:00Z")
+    worker, llm, _, _ = ReflectionWorkerTests()._make_worker('{"observation":""}')
+    worker._memory_store.list_recent = lambda **_: [row]
+    worker.maybe_run(session_key="s", user_text="Hello", assistant_text="Hello", reaction="warm")
+    prompt = llm.calls[0]["messages"][1]["content"]
+    assert "Earlier private notes" in prompt and "subject=aiko" in prompt
+    assert "ago" in prompt and len(prompt) < 1200
 
 
 @dataclass(slots=True)
@@ -59,6 +107,7 @@ class _FakeMemoryStore:
         source_session=None,
         source_message_id=None,
         tier: str | None = None,
+        metadata=None,
     ):
         self.calls.append({
             "content": content,
@@ -66,6 +115,7 @@ class _FakeMemoryStore:
             "salience": salience,
             "source_session": source_session,
             "tier": tier,
+            "metadata": metadata,
         })
         if self.fail_kind == kind:
             return None
