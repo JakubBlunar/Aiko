@@ -38,7 +38,8 @@ class DependencyLedger:
 
     def _memory(self, node):
         return self.db._get_conn().execute(
-            "SELECT content, kind, event_time, metadata, confidence, source_message_id "
+            "SELECT content, kind, event_time, metadata, confidence, source_message_id, "
+            "temporal_type, provenance, source_session, created_at "
             "FROM memories WHERE id = ?", (int(node[1]),),
         ).fetchone()
 
@@ -56,7 +57,18 @@ class DependencyLedger:
             row = self.store.get(int(ident))
             return revision_hash([row.label, row.rationale]) if row else None
         row = self._memory(node)
-        return revision_hash(list(row[:3])) if row else None
+        return self._memory_revision(row) if row else None
+
+    @staticmethod
+    def _memory_revision(row):
+        metadata = json.loads(row[3] or "{}")
+        enriched = {key: metadata[key] for key in
+                    ("observation", "follow_through", "contextual_relation") if key in metadata}
+        # Keep every ordinary historical fingerprint byte-stable. New semantic
+        # facets invalidate only the evidence records that actually carry them.
+        if enriched:
+            return revision_hash([list(row[:3]), enriched, list(row[6:8])])
+        return revision_hash(list(row[:3]))
 
     def _write(self, cid, sets):
         self.db.kv_set(PREFIX + str(cid), json.dumps(sets))
@@ -196,7 +208,7 @@ class DependencyLedger:
                         current = self.fingerprint((kind, ident))
                     else:
                         row = self._memory((kind, ident))
-                        current = revision_hash(list(row[:3])) if row else None
+                        current = self._memory_revision(row) if row else None
                     if current is None:
                         reason = "source_missing"
                     elif current != fingerprint:
@@ -230,6 +242,24 @@ class DependencyLedger:
                         elif float(row[4]) < 0.4:
                             reason = "source_low_confidence"
                         else:
+                            from app.core.memory.memory_relations import (
+                                SqlMemoryReader, review_state,
+                            )
+                            from app.core.memory.observation_receipts import (
+                                longitudinal_sources_current,
+                            )
+                            from types import SimpleNamespace
+
+                            memory = SimpleNamespace(
+                                id=int(ident), content=row[0], kind=row[1], event_time=row[2],
+                                metadata=metadata, source_message_id=row[5], temporal_type=row[6],
+                                provenance=row[7], source_session=row[8], created_at=row[9],
+                            )
+                            reader = SqlMemoryReader(self.db._get_conn(), {int(ident): memory})
+                            if not longitudinal_sources_current(memory, reader):
+                                reason = "source_receipt_changed"
+                            elif review_state(memory, reader)["review_required"]:
+                                reason = "source_context_review"
                             message_ids = set(metadata.get("source_message_ids") or [])
                             if row[5] is not None:
                                 message_ids.add(row[5])

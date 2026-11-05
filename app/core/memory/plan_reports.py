@@ -37,10 +37,9 @@ _PATTERNS = {
 
 
 def plan_revision(memory):
-    from app.core.concepts.concept_support import memory_revision, revision_hash
+    from app.core.memory.memory_relations import reference_revision
 
-    return revision_hash([memory_revision(memory), memory_origin(memory),
-                          getattr(memory, "temporal_type", None)])
+    return reference_revision(memory)
 
 
 def offer_intentions(store):
@@ -126,26 +125,13 @@ def admit_report(value, rows, offered, store, *, session_key, subject, temporal_
 
 
 def report_current(value, store, _seen=None):
-    from app.core.memory.observation_receipts import receipt_sources_current
+    from app.core.memory.memory_relations import linked_source_current
 
     if (not isinstance(value, dict) or value.get("version") != 1
             or type(value.get("prior_memory_id")) is not int
             or not isinstance(value.get("status"), str) or value["status"] not in STATUSES):
         return False
-    mid = value["prior_memory_id"]
-    seen = set(_seen or ())
-    if mid in seen or len(seen) >= 8:
-        return False
-    prior = store.get(mid)
-    if prior is not None:
-        metadata = getattr(prior, "metadata", None) or {}
-        if not receipt_sources_current(metadata.get("observation"), store):
-            return False
-        parent = metadata.get("follow_through")
-        if parent is not None and not report_current(parent, store, seen | {mid}):
-            return False
-    return (prior is not None and plan_revision(prior) == value.get("prior_revision")
-            and receipt_sources_current(value, store))
+    return linked_source_current(value, store, _seen)
 
 
 def plan_progress(prior, store):

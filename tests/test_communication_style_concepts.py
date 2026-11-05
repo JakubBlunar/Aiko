@@ -542,8 +542,8 @@ class ApplicabilityTests(unittest.TestCase):
                 "communication_style", "user", applicability=scope, **kwargs,
             )
 
-        brief = proposal("Keep replies brief", "troubleshooting", "When troubleshooting")
         self.memory.content += " While learning, use detailed replies."
+        brief = proposal("Keep replies brief", "troubleshooting", "When troubleshooting")
         detail = proposal("Use detailed replies", "learning", "While learning")
         h.worker._persist(brief, stats)
         first = h.store.list_by(kind="communication_style")[0]

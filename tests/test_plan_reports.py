@@ -88,6 +88,12 @@ def test_edited_or_deleted_report_does_not_keep_a_plan_closed(setup):
     db.execute_commit("UPDATE messages SET content=? WHERE id=?",
                       ("A correction to that report", value["report"]["message_id"]))
     assert plan_progress(plan, store)["status"] == "unknown"
+    from app.core.conversation.topic_evidence import topic_evidence_profile
+
+    profile = topic_evidence_profile(SimpleNamespace(member_ids=[saved.id]), store)
+    assert profile["reported_follow_through"] == {"unknown": 1}
+    assert profile["invalid_source_receipts"] == 1
+    assert profile["recorded_observation_groups"] == 0
     store.delete(saved.id)
     assert plan_progress(plan, store)["status"] == "planned"
 
@@ -104,7 +110,8 @@ def test_actual_extraction_offers_plan_ids_and_persists_the_report(setup):
                  "follow_through": {"prior_memory_id": plan.id, "status": "reported_completed",
                                     "report": {"message_id": mid, "quote": text}}}
     model = _FakeOllama([json.dumps({"memories": [candidate]})])
-    worker = MemoryExtractor(db, store, _FakeEmbedder(), model, model="fake", min_window_messages=2)
+    worker = MemoryExtractor(db, store, _FakeEmbedder(), model, model="fake", min_window_messages=2,
+                             context_window=lambda: 16384)
     assert worker.extract_for_session("s") == 1
     assert f"[intention:{plan.id}]" in model.prompts[0]
     assert plan_progress(plan, store)["status"] == "reported_completed"

@@ -153,4 +153,9 @@ def origin_annotation(memory) -> str:
     report = report_annotation(memory)
     if report:
         parts.append(report)
+    from app.core.memory.memory_relations import relation_annotation
+
+    relation = relation_annotation(memory)
+    if relation:
+        parts.append(relation)
     return "; ".join(parts)

@@ -243,7 +243,10 @@ class SynthesisRoutingTests(unittest.TestCase):
         harness.ollama._responder = responder
         with self._advance(harness):
             stats = self._run(harness)
-        self.assertEqual(stats["routing"]["new_claim"], 1)
+        # A source edit now dirties the normal pass as well. It can create
+        # the distinct claim before the queued retry sees the same proposal.
+        self.assertEqual(stats["routing"]["reconsidered"], 1)
+        self.assertEqual(stats["user_processed"], 1)
         self.assertEqual(stats["added"], 1)
         self.assertIn("An updated concrete observation", prompts[0])
         self.assertEqual(len(harness.store.evidence_of(ident)), 2)

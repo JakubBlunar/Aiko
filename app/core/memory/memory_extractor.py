@@ -35,6 +35,7 @@ labelled read-only context so a pronoun at the boundary still resolves.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import logging
 import re
 import threading
@@ -533,7 +534,8 @@ class MemoryExtractor:
         context_rows, rows = window
         pattern_owner = self._user_id_provider()
 
-        existing = self._format_existing(owner=pattern_owner)
+        references = {}
+        existing = self._format_existing(owner=pattern_owner, offered=references)
         from app.core.memory.plan_reports import (
             offer_intentions, render_intentions, RULE as PLAN_RULE,
         )
@@ -550,6 +552,10 @@ class MemoryExtractor:
         from app.core.memory.observation_receipts import EXTRACTION_RULE as OBSERVATION_RULE
 
         system_content += "\n" + OBSERVATION_RULE
+        from app.core.memory.memory_relations import RULE as RELATION_RULE
+
+        if references:
+            system_content += "\n" + RELATION_RULE
         if intentions:
             system_content += "\n" + PLAN_RULE
         from app.core.memory.shared_shorthand import EXTRACTION_RULE
@@ -635,6 +641,7 @@ class MemoryExtractor:
         context_rows = selected_context
         if not selected_existing:
             intentions = {}
+            references = {}
         has_more = packed.item_count < len(rows) or len(rows) == self._max_window
         rows = rows[:packed.item_count]
 
@@ -755,6 +762,20 @@ class MemoryExtractor:
             )
             if not admission.accepted:
                 continue
+            if cand.get("contextual_relation") is not None:
+                from app.core.memory.memory_relations import admit_relation
+
+                try:
+                    value = admit_relation(
+                        cand["contextual_relation"], rows, references, self._store,
+                        session_key=session_key,
+                        subject="assistant" if cand["kind"] == "self" else "user",
+                    )
+                except ValueError:
+                    continue
+                admission.metadata["contextual_relation"] = value
+                if value["relation"] in {"different_context", "counterexample"}:
+                    admission.metadata["admission"]["supersedes_memory_id"] = None
             if cand.get("follow_through") is not None:
                 from app.core.memory.plan_reports import admit_report
 
@@ -786,6 +807,13 @@ class MemoryExtractor:
         for cand in batch["candidates"]:
             if cand.get("applied"):
                 continue
+            relation = (cand.get("metadata") or {}).get("contextual_relation")
+            if relation is not None:
+                from app.core.memory.memory_relations import relation_current
+
+                if not relation_current(relation, self._store):
+                    cand["applied"] = True
+                    continue
             observation = (cand.get("metadata") or {}).get("observation")
             if observation is not None:
                 from app.core.memory.shared_shorthand import sources_current
@@ -838,7 +866,8 @@ class MemoryExtractor:
                 source_session=session_key,
                 source_message_id=cand.get("source_message_id"),
                 metadata=cand.get("metadata"),
-                skip_dedupe=cand["kind"] in {"shared_term", "strategy"} or report is not None,
+                skip_dedupe=(cand["kind"] in {"shared_term", "strategy"}
+                             or report is not None or relation is not None),
                 # Schema v8: LLM-distilled observations are speculative.
                 # Land them in scratchpad so the promotion worker can
                 # either confirm them via retrieval / revival or sweep
@@ -880,7 +909,7 @@ class MemoryExtractor:
             for row in rows
         )
 
-    def _format_existing(self, *, owner: str | None = None) -> str:
+    def _format_existing(self, *, owner: str | None = None, offered=None) -> str:
         """The "do NOT re-emit these" block: salient rows *and* fresh ones.
 
         This used to be ``list_top(20)`` alone, which is ranked by salience
@@ -914,12 +943,20 @@ class MemoryExtractor:
             merged.append(mem)
         if not merged:
             return ""
+        from app.core.memory.memory_relations import reference_revision
+
+        if offered is not None:
+            for memory in merged:
+                if type(getattr(memory, "id", None)) is int and len(memory.content) <= 1000:
+                    offered[memory.id] = {"row": deepcopy(memory),
+                                          "revision": reference_revision(memory)}
         # Age-tagged (K-time10): the dedupe judgement is partly temporal.
         # "Jacob has a headache" from six weeks ago is not the same claim
         # as one from this morning, and an undated list invited the model
         # to treat them as duplicates.
-        return timephrase.format_memory_block(
-            merged, header="Existing memories (do NOT re-emit these):",
+        return "Existing memories (do NOT re-emit these):\n" + "\n".join(
+            f"[memory:{getattr(memory, 'id', 'unknown')}] " + timephrase.format_memory_line(memory)
+            for memory in merged
         )
 
     def _parse_response(self, raw: str) -> list[dict]:
@@ -1031,6 +1068,8 @@ class MemoryExtractor:
                     **({"observation": entry["observation"]} if "observation" in entry else {}),
                     **({"follow_through": entry["follow_through"]}
                        if "follow_through" in entry else {}),
+                    **({"contextual_relation": entry["contextual_relation"]}
+                       if "contextual_relation" in entry else {}),
                 }
             )
         return out

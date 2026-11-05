@@ -13,8 +13,19 @@ def _span(values):
             "to": max(dates).isoformat() if dates else None, "dated_notes": len(dates)}
 
 
+def topic_source_fingerprint(cluster, store):
+    """Cheap semantic dirtiness; no profile, report query or model call."""
+    from app.core.concepts.concept_support import revision_hash, memory_revision
+
+    return revision_hash([(mid, memory_revision(row), getattr(row, "temporal_type", None))
+                          if (row := store.get(mid)) is not None else (mid, "missing")
+                          for mid in sorted({int(mid) for mid in cluster.member_ids})])
+
+
 def topic_evidence_profile(cluster, store, *, limit=256):
     from app.core.concepts.concept_evidence_lineage import memory_lineages, support_summary
+    from app.core.memory.memory_relations import incoming_relations
+    from app.core.memory.observation_receipts import longitudinal_sources_current
 
     ids = sorted({int(mid) for mid in cluster.member_ids})
     cap = min(1024, max(1, int(limit)))
@@ -29,6 +40,7 @@ def topic_evidence_profile(cluster, store, *, limit=256):
             rows.append(row)
     roles, temporal = Counter(), Counter()
     report_statuses, plan_states = Counter(), Counter()
+    relations, invalid_receipts = Counter(), 0
     observations, plans, unknown = [], [], 0
     lineages = []
     for row in rows:
@@ -36,17 +48,24 @@ def topic_evidence_profile(cluster, store, *, limit=256):
         roles[f"{origin.subject}/{origin.mode}"] += 1
         scope = getattr(row, "temporal_type", "unknown")
         temporal[scope] += 1
+        valid = longitudinal_sources_current(row, store)
+        if not valid:
+            invalid_receipts += 1
+        linked, _ = incoming_relations(row, store, limit=8)
+        for item in linked:
+            if item["current"]:
+                relations[item["receipt"]["relation"]] += 1
         from app.core.memory.plan_reports import plan_progress
 
         report = (getattr(row, "metadata", None) or {}).get("follow_through")
         if isinstance(report, dict) and report.get("version") == 1:
-            report_statuses[str(report.get("status", "unknown"))] += 1
+            report_statuses[str(report.get("status", "unknown")) if valid else "unknown"] += 1
         if scope == "future_plan" or getattr(row, "kind", "") == "promise":
             plan_states[plan_progress(row, store)["status"]] += 1
         sources = memory_lineages(row)
         if origin.subject == "unknown" or not any(source.roots for source in sources):
             unknown += 1
-        if origin.mode in {"observation", "declaration", "interpretation", "world_fact"}:
+        if valid and origin.mode in {"observation", "declaration", "interpretation", "world_fact"}:
             if scope != "future_plan":
                 lineages.extend(sources)
                 if scope == "past_event":
@@ -67,7 +86,11 @@ def topic_evidence_profile(cluster, store, *, limit=256):
         "question_resolution": "not_assessed",
         "reported_follow_through": dict(sorted(report_statuses.items())),
         "intention_states": dict(sorted(plan_states.items())),
-        "complete": not (missing or len(ids) > cap or support["unknown_sources"]),
+        "contextual_relations": dict(sorted(relations.items())),
+        "invalid_source_receipts": invalid_receipts,
+        "fingerprint": topic_source_fingerprint(cluster, store),
+        "complete": not (missing or unknown or invalid_receipts or len(ids) > cap
+                         or support["unknown_sources"]),
         "meaning": "Source groups record separation, not independence, truth or recurrence. "
                    "Recording dates are not event dates; plans are not completed actions.",
     }

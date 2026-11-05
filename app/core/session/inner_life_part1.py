@@ -1947,7 +1947,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             if not renders_in_static_block(getattr(concept, "kind", "") or ""):
                 return False
             style_cost = 0
-            if getattr(concept, "kind", "") == "communication_style":
+            if (getattr(concept, "kind", "") == "communication_style"
+                    or applicability is not None and applicability.get(cid)):
                 scope = applicability.get(cid) if applicability is not None else None
                 contexts = current_contexts(user_text, snapshot, scope=scope)
                 state = applicability_state(scope, contexts)
@@ -3050,17 +3051,16 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             comp = components.get(cid_int)
             reason = comp.get("reason") if comp else None
             lead = self._reason_framing(reason, conf_val) if framing_on else hedge
-            if kind == "communication_style":
+            if kind == "communication_style" or (style_scopes or {}).get(cid_int):
                 from app.core.concepts.concept_applicability import scope_hint
 
                 state = (style_states or {}).get(cid_int, "unknown")
                 if state not in {"matched", "unknown", "unknown_context"}:
                     continue
                 hint = scope_hint((style_scopes or {}).get(cid_int))
-                lead = (
-                    f"{hedge} this delivery preference fits the current context:"
-                    if state == "matched" else "A possible delivery preference, not a current rule:"
-                )
+                description = "delivery preference" if kind == "communication_style" else "reading"
+                lead = (f"{hedge} this {description} fits the current context:"
+                        if state == "matched" else f"A possible {description}, not a current rule:")
                 rationale_clause += f" ({hint})"
             groups.setdefault((subject, family), []).append(
                 f"- {lead} {label}{grounding}{rationale_clause}"

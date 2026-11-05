@@ -1107,6 +1107,10 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
     ) -> list[CandidateProposal]:
         clusters = self._dominant_clusters("user")
         sources = {int(c.representative_id): c for c in self._topic_graph.topic_clusters()}
+        from app.core.conversation.topic_evidence import topic_source_fingerprint
+
+        fingerprints = {rep: topic_source_fingerprint(cluster, self._memory_store)
+                        for rep, cluster in sources.items()}
         clusters = [c for c in clusters if self._cluster_source_refusal(
             sources[c[0]], subject=spec.subject, kind=spec.kind,
         ) is None]
@@ -1130,7 +1134,8 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             prev_size = int(prev.get("size", 0))
             prev_label = str(prev.get("label", ""))
             drift = abs(size - prev_size)
-            if force or prev_label != label or drift >= delta:
+            if (force or prev_label != label or drift >= delta
+                    or prev.get("evidence_fingerprint") != fingerprints[rep]):
                 dirty.append((rep, label, size, drift, False))
 
         stats["user_dirty_total"] = len(dirty)
@@ -1170,7 +1175,8 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         new_sigs: dict[str, dict[str, Any]] = {}
         for rep, (label, size) in current.items():
             if rep in processed:
-                new_sigs[str(rep)] = {"size": size, "label": label}
+                new_sigs[str(rep)] = {"size": size, "label": label,
+                                      "evidence_fingerprint": fingerprints[rep]}
             elif str(rep) in sigs:
                 new_sigs[str(rep)] = sigs[str(rep)]
         self._save_sigs(sig_key, new_sigs)
@@ -3593,7 +3599,7 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         )
         self._observe_support(concept, proposal.evidence, set())
         self._record_dependencies(concept, proposal.evidence, proposal.dependency_revisions)
-        if proposal.kind == "communication_style" and proposal.applicability:
+        if proposal.applicability:
             self._concept_store.applicability.record(cid, proposal.applicability)
             if proposal.supersedes_id is not None:
                 self._concept_store.applicability.supersede(
@@ -3627,7 +3633,7 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         not (see that module).
         """
         exclude: set[int] = set()
-        if proposal.kind == "communication_style":
+        if proposal.kind == "communication_style" or proposal.applicability:
             from app.core.concepts.concept_applicability import scope_key
 
             wanted = scope_key(proposal.applicability)
@@ -3657,7 +3663,7 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             kind=proposal.kind,
             exclude_ids=exclude,
         )
-        if match is None and proposal.kind == "communication_style" and proposal.applicability:
+        if match is None and proposal.applicability:
             from app.core.concepts.concept_applicability import scope_hint, scope_key
 
             nearest = self._concept_store.nearest(
@@ -3790,7 +3796,8 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         """
         if not hasattr(self, "_routing_stats"):
             self._routing_begin(stats)
-        if concept.kind == "communication_style":
+        if (concept.kind == "communication_style" or proposal.applicability
+                or self._concept_store.applicability.get(concept.concept_id)):
             from app.core.concepts.concept_applicability import scope_key
 
             scope = self._concept_store.applicability.get(concept.concept_id)

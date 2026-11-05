@@ -79,6 +79,10 @@ def conflict_scope_compatible(first, second):
         return False
     if a.mode not in factual or b.mode not in factual:
         return False
+    from app.core.memory.memory_relations import context_scope
+
+    if context_scope(first) != context_scope(second):
+        return False
     scope = getattr(first, "temporal_type", "durable")
     if scope != getattr(second, "temporal_type", "durable"):
         return False

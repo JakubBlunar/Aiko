@@ -345,9 +345,14 @@ class SynthesisRoutingMixin:
             profile_context = focus_evidence_context(
                 kwargs.get("focus_clusters", []), self._topic_graph, self._memory_store,
             )
+            from app.core.concepts.longitudinal_context import capture_context, RULE
+
+            source_context, offered_rows, source_revisions = capture_context(
+                kwargs, self._topic_graph, self._memory_store,
+            )
 
             def call(system: str, user: str) -> list[dict[str, Any]]:
-                raw = ctx.call_llm(system, user + profile_context)
+                raw = ctx.call_llm(system + "\n" + RULE, user + profile_context + source_context)
                 outputs.extend(raw)
                 return raw
 
@@ -374,6 +379,12 @@ class SynthesisRoutingMixin:
                 for node in manifest_nodes(manifest)
             }
             proposals = spec.propose(replace(ctx, call_llm=call), **kwargs)
+            from app.core.concepts.longitudinal_context import sources_unchanged
+
+            if not sources_unchanged(source_revisions, self._memory_store):
+                self._routing_stats["longitudinal_source_changed"] += 1
+                return []
+            accepted = []
             for proposal in proposals:
                 proposal.dependency_revisions = {
                     node: frozen_dependencies[key]
@@ -382,6 +393,15 @@ class SynthesisRoutingMixin:
                     in frozen_dependencies
                 }
                 output = _match_output(proposal, outputs)
+                if (proposal.kind != "communication_style"
+                        and output.get("applicability") is not None):
+                    from app.core.concepts.concept_applicability import parse_applicability
+
+                    scope = parse_applicability(output["applicability"], offered_rows)
+                    if scope is None:
+                        self._routing_stats["unsupported_applicability"] += 1
+                        continue
+                    proposal.applicability = scope
                 relation = str(output.get("evidence_relation") or "unspecified")
                 proposal.evidence_relation = (
                     relation
@@ -403,6 +423,8 @@ class SynthesisRoutingMixin:
                 self._routing_stats["proposals"] += 1
                 if proposal.reinforces_id is not None and relation == "unspecified":
                     self._routing_stats["relation_unspecified"] += 1
+                accepted.append(proposal)
+            proposals = accepted
             claimed = {node for proposal in proposals for node in proposal.evidence}
             if manifest is not None:
                 self._track_sources("offered", manifest_nodes(manifest))

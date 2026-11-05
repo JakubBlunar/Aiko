@@ -57,3 +57,43 @@ forward questions cannot bypass that check even through a forced pool claim.
 There is no extra model call, new proactive question or automatic promise
 fulfilment based on elapsed time. Indexed reference lookup avoids rescanning the
 whole memory table for every intention.
+
+## Context changes and scoped concepts
+
+Optional source-cited links distinguish corrections, explicitly changed
+preferences, different contexts and counterexamples. Only a newly offered
+message from the same actor can qualify a specific, snapshotted existing claim.
+Both records are retained. A different situation or single contrasting episode
+cannot supersede the original or turn into a universal opposite trait.
+
+An explicit correction or reported preference change asks for review of the
+linked basis. Existing dependent concepts stop being assertable on that basis;
+the lifecycle worker still owns concept status. This does not mark the old
+memory false, invalidate neighboring claims or automatically create a replacement.
+Edited/deleted receipts and changed linked sources are treated conservatively
+as unavailable support. Bounded, indexed lookups avoid full-table relation scans.
+
+All personal concept proposers receive a bounded packet of dated sources,
+including explicit contrasts and original claims. Source revisions are checked
+again after generation. A conditional interpretation can retain literal,
+source-cited contexts and exceptions through the existing applicability ledger,
+beyond communication styles. Unsupported scope is rejected. Distinct scopes
+cannot merge or reinforce through cosine similarity; surfacing checks current
+scope and source validity, and frames an unknown context as a possible reading.
+
+Topic dirtiness includes semantic source fingerprints, so new details can prompt
+reconsideration even when topic labels and sizes stay the same. Ordinary legacy
+support hashes remain stable; a new packet is not a new observation or confidence
+vote. These changes add no model call and do not rewrite historical live data.
+
+## Validation
+
+Paired checks cover missing/unknown provenance, shared observation roots,
+source edits and deletion, queued writes, hypothetical and negated outcomes,
+ambiguous completion, same-actor links, different contexts, explicit corrections,
+scope-preserving dedupe and rendering, and source changes during generation.
+SQLite round trips verify extractor admission, dependency review, queued cue
+suppression and indexed link lookup. Representative affected checks cover the
+memory-to-concept path; lint covers Python and frontend types. All test state is
+isolated. These checks verify behavior, not the semantic quality of future model
+output; review a fresh post-restart cohort before changing promotion thresholds.
