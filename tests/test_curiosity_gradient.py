@@ -154,7 +154,8 @@ class FindEdgesTests(unittest.TestCase):
         )
 
     def test_gradient_relevant_either_side(self) -> None:
-        entry = {"dense_topic": "hiking gear", "thin_topic": "trail navigation"}
+        entry = {"exploration_version": 1, "dense_topic": "hiking gear",
+                 "thin_topic": "trail navigation"}
         self.assertTrue(gradient_relevant(entry, "my hiking gear is old"))
         self.assertTrue(gradient_relevant(entry, "how does navigation work"))
         self.assertFalse(gradient_relevant(entry, "let's talk about wine"))
@@ -328,7 +329,7 @@ class ProviderTests(unittest.TestCase):
             host._chat_db.kv_set,
             {
                 "at": "2026-01-01T00:00:00+00:00",
-                "dense_topic": "hiking gear",
+                "exploration_version": 1, "dense_topic": "hiking gear",
                 "thin_topic": "trail navigation",
                 "edge_key": pair_key("hiking gear", "trail navigation"),
                 "cosine": 0.6,
@@ -354,7 +355,7 @@ class ProviderTests(unittest.TestCase):
         self._seed(host)
         out = host._render_curiosity_gradient_block("my hiking gear broke")
         self.assertIn("trail navigation", out)
-        self.assertIn("curious", out.lower())
+        self.assertIn("possible direction", out.lower())
 
     def test_surfaces_on_thin_topic(self) -> None:
         host = _Host()

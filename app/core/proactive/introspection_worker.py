@@ -235,6 +235,15 @@ class IntrospectionWorker(HypothesisProposerWorker):
             raise ValueError("invalid reflection kind")
         return [parsed]
 
+    def _retire_unreviewed(self, store):
+        # An outcome review never evicts or reclassifies inventory to buy room.
+        return 0
+
+    def _proposal_quality(self, candidate):
+        # _call_llm has its own strict alternative/disconfirmation contract,
+        # grounded in the selected ledger event rather than a memory/topic id.
+        return {}, ""
+
     def _persist(self, store, candidate, statement, vec) -> Hypothesis | None:
         if self._cancel_event.is_set() or self._user_id_provider() != self._active_user:
             return None
@@ -247,6 +256,17 @@ class IntrospectionWorker(HypothesisProposerWorker):
             statement=statement, kind=candidate["kind"], subject=candidate["subject"],
             user_id=self._active_user, origin=ORIGIN_BELIEF_OUTCOME,
             origin_refs=[self._event["id"]], credence=0.35, embedding=vector,
+            quality={
+                "version": 1, "contract": "belief_outcome",
+                "inspiration": {"type": "belief_outcome", "id": self._event["id"],
+                                "text": str(self._event.get("claim", {}).get(
+                                    "predicted_state", ""))},
+                "useful_because": "Adapt a prior reading after a specific correction.",
+                "alternative": candidate["alternative"],
+                "raise_when": "Only when the corrected subject is relevant again; "
+                              "do not ask the user to repeat a correction.",
+                "check_question": "",
+            },
             rationale=(
                 f"{candidate['rationale']} Alternative: {candidate['alternative']} "
                 f"Disconfirmed if: {candidate['disconfirming_observation']}"

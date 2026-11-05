@@ -112,6 +112,7 @@ REASON_CADENCE_BLOCK = "cadence_block"
 # unarmed: the snapshot saw stock and it was gone or unusable by
 # assembly, which is a supply-timing finding rather than a gate.
 REASON_NO_STOCK = "no_stock"
+REASON_INELIGIBLE = "ineligible"
 # The slot was armed, but the source corpus had no candidates to pick.
 REASON_NO_CANDIDATES = "no_candidates"
 # Another lane already claimed this material in the same assembly, so the
@@ -160,6 +161,7 @@ INELIGIBLE_REASONS: frozenset[str] = frozenset({
     REASON_CADENCE_BLOCK,
     REASON_NO_OPENING,
     REASON_NO_STOCK,
+    REASON_INELIGIBLE,
     REASON_NO_CANDIDATES,
     REASON_QUESTION_BALANCE,
 })
@@ -1425,6 +1427,7 @@ __all__ = [
     "REASON_CADENCE_BLOCK",
     "REASON_AGE_WINDOW",
     "REASON_CROSS_LANE",
+    "REASON_INELIGIBLE",
     "REASON_IMPORTANCE_FLOOR",
     "REASON_LOST_PRIORITY",
     "REASON_NO_CANDIDATES",

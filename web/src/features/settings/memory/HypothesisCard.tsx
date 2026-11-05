@@ -25,7 +25,7 @@ const STATUS_HELP: Record<string, string> = {
   refuted:
     "Denied. Closed outright rather than merely weakened -- Aiko made it up, and being told no is the end of it. Kept as a row so the novelty gate cannot re-invent it.",
   expired:
-    "Aged out without ever being asked. Nothing was learned, so it does NOT block re-inventing the same ground.",
+    "Retired without a verdict: aged out, replaced, or held back for quality review. This does not mean the guess was false.",
   merged:
     "Proved true, but a concept already held the belief -- folded into that one instead of forking a near-twin.",
   graduated:
@@ -106,7 +106,7 @@ export function HypothesisCard({
               {row.support_count}+ / {row.refute_count}-
             </span>
             <span>·</span>
-            <span title="Times a cue was published for this row. max_asks=1, so anything above 0 means the ask side is done with it.">
+            <span title="Times a matching question was actually asked for this row. max_asks=1, so anything above 0 means the ask side is done with it.">
               asked {row.asked_count}
             </span>
             <span>·</span>
@@ -214,6 +214,26 @@ export function HypothesisCard({
 
       {expanded ? (
         <div className="mt-2 space-y-1 text-[10px] text-ink-100/60">
+          {row.quality?.version === 1 ? (
+            <dl className="mt-2 space-y-1 text-[11px] text-ink-100/65">
+              {([ ["useful_because", "Why finding out could help"],
+                ["alternative", "Another possibility"], ["raise_when", "Fits when"],
+                ["check_question", "Possible way to explore it"] ] as const).map(([key, label]) =>
+                  row.quality?.[key] ? <div key={key}>
+                    <dt className="inline font-medium">{label}: </dt>
+                    <dd className="inline">{row.quality[key]}</dd>
+                  </div> : null)}
+              {row.quality.inspiration?.text && <div>
+                <dt className="inline font-medium">Inspired by: </dt>
+                <dd className="inline">{row.quality.inspiration.quote || row.quality.inspiration.text} (context, not proof)</dd>
+                {row.quality.inspiration.created_at && <div>
+                  Source recorded {formatRelative(row.quality.inspiration.created_at)}
+                </div>}
+              </div>}
+            </dl>
+          ) : row.support_count === 0 && row.origin !== "belief_outcome" ? (
+            <p className="mt-1 text-[11px] text-amber-200/70">Earlier guess: usefulness needs review before surfacing.</p>
+          ) : null}
           {row.rationale ? (
             <div className="whitespace-pre-wrap break-words">
               <span className="text-ink-100/40">rationale: </span>

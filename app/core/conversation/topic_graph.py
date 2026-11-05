@@ -1051,6 +1051,24 @@ class TopicGraph(TopicGraphUpdatesMixin):
         with self._lock:
             return self._live_to_topic_clusters_locked()
 
+    def topic_clusters_for_labels(self, labels: set[str]) -> list[TopicCluster]:
+        """Bounded source checks for queued directions on the turn path.
+
+        Match live labels before joining member roles. Calling topic_clusters
+        here would read every memory in the graph for each cue considered.
+        Unlabelled representative snippets wait for a real topic label.
+        """
+        wanted = {str(label).strip().casefold() for label in labels if label}
+        if not wanted:
+            return []
+        if not self.persistent:
+            return [c for c in self.topic_clusters() if c.summary.strip().casefold() in wanted]
+        self._ensure_warm()
+        with self._lock:
+            ids = {cid for cid, cluster in self._live.items()
+                   if cluster.label and cluster.label.strip().casefold() in wanted}
+            return self._live_to_topic_clusters_locked(ids)
+
     def topic_graph_maturity(self) -> tuple[int, int]:
         """L21 cold-start signal: ``(cluster_count, total_members)``.
 
@@ -1450,6 +1468,8 @@ class TopicGraph(TopicGraphUpdatesMixin):
         pick what to *research*, so the two stay in lockstep -- F9 quietly
         fills the gap while F10f lets Aiko own it out loud.
         """
+        from app.core.proactive.topic_exploration import explorable_topic
+
         if not self.persistent:
             return []
         floor = max(self._min_cluster_size, int(min_size))
@@ -1457,6 +1477,8 @@ class TopicGraph(TopicGraphUpdatesMixin):
         n = max(1, int(top_n))
         out: list[KnowledgeGapCluster] = []
         for cluster in self.topic_clusters():
+            if not explorable_topic(cluster):
+                continue
             size = cluster.size
             if size < floor:
                 continue
@@ -2111,7 +2133,9 @@ class TopicGraph(TopicGraphUpdatesMixin):
                 log.debug("set_cluster_label persist failed", exc_info=True)
         return True
 
-    def _live_to_topic_clusters_locked(self) -> list[TopicCluster]:
+    def _live_to_topic_clusters_locked(
+        self, cluster_ids: set[int] | None = None,
+    ) -> list[TopicCluster]:
         """Build the public ``TopicCluster`` list from live state.
 
         Joins member ids back to the mirror for representative / summary /
@@ -2121,6 +2145,8 @@ class TopicGraph(TopicGraphUpdatesMixin):
         get = self._memory_store.get
         out: list[TopicCluster] = []
         for cid, cluster in self._live.items():
+            if cluster_ids is not None and cid not in cluster_ids:
+                continue
             if len(cluster.member_ids) < self._min_cluster_size:
                 continue
             members = [m for m in (get(mid) for mid in cluster.member_ids)

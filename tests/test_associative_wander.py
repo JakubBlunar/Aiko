@@ -43,6 +43,8 @@ class _Cluster:
 @dataclass
 class _Mem:
     content: str
+    kind: str = "fact"
+    created_at: str = "2026-01-01T12:00:00+00:00"
 
 
 class _FakeGraph:
@@ -90,7 +92,8 @@ class _FakeLLM:
         self.calls += 1
         return (
             json.dumps(
-                {"connects": self._connects, "connection": self._connection}
+                {"connects": self._connects, "connection": self._connection,
+                 "useful_because": "Try following one small clue before changing the approach."}
             ),
             None,
         )

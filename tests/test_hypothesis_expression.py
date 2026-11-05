@@ -23,3 +23,15 @@ def test_topical_or_quoted_text_is_not_a_target_question(reply):
 ])
 def test_actual_request_is_preserved_verbatim(reply, expected):
     assert question_span("The user uses walking as thinking time", reply) == expected
+
+
+def test_a_concrete_nonleading_check_can_be_verified_without_repeating_the_guess():
+    from app.core.concepts.hypothesis_expression import hypothesis_question
+
+    payload = {"label": "A short walk might help organise tangled thoughts", "quality": {
+        "version": 1, "check_question": "What helps you reorganise a difficult project?",
+    }}
+    question = "What helps you reorganise a difficult project?"
+    assert hypothesis_question(payload, question) == question
+    assert hypothesis_question(payload, "How was your lunch?") == ""
+    assert hypothesis_question(payload, "A short walk might help organise tangled thoughts.") == ""

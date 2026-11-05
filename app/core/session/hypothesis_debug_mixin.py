@@ -105,14 +105,16 @@ class HypothesisDebugMixin:
         out: dict[str, Any] = {
             "invention_enabled": bool(
                 getattr(
-                    getattr(self, "_agent_settings", None),
+                    getattr(getattr(self, "_settings", None), "agent",
+                            getattr(self, "_agent_settings", None)),
                     "hypothesis_invention_enabled",
                     False,
                 )
             ),
             "ask_enabled": bool(
                 getattr(
-                    getattr(self, "_agent_settings", None),
+                    getattr(getattr(self, "_settings", None), "agent",
+                            getattr(self, "_agent_settings", None)),
                     "concept_hypothesis_ask_enabled",
                     False,
                 )
@@ -164,6 +166,8 @@ class HypothesisDebugMixin:
         except Exception:
             log.debug("invented hypothesis read failed", exc_info=True)
             return []
+        from app.core.concepts.hypothesis_quality import usable_hypothesis
+
         return [
             {
                 "origin": ORIGIN_INVENTED,
@@ -172,6 +176,7 @@ class HypothesisDebugMixin:
                 "kind": str(row.kind),
                 "subject": str(row.subject),
                 "rationale": str(row.rationale or ""),
+                "quality": dict(getattr(row, "quality", {})),
                 "credence": round(float(row.credence), 3),
                 "support_count": int(row.support_count),
                 "asked_count": int(row.asked_count),
@@ -183,7 +188,7 @@ class HypothesisDebugMixin:
             # A linked row's belief is already spoken for by a concept, so
             # listing it would show one thing twice with two different
             # confidence stories attached.
-            if row.linked_concept_id is None
+            if row.linked_concept_id is None and usable_hypothesis(row)
         ]
 
     def _grounded_hypothesis_rows(
@@ -285,6 +290,7 @@ class HypothesisDebugMixin:
                     "kind": str(row.kind),
                     "subject": str(row.subject),
                     "rationale": str(row.rationale or ""),
+                    "quality": dict(getattr(row, "quality", {})),
                     "origin": str(row.origin),
                     "origin_refs": list(row.origin_refs or []),
                     "status": str(row.status),

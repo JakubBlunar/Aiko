@@ -5,6 +5,10 @@ exists, the vocabulary it introduced, the lifecycle a guess moves
 through, and the invariants that keep a guess from being mistaken for a
 belief. Read it before touching anything under "Implementation" below.
 
+The [hypothesis and exploratory-cue quality contract](hypothesis-cue-quality.md)
+adds inspectable motivation and source receipts to ordinary inventions without
+requiring an established concept or treating inspiration as confirming evidence.
+
 Its sibling is [`concept-lifecycle.md`](concept-lifecycle.md), which owns
 the *belief* state machine. The two connect at exactly one place —
 graduation — and the boundary is deliberately narrow.
@@ -15,6 +19,7 @@ graduation — and the boundary is deliberately narrow.
 | --- | --- |
 | Storage (`hypotheses` table + cosine mirror) | [`hypothesis_store.py`](../app/core/concepts/hypothesis_store.py) |
 | Invention (L30c) | [`hypothesis_proposer_worker.py`](../app/core/proactive/hypothesis_proposer_worker.py) |
+| Motivation and source admission | [`hypothesis_quality.py`](../app/core/concepts/hypothesis_quality.py) |
 | Outcome-led introspection (L33, opt-in) | [`introspection_worker.py`](../app/core/proactive/introspection_worker.py) |
 | Choosing what to ask (L30b) | [`concept_hypothesis_worker.py`](../app/core/proactive/concept_hypothesis_worker.py) |
 | Reading the reply | [`answer_adjudicator.py`](../app/core/concepts/answer_adjudicator.py) |
@@ -181,7 +186,7 @@ not come back.
 
 | Transition | Condition | Setting(s) |
 | --- | --- | --- |
-| `[*] → open` | the proposer's LLM returned a statement that cleared **both** novelty gates and the shelf had room | `hypothesis_min_novelty`, `hypothesis_concept_novelty`, `hypothesis_max_open`, `hypothesis_invention_max_per_run` |
+| `[*] → open` | the proposal passed motivation/source admission and **both** novelty gates, and the shelf had room | `hypothesis_min_novelty`, `hypothesis_concept_novelty`, `hypothesis_max_open`, `hypothesis_invention_max_per_run` |
 | `open → expired` | **never answered** (`last_tested_at IS NULL`) **and** age past the TTL. Exemption is on having been *answered*, not on having been *asked* — see the deadlock note below | `hypothesis_ttl_hours` |
 | `open/supported → supported` | adjudicator returned `CONFIRM`; `support_count += 1`, `credence += step`, the answer memory is remembered on the row | `hypothesis_credence_step` |
 | `open/supported → refuted` | adjudicator returned `DENY` — closes immediately, one "no" is enough | `hypothesis_credence_step` |
@@ -242,8 +247,8 @@ Two paths, and they are different mechanisms.
 **Musing (the L30a lane, T3.)** The tentative register inside
 `relevant_context`. Up to `context_budget_hypothesis_cap` rows, **one per
 origin**, phrased as questions rather than conclusions. Grounded rows get
-"you've half-noticed"; invented rows get their own weaker header that
-says outright they rest on nothing. One-per-origin is applied *before*
+"you've half-noticed"; invented rows get a weaker header separating
+inspiration from proof, followed by their motivation. One-per-origin is applied *before*
 the context budget, because L32 importance blends a kind prior with the
 emotional charge of grounded topic clusters — an invention has no
 grounded memories, falls back to the bare prior, and would lose a shared
@@ -254,7 +259,8 @@ in the pool: it can surface on topical relevance mid-conversation, *or*
 on a typed gap through the gap-cue mutex, where it sits last because
 probing a belief about the user is the heaviest thing she can open a gap
 with. See [`cue-pool.md`](cue-pool.md) for the mechanics and why its
-`CueSpec` carries no `slot_attr`.
+`CueSpec` carries no `slot_attr`. The gap path also needs a current connection
+to the claim or its inspiration; elapsed silence alone does not make a guess useful.
 
 Both are gated by K47's question balance, and they guard against each
 other: the lane records the ids it surfaced
@@ -440,7 +446,8 @@ identical from the chat window:
 | rows with `asked 1` and no answer | the cue was queued but never fired — go to the Cues sub-tab, the cue is the thing to look at |
 
 Its two run buttons are `invent now` and `queue ask`. Queuing is not
-asking: the cue still waits for a topic match or a typed gap.
+asking: the cue still waits for an eligible source and a matching context,
+including on the typed-gap path.
 
 Each invented row offers `confirm` / `correct` / `deny`, each opening a
 small textarea for what the user would have said, and `delete`. **The

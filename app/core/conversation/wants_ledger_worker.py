@@ -327,6 +327,15 @@ class WantsLedgerWorker:
             log.debug("wants: seed resolution read failed", exc_info=True)
             return state, [], []
         dead = {by_id[cue_id] for cue_id in settled if cue_id in by_id}
+        from app.core.proactive.cue_quality import seed_usable
+
+        for cue_id, ref in by_id.items():
+            try:
+                seed = store.get(cue_id)
+                if seed is None or not seed_usable(seed.payload):
+                    dead.add(ref)
+            except Exception:
+                log.debug("wants: seed quality read failed", exc_info=True)
         if not dead:
             return state, [], []
         state, dropped = wants_ledger.drop_source_refs(state, dead)
@@ -427,7 +436,10 @@ class WantsLedgerWorker:
         if store is None:
             return None
         try:
-            return store.pending("curiosity_seed", limit=max(1, int(limit)))
+            from app.core.proactive.cue_quality import seed_usable
+
+            return [row for row in store.pending("curiosity_seed", limit=max(1, int(limit)))
+                    if seed_usable(row.payload)]
         except Exception:
             log.debug("wants: seed pool pending read failed", exc_info=True)
             return None
@@ -454,8 +466,10 @@ class WantsLedgerWorker:
             topic = (row.subject or "").strip()
             if not topic:
                 continue
+            from app.core.conversation.cue_wants import seed_text
+
             out.append((
-                f"bring up what you've been curious about: {_clip(topic)}",
+                seed_text(row),
                 "ask",
                 "curiosity_seed",
                 f"cue:{row.id}",

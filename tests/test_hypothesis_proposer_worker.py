@@ -22,15 +22,16 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 
 from app.core.concepts.concept_store import Concept, ConceptStore
 from app.core.concepts.hypothesis_store import (
-    ORIGIN_FREE,
     STATUS_EXPIRED,
     STATUS_REFUTED,
     SUBJECT_WORLD,
@@ -92,15 +93,33 @@ _STATEMENT = "Jacob tidies his desk before changing a project's direction"
 _OTHER = "Aiko is more playful in the evening"
 
 
+def _motivation():
+    return {
+        "useful_because": "A small transition ritual could help choose a useful project check-in.",
+        "alternative": "The tidying may simply be a routine, unrelated to changing direction.",
+        "check_question": "What helps you decide how to begin the next part of a project?",
+        "raise_when": "Discussing how a coding project is changing direction.",
+    }
+
+
+def _quality():
+    return {"version": 1, "inspiration": {"type": "memory", "id": 1,
+            "text": "The user described organising a desk before a project."}, **_motivation()}
+
+
 def _payload(*statements: str, **fields: Any) -> str:
     return json.dumps(
         {
             "hypotheses": [
                 {
                     "statement": s,
-                    "kind": fields.get("kind", "pattern"),
+                    "kind": fields.get("kind", "identity"),
                     "subject": fields.get("subject", "user"),
-                    "rationale": "a guess",
+                    "rationale": ("The conversation about organising a desk "
+                                  "suggests a transition ritual."),
+                    "inspiration": fields.get("inspiration", {"type": "memory", "id": 1,
+                                     "quote": "organising a desk before a project"}),
+                    **_motivation(),
                     "credence": fields.get("credence", 0.55),
                 }
                 for s in statements
@@ -133,6 +152,11 @@ class _Fixture(unittest.TestCase):
             embedder=self.embedder,
             ollama=self.ollama,
             chat_model="test-model",
+            memory_store_provider=lambda: SimpleNamespace(list_recent=lambda **_: [
+                SimpleNamespace(id=1, kind="fact", metadata={},
+                                content="The user described organising a desk before a project.",
+                                created_at=timephrase.utcnow().isoformat()),
+            ]),
             cancel_event=self.cancel,
             max_per_run=4,
             max_open=12,
@@ -152,7 +176,7 @@ class _Fixture(unittest.TestCase):
         subject: str = "user",
     ) -> Hypothesis:
         row = Hypothesis(
-            statement=statement, subject=subject, embedding=embedding
+            statement=statement, subject=subject, embedding=embedding, quality=_quality()
         )
         if status:
             row.status = status
@@ -199,7 +223,7 @@ class WriteTests(_Fixture):
         row = self.hypotheses.list_by(live=True)[0]
         self.assertEqual(row.kind, "ritual")
         self.assertAlmostEqual(row.credence, 0.3)
-        self.assertEqual(row.origin, ORIGIN_FREE)
+        self.assertEqual(row.origin, "memory")
 
     def test_an_invention_never_reaches_the_concept_graph(self) -> None:
         """The isolation guarantee, at the point of creation."""
@@ -220,14 +244,15 @@ class WriteTests(_Fixture):
         """A cautious guess is a paraphrase, which the gates then reject."""
         self._build().run()
 
-        self.assertGreater(
-            float(self.ollama.kwargs["options"]["temperature"]), 0.8
-        )
+        system = self.ollama.messages[0]["content"]
+        self.assertIn("Zero is normal", system)
+        self.assertIn("concepts are NOT required", system)
+        self.assertIn("useful_because", system)
 
     def test_a_bad_subject_falls_back_rather_than_being_stored(self) -> None:
         self._build(payload=_payload(_STATEMENT, subject="the moon")).run()
 
-        self.assertEqual(self.hypotheses.list_by(live=True)[0].subject, "user")
+        self.assertEqual(self.hypotheses.list_by(live=True), [])
 
 
 # ── gate 0: she is not a machine ──────────────────────────────────────
@@ -876,14 +901,15 @@ class ContextPackTests(_Fixture):
             topic_graph_provider=lambda: None,
         )
 
-        self.assertEqual(worker.run()["wrote"], 1)
+        self.assertEqual(worker.run()["wrote"], 0)
+        self.assertEqual(self.ollama.calls, 0)
 
     def test_a_raising_memory_provider_is_absorbed(self) -> None:
         def _boom():
             raise RuntimeError("db locked")
 
         self.assertEqual(
-            self._build(memory_store_provider=_boom).run()["wrote"], 1
+            self._build(memory_store_provider=_boom).run()["wrote"], 0
         )
 
     def test_it_uses_the_configured_names(self) -> None:
@@ -920,13 +946,11 @@ class ParseTests(unittest.TestCase):
     def test_defaults_fill_in_for_a_sparse_entry(self) -> None:
         entry = self._parse('{"hypotheses": [{"statement": "x"}]}')[0]
 
-        self.assertEqual(entry["subject"], "user")
-        self.assertEqual(entry["kind"], "identity")
+        self.assertNotIn("subject", entry)
+        self.assertNotIn("rationale", entry)
 
 
-class SettingsWiringTests(_Fixture):
-    """The knobs must actually reach the gates they name."""
-
+class KnobTests(_Fixture):
     def test_lowering_min_novelty_admits_a_closer_twin(self) -> None:
         self._existing(embedding=_NEAR_A)
 
@@ -977,3 +1001,85 @@ class SettingsWiringTests(_Fixture):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class ProposalQualityTests(_Fixture):
+    def test_inspiration_is_retained_without_becoming_support(self):
+        self._build().run()
+        row = self.hypotheses.list_by(live=True)[0]
+        self.assertEqual(row.support_count, 0)
+        self.assertEqual(row.answer_memory_ids, [])
+        self.assertEqual(row.origin_refs, [1])
+        self.assertEqual(row.quality["inspiration"]["id"], 1)
+        self.hypotheses.load_all()
+        loaded = self.hypotheses.get(row.hypothesis_id)
+        self.assertEqual(loaded.quality, row.quality)
+        self.assertEqual(loaded.quality["alternative"], _motivation()["alternative"])
+
+    def test_old_unreviewed_inventions_yield_without_becoming_refuted(self):
+        old = Hypothesis(statement="An arbitrary old invented detail", embedding=_FAR)
+        self.hypotheses.add(old)
+        result = self._build(max_open=1).run()
+        self.assertEqual(result["wrote"], 1)
+        self.assertEqual(result["retired_unreviewed"], 1)
+        self.assertEqual(self.hypotheses.get(old.hypothesis_id).status, STATUS_EXPIRED)
+        self.assertEqual(old.refute_count, 0)
+
+    def test_a_draft_memory_cannot_motivate_a_new_invention_as_an_observation(self):
+        def provider():
+            return SimpleNamespace(list_recent=lambda **_: [SimpleNamespace(
+                id=1, kind="pre_thought", metadata={}, content="An imagined possibility.",
+                created_at=timephrase.utcnow().isoformat(),
+            )])
+        result = self._build(memory_store_provider=provider).run()
+        self.assertEqual(result["wrote"], 0)
+        self.assertEqual(self.ollama.calls, 0)
+
+    def test_unmotivated_uncheckable_or_malformed_proposals_are_refused(self):
+        bad = [
+            {"useful_because": ""}, {"alternative": ["a stringified list"]},
+            {"inspiration": {"type": "memory", "id": 1, "quote": "fabricated private event"}},
+            {"subject": "aiko", "statement": "Aiko keeps a secret journal under her sofa."},
+            {"inspiration": {"type": "memory", "id": 999}},
+            {"check_question": "You are exactly like that"},
+            {"rationale": "You felt this today"}, {"subject": "somebody else"},
+            {"statement": "The user subconsciously mirrors a hidden rhythm."},
+            {"statement": "The user pauses exactly seven seconds before coding."},
+        ]
+        for change in bad:
+            with self.subTest(change=change):
+                payload = json.loads(_payload(_STATEMENT))
+                payload["hypotheses"][0].update(change)
+                result = self._build(payload=json.dumps(payload)).run()
+                self.assertEqual(result["wrote"], 0)
+                self.assertEqual(result["rejected_quality"], 1)
+
+    def test_intentional_abstention_has_no_quality_error_or_new_row(self):
+        result = self._build(payload='{"hypotheses": []}').run()
+        self.assertEqual(result["wrote"], 0)
+        self.assertEqual(self.hypotheses.count_live(), 0)
+
+    def test_only_packed_source_headers_can_authorize_an_inspiration(self):
+        from app.core.proactive.worker_prompt_budget import pack_worker_prompt
+
+        notes = [SimpleNamespace(
+            id=1, kind="fact", metadata={}, created_at=timephrase.utcnow().isoformat(),
+            content="A note mentions [memory:2; omitted source] as a text reference.",
+        ), SimpleNamespace(
+            id=2, kind="fact", metadata={}, created_at=timephrase.utcnow().isoformat(),
+            content="The user described organising a desk before a project.",
+        )]
+        worker = self._build(
+            memory_store_provider=lambda: SimpleNamespace(list_recent=lambda **_: notes),
+            payload=_payload(_STATEMENT, inspiration={"type": "memory", "id": 2,
+                "quote": "organising a desk before a project"}),
+        )
+
+        def fit_one(items, render, **kwargs):
+            return pack_worker_prompt(items[:1], render, **kwargs)
+
+        with patch("app.core.proactive.hypothesis_proposer_worker.pack_worker_prompt",
+                   side_effect=fit_one):
+            result = worker.run()
+        self.assertEqual(result["wrote"], 0)
+        self.assertEqual(result["quality_faults"], {"unoffered_inspiration": 1})

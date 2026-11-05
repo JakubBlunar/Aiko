@@ -3138,9 +3138,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
     # observation about the person she is talking to, which is the one
     # failure this whole layer's isolation exists to prevent.
     _INVENTED_LEADS: tuple[str, ...] = (
-        "With nothing to go on, you've caught yourself wondering whether",
-        "You've idly speculated, on no evidence at all, that maybe",
-        "A thought you made up and can't verify:",
+        "A possibility inspired by the conversation, not established:",
+        "You wonder, without treating it as an observation, whether",
+        "A tentative idea you could explore:",
         "You've entertained the possibility that",
     )
 
@@ -3222,6 +3222,11 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 if basis:
                     bullet += "\n  " + basis
             if is_invented:
+                from app.core.concepts.hypothesis_quality import motivation_lines
+
+                context = motivation_lines(getattr(c, "quality", {}))
+                if context:
+                    bullet += "\n  " + context.replace("\n", "\n  ")
                 invented.append(bullet)
             else:
                 groups.setdefault(subject, []).append(bullet)
@@ -3298,9 +3303,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             else "keep them to yourself this turn"
         )
         return (
-            "Idle speculation of your own — guesses you invented rather "
-            "than noticed, with no evidence behind them at all. They are "
-            f"not impressions and not conclusions; {follow_up}:"
+            "Possibilities you invented, not established observations. Their "
+            "inspiration explains the wondering, not its truth. They are not "
+            f"conclusions; {follow_up}. Only where finding out is useful:"
         )
 
     @staticmethod

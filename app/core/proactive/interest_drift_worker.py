@@ -322,6 +322,9 @@ class InterestDriftWorker:
         self._force_next = False
         if not self._enabled():
             return {"drafted": 0, "disabled": True}
+        if not force and self._cues.stock() >= self._cues.inventory_target:
+            return {"drafted": 0, "stocked": True}
+
 
         graph = self._safe_graph()
         if graph is None:

@@ -33,10 +33,11 @@ be found by grep rather than by a surprising number in the prompt.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from app.core.concepts.hypothesis_quality import usable_hypothesis
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
     from app.core.concepts.hypothesis_store import Hypothesis, HypothesisStore
@@ -63,6 +64,7 @@ class InventedRow:
     support_count: int
     embedding: Any
     origin: str = ORIGIN_INVENTED
+    quality: dict[str, Any] = field(default_factory=dict)
 
     @property
     def concept_id(self) -> int:
@@ -88,7 +90,7 @@ def adapt(row: "Hypothesis") -> InventedRow:
         kind=str(row.kind or ""),
         credence=float(row.credence or 0.0),
         support_count=int(row.support_count or 0),
-        embedding=row.embedding,
+        embedding=row.embedding, quality=dict(row.quality),
     )
 
 
@@ -120,7 +122,7 @@ def nearest_invented(
         return []
     out: list[tuple[InventedRow, float]] = []
     for row, sim in hits:
-        if row.linked_concept_id is not None:
+        if row.linked_concept_id is not None or not usable_hypothesis(row):
             continue
         if float(sim) < float(min_sim):
             continue

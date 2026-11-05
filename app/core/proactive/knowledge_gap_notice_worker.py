@@ -183,7 +183,11 @@ class KnowledgeGapNoticeWorker:
         """Pressure from the shortfall of unspent notices."""
         if not self._enabled():
             return WorkSignal(pressure=0.0, reason="disabled")
-        return self._cues.demand()
+        from app.core.proactive.cue_quality import inventory_demand
+        from app.core.proactive.topic_exploration import payload_explorable
+
+        return inventory_demand(self._cues,
+                                lambda payload: payload_explorable(self.name, payload))
 
     def run(self) -> dict[str, Any]:
         force = self._force_next
@@ -194,6 +198,16 @@ class KnowledgeGapNoticeWorker:
         graph = self._safe_graph()
         if graph is None:
             return {"drafted": 0, "no_graph": True}
+        from app.core.proactive.topic_exploration import payload_explorable
+
+        store = self._cues.store()
+        if store is not None:
+            source_graph = graph if hasattr(graph, "topic_clusters") else None
+            for pending in self._cues.stock_rows(limit=200):
+                if not payload_explorable("knowledge_gap_notice", pending.payload, source_graph):
+                    store.expire(pending.id, evidence="source_not_explorable")
+        if not force and self._cues.stock() >= self._cues.inventory_target:
+            return {"drafted": 0, "stocked": True}
 
         try:
             candidates = graph.knowledge_gap_clusters(
@@ -214,6 +228,10 @@ class KnowledgeGapNoticeWorker:
         pooled = set() if force else self._cues.spoken_for()
         chosen = None
         for cand in candidates:
+            from app.core.proactive.topic_exploration import explorable_topic
+
+            if not explorable_topic(cand):
+                continue
             key = topic_key(cand.label)
             if not force and self._on_cooldown(cooldowns, key, now):
                 continue
@@ -226,6 +244,7 @@ class KnowledgeGapNoticeWorker:
 
         cand, key = chosen
         entry = {
+            "exploration_version": 1,
             "at": now.isoformat(timespec="seconds"),
             "topic": cand.label[:200],
             "cluster_key": key,
@@ -332,9 +351,10 @@ def render_notice_cue(topic: str) -> str:
     lives in the persona section this cue type hoists into T6.
     """
     return (
-        f"Heads-up: \"{topic}\" keeps coming up between you two, but you've "
-        "never actually dug into it — you don't really know much about it "
-        "yet."
+        f"Your stored notes about \"{topic}\" contain little external research. "
+        "That is a coverage signal, not proof you know little. Only explore "
+        "a concrete unanswered question if it would help the current exchange; "
+        "do not turn a personal moment into a research task."
     )
 
 

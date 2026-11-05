@@ -878,6 +878,7 @@ class IdleWorkersInitMixin:
                     min_novelty=mem.hypothesis_min_novelty,
                     concept_novelty=mem.hypothesis_concept_novelty,
                     ttl_hours=mem.hypothesis_ttl_hours,
+                    context_window=lambda: self._worker_route_model_ctx()[1],
                     evict_when_full=mem.hypothesis_evict_when_full,
                     evict_min_age_hours=mem.hypothesis_evict_min_age_hours,
                 )

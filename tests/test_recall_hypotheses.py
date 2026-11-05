@@ -82,6 +82,11 @@ class _Fixture(unittest.TestCase):
         linked: int | None = None,
     ) -> Hypothesis:
         row = Hypothesis(
+            quality={"version": 1, "inspiration": {"type": "memory", "id": 1},
+            "useful_because": "Choose an appropriate response in a matching exchange.",
+            "alternative": "The user may want another approach.",
+            "check_question": "What would be helpful in this situation?",
+            "raise_when": "Discussing the same activity."},
             statement=statement,
             subject=subject,
             kind=kind,

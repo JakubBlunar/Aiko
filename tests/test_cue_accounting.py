@@ -54,6 +54,7 @@ from app.core.proactive.cue_accounting import (
     REASON_NO_CANDIDATES,
     REASON_NO_OPENING,
     REASON_NO_STOCK,
+    REASON_INELIGIBLE,
     REASON_PROVIDER,
     REASON_QUESTION_BALANCE,
     REASON_TOPIC_MISS,
@@ -687,7 +688,7 @@ class EligibilityTests(unittest.TestCase):
     def test_the_reasons_that_mean_never_in_play(self) -> None:
         for reason in (
             REASON_CADENCE_BLOCK, REASON_NO_OPENING, REASON_QUESTION_BALANCE,
-            REASON_NO_STOCK, REASON_NO_CANDIDATES,
+            REASON_NO_STOCK, REASON_NO_CANDIDATES, REASON_INELIGIBLE,
         ):
             self.assertFalse(is_eligible_decline(reason), reason)
         self.assertTrue(is_eligible_decline(REASON_AGE_WINDOW))
@@ -723,10 +724,10 @@ class EligibilityTests(unittest.TestCase):
             REASON_AGE_WINDOW,
             REASON_CADENCE_BLOCK, REASON_CROSS_LANE, REASON_IMPORTANCE_FLOOR,
             REASON_LOST_PRIORITY, REASON_NO_CANDIDATES, REASON_NO_OPENING, REASON_NO_STOCK,
-            REASON_PROVIDER, REASON_QUESTION_BALANCE, REASON_TOPIC_MISS,
+            REASON_PROVIDER, REASON_QUESTION_BALANCE, REASON_TOPIC_MISS, REASON_INELIGIBLE,
         }
         self.assertTrue(INELIGIBLE_REASONS <= known)
-        self.assertEqual(len(INELIGIBLE_REASONS), 5)
+        self.assertEqual(len(INELIGIBLE_REASONS), 6)
 
 
 # ── 4. the store ──────────────────────────────────────────────────────

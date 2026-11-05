@@ -66,6 +66,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 import numpy as np
 
 from app.core.infra import timephrase
+from app.core.concepts.hypothesis_quality import decode_quality
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
     from app.core.infra.chat_database import ChatDatabase
@@ -116,7 +117,7 @@ _COLS = (
     "origin_refs, credence, support_count, refute_count, status, "
     "embedding, dim, asked_count, origin_session, created_at, "
     "updated_at, last_tested_at, closed_at, linked_concept_id, "
-    "graduated_concept_id, graduated_memory_id, answer_memory_ids"
+    "graduated_concept_id, graduated_memory_id, answer_memory_ids, quality"
 )
 
 
@@ -208,6 +209,8 @@ class Hypothesis:
     graduated_concept_id: int | None = None
     graduated_memory_id: int | None = None
     hypothesis_id: int = 0
+    # Motivation only; never an answer receipt or graduation evidence.
+    quality: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_live(self) -> bool:
@@ -292,6 +295,7 @@ class HypothesisStore:
             graduated_concept_id=(int(r[21]) if r[21] is not None else None),
             graduated_memory_id=(int(r[22]) if r[22] is not None else None),
             answer_memory_ids=_int_list(r[23] if len(r) > 23 else None),
+            quality=decode_quality(r[24] if len(r) > 24 else None),
         )
 
     # ── reads ─────────────────────────────────────────────────────────
@@ -376,9 +380,9 @@ class HypothesisStore:
             " embedding, dim, asked_count, origin_session, created_at, "
             " updated_at, last_tested_at, closed_at, linked_concept_id, "
             " graduated_concept_id, graduated_memory_id, "
-            " answer_memory_ids) "
+            " answer_memory_ids, quality) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?)",
             (
                 str(row.statement),
                 str(row.kind),
@@ -403,6 +407,7 @@ class HypothesisStore:
                 row.graduated_concept_id,
                 row.graduated_memory_id,
                 json.dumps([int(x) for x in (row.answer_memory_ids or [])]),
+                json.dumps(row.quality, ensure_ascii=False),
             ),
         )
         conn.commit()
@@ -427,7 +432,7 @@ class HypothesisStore:
                 "  origin_session = ?, updated_at = ?, last_tested_at = ?, "
                 "  closed_at = ?, linked_concept_id = ?, "
                 "  graduated_concept_id = ?, graduated_memory_id = ?, "
-                "  answer_memory_ids = ? "
+                "  answer_memory_ids = ?, quality = ? "
                 "WHERE id = ?",
                 (
                     str(row.statement),
@@ -454,6 +459,7 @@ class HypothesisStore:
                     json.dumps(
                         [int(x) for x in (row.answer_memory_ids or [])]
                     ),
+                    json.dumps(row.quality, ensure_ascii=False),
                     int(row.hypothesis_id),
                 ),
             )

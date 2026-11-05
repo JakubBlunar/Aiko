@@ -133,6 +133,35 @@ def test_other_wants_keep_their_own_lifetime(setup_cue):
     assert refresh_forward_wants(wl.LedgerState(wants=(other,)), store).wants == (other,)
 
 
+@pytest.mark.parametrize("state_name", ["pending", "expired"])
+def test_unreviewed_generated_seed_cannot_resurface_through_wants(setup_cue, state_name):
+    db, store, _, state = setup_cue
+    ident = store.add("curiosity_seed", "unmotivated topic", "bare topic",
+                      payload={"source": "llm", "prompt_text": "bare topic"})
+    db.execute_commit("UPDATE cue_pool SET state=? WHERE id=?", (state_name, ident))
+    want = replace(state.wants[0], source="curiosity_seed", source_ref=f"cue:{ident}")
+    assert refresh_forward_wants(wl.LedgerState(wants=(want,)), store).wants == ()
+    assert claim_forward_wants(Host(store), (want,), block="wants_block") == ()
+
+
+def test_motivated_seed_want_can_outlive_expiry_with_its_full_direction(setup_cue):
+    db, store, _, state = setup_cue
+    ident = store.add("curiosity_seed", "desk layouts", "short label", payload={
+        "source": "llm", "prompt_text": "Explore desk layouts for drawing and coding",
+        "why": "Both activities share the same small desk",
+        "quality": {"version": 1, "useful_because": "Find a layout with fewer interruptions"},
+    })
+    db.execute_commit("UPDATE cue_pool SET state='expired' WHERE id=?", (ident,))
+    want = replace(state.wants[0], source="curiosity_seed", source_ref=f"cue:{ident}")
+    refreshed = refresh_forward_wants(wl.LedgerState(wants=(want,)), store)
+    shown = claim_forward_wants(Host(store), refreshed.wants, block="wants_block")
+    assert len(shown) == 1
+    assert "drawing and coding" in shown[0].text
+    assert "same small desk" in shown[0].text
+    assert "fewer interruptions" in shown[0].text
+    assert store.get(ident).state == "expired"
+
+
 def test_final_prompt_claims_want_with_its_handling(setup_cue, tmp_path):
     from app.core.session.prompt_assembler import PromptAssembler
 

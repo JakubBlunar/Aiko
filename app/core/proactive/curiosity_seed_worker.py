@@ -80,41 +80,39 @@ log = logging.getLogger("app.curiosity_seed_worker")
 
 
 _SYSTEM_PROMPT = (
-    "You are an inner-life worker for an AI companion named {assistant_name}. "
-    "Propose new topics {assistant_name} is quietly curious about -- topics "
-    "that have NOT come up yet. You must avoid topics close to anything in "
-    "the ALREADY-DISCUSSED list. Lean toward small, specific, sensory or "
-    "emotional curiosities (rituals, habits, daydreams, taste in something "
-    "concrete) over big philosophical questions.\n"
-    "\n"
-    "Each seed is one of two kinds, and you must label which:\n"
-    "  - \"user\": something about {user_name} -- their life, their habits, "
-    "what they think. Discharged by asking them.\n"
-    "  - \"subject\": something about a THING, that {assistant_name} is "
-    "curious about for its own sake and would still be curious about alone. "
-    "Discharged by saying what she noticed or wants to try. It must NOT be "
-    "a question about {user_name}.\n"
-    "At least {min_subject} of your seeds must be \"subject\" seeds.\n"
-    "\n"
-    "Reply with ONE JSON object on a single line and nothing else. "
-    "Schema: {{\"seeds\": [{{\"topic\": \"<= 80 chars\", "
-    "\"prompt_text\": \"<= 160 chars, written in {assistant_name}'s warm voice "
-    "as if she might say it aloud later\", \"why\": \"<= 120 chars\", "
-    "\"about\": \"user\" | \"subject\"}}, ...] }}. "
-    "Return between {min_seeds} and {max_seeds} entries."
+    "You are an inner-life worker for {assistant_name}. Propose zero to two "
+    "specific curiosities worth sharing. A new angle can grow from a familiar "
+    "interest; do not jump to unrelated subjects just to be novel. Curiosity "
+    "may be playful or about a thing she likes, not only practical work. Name "
+    "the connection to the supplied conversation, interests or persona and "
+    "what exploring it could add. Do not invent possessions, observations or "
+    "hidden motives. Do not restate familiar affection or ask a broad survey. "
+    "A lull creates room, not a reason to ask a random question. Zero is normal.\n"
+    "Each seed has about=user (a concrete curiosity about {user_name}) or "
+    "about=subject (something she would enjoy exploring for its own sake). "
+    "When several ideas genuinely fit, include a subject idea; never manufacture "
+    "one to fill a quota. Existing topics are a baseline, not forbidden ground: "
+    "a useful new angle is welcome, repeating an answered question is not.\n"
+    "Reply with ONE JSON object {{\"seeds\": [...]}}. Each entry has topic "
+    "(<=80 chars), prompt_text (one specific possible line in her voice, <=200 "
+    "chars), why (the actual connection to offered context, 8-240 chars), "
+    "useful_because (what this could add, 8-240 chars), inspiration (conversation, "
+    "interest or persona), about (user or subject), and optional new_angle "
+    "(what remains open within a familiar topic, <=240 chars). Empty output is "
+    "better than an unmotivated, generic or already answered curiosity."
 )
 
 
 _USER_TEMPLATE = (
     "PERSONA TRAITS:\n{persona}\n\n"
-    "RECENT CONVERSATION (rolling summary):\n{summary}\n\n"
-    "ALREADY-DISCUSSED TOPICS (avoid anything close to these):\n{clusters}\n\n"
+    "CONVERSATION SUMMARY (historical context; age not supplied, not live state):\n{summary}\n\n"
+    "FAMILIAR TOPICS (avoid repetition, allow a concrete new angle):\n{clusters}\n\n"
     "ACTIVE QUIET CURIOSITIES (avoid duplicating these):\n{active_seeds}\n\n"
     "Propose new seeds now."
 )
 
 
-_MIN_SEEDS = 3
+_MIN_SEEDS = 0
 _MAX_SEEDS = 5
 # Generation cap for the seed JSON. Each seed is up to topic(<=80) +
 # prompt_text(<=160) + why(<=120) chars of content, which lands around
@@ -124,7 +122,7 @@ _MAX_SEEDS = 5
 # This is only a ceiling — with format_json the model stops as soon as
 # the object closes, so the extra headroom costs nothing on normal runs
 # and just removes the truncation on full sets.
-_MAX_TOKENS = 768
+_MAX_TOKENS = 1100
 _MAX_CLUSTERS = 8
 _MAX_ACTIVE_LIST = 8
 _MAX_PERSONA_CHARS = 800
@@ -282,7 +280,9 @@ class CuriositySeedWorker:
             getattr(self._agent_settings, "curiosity_seed_enabled", True)
         ):
             return WorkSignal(pressure=0.0, reason="disabled")
-        return self._cues.demand(needs_llm=True)
+        from app.core.proactive.cue_quality import inventory_demand, seed_usable
+
+        return inventory_demand(self._cues, seed_usable, needs_llm=True)
 
     def run(self) -> dict[str, Any]:
         if not bool(
@@ -302,6 +302,15 @@ class CuriositySeedWorker:
                 )
             ),
         )
+        # Earlier seeds did not retain a reason to raise them. Keep their
+        # receipts, but do not let them fill the inventory for the new contract.
+        store = self._cues.store()
+        if store is not None:
+            for old in self._cues.stock_rows(limit=200):
+                from app.core.proactive.cue_quality import seed_usable
+
+                if not seed_usable(old.payload):
+                    store.expire(old.id, evidence="unreviewed_seed_motivation")
         active_seeds = self._active_seeds()
         if len(active_seeds) >= max_active:
             return {
@@ -400,7 +409,7 @@ class CuriositySeedWorker:
                 best_sim, best_id = self._topic_graph.best_match(embedding)
             except Exception:
                 log.debug("topic_graph best_match raised", exc_info=True)
-            if best_sim >= graph_threshold:
+            if best_sim >= graph_threshold and not candidate.get("new_angle"):
                 rejected_graph += 1
                 log.debug(
                     "curiosity_seed reject(graph): topic=%r sim=%.2f match=%s",
@@ -433,6 +442,8 @@ class CuriositySeedWorker:
                 embedding=embedding,
                 now=now,
                 about=about,
+                quality={key: candidate.get(key, "") for key in
+                         ("inspiration", "useful_because", "new_angle")},
             )
             if not cue_id:
                 rejected_dup += 1
@@ -603,6 +614,15 @@ class CuriositySeedWorker:
             max_seeds=_MAX_SEEDS,
             min_subject=max(1, round(self._subject_quota() * _MAX_SEEDS)),
         )
+        system = (timephrase.today_anchor(self._clock()) + "\n\n" + system
+                  + "\n\n" + timephrase.STORED_TEXT_TIME_RULE)
+        placeholders = {"(none)", "(no recent summary)", "(no clusters yet)",
+                        "(persona unavailable)"}
+        available = {key for key, value in (("persona", persona_text),
+                     ("conversation", summary_text), ("interest", cluster_text))
+                     if value and value.strip() not in placeholders}
+        if not available:
+            return []
         user_payload = _USER_TEMPLATE.format(
             persona=persona_text or "(persona unavailable)",
             summary=summary_text or "(no recent summary)",
@@ -638,7 +658,7 @@ class CuriositySeedWorker:
         raw = "".join(chunks).strip()
         if not raw:
             return []
-        return self._parse_seeds(raw)
+        return [seed for seed in self._parse_seeds(raw) if seed["inspiration"] in available]
 
     @staticmethod
     def _parse_seeds(raw: str) -> list[dict[str, Any]]:
@@ -659,17 +679,21 @@ class CuriositySeedWorker:
         for entry in seeds[:_MAX_SEEDS]:
             if not isinstance(entry, dict):
                 continue
-            topic = str(entry.get("topic") or "").strip()
-            prompt_text = str(entry.get("prompt_text") or "").strip()
-            why = str(entry.get("why") or "").strip()
-            if not topic or not prompt_text:
+            caps = {"topic": 80, "prompt_text": 200, "why": 240, "useful_because": 240}
+            if any(not isinstance(entry.get(k), str) or not 8 <= len(entry[k].strip()) <= cap
+                   or timephrase.has_relative_deictic(entry[k]) for k, cap in caps.items()):
                 continue
-            out.append({
-                "topic": topic,
-                "prompt_text": prompt_text,
-                "why": why,
-                "about": str(entry.get("about") or "").strip().lower(),
-            })
+            if (not isinstance(entry.get("inspiration"), str)
+                    or entry["inspiration"] not in {"conversation", "interest", "persona"}):
+                continue
+            angle = entry.get("new_angle", "")
+            if (not isinstance(angle, str) or len(angle) > 240
+                    or (angle and len(angle.strip()) < 12)
+                    or timephrase.has_relative_deictic(angle)):
+                continue
+            out.append({**{k: entry[k].strip() for k in caps},
+                        "about": entry.get("about", ""),
+                        "inspiration": entry["inspiration"], "new_angle": angle.strip()})
         return out
 
     def _classify(self, candidate: dict[str, Any], user_name: str) -> str:
@@ -703,6 +727,7 @@ class CuriositySeedWorker:
         embedding: Any,
         now: datetime,
         about: str = MODE_PERSON,
+        quality: dict[str, Any] | None = None,
     ) -> int:
         """Queue one seed in the pool. Returns the row id, or 0.
 
@@ -718,6 +743,7 @@ class CuriositySeedWorker:
                 payload={
                     "prompt_text": prompt_text,
                     "why": why,
+                    "quality": {"version": 1, **(quality or {})},
                     "source": "llm",
                     "about": about,
                     "generated_at": now.isoformat(),

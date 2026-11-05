@@ -24,6 +24,11 @@ on, which made the whole ring a write-only log of good intentions.
 
 The pool is one table that answers both.
 
+The [exploratory quality contract](hypothesis-cue-quality.md) also checks why a
+generated suggestion is worth raising, preserves its direction through wants
+and delivery, and distinguishes research opportunities from personal scenes.
+Relevance chooses among eligible moves; it does not override source validity.
+
 ## The table
 
 `cue_pool` (schema v29, created in

@@ -137,7 +137,11 @@ def find_gradient_edges(
     """
     dense: list["TopicCluster"] = []
     thin: list["TopicCluster"] = []
+    from app.core.proactive.topic_exploration import explorable_topic
+
     for c in clusters:
+        if not explorable_topic(c):
+            continue
         label = (getattr(c, "summary", "") or "").strip()
         if not label or getattr(c, "centroid", None) is None:
             continue
@@ -249,7 +253,9 @@ def render_gradient_cue(entry: dict[str, Any]) -> str:
     return (
         f"Heads-up: you spend a lot of time around \"{dense}\", but "
         f"\"{thin}\" sits right on its edge and you've barely explored it "
-        "— and you're genuinely curious about it."
+        "— a possible direction, not proof that you know little or need to ask. "
+        "Only follow it if a concrete question would help this exchange; "
+        "do not ask for a tour of a topic just because it is a small cluster."
     )
 
 
@@ -314,7 +320,11 @@ class CuriosityGradientWorker:
         """Pressure from the shortfall of unasked edge questions."""
         if not self._enabled():
             return WorkSignal(pressure=0.0, reason="disabled")
-        return self._cues.demand()
+        from app.core.proactive.cue_quality import inventory_demand
+        from app.core.proactive.topic_exploration import payload_explorable
+
+        return inventory_demand(self._cues,
+                                lambda payload: payload_explorable(self.name, payload))
 
     def run(self) -> dict[str, Any]:
         force = self._force_next
@@ -331,6 +341,16 @@ class CuriosityGradientWorker:
         except Exception:
             log.debug("curiosity_gradient topic_clusters failed", exc_info=True)
             return {"drafted": 0, "no_graph": True}
+        from app.core.proactive.topic_exploration import payload_explorable
+
+        store = self._cues.store()
+        if store is not None:
+            source_graph = graph if hasattr(graph, "topic_clusters") else None
+            for pending in self._cues.stock_rows(limit=200):
+                if not payload_explorable("curiosity_gradient", pending.payload, source_graph):
+                    store.expire(pending.id, evidence="source_not_explorable")
+        if not force and self._cues.stock() >= self._cues.inventory_target:
+            return {"drafted": 0, "stocked": True}
 
         edges = find_gradient_edges(
             clusters,
@@ -359,6 +379,7 @@ class CuriosityGradientWorker:
             return {"drafted": 0, "all_on_cooldown": True}
 
         entry = {
+            "exploration_version": 1,
             "at": now.isoformat(timespec="seconds"),
             "dense_topic": chosen.dense_label[:200],
             "thin_topic": chosen.thin_label[:200],

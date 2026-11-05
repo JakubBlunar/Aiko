@@ -11,6 +11,7 @@ is the filter chain between them and the write.
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import unittest
 from datetime import datetime, timezone
@@ -118,21 +119,47 @@ _GOOD_PAYLOAD = (
 )
 
 
+def _motivated_payload(raw):
+    """Supply the new contract for fixtures about novelty, pacing and quota.
+
+    Tests of malformed/unmotivated output explicitly opt out of this adapter.
+    """
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return raw
+    for seed in data.get("seeds", []):
+        if not isinstance(seed, dict):
+            continue
+        seed.setdefault("inspiration", "persona")
+        seed.setdefault("useful_because", "Offer a concrete sensory detail to share and explore.")
+        if isinstance(seed.get("why"), str) and len(seed["why"]) < 8:
+            seed["why"] = "Persona connection: " + seed["why"]
+    return json.dumps(data)
+
+
 class _Fixture(unittest.TestCase):
     def setUp(self) -> None:
         tmp = TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)
         self.store = CueStore(ChatDatabase(Path(tmp.name) / "chat.db"))
 
+    def _stock(self, *args, **kwargs):
+        payload = dict(kwargs.pop("payload", {}))
+        payload.setdefault("quality", {"version": 1,
+                           "useful_because": "Explore an existing useful curiosity."})
+        return self.store.add(*args, payload=payload, **kwargs)
+
     def _build(
         self,
         *,
         payload: str = _GOOD_PAYLOAD,
         best_sim: float = 0.0,
+        motivate: bool = True,
         **overrides: Any,
     ) -> CuriositySeedWorker:
         self.graph = _StubTopicGraph(best_sim=best_sim)
-        self.ollama = _StubOllama(payload)
+        self.ollama = _StubOllama(_motivated_payload(payload) if motivate else payload)
         self.embedder = _StubEmbedder()
         return CuriositySeedWorker(
             cue_store_provider=lambda: self.store,
@@ -202,7 +229,7 @@ class NoveltyFilterTests(_Fixture):
         # duplicate of pending stock is what it must catch.
         fixed = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         worker._embedder.embed = lambda text: fixed  # type: ignore[assignment]
-        self.store.add(
+        self._stock(
             "curiosity_seed", "placeholder", "placeholder", embedding=fixed,
         )
 
@@ -233,8 +260,8 @@ class DemandTests(_Fixture):
     def test_a_full_shelf_reports_none(self) -> None:
         """max_active stopped being a cap and became the target stock."""
         worker = self._build(curiosity_seed_max_active=2)
-        self.store.add("curiosity_seed", "one", "one")
-        self.store.add("curiosity_seed", "two", "two")
+        self._stock("curiosity_seed", "one", "one")
+        self._stock("curiosity_seed", "two", "two")
         signal = worker.demand(
             now=datetime.now(timezone.utc), last_run_at=None,
         )
@@ -242,8 +269,8 @@ class DemandTests(_Fixture):
 
     def test_spending_a_seed_reopens_demand(self) -> None:
         worker = self._build(curiosity_seed_max_active=2)
-        first = self.store.add("curiosity_seed", "one", "one")
-        self.store.add("curiosity_seed", "two", "two")
+        first = self._stock("curiosity_seed", "one", "one")
+        self._stock("curiosity_seed", "two", "two")
         self.store.mark_used(first, evidence="test")
         signal = worker.demand(
             now=datetime.now(timezone.utc), last_run_at=None,
@@ -296,7 +323,7 @@ class SubjectQuotaTests(_Fixture):
 
     def test_a_pool_already_at_quota_keeps_the_model_order(self) -> None:
         for i in range(4):
-            self.store.add(
+            self._stock(
                 "curiosity_seed", f"own {i}", f"own {i}",
                 payload={"about": "subject"},
             )
@@ -343,12 +370,48 @@ class SubjectQuotaTests(_Fixture):
 
         def _capture(messages, *args: Any, **kwargs: Any):
             captured["system"] = messages[0]["content"]
-            yield _MIXED_PAYLOAD
+            yield _motivated_payload(_MIXED_PAYLOAD)
 
         worker._ollama.chat_stream = _capture  # type: ignore[assignment]
         worker.run()
-        self.assertIn("must be \"subject\" seeds", captured["system"])
+        self.assertIn("never manufacture", captured["system"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MotivationTests(_Fixture):
+    def test_missing_motivation_is_not_filled_in_by_production(self):
+        result = self._build(motivate=False).run()
+        self.assertEqual(result["wrote"], 0)
+        self.assertEqual(self.store.count_pending("curiosity_seed"), 0)
+
+    def test_a_new_angle_on_a_familiar_topic_is_allowed(self):
+        data = json.loads(_motivated_payload(_GOOD_PAYLOAD))
+        data["seeds"] = data["seeds"][:1]
+        data["seeds"][0]["new_angle"] = (
+            "Explore how water temperature changes a familiar tea ritual."
+        )
+        result = self._build(payload=json.dumps(data), best_sim=0.95).run()
+        self.assertEqual(result["wrote"], 1)
+        row = self.store.pending("curiosity_seed")[0]
+        self.assertIn("water temperature", row.payload["quality"]["new_angle"])
+
+    def test_old_generated_seeds_are_retained_but_no_longer_fill_the_shelf(self):
+        old = self.store.add("curiosity_seed", "An unrelated old invented topic", "Old topic",
+                             payload={"source": "llm"})
+        result = self._build().run()
+        self.assertGreater(result["wrote"], 0)
+        previous = next(r for r in self.store.list_for_user() if r.id == old)
+        self.assertEqual(previous.state, "expired")
+        self.assertEqual(previous.used_evidence, "unreviewed_seed_motivation")
+
+    def test_nontext_fields_and_floating_dates_are_refused(self):
+        for change in ({"why": []}, {"inspiration": {}}, {"useful_because": "Explore it tonight"}):
+            with self.subTest(change=change):
+                data = json.loads(_motivated_payload(_GOOD_PAYLOAD))
+                data["seeds"] = data["seeds"][:1]
+                data["seeds"][0].update(change)
+                result = self._build(payload=json.dumps(data), motivate=False).run()
+                self.assertEqual(result["wrote"], 0)

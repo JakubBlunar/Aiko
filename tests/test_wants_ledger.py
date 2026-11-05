@@ -705,6 +705,7 @@ class _FakeCues:
         ) -> None:
             self.id = id
             self.subject = subject
+            self.text = subject
             self.state = state
             self.payload: dict = {}
 
@@ -726,6 +727,11 @@ class _FakeCues:
             r.id for r in self._rows
             if r.id in wanted and r.state in {"used", "superseded"}
         }
+
+    def get(self, cue_id):
+        if self.raises:
+            raise RuntimeError("pool unavailable")
+        return next((row for row in self._rows if row.id == cue_id), None)
 
 
 class _FakeGoals:
@@ -1046,23 +1052,17 @@ class WorkerTests(unittest.TestCase):
             last_growth_at=iso,
         )
 
-    def test_a_seed_the_pool_has_never_heard_of_prunes_nothing(self) -> None:
-        """Silence is not evidence that the subject is settled.
-
-        The pruner used to answer by absence — anything missing from a
-        page of live seeds was retired — so an empty or partial read
-        erased the ledger's curiosity half. It now answers by presence,
-        which makes "I know nothing about this cue" retire nothing.
-        """
+    def test_a_seed_missing_from_exact_source_lookup_retires_the_want(self) -> None:
+        """An exact source read distinguishes deletion from a partial pending page."""
         kv = _KvStore()
         kv.set(wl.KV_WANTS_LEDGER, wl.serialize(_state_with(self._seed_want(1))))
         worker = self._worker(
             kv, cue_store_provider=lambda: _FakeCues(),
         )
         stats = worker.run()
-        self.assertEqual(stats["pruned"], 0)
+        self.assertEqual(stats["pruned"], 1)
         state = wl.deserialize(kv.get(wl.KV_WANTS_LEDGER))
-        self.assertIn("cue:1", {w.source_ref for w in state.wants})
+        self.assertNotIn("cue:1", {w.source_ref for w in state.wants})
 
     def test_keeps_want_when_seed_is_still_pending(self) -> None:
         kv = _KvStore()

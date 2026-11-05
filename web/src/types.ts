@@ -1184,6 +1184,14 @@ export interface HypothesisRow {
   kind: string;
   subject: string;
   rationale: string;
+  quality?: {
+    version?: number;
+    inspiration?: { type?: string; id?: number; text?: string; quote?: string; created_at?: string | null };
+    useful_because?: string;
+    alternative?: string;
+    check_question?: string;
+    raise_when?: string;
+  };
   origin: string;
   origin_refs: number[];
   /** `open` | `supported` | `refuted` | `expired` | `merged` | `graduated`. */

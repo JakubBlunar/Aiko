@@ -129,9 +129,11 @@ class HypothesisResolveMixin:
             if ledger_provider is not None:
                 delivery = ledger_provider().evidence_for(row.payload.get("asked_message_id"))
             belief = str(row.payload.get("label") or "") or row.subject
-            from app.core.concepts.hypothesis_expression import question_span
+            from app.core.concepts.hypothesis_expression import hypothesis_question
 
-            actual_question = question_span(belief, str(row.payload.get("asked_text") or ""))
+            actual_question = hypothesis_question(
+                row.payload, str(row.payload.get("asked_text") or ""), fallback=belief,
+            )
             if not row.payload.get("ask_verified") or not actual_question:
                 store.record_feedback(row.id, "unverified_ask", **event)
                 store.expire(row.id, evidence="unverified_ask")

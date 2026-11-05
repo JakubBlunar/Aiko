@@ -45,6 +45,7 @@ from app.core.proactive.cue_accounting import (
     MATCH_SCOPE_TURN,
     REASON_CADENCE_BLOCK,
     REASON_NO_STOCK,
+    REASON_INELIGIBLE,
     REASON_QUESTION_BALANCE,
     REASON_TOPIC_MISS,
     CuePolicy,
@@ -125,6 +126,7 @@ class CuePoolMixin:
         cue_id: int | None = None,
         claim_block: str | None = None,
         still_valid: Callable[[dict[str, Any]], bool] | None = None,
+        eligible: Callable[[dict[str, Any]], bool] | None = None,
     ) -> "CueRow | None":
         """Claim one pending cue for the prompt, or ``None``.
 
@@ -188,6 +190,31 @@ class CuePoolMixin:
                 )
 
             force = False
+        if cue_type in {"knowledge_gap_notice", "curiosity_gradient"}:
+            from app.core.proactive.topic_exploration import payload_explorable
+
+            source_valid = still_valid
+
+            def still_valid(payload):
+                return ((source_valid is None or source_valid(payload))
+                        and payload_explorable(cue_type, payload,
+                                               getattr(self, "_topic_graph", None)))
+        if cue_type == "associative_wander":
+            previous_eligible = eligible
+
+            def eligible(payload):
+                from app.core.proactive.cue_quality import connection_usable
+
+                return ((previous_eligible is None or previous_eligible(payload))
+                        and connection_usable(payload))
+        if cue_type == "curiosity_seed":
+            prior_eligible = eligible
+
+            def eligible(payload):
+                from app.core.proactive.cue_quality import seed_usable
+
+                return ((prior_eligible is None or prior_eligible(payload))
+                        and seed_usable(payload))
         balance = getattr(self, "_question_balance_suppressed", None)
         if cue_type in CURIOSITY_CUE_TYPES and balance is not None and balance():
             note_decline(self, cue_type, REASON_QUESTION_BALANCE)
@@ -219,6 +246,29 @@ class CuePoolMixin:
                     drop_stopwords=options.drop_stopwords,
                 )[0]
 
+        def hypothesis_source_valid(row):
+            if row.cue_type != "concept_hypothesis":
+                return True
+            from app.core.concepts.hypothesis_quality import cue_target_valid
+
+            return cue_target_valid(row.payload, label=row.subject,
+                                    concepts=getattr(self, "_concept_store", None),
+                                    hypotheses=getattr(self, "_hypothesis_store", None))
+
+        pacing_relevant = row_relevant
+        eligibility_filtered = 0
+
+        def row_relevant(row):
+            # Relevance only chooses among admissible moves. A cosine (or debug
+            # force) must not override source validity or conversational eligibility.
+            nonlocal eligibility_filtered
+            if (not hypothesis_source_valid(row)
+                    or (eligible is not None and not eligible(row.payload))
+                    or (still_valid is not None and not still_valid(row.payload))):
+                eligibility_filtered += 1
+                return False
+            return pacing_relevant is None or pacing_relevant(row)
+
         pick = pick_pool_cue(
             store,
             cue_type,
@@ -233,7 +283,9 @@ class CuePoolMixin:
         row = pick.row
         if row is None or store is None:
             if note_as is not None:
-                if pick.filtered:
+                if eligibility_filtered:
+                    reason = REASON_INELIGIBLE
+                elif pick.filtered:
                     reason = REASON_QUESTION_BALANCE
                 elif pick.held_for_cadence:
                     # The hold shrank the shelf before the gate ran, so
@@ -266,6 +318,10 @@ class CuePoolMixin:
         def commit_claim():
             if store.available(row.id) is None:
                 raise ValueError("cue_unavailable")
+            if not hypothesis_source_valid(row):
+                raise ValueError("cue_source_changed")
+            if eligible is not None and not eligible(row.payload):
+                raise ValueError("cue_ineligible")
             if still_valid is not None and not still_valid(row.payload):
                 raise ValueError("cue_source_changed")
             if not store.mark_surfaced(row.id):
@@ -511,11 +567,9 @@ class CuePoolMixin:
                     self._retire_or_retry(store, row, policy, evidence="not_asked")
                     continue
             if row.cue_type == "concept_hypothesis":
-                from app.core.concepts.hypothesis_expression import question_span
+                from app.core.concepts.hypothesis_expression import hypothesis_question
 
-                asked_text = question_span(
-                    str(row.payload.get("label") or row.subject), assistant_text,
-                )
+                asked_text = hypothesis_question(row.payload, assistant_text, fallback=row.subject)
                 if not asked_text:
                     if was_surfaced:
                         store.record_feedback(
@@ -524,7 +578,7 @@ class CuePoolMixin:
                         )
                         self._retire_or_retry(store, row, policy, evidence="not_asked")
                     continue
-            if not verdict.echoed:
+            if not verdict.echoed and not (row.cue_type == "concept_hypothesis" and asked_text):
                 if was_surfaced:
                     store.record_feedback(
                         row.id, "not_expressed", assistant_message_id=assistant_message_id,

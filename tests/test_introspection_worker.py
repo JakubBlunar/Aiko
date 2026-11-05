@@ -127,7 +127,8 @@ def test_repeated_extraction_cannot_drive_introspection(fixture):
     claim = dict(user_id="u1", kind="opinion", topic="tests", predicted_state="useful")
     beliefs.upsert(**claim)
     beliefs.upsert(**claim)
-    assert worker.run()["excluded"] == {"not_contradicted": 1}
+    assert worker.run()["excluded"] == {}
+    assert beliefs.list_outcomes(user_id="u1") == []
     llm.chat_stream.assert_not_called()
 
 

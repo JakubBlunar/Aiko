@@ -108,6 +108,12 @@ class SurfacingTests(_Fixture):
         host._chat_db = SimpleNamespace(get_messages=lambda session, limit: messages)
         related = self.store.add("curiosity_seed", "laundry folding", "Laundry question")
         unrelated = self.store.add("curiosity_seed", "fish shaped cookies", "Cookie question")
+        for seed in self.store.pending("curiosity_seed"):
+            payload = {**seed.payload, "quality": {"version": 1,
+                       "useful_because": "Explore a concrete way to make laundry easier."}}
+            import json
+            self.store._db.execute_commit("UPDATE cue_pool SET payload = ? WHERE id = ?",
+                                          (json.dumps(payload), seed.id))
         block = host._render_curiosity_seeds_block()
         self.assertIn("laundry folding", block)
         self.assertNotIn("cookies", block)
@@ -669,6 +675,11 @@ class _FakeHypothesis:
     def __init__(self, hid: int) -> None:
         self.hypothesis_id = hid
         self.asked_count = 0
+        self.statement = "walking clears his head"
+        self.is_live = True
+        self.linked_concept_id = None
+        self.support_count = 1
+        self.quality = {}
 
 
 class _FakeHypothesisStore:
@@ -752,17 +763,33 @@ class HypothesisAskStampTests(_Fixture):
 
         self.assertEqual(store.updates, 0)
 
-    def test_a_row_deleted_since_publish_does_not_raise(self) -> None:
+    def test_a_row_deleted_since_publish_cannot_surface(self) -> None:
         self.host._hypothesis_store = _FakeHypothesisStore()
+        cue_id = self._cue(hid=99)
+        self.assertIsNone(self.host.take_pool_cue("concept_hypothesis"))
+        self.assertEqual(self._state(cue_id), "pending")
 
-        cue_id = self._ask(hid=99)
+    def test_no_hypothesis_store_cannot_surface_the_cue(self) -> None:
+        cue_id = self._cue()
+        self.assertIsNone(self.host.take_pool_cue("concept_hypothesis"))
+        self.assertEqual(self._state(cue_id), "pending")
 
-        self.assertEqual(self._state(cue_id), STATE_AWAITING)
-
-    def test_no_hypothesis_store_still_asks_the_cue(self) -> None:
-        cue_id = self._ask()
-
-        self.assertEqual(self._state(cue_id), STATE_AWAITING)
+    def test_nonleading_question_spends_ask_without_confirming_claim(self) -> None:
+        row = _FakeHypothesis(7)
+        self.host._hypothesis_store = _FakeHypothesisStore(row)
+        cue_id = self._cue()
+        self.store.patch_payload(cue_id, {"quality": {
+            "version": 1, "check_question": "What helps you switch out of work mode?",
+        }})
+        self.assertIsNotNone(self.host.take_pool_cue("concept_hypothesis"))
+        self.host._settle_pool_cues(
+            user_text="hey", assistant_text="What helps you switch out of work mode?",
+        )
+        saved = self.store.get(cue_id)
+        self.assertEqual(saved.state, STATE_AWAITING)
+        self.assertEqual(saved.payload["asked_text"], "What helps you switch out of work mode?")
+        self.assertEqual(row.asked_count, 1)
+        self.assertEqual(row.support_count, 1)
 
     def test_topical_statement_and_unrelated_question_do_not_spend_ask(self) -> None:
         for text in (

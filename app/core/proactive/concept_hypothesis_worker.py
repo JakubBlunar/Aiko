@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.cue_producer import CueProducer, StoreProvider
 from app.core.proactive.idle_worker import WorkSignal
+from app.core.concepts.hypothesis_quality import usable_hypothesis, motivation_lines
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
     from app.core.concepts.concept_importance import ImportanceContext
@@ -89,7 +90,7 @@ def render_hypothesis_cue(label: str, subject: str) -> str:
     return (
         f"You've had a hunch {who} that you've never actually checked: "
         f"\"{(label or '').strip()}\". You're not sure enough to say it "
-        "as a fact -- but one honest answer would settle it."
+        "as a fact -- a relevant answer could help clarify it."
     )
 
 
@@ -109,9 +110,10 @@ def render_invented_cue(statement: str, subject: str) -> str:
         "world": "about how something works",
     }.get(str(subject or ""), "about them")
     return (
-        f"Something you've wondered {who}, with nothing behind it but the "
-        f"wondering: \"{(statement or '').strip()}\". You made it up -- so "
-        "hold it lightly, and only if the moment invites it."
+        f"A possibility to explore {who}, not an established observation: "
+        f"\"{(statement or '').strip()}\". Its inspiration explains why you "
+        "wondered, not whether it is true. Only raise it where finding out "
+        "could help the conversation; leave room for another explanation."
     )
 
 
@@ -350,11 +352,11 @@ class ConceptHypothesisWorker:
         pool = [
             row
             for row in rows
-            if force
+            if usable_hypothesis(row) and (force
             or (
                 int(getattr(row, "asked_count", 0) or 0) <= 0
                 and f"hypothesis:{int(row.hypothesis_id)}" not in claimed
-            )
+            ))
         ]
         if not pool:
             return []
@@ -396,7 +398,9 @@ class ConceptHypothesisWorker:
         subject = str(row.subject or "user")
         cue_id = self._cues.publish(
             statement,
-            render_invented_cue(statement, subject),
+            render_invented_cue(statement, subject)
+            + (f"\nWhy it occurred: {row.rationale}" if row.rationale else "")
+            + "\n" + motivation_lines(row.quality),
             payload={
                 "target_type": "hypothesis",
                 "target_id": int(row.hypothesis_id),
@@ -407,6 +411,7 @@ class ConceptHypothesisWorker:
                 "kind": str(row.kind or ""),
                 "subject": subject,
                 "origin": "invented",
+                "quality": dict(row.quality),
                 "credence": round(float(row.credence), 4),
                 # The gap path gates on this and reads a missing key as
                 # 0.0, so omitting it made every invented cue unreachable

@@ -232,7 +232,7 @@ class ProviderTests(unittest.TestCase):
         self._seed(host)
         out = host._render_knowledge_gap_notice_block("how do I debug python?")
         self.assertIn("python", out.lower())
-        self.assertIn("keeps coming up", out)
+        self.assertIn("coverage signal", out)
 
     def test_not_relevant_returns_blank(self) -> None:
         host = _Host()

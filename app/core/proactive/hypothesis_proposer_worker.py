@@ -65,19 +65,20 @@ import re
 import threading
 import time
 from datetime import datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 import numpy as np
 
 from app.core.concepts.hypothesis_store import (
     Hypothesis,
-    ORIGINS,
-    ORIGIN_BELIEF_OUTCOME,
-    ORIGIN_FREE,
     SUBJECT_WORLD,
 )
 from app.core.infra import timephrase
 from app.core.proactive.idle_worker import WorkSignal
+from app.core.concepts.hypothesis_quality import validate_proposal, usable_hypothesis
+from app.core.memory.memory_origin import memory_origin
+from app.core.proactive.worker_prompt_budget import pack_worker_prompt
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
     from app.core.concepts.concept_store import ConceptStore
@@ -92,59 +93,56 @@ log = logging.getLogger("app.hypothesis_proposer_worker")
 
 
 _SYSTEM_PROMPT = (
-    "You are the speculative faculty of an AI companion named "
-    "{assistant_name}. Your job is to invent HYPOTHESES: things that "
-    "might be true about {user_name}, about {assistant_name} herself, "
-    "about the two of them, or about how something in the world works. "
-    "A hypothesis is a guess, not a summary. Do NOT restate anything in "
-    "the WHAT SHE ALREADY BELIEVES list -- go one step beyond it, or "
-    "sideways from it, or somewhere else entirely. Reaching is the point; "
-    "being wrong is allowed and useful, because she will find out.\n"
-    "Prefer specific and checkable over grand and vague: \"he tidies his "
-    "desk when a project is about to change direction\" beats \"he values "
-    "order\". Write each statement as a plain declarative sentence, not a "
-    "question.\n"
-    "WHAT {assistant_name} IS, when you guess about her: she has a body "
-    "and an apartment of her own, and an energy level that rises and "
-    "falls through the day. She is NOT a machine and has no hardware -- "
-    "no chassis, no fans, no circuits, no processing latency, no "
-    "servers, no memory subsystem she can feel. A guess about her is "
-    "about her inner life, her habits, what she notices, what she wants, "
-    "how she is with him -- the same kinds of things you would guess "
-    "about a person.\n"
-    "{user_name} is on the other end of a chat, never in the room with "
-    "her. Do not guess about anything that would require her to see, "
-    "hear or be near him.\n"
-    "Reply with ONE JSON object on a single line and nothing else. "
-    "Schema: {{\"hypotheses\": [{{\"statement\": \"<= 160 chars, "
-    "declarative\", \"kind\": one of [{kinds}], \"subject\": one of "
-    "[user, aiko, relationship, world], \"rationale\": \"<= 120 chars, "
-    "why you suspect it\", \"credence\": 0.0-1.0 how likely you think it "
-    "is}}, ...] }}. Return between {min_n} and {max_n} entries."
+    "You are {assistant_name}'s speculative faculty. A hypothesis is a useful "
+    "possibility to explore, not a fact or a summary. You may reach beyond "
+    "established concepts: concepts are NOT required evidence. Start with an "
+    "actual offered memory or topic as inspiration, then make one intelligible "
+    "leap. The inspiration explains why you wondered; it does NOT prove the guess.\n"
+    "Zero is normal. Do not fill inventory, restate familiar affection, or choose "
+    "something merely because it sounds unusual. Ask what finding out would change: "
+    "a response, a practical choice, a shared activity, or a specific understanding. "
+    "A playful idea is welcome when its connection and value are clear.\n"
+    "Do not fabricate hidden belongings, private notebooks, exact pauses, bodily "
+    "signs you cannot observe, subconscious motives, or devices in her apartment. "
+    "Do not turn metaphor or imagined closeness into physical observations of "
+    "{user_name}. They are on the other end of a chat, never in the room with "
+    "her. {assistant_name} has her "
+    "own body and an apartment of her own, not computer hardware: no chassis, "
+    "no fans or circuits. Her energy and moods can "
+    "inspire wondering, but do not invent possessions or events as explanations.\n"
+    "Name people and concrete subjects clearly. Keep qualifications. Distinguish "
+    "mixed feelings from contradiction. Describe a possibility that an ordinary, "
+    "non-leading answer or experience could clarify. Another explanation must "
+    "remain possible. A generic request to confirm your insight is not useful.\n"
+    "Return ONE JSON object {{\"hypotheses\": [...]}} with zero to TWO entries: "
+    "statement (complete declarative possibility, <=300 chars), kind (one of "
+    "{kinds}), subject (user, aiko, relationship, world), rationale (<=400 chars, "
+    "the actual connection rather than an invented observation), credence (0-1, "
+    "uncertainty only), inspiration ({{\"type\": \"memory\" or \"topic\", \"id\": "
+    "an offered integer id, \"quote\": a literal 8-200 character span from that "
+    "offered inspiration}}), useful_because (what finding out could improve), "
+    "alternative (a plausible competing explanation), check_question (one "
+    "concrete, non-leading possible question ending '?'), raise_when (a matching "
+    "situation; a lull alone is insufficient). Each extra field <=300 chars. "
+    "Invented objects or inaccessible observations are not a way to add depth. "
+    "Output {{\"hypotheses\": []}} if none would be worth raising."
 )
-
 
 _USER_TEMPLATE = (
-    "WHAT SHE ALREADY BELIEVES (do not restate these):\n{concepts}\n\n"
-    "RECENT MOMENTS:\n{memories}\n\n"
-    "TOPICS THEY LIVE IN:\n{clusters}\n\n"
-    "GUESSES SHE IS ALREADY SITTING WITH (do not duplicate):\n"
-    "{open_hypotheses}\n\n"
-    "Invent new hypotheses now."
+    "KNOWN CONCEPT BASELINE (do not restate; never confirmation of a guess):\n{concepts}\n\n"
+    "DATED INSPIRATIONS (context, not proof):\n{inspirations}\n\n"
+    "EARLIER GUESSES (avoid paraphrases):\n{open_hypotheses}\n\n"
+    "Propose at most two useful possibilities, or none."
 )
-
-
-_MIN_N = 2
-_MAX_N = 4
-# Roomy for the same reason the curiosity seed budget is: a reasoning
-# model can spend a large, variable visible preamble before the JSON.
-_MAX_TOKENS = 900
+_MIN_N = 0
+_MAX_N = 2
+_MAX_TOKENS = 1600
 _MAX_CONCEPTS = 12
 _MAX_MEMORIES = 8
 _MAX_CLUSTERS = 8
 _MAX_OPEN_LIST = 10
-_MAX_STATEMENT_CHARS = 200
-_MAX_RATIONALE_CHARS = 200
+_MAX_STATEMENT_CHARS = 300
+_MAX_RATIONALE_CHARS = 400
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 
@@ -249,6 +247,7 @@ class HypothesisProposerWorker:
         evict_when_full: bool = True,
         evict_min_age_hours: float = 168.0,
         clock: Callable[[], datetime] | None = None,
+        context_window: Callable[[], int | None] | None = None,
     ) -> None:
         self._hypotheses = hypothesis_store_provider
         self._concepts = concept_store_provider
@@ -270,6 +269,9 @@ class HypothesisProposerWorker:
         self._evict_when_full = bool(evict_when_full)
         self._evict_min_age_hours = max(1.0, float(evict_min_age_hours))
         self._clock = clock or timephrase.utcnow
+        self._context_window = context_window or (lambda: None)
+        self._inspirations: dict[tuple[str, int], dict[str, Any]] = {}
+        self._offered_inspirations: dict[tuple[str, int], dict[str, Any]] = {}
 
     # ── IdleWorker protocol ───────────────────────────────────────────
 
@@ -311,6 +313,10 @@ class HypothesisProposerWorker:
             return WorkSignal(pressure=0.0, reason="no_store")
         shortfall = max(0, self._max_open - live)
         if shortfall <= 0:
+            if any(not usable_hypothesis(h) and h.asked_count <= 0
+                   for h in store.list_by(live=True)):
+                return WorkSignal(pressure=min(1.0, 1.0 / self._max_open),
+                                  reason="unreviewed_stock", needs_llm=True)
             if self._evictable(store) is None:
                 return WorkSignal(pressure=0.0, reason="shelf_full")
             return WorkSignal(
@@ -334,6 +340,7 @@ class HypothesisProposerWorker:
             return {"skipped": True, "reason": "cancelled_before_start"}
 
         expired = self._expire(store)
+        retired = self._retire_unreviewed(store)
 
         live = self._count_live(store)
         room = self._max_open - live
@@ -383,9 +390,17 @@ class HypothesisProposerWorker:
         rejected_dup = 0
         rejected_known = 0
         rejected_machine = 0
+        rejected_quality = 0
+        quality_faults: dict[str, int] = {}
         for candidate in candidates:
             if len(wrote) >= budget:
                 break
+            quality, fault = self._proposal_quality(candidate)
+            if fault:
+                rejected_quality += 1
+                quality_faults[fault] = quality_faults.get(fault, 0) + 1
+                continue
+            candidate["quality"] = quality
             statement = _trim(
                 candidate.get("statement"), max_chars=_MAX_STATEMENT_CHARS
             )
@@ -484,12 +499,29 @@ class HypothesisProposerWorker:
             "rejected_duplicate": rejected_dup,
             "rejected_already_believed": rejected_known,
             "rejected_machine_self": rejected_machine,
+            "rejected_quality": rejected_quality,
+            "quality_faults": quality_faults,
+            "retired_unreviewed": retired,
             "expired": expired,
             "llm_ms": int(llm_ms),
         }
         if evicted:
             out["evicted"] = evicted
         return out
+
+    def _proposal_quality(self, candidate):
+        return validate_proposal(candidate, self._offered_inspirations)
+
+    def _retire_unreviewed(self, store):
+        """The ordinary invention shelf yields before new motivated ideas."""
+        from app.core.concepts.hypothesis_store import STATUS_EXPIRED
+
+        retired = 0
+        for old in store.list_by(live=True):
+            if not usable_hypothesis(old) and old.asked_count <= 0:
+                store.close(old, status=STATUS_EXPIRED)
+                retired += 1
+        return retired
 
     # ── shelf space ───────────────────────────────────────────────────
 
@@ -652,9 +684,9 @@ class HypothesisProposerWorker:
         subject = str(candidate.get("subject") or "user")
         if subject not in _SUBJECTS:
             subject = "user"
-        origin = str(candidate.get("origin") or ORIGIN_FREE)
-        if origin not in ORIGINS or origin == ORIGIN_BELIEF_OUTCOME:
-            origin = ORIGIN_FREE
+        quality = candidate["quality"]
+        inspiration = quality["inspiration"]
+        origin = "memory" if inspiration["type"] == "memory" else "extrapolation"
         row = Hypothesis(
             statement=statement,
             kind=str(candidate.get("kind") or "identity"),
@@ -662,7 +694,7 @@ class HypothesisProposerWorker:
             rationale=_trim(
                 candidate.get("rationale"), max_chars=_MAX_RATIONALE_CHARS
             ),
-            origin=origin,
+            origin=origin, origin_refs=[inspiration["id"]], quality=quality,
             credence=_clamp(candidate.get("credence"), default=0.5),
             embedding=np.asarray(vec, dtype=np.float32).ravel(),
         )
@@ -715,15 +747,38 @@ class HypothesisProposerWorker:
         if store is None:
             return "(none)"
         try:
-            rows = store.list_recent(limit=_MAX_MEMORIES)
+            rows = store.list_recent(limit=_MAX_MEMORIES * 4)
         except Exception:
             log.debug("memory recent failed", exc_info=True)
             return "(none)"
-        lines = [
-            f"- {_trim(getattr(row, 'content', ''), max_chars=140)}"
-            for row in (rows or [])
-            if getattr(row, "content", "")
-        ]
+        lines = []
+        for row in rows or []:
+            origin = memory_origin(row)
+            if origin.mode in {"hypothetical", "question", "summary", "unknown"}:
+                continue
+            mid = getattr(row, "id", None)
+            content = getattr(row, "content", "")
+            if type(mid) is not int or not isinstance(content, str) or not content.strip():
+                continue
+            meta = getattr(row, "metadata", None) or {}
+            if meta.get("superseded_by") or meta.get("consolidated_into"):
+                continue
+            content = " ".join(content.splitlines()).strip()
+            if len(content) > 1000:
+                continue  # Do not sever qualifications just to fit more sources.
+            note = SimpleNamespace(content=content,
+                                   created_at=getattr(row, "created_at", None),
+                                   temporal_type=getattr(row, "temporal_type", None),
+                                   event_time=getattr(row, "event_time", None))
+            rendered = timephrase.format_memory_block([note], self._clock())
+            receipt = {"type": "memory", "id": mid, "text": content,
+                       "created_at": getattr(row, "created_at", None),
+                       "subject": origin.subject, "mode": origin.mode}
+            self._inspirations[("memory", mid)] = receipt
+            stamp = getattr(row, "created_at", None) or "date unknown"
+            lines.append(f"[memory:{mid}; {origin.subject}/{origin.mode}; {stamp}] {rendered}")
+            if len(lines) >= _MAX_MEMORIES:
+                break
         return "\n".join(lines) if lines else "(none)"
 
     def _clusters_block(self) -> str:
@@ -743,10 +798,16 @@ class HypothesisProposerWorker:
         if not clusters:
             return "(none)"
         ordered = sorted(clusters, key=lambda c: (-c.size, c.cluster_id))
-        lines = [
-            f"- {_trim(c.summary or '(unnamed)', max_chars=100)}"
-            for c in ordered[:_MAX_CLUSTERS]
-        ]
+        lines = []
+        for c in ordered[:_MAX_CLUSTERS]:
+            label = str(c.summary or "").strip()
+            if not label:
+                continue
+            self._inspirations[("topic", int(c.cluster_id))] = {
+                "type": "topic", "id": int(c.cluster_id), "text": label[:300],
+                "subject": "topic context", "mode": "summary, not an observation",
+            }
+            lines.append(f"[topic:{int(c.cluster_id)}; theme, not fact] {label[:300]}")
         return "\n".join(lines) if lines else "(none)"
 
     def _open_block(self, store: "HypothesisStore") -> str:
@@ -766,38 +827,58 @@ class HypothesisProposerWorker:
     def _call_llm(self, store: "HypothesisStore") -> list[dict[str, Any]]:
         from app.core.concepts.concept_kinds import CONCEPT_KINDS
 
-        system = _SYSTEM_PROMPT.format(
-            assistant_name=self._assistant_name(),
-            user_name=self._user_name(),
-            kinds=", ".join(sorted(CONCEPT_KINDS)),
-            min_n=_MIN_N,
-            max_n=_MAX_N,
-        )
-        user_payload = _USER_TEMPLATE.format(
-            concepts=self._concepts_block(),
-            memories=self._memories_block(),
-            clusters=self._clusters_block(),
-            open_hypotheses=self._open_block(store),
-        )
+        self._inspirations = {}
+        self._offered_inspirations = {}
+        system = (timephrase.today_anchor(self._clock()) + "\n\n"
+                  + _SYSTEM_PROMPT.format(assistant_name=self._assistant_name(),
+                                          user_name=self._user_name(),
+                                          kinds=", ".join(sorted(CONCEPT_KINDS)))
+                  + "\n\n" + timephrase.STORED_TEXT_TIME_RULE)
+        sources = (self._memories_block() + "\n" + self._clusters_block()).splitlines()
+        sources = [line for line in sources if line.startswith(("[memory:", "[topic:"))]
+        if not sources:
+            return []
+        concepts, guesses = self._concepts_block(), self._open_block(store)
+
+        def render(selected):
+            return [{"role": "system", "content": system}, {"role": "user", "content":
+                _USER_TEMPLATE.format(concepts=concepts, inspirations="\n".join(selected),
+                                      open_hypotheses=guesses)}]
+
+        packed = None
+        for _ in range(3):
+            packed = pack_worker_prompt(sources, render, context_window=self._context_window(),
+                                        output_tokens=_MAX_TOKENS + max(
+                                            0, int(getattr(self._ollama, "_think_headroom", 0))),
+                                        surface="hypothesis_proposer_worker", log=log)
+            if packed is not None:
+                break
+            if guesses != "(omitted for evidence budget)":
+                guesses = "(omitted for evidence budget)"
+            else:
+                concepts = "(omitted for evidence budget)"
+        if packed is None:
+            return []
+        for source in sources[:packed.item_count]:
+            match = re.match(r"\[(memory|topic):(\d+);", source)
+            if match is None:
+                continue
+            key = (match[1], int(match[2]))
+            if key in self._inspirations:
+                self._offered_inspirations[key] = self._inspirations[key]
         chunks: list[str] = []
         try:
             stream = self._ollama.chat_stream(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_payload},
-                ],
+                packed.messages,
                 options={
                     "num_predict": _MAX_TOKENS,
-                    # Hotter than the other maintenance passes. Every
-                    # other worker wants the most defensible reading of
-                    # its inputs; this one wants a reach, and a cautious
-                    # guess is a paraphrase of something she already
-                    # believes -- which the novelty gate then rejects.
-                    "temperature": 0.95,
+                    # Keep creative latitude while the motivation/alternative
+                    # contract and novelty gates decide whether a leap is useful.
+                    "temperature": 0.75,
                 },
                 model=self._chat_model,
                 stop_event=self._cancel_event,
-                format_json=True,
+                format_json=True, think=True,
                 surface="hypothesis_proposer_worker",
             )
             for chunk in stream:
@@ -827,19 +908,7 @@ class HypothesisProposerWorker:
         for entry in entries[:_MAX_N]:
             if not isinstance(entry, dict):
                 continue
-            statement = str(entry.get("statement") or "").strip()
-            if not statement:
-                continue
-            out.append(
-                {
-                    "statement": statement,
-                    "kind": str(entry.get("kind") or "identity").strip(),
-                    "subject": str(entry.get("subject") or "user").strip(),
-                    "rationale": str(entry.get("rationale") or "").strip(),
-                    "credence": entry.get("credence"),
-                    "origin": str(entry.get("origin") or ORIGIN_FREE).strip(),
-                }
-            )
+            out.append(dict(entry))
         return out
 
     # ── plumbing ──────────────────────────────────────────────────────

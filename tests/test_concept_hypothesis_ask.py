@@ -278,6 +278,11 @@ class InventedPoolTests(_WorkerFixture):
 
         row = Hypothesis(
             statement=statement,
+            quality={"version": 1, "inspiration": {"type": "memory", "id": 1},
+                     "useful_because": "Choose a better response.",
+                     "alternative": "A different preference may apply.",
+                     "check_question": "What would help in this situation?",
+                     "raise_when": "Discussing the same activity."},
             kind=kind,
             credence=credence,
             support_count=support,
@@ -311,7 +316,7 @@ class InventedPoolTests(_WorkerFixture):
 
         self._worker().run()
 
-        self.assertIn("made it up", self._pool()[0].text)
+        self.assertIn("not an established observation", self._pool()[0].text)
 
     def test_the_cue_carries_the_importance_it_was_ranked_on(self) -> None:
         """The gap path reads ``importance`` and treats a missing key as
@@ -503,6 +508,11 @@ class RateMatchTests(_WorkerFixture):
         for i in range(3):
             self.hypotheses.add(
                 Hypothesis(
+                    quality={"version": 1, "inspiration": {"type": "memory", "id": 1},
+                    "useful_because": "Choose an appropriate response in a matching exchange.",
+                    "alternative": "The user may want another approach.",
+                    "check_question": "What would be helpful in this situation?",
+                    "raise_when": "Discussing the same activity."},
                     statement=f"guess {i}",
                     kind="taste",
                     credence=0.4,
@@ -580,7 +590,7 @@ class CueTextTests(unittest.TestCase):
         text = render_invented_cue("Jacob would take to sailing", "user")
 
         self.assertIn("Jacob would take to sailing", text)
-        self.assertIn("nothing behind it", text)
+        self.assertIn("not an established observation", text)
         self.assertNotIn("noticed", text)
 
     def test_the_subject_changes_who_it_is_about(self) -> None:
@@ -623,6 +633,11 @@ class _Host(CuePoolMixin, InnerLifeProvidersMixin):
         lane_claimed: set[int] | None = None,
     ) -> None:
         self._cue_store = store
+        self._concept_store = SimpleNamespace(get=lambda cid: next((
+            SimpleNamespace(label=r.payload.get("label"), status="candidate")
+            for r in store.list_for_user() if r.payload.get("target_id") == cid
+            and r.payload.get("target_type", "concept") == "concept"
+        ), None))
         self._surfaced_pool_cues: list = []
         self._cue_pool_listeners: list = []
         self._embedder = None
@@ -728,20 +743,18 @@ class TopicPathTests(_ProviderFixture):
 
 
 class GapPathTests(_ProviderFixture):
-    def test_a_long_gap_raises_a_weighty_belief(self) -> None:
+    def test_a_long_gap_alone_does_not_make_a_weighty_hunch_relevant(self) -> None:
         cue_id = self._queue(importance=0.8)
         host = _Host(self.store, pending_seconds=9 * 3600.0)
 
-        self.assertIn(
-            "Jacob walks to think", host._render_concept_hypothesis_block(""),
-        )
-        self.assertEqual(self._state(cue_id), "surfaced")
+        self.assertEqual(host._render_concept_hypothesis_block(""), "")
+        self.assertEqual(self._state(cue_id), "pending")
 
-    def test_the_gap_path_spends_the_gap_slot(self) -> None:
+    def test_an_unrelated_hunch_does_not_spend_the_gap_slot(self) -> None:
         self._queue()
         host = _Host(self.store, pending_seconds=9 * 3600.0)
         host._render_concept_hypothesis_block("")
-        self.assertTrue(host._gap_cue_surfaced)
+        self.assertFalse(host._gap_cue_surfaced)
 
     def test_it_defers_to_every_other_gap_cue(self) -> None:
         # Last in ``GAP_CUE_ORDER``: raising a belief about someone out of
@@ -784,7 +797,8 @@ class GapPathTests(_ProviderFixture):
         self._queue("Jacob keeps odd hours", concept_id=2)
         host = _Host(self.store, pending_seconds=9 * 3600.0)
 
-        self.assertNotEqual(host._render_concept_hypothesis_block(""), "")
+        self.assertEqual(host._render_concept_hypothesis_block(""), "")
+        self.assertIsNone(host._pending_concept_hypothesis_seconds)
         host._gap_cue_surfaced = False
         self.assertEqual(host._render_concept_hypothesis_block(""), "")
 
@@ -882,3 +896,55 @@ class EmptyPoolTests(_ProviderFixture):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class SourceEligibilityTests(_ProviderFixture):
+    def test_force_cannot_resurrect_a_settled_source(self):
+        cid = self._queue("A walk helps with deciding on a project")
+        host = _Host(self.store)
+        host._concept_store = SimpleNamespace(get=lambda _: SimpleNamespace(
+            status="active", label="A walk helps with deciding on a project"))
+        host._debug_overrides.arm("concept_hypothesis_force_next", True)
+        self.assertEqual(host._render_concept_hypothesis_block("walk project"), "")
+        self.assertEqual(self.store.available(cid).surfaced_count, 0)
+
+    def test_cosine_cannot_bypass_another_lane_claiming_the_same_question(self):
+        cid = self._queue("A walk helps with deciding on a project", concept_id=4)
+        vec = np.array([1.0, 0.0], dtype=np.float32)
+        self.store._db.execute_commit("UPDATE cue_pool SET embedding = ? WHERE id = ?",
+                                      (vec.tobytes(), cid))
+        host = _Host(self.store, lane_claimed={4})
+        host._topic_rank_inputs = lambda _: (vec, 0.1)
+        self.assertEqual(host._render_concept_hypothesis_block("A walk for this project"), "")
+        self.assertEqual(self.store.available(cid).surfaced_count, 0)
+
+    def test_changed_source_wording_does_not_surface_a_stale_question(self):
+        cid = self._queue("A walk helps with deciding on a project")
+        host = _Host(self.store)
+        host._concept_store = SimpleNamespace(get=lambda _: SimpleNamespace(
+            status="candidate", label="A revised reading about choosing a project"))
+        self.assertEqual(host._render_concept_hypothesis_block("A walk for this project"), "")
+        self.assertEqual(self.store.available(cid).surfaced_count, 0)
+
+
+class MotivatedGapTests(_ProviderFixture):
+    def test_a_related_inspiration_can_bridge_to_a_new_idea(self):
+        statement = "A short walk might help organise tangled thoughts"
+        quality = {
+            "version": 1, "inspiration": {"type": "memory", "id": 1,
+                "text": "The user described a project becoming difficult to organise."},
+            "useful_because": "Offer a different way to approach a project transition.",
+            "alternative": "A small outline might be preferable to a break.",
+            "check_question": "What helps when a project gets tangled?",
+            "raise_when": "Discussing how to reorganise a project.",
+        }
+        row = SimpleNamespace(statement=statement, is_live=True, linked_concept_id=None,
+                              asked_count=0, support_count=0, quality=quality)
+        cid = self.store.add("concept_hypothesis", statement, "A possible way to untangle thoughts",
+                             payload={"target_type": "hypothesis", "target_id": 33,
+                                      "label": statement, "importance": 0.8, "quality": quality})
+        host = _Host(self.store, pending_seconds=9 * 3600.0)
+        host._hypothesis_store = SimpleNamespace(get=lambda _: row)
+        block = host._render_concept_hypothesis_block("This project needs reorganising")
+        self.assertIn("possible way", block)
+        self.assertEqual(self._state(cid), "surfaced")

@@ -1773,8 +1773,8 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if text or force_next:
             row = self.take_pool_cue(
                 "concept_hypothesis",
-                relevant=lambda payload: _unclaimed(payload)
-                and topic_relevant(
+                eligible=_unclaimed,
+                relevant=lambda payload: topic_relevant(
                     str(payload.get("label") or ""),
                     text,
                     options=self._topic_gate_options(),
@@ -1840,11 +1840,21 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         saw_light = False
         saw_claimed = False
         saw_unreadable = 0
+        saw_context_miss = False
 
         def _weighty(payload: dict[str, Any]) -> bool:
-            nonlocal saw_light, saw_claimed, saw_unreadable
+            nonlocal saw_light, saw_claimed, saw_unreadable, saw_context_miss
             if not _unclaimed(payload):
                 saw_claimed = True
+                return False
+            quality = payload.get("quality") or {}
+            inspiration = (quality.get("inspiration") or {}) if isinstance(quality, dict) else {}
+            surfaces = [str(payload.get("label") or "")]
+            if isinstance(inspiration, dict):
+                surfaces.append(str(inspiration.get("text") or ""))
+            if not text or not any(topic_relevant(s, text, options=self._topic_gate_options())
+                                   for s in surfaces if s):
+                saw_context_miss = True
                 return False
             weight = cue_importance(payload)
             if weight is None:
@@ -1860,7 +1870,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
 
         row = self.take_pool_cue(
             "concept_hypothesis",
-            relevant=None if force_next else _weighty,
+            eligible=_unclaimed if force_next else _weighty,
             force=force_next,
             note_as=None,
         )
@@ -1876,6 +1886,8 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 reason = REASON_IMPORTANCE_FLOOR
             elif saw_claimed:
                 reason = REASON_CROSS_LANE
+            elif saw_context_miss:
+                reason = REASON_TOPIC_MISS
             elif self._cadence_blocked("concept_hypothesis"):
                 reason = REASON_CADENCE_BLOCK
             else:

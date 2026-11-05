@@ -66,3 +66,21 @@ def question_span(belief: str, reply: str) -> str:
         if len(overlap) >= min(2, len(target)) and len(text) <= 1000:
             return reply[start:match.end()].strip()
     return ""
+
+
+def hypothesis_question(payload: dict, reply: str, *, fallback: str = "") -> str:
+    """Verify the claim or its declared concrete exploration question.
+
+    A useful non-leading question need not repeat the guessed explanation. This
+    identifies what was asked; it says nothing about whether an answer confirms
+    the guess. The answer adjudicator still sees both the claim and the question.
+    """
+    label = str(payload.get("label") or fallback)
+    direct = question_span(label, reply)
+    if direct:
+        return direct
+    quality = payload.get("quality")
+    if not isinstance(quality, dict) or quality.get("version") != 1:
+        return ""
+    check = quality.get("check_question")
+    return question_span(check, reply) if isinstance(check, str) else ""

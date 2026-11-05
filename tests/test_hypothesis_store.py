@@ -350,3 +350,18 @@ class ExpiryTests(_Fixture):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class MotivationMigrationTests(_Fixture):
+    def test_v47_upgrade_preserves_legacy_data_without_inventing_motivation(self):
+        original = self._add("A legacy guess remains available for review")
+        self.db.execute_commit("ALTER TABLE hypotheses DROP COLUMN quality")
+        self.db.execute_commit("UPDATE schema_version SET version = 47")
+        upgraded = ChatDatabase(self.path)
+        store = HypothesisStore(upgraded)
+        store.load_all()
+        row = store.get(original.hypothesis_id)
+        self.assertEqual(row.statement, original.statement)
+        self.assertEqual(row.status, original.status)
+        self.assertEqual(row.created_at, original.created_at)
+        self.assertEqual(row.quality, {})

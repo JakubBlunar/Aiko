@@ -318,10 +318,12 @@ def render_wander_cue(entry: dict[str, Any]) -> str:
     a = str(entry.get("topic_a") or "").strip()
     b = str(entry.get("topic_b") or "").strip()
     connection = str(entry.get("connection") or "").strip()
+    value = str(entry.get("useful_because") or "").strip()
+    implication = f" Possible use: {value}." if value else ""
     return (
         "Heads-up: while your mind was wandering earlier you noticed a "
         f"connection between \"{a}\" and \"{b}\" — {connection}. The live "
-        "turn just brushed one of them."
+        f"turn just brushed one of them.{implication}"
     )
 
 
@@ -399,13 +401,24 @@ class AssociativeWanderWorker:
         """Pressure from an empty shelf. Always an LLM run when admitted."""
         if not self._enabled():
             return WorkSignal(pressure=0.0, reason="disabled")
-        return self._cues.demand(needs_llm=True)
+        from app.core.proactive.cue_quality import inventory_demand, connection_usable
+
+        return inventory_demand(self._cues, connection_usable, needs_llm=True)
 
     def run(self) -> dict[str, Any]:
         force = self._force_next
         self._force_next = False
         if not self._enabled():
             return {"drafted": 0, "disabled": True}
+        store = self._cues.store()
+        if store is not None:
+            for old in self._cues.stock_rows(limit=200):
+                from app.core.proactive.cue_quality import connection_usable
+
+                if not connection_usable(old.payload):
+                    store.expire(old.id, evidence="unreviewed_connection_value")
+        if not force and self._cues.stock() >= self._cues.inventory_target:
+            return {"drafted": 0, "stocked": True}
 
         now = _utcnow()
         if not force and not self._cooldown_elapsed(now):
@@ -436,6 +449,7 @@ class AssociativeWanderWorker:
 
         members_a = self._member_snippets(graph, chosen.cluster_id_a)
         members_b = self._member_snippets(graph, chosen.cluster_id_b)
+        self._connection_value = ""
         connection = self._compose_connection(chosen, members_a, members_b)
         if not connection:
             # Mark the pair on cooldown anyway so a genuinely unconnectable
@@ -454,6 +468,7 @@ class AssociativeWanderWorker:
             "topic_b": chosen.label_b[:200],
             "pair_key": chosen.key,
             "connection": connection,
+            "useful_because": getattr(self, "_connection_value", ""),
         }
         append_wander(
             self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
@@ -556,7 +571,15 @@ class AssociativeWanderWorker:
             )
             if len(text) > _MEMBER_SNIPPET_CHARS:
                 text = text[: _MEMBER_SNIPPET_CHARS - 1].rsplit(" ", 1)[0] + "…"
-            out.append(text)
+            from types import SimpleNamespace
+            from app.core.memory.memory_origin import memory_origin
+
+            origin = memory_origin(mem)
+            if origin.mode in {"hypothetical", "question", "summary", "unknown"}:
+                continue
+            note = SimpleNamespace(content=text, created_at=getattr(mem, "created_at", None))
+            dated = timephrase.format_memory_block([note], _utcnow())
+            out.append(f"[{origin.subject}/{origin.mode}] {dated}")
         return out
 
     # ── connection composition (worker LLM) ───────────────────────────
@@ -594,17 +617,22 @@ class AssociativeWanderWorker:
                     {
                         "role": "system",
                         "content": (
+                            timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE
+                            + "\nDo not claim an imagined event was observed. A shared word "
+                            "or generic feeling is not an interesting connection. Name "
+                            "one concrete implication worth sharing; it can be playful. "
                             "Reply with JSON only: "
                             '{"connects": <bool>, "connection": "<one short '
                             "first-person observation linking the two, <= 200 "
-                            'chars, no preamble>"}. Set connects=false and '
+                            'chars, no preamble>", "useful_because": "<one concrete '
+                            'implication, <=240 chars>"}. Set connects=false and '
                             'connection="" when there is no honest connection.'
                         ),
                     },
                     {"role": "user", "content": prompt},
                 ],
                 model=self._model,
-                options={"temperature": 0.85, "num_predict": 120},
+                options={"temperature": 0.85, "num_predict": 240},
                 format_json=True,
                 surface="associative_wander",
             )
@@ -617,9 +645,17 @@ class AssociativeWanderWorker:
             return ""
         if not isinstance(blob, dict):
             return ""
-        if blob.get("connects") is False:
+        if blob.get("connects") is not True:
             return ""
-        line = str(blob.get("connection") or "").strip()
+        line = blob.get("connection")
+        value = blob.get("useful_because")
+        if (not isinstance(line, str) or not isinstance(value, str)
+                or len(line.strip()) < 12 or not 12 <= len(value.strip()) <= 240
+                or timephrase.has_relative_deictic(line)
+                or timephrase.has_relative_deictic(value)):
+            return ""
+        line = line.strip()
+        self._connection_value = value.strip()
         if len(line) > 240:
             line = line[:237].rsplit(" ", 1)[0] + "…"
         return line

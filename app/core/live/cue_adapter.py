@@ -135,6 +135,17 @@ class CueUrgeAdapter:
     @staticmethod
     def _eligible(row: Any) -> bool:
         cue_type = str(getattr(row, "cue_type", "") or "")
+        from app.core.proactive.cue_quality import seed_usable, connection_usable
+        from app.core.proactive.topic_exploration import payload_explorable
+
+        payload = getattr(row, "payload", None) or {}
+        if cue_type == "curiosity_seed" and not seed_usable(payload):
+            return False
+        if cue_type == "associative_wander" and not connection_usable(payload):
+            return False
+        if cue_type in {"knowledge_gap_notice", "curiosity_gradient"}:
+            if not payload_explorable(cue_type, payload):
+                return False
         policy = policy_for(cue_type)
         last = getattr(row, "last_surfaced_at", None)
         if policy is None or not last:

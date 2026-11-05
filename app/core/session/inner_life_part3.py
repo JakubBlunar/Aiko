@@ -1380,9 +1380,14 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             return ""
         if self._question_balance_suppressed():
             return ""
+        from app.core.proactive.cue_quality import seed_usable
+
         rendered: list[str] = []
         for _ in range(2):
-            row = self.take_pool_cue("curiosity_seed")
+            row = self.take_pool_cue(
+                "curiosity_seed",
+                eligible=seed_usable,
+            )
             if row is None:
                 break
             topic = (row.subject or "").strip()
@@ -1390,13 +1395,21 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
                 continue
             if len(topic) > 120:
                 topic = topic[:119].rstrip(",;: ") + "…"
-            rendered.append(f"- {topic}")
+            line = f"- {topic}"
+            question = row.payload.get("prompt_text")
+            why = row.payload.get("why")
+            value = row.payload.get("quality", {}).get("useful_because")
+            if isinstance(question, str) and question:
+                line += f"\n  Possible direction: {question}"
+            if isinstance(why, str) and why:
+                line += f"\n  Connection: {why}"
+            if isinstance(value, str) and value:
+                line += f"\n  What it could add: {value}"
+            rendered.append(line)
         if not rendered:
             return ""
-        # Bare topics under the persona's own header. The "only if a soft
-        # pivot lands naturally" qualifier that used to be baked into this
-        # line is in that hoisted section, which arrives in T6 alongside
-        # this block whenever it renders.
+        # Keep each direction and its reason under the registered header;
+        # natural timing is carried by the matching hoisted handling section.
         return "Quiet curiosity:\n" + "\n".join(rendered)
 
     def _render_initiative_block(self, user_text: str) -> str:

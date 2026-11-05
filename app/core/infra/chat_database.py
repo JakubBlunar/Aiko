@@ -16,7 +16,7 @@ from app.core.infra.message_outcomes import MessageOutcomesMixin, OUTCOME_SCHEMA
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 47
+_SCHEMA_VERSION = 48
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -646,6 +646,7 @@ CREATE TABLE IF NOT EXISTS hypotheses (
     dim INTEGER NOT NULL DEFAULT 0,
     asked_count INTEGER NOT NULL DEFAULT 0,
     answer_memory_ids TEXT NOT NULL DEFAULT '[]',
+    quality TEXT NOT NULL DEFAULT '{}',
     origin_session TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -2027,6 +2028,10 @@ class ChatDatabase(MessageOutcomesMixin):
                 conn.execute(stmt)
             except sqlite3.OperationalError:
                 pass
+        # v48: motivation for speculation, never support evidence. No backfill:
+        # old invented details cannot be retroactively certified as useful.
+        if "quality" not in {r[1] for r in conn.execute("PRAGMA table_info(hypotheses)")}:
+            conn.execute("ALTER TABLE hypotheses ADD COLUMN quality TEXT NOT NULL DEFAULT '{}'")
         conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
         conn.commit()
 
