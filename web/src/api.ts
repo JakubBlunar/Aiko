@@ -737,6 +737,7 @@ export const api = {
   listBeliefs: (
     options: {
       limit?: number;
+      include_legacy?: boolean;
       offset?: number;
       kind?: "mood" | "opinion";
       status?: "active" | "confirmed" | "contradicted" | "stale";
@@ -748,6 +749,7 @@ export const api = {
       limit: String(limit),
       offset: String(offset),
     });
+    if (options.include_legacy !== undefined) params.set("include_legacy", String(options.include_legacy));
     if (options.kind) params.set("kind", options.kind);
     if (options.status) params.set("status", options.status);
     return jsonFetch<BeliefsResponse>(`/api/beliefs?${params.toString()}`);
@@ -768,6 +770,8 @@ export const api = {
     payload: {
       predicted_state?: string;
       confidence?: number;
+      situation?: string;
+      uncertainty?: string;
       status?: "active" | "confirmed" | "contradicted" | "stale";
     },
   ) =>

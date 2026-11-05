@@ -220,178 +220,223 @@ class SessionKeyTests(unittest.TestCase):
         )
 
 
-class ExtractionTests(unittest.TestCase):
-    def test_run_upserts_beliefs_from_llm(self) -> None:
-        payload = json.dumps([
-            {
-                "kind": "mood",
-                "topic": "tokyo trip",
-                "predicted_state": "excited",
-                "confidence": 0.8,
-            },
-            {
-                "kind": "opinion",
-                "topic": "rust language",
-                "predicted_state": "overhyped",
-                "confidence": 0.6,
-            },
-        ])
-        worker, store, ollama, _ = _build_world(responses=[payload])
+def _reading(**overrides):
+    item = {
+        "kind": "mood", "topic": "tokyo trip preparations",
+        "interpretation": ("Jacob may welcome sharing ideas for the Tokyo trip, "
+                           "while the amount of planning he wants is unclear."),
+        "reason": "He describes excitement about the trip.",
+        "situation": "Discussing preparations for the Tokyo trip.",
+        "uncertainty": "Excitement alone does not establish a request for planning help.",
+        "revise_when": "He asks for quiet company or wants to plan independently.",
+        "scope": "situation",
+        "novelty": "A possible conversational opening, rather than a general personality claim.",
+        "confidence": 0.65,
+        "evidence": [{"message_id": 1, "quote": "excited about the Tokyo trip"}],
+    }
+    return {**item, **overrides}
+
+
+def _answer(*items):
+    return json.dumps({"beliefs": list(items)})
+
+
+class InterpretationTests(unittest.TestCase):
+    def test_a_new_idea_needs_no_concept_and_retains_its_unknowns(self):
+        worker, store, _, _ = _build_world(responses=[_answer(_reading())])
         result = worker.run()
-        self.assertEqual(result["upserted"], 2)
+        self.assertEqual(result["upserted"], 1)
+        row = store.list_active(user_id="u1")[0]
+        self.assertEqual(row.predicted_state, _reading()["interpretation"])
+        self.assertIn("does not establish", row.metadata["uncertainty"])
+        self.assertEqual(row.source_message_id, 1)  # not newest message 3
+        self.assertEqual(row.metadata["evidence"][0]["message_id"], 1)
+        self.assertEqual(row.status, "active")
+
+    def test_replaying_a_window_survives_worker_restart_without_spending_a_call(self):
+        worker, store, ollama, _ = _build_world(responses=[_answer(_reading())])
+        worker.run()
+        # Intake boundary belongs to SQLite, not the worker instance.
+        clone = object.__new__(BeliefInferenceWorker)
+        clone.__dict__.update(worker.__dict__)
+        self.assertEqual(clone.run()["reason"], "no_new_user_turns")
         self.assertEqual(len(ollama.chat_calls), 1)
-        beliefs = store.list_active(user_id="u1")
-        topics = {b.topic for b in beliefs}
-        self.assertIn("tokyo trip", topics)
-        self.assertIn("rust language", topics)
+        self.assertEqual(store.list_active(user_id="u1")[0].metadata["observations"], 1)
 
-    def test_mood_affect_coordinates_are_stored(self) -> None:
-        """Without valence a mood belief can never be checked.
+    def test_an_empty_result_also_consumes_the_window(self):
+        worker, _, ollama, _ = _build_world(responses=[_answer()])
+        self.assertEqual(worker.run()["upserted"], 0)
+        self.assertFalse(worker.is_ready(now=datetime.now(timezone.utc), last_run_at=None))
+        self.assertEqual(worker.run()["reason"], "no_new_user_turns")
+        self.assertEqual(len(ollama.chat_calls), 1)
 
-        The gap detector skips rows whose valence is NULL, and the worker
-        never asked for the field -- so on the live install all 118
-        worker-written mood beliefs were unverifiable and could only
-        leave the queue by hand or by the 90-day stale sweep.
-        """
-        payload = json.dumps([
-            {
-                "kind": "mood",
-                "topic": "tokyo trip",
-                "predicted_state": "quietly excited",
-                "confidence": 0.8,
-                "valence": 0.6,
-                "arousal": 0.55,
-            },
+    def test_an_unusable_object_is_not_confused_with_deliberate_abstention(self):
+        worker, store, _, _ = _build_world(responses=[
+            _answer(_reading(reason=["not a string"])), _answer(_reading()),
         ])
-        worker, store, _, _ = _build_world(responses=[payload])
-        worker.run()
-        row = store.list_active(user_id="u1")[0]
-        self.assertAlmostEqual(row.valence, 0.6)
-        self.assertAlmostEqual(row.arousal, 0.55)
-
-    def test_affect_coordinates_are_clamped_to_their_axes(self) -> None:
-        payload = json.dumps([
-            {
-                "kind": "mood", "topic": "a", "predicted_state": "wired",
-                "confidence": 0.8, "valence": 4.2, "arousal": -3.0,
-            },
-        ])
-        worker, store, _, _ = _build_world(responses=[payload])
-        worker.run()
-        row = store.list_active(user_id="u1")[0]
-        self.assertAlmostEqual(row.valence, 1.0)
-        self.assertAlmostEqual(row.arousal, 0.0)
-
-    def test_junk_coordinates_leave_the_row_unverifiable_not_wrong(self) -> None:
-        """Better an unchecked belief than one checked against a number
-        the model never gave."""
-        payload = json.dumps([
-            {
-                "kind": "mood", "topic": "a", "predicted_state": "wired",
-                "confidence": 0.8, "valence": "very high",
-            },
-        ])
-        worker, store, _, _ = _build_world(responses=[payload])
-        worker.run()
-        row = store.list_active(user_id="u1")[0]
-        self.assertIsNone(row.valence)
-
-    def test_opinions_carry_no_coordinates(self) -> None:
-        payload = json.dumps([
-            {
-                "kind": "opinion", "topic": "rust",
-                "predicted_state": "overhyped", "confidence": 0.6,
-                "valence": 0.9, "arousal": 0.9,
-            },
-        ])
-        worker, store, _, _ = _build_world(responses=[payload])
-        worker.run()
-        row = store.list_active(user_id="u1")[0]
-        self.assertIsNone(row.valence)
-        self.assertIsNone(row.arousal)
-
-    def test_the_prompt_asks_for_the_coordinates(self) -> None:
-        from app.core.relationship.belief_worker import _build_system_prompt
-
-        prompt = _build_system_prompt("Jacob")
-        self.assertIn("valence", prompt)
-        self.assertIn("arousal", prompt)
-        self.assertIn("mood beliefs ONLY", prompt)
-
-    def test_invalid_kind_dropped(self) -> None:
-        payload = json.dumps([
-            {
-                "kind": "bogus",
-                "topic": "x",
-                "predicted_state": "y",
-                "confidence": 0.5,
-            },
-            {
-                "kind": "mood",
-                "topic": "ok",
-                "predicted_state": "y",
-                "confidence": 0.5,
-            },
-        ])
-        worker, store, _, _ = _build_world(responses=[payload])
-        result = worker.run()
-        # Only the valid one lands.
-        self.assertEqual(result["upserted"], 1)
+        first = worker.run()
+        self.assertEqual(first["upserted"], 0)
+        self.assertTrue(first["retryable_format"])
+        self.assertEqual(worker.run()["upserted"], 1)
         self.assertEqual(len(store.list_active(user_id="u1")), 1)
 
-    def test_empty_array_no_upserts(self) -> None:
-        worker, store, _, _ = _build_world(responses=["[]"])
-        result = worker.run()
-        self.assertEqual(result["upserted"], 0)
-        self.assertEqual(len(store.list_active(user_id="u1")), 0)
-
-    def test_unparseable_response_returns_skipped(self) -> None:
-        worker, _, _, _ = _build_world(responses=["not json at all"])
-        result = worker.run()
-        self.assertTrue(result.get("skipped"))
-        self.assertEqual(result.get("reason"), "llm_unparseable")
-
-    def test_object_wrapped_array_is_the_shape_we_ask_for(self) -> None:
-        # ``format: "json"`` constrains output to an object, so the prompt
-        # asks for {"beliefs": [...]}. The old parser demanded a bare array
-        # and reported 26 of these as llm-unparseable.
-        payload = json.dumps({
-            "beliefs": [
-                {
-                    "kind": "opinion",
-                    "topic": "rust tooling",
-                    "predicted_state": "worth the learning curve",
-                    "confidence": 0.7,
-                },
-            ],
-        })
-        worker, store, _, _ = _build_world(responses=[payload])
-        result = worker.run()
-        self.assertEqual(result["upserted"], 1)
+    def test_failed_generation_remains_retryable(self):
+        worker, store, ollama, _ = _build_world(responses=["", _answer(_reading())])
+        self.assertEqual(worker.run()["reason"], "llm_unparseable")
+        self.assertEqual(worker.run()["upserted"], 1)
+        self.assertEqual(len(ollama.chat_calls), 2)
         self.assertEqual(len(store.list_active(user_id="u1")), 1)
 
-    def test_bare_empty_object_means_no_beliefs(self) -> None:
-        worker, store, _, _ = _build_world(responses=["{}"])
-        result = worker.run()
-        self.assertEqual(result.get("upserted"), 0)
-        self.assertEqual(len(store.list_active(user_id="u1")), 0)
-
-    def test_empty_answer_is_a_failure_not_zero_beliefs(self) -> None:
-        # An answer with no tokens at all means the reasoning trace ate
-        # the budget, not that the transcript was quiet.
-        worker, store, _, _ = _build_world(responses=[""])
-        result = worker.run()
-        self.assertTrue(result.get("skipped"))
-        self.assertEqual(result.get("reason"), "llm_unparseable")
-        self.assertEqual(len(store.list_active(user_id="u1")), 0)
-
-    def test_the_user_prompt_renders_without_a_format_error(self) -> None:
-        # The literal ``{"beliefs": [...]}`` in the template must be
-        # brace-escaped or ``str.format`` raises KeyError on every run.
-        worker, _, ollama, _ = _build_world(responses=['{"beliefs": []}'])
+    def test_adding_a_turn_does_not_make_old_quotes_new_evidence(self):
+        worker, store, ollama, _ = _build_world(
+            responses=[_answer(_reading()), _answer(_reading())])
         worker.run()
-        prompt = ollama.chat_calls[0]["messages"][-1]["content"]
-        self.assertIn('{"beliefs": [...]}', prompt)
+        worker._chat_db.add_message(session_id="u1:session-1", role="user",
+                                    content="An unrelated new message.")
+        result = worker.run()
+        self.assertEqual(result["dropped_invalid"], 1)
+        self.assertEqual(store.list_active(user_id="u1")[0].metadata["observations"], 1)
+        self.assertEqual(len(ollama.chat_calls), 2)
+
+    def test_a_failed_attempt_remains_ready_after_its_scheduler_timestamp(self):
+        worker, _, _, _ = _build_world(responses=[""])
+        worker.run()
+        now = datetime.now(timezone.utc)
+        self.assertTrue(worker.is_ready(now=now, last_run_at=now))
+
+    def test_two_labels_for_the_exact_same_meaning_do_not_make_two_rows(self):
+        worker, store, _, _ = _build_world(responses=[_answer(
+            _reading(), _reading(topic="travel enthusiasm"))])
+        worker.run()
+        rows = store.list_active(user_id="u1")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].metadata["observations"], 1)
+
+    def test_a_changed_qualifier_cannot_be_attached_as_corroboration(self):
+        worker, store, ollama, _ = _build_world(responses=[_answer(_reading())])
+        worker.run()
+        prior = store.list_active(user_id="u1")[0]
+        mid = worker._chat_db.add_message(session_id="u1:session-1", role="user",
+                                          content="I am excited about the Tokyo trip, still.")
+        if hasattr(mid, "id"):
+            mid = mid.id
+        ollama.responses.append(_answer(_reading(
+            existing_id=prior.id, uncertainty="He definitely wants Aiko to plan everything.",
+            evidence=[{"message_id": mid, "quote": "excited about the Tokyo trip"}])))
+        self.assertEqual(worker.run()["dropped_invalid"], 1)
+        self.assertEqual(store.get(prior.id).metadata["uncertainty"],
+                         _reading()["uncertainty"])
+
+    def test_switching_sessions_during_generation_discards_the_old_result(self):
+        worker, store, ollama, _ = _build_world(responses=[_answer(_reading())])
+        original = ollama.chat_stream
+        def switch(*args, **kwargs):
+            yield from original(*args, **kwargs)
+            worker._session_key_provider = lambda: "u1:other-session"
+        ollama.chat_stream = switch
+        self.assertEqual(worker.run()["reason"], "context_changed")
+        self.assertEqual(store.list_active(user_id="u1"), [])
+
+    def test_unquoted_or_assistant_evidence_does_not_create_a_belief(self):
+        for evidence in ([{"message_id": 2, "quote": "assistant invents a feeling"}],
+                         [{"message_id": 100, "quote": "a different conversation"}],
+                         [{"message_id": 1, "quote": "I want extensive planning help"}]):
+            with self.subTest(evidence=evidence):
+                worker, store, _, _ = _build_world(responses=[_answer(_reading(evidence=evidence))])
+                self.assertEqual(worker.run()["upserted"], 0)
+                self.assertEqual(store.list_active(user_id="u1"), [])
+
+    def test_only_budgeted_source_words_can_be_cited(self):
+        worker, store, _, _ = _build_world(responses=[_answer(_reading())])
+        # Simulate the packer omitting the older message, without mocking the
+        # validator: generation returns a quote from the fetched, unoffered row.
+        original = worker._snapshot_transcript
+        def recent_only(**kwargs):
+            full = original(**kwargs)
+            return "\n".join(line for line in full.splitlines() if "message_id=1;" not in line)
+        worker._snapshot_transcript = recent_only
+        self.assertEqual(worker.run()["upserted"], 0)
+        self.assertEqual(store.list_active(user_id="u1"), [])
+
+    def test_old_format_and_incomplete_subjects_are_rejected(self):
+        for item in ({"kind": "mood", "topic": "relationship with her",
+                      "predicted_state": "deeply affectionate"},
+                     _reading(topic="caring for")):
+            worker, store, _, _ = _build_world(responses=[_answer(item)])
+            self.assertEqual(worker.run()["upserted"], 0)
+            self.assertEqual(store.list_active(user_id="u1"), [])
+
+    def test_one_invalid_item_does_not_hide_a_complete_reading(self):
+        worker, store, _, _ = _build_world(responses=[_answer(
+            _reading(reason=["not a string"]), _reading())])
+        result = worker.run()
+        self.assertEqual(result["upserted"], 1)
+        self.assertEqual(result["dropped_shape"], 1)
+
+    def test_authored_relative_dates_are_refused_but_source_quotes_are_verbatim(self):
+        for key in ("interpretation", "reason", "situation", "uncertainty", "novelty"):
+            worker, _, _, _ = _build_world(responses=[_answer(_reading(**{key: "Tired today"}))])
+            self.assertEqual(worker.run()["upserted"], 0)
+        worker, store, _, _ = _build_world(
+            user_messages=["I am tired tonight, but stay with me."],
+            responses=[_answer(_reading(evidence=[
+                {"message_id": 1, "quote": "I am tired tonight"}]))])
+        self.assertEqual(worker.run()["upserted"], 1)
+        quote = store.list_active(user_id="u1")[0].metadata["evidence"][0]["quote"]
+        self.assertIn("tonight", quote)
+
+    def test_source_times_are_compared_as_instants_across_offsets(self):
+        worker, store, _, _ = _build_world(
+            user_messages=["I am excited about the Tokyo trip.",
+                           "I remain excited about the Tokyo trip."],
+            responses=[_answer(_reading(evidence=[
+                {"message_id": 1, "quote": "excited about the Tokyo trip"},
+                {"message_id": 3, "quote": "excited about the Tokyo trip"},
+            ]))])
+        worker._clock = lambda: datetime(2026, 11, 5, 10, 5, tzinfo=timezone.utc)
+        worker._chat_db.execute_commit("UPDATE messages SET created_at = ? WHERE id = 1",
+                                      ("2026-11-05T10:30:00+01:00",))
+        worker._chat_db.execute_commit("UPDATE messages SET created_at = ? WHERE id = 3",
+                                      ("2026-11-05T10:00:00+00:00",))
+        self.assertEqual(worker.run()["upserted"], 1)
+        self.assertEqual(store.list_active(user_id="u1")[0].observed_at,
+                         "2026-11-05T10:00:00+00:00")
+
+    def test_support_age_not_run_age_controls_expiry(self):
+        worker, store, _, _ = _build_world(responses=[_answer(_reading(scope="exchange"))])
+        stamp = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        worker._chat_db.execute_commit("UPDATE messages SET created_at = ?", (stamp,))
+        self.assertEqual(worker.run()["upserted"], 0)
+        self.assertEqual(store.list_active(user_id="u1"), [])
+
+    def test_paraphrase_reuses_offered_full_reading_without_confirming(self):
+        worker, store, ollama, _ = _build_world(responses=[_answer(_reading())])
+        worker.run()
+        prior = store.list_active(user_id="u1")[0]
+        message = worker._chat_db.add_message(session_id="u1:session-1", role="user",
+                                              content="I am excited about the Tokyo trip, still.")
+        mid = message.id if hasattr(message, "id") else message
+        ollama.responses.append(_answer(_reading(
+            topic="travel enthusiasm", existing_id=prior.id,
+            evidence=[{"message_id": mid, "quote": "excited about the Tokyo trip"}])))
+        self.assertEqual(worker.run()["upserted"], 1)
+        rows = store.list_active(user_id="u1")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].id, prior.id)
+        self.assertEqual(rows[0].metadata["observations"], 2)
+        self.assertEqual(rows[0].status, "active")
+
+    def test_unoffered_merge_id_does_not_overwrite_a_reading(self):
+        worker, store, _, _ = _build_world(responses=[_answer(_reading(existing_id=999))])
+        self.assertEqual(worker.run()["upserted"], 0)
+        self.assertEqual(store.list_active(user_id="u1"), [])
+
+    def test_empty_and_malformed_output_have_different_meanings(self):
+        for response in ('{"beliefs": []}', '{}', '[]'):
+            worker, _, _, _ = _build_world(responses=[response])
+            self.assertEqual(worker.run()["upserted"], 0)
+        worker, _, _, _ = _build_world(responses=["not json"])
+        self.assertEqual(worker.run()["reason"], "llm_unparseable")
 
 
 class RateLimitTests(unittest.TestCase):
@@ -429,7 +474,9 @@ class DemandTests(unittest.TestCase):
 
     def test_nothing_new_since_the_last_run_is_zero(self) -> None:
         worker, _store, _ollama, _limiter = _build_world()
-        # Everything in the fixture predates this watermark.
+        # Successful processing persists the intake boundary; a scheduler's
+        # last attempt timestamp is deliberately not evidence of processing.
+        worker.run()
         later = self._now() + timedelta(hours=1)
         signal = worker.demand(now=later, last_run_at=later)
         self.assertEqual(signal.pressure, 0.0)
@@ -519,35 +566,6 @@ class LookbackTests(unittest.TestCase):
         self.assertNotIn("topic_5", prompt)
 
 
-class SelfTagGuardTests(unittest.TestCase):
-    def test_self_tag_wins_over_lower_confidence_worker(self) -> None:
-        # Seed a high-confidence self-tag belief; worker returns the
-        # same topic at lower confidence -> should be skipped.
-        worker, store, _, _ = _build_world(
-            responses=[json.dumps([
-                {
-                    "kind": "mood",
-                    "topic": "tokyo trip",
-                    "predicted_state": "nervous",
-                    "confidence": 0.4,
-                },
-            ])],
-        )
-        existing = store.upsert(
-            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
-            predicted_state="excited", confidence=0.85,
-            source="self_tag",
-        )
-        assert existing is not None
-        result = worker.run()
-        self.assertEqual(result["skipped_self_tag"], 1)
-        self.assertEqual(result["upserted"], 0)
-        # The high-confidence self-tag belief is preserved.
-        latest = store.get(existing.id)
-        self.assertEqual(latest.predicted_state, "excited")
-        self.assertEqual(latest.confidence, 0.85)
-
-
 class _InterestEntry:
     """Mimics topic_graph.InterestEntry (has .label / .size)."""
 
@@ -587,7 +605,7 @@ class InterestBiasTests(unittest.TestCase):
 
     def test_budget_sheds_optional_hints_before_recent_evidence(self) -> None:
         worker, _, ollama, _ = _build_world(responses=["[]"])
-        worker._context_window = lambda: 1700
+        worker._context_window = lambda: 3000
         lines = [
             "oldest: " + "old " * 100,
             "middle: " + "mid " * 100,
@@ -602,7 +620,6 @@ class InterestBiasTests(unittest.TestCase):
         prompt = self._prompt(ollama)
         self.assertIn("newest:", prompt)
         self.assertIn("oldest:", prompt)
-        self.assertNotIn("concept concept", prompt)
         self.assertNotIn("reconsider reconsider", prompt)
 
     def test_multiline_message_stays_attributed_to_one_speaker(self) -> None:
@@ -611,7 +628,7 @@ class InterestBiasTests(unittest.TestCase):
             session_key="u1:session-1", lookback_turns=12,
         )
         self.assertIn("Jacob: I like tea. I also like coffee.", transcript)
-        self.assertEqual(len(transcript.splitlines()), 1)
+        self.assertEqual(sum("Jacob:" in line for line in transcript.splitlines()), 1)
 
     def test_interest_hint_lands_in_prompt(self) -> None:
         worker, _, ollama, _ = _build_world(
@@ -688,7 +705,8 @@ class InterestBiasTests(unittest.TestCase):
         worker.run()
         prompt = self._prompt(ollama)
         # reconsider_max defaults to 3 -> at most 3 topics enumerated.
-        mentioned = sum(1 for i in range(6) if f"tokyo plan {i}" in prompt)
+        section = prompt.split("Also re-check whether")[-1]
+        mentioned = sum(1 for i in range(6) if f"tokyo plan {i}" in section)
         self.assertLessEqual(mentioned, 3)
         self.assertGreaterEqual(mentioned, 1)
 
@@ -824,283 +842,22 @@ class ConceptBiasTests(unittest.TestCase):
         self.assertFalse(hasattr(view, "upsert"))
 
 
-class StateShapeTests(unittest.TestCase):
-    """``predicted_state`` has to complete the sentence it is read in.
+class InterpretationPromptTests(unittest.TestCase):
+    def test_prompt_preserves_new_thinking_without_concept_prerequisite(self):
+        from app.core.relationship.belief_worker import _build_system_prompt
+        prompt = _build_system_prompt("Sample User")
+        self.assertIn("Sample User", prompt)
+        self.assertIn("concept is not a prerequisite", prompt)
+        self.assertIn("Zero is the default", prompt)
+        self.assertIn("Preserve material differences", prompt)
+        self.assertIn("existing_id", prompt)
 
-    Every consumer slots it into a frame ("You had Jacob pegged as
-    {state} about {topic}"), so a standalone clause is not merely verbose
-    — it is ungrammatical there and makes a claim about a past evening
-    rather than about him. The row this class exists for was real::
-
-        topic = 'daily routine and motivation'
-        state = 'experienced mild evening frustration and low energy on
-                 august 12 2026'
-
-    It renders as "You had Jacob pegged as experienced mild evening
-    frustration and low energy on august 12 2026 about daily routine and
-    motivation", and being about one finished evening it can never be
-    confirmed or contradicted, so it sits in the active set until the cap
-    prunes it. On the store at the time, 8 of 40 rows carried a date.
-    """
-
-    def _payload(self, **over: Any) -> str:
-        item = {
-            "kind": "mood",
-            "topic": "daily routine and motivation",
-            "predicted_state": "frustrated and low on energy",
-            "confidence": 0.9,
-        }
-        item.update(over)
-        return json.dumps([item])
-
-    def test_the_row_that_started_this_is_refused(self) -> None:
-        worker, store, _o, _rl = _build_world(
-            responses=[self._payload(
-                predicted_state=(
-                    "experienced mild evening frustration and low energy "
-                    "on august 12 2026"
-                ),
-            )],
-        )
-        self.assertEqual(worker.run()["upserted"], 0)
-        self.assertEqual(store.list_active(user_id="u1"), [])
-
-    def test_a_well_shaped_state_is_kept(self) -> None:
-        worker, store, _o, _rl = _build_world(responses=[self._payload()])
-        self.assertEqual(worker.run()["upserted"], 1)
-        rows = store.list_active(user_id="u1")
-        self.assertEqual(rows[0].predicted_state, "frustrated and low on energy")
-
-    def test_a_date_in_the_state_is_refused(self) -> None:
-        for state in (
-            "looking forward to a meetup on friday august 14 2026",
-            "relaxed anticipation for a casual meetup on August 14, 2026",
-            "quietly hopeful about tomorrow",
-            "still annoyed about the 14th",
-        ):
-            with self.subTest(state=state):
-                worker, _s, _o, _rl = _build_world(
-                    responses=[self._payload(predicted_state=state)],
-                )
-                self.assertEqual(worker.run()["upserted"], 0)
-
-    def test_a_date_in_the_topic_is_refused(self) -> None:
-        # A topic is what gets embedded for retrieval and fuzzy merge, so
-        # a timestamp there is a belief no future turn can ever reach.
-        for topic in (
-            "evening of august 12 2026",
-            "august 13 daily routine",
-            "meeting on august 14 2026",
-        ):
-            with self.subTest(topic=topic):
-                worker, _s, _o, _rl = _build_world(
-                    responses=[self._payload(topic=topic)],
-                )
-                self.assertEqual(worker.run()["upserted"], 0)
-
-    def test_a_past_tense_opener_is_refused(self) -> None:
-        for state in ("felt overwhelmed", "was quietly proud", "said it helps"):
-            with self.subTest(state=state):
-                worker, _s, _o, _rl = _build_world(
-                    responses=[self._payload(predicted_state=state)],
-                )
-                self.assertEqual(worker.run()["upserted"], 0)
-
-    def test_a_whole_sentence_is_refused(self) -> None:
-        worker, _s, _o, _rl = _build_world(
-            responses=[self._payload(predicted_state=(
-                "likely to take a work pause to meet at a bench near the "
-                "office if the weather holds"
-            ))],
-        )
-        self.assertEqual(worker.run()["upserted"], 0)
-
-    def test_a_long_but_well_shaped_phrase_survives(self) -> None:
-        # The gate is about shape, not brevity: this completes the frame.
-        worker, _s, _o, _rl = _build_world(
-            responses=[self._payload(
-                predicted_state="quietly proud of how the refactor landed",
-            )],
-        )
-        self.assertEqual(worker.run()["upserted"], 1)
-
-    def test_a_finite_verb_opener_is_refused(self) -> None:
-        """The commonest fault, and the one the date check missed.
-
-        These render as "is finds deep emotional recharge" / "is values
-        low-pressure shared presence": a second predicate where a
-        complement belongs. Six rows on the live store looked like this,
-        on top of the eight dated ones.
-        """
-        for state in (
-            "finds deep emotional recharge in affectionate closeness",
-            "values low-pressure shared presence over active entertainment",
-            "views the companion as a vital source of stability",
-            "prefers low-pressure companionship",
-            "likes it a lot",
-        ):
-            with self.subTest(state=state):
-                worker, _s, _o, _rl = _build_world(
-                    responses=[self._payload(predicted_state=state)],
-                )
-                self.assertEqual(worker.run()["upserted"], 0)
-
-    def test_a_state_that_restates_the_subject_is_refused(self) -> None:
-        # The frame already supplies the subject, so this renders as
-        # "is he hopes for deeper mutual trust".
-        worker, _s, _o, _rl = _build_world(
-            responses=[self._payload(
-                predicted_state="he hopes for deeper mutual trust",
-            )],
-        )
-        self.assertEqual(worker.run()["upserted"], 0)
-
-    def test_participles_and_noun_phrases_are_not_mistaken_for_clauses(
-        self,
-    ) -> None:
-        # The precision half of the gate. These all complete the frame,
-        # and rejecting them would leave the worker storing nothing.
-        for state in (
-            "looking forward to it",
-            "a reliable source of comfort",
-            "quietly proud",
-            "essential for grounding after a long day",
-            "determined to fix it",
-            "more than enough",
-            "steadily deepening",
-        ):
-            with self.subTest(state=state):
-                worker, _s, _o, _rl = _build_world(
-                    responses=[self._payload(predicted_state=state)],
-                )
-                self.assertEqual(worker.run()["upserted"], 1)
-
-    def test_the_run_summary_reports_what_the_gate_ate(self) -> None:
-        """A silent gate is indistinguishable from a quiet transcript.
-
-        This worker has already shipped one bug that reported healthy
-        runs while storing nothing, so the count and the fault kinds both
-        have to reach the summary line.
-        """
-        payload = json.dumps([
-            {"kind": "mood", "topic": "the tokyo trip",
-             "predicted_state": "excited", "confidence": 0.8},
-            {"kind": "mood", "topic": "his workload",
-             "predicted_state": "felt flat on august 12", "confidence": 0.7},
-            {"kind": "opinion", "topic": "rust",
-             "predicted_state": "likes it a lot", "confidence": 0.6},
-        ])
-        worker, _s, _o, _rl = _build_world(responses=[payload])
-        result = worker.run()
-        self.assertEqual(result["upserted"], 1)
-        self.assertEqual(result["dropped_shape"], 2)
-        self.assertEqual(
-            result["shape_faults"], ["dated", "finite_verb"],
-        )
-
-    def test_a_clean_run_reports_no_shape_faults(self) -> None:
-        worker, _s, _o, _rl = _build_world(responses=[self._payload()])
-        result = worker.run()
-        self.assertEqual(result["dropped_shape"], 0)
-        self.assertNotIn("shape_faults", result)
-
-    def test_a_dropped_shape_is_logged_with_its_reason(self) -> None:
-        worker, _s, _o, _rl = _build_world(
-            responses=[self._payload(predicted_state="felt flat on august 12")],
-        )
-        with self.assertLogs("app.belief_worker", level="INFO") as caught:
-            worker.run()
-        self.assertTrue(
-            any("dropped unusable shape" in line for line in caught.output),
-            caught.output,
-        )
-
-    def test_one_bad_tuple_does_not_take_the_good_ones_with_it(self) -> None:
-        payload = json.dumps([
-            {"kind": "mood", "topic": "the tokyo trip",
-             "predicted_state": "excited", "confidence": 0.8},
-            {"kind": "mood", "topic": "evening of august 12 2026",
-             "predicted_state": "experienced mild frustration",
-             "confidence": 0.9},
-            {"kind": "opinion", "topic": "rust",
-             "predicted_state": "overhyped", "confidence": 0.6},
-        ])
-        worker, store, _o, _rl = _build_world(responses=[payload])
-        self.assertEqual(worker.run()["upserted"], 2)
-        topics = {b.topic for b in store.list_active(user_id="u1")}
-        self.assertEqual(topics, {"the tokyo trip", "rust"})
-
-
-class StateFramePromptTests(unittest.TestCase):
-    """The prompt has to teach the frame, not just a length budget.
-
-    ``experienced mild evening frustration and low energy on august 12
-    2026`` is 63 characters — comfortably inside the "2-80 char state
-    phrase" the prompt used to ask for. A length limit cannot express the
-    constraint that matters, so the frames are quoted literally and the
-    model can check its own answer by reading it back.
-    """
-
-    def _system(self, ollama: _StubOllama) -> str:
-        return ollama.chat_calls[0]["messages"][0]["content"]
-
-    def test_the_prompt_quotes_the_frame_the_state_completes(self) -> None:
-        worker, _s, ollama, _rl = _build_world(responses=["[]"])
-        worker.run()
-        system = self._system(ollama)
-        self.assertIn("Jacob is ___ about", system)
-        self.assertIn("<topic> is ___", system)
-
-    def test_the_frame_names_the_configured_user(self) -> None:
-        # The frame is only checkable if it reads as the sentence that
-        # will actually be rendered, so it cannot say "Jacob" by default.
-        worker, _s, ollama, _rl = _build_world(responses=["[]"])
-        worker._user_names_provider = lambda: ["Mira"]
-        worker.run()
-        self.assertIn("Mira is ___ about", self._system(ollama))
-
-    def test_the_state_field_gets_the_live_rule_not_the_stored_one(
-        self,
-    ) -> None:
-        """The root cause, pinned.
-
-        ``STORED_TEXT_TIME_RULE`` tells a model to write the concrete day
-        and to put finished events in the past tense. That is right for a
-        memory and wrong for a field re-read as a present-tense claim,
-        and this worker pasted it — so the extractor was following
-        instructions when it wrote "experienced ... on august 12 2026".
-        """
+    def test_reading_and_storage_have_their_separate_time_contracts(self):
         from app.core.infra import timephrase
-
-        worker, _s, ollama, _rl = _build_world(responses=["[]"])
+        worker, _, ollama, _ = _build_world(responses=[_answer()])
         worker.run()
-        system = self._system(ollama)
-        self.assertIn(timephrase.LIVE_STATE_TIME_RULE, system)
-        self.assertNotIn(timephrase.STORED_TEXT_TIME_RULE, system)
-
-    def test_the_anchor_survives_because_reading_still_needs_it(self) -> None:
-        # The two instructions do opposite jobs: the anchor is for
-        # resolving "he was stressed yesterday" while *reading* the
-        # transcript, the rule governs what gets *written*.
-        worker, _s, ollama, _rl = _build_world(responses=["[]"])
-        worker.run()
-        self.assertIn("Today is", self._system(ollama))
-
-    def test_the_prompt_sends_plans_and_events_elsewhere(self) -> None:
-        worker, _s, ollama, _rl = _build_world(responses=["[]"])
-        worker.run()
-        system = self._system(ollama)
-        self.assertIn("scheduled plan", system)
-
-    def test_the_prompt_states_what_the_gate_enforces(self) -> None:
-        # A gate the prompt does not explain is a gate the model keeps
-        # tripping, which costs a whole tick's output each time.
-        worker, _s, ollama, _rl = _build_world(responses=["[]"])
-        worker.run()
-        system = self._system(ollama)
-        self.assertIn("never a new clause", system)
-        self.assertIn("must not start with a verb", system)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        prompt = ollama.chat_calls[0]["messages"]
+        self.assertIn(timephrase.STORED_TEXT_TIME_RULE, prompt[0]["content"])
+        self.assertIn("Today is", prompt[0]["content"])
+        self.assertIn("[message_id=1; NEW]", prompt[1]["content"])
+        self.assertIn("[message_id=2; context only]", prompt[1]["content"])

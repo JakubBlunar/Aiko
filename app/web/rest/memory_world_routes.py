@@ -783,6 +783,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         offset: int = 0,
         kind: str | None = None,
         status: str | None = None,
+        include_legacy: bool = True,
     ) -> JSONResponse:
         clamped_limit = max(1, min(int(limit), 200))
         clamped_offset = max(0, int(offset))
@@ -793,6 +794,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             offset=clamped_offset,
             kind=kind_norm,
             status=status_norm,
+            **({"include_legacy": False} if not include_legacy else {}),
         )
         return JSONResponse(snapshot)
 
@@ -839,8 +841,13 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(400, "confidence must be a number")
         if status is not None and not isinstance(status, str):
             raise HTTPException(400, "status must be a string")
+        situation = payload.get("situation")
+        uncertainty = payload.get("uncertainty")
+        for key, value in (("situation", situation), ("uncertainty", uncertainty)):
+            if value is not None and not isinstance(value, str):
+                raise HTTPException(400, f"{key} must be a string")
         # Reject empty PATCH (mirrors PATCH /api/memories behaviour).
-        if predicted_state is None and confidence is None and status is None:
+        if all(v is None for v in (predicted_state, confidence, status, situation, uncertainty)):
             raise HTTPException(
                 400, "expected at least one of predicted_state/confidence/status",
             )
@@ -849,7 +856,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 int(belief_id),
                 predicted_state=predicted_state,
                 confidence=float(confidence) if confidence is not None else None,
-                status=status,
+                status=status, **({"situation": situation} if situation is not None else {}),
+                **({"uncertainty": uncertainty} if uncertainty is not None else {}),
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc

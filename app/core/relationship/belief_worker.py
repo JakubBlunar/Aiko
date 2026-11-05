@@ -1,59 +1,8 @@
-"""Belief inference worker (K2 personality backlog).
+"""Infer new, source-linked interpretations without requiring established concepts.
 
-Periodic background worker that mines Aiko's recent conversation for
-fresh theory-of-mind beliefs about the user -- mood predictions
-("Jacob is excited about the tokyo trip") and topical opinions
-("Jacob thinks Rust is overhyped") -- and upserts them into the
-:class:`app.core.relationship.belief_store.BeliefStore`.
-
-Pipeline (one tick = one ``run`` call):
-
-1. Snapshot the last ``belief_worker_lookback_turns`` (default 12)
-   user messages from the active session via
-   :meth:`ChatDatabase.get_messages`, each prefixed with the user's
-   name so the extractor knows whose "I"/"you" it's reading.
-2. Optionally privacy-scrub the lookback transcript via
-   :func:`fact_check_privacy.scrub_claim_for_search` (only when
-   ``belief_worker_scrub_transcript`` is on -- off by default because
-   the extractor runs on the trusted LOCAL model and the scrubber would
-   strip the pronouns/names the theory-of-mind pass depends on).
-3. Spend one LLM call through the dedicated
-   :class:`FactCheckRateLimiter`
-   (``state_key='belief_worker.rate_state'``) asking for a JSON
-   **object** ``{"beliefs": [...]}`` of belief tuples ``{kind, topic,
-   predicted_state, confidence}``. Object, not bare array, because
-   ``format: "json"`` gives no choice -- see
-   :mod:`app.llm.json_answers`.
-4. For each accepted tuple: compute a topic embedding via the
-   provided :class:`Embedder`, then call
-   :meth:`BeliefStore.upsert`. The store handles its own
-   (user_id, kind, topic) dedupe + fuzzy-topic merge.
-5. Cap the user's active-belief count at
-   ``belief_max_active_per_user`` via
-   :meth:`BeliefStore.prune_to_cap`.
-
-**The shape contract on the two text fields.** ``topic`` and
-``predicted_state`` are not free text: every consumer reads them back
-inside a sentence (see
-:func:`~app.core.relationship.belief_gap_detector.render_inner_life_block`
-— "You had {name} pegged as {state} about {topic}"), and ``topic`` is
-additionally embedded for retrieval and fuzzy merge. So a state has to
-complete "{name} is ___" in the present tense, and a topic has to be a
-subject that can come up again. Neither may carry a date: the row
-already has ``observed_at``, and a dated claim about a past evening is
-one nothing can ever confirm or contradict, so it occupies the active
-set until the cap prunes it. The prompt states both frames literally and
-:func:`state_fault` / :func:`topic_fault` enforce them, because the only
-thing the old "2-80 char state phrase" instruction bounded was length.
-
-The self-tag fast path (``[[predict:...]]``) wins over the worker:
-:meth:`BeliefStore.upsert` for an existing ``self_tag`` row simply
-refreshes its state; the worker writes ``source='worker'`` for
-brand-new beliefs only. Higher-confidence self-tag rows are not
-overwritten by lower-confidence worker rows because ``upsert``
-always overwrites with the latest value -- so we apply the
-self-tag wins guard inside the worker loop (skip upserting if a
-self-tagged active belief already exists for the topic).
+The persisted per-session watermark prevents heartbeat replay. Only actual user
+quotes in the budgeted prompt may support a reading; older and assistant turns
+provide reference context. Repeated inference never verifies a user's state.
 """
 from __future__ import annotations
 
@@ -61,17 +10,12 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.relationship.belief_store import (
     BeliefStore,
-    KIND_MOOD,
-    KIND_OPINION,
-    SOURCE_SELF_TAG,
     SOURCE_WORKER,
-    VALID_KINDS,
 )
 from app.core.memory.fact_check_privacy import scrub_claim_for_search
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
@@ -79,7 +23,10 @@ from app.core.infra import timephrase
 from app.core.proactive.worker_prompt_budget import (
     pack_worker_prompt, report_worker_prompt,
 )
-from app.llm.json_answers import parse_json_array_answer
+from app.core.relationship.belief_interpretation import (
+    VERSION, SCOPE_HOURS, Interpretation, system_prompt,
+    parse_interpretations, is_interpretation, is_current,
+)
 
 if TYPE_CHECKING:
     from app.core.concepts.concept_view import ConceptView
@@ -99,14 +46,14 @@ _LOG_PREVIEW_CHARS = 200
 
 
 # Cap on the LLM response so a malformed answer can't run away with
-# the budget. ~6 beliefs * ~50 chars each = ~300 tokens.
-_EXTRACT_MAX_TOKENS = 350
+# the budget. Two complete, concise interpretations need room for receipts.
+_EXTRACT_MAX_TOKENS = 1400
 
 
 # Maximum entries we accept from one extraction pass, regardless of
-# what the model returns. Tuned so a single noisy turn can't flood
-# the store; the next tick picks up anything we dropped.
-_MAX_BELIEFS_PER_RUN = 6
+# what the model returns. Zero is normal; a noisy turn cannot fill the
+# store with several paraphrases of the same familiar feeling.
+_MAX_BELIEFS_PER_RUN = 2
 
 
 # L28: how many durable concept labels reach the extraction prompt. The
@@ -123,86 +70,20 @@ _MAX_CONCEPT_HINTS = 5
 # the right answer and the grammar then emits ``{}``. See
 # :mod:`app.llm.json_answers`.
 def _build_system_prompt(user_name: str = "the user") -> str:
-    """Belief-extraction system prompt, naming the user in the frames.
-
-    The two frames quoted below are literal: they are what
-    :func:`~app.core.relationship.belief_gap_detector.render_inner_life_block`
-    actually renders, and ``predicted_state`` is dropped into the blank.
-    Quoting them is what turns the shape requirement into something the
-    model can check by reading its own answer back. Asked instead for
-    "a 2-80 char state phrase" it produced ``experienced mild evening
-    frustration and low energy on august 12 2026`` — inside the length
-    budget, and unusable in either frame.
-    """
-    name = (user_name or "").strip() or "the user"
-    return (
-        f"You read a short chat transcript and infer what {name} "
-        "believes or feels about specific topics. Reply with ONE JSON "
-        'object (no prose, no markdown) shaped {"beliefs": [...]} '
-        "holding zero or more belief objects. Each object in that array "
-        "has these fields:\n"
-        "  - kind: 'mood' (how they feel about the topic) or 'opinion' "
-        "(what they think about the topic).\n"
-        "  - topic: 2-60 char lowercase subject phrase, no quotes. A "
-        "lasting subject that could come up again next month ('the "
-        "tokyo trip', 'rust', 'his workload') -- never an occasion or a "
-        "date ('tuesday evening', 'the meeting on the 14th'). A topic "
-        "nobody can raise again is a belief nobody can ever check.\n"
-        "  - predicted_state: 2-80 char phrase. It gets read back "
-        "INSIDE a sentence, so write only the part that completes the "
-        "blank:\n"
-        f"      mood    -> \"{name} is ___ about <topic>\"\n"
-        "      opinion -> \"<topic> is ___\"\n"
-        "    So an adjective or a noun phrase, never a new clause: it "
-        "must not start with a verb or with 'he' / 'she' / 'it', and it "
-        "must not repeat the subject or the topic. 'frustrated and low "
-        "on energy', not 'experienced mild evening frustration'; "
-        "'overhyped', not 'thinks rust is overhyped'; 'restorative', "
-        "not 'finds the quiet evenings restorative'; 'a clever idea', "
-        "not 'he said it was a clever idea'. Read your phrase back "
-        "inside the frame before you answer -- if it does not make one "
-        "grammatical sentence, rewrite it. Keep it under about eight "
-        "words.\n"
-        "  - confidence: 0.0-1.0 decimal -- how sure you are.\n"
-        "  - valence and arousal: mood beliefs ONLY, omit both for "
-        "opinions. valence runs -1.0 (miserable) through 0.0 (neutral) "
-        "to 1.0 (delighted); arousal runs 0.0 (calm, drained, flat) to "
-        "1.0 (keyed up, agitated, energised). These are the only thing "
-        "that lets a mood read be checked later against how they "
-        "actually sound, so commit to your honest estimate -- a safe "
-        "0.0 / 0.5 for everything makes the read unfalsifiable.\n"
-        "A belief is a standing read on a person, so skip anything that "
-        "is really a scheduled plan or a single event ('meeting on "
-        "friday', 'went to bed early'). Those are commitments and "
-        "history; other parts of the system record them, and stored "
-        "here they can never be confirmed or contradicted.\n"
-        "Be conservative: skip the turn if the transcript doesn't "
-        "actually let you predict anything. Never invent beliefs from "
-        'thin air. Return {"beliefs": []} when there\'s nothing to '
-        "report. Output the JSON object and nothing else."
-    )
+    return system_prompt((user_name or "").strip() or "the user")
 
 
 # ``{{`` / ``}}`` because this template goes through ``str.format`` — a
 # literal ``{"beliefs"`` would be read as a replacement field and raise
 # ``KeyError`` on every run.
 _USER_TEMPLATE = (
-    "Transcript (most recent user turns):\n{transcript}\n\n"
+    "Transcript (user evidence and adjacent reference context):\n{transcript}\n\n"
     'Return one JSON object shaped {{"beliefs": [...]}}.'
 )
 
 
-# Field names that mark a belief object, so a single unwrapped item is
-# still understood. See :mod:`app.llm.json_answers`.
-_BELIEF_ITEM_KEYS = ("kind", "topic", "predicted_state")
-
-
 def _utcnow() -> datetime:
     return timephrase.utcnow()
-
-
-def _now_iso() -> str:
-    return _utcnow().isoformat()
 
 
 def _preview(text: str | None) -> str:
@@ -258,159 +139,6 @@ _TOPIC_WORD_RE = re.compile(r"[a-z0-9]{3,}")
 
 def _topic_words(text: str | None) -> set[str]:
     return set(_TOPIC_WORD_RE.findall((text or "").lower()))
-
-
-def _coerce_axis(raw: Any, *, lo: float, hi: float) -> float | None:
-    """Clamp one affect coordinate out of the LLM's JSON, or ``None``.
-
-    ``None`` for a missing or unparseable value rather than a default:
-    a mood belief with no coordinates is skipped by the gap detector,
-    which is the honest outcome, whereas defaulting to the midpoint
-    would invent a reading the model never made and then check her
-    against it.
-    """
-    if raw is None:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if value != value:  # NaN
-        return None
-    return max(lo, min(hi, value))
-
-
-# A date or a weekday written into a topic or a state, which the row's
-# own ``observed_at`` already records. In a field that is re-read as a
-# present-tense claim this is not redundancy, it is a category error: it
-# turns "how he feels about X" into "what happened on the 12th", which
-# nothing can later agree or disagree with.
-_DATE_RE = re.compile(
-    r"\b(?:"
-    r"jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec"
-    r"|january|february|march|april|june|july|august|september"
-    r"|october|november|december"
-    r"|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun"
-    r"|monday|tuesday|wednesday|thursday|friday|saturday|sunday"
-    r"|yesterday|tomorrow|tonight"
-    r")\b"
-    r"|\b(?:19|20)\d{2}\b"
-    r"|\b\d{1,2}(?:st|nd|rd|th)\b",
-    re.I,
-)
-
-
-# Openers that cannot follow "is". A state phrase completes a frame, so
-# it has to be a complement — an adjective ("frustrated"), a noun phrase
-# ("a clever idea"), a participle ("looking forward to it"). A *finite
-# verb* cannot: it makes the state a second predicate, and the render
-# comes out as "is finds deep emotional recharge" or "is experienced mild
-# evening frustration". A pronoun opener fails the same way ("is he hopes
-# for deeper trust") and additionally re-states the subject the frame
-# already supplies.
-#
-# Curated from what the store actually contained rather than derived,
-# because telling a finite verb from a participle needs POS tagging we
-# do not have here, and a guess in either direction is worse than a list:
-# too eager and the worker stores nothing, too shy and the frame breaks.
-# Every entry below appeared in a real row. Keep it that way — add a word
-# when a row shows up carrying it, not on suspicion.
-_PAST_OPENERS: frozenset[str] = frozenset(
-    {
-        "experienced", "felt", "had", "was", "were", "got", "went",
-        "became", "expressed", "showed", "reported", "described",
-        "mentioned", "said", "told", "asked", "spent", "took", "made",
-        "started", "finished", "decided", "struggled", "seemed",
-    }
-)
-
-_PRESENT_OPENERS: frozenset[str] = frozenset(
-    {
-        "finds", "likes", "loves", "hates", "values", "views", "hopes",
-        "prefers", "wants", "needs", "thinks", "believes", "feels",
-        "seeks", "enjoys", "considers", "sees", "treats", "keeps",
-        "tends", "plans", "expects", "trusts", "appreciates", "dislikes",
-        "find", "like", "value", "view", "hope", "prefer", "want",
-        "need", "think", "believe", "feel", "seek", "enjoy", "consider",
-    }
-)
-
-_PRONOUN_OPENERS: frozenset[str] = frozenset(
-    {"he", "she", "they", "it", "i", "you", "we", "his", "her", "their"}
-)
-
-
-# How many words a state phrase may run to before it is a sentence
-# rather than a complement. The prompt asks for "under about eight"; the
-# gate allows a little slack so a legitimately long-but-well-shaped
-# phrase ("quietly proud of how the refactor landed") survives.
-_MAX_STATE_WORDS = 12
-
-
-_WORD_RE = re.compile(r"[a-z0-9']+", re.I)
-
-
-def state_fault(state: str) -> str:
-    """Name why ``state`` cannot complete the frame, or ``""`` if it can.
-
-    The mirror of :func:`~app.core.memory.promise_worker._is_low_quality`,
-    and there for the same reason: a prompt is guidance, and the store is
-    what everything downstream reads. A model that ignores the shape
-    instruction should cost us one dropped tuple on one tick, not a
-    permanent row that renders as "You had Jacob pegged as experienced
-    mild evening frustration and low energy on august 12 2026 about
-    daily routine and motivation".
-
-    Returns a short reason string suitable for a log line, so the drops
-    are countable rather than invisible.
-    """
-    text = (state or "").strip()
-    if not text:
-        return "empty"
-    words = _WORD_RE.findall(text.lower())
-    if not words:
-        return "empty"
-    if _DATE_RE.search(text):
-        return "dated"
-    head = words[0]
-    if head in _PAST_OPENERS:
-        return f"past_tense:{head}"
-    if head in _PRESENT_OPENERS:
-        return f"finite_verb:{head}"
-    if head in _PRONOUN_OPENERS:
-        return f"restates_subject:{head}"
-    if len(words) > _MAX_STATE_WORDS:
-        return f"sentence:{len(words)}w"
-    return ""
-
-
-def topic_fault(topic: str) -> str:
-    """Name why ``topic`` is not a subject anyone can raise again."""
-    text = (topic or "").strip()
-    if not text:
-        return "empty"
-    if _DATE_RE.search(text):
-        return "dated"
-    return ""
-
-
-@dataclass(slots=True)
-class _BeliefTuple:
-    """One belief returned by the LLM extractor."""
-
-    kind: str
-    topic: str
-    predicted_state: str
-    confidence: float
-    # Mood only. Without these the gap detector cannot check a mood read
-    # at all -- it needs numeric coordinates to compare against the live
-    # AffectState, and rows with a NULL valence are skipped outright. The
-    # worker used never to supply them, so on the install where this was
-    # measured all 118 worker-written mood beliefs were unverifiable and
-    # sat in the review queue until a human or the 90-day sweep moved
-    # them.
-    valence: float | None = None
-    arousal: float | None = None
 
 
 class BeliefInferenceWorker:
@@ -491,7 +219,8 @@ class BeliefInferenceWorker:
         last_run_at: datetime | None,
     ) -> bool:
         """Both enable flags, plus budget for the extraction call."""
-        return self._fresh_turns(now, last_run_at) is not None
+        fresh = self._fresh_turns(now, last_run_at)
+        return fresh is not None and fresh[0] > 0
 
     def demand(
         self,
@@ -508,9 +237,8 @@ class BeliefInferenceWorker:
         material*: how many messages have landed since the last run,
         against the lookback window the extraction actually reads.
 
-        A session with no new turns reports zero and rides the
-        heartbeat, which is what re-mines the window occasionally in
-        case a later turn recontextualises an earlier one.
+        A session with no new user turns is not ready. Heartbeats and process
+        restarts cannot re-mine a window already covered by the persisted cursor.
         """
         fresh = self._fresh_turns(now, last_run_at)
         if fresh is None:
@@ -559,9 +287,9 @@ class BeliefInferenceWorker:
             )
             if not session_key:
                 return None
-            fresh = self._chat_db.count_messages_since(
-                session_key, last_run_at,
-            )
+            watermark = self._watermark(session_key)
+            rows = self._chat_db.get_messages(session_key, limit=max(2, lookback_turns * 2))
+            fresh = sum(r.role == "user" and r.id > watermark for r in rows)
         except Exception:
             log.debug("belief-worker demand probe failed", exc_info=True)
             return None
@@ -585,21 +313,20 @@ class BeliefInferenceWorker:
         if not session_key:
             return {"skipped": True, "reason": "no_session"}
 
+        user_id = self._user_id_provider()
         lookback_turns = int(
-            getattr(
-                self._belief_settings,
-                "belief_worker_lookback_turns",
-                12,
-            )
+            getattr(self._belief_settings, "belief_worker_lookback_turns", 12)
         )
         if lookback_turns <= 0:
             return {"skipped": True, "reason": "lookback_zero"}
 
         now = self._clock()
         source_ids: list[int] = []
+        offered: dict[int, dict[str, Any]] = {}
+        watermark = self._watermark(session_key)
         transcript = self._snapshot_transcript(
             session_key=session_key, lookback_turns=lookback_turns,
-            source_ids=source_ids,
+            source_ids=source_ids, offered=offered, watermark=watermark,
         )
         if not transcript:
             # An empty window is normal; a session key that matches *no*
@@ -620,6 +347,9 @@ class BeliefInferenceWorker:
                 session_key,
             )
             return {"skipped": True, "reason": "no_user_turns"}
+
+        if not any(mid > watermark for mid in source_ids):
+            return {"skipped": True, "reason": "no_new_user_turns"}
 
         # Rate-limit gate.
         if not self._rate_limiter.allow(now):
@@ -708,6 +438,19 @@ class BeliefInferenceWorker:
                 "belief-worker concept-bias: chars=%d", len(concept_hint),
             )
 
+        existing_rows = self._belief_store.list_recent(
+            user_id=user_id, limit=80,
+        )
+        live_words = _topic_words(transcript)
+        existing_rows.sort(key=lambda b: (
+            len(_topic_words(b.topic + " " + b.predicted_state) & live_words),
+            is_interpretation(b.metadata), b.observed_at,
+        ), reverse=True)
+        existing_rows = existing_rows[:8]
+        existing_hint = self._existing_hint(existing_rows, user_names, assistant_name)
+        # Captured rows are also used after generation; only offered ids may be merged.
+        candidates = {b.id: b for b in existing_rows}
+        self._offered_source_ids = set()
         t0 = time.monotonic()
         dropped_shape: list[str] = []
         tuples = self._extract_with_llm(
@@ -715,6 +458,7 @@ class BeliefInferenceWorker:
             interest_hint=interest_hint,
             reconsider_block=reconsider_block,
             concept_hint=concept_hint,
+            existing_hint=existing_hint,
             dropped=dropped_shape,
         )
         elapsed_ms = (time.monotonic() - t0) * 1000.0
@@ -737,78 +481,112 @@ class BeliefInferenceWorker:
         )
 
         upserted = 0
-        skipped_self_tag = 0
         dropped_invalid = 0
-        user_id = self._user_id_provider()
+        skipped_self_tag = 0
+        if self._user_id_provider() != user_id or self._session_key_provider() != session_key:
+            return {"skipped": True, "reason": "context_changed"}
         for t in tuples[:_MAX_BELIEFS_PER_RUN]:
             if self._cancel_event.is_set():
-                break
-            if t.kind not in VALID_KINDS:
+                return {"skipped": True, "reason": "cancelled_before_write"}
+            evidence = self._validate_evidence(t, offered, watermark)
+            if evidence is None:
                 dropped_invalid += 1
                 continue
-            # Self-tag wins guard: if Aiko already self-tagged a belief
-            # for this exact (kind, topic) and it's active, leave it
-            # alone -- her deliberate guess outranks the worker's
-            # inference.
-            existing = self._belief_store.list_recent(
-                user_id=user_id,
-                kind=t.kind,
-                limit=1,
-            )
-            if existing:
-                row = existing[0]
-                if (
-                    row.topic == t.topic.lower()
-                    and row.status == "active"
-                    and row.source == SOURCE_SELF_TAG
-                    and row.confidence >= t.confidence
-                ):
-                    skipped_self_tag += 1
-                    continue
+            target = candidates.get(t.existing_id) if t.existing_id is not None else None
+            if t.existing_id is not None and (
+                t.existing_id not in self._offered_existing_ids or target is None
+                or not is_interpretation(target.metadata)
+                or target.status not in ("active", "confirmed")
+                or not is_current(target, now)
+                or target.metadata.get("session_key") != session_key
+                or target.metadata.get("scope") != t.scope
+                or target.metadata.get("manually_edited")
+                or t.interpretation != target.predicted_state
+                or any(getattr(t, key) != target.metadata.get(key)
+                       for key in ("situation", "uncertainty", "revise_when"))
+            ):
+                dropped_invalid += 1
+                continue
+            if t.existing_id is None:
+                duplicate = next((b for b in existing_rows
+                                  if is_interpretation(b.metadata)
+                                  and b.status in ("active", "confirmed")
+                                  and b.metadata.get("session_key") == session_key
+                                  and b.metadata.get("scope") == t.scope
+                                  and all(getattr(t, key) == b.metadata.get(key)
+                                          for key in ("situation", "uncertainty", "revise_when"))
+                                  and " ".join(b.predicted_state.lower().split())
+                                      == " ".join(t.interpretation.lower().split())), None)
+                if duplicate is not None:
+                    t.topic = duplicate.topic
+                    t.kind = duplicate.kind
+            # A topic collision is a revision, not another observation. The
+            # store preserves the old interpretation's bounded receipt/history.
+            topic = target.topic if target is not None else t.topic
             embedding = None
             try:
-                embedding = self._embedder.embed(t.topic)
+                embedding = self._embedder.embed(t.interpretation)
             except Exception:
-                log.debug(
-                    "belief-worker: embedder raised for topic=%r",
-                    t.topic,
-                    exc_info=True,
-                )
+                log.debug("belief-worker: interpretation embedding failed", exc_info=True)
+            if target is not None:
+                # Preserve the exact canonical claim and qualifiers, rather
+                # than letting a similarity score erase a material distinction.
+                old = self._belief_store.get(target.id)
+                if (old is None or old.predicted_state != target.predicted_state
+                        or old.status != target.status or old.metadata != target.metadata):
+                    dropped_invalid += 1
+                    continue
+                topic = old.topic
+                t.kind = old.kind
+                t.interpretation = old.predicted_state
+            try:
+                support_time = max(timephrase.to_aware(datetime.fromisoformat(e["created_at"]))
+                                   for e in evidence)
+            except (TypeError, ValueError):
+                dropped_invalid += 1
+                continue
+            checked_at = timephrase.to_aware(self._clock())
+            end = support_time + timedelta(hours=SCOPE_HOURS[t.scope])
+            if support_time > checked_at or end <= checked_at:
+                dropped_invalid += 1
+                continue
+            support_at, expires_at = support_time.isoformat(), end.isoformat()
+            metadata = {
+                "interpretation_version": VERSION, "reason": t.reason,
+                "situation": t.situation, "uncertainty": t.uncertainty,
+                "revise_when": t.revise_when, "response_hint": t.response_hint,
+                "scope": t.scope, "novelty": t.novelty, "evidence": evidence,
+                "session_key": session_key, "last_supported_at": support_at,
+                "expires_at": expires_at, "source_window_message_ids": source_ids,
+            }
             belief = self._belief_store.upsert(
-                user_id=user_id,
-                kind=t.kind,
-                topic=t.topic,
-                predicted_state=t.predicted_state,
-                confidence=float(t.confidence),
-                valence=t.valence,
-                arousal=t.arousal,
+                user_id=user_id, kind=t.kind, topic=topic,
+                predicted_state=t.interpretation, confidence=t.confidence,
                 source=SOURCE_WORKER,
-                source_message_id=max(source_ids) if source_ids else None,
-                metadata={"source_window_message_ids": source_ids},
-                topic_embedding=embedding,
-                observed_at=now.isoformat(),
+                source_message_id=max(e["message_id"] for e in evidence),
+                metadata=metadata, topic_embedding=embedding, observed_at=support_at,
             )
             if belief is None:
                 dropped_invalid += 1
                 continue
             upserted += 1
-            log.info(
-                "belief-worker upsert: id=%s kind=%s topic=%r state=%r "
-                "confidence=%.2f",
-                belief.id,
-                belief.kind,
-                belief.topic,
-                belief.predicted_state,
-                belief.confidence,
-            )
-            if self._notify_belief_added is not None:
+            existed = any(b.id == belief.id for b in existing_rows)
+            existing_rows = [b for b in existing_rows if b.id != belief.id] + [belief]
+            notify = self._notify_belief_updated if existed else self._notify_belief_added
+            if notify is None:
+                notify = self._notify_belief_added
+            if notify is not None:
                 try:
-                    self._notify_belief_added(belief.to_payload())
+                    notify(belief.to_payload())
                 except Exception:
-                    log.debug(
-                        "belief-worker: notify_belief_added raised",
-                        exc_info=True,
-                    )
+                    log.debug("belief-worker: notify raised", exc_info=True)
+
+        # An empty, valid result is processed too. Failed calls and cancellation
+        # remain retryable; restarts retain the same intake boundary.
+        processed_ids = self._offered_source_ids & set(source_ids)
+        unusable_format = bool(dropped_shape) and not tuples
+        if not self._cancel_event.is_set() and processed_ids and not unusable_format:
+            self._chat_db.kv_set(self._watermark_key(session_key), str(max(processed_ids)))
 
         # Prune any per-user excess. Cap is a hard ceiling on
         # ``active`` rows; we don't touch confirmed / contradicted /
@@ -835,6 +613,7 @@ class BeliefInferenceWorker:
             "skipped_self_tag": skipped_self_tag,
             "dropped_invalid": dropped_invalid,
             "dropped_shape": len(dropped_shape),
+            "retryable_format": unusable_format,
             "pruned": pruned,
             "llm_ms": round(elapsed_ms, 1),
         }
@@ -847,6 +626,43 @@ class BeliefInferenceWorker:
             )
         log.info("belief-worker done: %s", result)
         return result
+
+    def _watermark_key(self, session_key: str) -> str:
+        return f"belief_worker.v2.watermark:{self._user_id_provider()}:{session_key}"
+
+    def _watermark(self, session_key: str) -> int:
+        try:
+            return int(self._chat_db.kv_get(self._watermark_key(session_key)) or 0)
+        except (ValueError, TypeError):
+            return 0
+
+    def _existing_hint(self, rows, user_names, assistant_name) -> str:
+        lines = []
+        for b in rows:
+            text = (f"id={b.id} [{b.status}; supported {b.observed_at}] "
+                    f"{b.topic}: {b.predicted_state}; scope={b.metadata.get('scope', 'unknown')}; "
+                    f"situation={b.metadata.get('situation', 'legacy, scope unknown')}; "
+                    f"uncertainty={b.metadata.get('uncertainty', 'unknown')}; "
+                    f"revise_when={b.metadata.get('revise_when', 'unknown')}")
+            if bool(getattr(self._agent_settings, "belief_worker_scrub_transcript", False)):
+                text = scrub_claim_for_search(text, user_names=user_names,
+                                              assistant_name=assistant_name)
+            if text:
+                lines.append(text)
+        return "\n".join(lines)
+
+    def _validate_evidence(self, t, offered, watermark):
+        evidence = []
+        for e in t.evidence:
+            row = offered.get(e["message_id"])
+            if (row is None or e["message_id"] not in self._offered_source_ids
+                    or row["role"] != "user" or e["quote"] not in row["content"]
+                    or e["quote"] not in self._offered_source_text.get(e["message_id"], "")
+                    or not row.get("created_at")):
+                return None
+            evidence.append({"message_id": e["message_id"], "quote": e["quote"],
+                             "created_at": row["created_at"]})
+        return evidence if any(e["message_id"] > watermark for e in evidence) else None
 
     # ── K65b: interest-map bias helpers ──────────────────────────────
 
@@ -1000,44 +816,39 @@ class BeliefInferenceWorker:
             return False
 
     def _snapshot_transcript(
-        self,
-        *,
-        session_key: str,
-        lookback_turns: int,
+        self, *, session_key: str, lookback_turns: int,
         source_ids: list[int] | None = None,
+        offered: dict[int, dict[str, Any]] | None = None, watermark: int = 0,
     ) -> str:
-        """Join the last N user messages into one speaker-attributed block.
-
-        Assistant turns are intentionally omitted: the worker mines
-        user beliefs, not Aiko's own speech. Each line is prefixed with
-        the user's name so the extractor knows first-person "I"/"me" is
-        the user and "you" addresses Aiko -- the deictic anchor that
-        makes "what does the user believe" resolvable. We cap each user
-        message at 600 chars so a long rant can't blow the budget.
-        """
         rows = self._chat_db.get_messages(session_key, limit=lookback_turns * 2)
-        user_msgs = [r for r in rows if r.role == "user"]
-        if not user_msgs:
+        users = [r for r in rows if r.role == "user"][-lookback_turns:]
+        if not users:
             return ""
-        user_msgs = user_msgs[-lookback_turns:]
-        user_name = self._resolve_user_name()
-        # K-time10: age-prefixed. A belief is a claim about what the user
-        # is like *now*, and the lookback window can span days -- without
-        # stamps, "he's been stressed all week" said last Tuesday reads as
-        # though it were said this morning.
-        now = self._clock()
-        chunks: list[str] = []
-        for row in user_msgs:
-            text = " ".join((row.content or "").splitlines()).strip()
+        first_id = users[0].id
+        # Include the question just before the oldest offered user response.
+        preceding = next((r.id for r in reversed(rows)
+                          if r.id < first_id and r.role == "assistant"), first_id)
+        first_id = preceding
+        assistant_name = (self._assistant_name_provider()
+                          if self._assistant_name_provider else None) or "Aiko"
+        chunks = []
+        for row in rows:
+            if row.id < first_id or row.role not in ("user", "assistant"):
+                continue
+            text = " ".join((row.content or "").splitlines()).strip()[:600]
             if not text:
                 continue
-            if source_ids is not None and getattr(row, "id", None) is not None:
-                source_ids.append(int(row.id))
-            if len(text) > 600:
-                text = text[:597] + "\u2026"
-            age = timephrase.age_prefix(getattr(row, "created_at", None), now)
-            stamp = f"[{age}] " if age else ""
-            chunks.append(f"{stamp}{user_name}: {text}")
+            record = {"role": row.role, "content": text, "created_at": row.created_at}
+            if offered is not None:
+                offered[row.id] = record
+            if row.role == "user" and source_ids is not None:
+                source_ids.append(row.id)
+            tag = "NEW" if row.role == "user" and row.id > watermark else "context only"
+            rendered = timephrase.format_transcript(
+                [record], self._clock(),
+                role_labels={"user": self._resolve_user_name(), "assistant": assistant_name},
+            )
+            chunks.append(f"[message_id={row.id}; {tag}] {rendered}")
         return "\n".join(chunks)
 
     # ── LLM extractor ────────────────────────────────────────────────
@@ -1049,26 +860,13 @@ class BeliefInferenceWorker:
         interest_hint: str = "",
         reconsider_block: str = "",
         concept_hint: str = "",
+        existing_hint: str = "",
         dropped: list[str] | None = None,
-    ) -> list[_BeliefTuple] | None:
-        # Two time instructions doing opposite jobs, deliberately.
-        #
-        # K-time8: the anchor is for *reading* — it lets the model resolve
-        # "he was stressed yesterday" in the transcript instead of
-        # guessing. The rule is for *writing*, and it has to be the
-        # live-state half of the contract: this worker fills a topic and
-        # a state phrase that are both re-read as claims about the
-        # present. Pasting `STORED_TEXT_TIME_RULE` here instead (which
-        # this worker did) instructs the model to write the concrete day
-        # and put finished events in the past tense, which is how a mood
-        # read became "experienced mild evening frustration and low
-        # energy on august 12 2026" — a row that no later turn can
-        # confirm or contradict, so it sits in the active set until the
-        # cap prunes it.
+    ) -> list[Interpretation] | None:
         system_content = (
             f"{timephrase.today_anchor(self._clock())}\n\n"
             f"{_build_system_prompt(self._resolve_user_name())}\n\n"
-            f"{timephrase.LIVE_STATE_TIME_RULE}"
+            f"{timephrase.STORED_TEXT_TIME_RULE}"
         )
         lines = scrubbed_transcript.splitlines()
         newest_first = list(reversed(lines))
@@ -1078,6 +876,11 @@ class BeliefInferenceWorker:
 
         def render(selected) -> list[dict[str, str]]:
             sections = [_USER_TEMPLATE.format(transcript="\n".join(reversed(selected)))]
+            if existing_hint:
+                sections.append(
+                    "Existing readings (novelty baseline, NOT evidence; do not "
+                    "rediscover paraphrases; preserve meaningful qualifiers):\n" + existing_hint
+                )
             if interest_hint:
                 sections.append(
                     "Topics this user keeps returning to (prioritise beliefs "
@@ -1113,7 +916,7 @@ class BeliefInferenceWorker:
         )
         packed = None
         selected_optional = optional_hints
-        for optional_count in range(3, -1, -1):
+        for optional_count in range(6, -1, -1):
             candidate = pack_worker_prompt(
                 newest_first, render, context_window=context_window,
                 output_tokens=output_tokens, surface="belief_worker", log=log,
@@ -1128,12 +931,18 @@ class BeliefInferenceWorker:
                 ))
             if packed is not None and packed.item_count == len(newest_first):
                 break
-            if optional_count == 3:
-                concept_hint = ""
-            elif optional_count == 2:
+            if optional_count == 6:
                 reconsider_block = ""
-            elif optional_count == 1:
+            elif optional_count == 5:
                 interest_hint = ""
+            elif optional_count == 4:
+                concept_hint = ""
+            elif optional_count == 3:
+                existing_hint = "\n".join(existing_hint.splitlines()[:3])
+            elif optional_count == 2:
+                existing_hint = "\n".join(existing_hint.splitlines()[:1])
+            elif optional_count == 1:
+                existing_hint = ""
         if packed is None:
             log.warning("belief_worker: no transcript line fits the prompt budget")
             return None
@@ -1144,7 +953,24 @@ class BeliefInferenceWorker:
                 optional_hints - selected_optional,
             )
         messages = packed.messages
+        # Receipts must refer to the actual budgeted/scrubbed prompt, not all
+        # rows fetched before packing. Optional hints contain no message_id tags.
+        self._offered_source_ids = {
+            int(mid) for mid in re.findall(r"\[message_id=(\d+);", messages[1]["content"])
+        }
         user_content = messages[1]["content"]
+        self._offered_source_text = {
+            int(match.group(1)): match.group(0)
+            for match in re.finditer(r"(?m)^\[message_id=(\d+);[^\n]*", user_content)
+        }
+        self._offered_existing_ids = {
+            int(mid) for mid in re.findall(r"(?m)^id=(\d+) ", user_content)
+        }
+        if "message_id=" in scrubbed_transcript and not any(
+            "; NEW]" in line for line in self._offered_source_text.values()
+        ):
+            log.warning("belief_worker: no new user evidence fits the prompt")
+            return None
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
                 "belief-worker extract prompt: model=%s prompt_chars=%d "
@@ -1191,80 +1017,5 @@ class BeliefInferenceWorker:
         return self._parse_tuples(raw, dropped=dropped)
 
     @staticmethod
-    def _parse_tuples(
-        raw: str, *, dropped: list[str] | None = None,
-    ) -> list[_BeliefTuple] | None:
-        """Parse the LLM's JSON answer into typed tuples.
-
-        Returns ``None`` only when the response is fundamentally
-        un-parseable. An empty list returns ``[]`` -- a perfectly valid
-        "nothing to report" turn. Shape tolerance lives in
-        :func:`app.llm.json_answers.parse_json_array_answer`.
-
-        Tuples that survive parsing are then shape-gated by
-        :func:`state_fault` / :func:`topic_fault`, because the length
-        limits below only ever bounded how *much* the model wrote, never
-        whether what it wrote fits the sentence it will be read back in.
-        Each rejection's reason is appended to ``dropped`` so the run
-        summary can report it: a gate that quietly ate most of the
-        model's output would be indistinguishable from a quiet
-        transcript, and "the extractor reports success while storing
-        nothing" is a failure this worker family has had before.
-        """
-        _dropped = dropped if dropped is not None else []
-        parsed = parse_json_array_answer(
-            raw, key="beliefs", item_hint_keys=_BELIEF_ITEM_KEYS,
-        )
-        if parsed is None:
-            return None
-        out: list[_BeliefTuple] = []
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            kind = str(item.get("kind", "")).strip().lower()
-            topic = str(item.get("topic", "")).strip().lower()
-            state = str(item.get("predicted_state", "")).strip()
-            try:
-                confidence = float(item.get("confidence", 0.0))
-            except (TypeError, ValueError):
-                continue
-            if kind not in (KIND_MOOD, KIND_OPINION):
-                continue
-            if not topic or len(topic) > 60:
-                continue
-            if not state or len(state) > 120:
-                continue
-            fault = topic_fault(topic) or state_fault(state)
-            if fault:
-                _dropped.append(fault)
-                log.info(
-                    "belief-worker dropped unusable shape: reason=%s "
-                    "topic=%r state=%r",
-                    fault,
-                    topic,
-                    _preview(state),
-                )
-                continue
-            confidence = max(0.0, min(1.0, confidence))
-            valence = arousal = None
-            if kind == KIND_MOOD:
-                valence = _coerce_axis(item.get("valence"), lo=-1.0, hi=1.0)
-                arousal = _coerce_axis(item.get("arousal"), lo=0.0, hi=1.0)
-                if valence is None:
-                    # Not fatal: the row is still worth keeping as a
-                    # readable belief, it just cannot be auto-verified.
-                    log.debug(
-                        "belief-worker: mood row without valence topic=%r",
-                        topic,
-                    )
-            out.append(
-                _BeliefTuple(
-                    kind=kind,
-                    topic=topic,
-                    predicted_state=state,
-                    confidence=confidence,
-                    valence=valence,
-                    arousal=arousal,
-                )
-            )
-        return out
+    def _parse_tuples(raw: str, *, dropped: list[str] | None = None):
+        return parse_interpretations(raw, dropped if dropped is not None else [])

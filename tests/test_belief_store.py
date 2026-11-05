@@ -4,6 +4,9 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from datetime import timedelta
+
+from app.core.infra import timephrase
 from pathlib import Path
 
 import numpy as np
@@ -317,7 +320,7 @@ class ReobservationTests(unittest.TestCase):
         self._reobserve(store)
         self.assertEqual(store.get(b.id).status, STATUS_CONFIRMED)
 
-    def test_repeat_observation_auto_confirms(self) -> None:
+    def test_replaying_an_extraction_is_not_confirmation(self) -> None:
         _, store, _ = _build_db()
         b = self._reobserve(store)
         assert b is not None
@@ -325,24 +328,24 @@ class ReobservationTests(unittest.TestCase):
         self.assertEqual(store.get(b.id).metadata.get("observations"), 1)
         self._reobserve(store)
         row = store.get(b.id)
-        self.assertEqual(row.status, STATUS_CONFIRMED)
-        self.assertEqual(row.metadata.get("observations"), 2)
+        self.assertEqual(row.status, STATUS_ACTIVE)
+        self.assertEqual(row.metadata.get("observations"), 1)
 
-    def test_threshold_is_configurable(self) -> None:
+    def test_old_threshold_does_not_turn_repetition_into_verification(self) -> None:
         _, store, _ = _build_db()
         b = self._reobserve(store, auto_confirm_after=3)
         assert b is not None
         self._reobserve(store, auto_confirm_after=3)
         self.assertEqual(store.get(b.id).status, STATUS_ACTIVE)
         self._reobserve(store, auto_confirm_after=3)
-        self.assertEqual(store.get(b.id).status, STATUS_CONFIRMED)
+        self.assertEqual(store.get(b.id).status, STATUS_ACTIVE)
 
     def test_changed_state_restarts_the_count(self) -> None:
         """A new claim about the same topic inherits no corroboration."""
         _, store, _ = _build_db()
         b = self._reobserve(store)
         assert b is not None
-        self._reobserve(store)
+        store.update(b.id, status="confirmed")
         self.assertEqual(store.get(b.id).status, STATUS_CONFIRMED)
         store.upsert(
             user_id="u1", kind=KIND_OPINION, topic="rust",
@@ -359,6 +362,19 @@ class ReobservationTests(unittest.TestCase):
         store.mark_contradicted(b.id)
         for _ in range(4):
             self._reobserve(store)
+        self.assertEqual(store.get(b.id).status, STATUS_CONTRADICTED)
+
+    def test_fresh_source_ids_count_as_support_without_certifying_the_reading(self):
+        _, store, _ = _build_db()
+        b = self._reobserve(store, source_message_id=10)
+        self._reobserve(store, source_message_id=10)
+        self.assertEqual(store.get(b.id).metadata["observations"], 1)
+        self._reobserve(store, source_message_id=11)
+        row = store.get(b.id)
+        self.assertEqual(row.metadata["observations"], 2)
+        self.assertEqual(row.status, STATUS_ACTIVE)
+        store.mark_contradicted(b.id)
+        self._reobserve(store, source_message_id=12)
         self.assertEqual(store.get(b.id).status, STATUS_ACTIVE)
 
 
@@ -417,7 +433,7 @@ class BelievedAndTrustedTests(unittest.TestCase):
 
 
 class OutcomeTests(unittest.TestCase):
-    def test_manual_confirmation_is_not_hidden_by_auto_confirmation(self) -> None:
+    def test_only_manual_confirmation_creates_a_resolution_from_repeated_extraction(self) -> None:
         _, store, _ = _build_db()
         claim = dict(user_id="u1", kind=KIND_OPINION, topic="testing", predicted_state="useful")
         belief = store.upsert(**claim)
@@ -426,7 +442,7 @@ class OutcomeTests(unittest.TestCase):
         store.update(belief.id, status="confirmed")
         self.assertEqual(
             [row["method"] for row in store.list_outcomes(user_id="u1")],
-            ["auto_confirm", "manual"],
+            ["manual"],
         )
 
     def test_upgrade_does_not_invent_historic_outcomes(self) -> None:
@@ -456,7 +472,7 @@ class OutcomeTests(unittest.TestCase):
         _, store, _ = _build_db()
         claim = dict(user_id="u1", kind=KIND_OPINION, topic="testing", predicted_state="useful")
         belief = store.upsert(**claim)
-        store.upsert(**claim)
+        store.update(belief.id, status="confirmed")
         store.mark_contradicted(
             belief.id, method="opinion_heuristic", evidence_message_id=42,
             evidence={"signals": ["negation"]},
@@ -466,7 +482,7 @@ class OutcomeTests(unittest.TestCase):
         )
         store.upsert(**{**claim, "predicted_state": "sometimes useful"})
         rows = store.list_outcomes(user_id="u1")
-        self.assertEqual([row["method"] for row in rows], ["auto_confirm", "opinion_heuristic"])
+        self.assertEqual([row["method"] for row in rows], ["manual", "opinion_heuristic"])
         self.assertEqual(rows[1]["claim"]["predicted_state"], "useful")
         self.assertEqual(rows[1]["evidence_message_id"], 42)
         self.assertEqual(rows[1]["evidence"], {"signals": ["negation"]})
@@ -515,7 +531,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(n, 1)
         self.assertEqual(store.get(b.id).status, STATUS_STALE)
 
-    def test_prune_to_cap_drops_oldest_lowest_confidence(self) -> None:
+    def test_active_cap_retires_oldest_without_deleting_receipts(self) -> None:
         _, store, _ = _build_db()
         keep_high = store.upsert(
             user_id="u1", kind=KIND_OPINION, topic="keep",
@@ -535,10 +551,95 @@ class MaintenanceTests(unittest.TestCase):
         assert keep_high is not None and drop_low is not None and drop_mid is not None
         pruned = store.prune_to_cap(user_id="u1", cap=1)
         self.assertEqual(pruned, 2)
-        self.assertIsNone(store.get(drop_low.id))
-        self.assertIsNone(store.get(drop_mid.id))
-        self.assertIsNotNone(store.get(keep_high.id))
+        self.assertEqual(store.get(drop_low.id).status, STATUS_STALE)
+        self.assertEqual(store.get(drop_mid.id).status, STATUS_STALE)
+        self.assertEqual(store.get(keep_high.id).status, STATUS_ACTIVE)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InterpretationLifecycleTests(unittest.TestCase):
+    def _write(self, store, **overrides):
+        now = timephrase.utcnow()
+        args = dict(user_id="u1", kind="mood", topic="quiet company",
+                    predicted_state="They may want quiet companionship while tired.",
+                    source="worker", source_message_id=1, metadata={
+                        "interpretation_version": 2, "scope": "exchange",
+                        "session_key": "u1:s", "situation": "Winding down.",
+                        "uncertainty": "Amount of conversation unknown.",
+                        "expires_at": (now + timedelta(hours=2)).isoformat(),
+                        "evidence": [{"message_id": 1, "quote": "Stay with me."}],
+                    })
+        args.update(overrides)
+        return store.upsert(**args)
+
+    def test_revising_a_reading_retains_a_bounded_original_receipt(self):
+        _, store, _ = _build_db()
+        first = self._write(store)
+        store.update(first.id, status="confirmed")
+        changed = self._write(
+            store, predicted_state="They may enjoy an active conversation instead.",
+            source_message_id=2,
+        )
+        self.assertEqual(changed.id, first.id)
+        self.assertEqual(changed.status, "active")
+        self.assertNotIn("confirmation_basis", changed.metadata)
+        self.assertEqual(changed.metadata["interpretation_history"][0]["interpretation"],
+                         first.predicted_state)
+        for i in range(6):
+            self._write(store, predicted_state=f"Another possible interpretation, number {i}.")
+        self.assertEqual(len(store.get(first.id).metadata["interpretation_history"]), 3)
+
+    def test_topic_similarity_alone_cannot_erase_different_meanings(self):
+        _, store, _ = _build_db()
+        vector = np.array([1.0, 0.0])
+        first = self._write(store, topic="welcoming affection", topic_embedding=vector)
+        second = self._write(store, topic="feeling secure", topic_embedding=vector,
+                             predicted_state="They may feel secure in Aiko's company.")
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual(len(store.list_active(user_id="u1")), 2)
+
+    def test_manual_scope_correction_preserves_the_previous_reading(self):
+        _, store, _ = _build_db()
+        first = self._write(store)
+        store.update(first.id, status="confirmed")
+        corrected = store.update(first.id, situation="Only while winding down before sleep.")
+        self.assertEqual(corrected.status, "active")
+        self.assertTrue(corrected.metadata["manually_edited"])
+        self.assertNotIn("confirmation_basis", corrected.metadata)
+        self.assertEqual(corrected.metadata["interpretation_history"][-1]["metadata"]["situation"],
+                         "Winding down.")
+        self.assertIsNone(self._write(store))  # worker cannot undo the user's current correction
+
+    def test_confirmed_moods_expire_despite_unrelated_inspections(self):
+        _, store, _ = _build_db()
+        old = (timephrase.utcnow() - timedelta(days=3)).isoformat()
+        row = store.upsert(user_id="u1", kind="mood", topic="trip", predicted_state="Excited",
+                           observed_at=old)
+        store.update(row.id, status="confirmed")
+        store.stamp_checked(row.id)
+        cutoff = (timephrase.utcnow() - timedelta(days=90)).isoformat()
+        self.assertEqual(store.mark_stale_older_than(cutoff_iso=cutoff), 1)
+        self.assertEqual(store.get(row.id).status, "stale")
+
+    def test_legacy_confidence_cannot_crowd_out_a_new_tentative_reading(self):
+        _, store, _ = _build_db()
+        new = self._write(store, confidence=0.3)
+        legacy = store.upsert(user_id="u1", kind="mood", topic="old warmth",
+                              predicted_state="Deeply affectionate", confidence=0.99)
+        self.assertEqual(store.prune_to_cap(user_id="u1", cap=1), 1)
+        self.assertEqual(store.get(new.id).status, STATUS_ACTIVE)
+        self.assertEqual(store.get(legacy.id).status, STATUS_STALE)
+
+    def test_legacy_filter_applies_before_pagination_and_to_counts(self):
+        _, store, _ = _build_db()
+        row = self._write(store)
+        for i in range(4):
+            store.upsert(user_id="u1", kind="mood", topic=f"legacy {i}", predicted_state="Warm")
+        scoped = store.list_recent(user_id="u1", interpretations_only=True, limit=1)
+        self.assertEqual([b.id for b in scoped], [row.id])
+        counts = store.count_by_status(user_id="u1", interpretations_only=True)
+        self.assertEqual(counts["active"], 1)
+        self.assertEqual(store.count_by_status(user_id="u1")["active"], 5)

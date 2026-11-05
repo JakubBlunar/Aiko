@@ -208,7 +208,7 @@ class PromptAssemblerHelpersMixin:
         user_expertise: Callable[[str], str] | None = None,
         knowledge_grounding: Callable[[str], str] | None = None,
         belief_gaps: Callable[[], str] | None = None,
-        trusted_beliefs: Callable[[], str] | None = None,
+        trusted_beliefs: Callable[[str], str] | None = None,
         clarification: Callable[[], str] | None = None,
         inside_joke: Callable[[], str] | None = None,
         calibration: Callable[[], str] | None = None,

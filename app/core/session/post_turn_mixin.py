@@ -1466,101 +1466,9 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     "activity self-tag dispatch failed", exc_info=True,
                 )
 
-        # K2: inline [[predict:kind:topic:state:confidence]] self-tag.
-        # Aiko's theory-of-mind prediction about the user gets parsed
-        # here and upserted into the BeliefStore. We optionally embed
-        # the topic so the store can fuzzy-merge near-duplicates on
-        # the next upsert. The gap detector pass below picks up the
-        # fresh row if its mood prediction disagrees with the live
-        # affect read.
-        belief_store = getattr(self, "_belief_store", None)
-        if (
-            belief_store is not None
-            and raw_assistant_text
-            and bool(getattr(self._settings.agent, "belief_tracking_enabled", True))
-        ):
-            try:
-                from app.core.services.response_text_service import (
-                    extract_predict_tags,
-                )
-
-                tags = extract_predict_tags(raw_assistant_text)
-                if tags:
-                    log.info(
-                        "K2 self-flag: aiko predicted %d belief(s)",
-                        len(tags),
-                    )
-                    embedder = getattr(self, "_embedder", None)
-                    # A mood belief with no numeric coordinates cannot be
-                    # checked by the gap detector at all -- it skips rows
-                    # whose valence is NULL -- and the four-field tag
-                    # grammar has nowhere to put them. Widening the tag
-                    # would mean asking her to emit two calibrated floats
-                    # inline mid-sentence, which buys a higher malformed
-                    # rate for a number she is not better placed to guess
-                    # than the estimator is.
-                    #
-                    # The tag fires about what they are discussing *now*,
-                    # so this turn's per-axis read of the user is a fair
-                    # anchor for it. Deliberately the L13 reader and not
-                    # the K37 contagion estimate, for the two reasons its
-                    # docstring gives: contagion reads a carried mood band
-                    # that can be days old, and it fuses the axes, so a
-                    # turn readable only for arousal still records a
-                    # valence. Both are wrong for a stored claim. Unread
-                    # axes stay None and the row stays honestly
-                    # unverifiable.
-                    tag_valence = tag_arousal = None
-                    if any(t.kind == "mood" for t in tags):
-                        tag_valence, tag_arousal = self._read_user_affect_axes(
-                            user_text or ""
-                        )
-                    for t in tags:
-                        embedding = None
-                        if embedder is not None:
-                            try:
-                                embedding = embedder.embed(t.topic)
-                            except Exception:
-                                log.debug(
-                                    "K2 embed topic failed",
-                                    exc_info=True,
-                                )
-                        try:
-                            belief = belief_store.upsert(
-                                user_id=self._user_id,
-                                kind=t.kind,
-                                topic=t.topic,
-                                predicted_state=t.predicted_state,
-                                confidence=t.confidence,
-                                valence=(
-                                    tag_valence if t.kind == "mood" else None
-                                ),
-                                arousal=(
-                                    tag_arousal if t.kind == "mood" else None
-                                ),
-                                source="self_tag",
-                                source_message_id=assistant_message_id,
-                                topic_embedding=embedding,
-                            )
-                            if belief is not None:
-                                log.info(
-                                    "K2 belief from tag: id=%s kind=%s "
-                                    "topic=%r state=%r confidence=%.2f",
-                                    belief.id,
-                                    belief.kind,
-                                    belief.topic,
-                                    belief.predicted_state,
-                                    belief.confidence,
-                                )
-                                self._notify_belief_added(belief.to_payload())
-                        except Exception:
-                            log.debug(
-                                "K2 upsert from tag raised", exc_info=True,
-                            )
-            except Exception:
-                log.debug(
-                    "predict-tag inline extraction failed", exc_info=True,
-                )
+        # Legacy [[predict:...]] tags are still stripped by response_text_service,
+        # but no longer write fragment beliefs. Only the source-linked worker
+        # contract produces new interpretations; an inline guess is not evidence.
 
         # K1: inline [[goal:summary]] self-tag. Aiko declares one of
         # her own long-term goals mid-turn; we hand each unique body
@@ -1622,26 +1530,17 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     "goal-tag inline extraction failed", exc_info=True,
                 )
 
-        # K2: post-turn gap detector pass. Compares active mood
-        # beliefs against the live affect read and active opinion
-        # beliefs against the user's most recent message. Surfaced
-        # gaps are stashed for the next-turn ``_render_belief_gaps_block``
-        # provider to consume.
+        # K2: expire scoped interpretations. Aiko's own affect is never
+        # evidence that a reading of the user was right or wrong.
+        belief_store = getattr(self, "_belief_store", None)
         gap_detector = getattr(self, "_belief_gap_detector", None)
         if (
             gap_detector is not None
             and bool(getattr(self._settings.agent, "belief_tracking_enabled", True))
         ):
             try:
-                affect_store = getattr(self, "_affect_store", None)
-                affect = (
-                    affect_store.get(self._user_id)
-                    if affect_store is not None
-                    else None
-                )
                 gaps = gap_detector.detect(
                     user_id=self._user_id,
-                    affect=affect,
                     recent_user_message=user_text,
                     evidence_message_id=user_message_id,
                 )

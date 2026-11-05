@@ -28,8 +28,10 @@ class _BeliefState:
         kind: str | None = None,
         status: str | None = None,
         include_counts: bool = True,
+        include_legacy: bool = True,
     ) -> dict[str, Any]:
-        rows = list(self.rows.values())
+        rows = [r for r in self.rows.values() if include_legacy
+                or r["metadata"].get("interpretation_version") == 2]
         if kind:
             rows = [r for r in rows if r["kind"] == kind]
         if status:
@@ -83,6 +85,8 @@ class _BeliefState:
         predicted_state: str | None = None,
         confidence: float | None = None,
         status: str | None = None,
+        situation: str | None = None,
+        uncertainty: str | None = None,
     ) -> dict[str, Any] | None:
         row = self.rows.get(int(belief_id))
         if row is None:
@@ -93,6 +97,10 @@ class _BeliefState:
             row["confidence"] = confidence
         if status is not None:
             row["status"] = status
+        if situation is not None:
+            row["metadata"]["situation"] = situation
+        if uncertainty is not None:
+            row["metadata"]["uncertainty"] = uncertainty
         return row
 
     def delete_belief(self, belief_id: int) -> bool:
@@ -170,6 +178,23 @@ class CreateBeliefTests(unittest.TestCase):
 
 
 class PatchBeliefTests(unittest.TestCase):
+    def test_scope_and_uncertainty_can_be_corrected_without_a_binary_verdict(self):
+        client, state = _build_client()
+        row = state.add_belief(kind="mood", topic="company", predicted_state="May want quiet")
+        resp = client.patch(f"/api/beliefs/{row['id']}", json={
+            "situation": "Winding down before sleep.",
+            "uncertainty": "Conversation is welcome too.",
+        })
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["belief"]["metadata"]["uncertainty"],
+                         "Conversation is welcome too.")
+        self.assertEqual(resp.json()["belief"]["status"], "active")
+
+    def test_invalid_scope_type_is_rejected(self):
+        client, _ = _build_client()
+        self.assertEqual(client.patch("/api/beliefs/1", json={"situation": []}).status_code, 400)
+
+
     def test_patch_state(self) -> None:
         client, state = _build_client()
         row = state.add_belief(kind="mood", topic="t", predicted_state="excited")

@@ -131,12 +131,6 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         "goals_block",
         "coactivation_block",
         "day_color_block",
-        # K2: corroborated theory-of-mind reads. Semi-stable by
-        # construction -- a belief needs two observations of the same
-        # state to reach the pool this renders, so it moves on the
-        # worker's cadence rather than per turn, and it belongs with the
-        # other "who is this person to me" context.
-        "trusted_beliefs_block",
     ),
     # T2 — compaction only. Only mutates when a SummaryWorker run
     # collapses old history into a new summary row. ``continuity_block``
@@ -206,6 +200,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # turn's dialogue act and authoritative world state. It reports
         # facts rather than offering a floor-taking move.
         "conversation_situation_block",
+        "trusted_beliefs_block",
         "belief_gaps_block",
         "clarification_block",
         "calibration_block",
@@ -848,7 +843,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # work itself, so we can safely call it on every turn. Dropped
         # in aggressive mode.
         self._belief_gaps_provider: Callable[[], str] | None = None
-        self._trusted_beliefs_provider: Callable[[], str] | None = None
+        self._trusted_beliefs_provider: Callable[[str], str] | None = None
         # K17 — clarification-repair one-shot. The post-turn detector
         # stashes a result on the controller; this provider renders
         # it on the very next turn and clears the slot.
@@ -1554,15 +1549,13 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 except Exception:
                     log.debug("day_color provider raised", exc_info=True)
                     day_color_block = ""
-        # K2 -- corroborated beliefs. Uncached for the same reason as
-        # day_color above: the worker can promote a belief mid-conversation
-        # and the block has to reflect that on the next turn. One indexed
-        # SELECT with a small LIMIT.
+        # K2 -- live, query-dependent interpretations. Tentative readings can
+        # help before concepts form; expiry and relevance are evaluated per turn.
         trusted_beliefs_block = ""
         if self._trusted_beliefs_provider is not None:
             with _timed_phase(provider_ms, "trusted_beliefs"):
                 try:
-                    trusted_beliefs_block = self._trusted_beliefs_provider() or ""
+                    trusted_beliefs_block = self._trusted_beliefs_provider(user_text) or ""
                 except Exception:
                     log.debug("trusted_beliefs provider raised", exc_info=True)
                     trusted_beliefs_block = ""
@@ -3249,13 +3242,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # survives K16 ``split``/``replace``. Lives in T1 because
             # the kv_meta row only flips at local midnight.
             system_parts.append(day_color_block)
-        if trusted_beliefs_block:
-            # K2 -- what she has actually learned he thinks and feels.
-            # Closes T1 because it is the last of the "who is this person
-            # to me" cluster; its sibling ``belief_gaps_block`` sits in T6
-            # since that one fires off the live message.
-            system_parts.append(trusted_beliefs_block)
-
         # ── T2: SUMMARY (compaction-only) ────────────────────────────
         # Only mutates when SummaryWorker collapses old history into a
         # new summary row. Stable across consecutive turns until the
@@ -3396,6 +3382,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts.append(sleep_state_block)
         if conversation_situation_block:
             system_parts.append(conversation_situation_block)
+        if trusted_beliefs_block:
+            # K2: query-dependent, temporary interpretations; context only,
+            # offers no stance and does not request a question or topic change.
+            system_parts.append(trusted_beliefs_block)
         if belief_gaps_block:
             # K2: surface up to two "your read on X doesn't match the
             # room" lines right alongside the knowledge-gap block.

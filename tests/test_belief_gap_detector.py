@@ -16,8 +16,6 @@ from app.core.relationship.belief_store import (
     KIND_MOOD,
     KIND_OPINION,
     STATUS_ACTIVE,
-    STATUS_CONFIRMED,
-    STATUS_CONTRADICTED,
     STATUS_STALE,
 )
 from app.core.infra.chat_database import ChatDatabase
@@ -31,180 +29,35 @@ def _build() -> tuple[BeliefStore, BeliefGapDetector]:
     return store, detector
 
 
-class MoodGapTests(unittest.TestCase):
-    """The mood pass, which only runs on a turn about the belief's topic.
-
-    A mood belief is about one subject; ``AffectState`` is a single
-    global read. Checking "he's excited about the tokyo trip" against how
-    he sounds while talking about his commute measures nothing, so every
-    case here has to say what the turn was about.
-    """
-
-    def test_large_valence_drift_flags_gap(self) -> None:
+class EvidenceSafetyTests(unittest.TestCase):
+    def test_aikos_emotion_cannot_contradict_user_readings(self):
         store, detector = _build()
-        b = store.upsert(
-            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
-            predicted_state="excited", confidence=0.85,
-            valence=0.5, arousal=0.7,
-        )
-        assert b is not None
-        affect = AffectState(
-            user_id="u1", valence=-0.4, arousal=0.3, mood_label="melancholy",
-        )
-        gaps = detector.detect(
-            user_id="u1", affect=affect,
-            recent_user_message="thinking about the tokyo trip again",
-            evidence_message_id=42,
-        )
-        self.assertEqual(len(gaps), 1)
-        self.assertEqual(gaps[0].kind, KIND_MOOD)
-        self.assertEqual(gaps[0].topic, "tokyo trip")
-        self.assertEqual(gaps[0].observed, "melancholy")
-        self.assertEqual(store.get(b.id).status, STATUS_CONTRADICTED)
-        outcome = store.list_outcomes(user_id="u1")[0]
-        self.assertEqual(outcome["method"], "mood_comparison")
-        self.assertEqual(outcome["evidence_message_id"], 42)
-        self.assertEqual(outcome["evidence"]["valence"], -0.4)
-
-    def test_small_drift_does_not_flag(self) -> None:
-        store, detector = _build()
-        b = store.upsert(
-            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
-            predicted_state="excited", confidence=0.85,
-            valence=0.5, arousal=0.7,
-        )
-        assert b is not None
-        affect = AffectState(
-            user_id="u1", valence=0.45, arousal=0.65,
-            mood_label="playful",
-        )
-        gaps = detector.detect(
-            user_id="u1", affect=affect,
-            recent_user_message="the tokyo trip is coming up soon",
-        )
-        self.assertEqual(gaps, [])
-        # The row was stamp_checked but still active.
-        row = store.get(b.id)
-        self.assertEqual(row.status, STATUS_ACTIVE)
-        self.assertIsNotNone(row.last_checked_at)
-
-    def test_valence_band_flip_flags_gap(self) -> None:
-        store, detector = _build()
-        # Predicted: positive valence belief. Observed: negative band.
-        # Even though val_diff = 0.31 (just over default threshold),
-        # band flip alone should trigger.
-        b = store.upsert(
-            user_id="u1", kind=KIND_MOOD, topic="rust language",
-            predicted_state="excited", confidence=0.8,
-            valence=0.15, arousal=0.5,
-        )
-        assert b is not None
-        affect = AffectState(
-            user_id="u1", valence=-0.20, arousal=0.5,
-            mood_label="melancholy",
-        )
-        gaps = detector.detect(
-            user_id="u1", affect=affect,
-            recent_user_message="been writing some rust today",
-        )
-        self.assertEqual(len(gaps), 1)
-        self.assertEqual(store.get(b.id).status, STATUS_CONTRADICTED)
-
-    def test_off_topic_turn_does_not_contradict(self) -> None:
-        """The reason the gate exists.
-
-        Without it, a mood belief is contradicted by any turn where the
-        user's global affect happens to differ -- i.e. by being about
-        something else. That would have turned filling in valence from a
-        fix into a false-contradiction generator.
-        """
-        store, detector = _build()
-        b = store.upsert(
-            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
-            predicted_state="excited", confidence=0.85,
-            valence=0.5, arousal=0.7,
-        )
-        assert b is not None
-        affect = AffectState(
-            user_id="u1", valence=-0.4, arousal=0.3, mood_label="melancholy",
-        )
-        gaps = detector.detect(
-            user_id="u1", affect=affect,
-            recent_user_message="the tram was late and my back hurts",
-        )
-        self.assertEqual(gaps, [])
-        row = store.get(b.id)
-        self.assertEqual(row.status, STATUS_ACTIVE)
-        self.assertIsNotNone(row.last_checked_at)
-
-    def test_no_live_turn_checks_nothing(self) -> None:
-        store, detector = _build()
-        b = store.upsert(
-            user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
-            predicted_state="excited", confidence=0.85,
-            valence=0.5, arousal=0.7,
-        )
-        assert b is not None
-        affect = AffectState(
-            user_id="u1", valence=-0.4, arousal=0.3, mood_label="melancholy",
-        )
-        self.assertEqual(detector.detect(user_id="u1", affect=affect), [])
+        b = store.upsert(user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
+                         predicted_state="excited", valence=0.9, arousal=0.8)
+        affect = AffectState(user_id="u1", valence=-0.8, arousal=0.1)
+        self.assertEqual(detector.detect(user_id="u1", affect=affect,
+                                        recent_user_message="Tokyo trip"), [])
         self.assertEqual(store.get(b.id).status, STATUS_ACTIVE)
+        self.assertEqual(store.list_outcomes(user_id="u1"), [])
 
-
-class OpinionGapTests(unittest.TestCase):
-    def test_opinion_contradicted_by_user_message(self) -> None:
+    def test_related_words_and_antonyms_are_not_semantic_verification(self):
         store, detector = _build()
-        b = store.upsert(
-            user_id="u1", kind=KIND_OPINION, topic="spicy food",
-            predicted_state="loves spicy food",
-        )
-        assert b is not None
-        gaps = detector.detect(
-            user_id="u1", affect=None,
-            recent_user_message="honestly i hate spicy food deeply",
-            evidence_message_id=43,
-        )
-        self.assertEqual(len(gaps), 1)
-        self.assertEqual(gaps[0].kind, KIND_OPINION)
-        self.assertEqual(store.get(b.id).status, STATUS_CONTRADICTED)
-        outcome = store.list_outcomes(user_id="u1")[0]
-        self.assertEqual(outcome["method"], "opinion_heuristic")
-        self.assertEqual(outcome["evidence_message_id"], 43)
-
-    def test_opinion_confirmed_by_strong_overlap(self) -> None:
-        store, detector = _build()
-        b = store.upsert(
-            user_id="u1", kind=KIND_OPINION, topic="rust language",
-            predicted_state="rust language is overhyped",
-        )
-        assert b is not None
-        # Same content words with no contradiction signal -> confirmed.
-        gaps = detector.detect(
-            user_id="u1", affect=None,
-            recent_user_message="rust language overhyped",
-        )
-        self.assertEqual(gaps, [])
-        self.assertEqual(store.get(b.id).status, STATUS_CONFIRMED)
-        self.assertEqual(store.list_outcomes(user_id="u1")[0]["method"], "lexical_overlap")
-
-    def test_no_signal_keeps_active(self) -> None:
-        store, detector = _build()
-        b = store.upsert(
-            user_id="u1", kind=KIND_OPINION, topic="rust language",
-            predicted_state="overhyped",
-        )
-        assert b is not None
-        gaps = detector.detect(
-            user_id="u1", affect=None,
-            recent_user_message="i think i will try a new restaurant tonight",
-        )
-        self.assertEqual(gaps, [])
-        # Stays active because there was no contradiction or overlap.
+        b = store.upsert(user_id="u1", kind=KIND_OPINION, topic="rust",
+                         predicted_state="overhyped")
+        for text in ("Rust is overhyped", "Rust is not overhyped", "They said Rust is overhyped"):
+            self.assertEqual(detector.detect(user_id="u1", recent_user_message=text), [])
         self.assertEqual(store.get(b.id).status, STATUS_ACTIVE)
+        self.assertEqual(store.list_outcomes(user_id="u1"), [])
 
+    def test_unrelated_checks_do_not_refresh_support(self):
+        store, detector = _build()
+        b = store.upsert(user_id="u1", kind=KIND_MOOD, topic="tokyo trip",
+                         predicted_state="excited", valence=0.8)
+        detector.detect(user_id="u1", recent_user_message="The commute was slow")
+        row = store.get(b.id)
+        self.assertEqual(row.observed_at, b.observed_at)
+        self.assertIsNone(row.last_checked_at)
 
-class StaleSweepTests(unittest.TestCase):
     def test_stale_sweep_runs(self) -> None:
         store, detector = _build()
         b = store.upsert(

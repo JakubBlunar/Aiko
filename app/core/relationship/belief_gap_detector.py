@@ -1,46 +1,9 @@
-"""Belief gap detector (K2 personality backlog).
+"""Belief applicability maintenance and compatibility gap rendering.
 
-Post-turn helper that compares Aiko's active mood beliefs against
-the live :class:`app.core.affect.affect_state.AffectState` and her active
-opinion beliefs against the user's most recent message. Mismatches
-produce :class:`BeliefGap` records the
-``_belief_inner_life_provider`` renders into the next-turn prompt
-so Aiko can either gently name the gap ("I had you pegged as
-excited about Tokyo -- am I reading this wrong?") or silently
-update her model.
-
-Two detection passes, both pure functions over the store state:
-
-1. **Mood gap** -- for every believed mood belief younger than
-   ``belief_recent_window_hours`` **whose topic the current turn is
-   actually about**, compare the stored ``valence`` / ``arousal``
-   against the live affect read. A gap fires when
-   ``|val_pred - val_obs| > belief_gap_valence_threshold``
-   OR ``|aro_pred - aro_obs| > belief_gap_arousal_threshold``
-   OR the recomputed mood label flips into the opposing
-   valence-band. ``status`` is bumped to ``contradicted`` and
-   ``gap_seen_at`` stamped; the gap tuple is returned for the
-   inner-life provider.
-
-   The topic gate matters more than it looks. A mood belief is about
-   one subject, but ``AffectState`` is a single global read, so without
-   it "he's excited about the tokyo trip" is contradicted by any turn
-   where he sounds flat -- including turns about his commute. That was
-   harmless only while the field was empty: no worker-written mood
-   belief carried a valence, so the comparator never ran. Filling the
-   coordinates in without this gate would have converted a dead check
-   into a false-contradiction generator.
-
-2. **Opinion gap** -- for every believed opinion belief, run
-   :func:`app.core.memory.conflict_heuristics.classify_pair` against the
-   most recent user message. A ``definite`` heuristic flips the
-   belief to ``contradicted``; a strong content overlap with no
-   contradiction signal nudges it to ``confirmed``.
-
-Stale aging is a third pass run opportunistically: any active
-belief whose ``last_checked_at`` (or ``observed_at`` when never
-checked) is older than ``belief_stale_after_days`` is flipped to
-``stale`` and dropped from future detector ticks.
+Aiko's AffectState describes Aiko, not the user's topic-specific feelings.
+Lexical overlap/antonyms likewise do not verify a scoped interpretation.
+The post-turn hook ages records; source-linked revisions happen in the worker
+and explicit corrections in the review UI. Neither creates a forced question.
 """
 from __future__ import annotations
 
@@ -50,14 +13,8 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from app.core.relationship.belief_store import (
-    Belief,
     BeliefStore,
     KIND_MOOD,
-    KIND_OPINION,
-)
-from app.core.memory.conflict_heuristics import (
-    HEURISTIC_DEFINITE,
-    classify_pair,
 )
 from app.core.infra import timephrase
 
@@ -70,9 +27,6 @@ log = logging.getLogger("app.belief_gap_detector")
 
 # Default thresholds. Overridable via ``belief_settings`` to keep
 # tests cheap and let the user dial the gap sensitivity in config.
-_DEFAULT_VAL_THRESHOLD = 0.30
-_DEFAULT_ARO_THRESHOLD = 0.25
-_DEFAULT_RECENT_WINDOW_HOURS = 24
 _DEFAULT_STALE_AFTER_DAYS = 90
 
 
@@ -94,30 +48,6 @@ class BeliefGap:
 
 def _utcnow() -> datetime:
     return timephrase.utcnow()
-
-
-def _parse_iso(stamp: str | None) -> datetime | None:
-    if not stamp:
-        return None
-    try:
-        return datetime.fromisoformat(str(stamp))
-    except ValueError:
-        return None
-
-
-def _valence_band(valence: float) -> str:
-    """Coarse valence band used to detect "opposing" flips.
-
-    Three bands: ``pos`` / ``neutral`` / ``neg``. We only call a
-    label-flip gap when the predicted and observed valence sit in
-    *opposing* bands (``pos`` vs ``neg``) -- crossing into neutral
-    is too noisy to flag.
-    """
-    if valence >= 0.10:
-        return "pos"
-    if valence <= -0.10:
-        return "neg"
-    return "neutral"
 
 
 class BeliefGapDetector:
@@ -144,296 +74,13 @@ class BeliefGapDetector:
         recent_user_message: str | None = None,
         evidence_message_id: int | None = None,
     ) -> list[BeliefGap]:
-        """Run both detector passes and return the surfaced gaps.
+        """Age records without treating affect or lexical similarity as evidence.
 
-        ``affect`` may be ``None`` (e.g. on the first turn before the
-        AffectStore has a row); we just skip the mood pass in that case.
-        ``recent_user_message`` may be ``None`` for the same reason on
-        the opinion pass.
+        Deprecated signal arguments are accepted for caller compatibility and
+        intentionally ignored. A model of Aiko's emotion cannot verify the user.
         """
-        gaps: list[BeliefGap] = []
-
-        # 1. mark stale rows first so we don't compare against ancient
-        # predictions on this tick.
         self._sweep_stale(user_id=user_id)
-
-        text = (recent_user_message or "").strip()
-
-        # 2. mood pass.
-        if affect is not None:
-            gaps.extend(
-                self._detect_mood_gaps(
-                    user_id=user_id, affect=affect, user_message=text,
-                    evidence_message_id=evidence_message_id,
-                )
-            )
-
-        # 3. opinion pass.
-        if text:
-            gaps.extend(
-                self._detect_opinion_gaps(
-                    user_id=user_id, user_message=text,
-                    evidence_message_id=evidence_message_id,
-                )
-            )
-
-        if gaps:
-            log.info(
-                "belief-gap-detector: gaps=%d (user=%s)",
-                len(gaps),
-                user_id,
-            )
-        else:
-            log.debug(
-                "belief-gap-detector: no gaps user=%s",
-                user_id,
-            )
-        return gaps
-
-    # ── mood pass ────────────────────────────────────────────────────
-
-    def _detect_mood_gaps(
-        self,
-        *,
-        user_id: str,
-        affect: "AffectState",
-        user_message: str = "",
-        evidence_message_id: int | None = None,
-    ) -> list[BeliefGap]:
-        recent_hours = float(
-            getattr(
-                self._belief_settings,
-                "belief_recent_window_hours",
-                _DEFAULT_RECENT_WINDOW_HOURS,
-            )
-        )
-        val_threshold = float(
-            getattr(
-                self._belief_settings,
-                "belief_gap_valence_threshold",
-                _DEFAULT_VAL_THRESHOLD,
-            )
-        )
-        aro_threshold = float(
-            getattr(
-                self._belief_settings,
-                "belief_gap_arousal_threshold",
-                _DEFAULT_ARO_THRESHOLD,
-            )
-        )
-
-        now = self._clock()
-        since_iso = (now - timedelta(hours=recent_hours)).isoformat()
-        beliefs = self._belief_store.list_active_for_gap_check(
-            user_id=user_id, kind=KIND_MOOD, since_iso=since_iso,
-        )
-        gaps: list[BeliefGap] = []
-        for b in beliefs:
-            if b.valence is None:
-                # Worker / tag only stored a textual label without
-                # numeric coordinates; stamp_checked but skip the
-                # numeric comparator.
-                self._belief_store.stamp_checked(b.id, gap=False)
-                continue
-            if not self._topic_is_live(b.topic, user_message):
-                # A mood belief is about *one subject*, but AffectState is
-                # a single global read. Comparing "he's excited about the
-                # tokyo trip" against how he sounds while discussing his
-                # commute measures nothing, and would contradict the row
-                # for being about a different thing. Only check a mood
-                # read on a turn that is actually on its topic.
-                self._belief_store.stamp_checked(b.id, gap=False)
-                continue
-            val_diff = abs(float(b.valence) - float(affect.valence))
-            aro_diff = (
-                abs(float(b.arousal) - float(affect.arousal))
-                if b.arousal is not None
-                else 0.0
-            )
-            pred_band = _valence_band(float(b.valence))
-            obs_band = _valence_band(float(affect.valence))
-            band_flip = (
-                pred_band != "neutral"
-                and obs_band != "neutral"
-                and pred_band != obs_band
-            )
-            if val_diff > val_threshold or aro_diff > aro_threshold or band_flip:
-                reason = self._render_mood_reason(
-                    b, affect=affect,
-                    val_diff=val_diff, aro_diff=aro_diff,
-                    band_flip=band_flip,
-                )
-                self._belief_store.mark_contradicted(
-                    b.id, stamp_gap=True, method="mood_comparison",
-                    evidence_message_id=evidence_message_id,
-                    evidence={
-                        "valence": float(affect.valence), "arousal": float(affect.arousal),
-                        "mood_label": str(affect.mood_label), "reason": reason,
-                        "user_message": user_message,
-                    },
-                )
-                gaps.append(
-                    BeliefGap(
-                        belief_id=b.id,
-                        kind=b.kind,
-                        topic=b.topic,
-                        predicted_state=b.predicted_state,
-                        confidence=b.confidence,
-                        reason=reason,
-                        observed=str(affect.mood_label),
-                    )
-                )
-                log.info(
-                    "belief-gap MOOD: id=%s topic=%r predicted=%r vs "
-                    "observed=%s (val_diff=%.2f aro_diff=%.2f flip=%s)",
-                    b.id,
-                    b.topic,
-                    b.predicted_state,
-                    affect.mood_label,
-                    val_diff,
-                    aro_diff,
-                    band_flip,
-                )
-            else:
-                self._belief_store.stamp_checked(b.id, gap=False)
-        return gaps
-
-    @staticmethod
-    def _topic_is_live(topic: str, user_message: str) -> bool:
-        """Whether the current turn is actually about ``topic``.
-
-        Uses the same lexical gate five cue providers already share
-        (``knowledge_gap_notice_worker.topic_relevant``) rather than a
-        second copy. An empty message means the caller had no live turn
-        to check against — the opinion pass skips itself in that case, so
-        the mood pass does too rather than checking against nothing.
-        """
-        if not topic or not user_message:
-            return False
-        try:
-            from app.core.proactive.knowledge_gap_notice_worker import (
-                topic_relevant,
-            )
-
-            return bool(topic_relevant(topic, user_message))
-        except Exception:
-            log.debug("topic_relevant raised; skipping mood check", exc_info=True)
-            return False
-
-    def _render_mood_reason(
-        self,
-        b: Belief,
-        *,
-        affect: "AffectState",
-        val_diff: float,
-        aro_diff: float,
-        band_flip: bool,
-    ) -> str:
-        if band_flip:
-            return (
-                f"predicted {b.predicted_state} but mood actually reads "
-                f"{affect.mood_label}"
-            )
-        if val_diff >= aro_diff:
-            return (
-                f"valence drifted {val_diff:.2f} from {b.predicted_state}; "
-                f"now {affect.mood_label}"
-            )
-        return (
-            f"arousal drifted {aro_diff:.2f}; {affect.mood_label} doesn't "
-            f"match {b.predicted_state}"
-        )
-
-    # ── opinion pass ─────────────────────────────────────────────────
-
-    def _detect_opinion_gaps(
-        self,
-        *,
-        user_id: str,
-        user_message: str,
-        evidence_message_id: int | None = None,
-    ) -> list[BeliefGap]:
-        # Opinions have no time window: an old belief can still be
-        # contradicted by a fresh statement. We still bound the list
-        # to a sensible cap to keep the heuristic loop bounded.
-        beliefs = self._belief_store.list_believed(
-            user_id=user_id, kind=KIND_OPINION, limit=200,
-        )
-        gaps: list[BeliefGap] = []
-        for b in beliefs:
-            # We compare the user's literal message against the
-            # belief's "{topic} {predicted_state}" rendering. That
-            # gives the heuristic enough lexical surface to catch a
-            # direct negation ("rust isn't overhyped at all").
-            belief_text = f"{b.topic} {b.predicted_state}"
-            result = classify_pair(user_message, belief_text)
-            if result.label == HEURISTIC_DEFINITE:
-                reason = "user message contradicts prediction (" + ", ".join(
-                    result.signals
-                ) + ")"
-                self._belief_store.mark_contradicted(
-                    b.id, stamp_gap=True, method="opinion_heuristic",
-                    evidence_message_id=evidence_message_id,
-                    evidence={"signals": list(result.signals), "user_message": user_message},
-                )
-                gaps.append(
-                    BeliefGap(
-                        belief_id=b.id,
-                        kind=b.kind,
-                        topic=b.topic,
-                        predicted_state=b.predicted_state,
-                        confidence=b.confidence,
-                        reason=reason,
-                        observed=None,
-                    )
-                )
-                log.info(
-                    "belief-gap OPINION: id=%s topic=%r predicted=%r "
-                    "signals=%s",
-                    b.id,
-                    b.topic,
-                    b.predicted_state,
-                    result.signals,
-                )
-                continue
-            # Cheap confirmation pass: if the message tokenises with a
-            # strong overlap with the belief text and there's no
-            # contradiction signal, nudge toward ``confirmed``.
-            if self._strong_overlap(user_message, belief_text):
-                self._belief_store.mark_confirmed(
-                    b.id, method="lexical_overlap", evidence_message_id=evidence_message_id,
-                    evidence={"user_message": user_message},
-                )
-                log.info(
-                    "belief-gap OPINION confirmed: id=%s topic=%r",
-                    b.id,
-                    b.topic,
-                )
-            else:
-                self._belief_store.stamp_checked(b.id, gap=False)
-        return gaps
-
-    @staticmethod
-    def _strong_overlap(text_a: str, text_b: str) -> bool:
-        """Jaccard >= 0.6 on lowercased word sets, ignoring stopwords."""
-        stop = {
-            "a", "an", "and", "as", "at", "be", "by", "for", "i", "in",
-            "is", "it", "its", "of", "on", "or", "that", "the", "to",
-            "was", "with", "you", "your", "he", "she", "they", "we",
-        }
-        toks_a = {
-            t for t in (text_a or "").lower().split() if t and t not in stop
-        }
-        toks_b = {
-            t for t in (text_b or "").lower().split() if t and t not in stop
-        }
-        if not toks_a or not toks_b:
-            return False
-        inter = len(toks_a & toks_b)
-        union = len(toks_a | toks_b)
-        if union == 0:
-            return False
-        return (inter / union) >= 0.6
+        return []
 
     # ── stale sweep ──────────────────────────────────────────────────
 
@@ -445,9 +92,8 @@ class BeliefGapDetector:
                 _DEFAULT_STALE_AFTER_DAYS,
             )
         )
-        if days <= 0:
-            return
-        cutoff = (self._clock() - timedelta(days=days)).isoformat()
+        # Structured applicability still expires when legacy aging is disabled.
+        cutoff = (self._clock() - timedelta(days=days if days > 0 else 365000)).isoformat()
         try:
             n = self._belief_store.mark_stale_older_than(
                 cutoff_iso=cutoff, user_id=user_id,

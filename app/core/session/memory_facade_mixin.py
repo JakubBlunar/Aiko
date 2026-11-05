@@ -1762,6 +1762,7 @@ class MemoryFacadeMixin:
         kind: str | None = None,
         status: str | None = None,
         include_counts: bool = True,
+        include_legacy: bool = True,
     ) -> dict[str, Any]:
         """Return a paginated belief list + per-status counts.
 
@@ -1786,14 +1787,16 @@ class MemoryFacadeMixin:
             kind=kind,
             status=status,
             limit=int(limit),
-            offset=int(offset),
+            offset=int(offset), interpretations_only=not include_legacy,
         )
         payload: dict[str, Any] = {
             "beliefs": [r.to_payload() for r in rows],
             "enabled": True,
         }
         if include_counts:
-            payload["counts"] = store.count_by_status(user_id=self._user_id)
+            payload["counts"] = store.count_by_status(
+                user_id=self._user_id, interpretations_only=not include_legacy,
+            )
         return payload
 
     def add_belief(
@@ -1840,6 +1843,8 @@ class MemoryFacadeMixin:
         predicted_state: str | None = None,
         confidence: float | None = None,
         status: str | None = None,
+        situation: str | None = None,
+        uncertainty: str | None = None,
     ) -> dict[str, Any] | None:
         """Apply a partial belief edit (REST PATCH /api/beliefs/{id})."""
         store = getattr(self, "_belief_store", None)
@@ -1849,7 +1854,7 @@ class MemoryFacadeMixin:
             int(belief_id),
             predicted_state=predicted_state,
             confidence=confidence,
-            status=status,
+            status=status, situation=situation, uncertainty=uncertainty,
         )
         if belief is None:
             return None

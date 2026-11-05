@@ -280,35 +280,12 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             "Don't repeat the question."
         )
 
-    def _render_trusted_beliefs_block(self) -> str:
-        """K2: what she has actually learned he thinks and feels.
+    def _render_trusted_beliefs_block(self, user_text: str = "") -> str:
+        """Relevant, expiring interpretations, explicitly including tentative ideas.
 
-        The counterpart to :meth:`_render_belief_gaps_block`, and the
-        reason that one was doing all the work alone. Until this existed,
-        a belief reached the prompt only by being *wrong* -- she could
-        voice a theory of mind exclusively at the moment it failed, and a
-        store full of correct reads about him contributed nothing to how
-        she spoke. On the install where that was measured the gap block
-        had rendered on 3 turns out of 851, so for practical purposes the
-        whole layer was inert.
-
-        Only ``confirmed`` rows appear (see ``BeliefStore.list_trusted``):
-        an ``active`` belief is a single uncorroborated extraction, and
-        speaking those back is how a companion earns a reputation for
-        confidently inventing things. The cue is deliberately phrased as
-        standing context rather than as an instruction to bring anything
-        up -- it is background she talks *from*, not a prompt to perform
-        insight. It therefore offers **no stance** and is deliberately
-        absent from ``_OFFERS`` in ``app/core/conversation/stance.py``,
-        alongside the other standing-context blocks (``profile_block``,
-        ``axes_block``): it never asks for the floor, so there is nothing
-        for the K92 arbiter to arbitrate.
-
-        Reads the store on each assembly rather than caching in
-        ``_StaticSlices``: one indexed ``SELECT ... LIMIT n`` is the same
-        order of cost as the ``day_color`` kv read that also runs
-        uncached, and the block has to reflect a promotion the worker
-        made mid-conversation.
+        This offers no stance: it supplies context for understanding the live
+        exchange, without asking Aiko to raise a subject or seek confirmation.
+        Freshness and query relevance make it a T6 block.
         """
         agent = self._settings.agent
         if not bool(getattr(agent, "belief_tracking_enabled", True)):
@@ -316,42 +293,42 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if not bool(getattr(agent, "belief_trusted_block_enabled", True)):
             return ""
         limit = max(0, int(getattr(agent, "belief_trusted_block_max", 4)))
-        if limit <= 0:
-            return ""
         store = getattr(self, "_belief_store", None)
-        if store is None:
+        if store is None or limit <= 0:
             return ""
         try:
-            rows = store.list_trusted(user_id=self._user_id, limit=limit)
+            rows = store.list_context(user_id=self._user_id, session_key=self.session_key,
+                                      user_text=user_text, limit=limit)
         except Exception:
-            log.debug("trusted beliefs read failed", exc_info=True)
+            log.debug("belief context read failed", exc_info=True)
             return ""
         if not rows:
             return ""
-        try:
-            from app.core.relationship.belief_store import KIND_MOOD
-
-            lines = [
-                "- "
-                + (
-                    f"{self.user_display_name} is {b.predicted_state} "
-                    f"about {b.topic}"
-                    if b.kind == KIND_MOOD
-                    else f"{b.topic} is {b.predicted_state}, to him"
-                )
-                for b in rows
-            ]
-        except Exception:
-            log.debug("trusted beliefs render failed", exc_info=True)
-            return ""
+        lines = []
+        for b in rows:
+            m = b.metadata
+            label = ("user confirmed" if b.status == "confirmed"
+                     and m.get("confirmation_basis") == "user" else "tentative")
+            line = (f"- [{label}; supported {b.observed_at}; "
+                    f"applies until {m.get('expires_at', 'legacy scope unknown')}] "
+                    + (b.predicted_state if m.get("interpretation_version") == 2
+                       else f"{b.topic}: {b.predicted_state}"))
+            for key, title in (("situation", "Situation"), ("reason", "Basis for inference"),
+                               ("uncertainty", "Unknown/alternative"),
+                               ("revise_when", "Revise if")):
+                if m.get(key):
+                    line += f"\n  {title}: {m[key]}"
+            lines.append(line)
         return (
-            f"What you've come to understand about {self.user_display_name} "
-            "(corroborated more than once — you can just assume these "
-            "rather than checking):\n"
+            f"Your interpretations of {self.user_display_name}'s situation "
+            "(possibilities you inferred, not established facts or concepts):\n"
             + "\n".join(lines)
-            + "\nThis is background you speak from, not a list to bring up. "
-            "Don't recite it, don't ask him to confirm it, and drop any of "
-            "it the moment he says otherwise."
+            + "\nUse only if this exchange still fits. They may inform a thoughtful "
+            "response or a new idea, but the user's actual words take priority. "
+            "Do not assume hidden needs or motives. This is context, not a list "
+            "to bring up: don't recite it or repeatedly ask for confirmation. "
+            "Let mixed feelings coexist; revise or drop a reading when the user "
+            "or the situation changes."
         )
 
     def _render_clarification_block(self) -> str:
