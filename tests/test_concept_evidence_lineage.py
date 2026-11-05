@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.concepts.concept_evidence_lineage import (
-    SourceLineage, capture_source_manifest, resolve_support, support_summary,
+    SourceLineage, capture_source_manifest, consolidation_lineage, memory_lineages,
+    resolve_support, support_summary,
 )
 from app.core.concepts.concept_store import Concept, ConceptEdge
 from app.core.concepts.concept_view import ConceptView
@@ -111,6 +112,30 @@ def test_cluster_alias_and_digest_do_not_double_support():
     view, _ = _view({1: _memory(10), 2: _memory(10)},
                     [_edge(1, source_type="cluster"), _edge(1)], clusters=[cluster])
     assert view.evidence_independence(1)["known_support_groups"] == 1
+
+
+def test_consolidation_preserves_known_roots_and_unknowns_without_inventing_observations():
+    sources = [_memory(10), _memory(10), _memory(20), _memory()]
+    row = _memory(10, metadata={"consolidation_lineage": consolidation_lineage(sources)})
+    report = support_summary(memory_lineages(row))
+    assert report["known_support_groups"] == 2
+    assert report["root_count"] == 2
+    assert report["unknown_sources"] == 1
+
+
+def test_consolidated_reflections_cannot_become_user_testimony():
+    source = _memory(10, kind="diary")
+    row = _memory(kind="diary", metadata={"consolidation_lineage": consolidation_lineage([source])})
+    report = support_summary(memory_lineages(row))
+    assert report["known_support_groups"] == 0
+    assert report["excluded_reflections"] == 2
+
+
+def test_historical_lineage_is_bounded_and_truncation_remains_visible():
+    history = consolidation_lineage([_memory(mid) for mid in range(1, 100)])
+    assert len(history["sources"]) <= 64 and history["truncated"]
+    report = support_summary(memory_lineages(_memory(metadata={"consolidation_lineage": history})))
+    assert report["unknown_sources"] > 0
 
 
 def test_unknown_deleted_and_opposing_evidence_are_not_support():

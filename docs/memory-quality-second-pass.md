@@ -3,6 +3,10 @@
 Worker quality takes priority. Concepts may guide useful questions, but a worker
 must never turn an existing interpretation into a new independent observation.
 
+The later [memory/topic correctness review](memory-topic-correctness.md) adds
+stable incremental membership, consolidation lineage preservation, generation-race
+checks and priorities for meaningful longitudinal evidence.
+
 ## Reflective worker output
 
 The post-turn reflection prompt previously required an observation even when

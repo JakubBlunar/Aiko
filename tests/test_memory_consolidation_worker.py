@@ -53,6 +53,9 @@ class _FakeStore:
         self._rows = {m.id: m for m in rows}
         self.updates: list[dict[str, Any]] = []
 
+    def get(self, memory_id):
+        return self._rows.get(memory_id)
+
     def iter_by_tier(self, tier: str) -> list[_FakeMemory]:
         return [m for m in self._rows.values() if m.tier == tier]
 
@@ -207,6 +210,70 @@ class ClusteringTests(unittest.TestCase):
 
 
 class PrimaryAndCommitTests(unittest.TestCase):
+    def test_worker_preserves_both_historical_observation_roots(self):
+        from app.core.concepts.concept_evidence_lineage import memory_lineages, support_summary
+
+        rows = [
+            _FakeMemory(1, "Noah enjoys hiking on weekends", embedding=_DUP_A),
+            _FakeMemory(2, "Noah enjoys hiking during weekends", embedding=_DUP_B),
+        ]
+        rows[0].source_message_id = 42
+        rows[1].source_message_id = 43
+        store = _FakeStore(rows)
+        assert _make_worker(store, ollama=None).run()["merged"] == 1
+        primary = next(row for row in rows if row.tier == "long_term")
+        report = support_summary(memory_lineages(primary))
+        assert report["root_count"] == 2
+        assert report["known_support_groups"] == 2
+
+    def test_a_victim_corrected_after_primary_commit_is_kept(self):
+        rows = [
+            _FakeMemory(1, "Noah enjoys hiking on weekends", embedding=_DUP_A, confidence=.9),
+            _FakeMemory(2, "Noah enjoys hiking during weekends", embedding=_DUP_B),
+        ]
+        store = _FakeStore(rows)
+        update = store.update
+
+        def correcting_update(memory_id, **kwargs):
+            saved = update(memory_id, **kwargs)
+            if memory_id == 1:
+                store.get(2).content = "Noah corrected the earlier preference."
+            return saved
+
+        store.update = correcting_update
+        _make_worker(store, ollama=None).run()
+        assert store.get(2).tier == "scratchpad"
+        assert "consolidated_into" not in store.get(2).metadata
+
+    def test_correction_during_composition_defers_without_archiving_sources(self):
+        store = _FakeStore([
+            _FakeMemory(1, "Noah enjoys hiking on weekends", embedding=_DUP_A),
+            _FakeMemory(2, "Noah enjoys hiking during weekends", embedding=_DUP_B),
+        ])
+
+        class EditingModel:
+            def chat_json(self, *args, **kwargs):
+                store.get(2).content = "Noah corrected the earlier preference."
+                return '{"merged": "A stale merged preference."}', {}
+
+        result = _make_worker(store, ollama=EditingModel()).run()
+        self.assertEqual(result["merged"], 0)
+        self.assertEqual(store.updates, [])
+        self.assertTrue(all(row.tier == "scratchpad" for row in store._rows.values()))
+
+    def test_failed_primary_write_does_not_absorb_any_other_source(self):
+        from unittest.mock import Mock
+
+        store = _FakeStore([
+            _FakeMemory(1, "Noah enjoys hiking on weekends", embedding=_DUP_A),
+            _FakeMemory(2, "Noah enjoys hiking during weekends", embedding=_DUP_B),
+        ])
+        store.update = Mock(return_value=None)
+        result = _make_worker(store).run()
+        self.assertEqual(result["merged"], 0)
+        self.assertEqual(store.update.call_count, 1)
+        self.assertTrue(all(row.tier == "scratchpad" for row in store._rows.values()))
+
     def test_primary_is_highest_confidence(self) -> None:
         rows = [
             _FakeMemory(1, "I enjoy hiking trips", confidence=0.7, embedding=_DUP_A),

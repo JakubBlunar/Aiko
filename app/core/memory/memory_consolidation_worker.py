@@ -487,6 +487,12 @@ class MemoryConsolidationWorker:
         group = cluster.members
         when_iso = now.isoformat() if isinstance(now, datetime) else _now_iso()
 
+        from app.core.memory.memory_integrity import merge_source_key
+        from app.core.concepts.concept_evidence_lineage import consolidation_lineage
+
+        revisions = {m.id: merge_source_key(m) for m in group}
+        history = consolidation_lineage(group)
+
         merged_text, used_llm = self._compose_merge(group, primary, now)
         merged_text = (merged_text or "").strip() or primary.content
         text_changed = merged_text != primary.content
@@ -512,8 +518,16 @@ class MemoryConsolidationWorker:
 
         from app.core.concepts.concept_support import memory_revision
 
+        # A correction arriving during composition must not be overwritten by
+        # text or provenance derived from an earlier version of that source.
+        for memory in group:
+            current = self._memory_store.get(memory.id)
+            if current is None or merge_source_key(current) != revisions[memory.id]:
+                log.info("memory-consolidation deferred: source changed id=%s", memory.id)
+                return (False, used_llm)
+
         try:
-            self._memory_store.update(
+            committed = self._memory_store.update(
                 primary.id,
                 content=merged_text if text_changed else None,
                 embedding=new_embedding,
@@ -524,9 +538,12 @@ class MemoryConsolidationWorker:
                     "source_ids": source_ids,
                     "source_revisions": {str(m.id): memory_revision(m) for m in group},
                     "consolidated_at": when_iso,
+                    "consolidation_lineage": history,
                 },
                 metadata_merge=True,
             )
+            if committed is None:
+                return (False, used_llm)
         except Exception:
             log.warning(
                 "memory-consolidation: primary update failed id=%s",
@@ -539,6 +556,10 @@ class MemoryConsolidationWorker:
 
         absorbed: list[int] = []
         for mem in cluster.others:
+            current = self._memory_store.get(mem.id)
+            if current is None or merge_source_key(current) != revisions[mem.id]:
+                log.info("memory-consolidation kept changed source id=%s", mem.id)
+                continue
             try:
                 self._memory_store.update(
                     mem.id,

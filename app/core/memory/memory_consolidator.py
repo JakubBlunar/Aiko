@@ -235,6 +235,9 @@ class MemoryConsolidator:
             if stop_flag is not None and stop_flag.is_set():
                 log.debug("consolidator: stop_flag set mid-run")
                 break
+            from app.core.memory.memory_integrity import merge_source_key
+
+            revisions = {m.id: merge_source_key(m) for m in cluster}
             try:
                 merged_content = self._merge_cluster(cluster)
             except Exception:
@@ -244,7 +247,8 @@ class MemoryConsolidator:
                 continue
             survivor, victims = _split_survivor(cluster)
             try:
-                archived = self._apply_merge(survivor, victims, merged_content)
+                archived = self._apply_merge(survivor, victims, merged_content,
+                                             source_revisions=revisions)
             except Exception:
                 log.debug("apply_merge raised", exc_info=True)
                 continue
@@ -343,6 +347,7 @@ class MemoryConsolidator:
         survivor: "Memory",
         victims: list["Memory"],
         merged_content: str,
+        *, source_revisions: dict | None = None,
     ) -> int | None:
         # Boost salience: average of the cluster + small bonus, clipped.
         if survivor is None:
@@ -371,11 +376,21 @@ class MemoryConsolidator:
                 log.debug("merge re-embed failed; keeping original text", exc_info=True)
                 cleaned_text = survivor.content
         from app.core.concepts.concept_support import memory_revision
+        from app.core.concepts.concept_evidence_lineage import consolidation_lineage
+        from app.core.memory.memory_integrity import merge_source_key
 
         group = [survivor, *victims]
-        source_revisions = {str(m.id): memory_revision(m) for m in group}
+        expected = {m.id: merge_source_key(m) for m in group}
+        if source_revisions is not None:
+            for memory in group:
+                current = self._mem.get(memory.id)
+                if current is None or merge_source_key(current) != source_revisions[memory.id]:
+                    log.info("consolidator deferred: source changed id=%s", memory.id)
+                    return None
+        revisions = {str(m.id): memory_revision(m) for m in group}
+        history = consolidation_lineage(group)
         try:
-            self._mem.update(
+            committed = self._mem.update(
                 int(survivor.id),
                 content=cleaned_text,
                 embedding=embedding,
@@ -385,14 +400,21 @@ class MemoryConsolidator:
                 revival_score=new_revival,
                 tier=getattr(survivor, "tier", "long_term"),
                 metadata={"source_ids": [m.id for m in group],
-                          "source_revisions": source_revisions},
+                          "source_revisions": revisions,
+                          "consolidation_lineage": history},
                 metadata_merge=True,
             )
+            if committed is None:
+                return None
         except Exception:
             log.debug("survivor update failed", exc_info=True)
             return None
         archived = 0
         for victim in victims:
+            current = self._mem.get(victim.id)
+            if current is None or merge_source_key(current) != expected[victim.id]:
+                log.info("consolidator kept changed source id=%s", victim.id)
+                continue
             try:
                 self._mem.update(int(victim.id), tier="archive", metadata={
                     "consolidated_into": int(survivor.id),

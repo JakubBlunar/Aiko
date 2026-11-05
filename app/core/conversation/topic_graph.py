@@ -999,6 +999,9 @@ class TopicGraph(TopicGraphUpdatesMixin):
         )
         self._live: dict[int, _LiveCluster] = {}
         self._assignment: dict[int, int] = {}
+        # Content-free vector fingerprints: metadata-only notifications and
+        # repeated add deliveries must not change geometric membership.
+        self._member_vectors: dict[int, bytes] = {}
         self._warm = False
         self._pending_unclustered = 0
         # L4 co-activation cache: keyed on (bucket_by, mirror-size, coarse
@@ -1901,6 +1904,9 @@ class TopicGraph(TopicGraphUpdatesMixin):
                 if not self._warm:
                     self._live = live
                     self._assignment = assign
+                    self._member_vectors = {
+                        mid: self._vector_key(eligible[mid]) for mid in assign
+                    }
                     self._warm = True
             log.debug("topic_graph warm-start: %d clusters from store", len(live))
             return
@@ -1973,6 +1979,9 @@ class TopicGraph(TopicGraphUpdatesMixin):
         with self._lock:
             self._live = live
             self._assignment = assignment
+            self._member_vectors = {
+                int(m.id): self._vector_key(m) for m in mems if int(m.id) in assignment
+            }
             self._warm = True
             self._pending_unclustered = 0
         log.info(
@@ -2002,6 +2011,15 @@ class TopicGraph(TopicGraphUpdatesMixin):
         self._ensure_warm()
         vec = _normalise(emb)
         mid = int(memory.id)
+        key = self._vector_key(memory)
+        with self._lock:
+            known = mid in self._member_vectors
+            unchanged = known and self._member_vectors[mid] == key
+        if unchanged:
+            return
+        if known:
+            self.on_memory_updated(memory)
+            return
         with self._lock:
             best_cid: int | None = None
             best_sim = -1.0
@@ -2030,12 +2048,17 @@ class TopicGraph(TopicGraphUpdatesMixin):
                 self._pending_unclustered += 1
                 store = None
                 row = None
+            self._member_vectors[mid] = key
         if store is not None and row is not None:
             try:
                 store.upsert_cluster(row)
                 store.set_assignment(mid, row.cluster_id)
             except Exception:
                 log.debug("on_memory_added persist failed", exc_info=True)
+            # A normalized centroid times member count is not a vector sum.
+            # Recompute the exact mean after a genuinely new point, avoiding
+            # drift from incremental renormalization and duplicate callbacks.
+            self._refresh_centroid(row.cluster_id)
 
     def on_memory_deleted(self, memory_id: int) -> None:
         """Drop a deleted memory from the live graph + persisted store.
@@ -2049,6 +2072,7 @@ class TopicGraph(TopicGraphUpdatesMixin):
         drop_cluster: int | None = None
         touched: _LiveCluster | None = None
         with self._lock:
+            self._member_vectors.pop(mid, None)
             cid = self._assignment.pop(mid, None)
             if cid is not None:
                 cluster = self._live.get(cid)

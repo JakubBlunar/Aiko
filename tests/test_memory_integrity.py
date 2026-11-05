@@ -106,3 +106,37 @@ def test_merge_preserves_sources_without_fabricating_use_or_repointing_evidence(
     assert first.provenance == "stated"
     assert first.metadata["source_revisions"]
     assert not repoints
+
+
+def test_merge_preserves_observation_roots_across_repeated_compaction_without_refreshing(store):
+    from app.core.concepts.concept_evidence_lineage import memory_lineages, support_summary
+    from app.core.concepts.concept_support import memory_revision
+
+    first = add(store, source_message_id=42, provenance="stated", salience=.8)
+    second = add(store, source_message_id=43, provenance="stated", skip_dedupe=True)
+    worker = MemoryConsolidator(ollama=None, memory_store=store, chat_db=None, model="")
+    before = memory_revision(first)
+    assert worker._apply_merge(first, [second], first.content) == 1
+    report = support_summary(memory_lineages(first))
+    assert report["known_support_groups"] == 2
+    assert report["root_count"] == 2
+    assert memory_revision(first) == before  # Packaging old roots is not a new observation.
+    third = add(store, source_message_id=44, provenance="stated", skip_dedupe=True)
+    worker._apply_merge(first, [third], first.content)
+    assert support_summary(memory_lineages(first))["root_count"] == 3
+    assert store.get(second.id) is not None
+    assert first.use_count == 0
+
+
+def test_merge_defers_if_a_source_was_corrected_since_the_generation_snapshot(store):
+    from app.core.memory.memory_integrity import merge_source_key
+
+    first = add(store, salience=.8)
+    second = add(store, skip_dedupe=True)
+    revisions = {row.id: merge_source_key(row) for row in (first, second)}
+    store.update(second.id, content="Noah prefers a different setting")
+    worker = MemoryConsolidator(ollama=None, memory_store=store, chat_db=None, model="")
+    assert worker._apply_merge(first, [second], "A stale generated merge",
+                               source_revisions=revisions) is None
+    assert first.content == "Noah enjoys quiet walks"
+    assert second.tier == "long_term" and "consolidated_into" not in second.metadata

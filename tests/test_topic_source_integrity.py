@@ -162,3 +162,51 @@ def test_pinned_digest_wording_survives_a_source_refresh(setup):
     assert worker.cluster_digest_map[cid] != old_id
     assert store.get(old_id).content == "A hand-curated subject summary"
     assert store.get(old_id).provenance == "stated"
+
+
+def test_metadata_only_updates_keep_a_singleton_topics_identity(setup):
+    _, store, graph = setup
+    original = graph.cluster_id_for(3)
+    store.update(1, metadata={"consolidated_into": 3}, metadata_merge=True)
+    store.update(2, metadata={"consolidated_into": 3}, metadata_merge=True)
+    assert graph.cluster_member_ids(original) == [3]
+    store.update(3, salience=.95, confidence=.8,
+                 metadata={"a_later_annotation": "same subject"}, metadata_merge=True)
+    assert graph.cluster_id_for(3) == original
+    assert graph._cluster_store.load_all()[1][3] == original
+
+
+def test_repeated_add_notifications_cannot_move_or_reweight_an_existing_point(setup):
+    _, store, graph = setup
+    row = store.add("A related point", "fact", np.array([.95, .3], dtype=np.float32),
+                    skip_dedupe=True)
+    cid = graph.cluster_id_for(row.id)
+    centroid = graph._live[cid].centroid.copy()
+    members = set(graph.cluster_member_ids(cid))
+    for _ in range(3):
+        graph.on_memory_added(row)
+    assert set(graph.cluster_member_ids(cid)) == members
+    np.testing.assert_allclose(graph._live[cid].centroid, centroid)
+    group = [store.get(mid) for mid in members]
+    np.testing.assert_allclose(centroid, graph._compute_centroid(group), atol=1e-6)
+
+
+def test_repeated_unassigned_notification_does_not_inflate_refit_demand(setup):
+    _, store, graph = setup
+    row = store.add("An orthogonal subject", "fact", np.array([-1., 0.]), skip_dedupe=True)
+    before = graph.pending_count()
+    assert before > 0
+    graph.on_memory_added(row)
+    assert graph.pending_count() == before
+
+
+def test_restored_graph_also_preserves_membership_on_metadata_update(setup):
+    db, store, _ = setup
+    graph = TopicGraph(store, similarity=.7, min_cluster_size=2,
+                       cluster_store=TopicClusterStore(db))
+    graph.topic_clusters()
+    cid = graph.cluster_id_for(1)
+    graph.on_memory_added(store.get(1))  # Replayed delivery after warm-start.
+    store.get(1).salience = .7
+    graph.on_memory_updated(store.get(1))
+    assert graph.cluster_id_for(1) == cid

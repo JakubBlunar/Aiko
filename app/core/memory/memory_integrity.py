@@ -5,6 +5,21 @@ from app.core.infra import timephrase
 from app.core.memory.memory_origin import MemoryOrigin, memory_origin
 
 
+def merge_source_key(memory):
+    """Ephemeral full source check, without upgrading historical support hashes."""
+    from app.core.concepts.concept_support import memory_revision, revision_hash
+
+    metadata = getattr(memory, "metadata", None) or {}
+    return revision_hash([memory_revision(memory),
+                          getattr(memory, "temporal_type", None),
+                          getattr(memory, "provenance", None),
+                          getattr(memory, "tier", None),
+                          getattr(memory, "pinned", False),
+                          metadata.get("admission"), metadata.get("consolidated_into"),
+                          metadata.get("source_ids"), metadata.get("source_revisions"),
+                          metadata.get("consolidation_lineage")])
+
+
 def compatible_memories(first, second, *, consolidation=False):
     a, b = memory_origin(first), memory_origin(second)
     if a.subject == "unknown" or b.subject == "unknown":

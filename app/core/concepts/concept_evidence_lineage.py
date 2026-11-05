@@ -88,24 +88,59 @@ def _memory_lineage(memory) -> SourceLineage:
     return SourceLineage(roots, category, complete=bool(source_ids))
 
 
-def memory_lineages(memory) -> list[SourceLineage]:
-    metadata = getattr(memory, "metadata", None) or {}
-    observations = metadata.get("support_observations", []) if isinstance(metadata, dict) else []
-    result = [_memory_lineage(memory)]
+def _read_observations(observations) -> list[SourceLineage]:
+    result = []
     if not isinstance(observations, list):
-        return result + [SourceLineage(frozenset(), "unknown", complete=False)]
+        return [SourceLineage(frozenset(), "unknown", complete=False)]
     for row in observations[:64]:
         if (isinstance(row, dict) and isinstance(row.get("roots"), list)
                 and all(isinstance(root, str) for root in row["roots"])
+                and isinstance(row.get("category"), str)
                 and row.get("category") in {"unknown", "testimony", "model_inference",
                                             "model_reflection", "external_observation"}):
             result.append(SourceLineage(frozenset(row["roots"]), row.get("category", "unknown"),
-                                        bool(row.get("complete"))))
+                                        row.get("complete") is True))
         else:
             result.append(SourceLineage(frozenset(), "unknown", complete=False))
+    if len(observations) > 64:
+        result.append(SourceLineage(frozenset(), "unknown", complete=False))
+    return result
+
+
+def memory_lineages(memory) -> list[SourceLineage]:
+    metadata = getattr(memory, "metadata", None) or {}
+    observations = metadata.get("support_observations", []) if isinstance(metadata, dict) else []
+    result = [_memory_lineage(memory), *_read_observations(observations)]
     if isinstance(metadata, dict) and metadata.get("support_observations_truncated"):
         result.append(SourceLineage(frozenset(), "unknown", complete=False))
+    history = metadata.get("consolidation_lineage") if isinstance(metadata, dict) else None
+    if history is not None:
+        if (isinstance(history, dict) and history.get("version") == 1
+                and history.get("scope") == "historical_inputs"):
+            result.extend(_read_observations(history.get("sources")))
+            if history.get("truncated"):
+                result.append(SourceLineage(frozenset(), "unknown", complete=False))
+        else:
+            result.append(SourceLineage(frozenset(), "unknown", complete=False))
     return list(dict.fromkeys(result))
+
+
+def consolidation_lineage(memories) -> dict:
+    """Freeze known roots before merging; historical packaging is not a new vote.
+
+    Kept outside support_observations and memory_revision, so merely carrying
+    existing provenance forward cannot refresh a concept's observation clock.
+    No observation is invented for a rootless legacy source.
+    """
+    sources = list(dict.fromkeys(
+        source for memory in memories for source in memory_lineages(memory)
+    ))
+    rows = [{"roots": sorted(source.roots), "category": source.category,
+             "complete": source.complete} for source in sources]
+    truncated = len(rows) > 64 or len(json.dumps(rows)) > 32768
+    while rows and (len(rows) > 64 or len(json.dumps(rows)) > 32768):
+        rows.pop()
+    return {"version": 1, "scope": "historical_inputs", "sources": rows, "truncated": truncated}
 
 
 def duplicate_observation_metadata(existing, *, metadata, kind, provenance, source_message_id):
