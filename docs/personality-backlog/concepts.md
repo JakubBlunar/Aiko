@@ -195,6 +195,11 @@ the existing L52 contract remains authoritative for derived concepts.
 schema offerings are not an opportunity denominator. A natural-result phrase is
 a useful missed-opportunity contrast, while useful transfer remains unvalidated.
 
+The outcome vocabulary now covers explicit natural status reports, with the
+same user/goal/condition/source checks and no extra model call. Same-message
+approach/result reports require unambiguous literal order. Ordinary-use precision
+and helpful transfer remain to be measured.
+
 **Source check:** [learned_strategies.py](../../app/core/memory/learned_strategies.py),
 [test_learned_strategies.py](../../tests/test_learned_strategies.py).
 

@@ -147,3 +147,23 @@ Validation: 161 affected tests and `npm run lint` passed, including protection
 for newly inferred/recently supported candidates and retirement followed by
 successful evidence-backed revival. The revival slice's separate regressions
 also remain applicable.
+
+## Subsequent implementation: natural outcome wording
+
+Strategy schema offering and admission now share the outcome vocabulary. Explicit
+user reports such as "now it is working" or "it did not help" can offer the
+existing optional schema; assistant claims and "worked up" do not supply a user
+outcome. The same goal, constraint, literal-source, owner and correction checks
+remain. Approach and outcome may share a user message only when their literal
+spans are unambiguous and the approach precedes the result. Reversed or repeated
+ambiguous spans fail closed. This is reported ordering, not proof of causality.
+
+The extractor still uses its existing call and count/token budgets. No historical
+strategy is backfilled. These deterministic language and admission contrasts do
+not establish ordinary-use extraction precision or useful transfer; L36 remains
+partial until source-linked results accumulate.
+
+Validation: 28 focused strategy/diagnostic tests, 75 affected extractor/pattern
+tests and `npm run lint` passed. Successful source-to-storage extraction remains
+one model call; failure/correction, missing conditions, assistant-only outcomes,
+questions and ambiguous same-message ordering have explicit regression coverage.

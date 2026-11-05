@@ -2,6 +2,7 @@ from types import SimpleNamespace as NS
 import json
 
 import numpy as np
+import pytest
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.memory_store import MemoryStore
@@ -104,10 +105,13 @@ def test_a_revised_or_deleted_original_source_invalidates_transfer(tmp_path):
         db._get_conn().close()
 
 
-def test_strategy_is_extracted_in_the_existing_single_model_call(tmp_path):
+@pytest.mark.parametrize("result", ["That worked and fixed the connection.", "Now it is working."])
+def test_strategy_is_extracted_in_the_existing_single_model_call(tmp_path, result):
     db = ChatDatabase(tmp_path / "memory.db")
     store = MemoryStore(tmp_path / "memory.db")
     rows, candidate = episode()
+    rows[2].content = result
+    candidate["strategy"]["outcome"].update(text=result, quote=result)
     for row in rows:
         row.created_at = "2026-10-01T12:00:00+00:00"
     messages, kv, calls = {r.id: r for r in rows}, {}, []

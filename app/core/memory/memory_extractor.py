@@ -548,8 +548,9 @@ class MemoryExtractor:
         if re.search(r"\b(?:call|calling|mean|means|rename)\b", offered_text, re.I):
             system_content += "\n" + EXTRACTION_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
             count_intake(self._db, pattern_owner, shorthand_schema_batches=1)
-        if re.search(r"\b(?:worked|helped|fixed|solved|succeeded|failed|didn'?t work)\b",
-                     offered_text, re.I):
+        from app.core.memory.strategy_outcomes import outcome_schema_needed
+
+        if outcome_schema_needed([*context_rows, *rows]):
             system_content += "\n" + STRATEGY_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
             count_intake(self._db, pattern_owner, strategy_schema_batches=1)
         try:

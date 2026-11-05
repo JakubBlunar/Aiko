@@ -11,6 +11,7 @@ from dataclasses import replace
 from app.core.concepts.concept_support import revision_hash
 from app.core.infra import timephrase
 from app.core.memory.shared_shorthand import source_receipt, sources_current
+from app.core.memory.strategy_outcomes import SUCCESS, FAILURE
 
 EXTRACTION_RULE = """
 L36 optional learned approaches: after an explicit USER report that a concrete
@@ -31,12 +32,14 @@ explicit user correction overturns an existing strategy listed in context;
 then copy its goal/approach/conditions server-side and cite only the new outcome.
 These entries share the existing memory count/output budget. Emit none when
 the exchange lacks a reusable approach with an explicit outcome and conditions.
+An explicit result can use natural wording such as 'now it is working' or
+'now it is fine'. Permission, a greeting or a prediction is not a result.
+Approach and outcome may share one message only when their literal spans clearly
+place the completed approach before the observed result. Do not infer causality.
 """
 _NONLITERAL = re.compile(
     r"\b(?:role.?play|hypothetical|pretend|imagine|fictional|would|might)\b", re.I,
 )
-_SUCCESS = re.compile(r"\b(?:worked|helped|fixed|solved|succeeded|successful)\b", re.I)
-_FAILURE = re.compile(r"\b(?:failed|didn'?t work|did not work|didn'?t help|did not help)\b", re.I)
 _STOP = frozenset("a an the to of in on for with and or i we you my our is it this that "
                   "want need please can could help how me get make do lets let's".split())
 
@@ -78,9 +81,9 @@ def admit_strategy(candidate, rows, context_rows=(), *, session_key, owner, memo
         result, result_row = citation(outcome)
         success = outcome.get("success")
         if (type(success) is not bool or result_row.id not in {r.id for r in rows}
-                or (success and (not _SUCCESS.search(result)
+                or (success and (not SUCCESS.search(result)
                                  or re.search(r"\b(?:not|never|didn'?t)\b", result, re.I)))
-                or (not success and not _FAILURE.search(result))):
+                or (not success and not FAILURE.search(result))):
             return reject("explicit_outcome_missing")
         revises = value.get("revises_memory_id")
         if revises is not None:
@@ -95,8 +98,14 @@ def admit_strategy(candidate, rows, context_rows=(), *, session_key, owner, memo
         else:
             goal, _ = citation(value.get("goal"))
             approach, approach_row = citation(value.get("approach"), user=False)
-            if approach_row.id >= result_row.id:
+            if approach_row.id > result_row.id:
                 return reject("outcome_precedes_approach")
+            if approach_row.id == result_row.id:
+                starts = [[m.start() for m in re.finditer(re.escape(text), result_row.content)]
+                          for text in (approach, result)]
+                if (any(len(items) != 1 for items in starts)
+                        or starts[0][0] + len(approach) > starts[1][0]):
+                    return reject("outcome_precedes_approach")
             constraints, exceptions = [], []
             for field, target in (("constraints", constraints), ("exceptions", exceptions)):
                 items = value.get(field, [])
