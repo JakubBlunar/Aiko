@@ -14,12 +14,11 @@ Design notes:
   touches the chat prompt cache.
 * **Cached by representative.** Each generated label is cached in
   ``kv_meta`` keyed by the cluster's *representative* memory id
-  (``aiko.topic_label.<rep>``) alongside the cluster ``size`` at label
+  (``aiko.topic_label.<rep>``) alongside a source fingerprint at label
   time. Cluster ids are reassigned on every batch refit, so keying by
   the (stable) representative lets a label survive a rebuild: the next
   tick re-applies the cached label for free (no LLM) and only
-  regenerates when the representative is new or the cluster has drifted
-  materially in size.
+  regenerates when the representative, membership or source meaning changes.
 * **Bounded spend.** At most ``topic_label_max_per_run`` clusters get a
   fresh LLM label per tick (largest-first); the rest wait for the next
   tick. The free cache-reapply pass is unbounded (it's just dict work).
@@ -41,6 +40,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.infra import timephrase
+from app.core.conversation.topic_digest_sources import capture_sources
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicGraph
@@ -65,6 +65,9 @@ _SYSTEM_PROMPT = (
     "what the group is ABOUT, so keep it timeless -- never fold a "
     "'today' / 'tonight' / 'tomorrow' from a snippet into the label, "
     "because the label outlives the day it was written. "
+    "Respect source subject and mode: public facts are not user experiences, "
+    "private reflections are Aiko's, and plans remain plans. "
+    + timephrase.STORED_TEXT_TIME_RULE + " "
     "Reply with ONE JSON object on a single line and nothing else: "
     '{"label": "<2-5 word phrase>"}.'
 )
@@ -192,13 +195,13 @@ class ClusterLabelWorker:
         todo: list[Any] = []
         for cluster in clusters:
             rep = int(cluster.representative_id)
-            size = int(cluster.size)
+            sources = capture_sources(cluster, self._memory_store, limit=_MAX_SNIPPETS)
             cached = self._read_cache(rep)
             # F10l: a user rename pins the label (``user_pinned``) so it is
             # always re-applied and never regenerated, even on size drift.
             user_pinned = bool(cached.get("user_pinned")) if cached else False
             if cached is not None and (
-                user_pinned or not self._drifted(size, cached.get("size"))
+                user_pinned or cached.get("fingerprint") == sources.fingerprint
             ):
                 label = str(cached.get("label") or "").strip()
                 if label and label != (cluster.summary or ""):
@@ -217,15 +220,19 @@ class ClusterLabelWorker:
         for cluster in todo[:max_per_run]:
             if self._cancel_event.is_set():
                 break
-            snippets = self._snippets_block(cluster)
+            sources = capture_sources(cluster, self._memory_store, limit=_MAX_SNIPPETS)
+            snippets = sources.render(max_chars=_MAX_SNIPPET_CHARS, now=self._clock())
             if not snippets:
                 continue
             label = self._call_llm(snippets)
-            if not label:
+            if (not label or timephrase.has_relative_deictic(label)
+                    or capture_sources(cluster, self._memory_store).fingerprint
+                    != sources.fingerprint):
                 continue
             if self._topic_graph.set_cluster_label(int(cluster.cluster_id), label):
                 self._write_cache(
-                    int(cluster.representative_id), label, int(cluster.size)
+                    int(cluster.representative_id), label, int(cluster.size),
+                    fingerprint=sources.fingerprint,
                 )
                 labeled += 1
 
@@ -260,11 +267,11 @@ class ClusterLabelWorker:
             return None
         return parsed if isinstance(parsed, dict) else None
 
-    def _write_cache(self, rep: int, label: str, size: int) -> None:
+    def _write_cache(self, rep: int, label: str, size: int, *, fingerprint="") -> None:
         try:
             self._kv_set(
                 _KV_PREFIX + str(rep),
-                json.dumps({"label": label, "size": int(size)}),
+                json.dumps({"label": label, "size": int(size), "fingerprint": fingerprint}),
             )
         except Exception:
             log.debug("topic_label: cache write failed (rep=%s)", rep, exc_info=True)
@@ -282,30 +289,8 @@ class ClusterLabelWorker:
     # ── prompt + LLM ──────────────────────────────────────────────────
 
     def _snippets_block(self, cluster: Any) -> str:
-        lines: list[str] = []
-        now = timephrase.utcnow()
-        for mid in list(cluster.member_ids)[:_MAX_SNIPPETS]:
-            try:
-                mem = self._memory_store.get(int(mid))
-            except Exception:
-                mem = None
-            if mem is None:
-                continue
-            snippet = _trim(getattr(mem, "content", ""), max_chars=_MAX_SNIPPET_CHARS)
-            if snippet:
-                # K-time10: the label this produces is reused far beyond
-                # this worker -- it names the cluster in the interest map
-                # and gets quoted verbatim into drift / gradient / dormant
-                # cues. An undated snippet reading "Jacob plans to bathe
-                # this evening" is exactly how that phrasing ends up
-                # frozen into a cue that surfaces a day later.
-                created_at = str(getattr(mem, "created_at", "") or "")
-                if timephrase.parse_iso(created_at) is not None:
-                    snippet = (
-                        f"{snippet} ({timephrase.humanize_past(created_at, now)})"
-                    )
-                lines.append(f"- {snippet}")
-        return "\n".join(lines)
+        return capture_sources(cluster, self._memory_store, limit=_MAX_SNIPPETS).render(
+            max_chars=_MAX_SNIPPET_CHARS, now=self._clock())
 
     def _call_llm(self, snippets: str) -> str:
         max_tokens = max(
@@ -355,7 +340,10 @@ class ClusterLabelWorker:
             return ""
         if not isinstance(parsed, dict):
             return ""
-        label = str(parsed.get("label") or "").strip().strip("\"'")
+        value = parsed.get("label")
+        if not isinstance(value, str):
+            return ""
+        label = value.strip().strip("\"'")
         # Guard against the model echoing a banned framing word or an empty
         # phrase; a degenerate label is worse than the heuristic fallback.
         if not label:

@@ -1914,6 +1914,9 @@ class SpeakingWorkersInitMixin:
                         # to the nearest cluster, a deleted one is dropped,
                         # without re-clustering the whole corpus. No-ops in
                         # the in-memory fallback mode.
+                        updater = getattr(self._memory_store, "add_update_listener", None)
+                        if callable(updater):
+                            updater(self._topic_graph.on_memory_updated)
                         if self._topic_graph.persistent:
                             try:
                                 self._memory_store.add_memory_listener(

@@ -11,8 +11,7 @@ This worker is the true realisation of the original "cluster-summary"
 idea: during quiet windows it writes one high-salience
 ``kind="topic_digest"`` memory per dense cluster — a worker-LLM
 one-paragraph compression of its members ("what I know about X") — and
-refreshes it only when the cluster has drifted materially in size (the
-same cache-by-representative trick :class:`ClusterLabelWorker` uses).
+refreshes it when membership or semantic source revisions change.
 
 Design notes:
 
@@ -24,13 +23,12 @@ Design notes:
   the Memory tab. It is, however, **excluded from topic-graph
   clustering** (see ``topic_graph._NON_CLUSTERING_KINDS``) so a digest
   never feeds back into the cluster it summarises.
-* **Cached by representative.** Each digest's ``(memory_id, size)`` is
+* **Cached by representative.** Each digest's ID and source fingerprint are
   cached in ``kv_meta`` keyed by the cluster's *representative* memory id
   (``aiko.topic_digest.<rep>``). Cluster ids are reassigned on every
   batch refit, so keying by the (stable) representative lets a digest
   survive a rebuild: the next tick re-uses the existing memory for free
-  (no LLM) and only regenerates when the representative is new or the
-  cluster drifted materially in size.
+  (no LLM) while its actual source snapshot remains unchanged.
 * **Cluster→digest map.** After each run the worker rebuilds
   :attr:`cluster_digest_map` (``{cluster_id: memory_id}``) from the live
   clusters and persists it to ``kv_meta`` (``aiko.topic_digest_map``).
@@ -59,6 +57,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
 from app.core.session.session_text_utils import resolve_user_name
 from app.core.infra import timephrase
+from app.core.conversation.topic_digest_sources import capture_sources
 
 if TYPE_CHECKING:
     from app.core.conversation.topic_graph import TopicGraph
@@ -100,6 +99,11 @@ def _build_system_prompt(
         "preamble. Each snippet ends with how long ago it was recorded -- "
         "respect that: something noted months ago is part of the history, "
         "not the present. "
+        "Each source has its own subject and mode. Keep public facts impersonal, "
+        "Aiko's private reflections hers, intentions uncompleted, and virtual activity "
+        "virtual. Related subjects are not evidence that the user did or experienced "
+        "something. Do not combine opposite or context-dependent claims into one trait; "
+        "preserve the dated distinction or uncertainty. "
         + timephrase.STORED_TEXT_TIME_RULE
         + ' Reply with ONE JSON object on a single line and nothing '
         'else: {"digest": "<2-4 sentences>"}.'
@@ -264,34 +268,40 @@ class TopicDigestWorker:
         todo: list[Any] = []
         for cluster in dense:
             rep = int(cluster.representative_id)
-            size = int(cluster.size)
             cid = int(cluster.cluster_id)
+            sources = capture_sources(cluster, self._memory_store, limit=_MAX_SNIPPETS)
+            if sources.member_count < min_size:
+                continue
             cached = self._read_cache(rep)
             mem_id = self._cached_memory_id(cached)
             if (
                 mem_id is not None
-                and not self._drifted(size, cached.get("size"))
+                and cached.get("fingerprint") == sources.fingerprint
                 and self._digest_exists(mem_id)
             ):
                 new_map[cid] = mem_id
                 reused += 1
                 continue
-            todo.append((cluster, mem_id))
+            todo.append((cluster, mem_id, sources))
 
         written = 0
-        for cluster, existing_id in todo[:max_per_run]:
+        for cluster, existing_id, sources in todo[:max_per_run]:
             if self._cancel_event.is_set():
                 break
-            snippets = self._snippets_block(cluster)
+            snippets = sources.render(max_chars=_MAX_SNIPPET_CHARS, now=self._clock())
             if not snippets:
                 continue
             digest_text = self._call_llm(snippets)
             if not digest_text:
                 continue
-            mem_id = self._write_digest(cluster, digest_text, existing_id)
+            if (capture_sources(cluster, self._memory_store).fingerprint != sources.fingerprint
+                    or timephrase.has_relative_deictic(digest_text)):
+                continue
+            mem_id = self._write_digest(cluster, digest_text, existing_id, sources=sources)
             if mem_id is None:
                 continue
-            self._write_cache(int(cluster.representative_id), mem_id, int(cluster.size))
+            self._write_cache(int(cluster.representative_id), mem_id, int(cluster.size),
+                              fingerprint=sources.fingerprint)
             new_map[int(cluster.cluster_id)] = mem_id
             written += 1
 
@@ -304,7 +314,7 @@ class TopicDigestWorker:
         # abandoned). Only the derived digest is deleted -- member memories
         # are untouched and re-cluster into a new digest later.
         pending_ids = {
-            int(mid) for _cluster, mid in todo[max_per_run:] if mid is not None
+            int(mid) for _cluster, mid, _sources in todo if mid is not None
         }
         reaped = self._reap_orphans(
             protected=set(new_map.values()) | pending_ids
@@ -420,11 +430,12 @@ class TopicDigestWorker:
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
-    def _write_cache(self, rep: int, memory_id: int, size: int) -> None:
+    def _write_cache(self, rep: int, memory_id: int, size: int, *, fingerprint="") -> None:
         try:
             self._kv_set(
                 _KV_PREFIX + str(rep),
-                json.dumps({"memory_id": int(memory_id), "size": int(size)}),
+                json.dumps({"memory_id": int(memory_id), "size": int(size),
+                            "fingerprint": fingerprint}),
             )
         except Exception:
             log.debug("topic_digest: cache write failed (rep=%s)", rep, exc_info=True)
@@ -457,19 +468,30 @@ class TopicDigestWorker:
     # ── digest write ────────────────────────────────────────────────────
 
     def _write_digest(
-        self, cluster: Any, digest_text: str, existing_id: int | None
+        self, cluster: Any, digest_text: str, existing_id: int | None, *, sources=None,
     ) -> int | None:
+        if existing_id is not None:
+            previous = self._memory_store.get(existing_id)
+            if previous is not None and bool(getattr(previous, "pinned", False)):
+                existing_id = None  # Keep curated wording; make a new derived summary instead.
         try:
             embedding = self._embedder.embed(digest_text)
         except Exception:
             log.warning("topic_digest embed failed", exc_info=True)
             return None
-        member_ids = [int(m) for m in list(cluster.member_ids)[:_MAX_SNIPPETS]]
+        sources = sources or capture_sources(cluster, self._memory_store, limit=_MAX_SNIPPETS)
+        if capture_sources(cluster, self._memory_store).fingerprint != sources.fingerprint:
+            return None
+        member_ids = sources.ids
         metadata = {
             "cluster_representative_id": int(cluster.representative_id),
             "member_count": int(cluster.size),
             "refreshed_at": self._clock().isoformat(),
             "source_ids": member_ids,
+            "source_revisions": dict(sources.revisions),
+            "source_fingerprint": sources.fingerprint,
+            "source_scope": "summary_inputs",
+            "input_member_count": sources.member_count,
         }
         # Refresh the existing row in place when we have one (keeps the same
         # memory id so the cluster→digest map and Memory-tab row are stable);
@@ -483,6 +505,7 @@ class TopicDigestWorker:
                     embedding=embedding,
                     salience=_DIGEST_SALIENCE,
                     metadata=metadata,
+                    metadata_merge=True,
                 )
             except Exception:
                 log.warning("topic_digest update failed", exc_info=True)
@@ -521,31 +544,8 @@ class TopicDigestWorker:
     # ── prompt + LLM ──────────────────────────────────────────────────
 
     def _snippets_block(self, cluster: Any) -> str:
-        lines: list[str] = []
-        now = timephrase.utcnow()
-        for mid in list(cluster.member_ids)[:_MAX_SNIPPETS]:
-            try:
-                mem = self._memory_store.get(int(mid))
-            except Exception:
-                mem = None
-            if mem is None:
-                continue
-            # Defensive: never feed a prior digest back into a fresh one.
-            if str(getattr(mem, "kind", "")) == "topic_digest":
-                continue
-            snippet = _trim(getattr(mem, "content", ""), max_chars=_MAX_SNIPPET_CHARS)
-            if snippet:
-                # K-time10: age-tag each snippet. A digest summarises a
-                # topic *over time*, and feeding the whole cluster in
-                # undated is how "Jacob was ill" from May gets written
-                # into a digest as though it were the current state.
-                created_at = str(getattr(mem, "created_at", "") or "")
-                if timephrase.parse_iso(created_at) is not None:
-                    snippet = (
-                        f"{snippet} ({timephrase.humanize_past(created_at, now)})"
-                    )
-                lines.append(f"- {snippet}")
-        return "\n".join(lines)
+        return capture_sources(cluster, self._memory_store, limit=_MAX_SNIPPETS).render(
+            max_chars=_MAX_SNIPPET_CHARS, now=self._clock())
 
     def _resolve_user_name(self) -> str:
         return resolve_user_name(self._user_display_name_provider)
@@ -613,7 +613,10 @@ class TopicDigestWorker:
             return ""
         if not isinstance(parsed, dict):
             return ""
-        digest = str(parsed.get("digest") or "").strip().strip("\"'")
+        value = parsed.get("digest")
+        if not isinstance(value, str):
+            return ""
+        digest = value.strip().strip("\"'")
         if len(digest) < 8:
             return ""
         return digest

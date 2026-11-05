@@ -63,6 +63,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from app.core.conversation.topic_memory_policy import NON_CLUSTERING_KINDS, topic_member_eligible
+from app.core.conversation.topic_graph_updates import TopicGraphUpdatesMixin
 from app.core.infra import timephrase
 
 try:  # networkx ships louvain_communities since 3.0; stay defensive anyway.
@@ -109,7 +111,7 @@ _LEARNED_KINDS: frozenset[str] = frozenset({"knowledge", "curiosity_finding"})
 # would end up summarising its own prior output (a feedback loop). The
 # mirror-read chokepoints (``_snapshot_mirror`` / ``_ensure_cached``) and
 # the incremental ``on_memory_added`` path all skip these kinds.
-_NON_CLUSTERING_KINDS: frozenset[str] = frozenset({"topic_digest"})
+_NON_CLUSTERING_KINDS = NON_CLUSTERING_KINDS
 
 
 def _days_since(iso_ts: str, now: datetime) -> float | None:
@@ -944,7 +946,7 @@ def _normalise(vec: np.ndarray) -> np.ndarray:
     return arr / norm
 
 
-class TopicGraph:
+class TopicGraph(TopicGraphUpdatesMixin):
     """Memory-graph wrapper exposing cluster + "is this fresh?" checks.
 
     Construction is cheap; the actual clustering is deferred to the
@@ -1721,7 +1723,7 @@ class TopicGraph:
             mems = [
                 m for m in memory_store._mirror.values()  # type: ignore[attr-defined]
                 if m.embedding is not None and m.embedding.size > 0
-                and str(m.kind) not in _NON_CLUSTERING_KINDS
+                and topic_member_eligible(m)
             ]
 
         key = self._cache_key(mems)
@@ -1810,19 +1812,21 @@ class TopicGraph:
                 m
                 for m in ms._mirror.values()  # type: ignore[attr-defined]
                 if m.embedding is not None and m.embedding.size > 0
-                and str(m.kind) not in _NON_CLUSTERING_KINDS
+                and topic_member_eligible(m)
             ]
 
     def _best_match_ann(self, vec: np.ndarray) -> tuple[float, int | None]:
         try:
-            hits = self._rag_store.knn_memories(_normalise(vec), top_k=1)
+            hits = self._rag_store.knn_memories(_normalise(vec), top_k=16)
         except Exception:
             log.debug("best_match_ann failed", exc_info=True)
             return 0.0, None
         if not hits:
             return 0.0, None
-        mid, sim = hits[0]
-        return float(sim), int(mid)
+        for mid, sim in hits:
+            if topic_member_eligible(self._memory_store.get(int(mid))):
+                return float(sim), int(mid)
+        return 0.0, None
 
     def _ensure_warm(self) -> None:
         """Warm the live state without doing heavy work under the lock.
@@ -1841,6 +1845,7 @@ class TopicGraph:
         except Exception:
             log.warning("topic_graph warm-start load failed", exc_info=True)
         if clusters:
+            eligible = {m.id: m for m in self._snapshot_mirror()}
             live: dict[int, _LiveCluster] = {}
             for row in clusters:
                 centroid = (
@@ -1857,10 +1862,19 @@ class TopicGraph:
             assign: dict[int, int] = {}
             for mid, cid in assignments.items():
                 cluster = live.get(cid)
-                if cluster is not None:
+                if cluster is not None and int(mid) in eligible:
                     cluster.member_ids.add(int(mid))
                     assign[int(mid)] = cid
             live = {cid: c for cid, c in live.items() if c.member_ids}
+            for cluster in live.values():
+                cluster.centroid = self._compute_centroid(
+                    [eligible[mid] for mid in cluster.member_ids])
+            if assign != assignments:
+                try:
+                    self._cluster_store.replace_all(
+                        [_LiveClusterToRow(c) for c in live.values()], assign)
+                except Exception:
+                    log.debug("warm-start source cleanup persist failed", exc_info=True)
             with self._lock:
                 if not self._warm:
                     self._live = live
@@ -1958,7 +1972,7 @@ class TopicGraph:
         if not self.persistent:
             return
         # F10g: derived artifacts (topic digests) never join clusters.
-        if str(getattr(memory, "kind", "")) in _NON_CLUSTERING_KINDS:
+        if not topic_member_eligible(memory):
             return
         emb = getattr(memory, "embedding", None)
         if emb is None or getattr(emb, "size", 0) == 0:
@@ -2004,10 +2018,9 @@ class TopicGraph:
     def on_memory_deleted(self, memory_id: int) -> None:
         """Drop a deleted memory from the live graph + persisted store.
 
-        Removes the member from its cluster (dropping the cluster when it
-        empties). The centroid is left approximate -- the next batch refit
-        re-derives it -- because we don't keep per-member vectors in the
-        live state."""
+        Removes the member from its cluster (dropping an empty cluster)
+        and recomputes the remaining centroid from current source vectors.
+        """
         if not self.persistent:
             return
         mid = int(memory_id)
@@ -2033,6 +2046,8 @@ class TopicGraph:
                 store.upsert_cluster(_LiveClusterToRow(touched))  # type: ignore[union-attr]
         except Exception:
             log.debug("on_memory_deleted persist failed", exc_info=True)
+        if touched is not None:
+            self._refresh_centroid(touched.cluster_id)
 
     def pending_count(self) -> int:
         """Number of memories added since the last batch refit that did
@@ -2108,7 +2123,8 @@ class TopicGraph:
         for cid, cluster in self._live.items():
             if len(cluster.member_ids) < self._min_cluster_size:
                 continue
-            members = [m for m in (get(mid) for mid in cluster.member_ids) if m is not None]
+            members = [m for m in (get(mid) for mid in cluster.member_ids)
+                       if topic_member_eligible(m)]
             if len(members) < self._min_cluster_size:
                 continue
             members.sort(

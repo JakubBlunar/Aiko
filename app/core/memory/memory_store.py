@@ -592,6 +592,7 @@ class MemoryStore:
         # a new memory never triggers a full re-cluster. Fired outside
         # the store lock (same discipline as delete listeners).
         self._added_listeners: list[Any] = []
+        self._updated_listeners: list[Any] = []
         # K76 flashbulb encoding — optional affect hook. ``_flashbulb_
         # provider`` returns the live ``(arousal, episode_intensity)`` at
         # write time; when enabled, ``add`` boosts a new row's salience by
@@ -674,6 +675,15 @@ class MemoryStore:
             self._added_listeners.remove(callback)
         except ValueError:
             pass
+
+    def add_update_listener(self, callback: Any) -> None:
+        """Observe committed updates after SQLite, mirror and vector sync; outside the lock."""
+        if callback is not None and callback not in self._updated_listeners:
+            self._updated_listeners.append(callback)
+
+    def remove_update_listener(self, callback: Any) -> None:
+        if callback in self._updated_listeners:
+            self._updated_listeners.remove(callback)
 
     def set_tier_caps(
         self,
@@ -1618,6 +1628,11 @@ class MemoryStore:
                 )
             except Exception:
                 log.debug("rag update mirror failed", exc_info=True)
+        for listener in list(self._updated_listeners):
+            try:
+                listener(updated)
+            except Exception:
+                log.debug("memory update listener raised for id=%s", memory_id, exc_info=True)
         return updated
 
     def reclassify(
