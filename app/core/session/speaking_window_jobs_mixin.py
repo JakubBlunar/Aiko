@@ -418,16 +418,12 @@ class SpeakingWindowJobsMixin:
         session_key = self.session_key
         history_window = 10
 
-        def _history_provider() -> list[tuple[str, str]]:
+        def _history_provider() -> list[Any]:
             try:
                 rows = self._chat_db.get_messages(session_key, limit=history_window)
             except Exception:
                 return []
-            return [
-                (str(r.role or ""), str(r.content or ""))
-                for r in rows
-                if r.role in ("user", "assistant")
-            ]
+            return [r for r in rows if r.role in ("user", "assistant")]
 
         def _job(_stop_flag: Any) -> None:
             if _stop_flag is not None and _stop_flag.is_set():

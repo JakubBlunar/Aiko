@@ -202,8 +202,8 @@ class TestBootstrap(unittest.TestCase):
 class TestReflection(unittest.TestCase):
     def test_reflection_writes_progress_and_mirrors_on_goal(self) -> None:
         payload = json.dumps({
-            "note": "I noticed I keep reaching for major seventh shapes; next "
-                    "week I want to compare them with a real jazz standard.",
+            "note": "I'm drawn to major seventh shapes; I want to compare "
+                    "them with a real jazz standard.",
         })
         goal_store, worker, ollama, _, _ = _harness(payload=payload)
         goal = goal_store.add_goal(

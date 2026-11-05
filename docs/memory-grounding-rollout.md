@@ -81,9 +81,37 @@ temporal/provenance rules and concept dependencies; it is intentionally bounded
 despite the store's broad static import reach. These are synthetic regressions,
 not a claim that all historical rewrites have been repaired.
 
+## 3. Dated inner-life and conversation workers
+
+Goal workers now receive today's anchor, storage rules and dated reflection
+history. Their prompt distinguishes intentions/reflections from evidence of
+completed actions and permits abstention. Goal reflection and away-diary writes
+reject unanchored relative wording. Diary transcripts preserve dates and actors
+when trimming input; entries are Aiko's episode reflections, with unknown event
+times left unknown. This does not turn reflection into an action-verification
+system: the role guard from slice 1 remains necessary.
+
+Dream inputs were already age-tagged at the source, but truncation inside the
+dream prompt could cut the age suffix off long notes. Content is now bounded
+before formatting and the age survives. Creative private reflections remain
+available, with an explicit distinction from experienced or completed events.
+
+Shared-moment scheduling now passes real message rows rather than discarding
+their IDs/dates into `(speaker, text)` tuples. The bounded offered window retains
+its IDs as a `context_window` receipt, explicitly not per-claim quote proof. A
+known conversation timestamp supplies canonical event time; absent dates remain
+unknown, separate from the display's recording-time fallback. Manual date edits
+update the canonical fields too. The weekly relationship pulse now writes an
+Aiko-owned `self` reflection rather than a user-oriented `self_tagged` note.
+No legacy self-tag cohort was bulk-renamed.
+
+Validation: 213 affected tests passed with 2,940 deselected, plus focused final
+moment/date checks; lint passed. Dynamic scheduling and long-input age retention
+have explicit regression coverage.
+
 ## Remaining slices
 
-- High-risk producer inputs: goals, diary/dream/moments, promises and pulse actor.
+- Promise source-message/quote validation and remaining producer/mutation boundaries.
 - Source-to-concept evaluation and fresh ordinary-use review after activation.
 
 Backend restart is required to activate implementation changes. These checks

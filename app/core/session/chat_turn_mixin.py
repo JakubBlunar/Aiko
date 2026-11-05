@@ -612,7 +612,13 @@ class ChatTurnMixin:
             return []
         out: list[str] = []
         for mem in top:
-            rendered = timephrase.format_memory_block([mem], max_items=1).strip()
+            from types import SimpleNamespace
+
+            rendered = timephrase.format_memory_line(SimpleNamespace(
+                content=mem.content[:160], created_at=getattr(mem, "created_at", None),
+                temporal_type=getattr(mem, "temporal_type", None),
+                event_time=getattr(mem, "event_time", None),
+            )).strip()
             if not rendered:
                 continue
             out.append(rendered)

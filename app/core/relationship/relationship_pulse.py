@@ -279,7 +279,9 @@ class RelationshipPulseWorker:
         try:
             mem = self._mem.add(
                 text,
-                kind="self_tagged",
+                kind="self",
+                metadata={"memory_origin": {"subject": "aiko", "mode": "reflection",
+                          "writer": "relationship_pulse", "domain": "conversation", "version": 1}},
                 embedding=embedding,
                 salience=self._salience,
                 source_session=None,

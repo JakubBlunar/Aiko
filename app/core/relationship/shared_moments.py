@@ -161,6 +161,7 @@ class SharedMomentsStore:
         source_message_ids: Iterable[int] | None = None,
         source_session: str | None = None,
         source_message_id: int | None = None,
+        source_scope: str | None = None,
         salience: float | None = None,
         pinned: bool | None = None,
     ) -> SharedMomentRow | None:
@@ -171,6 +172,7 @@ class SharedMomentsStore:
         normalised_vibe = normalise_vibe(vibe)
         content = _format_content(cleaned_summary, normalised_vibe)
         when_iso = str(when).strip() if when else _now_iso()
+        known_event_time = timephrase.parse_iso(when) if when else None
         # Validate ISO; fall back to "now" if anything weird arrives.
         try:
             datetime.fromisoformat(when_iso.replace("Z", "+00:00"))
@@ -213,6 +215,9 @@ class SharedMomentsStore:
         ids_list = [int(i) for i in (source_message_ids or []) if i is not None]
         if ids_list:
             meta["source_message_ids"] = ids_list
+        if source_scope:
+            meta["source_scope"] = source_scope
+        meta["when_basis"] = "provided" if known_event_time else "recording_time_only"
 
         mem = self._memory_store.add(
             content=content,
@@ -238,6 +243,8 @@ class SharedMomentsStore:
             # "(uncertain)" suffix work consistently across kinds.
             # Manual moments still clamp to >= 0.9 via the pin path.
             confidence=float(confidence),
+            temporal_type="past_event",
+            event_time=known_event_time.isoformat() if known_event_time else None,
         )
         if mem is None:
             return None
@@ -257,6 +264,7 @@ class SharedMomentsStore:
             source=candidate.source,
             confidence=candidate.confidence,
             source_message_ids=candidate.source_message_ids,
+            source_scope=candidate.source_scope,
             source_session=source_session,
             source_message_id=source_message_id,
         )
@@ -283,10 +291,13 @@ class SharedMomentsStore:
         if len(new_summary) < 4:
             return None
         new_vibe = normalise_vibe(vibe) if vibe is not None else normalise_vibe(meta.get("vibe"))
+        time_patch: dict[str, Any] = {}
         if when is not None:
             try:
                 datetime.fromisoformat(str(when).replace("Z", "+00:00"))
                 meta["when"] = str(when)
+                meta["when_basis"] = "provided"
+                time_patch = {"event_time": str(when), "temporal_type": "past_event"}
             except ValueError:
                 pass
         meta["what"] = new_summary
@@ -304,6 +315,8 @@ class SharedMomentsStore:
             salience=salience,
             embedding=embedding,
             metadata=meta,
+            provenance="stated" if summary is not None else None,
+            **time_patch,
         )
         if updated is None:
             return None

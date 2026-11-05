@@ -71,17 +71,23 @@ def build_recent_context(
     compose prompt budget. Returns ``""`` for empty / malformed input.
     """
     speaker = (user_name or "User").strip() or "User"
-    lines: list[str] = []
-    for row in rows or []:
-        role = str(getattr(row, "role", "") or "").lower()
-        content = str(getattr(row, "content", "") or "").strip()
-        if not content:
-            continue
-        who = speaker if role == "user" else "Aiko"
-        lines.append(f"{who}: {content}")
+    lines = [timephrase.format_transcript([row], role_labels={"user": speaker, "assistant": "Aiko"})
+             for row in rows or []]
+    lines = [line for line in lines if line]
     text = "\n".join(lines).strip()
     if max_chars > 0 and len(text) > max_chars:
-        text = text[-max_chars:]
+        # Keep each retained line's age/actor prefix when applying the budget.
+        kept: list[str] = []
+        remaining = max_chars
+        for line in reversed(lines):
+            if kept and len(line) + 1 > remaining:
+                break
+            clipped = line[:remaining]
+            kept.append(clipped)
+            remaining -= len(clipped) + 1
+            if remaining <= 0:
+                break
+        text = "\n".join(reversed(kept))
     return text
 
 
@@ -305,6 +311,8 @@ class DiaryWorker:
             "summary, not a note-to-self bullet, no greeting, no stage "
             "directions, no emoji. If nothing genuinely stuck with you, "
             'reply with an empty entry ("").'
+            " Your feelings are yours; distinguish them from what the user actually "
+            "said or did. An imagined future interaction is not a shared experience."
         )
         try:
             content, _usage = self._ollama.chat_json(
@@ -325,6 +333,7 @@ class DiaryWorker:
                             "back long after it was written.\n\n"
                             'Reply with JSON only: {"entry": "<diary entry, '
                             'or empty string if nothing sat with you>"}.'
+                            + "\n" + timephrase.STORED_TEXT_TIME_RULE
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -345,6 +354,8 @@ class DiaryWorker:
         return entry or None
 
     def _persist(self, entry: str) -> Any:
+        if timephrase.has_relative_deictic(entry):
+            return None
         try:
             embedding = self._embed(entry)
         except Exception:
@@ -364,7 +375,9 @@ class DiaryWorker:
                 salience=self._salience,
                 source_session=source_session,
                 tier="long_term",
-                temporal_type="durable",
+                temporal_type="past_event",
+                metadata={"memory_origin": {"subject": "aiko", "mode": "reflection",
+                          "writer": "diary_worker", "domain": "conversation", "version": 1}},
                 # Each diary entry is preserved as its own moment.
                 skip_dedupe=True,
             )

@@ -191,7 +191,7 @@ class MaybeRunTests(unittest.TestCase):
             self.assertEqual(len(ollama.calls), 1)
             self.assertEqual(len(calls), 1)
             self.assertIsNotNone(result.memory_id)
-            mids = {m.id for m in f.store.list_recent(limit=20) if m.kind == "self_tagged"}
+            mids = {m.id for m in f.store.list_recent(limit=20) if m.kind == "self"}
             self.assertIn(result.memory_id, mids)
         finally:
             f.close()

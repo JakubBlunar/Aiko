@@ -122,8 +122,8 @@ class TestGating(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(det._persisted, [result])  # type: ignore[attr-defined]
         self.assertEqual(result.source, "llm")
-        # ``when`` is stamped automatically by the detector.
-        self.assertTrue(result.when)
+        # Legacy tuple input has no event timestamp; do not manufacture one.
+        self.assertIsNone(result.when)
 
         stats = det.stats()
         self.assertEqual(stats["llm_scheduled"], 1)

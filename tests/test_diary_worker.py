@@ -36,7 +36,7 @@ class _FakeStore:
 
 
 class _FakeLLM:
-    def __init__(self, entry: str = "Today felt quiet without them.") -> None:
+    def __init__(self, entry: str = "The quiet felt different without them.") -> None:
         self.entry = entry
         self.calls: list[dict[str, Any]] = []
 

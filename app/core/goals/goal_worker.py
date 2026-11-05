@@ -88,6 +88,10 @@ _REFLECTION_SYSTEM_PROMPT = (
     "going, or one small next step. Keep it grounded, no platitudes, no "
     "self-help filler. Honour her recent reflections (the LAST entry is the "
     "most recent) and avoid repeating them word-for-word. "
+    "These are Aiko's intentions and reflections, not independent evidence of "
+    "completed actions. Do not invent practice, research, conversations, user "
+    "achievements or improvement. Without observed outcomes, stay with a wish, "
+    "uncertainty or possible next step, or return an empty note. "
     "Reply with ONE JSON object on a single line and nothing else. "
     "Schema: {{\"note\": \"<= 280 chars\"}}."
 )
@@ -434,6 +438,8 @@ class GoalWorker:
             return {"cancelled": True, "branch": "reflection"}
         # Collapse whitespace but keep the full note for GoalStore storage.
         cleaned = " ".join((note or "").split())
+        if timephrase.has_relative_deictic(cleaned):
+            cleaned = ""  # Never freeze an unanchored 'today' into long-term notes.
         if not cleaned:
             log.info(
                 "goal_worker reflection: empty note parsed (goal_id=%s llm_ms=%.0f)",
@@ -545,7 +551,13 @@ class GoalWorker:
             note = (mem.metadata or {}).get("note") or mem.content or ""
             note = _trim(note, max_chars=_MAX_NOTE_CHARS)
             if note:
-                lines.append(f"- {note}")
+                from types import SimpleNamespace
+
+                lines.append(timephrase.format_memory_line(SimpleNamespace(
+                    content=note, created_at=getattr(mem, "created_at", None),
+                    temporal_type=getattr(mem, "temporal_type", None),
+                    event_time=getattr(mem, "event_time", None),
+                )))
         return "\n".join(lines)
 
     # ── LLM ───────────────────────────────────────────────────────────
@@ -612,7 +624,8 @@ class GoalWorker:
         temperature: float,
     ) -> Any:
         messages = [
-            {"role": "system", "content": system},
+            {"role": "system", "content": timephrase.today_anchor() + "\n" + system
+             + "\n" + timephrase.STORED_TEXT_TIME_RULE},
             {"role": "user", "content": user},
         ]
         chunks: list[str] = []

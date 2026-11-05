@@ -59,6 +59,8 @@ def _build_dream_prompt(user_display_name: str = "the user") -> str:
         "Compose ONE short reflection (≤ 35 words, first person, plain "
         "sentence) that captures what you've been quietly sitting with. NOT a "
         "greeting, NOT a question — just a private note to yourself.\n"
+        "This is a private reflection, not evidence that you or the user acted "
+        "on a thought or experienced an imagined scene. Keep that distinction.\n"
         "\n"
         "Output ONLY the sentence. No quotes, no JSON, no prose around it."
     )
@@ -417,10 +419,10 @@ class DreamWorker:
         if rolling_summary:
             parts.append("Rolling summary of last conversation:\n" + rolling_summary[:1200])
         if callbacks:
-            joined = "; ".join(c[:160] for c in callbacks[:3])
+            joined = "; ".join(c[:512] for c in callbacks[:3])
             parts.append(f"Threads you'd noted to come back to: {joined}")
         if self_memories:
-            joined = "; ".join(s[:160] for s in self_memories[:3])
+            joined = "; ".join(s[:512] for s in self_memories[:3])
             parts.append(f"Things you've been quietly thinking about yourself: {joined}")
         if hot_clusters:
             joined = ", ".join(h[:80] for h in hot_clusters[:3])

@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.infra import timephrase
-from app.core.session.session_text_utils import resolve_user_name, speaker_label
+from app.core.session.session_text_utils import resolve_user_name
 
 if TYPE_CHECKING:
     from app.llm.ollama_client import OllamaClient
@@ -109,6 +109,7 @@ class SharedMomentCandidate:
     source_message_ids: list[int] | None = None
     source: str = "tag"  # "tag" | "llm" | "manual"
     confidence: float = 0.7
+    source_scope: str | None = None
 
     def to_metadata(self) -> dict[str, Any]:
         meta: dict[str, Any] = {
@@ -121,6 +122,8 @@ class SharedMomentCandidate:
             meta["when"] = self.when
         if self.source_message_ids:
             meta["source_message_ids"] = list(self.source_message_ids)
+        if self.source_scope:
+            meta["source_scope"] = self.source_scope
         return meta
 
     def to_memory_content(self) -> str:
@@ -246,28 +249,32 @@ def _parse_llm_payload(raw: str) -> SharedMomentCandidate | None:
     )
 
 
-def _format_history(
-    history: list[tuple[str, str]],
+def _bounded_history(
+    history: list[Any],
     *,
     max_chars: int,
     user_display_name: str = "Jacob",
-) -> str:
-    if not history:
-        return ""
-    lines: list[str] = []
+) -> tuple[str, list[Any]]:
+    lines: list[tuple[str, Any]] = []
     total = 0
-    for role, content in reversed(history):
-        text = (content or "").strip()
-        if not text:
+    for original in reversed(history):
+        row = ({"role": original[0], "content": original[1]}
+               if isinstance(original, tuple) else original)
+        line = timephrase.format_transcript([row], role_labels={
+            "user": user_display_name, "assistant": "Aiko",
+        })
+        if not line:
             continue
-        speaker = speaker_label(role, user_display_name)
-        line = f"{speaker}: {text}"
         if total + len(line) > max_chars:
             break
-        lines.append(line)
+        lines.append((line, row))
         total += len(line) + 1
     lines.reverse()
-    return "\n".join(lines)
+    return "\n".join(line for line, _ in lines), [row for _, row in lines]
+
+
+def _format_history(history, *, max_chars, user_display_name="Jacob") -> str:
+    return _bounded_history(history, max_chars=max_chars, user_display_name=user_display_name)[0]
 
 
 # Reaction tags whose presence in the turn we treat as a "moment candidate"
@@ -459,7 +466,7 @@ class MomentDetector:
         if not history:
             self._stats["llm_returned_null"] += 1
             return None
-        block = _format_history(
+        block, offered = _bounded_history(
             history,
             max_chars=self._llm_max_history_chars,
             user_display_name=resolve_user_name(
@@ -515,7 +522,15 @@ class MomentDetector:
         if candidate is None:
             self._stats["llm_returned_null"] += 1
             return None
-        candidate.when = timephrase.utcnow().isoformat()
+        def value(row, key):
+            return row.get(key) if isinstance(row, dict) else getattr(row, key, None)
+
+        candidate.source_message_ids = [value(row, "id") for row in offered
+                                        if type(value(row, "id")) is int]
+        candidate.source_scope = "context_window"  # Retrieval receipt, not per-claim quote proof.
+        known = [value(row, "created_at") for row in offered
+                 if timephrase.parse_iso(value(row, "created_at")) is not None]
+        candidate.when = known[-1] if known else None
         if self._persist is not None:
             try:
                 self._persist(candidate)
