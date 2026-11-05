@@ -74,7 +74,7 @@ def test_inspect_preserves_dates_content_and_evidence_without_mutation(host):
     result = json.loads(tool.run({"action": "get", "entry_id": 3}))
     entry = result["entry"]
     assert entry == {key: before[key] for key in ("id", "kind", "content", "metadata")} | {
-        "date": before["created_at"],
+        "date": before["created_at"], "authorship": "unspecified",
     }
     assert entry["metadata"]["evidence_type"] == "search_excerpt"
     assert "not verified full pages" in result["note"]

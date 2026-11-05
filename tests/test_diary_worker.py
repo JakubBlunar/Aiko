@@ -12,7 +12,7 @@ import unittest
 from datetime import datetime, timezone
 from typing import Any
 
-from app.core.proactive.diary_worker import DiaryWorker, build_recent_context
+from app.core.proactive.diary_worker import DiaryWorker, build_recent_context, context_key
 
 
 class _FakeMemory:
@@ -277,6 +277,54 @@ class StateTests(unittest.TestCase):
             self.assertIn(key, state)
         self.assertTrue(state["away"])
         self.assertTrue(state["has_llm"])
+
+
+class JournalQualityTests(unittest.TestCase):
+    def test_no_new_conversation_does_not_produce_another_entry_after_cooldown(self):
+        worker = _make_worker()
+        revision = ["session:42"]
+        worker._context_key_provider = lambda: revision[0]
+        assert worker.run()["fired"] == 1
+        assert worker.run()["reason"] == "no_new_conversation"
+        assert len(worker._ollama.calls) == 1
+        revision[0] = "session:44"
+        assert worker.run()["fired"] == 1
+        assert len(worker._memory_store.added) == 2
+        journal = worker._memory_store.added[-1].kw["metadata"]["journal"]
+        assert journal["authorship"] == "background"
+
+    def test_empty_reflection_spends_cooldown_and_waits_for_new_material(self):
+        kv = {}
+        worker = _make_worker(llm=_FakeLLM(entry=""), kv=kv)
+        worker._context_key_provider = lambda: "session:42"
+        assert worker.run()["reason"] == "empty"
+        assert "diary_worker.last_fired_at" in kv
+        assert worker.run()["reason"] == "no_new_conversation"
+        assert len(worker._ollama.calls) == 1
+
+    def test_context_identity_is_based_on_message_content_and_time_not_rendered_age(self):
+        from types import SimpleNamespace
+
+        row = SimpleNamespace(id=42, session_id="s1", role="user", content="A quiet thought.",
+                              created_at="2026-11-05T10:00:00Z")
+        first = context_key([row])
+        assert context_key([row]) == first
+        row.content = "A corrected thought."
+        assert context_key([row]) != first
+
+    def test_previous_entries_are_dated_subjective_context_not_new_evidence(self):
+        from types import SimpleNamespace
+
+        worker = _make_worker()
+        worker._memory_store.list_recent = lambda **_: [SimpleNamespace(
+            content="I felt uncertain about offering another suggestion.",
+            created_at="2026-11-01T10:00:00Z", temporal_type="past_event",
+        )]
+        worker.run()
+        prompt = worker._ollama.calls[0]["messages"][1]["content"]
+        assert "earlier subjective diary entries, not new evidence" in prompt
+        assert "I felt uncertain" in prompt
+        assert "Do not paraphrase an earlier entry" in prompt
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ tag-authored one.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
 from app.core.infra import timephrase
+from app.core.memory.diary_journal import journal_metadata
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import numpy as np
@@ -47,6 +49,7 @@ log = logging.getLogger("app.diary_worker")
 
 # kv_meta keys this worker owns (namespaced under ``diary_worker.``).
 _KV_LAST_FIRED_AT = "diary_worker.last_fired_at"
+_KV_LAST_CONTEXT = "diary_worker.last_context_key"
 
 # Minimum length of a composed entry to be worth persisting — guards
 # against the LLM returning a stray token / empty clause.
@@ -55,6 +58,13 @@ _MIN_ENTRY_CHARS = 16
 
 def _utcnow() -> datetime:
     return timephrase.utcnow()
+
+
+def context_key(rows) -> str:
+    """Fingerprint source messages, independent of their changing age labels."""
+    fields = ("session_id", "id", "role", "content", "created_at")
+    raw = [[getattr(row, field, None) for field in fields] for row in rows]
+    return hashlib.sha256(json.dumps(raw, ensure_ascii=False).encode()).hexdigest()
 
 
 def build_recent_context(
@@ -129,6 +139,7 @@ class DiaryWorker:
         memory_store: "MemoryStore",
         embed: Callable[[str], "np.ndarray"],
         recent_context_provider: Callable[[], str],
+        context_key_provider: Callable[[], str] | None = None,
         is_away_provider: Callable[[], bool],
         user_display_name_provider: Callable[[], str],
         kv_get: Callable[[str], str | None],
@@ -147,6 +158,7 @@ class DiaryWorker:
         self._memory_store = memory_store
         self._embed = embed
         self._recent_context_provider = recent_context_provider
+        self._context_key_provider = context_key_provider
         self._is_away_provider = is_away_provider
         self._user_display_name_provider = user_display_name_provider
         self._kv_get = kv_get
@@ -237,6 +249,9 @@ class DiaryWorker:
                 return "client_connected"
             if not self._cooldown_elapsed(now):
                 return "cooldown"
+            key = self._context_key()
+            if key and key == self._kv_get_safe(_KV_LAST_CONTEXT):
+                return "no_new_conversation"
         try:
             if len(self._recent_context()) < self._min_context_chars:
                 return "no_context"
@@ -267,17 +282,22 @@ class DiaryWorker:
         if blocker is not None:
             return DiaryResult(reason=blocker)
 
+        key = self._context_key()
         context = self._recent_context()
         entry = self._compose(context)
+        # Even an abstention spends a model call. A timer alone must not make
+        # unchanged dialogue worth another entry (or retry an empty pass).
+        self._mark_fired(now)
         if not entry or len(entry) < _MIN_ENTRY_CHARS:
+            if entry is not None and key:
+                self._kv_set_safe(_KV_LAST_CONTEXT, key)
             return DiaryResult(reason="empty")
 
-        memory = self._persist(entry)
-        # Always mark fired even if the insert returned None — we spent
-        # an LLM call and don't want to retry the same context next tick.
-        self._mark_fired(now)
+        memory = self._persist(entry, source_key=key)
         if memory is None:
             return DiaryResult(fired=1, reason="persist_failed", entry=entry)
+        if key:
+            self._kv_set_safe(_KV_LAST_CONTEXT, key)
         mem_id = getattr(memory, "id", None)
         log.info("diary worker wrote entry: %s", entry)
         return DiaryResult(
@@ -290,6 +310,11 @@ class DiaryWorker:
 
     def _compose(self, context: str) -> str | None:
         user_name = self._resolve(self._user_display_name_provider) or "them"
+        try:
+            previous = self._memory_store.list_recent(limit=3, kind="diary")
+            earlier = timephrase.format_memory_block(previous, _utcnow())
+        except Exception:
+            earlier = "(no earlier entries available)"
         color = ""
         if self._day_color_provider is not None:
             try:
@@ -303,6 +328,8 @@ class DiaryWorker:
             "private diary. Below is the most recent conversation between "
             f"you and {user_name}.{color}\n\n"
             f"--- recent conversation ---\n{context}\n--- end ---\n\n"
+            "--- earlier subjective diary entries, not new evidence ---\n"
+            f"{earlier}\n--- end ---\n\n"
             "Write ONE short diary entry (one to three sentences) about how "
             "today / this conversation sat with you — a feeling, a small "
             "realisation, something about "
@@ -313,6 +340,11 @@ class DiaryWorker:
             'reply with an empty entry ("").'
             " Your feelings are yours; distinguish them from what the user actually "
             "said or did. An imagined future interaction is not a shared experience."
+            " Do not paraphrase an earlier entry or manufacture another reassurance about "
+            "affection. Keep one concrete detail and what changed in your own perspective, "
+            "including uncertainty if that is what remains. The conversation may contain "
+            "imagined shared scenes: preserve that framing rather than treating them as "
+            "observed physical events. No new meaningful reflection means an empty entry."
         )
         try:
             content, _usage = self._ollama.chat_json(
@@ -348,12 +380,14 @@ class DiaryWorker:
             return None
         try:
             blob = json.loads(content or "{}")
-            entry = str(blob.get("entry") or "").strip()
+            if not isinstance(blob, dict) or not isinstance(blob.get("entry"), str):
+                return None
+            entry = blob["entry"].strip()
         except Exception:
-            entry = ""
-        return entry or None
+            return None
+        return entry
 
-    def _persist(self, entry: str) -> Any:
+    def _persist(self, entry: str, *, source_key: str = "") -> Any:
         if timephrase.has_relative_deictic(entry):
             return None
         try:
@@ -376,8 +410,8 @@ class DiaryWorker:
                 source_session=source_session,
                 tier="long_term",
                 temporal_type="past_event",
-                metadata={"memory_origin": {"subject": "aiko", "mode": "reflection",
-                          "writer": "diary_worker", "domain": "conversation", "version": 1}},
+                metadata={**journal_metadata("worker"),
+                          "context_key": source_key},
                 # Each diary entry is preserved as its own moment.
                 skip_dedupe=True,
             )
@@ -406,6 +440,15 @@ class DiaryWorker:
             return str(self._recent_context_provider() or "").strip()
         except Exception:
             log.debug("diary worker recent-context provider raised", exc_info=True)
+            return ""
+
+    def _context_key(self) -> str:
+        if self._context_key_provider is None:
+            return ""
+        try:
+            return str(self._context_key_provider() or "")
+        except Exception:
+            log.debug("diary source revision read failed", exc_info=True)
             return ""
 
     def _cooldown_elapsed(self, now: datetime) -> bool:

@@ -126,6 +126,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "recall_self_history": "recall",
     "recall_hypotheses": "recall",
     "read_diary": "recall",
+    "write_diary": "journal",
     "conversation_history": "recall",
     # world / room / garden
     "look_around": "world",
@@ -174,6 +175,7 @@ def _compile(words: Iterable[str]) -> re.Pattern[str]:
 # one compiled alternation; ``matched`` on the decision records which
 # families fired for observability.
 _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
+    "journal": _compile([r"diar(?:y|ies)", r"journal", r"write (?:it|this|that) down"]),
     "reminders": _compile([
         r"remind(?:er|ers|ed|ing)?", r"don'?t let me forget", r"alert me", r"notify me",
     ]),

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from app.core.infra import timephrase
+from app.core.memory.diary_journal import journal_metadata
 from app.core.proactive.idle_worker import WorkSignal
 
 
@@ -141,7 +142,7 @@ class PostSleepDiaryWorker:
                 embedding=embedding,
                 salience=0.68,
                 source_session=self._session_provider(),
-                metadata={"sleep_episode_id": episode.id},
+                metadata={**journal_metadata("post_sleep_worker"), "sleep_episode_id": episode.id},
                 tier="long_term",
                 temporal_type="past_event",
                 event_time=episode.ended_at,

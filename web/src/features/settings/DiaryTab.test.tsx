@@ -14,6 +14,21 @@ function entry(overrides: Partial<Memory> = {}): Memory {
 }
 
 describe("Diary research entries", () => {
+  it("distinguishes chosen entries, background reflections and unknown earlier sources", () => {
+    const chosen = renderToStaticMarkup(<DiaryEntry entry={entry({ kind: "diary", metadata: {
+      journal: { version: 1, authorship: "chosen", revisits_entry_id: 42 },
+    } })} />);
+    expect(chosen).toContain("written in conversation");
+    expect(chosen).toContain("Revisiting diary entry #42");
+    const background = renderToStaticMarkup(<DiaryEntry entry={entry({ kind: "diary", metadata: {
+      journal: { version: 1, authorship: "background" },
+    } })} />);
+    expect(background).toContain("quiet reflection");
+    expect(background).not.toContain("written in conversation");
+    expect(renderToStaticMarkup(<DiaryEntry entry={entry({ kind: "diary" })} />))
+      .toContain("source not recorded");
+  });
+
   it("has a research filter wired to the backend kind", () => {
     expect(renderToStaticMarkup(<DiaryTab />)).toContain(">research</button>");
     const source = readFileSync(new URL("./DiaryTab.tsx", import.meta.url), "utf8");

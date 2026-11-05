@@ -122,6 +122,17 @@ export function DiaryEntry({ entry }: { entry: Memory }) {
   const badgeStyle = badge ? BADGE_STYLES[badge] : null;
   const kBadge = badge ? null : kindBadge(entry.kind);
   const time = entryTime(entry.created_at);
+  const rawJournal = entry.metadata?.journal;
+  const journal = rawJournal && typeof rawJournal === "object"
+    ? rawJournal as Record<string, unknown> : {};
+  const rawOrigin = entry.metadata?.memory_origin;
+  const origin = rawOrigin && typeof rawOrigin === "object"
+    ? rawOrigin as Record<string, unknown> : {};
+  const authorship = journal.version === 1
+    ? journal.authorship
+    : origin.writer === "diary_worker"
+      ? "background" : "unspecified";
+  const revisits = journal.version === 1 ? journal.revisits_entry_id : null;
   return (
     <li
       className={`rounded-md border px-3 py-2 text-xs ${
@@ -144,9 +155,16 @@ export function DiaryEntry({ entry }: { entry: Memory }) {
           </span>
         ) : null}
         {time ? <span className="text-ink-100/35">{time}</span> : null}
+        {entry.kind === "diary" ? <span className="text-ink-100/45">
+          {authorship === "chosen" ? "written in conversation"
+            : authorship === "background" ? "quiet reflection" : "source not recorded"}
+        </span> : null}
         {entry.pinned ? <span className="text-amber-300/70">pinned</span> : null}
       </div>
       <p className={`break-words text-ink-100/90${research ? "" : " italic"}`}>{text}</p>
+      {typeof revisits === "number" && revisits > 0 ? (
+        <p className="mt-1 text-[11px] text-ink-100/45">Revisiting diary entry #{revisits}</p>
+      ) : null}
       {research ? <ResearchSources metadata={entry.metadata} /> : null}
     </li>
   );

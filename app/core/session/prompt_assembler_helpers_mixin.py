@@ -54,6 +54,9 @@ class PromptAssemblerHelpersMixin:
     """Config setters, persona loader, slice-cache machinery,
     history fitting, and the small per-turn block renderers."""
 
+    def set_diary_awareness_provider(self, provider: Callable[[], str]) -> None:
+        self._diary_awareness_provider = provider
+
     def set_memory_retriever(self, retriever: "MemoryRetriever | None") -> None:
         self._memory_retriever = retriever
 

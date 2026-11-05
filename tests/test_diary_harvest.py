@@ -52,6 +52,22 @@ def _run(host: SimpleNamespace, raw: str) -> None:
 
 
 class DiaryHarvestTests(unittest.TestCase):
+    def test_tool_receipt_and_inline_fallback_do_not_save_the_same_entry_twice(self):
+        from app.core.infra import timephrase
+
+        store = _FakeStore()
+        content = "I felt uncertain whether another suggestion would help."
+        store.list_recent = lambda **_: [SimpleNamespace(
+            content=content, source_session="user:s1", created_at=timephrase.utcnow().isoformat(),
+            metadata={"journal": {"version": 1, "source": "tool", "authorship": "chosen"}},
+        )]
+        host = _host(store, _FakeEmbedder())
+        _run(host, f"[[diary:{content}]]")
+        self.assertEqual(store.adds, [])
+        _run(host, "[[diary:I want to leave more room for what they actually need.]]")
+        self.assertEqual(len(store.adds), 1)
+        self.assertEqual(store.adds[0]["metadata"]["journal"]["source"], "inline_tag")
+
     def test_writes_a_diary_memory(self) -> None:
         store = _FakeStore()
         host = _host(store, _FakeEmbedder())

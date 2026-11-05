@@ -16,6 +16,9 @@ Replaces the old ``_AgentWrapper`` + ``AgentController`` + ``TurnTriage`` +
 """
 from __future__ import annotations
 
+from app.core.memory.diary_journal import journal_metadata
+from app.core.infra import timephrase
+
 from app.llm.turn_outcome import TurnOutcome
 
 import json
@@ -1940,6 +1943,22 @@ class TurnRunner:
             if key in seen:
                 continue
             seen.add(key)
+            # A tool receipt and the optional inline fallback must not save
+            # the same chosen entry twice. Compare exact prose, never cosine:
+            # a genuinely changed perspective deserves its own journal row.
+            try:
+                recent = self._memory_store.list_recent(limit=20, kind="diary")
+                date = timephrase.now().date()
+                if any(
+                    row.content == content and row.source_session == session_key
+                    and row.metadata.get("journal", {}).get("source") == "tool"
+                    and (stamp := timephrase.parse_iso(row.created_at)) is not None
+                    and stamp.astimezone().date() == date
+                    for row in recent
+                ):
+                    continue
+            except Exception:
+                log.debug("diary tool-receipt lookup unavailable", exc_info=True)
             try:
                 embedding = self._embedder.embed(content)
             except Exception as exc:
@@ -1954,7 +1973,9 @@ class TurnRunner:
                     source_session=session_key,
                     source_message_id=assistant_message_id,
                     tier="long_term",
-                    temporal_type="durable",
+                    temporal_type="past_event",
+                    event_time=timephrase.utcnow().isoformat(),
+                    metadata=journal_metadata("inline_tag"),
                     # Each diary entry is preserved as its own moment.
                     skip_dedupe=True,
                 )

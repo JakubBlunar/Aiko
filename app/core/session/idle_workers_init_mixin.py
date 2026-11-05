@@ -625,6 +625,7 @@ class IdleWorkersInitMixin:
                 from app.core.proactive.diary_worker import (
                     DiaryWorker,
                     build_recent_context,
+                    context_key,
                 )
 
                 mem = self._memory_settings
@@ -634,6 +635,9 @@ class IdleWorkersInitMixin:
                     recent_context_provider=lambda: build_recent_context(
                         self._chat_db.get_messages(self.session_key, limit=14),
                         self.user_display_name,
+                    ),
+                    context_key_provider=lambda: context_key(
+                        self._chat_db.get_messages(self.session_key, limit=14),
                     ),
                     is_away_provider=lambda: self.is_user_away(),
                     user_display_name_provider=lambda: self.user_display_name,

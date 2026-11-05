@@ -703,6 +703,11 @@ class SpeakingWorkersInitMixin:
         self._last_turn_gift_received: bool = False
         # Wire all hot-path providers (each cheap: SQL/mirror reads or
         # pure functions). Token accounting runs through PromptTelemetry.
+        from app.core.memory.diary_journal import diary_awareness
+
+        self._prompt_assembler.set_diary_awareness_provider(
+            lambda: diary_awareness(self.available_tool_names()),
+        )
         self._prompt_assembler.set_inner_life_providers(
             affect=self._render_affect_block,
             vitality=self._render_vitality_block,

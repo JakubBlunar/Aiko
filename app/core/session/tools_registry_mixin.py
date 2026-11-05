@@ -96,9 +96,11 @@ class ToolsRegistryMixin:
                 and getattr(getattr(self._settings, "memory", None), "enabled", False)
                 and getattr(self, "_memory_store", None) is not None
             ):
-                from app.llm.tools.diary import ReadDiaryTool
+                from app.llm.tools.diary import ReadDiaryTool, WriteDiaryTool
 
                 registry.register(ReadDiaryTool(self))
+                if getattr(self, "_embedder", None) is not None:
+                    registry.register(WriteDiaryTool(self))
             # F10d cluster-scoped recall. Gated by its own switch but needs
             # the same retriever; only useful once the topic graph is wired
             # (the tool returns an empty result otherwise, so it is safe to
