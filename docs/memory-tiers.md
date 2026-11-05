@@ -13,6 +13,12 @@ rewards memories Aiko actually cites with persistent salience drift.
 This document covers the runtime model, the configuration knobs, and
 the producer rules every new worker should follow.
 
+The [5 November producer audit](memory-producer-audit-2026-11-05.md) reviews the
+current source/time/subject contracts and remaining gaps across writers and
+rewriters. A tier describes retention and retrieval; long-term storage alone
+does not establish that a memory is verified or suitable evidence for a personal
+concept. The original rollout description below must be read with that distinction.
+
 ## TL;DR
 
 - Every memory row has a `tier` in

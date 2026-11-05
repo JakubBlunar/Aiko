@@ -48,6 +48,12 @@ specific shared-context conflict. The final synthetic run retained all positive
 controls but still admitted three false tensions in 36 trials. L22 remains partial;
 fresh ordinary-use cohorts and independent paraphrases are the next quality gate.
 
+The subsequent [memory-producer audit](../memory-producer-audit-2026-11-05.md)
+covers 32 direct write sites, indirect producers and rewrite paths. It reproduces
+drafts, Aiko goal reflections and public facts becoming user-event concepts.
+Preserving source subject/authority/purpose through memory-to-concept admission
+is the next foundation; evidence-count or lifecycle tuning cannot establish it.
+
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l22).
 
 **Source check:** [concept_quality.py](../../app/core/concepts/concept_quality.py),
