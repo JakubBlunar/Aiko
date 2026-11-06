@@ -48,3 +48,10 @@ capability-gap reads make the response partial. An empty active list cannot be
 used as evidence that an earlier task succeeded.
 
 Focused task/tool checks: 47 tests passed; lint passed.
+
+## Narrative time and current capability guidance
+
+Explicit-zone time reads convert the same `timephrase` instant as default reads,
+including a shifted debug clock. The world snapshot schema directs file work to
+the available background workflow rather than the retired `list_file_roots` tool.
+Focused time/world checks: 79 tests and 9 subtests passed; lint passed.

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from typing import Any
 
 from app.llm.tools.base import ToolError, ToolSchema
@@ -49,7 +48,7 @@ class GetTimeTool:
             if tz_name:
                 from zoneinfo import ZoneInfo
 
-                now = datetime.now(ZoneInfo(tz_name))
+                now = timephrase.now().astimezone(ZoneInfo(tz_name))
             else:
                 now = timephrase.now()
         except Exception as exc:

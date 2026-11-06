@@ -142,8 +142,9 @@ class LookAroundTool:
                 "structured world (her apartment, the garden, or a place "
                 "the user authored such as their room) -- it is NOT the "
                 "user's files or folders on disk. If the user asks what "
-                "files/folders/documents you can see or access, use "
-                "list_file_roots instead, never look_around."
+                "files/folders/documents you can see or access, that is background "
+                "file work, not this virtual-world snapshot. Use start_workflow "
+                "when available to inspect permitted files."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
         )
