@@ -94,6 +94,27 @@ Source checks: [goal_reflection_evidence.py](../../app/core/goals/goal_reflectio
 [reflective_evidence.py](../../app/core/memory/reflective_evidence.py),
 [dream_worker.py](../../app/core/proactive/dream_worker.py).
 
+## Remaining memory boundaries (reviewed 6 Nov 2026)
+
+**Status: Proposed; not implemented.** The read-only
+[boundary audit](../memory-boundary-audit-2026-11-06.md) found six remaining areas:
+
+1. Preserve SQLite subject, source mode and virtual/external domain through
+   direct and associative recall; kind-only headings currently lose them.
+2. Keep hypothesis answer memories bounded to the supported reply and retain
+   support receipts through world graduation, with honest answer/event timing.
+3. Separate image sharing time from depicted time and retain caption-message
+   provenance, subject and uncertainty.
+4. Preserve manual gap-answer context and distinguish successful saving from
+   deliberate dismissal or a failed write.
+5. Retain virtual pursuit episode/research receipts and qualified time scope.
+6. Retain catchphrase occurrences and first-observed authorship scope, plus both
+   sides and verified timing for a newly shared joke.
+
+The audit includes acceptance scenarios and historical examples. Those examples
+are not a fresh post-restart quality measurement; L22's existing review remains
+pending. No live memory was modified.
+
 ## G-CLEANUP. `consolidator_state.last_cluster_index` is not dead weight — do not drop it
 
 **Status: Open implementation.**
