@@ -980,6 +980,15 @@ class ConceptView:
 
         return build_question_context(self, consumer, embedding)
 
+    def evidence_packet(self, concept: "Concept", *, limit: int = 3) -> dict:
+        """Read the existing source projection without flattening its scope."""
+        from app.core.concepts.evidence_projection import project_evidence
+
+        return project_evidence(
+            self._store, self._memory_store, self._topic_graph, concept, limit=limit,
+            db=getattr(self._store, "_db", None),
+        )
+
     def evidence_independence(self, concept_id: int, *, max_nodes: int = 256) -> dict:
         """L49 shadow counts only; does not alter confidence, diets or promotion."""
         from app.core.concepts.concept_evidence_lineage import resolve_support

@@ -163,7 +163,7 @@ class _FakeStore:
 
 
 class _FakeLLM:
-    def __init__(self, reply: str = "I realise my head's all about work lately.") -> None:
+    def __init__(self, reply: str = "I realised I had been reflecting mostly on work.") -> None:
         self.reply = reply
         self.calls = 0
 
@@ -462,7 +462,7 @@ class ConceptAnnotationTests(unittest.TestCase):
             view_provider=lambda: view,
         )
         self.assertEqual(worker.run()["wrote"], 1)
-        self.assertIn("you believe: he burns out when deadlines stack up", llm.last_user)
+        self.assertIn("he burns out when deadlines stack up", llm.last_user)
         self.assertIn("he misses playing guitar", llm.last_user)
         # Still says how much / how recently.
         self.assertIn("20 memories, hot this week", llm.last_user)
@@ -483,7 +483,8 @@ class ConceptAnnotationTests(unittest.TestCase):
             view_provider=lambda: view, concepts_per_cluster=2,
         )
         worker.run()
-        self.assertIn("firm belief; middling", llm.last_user)
+        self.assertIn("firm belief", llm.last_user)
+        self.assertIn("middling", llm.last_user)
         self.assertNotIn("weak hunch", llm.last_user)
 
     def test_the_read_is_scoped_to_the_declared_diet(self) -> None:
@@ -578,6 +579,103 @@ class ConceptAnnotationTests(unittest.TestCase):
             graph=self._graph(), min_clusters=4, view_provider=boom,
         )
         self.assertEqual(worker.run()["wrote"], 1)
+
+    def test_subjects_and_conditional_scope_reach_the_prompt_whole(self):
+        from types import SimpleNamespace
+
+        view = _FakeView({11: [
+            SimpleNamespace(label="likes detailed debugging", kind="identity",
+                            confidence=.8, subject="user"),
+            SimpleNamespace(label="enjoys the music", kind="taste",
+                            confidence=.7, subject="aiko"),
+        ]})
+        scope = {"contexts": [{"name": "troubleshooting", "quote": "when debugging"}],
+                 "exceptions": [{"name": "casual", "quote": "except in casual chat"}]}
+        view.evidence_packet = lambda concept, **kw: {
+            "applicability": scope, "uncertainty": "Only the recorded context is supported.",
+            "evidence": [{"memory_id": 7, "revision": "v1",
+                          "observation_mode": "virtual_shared", "text": "A partial quote"}],
+        }
+        llm = _CapturingLLM()
+        worker, _ = _make_worker(graph=self._graph(), llm=llm, view_provider=lambda: view)
+        self.assertEqual(worker.run()["wrote"], 1)
+        self.assertIn('"subject": "user"', llm.last_user)
+        self.assertIn('"subject": "aiko"', llm.last_user)
+        self.assertIn("except in casual chat", llm.last_user)
+        self.assertIn("virtual_shared", llm.last_user)
+        self.assertNotIn("A partial quote", llm.last_user)
+
+    def test_recall_and_confidence_drift_do_not_mint_another_reflection(self):
+        graph = self._graph()
+        concept = _Concept("prefers depth when debugging", .8)
+        view = _FakeView({11: [concept]})
+        llm = _FakeLLM()
+        worker, _ = _make_worker(graph=graph, llm=llm, view_provider=lambda: view,
+                                 cooldown_hours=0)
+        self.assertEqual(worker.run()["wrote"], 1)
+        graph._rich[0].days_since = 0
+        graph._rich[0].size += 10
+        graph._rich.reverse()
+        concept.confidence = .75
+        self.assertTrue(worker.run().get("unchanged_context"))
+        self.assertEqual(llm.calls, 1)
+        concept.label = "prefers a concise answer during casual chat"
+        self.assertEqual(worker.run()["wrote"], 1)
+
+    def test_equal_labels_do_not_swap_subjects_during_selection(self):
+        from types import SimpleNamespace
+
+        view = _FakeView({11: [
+            SimpleNamespace(label="enjoys music", subject="user", kind="identity", confidence=.5),
+            SimpleNamespace(label="enjoys music", subject="aiko", kind="taste", confidence=.9),
+        ]})
+        llm = _CapturingLLM()
+        worker, _ = _make_worker(graph=self._graph(), llm=llm, view_provider=lambda: view,
+                                 concepts_per_cluster=1)
+        worker.run()
+        self.assertIn('"subject": "aiko"', llm.last_user)
+        self.assertNotIn('"subject": "user"', llm.last_user)
+
+    def test_source_changes_during_model_or_embedding_discard_the_draft(self):
+        for stage in ("model", "embedding", "scope"):
+            with self.subTest(stage=stage):
+                concept = _Concept("likes details when debugging", .8)
+                view = _FakeView({11: [concept]})
+                scope = {"uncertainty": "original basis", "evidence": []}
+                view.evidence_packet = lambda concept, scope=scope, **kw: dict(scope)
+                llm = _FakeLLM()
+                original = llm.chat
+                def generate(*args, stage=stage, concept=concept, scope=scope,
+                             original=original, **kw):
+                    if stage == "model":
+                        concept.label = "declined the suggestion"
+                    if stage == "scope":
+                        scope["uncertainty"] = "a cited source was withdrawn"
+                    return original(*args, **kw)
+                llm.chat = generate
+                embedder = _FakeEmbedder()
+                def embed(text, concept=concept):
+                    concept.label = "declined the suggestion"
+                    return np.ones(4)
+                if stage == "embedding":
+                    embedder.embed = embed
+                store = _FakeStore()
+                worker, _ = _make_worker(graph=self._graph(), store=store, llm=llm,
+                                         embedder=embedder, view_provider=lambda view=view: view)
+                self.assertTrue(worker.run().get("source_changed"))
+                self.assertEqual(store.added, [])
+
+    def test_unsafe_output_is_rejected_whole_and_unchanged_context_is_spent(self):
+        for reply in ("I feel informed today.", "A long reflection. " * 40, ""):
+            with self.subTest(reply=reply[:25]):
+                llm = _FakeLLM(reply)
+                store = _FakeStore()
+                worker, _ = _make_worker(graph=self._graph(), store=store, llm=llm,
+                                         cooldown_hours=0)
+                self.assertEqual(worker.run()["wrote"], 0)
+                self.assertTrue(worker.run().get("unchanged_context"))
+                self.assertEqual(llm.calls, 1)
+                self.assertEqual(store.added, [])
 
 
 if __name__ == "__main__":

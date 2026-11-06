@@ -74,6 +74,7 @@ class RichTerritory:
     days_since: float | None = None
     representative_id: int = 0
     concepts: list[str] = field(default_factory=list)
+    concept_inputs: list[dict] = field(default_factory=list)
 
 
 def _utcnow() -> datetime:
@@ -112,6 +113,10 @@ def _build_system_prompt() -> str:
         "to notice when a territory has gone quiet for a while, or when one "
         "is suddenly hot. NOT a greeting, NOT a question, NOT a to-do — just "
         "a private note to yourself.\n"
+        "Counts and last use describe storage or recall activity, not verified user "
+        "interest or fresh conversation. Preserve each held record's subject, "
+        "conditions and uncertainty, including virtual or hypothetical scope. "
+        "A reflection on earlier reflections is not independent new knowledge.\n"
         "\n"
         # K-time10: this lands in ``memories`` as a "[mindmap] "
         # reflection and gets recalled weeks later, when "lately" no
@@ -288,9 +293,26 @@ class KnowledgeMapReflectionWorker:
         if len(rich) < self._min_clusters:
             return {"wrote": 0, "no_context": True, "rich": len(rich)}
 
+        from app.core.memory.knowledge_map_sources import context_key, derivation
+
+        key = context_key(rich, gaps)
+        key_name = "knowledge_map_reflection.last_context"
+        if not force and self._kv_get_safe(key_name) == key:
+            return {"wrote": 0, "unchanged_context": True}
+        packet = derivation(rich, gaps)
+
         reflection = self._compose(rich, gaps)
         if not reflection:
+            if reflection is not None:
+                self._mark_fired(now)
+                self._kv_set_safe(key_name, key)
             return {"wrote": 0, "no_reflection": True}
+        if len(reflection) > 500 or timephrase.has_relative_deictic(reflection):
+            self._mark_fired(now)
+            self._kv_set_safe(key_name, key)
+            return {"wrote": 0, "unqualified_output": True}
+        if context_key(*self._read_shape(graph)) != key:
+            return {"wrote": 0, "source_changed": True}
 
         content = MINDMAP_PREFIX + reflection
         try:
@@ -299,6 +321,8 @@ class KnowledgeMapReflectionWorker:
             log.debug("knowledge_map_reflection embed failed", exc_info=True)
             return {"wrote": 0, "embed_failed": True}
         try:
+            if context_key(*self._read_shape(graph)) != key:
+                return {"wrote": 0, "source_changed": True}
             memory = self._memory_store.add(
                 content=content,
                 kind="reflection",
@@ -308,7 +332,9 @@ class KnowledgeMapReflectionWorker:
                 metadata={
                     "source": "knowledge_map",
                     "reflected_at": now.isoformat(timespec="seconds"),
+                    "reflective_derivation": packet,
                 },
+                temporal_type="past_event", event_time=now.isoformat(),
             )
         except Exception:
             log.debug("knowledge_map_reflection write failed", exc_info=True)
@@ -317,6 +343,7 @@ class KnowledgeMapReflectionWorker:
         # Stamp the cooldown regardless of dedupe so a near-identical
         # reflection doesn't get re-attempted every tick.
         self._mark_fired(now)
+        self._kv_set_safe(key_name, key)
 
         if memory is None:
             log.info("knowledge-map-reflection deduped against existing memory")
@@ -450,10 +477,22 @@ class KnowledgeMapReflectionWorker:
                     "knowledge_map_reflection for_cluster failed", exc_info=True
                 )
                 continue
-            row.concepts = self._territory_labels(concepts)
+            selected_concepts = self._territory_concepts(concepts)
+            row.concepts = [" ".join(str(c.label).split()) for c in selected_concepts]
+            from app.core.memory.knowledge_map_sources import concept_record, render_concept
 
-    def _territory_labels(self, concepts: "Sequence[object]") -> list[str]:
-        """Up to ``concepts_per_cluster`` labels, one kind at a time.
+            for selected in selected_concepts:
+                try:
+                    projector = getattr(view, "evidence_packet", None)
+                    evidence = projector(selected, limit=2) if callable(projector) else None
+                    record = concept_record(selected, evidence)
+                    if render_concept(record):
+                        row.concept_inputs.append(record)
+                except Exception:
+                    log.debug("knowledge-map concept projection failed", exc_info=True)
+
+    def _territory_concepts(self, concepts: "Sequence[object]") -> list[object]:
+        """Up to ``concepts_per_cluster`` whole records, one kind at a time.
 
         Most-confident within a kind, then round the kinds in order of
         their leading concept -- so the first slot still goes to the
@@ -475,30 +514,28 @@ class KnowledgeMapReflectionWorker:
             return float(getattr(buckets[kind][0], "confidence", 0.0) or 0.0)
 
         order = sorted(buckets, key=lambda k: (-_lead(k), k))
-        labels: list[str] = []
+        selected: list[object] = []
         depth = 0
-        while len(labels) < self._concepts_per_cluster:
+        while len(selected) < self._concepts_per_cluster:
             drew = False
             for kind in order:
                 rows = buckets[kind]
                 if depth >= len(rows):
                     continue
-                labels.append(
-                    " ".join(str(getattr(rows[depth], "label", "")).split())
-                )
+                selected.append(rows[depth])
                 drew = True
-                if len(labels) >= self._concepts_per_cluster:
+                if len(selected) >= self._concepts_per_cluster:
                     break
             if not drew:
                 break
             depth += 1
-        return labels
+        return selected
 
     def _compose(
         self,
         rich: list["RichTerritory"],
         gaps: list[tuple[str, int]],
-    ) -> str:
+    ) -> str | None:
         rich_lines = "\n".join(
             self._rich_line(row) for row in rich[: self._rich_top_n]
         )
@@ -512,8 +549,8 @@ class KnowledgeMapReflectionWorker:
                 f"  - {label}" for label, _ in gaps
             )
             payload.append(
-                "Topics that keep coming up but you've barely actually "
-                "learned about:\n" + gap_lines
+                "Topics with few saved public research entries; this does not "
+                "establish missing personal understanding:\n" + gap_lines
             )
         user_payload = "\n\n".join(payload)
         try:
@@ -535,16 +572,19 @@ class KnowledgeMapReflectionWorker:
             )
         except Exception:
             log.debug("knowledge_map_reflection LLM call failed", exc_info=True)
-            return ""
+            return None
         return clean_reflection_output(raw)
 
     @staticmethod
     def _rich_line(row: "RichTerritory") -> str:
         phrase = recency_phrase(row.days_since)
         facts = f"{row.size} memories, {phrase}" if phrase else f"{row.size} memories"
-        line = f"  - {row.label} ({facts})"
-        if row.concepts:
-            line += " — you believe: " + "; ".join(row.concepts)
+        line = f"  - {row.label} ({facts}; storage/recall activity, not verified user interest)"
+        from app.core.memory.knowledge_map_sources import render_concept
+
+        if row.concept_inputs:
+            line += "\nHeld concept records (record dates are not event dates):\n" + "\n".join(
+                render_concept(record) for record in row.concept_inputs)
         return line
 
     # ── gates / helpers ────────────────────────────────────────────────

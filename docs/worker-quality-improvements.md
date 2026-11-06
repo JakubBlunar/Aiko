@@ -57,3 +57,23 @@ event links, period bounds and watermark behavior are preserved.
 
 Focused tests cover old relationship events in the prompt and rejected prose
 leaving the historical events available for a later pass.
+
+## Qualified knowledge-map reflections
+
+Map composition receives whole, bounded concept records with subjects, rationale,
+status, dates and the existing evidence projection's applicability, uncertainty,
+source modes/domains and revisions. Incomplete inspection excerpts are not fed
+back as quotations. Equal wording cannot swap a selected concept's subject.
+Oversized records are omitted whole. The projection remains a read through
+ConceptView; no alternative concept store or confidence-voting scheme is added.
+
+Memory counts and last use are labelled as storage/recall activity; sparse public
+research coverage does not establish a gap in personal understanding. A stable
+context signature ignores recall counts, changing age labels, confidence drift
+and ordering. It prevents a timer from creating another paraphrase of unchanged
+understanding. A real source or scope change invalidates an in-flight draft.
+Empty or unsafe completions spend the unchanged context; transient model failures
+remain retryable. Saved derivation is generation context, not new observations.
+
+Focused checks cover subject collisions, conditions, virtual scope, changed inputs
+during model/embedding calls, unchanged context and whole-output rejection.

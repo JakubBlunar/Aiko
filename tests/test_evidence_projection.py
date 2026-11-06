@@ -49,6 +49,25 @@ def test_negative_edges_never_supply_the_supporting_excerpt():
     assert project_evidence(store, NS(get=lambda _: memory(1)), None, concept)["evidence"] == []
 
 
+def test_concept_view_projection_retains_source_mode_domain_and_conditions():
+    from app.core.concepts.concept_view import ConceptView
+
+    row = memory(1)
+    row.metadata = {"subject": "relationship", "observation_mode": "virtual_shared",
+                    "activity_domain": "imagined_trip"}
+    concept = NS(concept_id=1, confidence=.8, updated_at="r1")
+    scope = {"version": 1, "contexts": [], "exceptions": []}
+    store = NS(get=lambda _: concept, evidence_of=lambda _: [
+        NS(src_type="memory", src_id="1", polarity=1, strength=1)],
+        applicability=NS(get=lambda _: scope))
+    packet = ConceptView(store, memory_store=NS(get=lambda _: row)).evidence_packet(concept)
+    source = packet["evidence"][0]
+    assert source["subject"] == "relationship"
+    assert source["observation_mode"] == "virtual_shared"
+    assert source["activity_domain"] == "imagined_trip"
+    assert packet["applicability"] == scope
+
+
 def test_deleted_or_edited_original_testimony_cannot_supply_a_hypothesis_basis():
     row = memory(1)
     row.metadata = {"admission": {"subject": "user", "evidence": [

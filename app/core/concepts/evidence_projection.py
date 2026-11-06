@@ -78,6 +78,10 @@ def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
                 "memory_id": ident, "revision": memory_revision(row),
                 "text": str(row.content or "")[:280],
                 "subject": metadata.get("subject", admission.get("subject", "unknown")),
+                "observation_mode": metadata.get(
+                    "observation_mode", admission.get("observation_mode", "unknown")),
+                "activity_domain": metadata.get(
+                    "activity_domain", admission.get("activity_domain", "unknown")),
                 "source_check": source_check,
                 "authority": lineages[0].category,
                 "source_message_id": getattr(row, "source_message_id", None),
