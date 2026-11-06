@@ -225,6 +225,10 @@ class VoiceAdoptionWorker:
             return []
         out: list[dict[str, Any]] = []
         for mem in mems:
+            from app.core.memory.catchphrase_evidence import memory_current
+
+            if not memory_current(mem, store):
+                continue
             phrase = (getattr(mem, "content", "") or "").strip()
             if not phrase:
                 continue
@@ -247,6 +251,8 @@ class VoiceAdoptionWorker:
         self, mem: Any, phrase: str, *, resolve: bool = True,
     ) -> str | None:
         meta = getattr(mem, "metadata", None) or {}
+        if isinstance(meta, dict) and meta.get("origin_scope") == "first_observed_in_window":
+            return None
         origin = meta.get("origin") if isinstance(meta, dict) else None
         if origin in ("user", "assistant"):
             return str(origin)

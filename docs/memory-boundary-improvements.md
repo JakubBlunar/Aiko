@@ -87,3 +87,22 @@ reflections. These source distinctions also reach recall and worker packets.
 
 Focused pursuit/activity checks: 186 tests and 4 subtests passed; lint passed.
 Virtual-state receipts establish simulated effects, not physical-world proof.
+
+## Phrase occurrences and shared-joke exchanges
+
+The miner retains bounded literal occurrence receipts, window counts and the
+first observed speaker. It marks authorship unknown rather than treating the
+first speaker in a sample as the original author. Voice adoption cannot upgrade
+that sampled observation through its legacy origin lookup. Quotations do not
+independently establish personal concepts.
+
+The fast joke path verifies the actual assistant line and user echo, retains
+both sources and anchors the shared exchange to the echo's verified timestamp.
+It describes the observed amused echo rather than asserting a recurring joke
+from one exchange. Missing dates remain unknown. Edited sources invalidate
+receipts and defer writes; registry, recall and voice consumers omit stale
+evidence. Legacy records without receipts are not retroactively certified.
+
+Focused phrase/moment/voice checks: 90 passed. Another 14 tests cover occurrence
+receipts and the direct-retrieval SQLite join. Lint passed before the final
+integration sweep. Amusement detection and usefulness still need ordinary use.

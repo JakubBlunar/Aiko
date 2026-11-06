@@ -129,6 +129,9 @@ def longitudinal_sources_current(memory, store, _seen=None):
     """Verify preserved quotes against SQLite before using enriched evidence."""
     metadata = getattr(memory, "metadata", None) or {}
     answer = metadata.get("hypothesis_answer")
+    if metadata.get("catchphrase_evidence") is not None:
+        if not receipt_sources_current(metadata["catchphrase_evidence"], store):
+            return False
     if isinstance(answer, dict) and answer.get("version") == 1:
         if not receipt_sources_current(answer, store):
             return False

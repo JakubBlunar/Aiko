@@ -32,6 +32,14 @@ _ORIGIN = "honestly it's just a fish-shaped cookie situation at this point"
 _ECHO = "lmao a fish-shaped cookie situation, exactly"
 
 
+def _source_row(mid):
+    if mid not in {7, 8}:
+        return None
+    return SimpleNamespace(id=mid, role="assistant" if mid == 7 else "user",
+                           content=_ORIGIN if mid == 7 else _ECHO, session_id="s1",
+                           created_at="2026-11-05T10:00:00+00:00")
+
+
 class _Kv:
     """``ChatDatabase``-shaped stub with just the kv pair we touch."""
 
@@ -43,6 +51,9 @@ class _Kv:
 
     def kv_set(self, key: str, value: str) -> None:
         self.store[key] = value
+
+    def get_message_row(self, mid):
+        return _source_row(mid)
 
 
 class _MemoryStore:
@@ -58,6 +69,13 @@ class _MemoryStore:
     def add(self, **kwargs: Any) -> Any:
         self.added.append(kwargs)
         return SimpleNamespace(id=len(self.added))
+
+    def _get_conn(self):
+        def execute(query, params):
+            row = _source_row(params[0])
+            result = ((row.role, row.content, row.session_id, row.created_at) if row else None)
+            return SimpleNamespace(fetchone=lambda: result)
+        return SimpleNamespace(execute=execute)
 
 
 class _Moments:

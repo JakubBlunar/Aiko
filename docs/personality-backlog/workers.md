@@ -96,8 +96,9 @@ Source checks: [goal_reflection_evidence.py](../../app/core/goals/goal_reflectio
 
 ## Remaining memory boundaries (reviewed 6 Nov 2026)
 
-**Status: Proposed; not implemented.** The read-only
-[boundary audit](../memory-boundary-audit-2026-11-06.md) found six remaining areas:
+**Status: Implemented; ordinary-use review pending.** The read-only
+[boundary audit](../memory-boundary-audit-2026-11-06.md) found six areas now covered
+by the [implementation record](../memory-boundary-improvements.md):
 
 1. Preserve SQLite subject, source mode and virtual/external domain through
    direct and associative recall; kind-only headings currently lose them.
@@ -113,7 +114,8 @@ Source checks: [goal_reflection_evidence.py](../../app/core/goals/goal_reflectio
 
 The audit includes acceptance scenarios and historical examples. Those examples
 are not a fresh post-restart quality measurement; L22's existing review remains
-pending. No live memory was modified.
+pending. A backend restart activates the changes. Historical memories were not
+bulk rewritten; known source edits are checked when those receipts are consumed.
 
 ## G-CLEANUP. `consolidator_state.last_cluster_index` is not dead weight — do not drop it
 

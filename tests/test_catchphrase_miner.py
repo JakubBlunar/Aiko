@@ -210,7 +210,9 @@ class CatchphraseMinerPersistenceTests(unittest.TestCase):
             ]
             self.assertTrue(catch)
             for mem in catch:
-                self.assertEqual(mem.metadata.get("origin"), "user")
+                self.assertEqual(mem.metadata.get("origin"), "unknown")
+                self.assertEqual(mem.metadata.get("first_observed_speaker"), "user")
+                self.assertEqual(mem.metadata.get("origin_scope"), "first_observed_in_window")
         finally:
             f.close()
 

@@ -110,6 +110,8 @@ def stamp_origin(kind, content, metadata, temporal_type=None):
 
 
 def claim_source_refusal(memory, *, subject, kind) -> str | None:
+    if getattr(memory, "kind", "") == "catchphrase":
+        return "quotation_not_personal_claim"
     if (getattr(memory, "metadata", None) or {}).get("source") == "shared_image":
         # A representation is useful recall. Personal testimony in its caption
         # has its own ordinary extraction path; the picture is not that source.

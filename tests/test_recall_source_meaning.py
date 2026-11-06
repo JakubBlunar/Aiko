@@ -63,3 +63,30 @@ def test_expansion_never_loses_end_qualification_to_prefix_truncation():
         RagRetriever._memory_to_hit(row, score=0.8, expansion=True),
     ])
     assert "never in real life" in block
+
+
+def test_direct_retrieval_joins_sqlite_origin_instead_of_trusting_vector_kind(tmp_path):
+    import numpy as np
+    from app.core.infra.chat_database import ChatDatabase
+    from app.core.memory.memory_store import MemoryStore
+    from tests.test_rag_retriever_scoring import _StubStore, _StubEmbedder
+
+    path = tmp_path / "recall.db"
+    ChatDatabase(path)
+    store = MemoryStore(path)
+    try:
+        saved = store.add("I imagined visiting a cafe.", "pursuit_note", np.array([1., 0., 0., 0.]))
+        # The vector record carries only a coarse kind; SQLite owns meaning.
+        record = MemoryRecord(str(saved.id), saved.content, "fact", .5,
+                              None, None, saved.created_at, None, 0)
+        vector = _StubStore(memories=[RagHit("memory", .9, record)])
+        retriever = RagRetriever(vector, _StubEmbedder(), memory_store=store,
+                                 score_threshold=-1, top_k=2)
+        hits = retriever.retrieve("cafe")
+        assert len(hits) == 1
+        assert hits[0].memory_origin.subject == "aiko"
+        block = retriever.format_hits(hits, user_display_name="Jacob")
+        assert "domain=virtual" in block
+        assert "What you know about Jacob" not in block
+    finally:
+        store.close()

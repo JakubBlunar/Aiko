@@ -30,6 +30,8 @@ the same ``kind="catchphrase"`` registry so K22 can carry it forward.
 """
 from __future__ import annotations
 
+from app.core.memory.catchphrase_evidence import memory_current as _phrase_memory_current
+
 import logging
 import re
 import time
@@ -328,6 +330,7 @@ def bless_inside_joke(
     session_key: str | None = None,
     source_message_id: int | None = None,
     salience: float = 0.7,
+    chat_db: Any = None,
 ) -> dict[str, Any]:
     """Persist a just-born bit so it outlives the turn it was born in.
 
@@ -346,12 +349,27 @@ def bless_inside_joke(
     phrase = birth.phrase.strip()
     if not phrase or memory_store is None or embedder is None:
         return out
+    from app.core.memory.catchphrase_evidence import birth_sources, current, moment_receipt
+
+    receipt = None
+    if chat_db is not None:
+        if birth.origin_message_id is None or source_message_id is None:
+            return out
+        try:
+            receipt = birth_sources(birth, chat_db, source_message_id, session_key)
+        except Exception:
+            log.debug("inside-joke source lookup failed", exc_info=True)
+            return out
+        if receipt is None or not current(receipt, memory_store):
+            return out
     try:
         emb = embedder.embed(phrase)
     except Exception:
         log.debug("inside-joke embed failed", exc_info=True)
         return out
     try:
+        if not current(receipt, memory_store):
+            return out
         memory = memory_store.add(
             content=phrase,
             kind="catchphrase",
@@ -362,7 +380,11 @@ def bless_inside_joke(
             # K26 provenance: a bit born this way is one of *hers* that he
             # echoed, so she can never later "adopt" it as his turn of
             # phrase. ``born`` marks the fast path for state dumps.
-            metadata={"origin": "assistant", "born": True},
+            metadata={"origin": "assistant", "born": True,
+                      "origin_scope": "observed_assistant_echo_exchange",
+                      **({"catchphrase_evidence": receipt, "admission": {
+                          "source_message_ids": [s["message_id"] for s in receipt["sources"]],
+                      }} if receipt else {})},
             # Born in front of us with a laugh behind it -- at least as
             # vetted as a phrase the slow miner counted three times.
             tier="long_term",
@@ -375,19 +397,23 @@ def bless_inside_joke(
 
     if moments_store is not None:
         try:
+            if not current(receipt, memory_store):
+                return out
+            when, evidence = moment_receipt(receipt) if receipt else (None, None)
             row = moments_store.add(
-                summary=f"\u201c{phrase}\u201d became a running bit between us",
+                summary=f'Aiko used "{phrase}" and the user echoed it with amusement',
                 vibe="playful",
                 source="birth",
                 confidence=0.7,
                 salience=max(0.0, min(1.0, float(salience))),
                 source_message_ids=(
-                    [birth.origin_message_id]
-                    if birth.origin_message_id is not None
-                    else None
+                    list(dict.fromkeys(mid for mid in (birth.origin_message_id, source_message_id)
+                                       if mid is not None))
                 ),
                 source_session=session_key,
                 source_message_id=source_message_id,
+                when=when, moment_evidence=evidence,
+                source_scope="observed_phrase_exchange",
             )
         except Exception:
             log.debug("inside-joke shared moment insert failed", exc_info=True)
@@ -491,6 +517,7 @@ class CatchphraseMiner:
             candidates,
             existing_phrases=existing_phrases,
             session_key=session_key,
+            messages=tail,
         )
 
     # ── internals ───────────────────────────────────────────────────────
@@ -512,7 +539,7 @@ class CatchphraseMiner:
         return [
             (m.content or "").strip().lower()
             for m in top
-            if m.content
+            if m.content and _phrase_memory_current(m, store)
         ]
 
     def _persist_top_candidates(
@@ -521,6 +548,7 @@ class CatchphraseMiner:
         *,
         existing_phrases: list[str],
         session_key: str,
+        messages: Sequence["MessageRow"],
     ) -> int:
         written = 0
         for cand in candidates:
@@ -531,6 +559,11 @@ class CatchphraseMiner:
                 continue
             phrase_lower = phrase.lower()
             if _is_subsumed(phrase_lower, existing_phrases):
+                continue
+            from app.core.memory.catchphrase_evidence import mined, current
+
+            receipt = mined(cand, messages)
+            if receipt is None or not current(receipt, self._memory):
                 continue
             try:
                 emb = self._embedder.embed(phrase)
@@ -544,22 +577,23 @@ class CatchphraseMiner:
                 1, cand.count // 2
             )
             salience = max(0.3, min(0.9, self._salience + 0.1 * (balance - 1.0)))
-            # K26: who said it first decides whether Aiko is allowed to
-            # take the phrase on as her own later. Recorded at write time
-            # because the window that proves provenance is right here.
-            metadata = (
-                {"origin": cand.first_speaker}
-                if cand.first_speaker in ("user", "assistant")
-                else None
-            )
+            # First seen in a bounded sample is not original authorship.
+            # K26 must not upgrade that observation through a history guess.
+            metadata = {"origin": "unknown", "origin_scope": "first_observed_in_window",
+                        "first_observed_speaker": cand.first_speaker,
+                        "catchphrase_evidence": receipt,
+                        "admission": {"source_message_ids": [
+                            s["message_id"] for s in receipt["sources"]]}}
             try:
+                if not current(receipt, self._memory):
+                    continue
                 memory = self._memory.add(
                     content=phrase,
                     kind="catchphrase",
                     embedding=emb,
                     salience=salience,
                     source_session=session_key,
-                    source_message_id=None,
+                    source_message_id=receipt["sources"][0]["message_id"],
                     metadata=metadata,
                     # Schema v8: catchphrases are analytic outputs over
                     # an entire conversation window -- already vetted

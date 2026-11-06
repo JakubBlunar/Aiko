@@ -2114,6 +2114,7 @@ class RagRetriever:
             temporal_type=getattr(mem, "temporal_type", None),
             event_time=getattr(mem, "event_time", None),
             event_time_precision=((getattr(mem, "metadata", None) or {}).get("claim_fidelity")
+                                  or (getattr(mem, "metadata", None) or {}).get("moment_evidence")
                                   or {}).get("precision"),
         )
 

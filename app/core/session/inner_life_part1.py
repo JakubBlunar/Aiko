@@ -224,6 +224,10 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             return ""
         phrases: list[str] = []
         for mem in top:
+            from app.core.memory.catchphrase_evidence import memory_current
+
+            if not memory_current(mem, store):
+                continue
             content = (mem.content or "").strip()
             if not content:
                 continue
@@ -234,7 +238,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             return ""
         bullets = "\n".join(f"- {p}" for p in phrases)
         return (
-            f"Aiko's running jokes with {self.user_display_name}:\n" + bullets
+            f"Aiko's running jokes with {self.user_display_name}:\n"
+            "These are recurring quotations; recurrence alone proves neither a joke "
+            "nor original authorship.\n" + bullets
         )
 
     def _render_voice_adoption_block(self) -> str:

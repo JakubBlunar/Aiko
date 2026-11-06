@@ -9,6 +9,8 @@ symbol looked up by these methods; hypothesis resolve/listen live in
 """
 from __future__ import annotations
 
+from app.core.memory.catchphrase_evidence import memory_current as _phrase_memory_current
+
 import logging
 from typing import Any
 from app.core.infra import timephrase
@@ -2692,6 +2694,7 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
             moments_store=getattr(self, "_shared_moments_store", None),
             session_key=getattr(self, "session_key", None),
             source_message_id=user_message_id,
+            chat_db=chat_db,
         )
         if chat_db is not None:
             try:
@@ -2724,7 +2727,7 @@ class PostTurnHelpersMixin(HypothesisResolveMixin, DebugOverridesHostMixin):
         return [
             (m.content or "").strip().lower()
             for m in top
-            if m.content
+            if m.content and _phrase_memory_current(m, store)
         ]
 
 
