@@ -36,3 +36,15 @@ Inline creative writing and ordinary statements still skip the added work routes
 information-need recall retains its read-only subset with the router disabled.
 
 Focused routing/runner checks: 120 tests and 6 subtests passed; lint passed.
+
+## Work status and persisted results
+
+`check_my_work` now supports an exact owned task ID and a bounded recent-history
+list, including completed and failed tasks. It returns saved status, dates,
+result/error and pending input; long JSON details use revision-bound pages.
+Inspection never starts/restarts work. A failed active-task read raises an
+unavailable result, disabled tasks are explicitly unavailable, and failed
+capability-gap reads make the response partial. An empty active list cannot be
+used as evidence that an earlier task succeeded.
+
+Focused task/tool checks: 47 tests passed; lint passed.

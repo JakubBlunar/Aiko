@@ -179,40 +179,54 @@ class CheckMyWorkTool:
                 "user asks 'what are you up to?', 'how's that going?', "
                 "'are you still working on it?', or 'is there anything you "
                 "couldn't do?'. Returns JSON: {active: [...], "
-                "capability_gaps: [...]}. If active is empty, you're not "
-                "working on anything right now."
+                "capability_gaps: [...]}. With status=ok, an empty active list means no active "
+                "work was found, not that earlier work succeeded. Use scope=recent to find "
+                "recent IDs, or task_id to inspect saved results/errors, including completed, "
+                "failed or cancelled tasks. This is read-only and starts nothing. Follow "
+                "next_offset with content_offset and revision for long JSON result fragments. "
+                "Unavailable/partial reads do not establish absence."
             ),
-            parameters={"type": "object", "properties": {}, "required": []},
+            parameters={"type": "object", "properties": {
+                "task_id": {"type": "integer", "minimum": 1},
+                "scope": {"type": "string", "enum": ["active", "recent"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                "content_offset": {"type": "integer", "minimum": 0},
+                "revision": {"type": "string", "maxLength": 128},
+            }, "required": [], "additionalProperties": False},
         )
 
     def run(self, arguments: dict[str, Any]) -> str:
         orch = _orchestrator(self._session)
         if orch is None:
             return json.dumps(
-                {"active": [], "capability_gaps": [], "note": "tasks disabled"},
+                {"status": "unavailable", "active": [], "capability_gaps": [],
+                 "note": "tasks disabled; absence/completion unknown"},
                 ensure_ascii=False,
             )
         user_id = _user_id(self._session)
+        from app.core.tasks.work_inspection import brief, inspect_work
+
+        if "task_id" in arguments:
+            if set(arguments) - {"task_id", "content_offset", "revision"}:
+                raise ToolError("check_my_work: task_id cannot be combined with list filters")
+            try:
+                return json.dumps(inspect_work(orch, user_id, **arguments), ensure_ascii=False)
+            except Exception as exc:
+                raise ToolError(f"check_my_work unavailable: {exc}") from exc
+        if "content_offset" in arguments or "revision" in arguments:
+            raise ToolError("check_my_work: content_offset/revision require task_id")
+        scope = arguments.get("scope", "active")
+        limit = arguments.get("limit", 10)
         active: list[dict[str, Any]] = []
         try:
-            rows = orch.list_running(user_id=user_id)
-        except Exception:
-            log.debug("check_my_work: list_running failed", exc_info=True)
-            rows = []
-        for row in rows:
-            active.append(
-                {
-                    "task_id": int(getattr(row, "id", 0)),
-                    "title": str(getattr(row, "title", "") or ""),
-                    "handler": str(getattr(row, "handler_name", "") or ""),
-                    "status": str(getattr(row, "status", "") or ""),
-                    "phase": getattr(row, "phase", None),
-                    "progress": getattr(row, "progress", None),
-                    "last_message": getattr(row, "last_message", None),
-                    "parent_task_id": getattr(row, "parent_task_id", None),
-                }
-            )
+            rows = (orch.list_for_user(user_id, limit=limit + 1) if scope == "recent"
+                    else orch.list_running(user_id=user_id))
+        except Exception as exc:
+            raise ToolError("check_my_work unavailable; current work could not be read") from exc
+        rows = [row for row in rows if getattr(row, "user_id", user_id) == user_id]
+        active = [brief(row) for row in rows[:limit]]
         gaps: list[dict[str, Any]] = []
+        gap_unavailable = False
         gap_fn = getattr(self._session, "workflow_capability_gaps", None)
         if callable(gap_fn):
             try:
@@ -225,12 +239,17 @@ class CheckMyWorkTool:
                     )
             except Exception:
                 log.debug("check_my_work: gap read failed", exc_info=True)
+                gap_unavailable = True
         log.info(
             "check_my_work: active=%d gaps=%d", len(active), len(gaps)
         )
         return json.dumps(
             {
-                "active": active,
+                "status": "partial" if gap_unavailable else "ok",
+                "read_only": True,
+                "active" if scope == "active" else "recent": active,
+                "has_more": len(rows) > limit,
+                "capability_gaps_unavailable": gap_unavailable,
                 "capability_gaps": gaps,
                 "note": (
                     "Report these naturally. If capability_gaps is "
