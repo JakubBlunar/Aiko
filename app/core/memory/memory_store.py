@@ -58,8 +58,8 @@ _DEFAULT_TIER = "long_term"
 # moment Aiko should reference retrospectively, never as if it just
 # happened. ``future_plan`` is something the user mentioned as
 # upcoming; ``event_time`` carries the ISO-8601 moment it's supposed
-# to take place. The ``MemoryDecayWorker`` flips ``future_plan`` rows
-# to ``past_event`` once their ``event_time`` passes; the
+# to take place. The ``MemoryDecayWorker`` retires elapsed planning windows
+# without asserting that the intended event occurred; the
 # ``FollowUpWorker`` schedules a one-shot nudge near ``event_time``
 # so Aiko can ask retrospectively when the moment fits.
 VALID_TEMPORAL_TYPES = (
@@ -1645,11 +1645,8 @@ class MemoryStore:
     ) -> Memory | None:
         """Flip the v10 temporal classification of a memory in-place.
 
-        Used by :class:`MemoryDecayWorker` to convert a ``future_plan``
-        whose ``event_time`` has passed into a ``past_event`` (with a
-        fresh ``relevance_until = event_time + 7d`` so the row can still
-        be referenced retrospectively for a week before sliding to
-        ``archive``).
+        Use only when source meaning supports the new classification.
+        Elapsed time alone never authorizes converting an intention to an event.
 
         Pass ``event_time=None`` / ``relevance_until=None`` explicitly to
         clear those columns; omit the arg (sentinel) to leave them as-is.

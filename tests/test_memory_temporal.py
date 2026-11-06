@@ -373,7 +373,7 @@ class DeliveryRegressionTests(unittest.TestCase):
         )
         later = timephrase.utcnow() + timedelta(hours=5)
         bullet = self._bullet(mem, later)
-        self.assertIn("should be done by now", bullet)
+        self.assertIn("outcome unknown", bullet)
 
     def test_a_same_day_past_event_is_not_flattened_to_just_now(self) -> None:
         """The other row in the pile: written at 02:48, stamped noon.
@@ -953,7 +953,7 @@ class TestRetrieverTemporalAnnotation(unittest.TestCase):
             created_at="2026-05-28T07:00:00Z",
             now=now,
         )
-        self.assertIn("should be done by now", suffix)
+        self.assertIn("outcome unknown", suffix)
 
     def test_format_block_renders_temporal_suffixes(self) -> None:
         # Use real-time deltas so we don't have to patch ``datetime``
@@ -1191,7 +1191,7 @@ class _StubMemorySettings:
 
 
 class TestMemoryDecayWorkerReclassify(unittest.TestCase):
-    def test_future_plan_flips_to_past_after_event_time(self) -> None:
+    def test_elapsed_plan_retains_intention_and_unknown_outcome(self) -> None:
         _, store = _store_factory()
         # event_time well in the past so the buffer is irrelevant.
         past_dt = (
@@ -1210,11 +1210,12 @@ class TestMemoryDecayWorkerReclassify(unittest.TestCase):
         assert mem is not None
         worker = MemoryDecayWorker(store, _StubMemorySettings())
         result = worker.run()
-        self.assertGreaterEqual(result.get("future_plans_to_past", 0), 1)
-        # Verify the row is now past_event.
+        self.assertGreaterEqual(result.get("planning_windows_elapsed", 0), 1)
+        # Expiry never establishes execution.
         updated = store.get(mem.id)
         assert updated is not None
-        self.assertEqual(updated.temporal_type, "past_event")
+        self.assertEqual(updated.temporal_type, "future_plan")
+        self.assertEqual(updated.metadata["plan_retirement"]["outcome"], "unknown")
         # relevance_until should be event_time + 7 days.
         assert updated.relevance_until is not None
         ru = datetime.fromisoformat(updated.relevance_until)
@@ -1271,10 +1272,11 @@ class TestMemoryDecayWorkerReclassify(unittest.TestCase):
 
         result = MemoryDecayWorker(store, _StubMemorySettings()).run()
 
-        self.assertGreaterEqual(result.get("future_plans_to_past", 0), 1)
+        self.assertGreaterEqual(result.get("planning_windows_elapsed", 0), 1)
         updated = store.get(mem.id)
         assert updated is not None
-        self.assertEqual(updated.temporal_type, "past_event")
+        self.assertEqual(updated.temporal_type, "future_plan")
+        self.assertEqual(updated.metadata["plan_retirement"]["outcome"], "unknown")
 
     def test_a_long_dead_plan_does_not_come_back_as_fresh(self) -> None:
         """The retrospective window anchors on when it went stale.
@@ -1366,7 +1368,7 @@ class TestMemoryDecayWorkerReclassify(unittest.TestCase):
         assert mem is not None
         result = MemoryDecayWorker(store, _StubMemorySettings()).run()
         # Counted once, not twice, despite matching both sweeps.
-        self.assertEqual(result.get("future_plans_to_past", 0), 1)
+        self.assertEqual(result.get("planning_windows_elapsed", 0), 1)
         updated = store.get(mem.id)
         assert updated is not None
         assert updated.relevance_until is not None

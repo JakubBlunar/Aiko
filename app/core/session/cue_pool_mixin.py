@@ -199,6 +199,7 @@ class CuePoolMixin:
                 if payload.get("source") != "future_plan":
                     return True
                 from app.core.memory.plan_reports import plan_progress, CLOSED
+                from app.core.memory.plan_timing import historical_plan
 
                 memories = getattr(self, "_memory_store", None)
                 if memories is None:
@@ -208,6 +209,7 @@ class CuePoolMixin:
                 except (TypeError, ValueError):
                     return False
                 return (prior is not None
+                        and not historical_plan(prior)
                         and plan_progress(prior, memories)["status"] not in CLOSED)
         if cue_type in {"knowledge_gap_notice", "curiosity_gradient"}:
             from app.core.proactive.topic_exploration import payload_explorable

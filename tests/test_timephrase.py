@@ -199,7 +199,7 @@ class TemporalSuffixTests(unittest.TestCase):
             created_at=None,
             now=_NOW,
         )
-        self.assertIn("should be done by now", out)
+        self.assertIn("outcome unknown", out)
 
 
 class AgePrefixTests(unittest.TestCase):

@@ -462,6 +462,10 @@ def _temporal_filter_drops(mem, now: datetime) -> bool:
         if promise_lifecycle.promise_status(mem) == promise_lifecycle.STATUS_DROPPED:
             return True
     temporal_type = getattr(mem, "temporal_type", None)
+    if temporal_type == "future_plan":
+        from app.core.memory.plan_timing import historical_plan
+
+        return historical_plan(mem, now)
     if temporal_type != "past_event":
         return False
     relevance_until = getattr(mem, "relevance_until", None)

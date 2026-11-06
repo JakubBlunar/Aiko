@@ -400,6 +400,10 @@ class ForwardCuriosityWorker:
         # move, interview). These are the strongest forward-question
         # source: a concrete event with a "how did it go?" shape.
         for mem in self._safe_list_temporal("future_plan"):
+            from app.core.memory.plan_timing import historical_plan
+
+            if historical_plan(mem):
+                continue
             from app.core.memory.plan_reports import plan_progress, CLOSED
 
             if plan_progress(mem, self._memory_store)["status"] in CLOSED:

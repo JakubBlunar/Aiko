@@ -14,8 +14,8 @@ quiet-window gate as the promotion worker.
 
 Schema v10 — also runs two cheap reclassification passes per tick:
 
-  - ``future_plan`` rows that have stopped being future are flipped
-    to ``past_event`` with a fresh ``relevance_until``. Two signals
+  - Elapsed ``future_plan`` windows retain their intention type and unknown
+    outcome, with bounded retrospective relevance. Two signals
     retire a plan: an ``event_time`` at least an hour into the past
     (the 1-hour buffer keeps a plan flagged "future" through the
     moment it's actually happening, so no premature flip if Aiko has
@@ -328,8 +328,9 @@ class MemoryDecayWorker:
             "past_events_archived": 0,
         }
 
-        # Pass 1: future_plan -> past_event. There are two ways a plan
-        # stops being a plan. An ``event_time`` that precedes ``now -
+        # Pass 1: retire planning windows without asserting an event.
+        # There are two ways a plan
+        # loses forward relevance. An ``event_time`` that precedes ``now -
         # buffer`` is the precise one, and the buffer means a plan
         # currently happening keeps its "(planned for tonight 20:00)"
         # framing in retrieval until the moment is over. But the
@@ -345,25 +346,41 @@ class MemoryDecayWorker:
         # only ``created_at + 1 day`` and means "stop surfacing this in
         # RAG", not "this plan is over".
         overdue = self._overdue_future_plans(future_cutoff, plan_cutoff)
+        out["planning_windows_elapsed"] = 0
+        out["historical_plans_archived"] = 0
         for mem in overdue:
             try:
+                if mem.kind == "promise":
+                    continue  # Commitment status owns promise retention.
+                metadata = dict(mem.metadata or {})
+                previous = metadata.get("plan_retirement") or {}
+                if (isinstance(previous, dict) and previous.get("version") == 1
+                        and previous.get("intended_for") == mem.event_time):
+                    if (mem.tier != "archive" and self._parse_iso(mem.relevance_until)
+                            and self._parse_iso(mem.relevance_until) < now):
+                        self._store.update(mem.id, tier="archive")
+                        out["historical_plans_archived"] += 1
+                    continue
                 event_dt = self._parse_iso(mem.event_time)
                 # Anchor the new relevance window on event_time so a
                 # plan that slipped recognised hours ago still gets
                 # the full retrospective window from when it actually
-                # happened, not when the worker noticed. With no
+        # was intended, not when the worker noticed. With no
                 # event_time, anchor on the moment the plan went stale
                 # rather than on ``now``: a plan that expired weeks ago
                 # should fall straight through pass 2 into the archive,
                 # not come back as a freshly-relevant past event.
                 anchor = event_dt or self._parse_iso(mem.relevance_until) or now
                 new_relevance = (anchor + _PAST_EVENT_RELEVANCE_WINDOW).isoformat()
-                self._store.reclassify(
-                    mem.id,
-                    temporal_type="past_event",
-                    relevance_until=new_relevance,
-                )
-                out["future_plans_to_past"] += 1
+                metadata["plan_retirement"] = {
+                    "version": 1, "reason": "planning_window_elapsed", "outcome": "unknown",
+                    "intended_for": mem.event_time, "assessed_at": now.isoformat(),
+                    "previous_relevance_until": mem.relevance_until,
+                }
+                self._store.update(mem.id, metadata=metadata, relevance_until=new_relevance,
+                                   tier="archive" if anchor < now - _PAST_EVENT_RELEVANCE_WINDOW
+                                   else mem.tier)
+                out["planning_windows_elapsed"] += 1
             except Exception:
                 log.debug(
                     "reclassify future_plan id=%s failed", mem.id, exc_info=True
@@ -391,10 +408,10 @@ class MemoryDecayWorker:
                     "archive past_event id=%s failed", mem.id, exc_info=True
                 )
 
-        if out["future_plans_to_past"] or out["past_events_archived"]:
+        if out["planning_windows_elapsed"] or out["past_events_archived"]:
             log.info(
-                "memory_decay temporal: %d future->past, %d past->archive",
-                out["future_plans_to_past"],
+                "memory_decay temporal: %d planning windows elapsed, %d past->archive",
+                out["planning_windows_elapsed"],
                 out["past_events_archived"],
             )
         return out

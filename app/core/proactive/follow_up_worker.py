@@ -354,6 +354,10 @@ class FollowUpWorker:
         forced = self._forced_source_id
         due = stale = 0
         for mem in candidates:
+            from app.core.memory.plan_timing import historical_plan
+
+            if historical_plan(mem):
+                continue
             from app.core.memory.plan_reports import plan_progress, CLOSED
 
             if plan_progress(mem, self._memory_store)["status"] in CLOSED:
@@ -405,6 +409,10 @@ class FollowUpWorker:
         skipped_already_fired = 0
         skipped_out_of_window = 0
         for mem in candidates:
+            from app.core.memory.plan_timing import historical_plan
+
+            if historical_plan(mem, now):
+                continue
             if fired >= self._max_per_run:
                 break
             considered += 1

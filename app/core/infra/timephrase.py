@@ -276,7 +276,7 @@ def temporal_suffix(
         if when <= to_aware(now):
             return (
                 f" (was planned for {humanize_future(event_time, when - timedelta(seconds=1))}"
-                " — should be done by now)"
+                " — outcome unknown)"
             )
         return f" (planned for {humanize_future(event_time, now)})"
     return ""

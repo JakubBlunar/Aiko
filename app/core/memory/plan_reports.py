@@ -137,6 +137,10 @@ def report_current(value, store, _seen=None):
 def plan_progress(prior, store):
     """Latest explicit report; unavailable/changed history never means completion."""
     result = {"status": "planned", "outcome_known": False, "report_memory_id": None}
+    retirement = (getattr(prior, "metadata", None) or {}).get("plan_retirement")
+    if (isinstance(retirement, dict) and retirement.get("version") == 1
+            and retirement.get("intended_for") == getattr(prior, "event_time", None)):
+        result.update(status="unknown", reason="planning_window_elapsed")
     try:
         rows = store._get_conn().execute(
             "SELECT id, metadata FROM memories WHERE json_valid(metadata) AND "
