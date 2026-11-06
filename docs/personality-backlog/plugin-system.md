@@ -13,6 +13,10 @@ P1/P2 are historical shipped milestones; P3 onward below is proposed, not an
 available API. [The current plugin manual](../plugins.md) remains the reference
 for writing a plugin that works today.
 
+2026-11-06: [agent harness re-audit](../agent-harness-audit-2026-11-06.md) confirms
+the central runner gaps with offline contract probes and proposes small delivery
+slices over P3–P6. No platform milestone was implemented by that audit.
+
 ### Navigation
 
 - [Recommendation and invariants](#1-recommendation), [current baseline](#2-what-exists-today)
