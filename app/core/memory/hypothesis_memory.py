@@ -46,8 +46,9 @@ def answer_payload(belief, body, *, evidence, question, verdict, subject, target
     }
     # The quote remains literal and its relative language is explicitly scoped
     # to the recording date. The proposed belief never enters indexed content.
+    context = f'Question context (not a claim): "{question}". ' if question else ""
     return {
-        "content": f'User reply recorded at {stamp} ({verdict}): "{quote}"',
+        "content": context + f'User reply recorded at {stamp} ({verdict}): "{quote}"',
         "temporal_type": "past_event", "event_time": None, "provenance": "stated",
         "metadata": {
             "answer_event": dict(event), "hypothesis_answer": receipt,
@@ -66,11 +67,23 @@ def world_support(row, store):
             return None
         receipt = (getattr(answer, "metadata", None) or {}).get("hypothesis_answer") or {}
         if (receipt.get("verdict") != "confirm" or receipt.get("target_subject") != "world"
-                or receipt.get("target_id") != row.hypothesis_id):
+                or receipt.get("target_id") != row.hypothesis_id
+                or receipt.get("target_type") != "hypothesis"
+                or receipt.get("proposed_statement") != row.statement):
             return None
         inputs.append({"memory_id": mid, "revision": revision(answer)})
     if not inputs:
         return None
     packet = {"version": 1, "scope": "hypothesis_support",
-              "hypothesis_id": row.hypothesis_id, "memory_inputs": inputs}
+              "hypothesis_id": row.hypothesis_id, "target_revision": target_revision(row),
+              "memory_inputs": inputs}
     return packet if current(packet, store) else None
+
+
+def target_revision(row):
+    from app.core.concepts.concept_support import revision_hash
+
+    return revision_hash([getattr(row, key, None) for key in (
+        "statement", "subject", "answer_memory_ids", "support_count", "refute_count",
+        "credence", "status",
+    )])

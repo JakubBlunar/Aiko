@@ -615,6 +615,8 @@ class ImageMemoryTests(unittest.TestCase):
             call["metadata"]["source_attachment"], "Attachments:79e981.jpg",
         )
         self.assertEqual(call["metadata"]["source"], "shared_image")
+        self.assertEqual(call["metadata"]["image_evidence"]["version"], 1)
+        self.assertIsNone(call["event_time"])
 
     def test_dedupe_is_reported_as_no_write(self) -> None:
         from app.core.infra import timephrase

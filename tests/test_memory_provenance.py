@@ -339,7 +339,8 @@ class TestFormatBlockInferredSuffix(unittest.TestCase):
 
     def test_stated_fact_has_no_suffix(self) -> None:
         block = self._block([_mem_hit("Jacob lives in Prague", "fact", "stated")])
-        self.assertIn("- Jacob lives in Prague", block)
+        self.assertIn("Jacob lives in Prague", block)
+        self.assertIn("subject=unknown", block)
         self.assertNotIn("(inferred)", block)
 
     def test_missing_provenance_has_no_suffix(self) -> None:

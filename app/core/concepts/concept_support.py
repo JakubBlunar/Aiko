@@ -23,6 +23,8 @@ def revision_hash(value: Any) -> str:
 
 
 def memory_revision(memory: Any) -> str:
+    from app.core.memory.receipt_contracts import receipt_fields
+
     metadata = getattr(memory, "metadata", None) or {}
     return revision_hash(
         [
@@ -47,6 +49,7 @@ def memory_revision(memory: Any) -> str:
                     "contextual_relation",
                     "claim_fidelity",
                     "moment_evidence",
+                    *receipt_fields(metadata),
                 )
                 if key not in {"memory_origin", "observation", "follow_through",
                                "contextual_relation", "claim_fidelity", "moment_evidence"}

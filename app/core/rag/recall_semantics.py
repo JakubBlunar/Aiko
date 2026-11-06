@@ -1,5 +1,19 @@
 """Preserve source meaning when SQLite memories become recall context."""
+import logging
+
 from app.core.memory.memory_origin import MemoryOrigin, memory_origin
+
+log = logging.getLogger("app.rag_retriever")
+
+
+def recall_cost(rag, hit, user_display_name, estimate_tokens):
+    try:
+        rendered = rag.format_hits([hit], user_display_name=user_display_name)
+    except Exception:
+        log.debug("recall candidate formatting failed", exc_info=True)
+        return 0
+    # Each standalone heading conservatively covers shared-section overhead.
+    return estimate_tokens(rendered) + 3 if rendered else 0
 
 
 def recall_context(memory):

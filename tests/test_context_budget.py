@@ -2083,8 +2083,8 @@ class InventedRenderTests(unittest.TestCase):
             [self._invented(3, "Jacob would love sailing")]
         )
 
-        self.assertIn("invented rather than noticed", text)
-        self.assertIn("no evidence behind them", text)
+        self.assertIn("Possibilities you invented, not established observations", text)
+        self.assertIn("inspiration explains the wondering, not its truth", text)
 
     def test_it_never_borrows_the_grounded_header(self) -> None:
         text, _ = self._host()._render_hypothesis_concepts(
@@ -2101,7 +2101,7 @@ class InventedRenderTests(unittest.TestCase):
         ])
 
         self.assertIn("about Jacob", text)
-        self.assertIn("Idle speculation", text)
+        self.assertIn("Possibilities you invented, not established observations", text)
 
     def test_the_weakest_thing_is_read_last(self) -> None:
         text, _ = self._host()._render_hypothesis_concepts([

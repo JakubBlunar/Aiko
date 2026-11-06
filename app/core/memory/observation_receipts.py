@@ -103,7 +103,15 @@ def observation_context(memory):
 
 
 def facet_scope(memory):
+    from app.core.memory.receipt_contracts import receipt_fields
+
     metadata = getattr(memory, "metadata", None) or {}
+    existing = _ordinary_facet_scope(metadata)
+    receipts = receipt_fields(metadata)
+    return json.dumps([existing, receipts], sort_keys=True) if receipts else existing
+
+
+def _ordinary_facet_scope(metadata):
     if metadata.get("moment_evidence"):
         value = metadata["moment_evidence"]
         return json.dumps({key: value.get(key) for key in

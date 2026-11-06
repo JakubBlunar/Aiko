@@ -27,6 +27,12 @@ def memory_origin(memory) -> MemoryOrigin:
     meta = getattr(memory, "metadata", None) or {}
     meta = meta if isinstance(meta, dict) else {}
     explicit = meta.get("memory_origin")
+    if (meta.get("source") == "shared_image" and not meta.get("image_evidence")
+            and (explicit is None or isinstance(explicit, dict)
+                 and explicit.get("writer") in {"shared_image", "legacy_kind:event"})):
+        # Older image rows named the uploader through the event-kind fallback.
+        # Without a caption receipt we cannot identify the depicted subject.
+        return MemoryOrigin("unknown", "interpretation", "legacy_shared_image")
     if explicit is not None:
         if (isinstance(explicit, dict) and explicit.get("version") == 1
                 and isinstance(explicit.get("subject"), str)

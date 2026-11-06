@@ -1617,7 +1617,11 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 text = (getattr(hit, "text", "") or "").strip()
                 if not text:
                     continue
-                cost = estimate_tokens(text[:240]) + 3
+                from app.core.rag.recall_semantics import recall_cost
+
+                cost = recall_cost(rag, hit, name, estimate_tokens)
+                if not cost:
+                    continue
                 rel = min(1.0, max(0.0, float(getattr(hit, "score", 0.0))))
                 cand = ContextCandidate(
                     source="memory", relevance=rel, tokens=cost,

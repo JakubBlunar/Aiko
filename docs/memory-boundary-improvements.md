@@ -13,16 +13,17 @@ recurring quotations rather than personal claims or proven original authorship.
 Associative notes retain whole qualifications and the ordinary temporal tags;
 oversized notes are omitted rather than cut to a misleading prefix.
 
-Focused recall regressions: 110 passed. Lint passed. The static affected selector
-includes shared session consumers; its combined regression run follows completion
-of the remaining boundaries. Live-model wording remains to be checked after a
-backend restart and ordinary use.
+Focused recall regressions: 110 passed. The combined verification is recorded
+below. Live-model wording remains to be checked after a backend restart and
+ordinary use. Legacy image rows with only an uploader/event-kind fallback now
+resolve to an unknown depicted subject at read time; the rows are not rewritten.
 
 ## Hypothesis answers and world graduation
 
-Answer memories index only the literal reply, explicitly anchored to its source
-recording date. The question, proposed interpretation, exact verdict and target
-identity remain in a separate receipt. Recall and worker packets expose the
+Answer memories index the literal reply and actual question labelled as context,
+explicitly anchored to the source recording date. The proposed interpretation,
+exact verdict, question and target identity remain in a separate receipt.
+Recall and worker packets expose the
 question as target-specific context. General concept synthesis cannot repurpose
 that contextual answer as an independent claim; the dedicated verdict and
 graduation paths still attach it to the tested target.
@@ -106,3 +107,48 @@ evidence. Legacy records without receipts are not retroactively certified.
 Focused phrase/moment/voice checks: 90 passed. Another 14 tests cover occurrence
 receipts and the direct-retrieval SQLite join. Lint passed before the final
 integration sweep. Amusement detection and usefulness still need ordinary use.
+
+## Receipt revisions, merging and prompt budgets
+
+The new versioned receipts participate in source revisions and merge scope.
+Changing a question, support link or episode receipt invalidates the earlier
+support even if the memory wording remains identical. Identically worded answers
+from different contexts cannot silently merge. Rows without these v1 contracts,
+including legacy unversioned hypothesis answers, retain their original support
+fingerprints.
+
+World graduation checks that each confirmation concerns the current statement
+and target, and rechecks the hypothesis after embedding. A target edit cannot
+reuse confirmations for an older statement. Malformed research-support packets
+fail closed.
+
+Memory and learned-pattern candidates are costed using their whole rendered
+content, including source labels, question context and timing. Standalone headers
+provide conservative allowance for shared section overhead. A qualified note is
+kept whole or omitted when it cannot fit; formatting failures omit that candidate.
+
+## Validation and ordinary-use follow-up
+
+The initial unfiltered affected selection covered 336 files: 8,187 tests and
+1,135 subtests passed; seven timing tests were skipped under parallel execution.
+Four assertions failed: two expected the previous recall layout, and two checked
+older invention wording. The invention renderer was verified unchanged from the
+audit baseline; its assertions now check the existing stronger source boundary.
+All four failing modules passed in focused follow-up.
+
+After the optional receipt/hash and budget refinements, a representative
+integration set passed 791 tests and 45 subtests, covering all six intake paths,
+source lineage, consolidation, patterns and prompt assembly. The seven timing
+checks passed serially. The interrupted final selector run was stopped when
+Codex closed; its abandoned managed scratch was removed only after verifying
+the Python processes had stopped. The final affected-selector rerun used the
+explicit representative module set for the remaining optional-contract and
+budget changes: 886 tests and 45 subtests passed. `npm run lint` passed, all
+changed text files retain LF, and managed scratch was cleaned after completion.
+
+After restarting the backend, inspect fresh ordinary-use rows and surfaced
+context for subject/domain preservation, target-specific answers, image caption
+uncertainty and depicted dates, useful manual answers, research/virtual episode
+continuity and genuine shared phrases. Check missed useful notes as well as
+overclaims. L22 remains the ordinary-use checkpoint; no live worker was forced
+and no historical memory was bulk rewritten.

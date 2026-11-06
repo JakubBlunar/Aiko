@@ -20,6 +20,7 @@ def test_only_literal_reply_is_indexed_and_verdict_is_preserved(verdict):
     value = payload(verdict=verdict)
     assert "not always, only when I ask" in value["content"]
     assert "unsupported proposed interpretation" not in value["content"]
+    assert "Question context (not a claim)" in value["content"]
     assert value["metadata"]["hypothesis_answer"]["verdict"] == verdict
     assert value["event_time"] is None
 
@@ -93,6 +94,16 @@ def test_real_answer_support_and_world_anchor_follow_source_edits(tmp_path):
         assert memory_origin(saved).subject == "world"
         assert memory_origin(saved).mode == "interpretation"
         assert longitudinal_sources_current(saved, store)
+        host._hypothesis_store = SimpleNamespace(get=lambda hid: row)
+        def edit_target(text):
+            row.statement = "A broader untested interpretation"
+            return np.array([1., 0.])
+        host._embedder = SimpleNamespace(embed=edit_target)
+        count = store.count()
+        assert HypothesisResolveMixin._anchor_world_hypothesis(host, row) is None
+        assert store.count() == count
+        row.statement = "A broader untested interpretation"
+        assert world_support(row, store) is None
         db.execute_commit("UPDATE messages SET content=? WHERE id=?", ("That was mistaken", mid))
         assert not longitudinal_sources_current(saved, store)
         assert world_support(row, store) is None

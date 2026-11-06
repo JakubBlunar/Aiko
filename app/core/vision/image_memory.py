@@ -214,7 +214,8 @@ def write_image_memory(
     if not summary or len(summary) > MAX_MEMORY_CHARS or not source_current(
             caption_receipt, memory_store):
         return None
-    details = dict(getattr(line, "details", {}) or {})
+    details = {"version": 1, "subject": "unknown", "depicted_domain": "unknown",
+               "precision": "unknown", **dict(getattr(line, "details", {}) or {})}
     details.update(shared_at=now.isoformat(), scope="depicted_content",
                    sources=[caption_receipt] if caption_receipt else [])
     subject = details.get("subject", "unknown")

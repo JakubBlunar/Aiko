@@ -90,3 +90,18 @@ def test_direct_retrieval_joins_sqlite_origin_instead_of_trusting_vector_kind(tm
         assert "What you know about Jacob" not in block
     finally:
         store.close()
+
+
+def test_legacy_image_uploader_is_not_automatically_the_depicted_subject():
+    from app.core.memory.memory_origin import memory_origin
+
+    legacy = SimpleNamespace(kind="event", content="Aiko's avatar in a blue outfit.",
+                             metadata={"source": "shared_image"})
+    assert memory_origin(legacy).subject == "unknown"
+    legacy.metadata["memory_origin"] = asdict(MemoryOrigin(
+        "user", "observation", "shared_image"))
+    assert memory_origin(legacy).subject == "unknown"
+    legacy.metadata["image_evidence"] = {"version": 1, "subject": "aiko"}
+    legacy.metadata["memory_origin"] = asdict(MemoryOrigin(
+        "aiko", "interpretation", "image_memory", "virtual"))
+    assert memory_origin(legacy).subject == "aiko"

@@ -40,16 +40,25 @@ def build(source, topic, stamp, extra, store):
 
 
 def current(receipt, store):
-    if not receipt or not receipt.get("research_inputs"):
+    if receipt is None:
         return True
+    if not isinstance(receipt, dict) or receipt.get("version") != 1:
+        return False
+    inputs = receipt.get("research_inputs")
+    if not isinstance(inputs, list):
+        return False
+    if not inputs:
+        return receipt.get("activity_mode") in {"virtual", "idea"}
     from app.core.memory.reflective_evidence import current as sources_current
 
-    for item in receipt["research_inputs"]:
+    for item in inputs:
+        if not isinstance(item, dict) or type(item.get("memory_id")) is not int:
+            return False
         row = store.get(item["memory_id"])
         if (row is None or row.kind != "curiosity_finding"
                 or (row.metadata or {}).get("pursuit_evidence")):
             return False
-    return sources_current({"memory_inputs": receipt["research_inputs"]}, store)
+    return sources_current({"memory_inputs": inputs}, store)
 
 
 def context(memory):

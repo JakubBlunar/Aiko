@@ -504,7 +504,7 @@ class HypothesisResolveMixin:
     def _anchor_world_hypothesis(self, row: Any) -> int | None:
         """Anchor a world interpretation with its actual answer supports."""
         from dataclasses import asdict
-        from app.core.memory.hypothesis_memory import world_support
+        from app.core.memory.hypothesis_memory import world_support, target_revision
         from app.core.memory.memory_origin import MemoryOrigin
         from app.core.memory.reflective_evidence import current
 
@@ -520,6 +520,11 @@ class HypothesisResolveMixin:
             embedding = embedder.embed(body)
             if not current(support, memory_store):
                 return None
+            hypotheses = getattr(self, "_hypothesis_store", None)
+            if hypotheses is not None:
+                live = hypotheses.get(row.hypothesis_id)
+                if live is None or target_revision(live) != support["target_revision"]:
+                    return None
             memory = memory_store.add(
                 content=body, kind="fact", embedding=embedding,
                 salience=0.6, confidence=0.75, tier="long_term", provenance="inferred",

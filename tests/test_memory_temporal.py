@@ -1066,7 +1066,7 @@ class TestRetrieverTemporalAnnotation(unittest.TestCase):
         self.assertIn("(noted ", block)
         self.assertIn("month", block)
 
-    def test_fresh_untagged_memory_stays_bare(self) -> None:
+    def test_fresh_memory_keeps_scope_without_an_age_suffix(self) -> None:
         now = datetime.now(timezone.utc)
         block = RagRetriever.format_block(
             [
@@ -1077,7 +1077,8 @@ class TestRetrieverTemporalAnnotation(unittest.TestCase):
             ],
             user_display_name="Jacob",
         )
-        self.assertIn("- Jacob is a software engineer", block)
+        self.assertIn("Jacob is a software engineer", block)
+        self.assertIn("subject=unknown", block)
         self.assertNotIn("(noted", block)
 
     def test_noted_tag_never_overrides_a_real_tense_tag(self) -> None:
