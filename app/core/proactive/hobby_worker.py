@@ -668,7 +668,7 @@ class HobbyWorker:
         label = str(state.get("label") or "").strip()
         if self._pursuit_notes is None or not label:
             return
-        line = f"{self._progress_phrase(state)} into {label}."
+        line = f"Research reflection: {self._progress_phrase(state)} into {label}."
         if seed:
             line = f"{line} {seed}"
         self._pursuit_notes.write(
@@ -679,6 +679,9 @@ class HobbyWorker:
             extra={
                 "advances": int(state.get("advances", 0)),
                 "research_memory_id": (state.get("research_result_ids") or [None])[-1],
+                "research_memory_ids": list(state.get("research_result_ids") or [])[-12:],
+                "progress_source": state.get("progress_source"),
+                "thread_started_at": state.get("started_at"),
             },
         )
 
@@ -694,7 +697,7 @@ class HobbyWorker:
         if self._pursuit_notes is None or not label:
             return
         line = (
-            f"Wrapped up {label} after {self._progress_phrase(state)}."
+            f"Wrapped up the research thread for {label} after {self._progress_phrase(state)}."
             if state.get("progress_source") == "research"
             else f"Left the project idea {label}; no result-backed progress was recorded."
         )
@@ -705,7 +708,10 @@ class HobbyWorker:
             source="hobby_wrapup",
             topic=str(state.get("key") or ""),
             at=now,
-            extra={"advances": int(state.get("advances", 0))},
+            extra={"advances": int(state.get("advances", 0)),
+                   "research_memory_ids": list(state.get("research_result_ids") or [])[-12:],
+                   "progress_source": state.get("progress_source"),
+                   "thread_started_at": state.get("started_at")},
         )
 
     @staticmethod

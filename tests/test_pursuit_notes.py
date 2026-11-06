@@ -232,6 +232,8 @@ class HobbyNoteTests(unittest.TestCase):
         self.assertIn("9 findings into", entry["content"])
         self.assertIn("sci-fi series", entry["content"])
         self.assertEqual(entry["extra"]["research_memory_id"], 9)
+        self.assertIn(9, entry["extra"]["research_memory_ids"])
+        self.assertEqual(entry["extra"]["progress_source"], "research")
 
     def test_an_ordinary_advance_is_not(self) -> None:
         notes = _Notes()
@@ -251,7 +253,8 @@ class HobbyNoteTests(unittest.TestCase):
         self.assertEqual(len(notes.written), 1)
         entry = notes.written[0]
         self.assertEqual(entry["source"], "hobby_wrapup")
-        self.assertIn("Wrapped up working through a sci-fi series", entry["content"])
+        self.assertIn("Wrapped up the research thread for working through a sci-fi series",
+                      entry["content"])
         self.assertIn("12 chapters", entry["content"])
 
     def test_a_single_chapter_is_singular(self) -> None:

@@ -21,8 +21,8 @@ when something happened worth having an angle on:
     to say about.
 
 Notes land on the ``long_term`` tier because the point is outliving the
-ring they came from, and go through normal dedupe: watering the same
-lettuce every day should read as one recurring thread, not thirty rows.
+ring they came from. Episode receipts suppress replay of the same beat;
+distinct dated visits remain distinguishable rather than merging their times.
 
 This module is the single write path so the metadata shape stays
 uniform for the ``pursuit`` proposer that reads it (K85c).
@@ -93,10 +93,20 @@ class PursuitNoteWriter:
         which callers treat the same way: there is nothing new to do.
         """
         text = (content or "").strip()
-        if len(text) < _MIN_CHARS:
+        if not _MIN_CHARS <= len(text) <= _MAX_CHARS:
             return None
-        text = text[:_MAX_CHARS]
+        from app.core.memory.pursuit_evidence import build, current
+
         stamp = (at or timephrase.utcnow()).isoformat(timespec="seconds")
+        extra = dict(extra or {})
+        try:
+            evidence = build(source, topic, stamp, extra, self._store)
+        except Exception:
+            log.debug("pursuit source receipt failed", exc_info=True)
+            return None
+        if evidence is None:
+            return None
+        receipt, origin, derivation = evidence
         metadata: dict[str, Any] = {
             "source": str(source or "")[:40],
             "noted_at": stamp,
@@ -105,12 +115,19 @@ class PursuitNoteWriter:
             metadata["topic"] = str(topic)[:120]
         if extra:
             metadata.update(extra)
+        metadata.update(source=str(source or "")[:40], noted_at=stamp,
+                        pursuit_evidence=receipt, memory_origin=origin,
+                        admission_key="pursuit:" + receipt["episode_id"])
+        if derivation:
+            metadata["reflective_derivation"] = derivation
         try:
             embedding = self._embedder.embed(text)
         except Exception:
             log.debug("pursuit note embed failed", exc_info=True)
             return None
         try:
+            if not current(receipt, self._store):
+                return None
             mem = self._store.add(
                 content=text,
                 kind=PURSUIT_NOTE_KIND,
@@ -119,6 +136,7 @@ class PursuitNoteWriter:
                 tier="long_term",
                 metadata=metadata,
                 provenance="inferred",
+                temporal_type="past_event", event_time=stamp,
             )
         except Exception:
             log.debug("pursuit note write failed", exc_info=True)

@@ -136,6 +136,11 @@ def longitudinal_sources_current(memory, store, _seen=None):
     if isinstance(image, dict) and image.get("sources"):
         if not receipt_sources_current(image, store):
             return False
+    if metadata.get("pursuit_evidence") is not None:
+        from app.core.memory.pursuit_evidence import current
+
+        if not current(metadata["pursuit_evidence"], store):
+            return False
     support = metadata.get("hypothesis_support")
     if support is not None:
         from app.core.memory.reflective_evidence import current

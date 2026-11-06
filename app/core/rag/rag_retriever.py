@@ -40,8 +40,9 @@ from app.core.memory import promise_lifecycle
 from app.core.rag.rag_store import MessageRecord, RagHit
 from app.core.infra import timephrase
 from app.core.memory.memory_origin import memory_origin
-from app.core.memory.hypothesis_memory import answer_context
-from app.core.rag.recall_semantics import recall_origin, recall_scope, recall_sections
+from app.core.rag.recall_semantics import (
+    recall_origin, recall_scope, recall_sections, recall_context,
+)
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -1156,7 +1157,7 @@ class RagRetriever:
                                 h.score += _provenance_penalty(mem_provenance)
                                 h.memory_provenance = mem_provenance
                                 h.memory_origin = memory_origin(mem)
-                                h.memory_context = answer_context(mem)
+                                h.memory_context = recall_context(mem)
                                 # K25 — stamp the pinned flag on the
                                 # hit so the ``(distant)`` time-decay
                                 # suffix can bypass user-trusted rows
@@ -2107,7 +2108,7 @@ class RagRetriever:
             memory_tier=getattr(mem, "tier", None),
             expansion=bool(expansion),
             memory_origin=memory_origin(mem),
-            memory_context=answer_context(mem),
+            memory_context=recall_context(mem),
             memory_provenance=getattr(mem, "provenance", None),
             confidence=getattr(mem, "confidence", None),
             temporal_type=getattr(mem, "temporal_type", None),

@@ -69,3 +69,21 @@ Unavailable embedding, failed writes and changed questions report a retryable
 error without closing the gap. A deliberately blank answer still dismisses it
 without creating a memory. Invalid/non-gap IDs create no answer. Already closed
 gaps do not create another answer. Focused gap/REST checks: 70 passed; lint passed.
+
+## Pursuit episodes and research continuity
+
+Pursuit notes retain a stable episode identity, dated virtual/reflection scope,
+activity clauses and world-state receipts. Imagined outing clauses remain
+distinct from simulated activity clauses. Replaying one episode cannot add a
+second note; separate dated visits do not collapse their timing. Whole overlong
+notes are refused rather than losing their final qualification.
+
+Hobby milestones and wrap-ups retain a bounded chain of research-result
+identities/revisions. Only recorded curiosity findings with research evidence
+can supply that chain. Changed results defer a queued note and invalidate its
+research support later. Such notes are Aiko's research reflections, not physical
+practice or additional independent observations. Unbacked project ideas remain
+reflections. These source distinctions also reach recall and worker packets.
+
+Focused pursuit/activity checks: 186 tests and 4 subtests passed; lint passed.
+Virtual-state receipts establish simulated effects, not physical-world proof.

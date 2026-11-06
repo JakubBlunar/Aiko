@@ -140,6 +140,10 @@ def origin_annotation(memory) -> str:
         from app.core.memory.hypothesis_memory import answer_context
 
         parts.append(answer_context(memory))
+    if (getattr(memory, "metadata", None) or {}).get("pursuit_evidence"):
+        from app.core.memory.pursuit_evidence import context
+
+        parts.append(context(memory))
     parts.append("authority=" + str(getattr(memory, "provenance", "unknown") or "unknown"))
     if origin.writer.startswith("legacy_kind:"):
         parts.append("basis=kind_contract")

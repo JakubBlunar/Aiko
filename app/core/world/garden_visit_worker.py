@@ -470,6 +470,12 @@ class GardenVisitWorker:
                 extra={
                     "watered": [str(w.get("name") or "") for w in watered],
                     "harvested": [str(h["plant"]) for h in harvested],
+                    "clauses": [{"activity": "garden", "text": summary, "mode": "simulated"}],
+                    "world_receipts": {
+                        "watered": watered,
+                        "harvested": [{"plant": h.get("plant"), "produce": h.get("produce")}
+                                      for h in harvested],
+                    },
                 },
             )
         result = {

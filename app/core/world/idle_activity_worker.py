@@ -655,6 +655,10 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 "keys": [b.key for b in chain],
                 "changed": [str(e.get("effect") or "") for e in effects],
                 "closed_intention": bool(closed_intention),
+                "clauses": [{"activity": beat.key, "text": beat.summary,
+                             "mode": "imagined" if beat.key == "outing" else "simulated"}
+                            for beat in chain],
+                "world_receipts": effects,
             },
         )
 

@@ -2,6 +2,13 @@
 from app.core.memory.memory_origin import MemoryOrigin, memory_origin
 
 
+def recall_context(memory):
+    from app.core.memory.hypothesis_memory import answer_context
+    from app.core.memory.pursuit_evidence import context
+
+    return " ".join(part for part in (answer_context(memory), context(memory)) if part)
+
+
 def recall_origin(hit) -> MemoryOrigin:
     origin = getattr(hit, "memory_origin", None)
     if isinstance(origin, MemoryOrigin):
