@@ -873,7 +873,8 @@ def format_memory_line(mem: Any, now_dt: datetime | None = None) -> str:
         event_time=getattr(mem, "event_time", None),
         created_at=created_at,
         now=when,
-        precision=((getattr(mem, "metadata", None) or {}).get("claim_fidelity") or {})
+        precision=((getattr(mem, "metadata", None) or {}).get("claim_fidelity")
+                   or (getattr(mem, "metadata", None) or {}).get("moment_evidence") or {})
         .get("precision"),
     )
     until = parse_iso(getattr(mem, "relevance_until", None))

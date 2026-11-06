@@ -1,5 +1,6 @@
 """Worker inputs retain recording age, actor and source scope through budgets."""
 from types import SimpleNamespace
+import json
 
 from app.core.infra import timephrase
 from app.core.proactive.diary_worker import build_recent_context
@@ -54,8 +55,10 @@ def test_long_dream_sources_keep_their_age_after_prompt_budgeting():
 def test_moment_receipt_names_only_the_history_actually_offered():
     det, llm = _make(min_turn_gap=1)
     det.notify_user_turn()
-    llm.chat.return_value = ('{"moment": {"summary": "We laughed over the drawing", '
-                             '"vibe": "playful"}}')
+    llm.chat.return_value = json.dumps({"moment": {"summary": "We laughed over the drawing",
+        "vibe": "playful", "event_scope": "exchange", "claims": [{
+            "text": "We laughed over the drawing.", "evidence": [{"message_id": 2,
+                "quote": "That drawing made me laugh"}]}]}})
     det._llm_max_history_chars = 250
     history = [
         SimpleNamespace(id=1, role="user", content="Old context " * 50,
@@ -68,7 +71,7 @@ def test_moment_receipt_names_only_the_history_actually_offered():
     candidate = det.maybe_run_llm(history_provider=lambda: history, reaction_signal=True,
                                  milestone_signal=False, gift_signal=False,
                                  promise_kept_signal=False, now_monotonic=100.)
-    assert candidate.source_message_ids == [2, 3]
-    assert candidate.when == history[-1].created_at
-    assert candidate.source_scope == "context_window"
+    assert candidate.source_message_ids == [2]
+    assert timephrase.parse_iso(candidate.when) == timephrase.parse_iso(history[1].created_at)
+    assert candidate.source_scope == "validated_moment_claims"
     assert "Old context" not in llm.chat.call_args.args[0][1]["content"]

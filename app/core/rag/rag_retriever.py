@@ -1248,8 +1248,9 @@ class RagRetriever:
                                     mem, "temporal_type", None
                                 )
                                 h.event_time = getattr(mem, "event_time", None)
-                                h.event_time_precision = (getattr(mem, "metadata", None) or {}).get(
-                                    "claim_fidelity", {}).get("precision")
+                                metadata = getattr(mem, "metadata", None) or {}
+                                h.event_time_precision = (metadata.get("claim_fidelity")
+                                    or metadata.get("moment_evidence") or {}).get("precision")
                                 h.relevance_until = getattr(
                                     mem, "relevance_until", None
                                 )

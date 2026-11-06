@@ -39,7 +39,7 @@ def select_memory_batch(
                     {key: (getattr(row, "metadata", None) or {}).get(key)
                      for key in dict.fromkeys([*metadata_keys,
                          *[name for name in ("observation", "follow_through", "contextual_relation",
-                                            "claim_fidelity")
+                                            "claim_fidelity", "moment_evidence")
                            if name in (getattr(row, "metadata", None) or {})]])},
                 ],
                 default=str,

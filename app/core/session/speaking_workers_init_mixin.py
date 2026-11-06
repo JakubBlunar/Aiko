@@ -581,16 +581,17 @@ class SpeakingWorkersInitMixin:
             try:
                 from app.core.relationship.shared_moment_extractor import MomentDetector
 
-                def _persist_moment_candidate(candidate: Any) -> None:
+                def _persist_moment_candidate(candidate: Any) -> bool:
                     store = self._shared_moments_store
                     if store is None:
-                        return
+                        return False
                     row = store.add_from_candidate(
                         candidate,
                         source_session=self.session_key,
                     )
                     if row is not None:
                         self._notify_shared_moment_added(row)
+                    return row is not None
 
                 self._moment_detector = MomentDetector(
                     ollama=self._ollama,

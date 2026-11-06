@@ -110,6 +110,7 @@ class SharedMomentCandidate:
     source: str = "tag"  # "tag" | "llm" | "manual"
     confidence: float = 0.7
     source_scope: str | None = None
+    evidence: dict | None = None
 
     def to_metadata(self) -> dict[str, Any]:
         meta: dict[str, Any] = {
@@ -124,6 +125,8 @@ class SharedMomentCandidate:
             meta["source_message_ids"] = list(self.source_message_ids)
         if self.source_scope:
             meta["source_scope"] = self.source_scope
+        if self.evidence:
+            meta["moment_evidence"] = self.evidence
         return meta
 
     def to_memory_content(self) -> str:
@@ -238,6 +241,9 @@ def _parse_llm_payload(raw: str) -> SharedMomentCandidate | None:
     if not isinstance(moment, dict):
         return None
     summary = str(moment.get("summary") or "").strip()
+    if not summary and isinstance(moment.get("claims"), list):
+        summary = " ".join(item["text"] for item in moment["claims"]
+                           if isinstance(item, dict) and isinstance(item.get("text"), str))
     if len(summary) < 8:
         return None
     vibe = normalise_vibe(moment.get("vibe"))
@@ -246,6 +252,7 @@ def _parse_llm_payload(raw: str) -> SharedMomentCandidate | None:
         vibe=vibe,
         source="llm",
         confidence=0.7,
+        evidence={key: moment.get(key) for key in ("claims", "event_scope", "event_time_evidence")},
     )
 
 
@@ -265,6 +272,8 @@ def _bounded_history(
         })
         if not line:
             continue
+        mid = row.get("id") if isinstance(row, dict) else getattr(row, "id", None)
+        line = f"[message_id={mid}] " + line
         if total + len(line) > max_chars:
             break
         lines.append((line, row))
@@ -363,6 +372,7 @@ class MomentDetector:
             "llm_failed": 0,
             "llm_returned_null": 0,
             "llm_persisted": 0,
+            "llm_declined_persistence": 0,
         }
 
     # ── lifecycle ──
@@ -478,6 +488,8 @@ class MomentDetector:
             return None
 
         try:
+            from app.core.relationship.moment_evidence import RULE
+
             messages = [
                 {
                     "role": "system",
@@ -495,6 +507,7 @@ class MomentDetector:
                         # into it is read back at the worst possible time.
                         + "\n\n"
                         + timephrase.STORED_TEXT_TIME_RULE
+                        + "\n" + RULE
                     ),
                 },
                 {"role": "user", "content": block},
@@ -503,7 +516,7 @@ class MomentDetector:
                 messages,
                 options={
                     "temperature": 0.2,
-                    "num_predict": self._llm_max_tokens,
+                    "num_predict": max(512, self._llm_max_tokens),
                 },
                 model=self._model,
                 # Judging whether a stretch of conversation is a genuine
@@ -522,18 +535,16 @@ class MomentDetector:
         if candidate is None:
             self._stats["llm_returned_null"] += 1
             return None
-        def value(row, key):
-            return row.get(key) if isinstance(row, dict) else getattr(row, key, None)
+        from app.core.relationship.moment_evidence import admit
 
-        candidate.source_message_ids = [value(row, "id") for row in offered
-                                        if type(value(row, "id")) is int]
-        candidate.source_scope = "context_window"  # Retrieval receipt, not per-claim quote proof.
-        known = [value(row, "created_at") for row in offered
-                 if timephrase.parse_iso(value(row, "created_at")) is not None]
-        candidate.when = known[-1] if known else None
+        if not admit(candidate, offered):
+            self._stats["llm_returned_null"] += 1
+            return None
         if self._persist is not None:
             try:
-                self._persist(candidate)
+                if self._persist(candidate) is False:
+                    self._stats["llm_declined_persistence"] += 1
+                    return None
                 self._stats["llm_persisted"] += 1
             except Exception:
                 log.debug("moment persist callback raised", exc_info=True)

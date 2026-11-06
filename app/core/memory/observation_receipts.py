@@ -104,6 +104,11 @@ def observation_context(memory):
 
 def facet_scope(memory):
     metadata = getattr(memory, "metadata", None) or {}
+    if metadata.get("moment_evidence"):
+        value = metadata["moment_evidence"]
+        return json.dumps({key: value.get(key) for key in
+                           ("version", "event_scope", "when_basis", "precision", "sources")},
+                          sort_keys=True)
     report = metadata.get("follow_through")
     if metadata.get("contextual_relation"):
         return json.dumps({key: metadata.get(key) for key in
@@ -124,6 +129,8 @@ def longitudinal_sources_current(memory, store, _seen=None):
     """Verify preserved quotes against SQLite before using enriched evidence."""
     metadata = getattr(memory, "metadata", None) or {}
     if not receipt_sources_current(metadata.get("claim_fidelity"), store):
+        return False
+    if not receipt_sources_current(metadata.get("moment_evidence"), store):
         return False
     if not receipt_sources_current(metadata.get("observation"), store):
         return False

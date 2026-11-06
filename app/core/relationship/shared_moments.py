@@ -75,6 +75,7 @@ class SharedMomentRow:
     confidence: float
     source_message_ids: list[int]
     last_anniversaried_at: str | None
+    when_basis: str = "legacy_unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +84,7 @@ class SharedMomentRow:
             "vibe": self.vibe,
             "when": self.when,
             "created_at": self.created_at,
+            "when_basis": self.when_basis,
             "salience": float(self.salience),
             "pinned": bool(self.pinned),
             "source": self.source,
@@ -110,6 +112,7 @@ def _row_from_memory(mem: "Memory") -> SharedMomentRow:
         confidence=float(meta.get("confidence", 0.6)),
         source_message_ids=[int(i) for i in source_ids if isinstance(i, (int, float))],
         last_anniversaried_at=meta.get("last_anniversaried_at"),
+        when_basis=str(meta.get("when_basis") or "legacy_unknown"),
     )
 
 
@@ -162,6 +165,7 @@ class SharedMomentsStore:
         source_session: str | None = None,
         source_message_id: int | None = None,
         source_scope: str | None = None,
+        moment_evidence: dict | None = None,
         salience: float | None = None,
         pinned: bool | None = None,
     ) -> SharedMomentRow | None:
@@ -218,6 +222,16 @@ class SharedMomentsStore:
         if source_scope:
             meta["source_scope"] = source_scope
         meta["when_basis"] = "provided" if known_event_time else "recording_time_only"
+        if moment_evidence is not None:
+            from app.core.memory.observation_receipts import receipt_sources_current
+
+            if not receipt_sources_current(moment_evidence, self._memory_store):
+                return None
+            meta["moment_evidence"] = moment_evidence
+            meta["when_basis"] = moment_evidence["when_basis"]
+            if moment_evidence.get("event_scope") == "shared_virtual":
+                meta["memory_origin"] = {"version": 1, "subject": "relationship",
+                    "mode": "virtual_event", "writer": "moment_detector", "domain": "virtual"}
 
         mem = self._memory_store.add(
             content=content,
@@ -265,6 +279,7 @@ class SharedMomentsStore:
             confidence=candidate.confidence,
             source_message_ids=candidate.source_message_ids,
             source_scope=candidate.source_scope,
+            moment_evidence=candidate.evidence if candidate.source == "llm" else None,
             source_session=source_session,
             source_message_id=source_message_id,
         )
@@ -302,6 +317,11 @@ class SharedMomentsStore:
                 pass
         meta["what"] = new_summary
         meta["vibe"] = new_vibe
+        if summary is not None or when is not None:
+            previous_receipt = meta.pop("moment_evidence", None)
+            if previous_receipt is not None:
+                meta["prior_moment_evidence"] = previous_receipt
+                meta["source_scope"] = "manual_revision"
         new_content = _format_content(new_summary, new_vibe)
         embedding = None
         if summary is not None and self._embedder is not None:

@@ -6,9 +6,21 @@ cadence/cooldown/signal gates without making a real LLM call.
 from __future__ import annotations
 
 import unittest
+import json
 from unittest.mock import MagicMock
 
 from app.core.relationship.shared_moment_extractor import MomentDetector
+
+
+def _history():
+    return [{"id": 1, "role": "user", "content": "That cookie jar joke made me laugh!"},
+            {"id": 2, "role": "assistant", "content": "The cookie jar was funny."}]
+
+
+def _payload():
+    return json.dumps({"moment": {"summary": "we laughed about the cookie jar", "vibe": "playful",
+        "event_scope": "exchange", "claims": [{"text": "We laughed about the cookie jar.",
+            "evidence": [{"message_id": 1, "quote": "That cookie jar joke made me laugh!"}]}]}})
 
 
 def _make(min_turn_gap: int = 2, cooldown: float = 0.0) -> tuple[MomentDetector, MagicMock]:
@@ -67,13 +79,11 @@ class TestGating(unittest.TestCase):
 
     def test_cooldown_blocks_back_to_back_runs(self) -> None:
         det, ollama = _make(min_turn_gap=1, cooldown=120.0)
-        ollama.chat.return_value = (
-            '{"moment": {"summary": "we laughed about cookies", "vibe": "playful"}}'
-        )
+        ollama.chat.return_value = _payload()
         det.notify_user_turn()
         det.notify_user_turn()
         result1 = det.maybe_run_llm(
-            history_provider=lambda: [("user", "ahah okay"), ("assistant", "ha")],
+            history_provider=_history,
             now_monotonic=10.0,
             reaction_signal=True,
             milestone_signal=False,
@@ -106,13 +116,11 @@ class TestGating(unittest.TestCase):
 
     def test_maybe_run_llm_persists_on_success(self) -> None:
         det, ollama = _make(min_turn_gap=1)
-        ollama.chat.return_value = (
-            '{"moment": {"summary": "we laughed about the cookie jar", "vibe": "playful"}}'
-        )
+        ollama.chat.return_value = _payload()
         det.notify_user_turn()
         det.notify_user_turn()
         result = det.maybe_run_llm(
-            history_provider=lambda: [("user", "hahaha"), ("assistant", "okay okay")],
+            history_provider=_history,
             now_monotonic=0.0,
             reaction_signal=True,
             milestone_signal=False,

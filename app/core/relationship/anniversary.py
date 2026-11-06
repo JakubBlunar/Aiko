@@ -101,6 +101,8 @@ def pick_anniversary(
     candidates_by_window: dict[int, list["SharedMomentRow"]] = {}
     last_stamp_cutoff = now - timedelta(seconds=rate_limit_seconds)
     for moment in moments:
+        if getattr(moment, "when_basis", "") in {"unknown_occurrence", "recording_time_only"}:
+            continue
         if limit_family and rate_limit_seconds > 0:
             stamped = _parse_iso(moment.last_anniversaried_at)
             if stamped is not None and stamped >= last_stamp_cutoff:
