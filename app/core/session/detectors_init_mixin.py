@@ -162,7 +162,9 @@ class DetectorsInitMixin:
         # force_next`` is the MCP debug bypass.
         self._pending_away_activities_seconds: float | None = None
         self._gap_cue_surfaced: bool = False
-        self._away_activity_worker: Any = None
+        # Idle workers are already registered before detector initialization.
+        # Preserve their handles; resetting these slots hides live workers.
+        self._away_activity_worker: Any = getattr(self, "_away_activity_worker", None)
         # H21 — "I dozed off while you were away". ``_pending_sleep_
         # return_seconds`` is armed by the post-turn tracker on a typed
         # gap >= ``memory.sleep_return_min_gap_hours`` (default 5h). The
@@ -179,16 +181,16 @@ class DetectorsInitMixin:
         # H19 — the hobby worker (ongoing personal project). ``None`` until
         # registered in ``idle_workers_init_mixin``. MCP ``get_hobby_state``
         # / ``force_hobby_advance`` / ``force_hobby_rotate`` read it.
-        self._hobby_worker: Any = None
+        self._hobby_worker: Any = getattr(self, "_hobby_worker", None)
         # H20 — the room-evolution worker (depleting + accruing item state).
         # ``None`` until registered. MCP ``get_room_evolution_state`` /
         # ``force_room_evolution`` read it.
-        self._room_evolution_worker: Any = None
+        self._room_evolution_worker: Any = getattr(self, "_room_evolution_worker", None)
         # H9 — the away-diary worker. ``None`` until registered in
         # ``idle_workers_init_mixin`` (skipped when there's no memory
         # store / embedder). The MCP ``get_diary_worker_state`` /
         # ``force_diary_entry`` tools read it.
-        self._diary_worker: Any = None
+        self._diary_worker: Any = getattr(self, "_diary_worker", None)
         # K34 — "forward curiosity". ``_pending_forward_curiosity_
         # seconds`` is armed by the post-turn tracker on a typed gap >=
         # ``memory.forward_curiosity_min_gap_hours`` (default 4h). The
@@ -197,29 +199,29 @@ class DetectorsInitMixin:
         # the shared ``_gap_cue_surfaced`` flag. ``_forward_curiosity_
         # force_next`` is the MCP debug bypass.
         self._pending_forward_curiosity_seconds: float | None = None
-        self._forward_curiosity_worker: Any = None
+        self._forward_curiosity_worker: Any = getattr(self, "_forward_curiosity_worker", None)
         # L30b — "test a hunch by asking". Same typed-gap slot shape as
         # K34, but it only arms the provider's *fallback* path: the topic
         # path fires mid-conversation with no gap at all. The worker (set
         # in idle_workers_init) keeps the shelf stocked.
         self._pending_concept_hypothesis_seconds: float | None = None
-        self._concept_hypothesis_worker: Any = None
+        self._concept_hypothesis_worker: Any = getattr(self, "_concept_hypothesis_worker", None)
         # K70 growth-witness — watermark-gated cue-producer. The worker
         # (set in idle_workers_init) drafts a rare "you've grown" finding.
-        self._growth_witness_worker: Any = None
+        self._growth_witness_worker: Any = getattr(self, "_growth_witness_worker", None)
         # L14 aspiration-momentum — watermark-gated cue-producer. The worker
         # (set in speaking_workers_init) drafts an occasional "check in on
         # where they're heading" cue.
-        self._aspiration_momentum_worker: Any = None
+        self._aspiration_momentum_worker: Any = getattr(self, "_aspiration_momentum_worker", None)
         # K72 wellbeing-concern producer + MCP surfacing bypass.
-        self._wellbeing_concern_worker: Any = None
+        self._wellbeing_concern_worker: Any = getattr(self, "_wellbeing_concern_worker", None)
         # K73 shared-ritual producer + MCP surfacing bypass.
-        self._shared_ritual_worker: Any = None
+        self._shared_ritual_worker: Any = getattr(self, "_shared_ritual_worker", None)
         # K75 user-expertise depth steer: provider cooldown + MCP bypass.
         self._user_expertise_cooldown: int = 0
         self._user_expertise_last: Any = None
         # K71 self-callback — watermark-gated cue-producer (her continuity).
-        self._self_callback_worker: Any = None
+        self._self_callback_worker: Any = getattr(self, "_self_callback_worker", None)
         # K30 — self-noticing cues (agreement-streak / flat-affect /
         # repeated-thought). Three sub-detectors fan into one
         # ``self_noticing`` inner-life block. Agreement-streak is
