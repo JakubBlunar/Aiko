@@ -3213,6 +3213,7 @@ class SpeakingWorkersInitMixin:
                         _gmem = self._memory_settings
                         self._garden_visit_worker = GardenVisitWorker(
                             self._world_store,
+                            idle_seconds_provider=self._idle_depth_seconds,
                             notify=self._notify_world,
                             kv_get=self._chat_db.kv_get,
                             kv_set=self._chat_db.kv_set,

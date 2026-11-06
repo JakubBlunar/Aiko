@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
-from app.core.world import beat_detail, beat_episode, day_intention
+from app.core.world import beat_detail, beat_episode, day_intention, in_progress_beat
 from app.core.world.idle_activity_worker import (
     append_journal,
 )
@@ -72,10 +72,10 @@ _VISIT_DURATION_MINUTES = 6.0
 # Each is a (posture, activity, summary) used when the visit flavour is
 # "relax" instead of "tend".
 _RELAX_BEATS: tuple[tuple[str, str, str], ...] = (
-    ("sitting", "relaxing", "sat out on the pavers with some tea and just enjoyed the air"),
-    ("curled_up", "reading", "read outside for a while, soaking up the sun"),
-    ("leaning", "looking_outside", "stood out among the plants for a bit, watching the clouds"),
-    ("sitting", "relaxing", "took my tea out to the garden and let my thoughts wander"),
+    ("sitting", "relaxing", "sat among the garden plants and enjoyed a quiet break"),
+    ("standing", "stretching", "went out to the garden to stretch for a while"),
+    ("leaning", "looking_outside", "spent a little time looking around the garden"),
+    ("sitting", "thinking", "sat in the garden and let my thoughts wander"),
 )
 
 # Slug of the location she returns to after the visit. Falls back to
@@ -94,8 +94,8 @@ _RETURN_SPOTS: dict[str, tuple[str, str]] = {
     "desk": ("sitting", "idle"),
     "beanbag": ("curled_up", "idle"),
     "window_seat": ("leaning", "looking_outside"),
-    "bookshelf": ("curled_up", "reading"),
-    "bed": ("lying", "napping"),
+    "bookshelf": ("curled_up", "idle"),
+    "bed": ("lying", "idle"),
 }
 
 # Periods where curling up for a nap on the bed reads as natural.
@@ -150,6 +150,7 @@ class GardenVisitWorker:
         circadian_period_provider: Callable[[], str] | None = None,
         intentional_hold_seconds: float = 0.0,
         mutation_guard: "WorldMutationGuard | None" = None,
+        idle_seconds_provider: Callable[[], float] | None = None,
         enabled_provider: Callable[[], bool] | None = None,
         # H15 — needs-driven + varied + journalled.
         need_dry_days: float = 2.0,
@@ -165,6 +166,7 @@ class GardenVisitWorker:
         self._interval_seconds = float(interval_seconds)
         self._intentional_hold_seconds = max(0.0, float(intentional_hold_seconds))
         self._mutation_guard = mutation_guard
+        self._idle_seconds_provider = idle_seconds_provider
         # Per-instance bookkeeping — return_at + next_eligible are
         # stored here when no kv_get/kv_set are supplied so tests can
         # exercise the two-phase logic without a real ChatDatabase.
@@ -205,7 +207,7 @@ class GardenVisitWorker:
         # probe wearing a readiness predicate's name.
         if not self._enabled():
             return False
-        garden = self._store.get_location("garden")
+        garden = self._garden_target()
         if garden is None:
             return False
         try:
@@ -223,6 +225,8 @@ class GardenVisitWorker:
         # Phase 1 — outside the garden: don't start a visit right after a
         # deliberate placement, then respect daylight + cooldown.
         if self._mutation_block_reason(now):
+            return False
+        if self._activity_outstanding(now):
             return False
         if not self._is_daylight(now):
             return False
@@ -260,7 +264,7 @@ class GardenVisitWorker:
         if mutation_block:
             return WorkSignal(pressure=0.0, reason=mutation_block)
         try:
-            garden = self._store.get_location("garden")
+            garden = self._garden_target()
             if garden is not None:
                 state = self._store.get_state()
                 if state.location_id == garden.id:
@@ -289,7 +293,7 @@ class GardenVisitWorker:
         been touched since the last sweep still counts. Best-effort: any
         failure returns ``False`` (fall back to the timer).
         """
-        garden = self._store.get_location("garden")
+        garden = self._garden_target()
         if garden is None:
             return False
         try:
@@ -327,7 +331,7 @@ class GardenVisitWorker:
         self._force_next = False
         if not self._enabled():
             return {"skipped": True, "reason": "disabled"}
-        garden = self._store.get_location("garden")
+        garden = self._garden_target()
         if garden is None:
             return {"skipped": True, "reason": "no_garden"}
         try:
@@ -356,7 +360,36 @@ class GardenVisitWorker:
             return {"skipped": True, "reason": mutation_block}
         if in_garden:
             return self._return_home(now=now)
+        if self._activity_outstanding(now):
+            return {"skipped": True, "reason": "activity_in_progress"}
         return self._visit_garden(garden=garden, now=now, forced=forced)
+
+    def _garden_target(self) -> Any | None:
+        """A long absence leaves her free to visit her own home garden.
+
+        Only the known home scene is eligible, never arbitrary authored
+        places. A deliberate placement and shared conversation still veto
+        the trip through WorldMutationGuard.
+        """
+        garden = self._store.get_location("garden")
+        if garden is not None:
+            return garden
+        if self._idle_seconds_provider is None:
+            return None
+        try:
+            if float(self._idle_seconds_provider()) < 2 * 3600:
+                return None
+            home = self._store.home_scene()
+            return self._store.get_location("garden", scene_id=home.id) if home else None
+        except Exception:
+            log.debug("garden home visit unavailable", exc_info=True)
+            return None
+
+    def _activity_outstanding(self, now: datetime) -> bool:
+        if self._kv_get is None:
+            return False
+        beat = in_progress_beat.load(self._kv_get)
+        return beat is not None and beat.is_open_at(now)
 
     # ── phase 1 — visit ─────────────────────────────────────────────
 
