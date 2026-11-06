@@ -238,6 +238,13 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"what(?:'s| is) on (?:my|the) (?:screen|desktop)",
     ]),
     "recall": _compile([
+        r"why (?:do|did) you (?:think|believe|say|feel) (?:that|this|so)\b",
+        r"what (?:have you|do you) (?:figured out|learned|understood|think|believe) "
+        r"about (?:me|us|yourself)\b",
+        r"how (?:has|have) (?:your (?:picture|understanding|view)(?: of (?:me|us))?"
+        r"|our relationship|we) changed\b",
+        r"your (?:tentative |current )?(?:interpretation|impression)\b",
+        r"relationship history", r"evolution diary",
         r"diar(?:y|ies)", r"journal", r"research notes?", r"curiosity findings?",
         r"remember", r"recall", r"memor(?:y|ies)", r"forg[eo]t(?:ten)?",
         r"did i (?:tell|mention|say)", r"have i (?:told|mentioned|said)",
@@ -283,6 +290,11 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
     # ``calculator`` plugin — it now supplies its family patterns at
     # runtime via ``TurnRunner.set_plugin_tool_gate`` (extra_patterns).
     "tasks": _compile([
+        r"what (?:are you|have you been) (?:up to|working on)\b",
+        r"(?:can you|could you|would you|will you|please)\s+(?:please\s+)?"
+        r"(?:read|write|create|edit|move|save|open|delete|rename)\b[^\n]{0,120}"
+        r"\b(?:files?|folders?|documents?|[\w-]+\.(?:txt|md|json|csv|py|pdf|docx))\b",
+        r"(?:read|write|create|edit|save|open)\s+[\w-]+\.(?:txt|md|json|csv|py|pdf|docx)\b",
         r"tasks?", r"workflows?", r"cancel", r"status", r"running",
         r"done yet", r"finished?", r"check (?:my|your|the|on)",
         r"work on", r"start(?:ed)? (?:the|a|that)",

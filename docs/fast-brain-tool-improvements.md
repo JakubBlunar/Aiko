@@ -26,3 +26,13 @@ the wider evidence mode as capped rather than exhaustive.
 
 Focused first-slice checks: 176 tests passed; `npm run lint` passed. Ordinary model
 selection and wording still need post-restart use.
+
+## Natural-request reachability
+
+The gate recognises explicit grounding questions, relationship-change questions,
+background-work status and file-action requests advertised by the tool schemas.
+Tests check the selected schemas as well as whether the decision pass runs.
+Inline creative writing and ordinary statements still skip the added work routes;
+information-need recall retains its read-only subset with the router disabled.
+
+Focused routing/runner checks: 120 tests and 6 subtests passed; lint passed.
