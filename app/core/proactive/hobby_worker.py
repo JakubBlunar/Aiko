@@ -385,6 +385,10 @@ class HobbyWorker:
         if hobby_mod.is_milestone(advances=int(state["advances"]), every=every):
             self._note_milestone(now, state, seed)
 
+        from app.core.world.day_intention import satisfy_hobby
+
+        satisfy_hobby(self._chat_db.kv_get, self._chat_db.kv_set, now=now)
+
         log.info(
             "hobby advanced: key=%s progress=%d advances=%d milestone=%s",
             state.get("key"),

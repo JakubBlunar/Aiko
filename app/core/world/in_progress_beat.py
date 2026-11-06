@@ -16,12 +16,10 @@ catches her at it — "oh — hang on, let me put this down".
 Three states, one kv key (``away_activity.in_progress``):
 
 * **open** — started, not yet due to finish. A return now catches her.
-* **interrupted** — a return caught her and she set it down. The beat is
-  now an unfinished thread the worker can pick back up, which is what
-  makes it a thread rather than a one-liner.
-* **gone** — completed (either the window elapsed with nobody home, or
-  she resumed and finished it). The summary lands in the journal at that
-  point, so the existing K36 surfacing path is unchanged.
+* **interrupted** — a return caught her and she set it down. The worker
+  records the completed steps and pause; interruption never implies resumption.
+* **gone** — the window elapsed or the interrupted span was journalled.
+  Only steps actually executed earn progress; a timer adds no further work.
 
 The two-phase shape is borrowed from :class:`GardenVisitWorker`, which
 already parks a ``return_at`` watermark and pulls her back when it
@@ -32,7 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import random
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -78,10 +76,11 @@ class InProgressBeat:
     summary: str
     started_at: str
     expected_end_at: str
-    # Set when a return caught her at it; the beat becomes a thread to
-    # pick back up rather than something to report.
+    # Set when a return caught her at it; records a pause, not new work.
     interrupted_at: str = ""
     used_item_id: int | None = None
+    # Steps already completed while the wider activity is still ongoing.
+    effects: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def interrupted(self) -> bool:
@@ -147,6 +146,7 @@ def build(
     now: datetime,
     rng: random.Random | None = None,
     used_item_id: int | None = None,
+    effects: list[dict[str, Any]] | None = None,
 ) -> InProgressBeat:
     """Open a beat now, ending after a plausible span."""
     minutes = pick_duration_minutes(key, rng)
@@ -160,6 +160,7 @@ def build(
             now + timedelta(minutes=minutes)
         ).isoformat(timespec="seconds"),
         used_item_id=int(used_item_id) if used_item_id is not None else None,
+        effects=list(effects or []),
     )
 
 
@@ -186,6 +187,7 @@ def load(kv_get: Callable[[str], str | None]) -> InProgressBeat | None:
             started_at=str(blob.get("started_at") or ""),
             expected_end_at=str(blob.get("expected_end_at") or ""),
             interrupted_at=str(blob.get("interrupted_at") or ""),
+            effects=[e for e in (blob.get("effects") or []) if isinstance(e, dict)],
             used_item_id=(
                 int(blob["used_item_id"])
                 if blob.get("used_item_id") is not None
@@ -197,12 +199,14 @@ def load(kv_get: Callable[[str], str | None]) -> InProgressBeat | None:
         return None
 
 
-def save(kv_set: Callable[[str, str], None], beat: InProgressBeat) -> None:
+def save(kv_set: Callable[[str, str], None], beat: InProgressBeat) -> bool:
     """Persist the open beat."""
     try:
         kv_set(IN_PROGRESS_KEY, json.dumps(asdict(beat)))
+        return True
     except Exception:
         log.debug("in-progress beat write failed", exc_info=True)
+        return False
 
 
 def clear(kv_set: Callable[[str, str], None]) -> None:

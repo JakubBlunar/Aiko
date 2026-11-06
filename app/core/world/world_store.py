@@ -1483,6 +1483,7 @@ class WorldStore(WorldCarryMixin, WorldScenesMixin):
         location_id: int | None | object = ...,  # use sentinel so None is meaningful (carry)
         quantity: int | None = None,
         state: dict[str, Any] | None = None,
+        expected_updated_at: str | None = None,
     ) -> Item | None:
         with self._lock:
             item = self._items.get(int(item_id))
@@ -1510,11 +1511,11 @@ class WorldStore(WorldCarryMixin, WorldScenesMixin):
         new_state = dict(item.state or {}) if state is None else dict(state or {})
         now = _now_iso()
         conn = self._get_conn()
-        conn.execute(
+        cursor = conn.execute(
             "UPDATE world_items SET name = ?, description = ?, kind = ?, "
             "location_id = ?, home_location_id = ?, quantity = ?, "
             "state_json = ?, updated_at = ? "
-            "WHERE id = ?",
+            "WHERE id = ? AND (? IS NULL OR updated_at = ?)",
             (
                 new_name,
                 new_desc,
@@ -1525,9 +1526,13 @@ class WorldStore(WorldCarryMixin, WorldScenesMixin):
                 _encode_state(new_state),
                 now,
                 int(item_id),
+                expected_updated_at,
+                expected_updated_at,
             ),
         )
         conn.commit()
+        if cursor.rowcount != 1:
+            return None
         with self._lock:
             item.name = new_name
             item.description = new_desc

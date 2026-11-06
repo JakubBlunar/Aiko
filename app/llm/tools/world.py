@@ -69,6 +69,16 @@ def _format_item(item: "Item") -> dict[str, Any]:
         payload["consumable"] = True
     if item.state:
         payload["state"] = dict(item.state)
+        from app.core.world.idle_creations import revisions
+
+        saved = revisions(item)
+        if saved:
+            payload["state"].pop("revisions", None)
+            payload["state"]["revision_count"] = len(saved)
+            payload["creation_hint"] = (
+                "Aiko's original creative writing. inspect_item returns a saved revision; "
+                "fictional events are not autobiographical facts."
+            )
         if item.kind == "book" and "chapters" in item.state:
             chapters = payload["state"].pop("chapters")
             if isinstance(chapters, list):
@@ -432,6 +442,9 @@ class InspectItemTool:
                 "first if unread). Use next_offset to continue a long passage. This is "
                 "read-only: inspection does not advance saved reading progress. Treat "
                 "fiction as fiction and ground discussion in the returned text."
+                " For your saved original writings, omit revision for the latest, or pass "
+                "an exact revision number to revisit older text. Returns up to 1000 "
+                "characters, with next_offset for more. These are creative works."
             ),
             parameters={
                 "type": "object",
@@ -450,7 +463,13 @@ class InspectItemTool:
                     },
                     "offset": {
                         "type": "integer", "minimum": 0,
-                        "description": "Books only: character offset within that passage.",
+                        "description": "Character offset within a book passage or saved creation.",
+                    },
+                    "revision": {
+                        "type": "integer", "minimum": 1,
+                        "description": (
+                            "Saved original writings only: exact revision; latest if omitted."
+                        ),
                     },
                 },
                 "required": ["item"],
@@ -474,6 +493,20 @@ class InspectItemTool:
         )
         out = _format_item(item)
         out["location"] = loc.name if loc is not None else "carried"
+        from app.core.world.idle_creations import inspect_revision, revisions
+
+        if revisions(item):
+            if "passage" in arguments:
+                raise ToolError("inspect_item: writings use revision, not book passage.")
+            try:
+                out["creation"] = inspect_revision(
+                    item, arguments.get("revision"), arguments.get("offset", 0),
+                )
+            except ValueError as exc:
+                raise ToolError(f"inspect_item: {exc}") from exc
+            return json.dumps(out, ensure_ascii=False)
+        if "revision" in arguments:
+            raise ToolError("inspect_item: this item is not a saved original writing.")
         chapters = (item.state or {}).get("chapters")
         has_text = item.kind == "book" and isinstance(chapters, list) and bool(chapters)
         if not has_text and ("passage" in arguments or "offset" in arguments):

@@ -13,6 +13,7 @@ with nothing to have done.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 
@@ -39,7 +40,7 @@ class ActivityCandidatesMixin:
         self, user_name: str, now: datetime,
     ) -> RoomSnapshot:
         try:
-            items = self._world_store.list_items()
+            items = deepcopy(self._world_store.list_items())
         except Exception:
             items = []
         try:
@@ -93,23 +94,27 @@ class ActivityCandidatesMixin:
             )
 
         # Desk — tidy / tinker: put stray pocketables back where they live.
-        if loc_desk is not None:
+        if loc_desk is not None and any(
+            getattr(item, "location_id", None) == loc_desk.id
+            and getattr(item, "home_location_id", None) not in (None, loc_desk.id)
+            for item in items
+        ):
             candidates["tidy_desk"] = ActivityPlan(
                 key="tidy_desk",
                 posture="sitting",
                 activity="tinkering",
-                summary="tidied up my desk and put a few things back where they belong",
+                summary="put a few things back where they belong from the desk",
                 aiko_location_id=loc_desk.id,
                 restore_strays_at_location_id=loc_desk.id,
             )
 
-        # Nap — only when there's a bed to do it in.
+        # Awake rest only. SleepLifecycleWorker owns actual sleep transitions.
         if loc_bed is not None:
             candidates["nap"] = ActivityPlan(
                 key="nap",
                 posture="lying",
-                activity="napping",
-                summary="curled up for a little nap to recharge",
+                activity="idle",
+                summary="curled up on the bed for a quiet rest",
                 aiko_location_id=loc_bed.id,
             )
 
@@ -140,14 +145,15 @@ class ActivityCandidatesMixin:
             )
 
         # Fallback — let her thoughts wander. Always available.
+        candidates["stretching"] = ActivityPlan(
+            key="stretching", posture="standing", activity="stretching",
+            summary="took a quiet break to stretch and loosen up",
+        )
         candidates["wander"] = ActivityPlan(
             key="wander",
             posture="curled_up",
             activity="thinking",
-            summary=(
-                "mostly let my thoughts wander — kept thinking about "
-                + user_name
-            ),
+            summary="let my thoughts wander without trying to turn them into a task",
             aiko_location_id=(
                 loc_window.id if loc_window
                 else (loc_beanbag.id if loc_beanbag else None)
@@ -156,6 +162,7 @@ class ActivityCandidatesMixin:
 
         return RoomSnapshot(
             items=items, locations=locations, candidates=candidates,
+            scene_id=scene_id,
         )
 
     # ── individual inventory-backed beats ────────────────────────────

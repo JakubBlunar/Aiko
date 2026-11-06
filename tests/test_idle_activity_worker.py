@@ -539,11 +539,10 @@ class InProgressBeatTests(unittest.TestCase):
         worker.run()
         self.assertEqual(book.location_id, 2)
 
-    def test_an_interrupted_beat_is_resumed_and_reads_as_a_thread(
+    def test_an_interrupted_beat_records_a_pause_without_inventing_resumption(
         self,
     ) -> None:
-        # The half that makes this more than a different opening line:
-        # she gets to go back to it, so the afternoon has continuity.
+        # A return records a pause; it is not evidence of further work.
         kv = _FakeKV()
         worker = _make_worker(
             world=_FakeWorldStore(), kv=kv, cooldown=0.0, in_progress_ratio=1.0,
@@ -559,11 +558,12 @@ class InProgressBeatTests(unittest.TestCase):
 
         result = worker.run()
 
-        self.assertTrue(result["resumed"])
+        self.assertFalse(result["resumed"])
+        self.assertTrue(result["interrupted"])
         journal = load_journal(kv.get)
         self.assertEqual(len(journal), 1)
-        self.assertTrue(journal[0]["resumed"])
-        self.assertIn("went back to", journal[0]["summary"])
+        self.assertTrue(journal[0]["interrupted"])
+        self.assertIn("before putting it aside", journal[0]["summary"])
 
     def test_the_debug_force_opens_a_beat_even_at_ratio_zero(self) -> None:
         # Catching this state by hand is otherwise mostly waiting: a
@@ -1224,7 +1224,7 @@ class DayIntentionTests(unittest.TestCase):
     def test_satisfying_the_intention_says_so_once(self) -> None:
         kv = _FakeKV()
         worker = _make_worker(
-            world=self._book_world(),
+            world=self._book_world(progress=15),
             kv=kv,
             cooldown=0.0,
             day_intention=True,

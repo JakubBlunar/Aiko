@@ -38,10 +38,10 @@ _NEARLY_DONE_CHAPTERS = 4
 
 # Ways to admit she'd been meaning to do the thing.
 _CLOSING_FRAGMENTS: tuple[str, ...] = (
-    "I'd been meaning to get to that all day",
-    "which is what I'd promised myself this morning",
-    "the one thing I actually meant to do today",
-    "I'd had it in the back of my mind since morning",
+    "something I'd been meaning to get to",
+    "which was the little intention I'd set myself",
+    "one thing I'd wanted to make time for",
+    "I'd had it in the back of my mind",
 )
 
 # Small self-directed fallbacks for a day with no pressing need, so the
@@ -49,7 +49,7 @@ _CLOSING_FRAGMENTS: tuple[str, ...] = (
 _FALLBACK_INTENTIONS: tuple[tuple[str, str], ...] = (
     ("sort out my desk properly", "tidy_desk"),
     ("sit and watch the street for a while", "look_outside"),
-    ("draw something properly instead of scribbling", "doodle"),
+    ("think through an idea for a drawing", "doodle"),
     ("spend a while just thinking", "wander"),
 )
 
@@ -117,6 +117,7 @@ def propose(
     now: datetime,
     hobby: str | None = None,
     rng: random.Random,
+    available_keys: set[str] | None = None,
 ) -> DayIntention:
     """Pick today's intention from what her world is actually asking for.
 
@@ -130,10 +131,13 @@ def propose(
     if hobby:
         return DayIntention(
             day=local_day(now),
-            text="put a proper hour into " + hobby,
-            beat_key="tidy_desk",
+            text="explore a question about " + hobby,
+            # Research progress belongs to the hobby worker, not tidying.
+            beat_key="hobby",
         )
-    text, key = rng.choice(_FALLBACK_INTENTIONS)
+    fallbacks = [pair for pair in _FALLBACK_INTENTIONS
+                 if available_keys is None or pair[1] in available_keys]
+    text, key = rng.choice(fallbacks or [("spend a while just thinking", "wander")])
     return DayIntention(day=local_day(now), text=text, beat_key=key)
 
 
@@ -183,12 +187,27 @@ def closing_fragment(rng: random.Random) -> str:
     return rng.choice(_CLOSING_FRAGMENTS)
 
 
+def closing_fragments() -> tuple[str, ...]:
+    """Recognize an already annotated journal retry without repeating its prose."""
+    return _CLOSING_FRAGMENTS
+
+
 def close_out(summary: str, rng: random.Random) -> str:
     """Append the "meant to do that" admission to a beat's clause."""
     base = (summary or "").strip().rstrip(".")
     if not base:
         return base
     return base + " — " + closing_fragment(rng)
+
+
+def satisfy_hobby(kv_get: Any, kv_set: Any, *, now: datetime) -> bool:
+    """Called only after the hobby worker saves a new evidence-backed finding."""
+    current = load(kv_get(DAY_INTENTION_KEY))
+    if (current is None or current.satisfied or current.beat_key != "hobby"
+            or current.day != local_day(now)):
+        return False
+    kv_set(DAY_INTENTION_KEY, dump(current.satisfy()))
+    return True
 
 
 __all__ = [

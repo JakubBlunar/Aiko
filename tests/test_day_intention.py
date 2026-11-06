@@ -85,8 +85,10 @@ class ProposeTests(unittest.TestCase):
             rng=random.Random(0),
         )
         self.assertEqual(
-            intention.text, "put a proper hour into mapping the constellations"
+            intention.text, "explore a question about mapping the constellations"
         )
+
+        self.assertEqual(intention.beat_key, "hobby")
 
     def test_an_empty_room_still_gets_an_intention(self) -> None:
         intention = day_intention.propose([], now=NOW, rng=random.Random(0))

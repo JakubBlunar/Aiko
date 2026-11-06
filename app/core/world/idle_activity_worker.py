@@ -60,12 +60,12 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal
 from app.core.world import (
-    beat_detail,
     beat_episode,
     day_intention,
     in_progress_beat,
 )
 from app.core.world.activity_selection import weighted_pick
+from app.core.world.idle_activity_composition_mixin import ActivityCompositionMixin
 from app.core.world.idle_activity_candidates_mixin import (
     ActivityCandidatesMixin,
 )
@@ -220,7 +220,7 @@ def append_idle_seed(
     return True
 
 
-class IdleAwayActivityWorker(ActivityCandidatesMixin):
+class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
     """IdleWorker that gives Aiko a quiet, room-grounded inner life."""
 
     name = "away_activity"
@@ -391,7 +391,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         snapshot = self._build_candidates(user_name, now)
         # K91 — establish today's intention before anything is chosen, so a
         # forced or LLM-composed beat is measured against it too.
-        intention = self._today_intention(snapshot.items, now)
+        intention = self._today_intention(snapshot.items, now, set(snapshot.candidates))
         plan = self._choose_plan(user_name, now, snapshot, intention)
         if plan is None:
             return {"fired": 0, "no_plan": True}
@@ -399,6 +399,13 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         # K91 — a long quiet stretch plays out as a short sequence rather
         # than a single disconnected postcard.
         chain = self._plan_episode(plan, snapshot, now)
+        # Model choice can take seconds. A returning user, a deliberate move
+        # or an edited item invalidates that choice before any effects run.
+        mutation_block = self._mutation_block_reason(_utcnow())
+        if mutation_block:
+            return {"fired": 0, f"skipped_{mutation_block}": True}
+        if not self._snapshot_is_current(snapshot, chain):
+            return {"fired": 0, "reason": "world_changed"}
         effects: list[dict[str, Any]] = []
         for beat in chain:
             # H22 — stamp the outing's own cooldown when chosen.
@@ -406,7 +413,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 self._mark_outing_fired(now)
             try:
                 beat_effect = self._apply_world_mutation(beat)
-                if beat.item_effect is not None and beat_effect is None:
+                if (beat.item_effect is not None or beat.creation is not None) and not beat_effect:
                     raise RuntimeError("the planned item action did not complete")
             except Exception:
                 self._restore_moved_items(chain, keep_id=None)
@@ -416,9 +423,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 effects.append(beat_effect)
 
         summary = self._episode_summary(user_name, chain)
-        summary, closed_intention = self._maybe_close_intention(
-            intention, chain, summary, now,
-        )
+        closed_intention = False
 
         # H26 — sometimes leave the last beat running. Nothing is
         # journalled yet: there is no "while you were away I…" to tell
@@ -440,27 +445,45 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
                 now=now,
                 rng=self._rng,
                 used_item_id=last_held,
+                effects=effects,
             )
-            in_progress_beat.save(self._kv_set, open_beat)
-            self._mark_fired(now)
-            log.info(
-                "away_activity started (in progress): key=%s until=%s",
-                open_beat.key, open_beat.expected_end_at,
-            )
-            result_open: dict[str, Any] = {
-                "fired": 1,
-                "key": chain[0].key,
-                "activity": chain[-1].activity,
-                "summary": summary,
-                "in_progress": True,
-                "expected_end_at": open_beat.expected_end_at,
-            }
-            if effects:
-                result_open["item_effect"] = (
-                    effects[0] if len(effects) == 1 else effects
-                )
-            return result_open
+            if not in_progress_beat.save(self._kv_set, open_beat):
+                # The step already happened. Fall through to its journal,
+                # rather than losing it or performing it again next tick.
+                self._restore_moved_items(chain, keep_id=None)
+            else:
+                return self._started_beat_result(open_beat, chain, effects, now)
 
+        summary, closed_intention = self._maybe_close_intention(
+            intention, chain, summary, now, effects=effects,
+        )
+        return self._journal_completed_chain(
+            now, user_name, chain, summary, effects, closed_intention,
+        )
+
+    def _started_beat_result(self, open_beat, chain, effects, now) -> dict[str, Any]:
+        self._mark_fired(now)
+        log.info(
+            "away_activity started (in progress): key=%s until=%s",
+            open_beat.key, open_beat.expected_end_at,
+        )
+        result_open: dict[str, Any] = {
+            "fired": 1,
+            "key": chain[0].key,
+            "activity": chain[-1].activity,
+            "summary": open_beat.summary,
+            "in_progress": True,
+            "expected_end_at": open_beat.expected_end_at,
+        }
+        if effects:
+            result_open["item_effect"] = (
+                effects[0] if len(effects) == 1 else effects
+            )
+        return result_open
+
+    def _journal_completed_chain(
+        self, now, user_name, chain, summary, effects, closed_intention,
+    ) -> dict[str, Any]:
         entry: dict[str, Any] = {
             "at": now.isoformat(timespec="seconds"),
             "activity": chain[-1].activity,
@@ -473,7 +496,17 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
         )
         if not journalled:
+            # The step has already changed the world. Retain its receipt for
+            # journal recovery instead of repeating that action next tick.
+            pending = in_progress_beat.build(
+                key=chain[0].key, activity=chain[-1].activity, posture=chain[-1].posture,
+                summary=summary, now=now, effects=effects, rng=self._rng,
+            )
+            pending.expected_end_at = now.isoformat()
+            in_progress_beat.save(self._kv_set, pending)
             return {"fired": 0, "errored": True, "reason": "journal_write_failed"}
+        if closed_intention:
+            self._commit_intention(now)
         noted = self._note_pursuit(
             now, chain, summary, effects, closed_intention,
         )
@@ -536,10 +569,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         * **elapsed unseen** — nobody came back during the window, so it
           simply finished. Journal it and the ordinary K36 return cue
           reports it, exactly as before H26.
-        * **interrupted** — a return caught her and she put it down. It
-          finishes here too, but the journal line says she got back to
-          it, which is what turns the interruption into a thread that
-          closes rather than a loose end.
+        * **interrupted** — preserve the steps she actually completed and
+          record the pause. A timer is not evidence of resuming work.
         """
         beat = in_progress_beat.load(self._kv_get)
         if beat is None:
@@ -554,18 +585,33 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
 
         summary = beat.summary
         if beat.interrupted:
-            summary = self._resumed_summary(beat)
+            summary = "before putting it aside, " + summary
+        chain = [ActivityPlan(key=beat.key, activity=beat.activity,
+                              posture=beat.posture, summary=beat.summary)]
+        intention = day_intention.load(self._kv_get_safe(day_intention.DAY_INTENTION_KEY))
+        # Completed steps may earn an intention even if the wider activity
+        # was paused. No new reading/research is inferred from elapsed time.
+        annotated, closed = self._maybe_close_intention(
+            intention, chain, summary, now, effects=beat.effects,
+        )
+        if not any(fragment in summary for fragment in day_intention.closing_fragments()):
+            summary = annotated
         entry: dict[str, Any] = {
             "at": now.isoformat(timespec="seconds"),
             "activity": beat.activity,
             "key": beat.key,
             "summary": summary,
+            "started_at": beat.started_at,
+            "interrupted": beat.interrupted,
         }
-        if beat.interrupted:
-            entry["resumed"] = True
-        append_journal(
+        if not append_journal(
             self._kv_get, self._kv_set, entry, max_entries=self._journal_max,
-        )
+        ):
+            return {"fired": 0, "errored": True, "reason": "journal_write_failed"}
+        if closed:
+            self._commit_intention(now)
+        completed_at = _parse_iso(beat.started_at) or now
+        self._note_pursuit(completed_at, chain, summary, beat.effects, closed)
         in_progress_beat.clear(self._kv_set)
         self._restore_used_item(getattr(beat, "used_item_id", None))
         log.info(
@@ -578,21 +624,9 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             "activity": beat.activity,
             "summary": summary,
             "completed_in_progress": True,
-            "resumed": beat.interrupted,
+            "resumed": False,
+            "interrupted": beat.interrupted,
         }
-
-    @staticmethod
-    def _resumed_summary(beat: "in_progress_beat.InProgressBeat") -> str:
-        """The journal line for a beat she came back to after a pause.
-
-        Kept as a light prefix rather than a rewrite: the original
-        summary is already in her voice (possibly LLM-composed), and
-        re-generating it would cost a call to say the same thing.
-        """
-        summary = (beat.summary or "").strip()
-        if not summary:
-            return f"got back to {beat.activity}".strip()
-        return f"went back to what you'd started and {summary}"
 
     def _episode_summary(
         self, user_name: str, chain: list[ActivityPlan],
@@ -780,7 +814,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             user_name,
             now,
             snapshot,
-            self._today_intention(snapshot.items, now),
+            self._today_intention(snapshot.items, now, set(snapshot.candidates)),
         )
 
     def _choose_plan(
@@ -915,6 +949,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
 
     def _today_intention(
         self, items: list[Any], now: datetime,
+        available_keys: set[str] | None = None,
     ) -> day_intention.DayIntention | None:
         """Today's intention, proposing one on the day's first beat.
 
@@ -933,6 +968,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         try:
             fresh = day_intention.propose(
                 items, now=now, hobby=self._read_hobby(), rng=self._rng,
+                available_keys=available_keys,
             )
         except Exception:
             log.debug("day_intention propose failed", exc_info=True)
@@ -960,6 +996,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         chain: list[ActivityPlan],
         summary: str,
         now: datetime,
+        *, effects: list[dict[str, Any]] | None = None,
     ) -> tuple[str, bool]:
         """Mark the intention done when a beat satisfied it, and say so.
 
@@ -973,12 +1010,20 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
             return summary, False
         if current.beat_key not in {b.key for b in chain}:
             return summary, False
-        self._kv_set_safe(
-            day_intention.DAY_INTENTION_KEY,
-            day_intention.dump(current.satisfy()),
-        )
-        log.info("day_intention satisfied: text=%s", current.text)
+        if current.beat_key == "read_book" and not any(
+            receipt.get("finished")
+            and current.text == "finish " + str(receipt["finished"])
+            for receipt in effects or []
+        ):
+            return summary, False
         return day_intention.close_out(summary, self._rng), True
+
+    def _commit_intention(self, now: datetime) -> None:
+        current = day_intention.load(self._kv_get_safe(day_intention.DAY_INTENTION_KEY))
+        if current is not None and current.day == day_intention.local_day(now):
+            self._kv_set_safe(
+                day_intention.DAY_INTENTION_KEY, day_intention.dump(current.satisfy()),
+            )
 
     def day_intention_debug_state(
         self, now: datetime | None = None,
@@ -1057,6 +1102,28 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
 
     # ── world mutation ───────────────────────────────────────────────
 
+    def _snapshot_is_current(self, snapshot: RoomSnapshot, chain: list[ActivityPlan]) -> bool:
+        scene = getattr(self._world_store, "current_scene_id", None)
+        if callable(scene) and scene() != snapshot.scene_id:
+            return False
+        referenced = {
+            iid for beat in chain for iid in (
+                beat.consume_item_id, beat.move_item_id,
+                beat.item_effect.item_id if beat.item_effect else None,
+                beat.creation.item_id if beat.creation else None,
+            ) if iid is not None
+        }
+        originals = {item.id: item for item in snapshot.items}
+        for iid in referenced:
+            old = originals.get(iid)
+            live = self._world_store.get_item(iid)
+            if old is None or live is None:
+                return False
+            for field in ("location_id", "updated_at", "state", "quantity"):
+                if getattr(old, field, None) != getattr(live, field, None):
+                    return False
+        return True
+
     def _apply_world_mutation(self, plan: ActivityPlan) -> dict[str, Any] | None:
         try:
             # H13 — relocate Aiko herself when the beat has a target spot,
@@ -1118,6 +1185,15 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
 
         if plan.item_effect is not None:
             return self._apply_item_effect(plan.item_effect)
+        if plan.creation is not None:
+            from app.core.world.idle_creations import save_draft
+
+            receipt = save_draft(self._world_store, plan.creation,
+                                 location_id=plan.aiko_location_id, now=_utcnow())
+            if receipt is not None:
+                item = self._world_store.get_item(receipt["item_id"])
+                self._broadcast({"item": item.to_dict()})
+            return receipt
         return None
 
     # ── K91: beats write their state back ────────────────────────────
@@ -1213,230 +1289,6 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin):
         return result
 
     # ── summary composition ──────────────────────────────────────────
-
-    def _compose_summary(
-        self, user_name: str, plan: ActivityPlan, *, sequence: bool = False,
-    ) -> str:
-        fallback = plan.summary
-        if self._ollama is None or not self._model:
-            return fallback
-        shape = (
-            "ONE short sentence that keeps the order of what happened"
-            if sequence
-            else "ONE short clause"
-        )
-        prompt = (
-            f"You are Aiko, alone in your room while {user_name} was away. "
-            f"You just spent some quiet time: {plan.summary}. Rewrite that as "
-            "the gist of what you'd casually mention you got up to — first "
-            f"person, past tense, {shape}, no greeting, no stage "
-            "directions, no emoji. Keep it small and natural."
-            " Preserve exactly what happened: do not add observations, findings, "
-            "physical outings or object use that is not in the supplied activity."
-        )
-        try:
-            content, _usage = self._ollama.chat_json(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            'Reply with JSON only: {"summary": "<short '
-                            'first-person clause>"}.'
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                model=self._model,
-                options={"temperature": 0.8, "num_predict": 80},
-                format_json=True,
-                surface="away_activity",
-            )
-        except Exception:
-            log.debug("away_activity LLM compose failed", exc_info=True)
-            return fallback
-        try:
-            blob = json.loads(content or "{}")
-            line = str(blob.get("summary") or "").strip()
-        except Exception:
-            line = ""
-        return line or fallback
-
-    def _compose_plan_llm(
-        self,
-        user_name: str,
-        locations: list[Any],
-        items: list[Any],
-        *,
-        intention: str = "",
-    ) -> ActivityPlan | None:
-        """H14 — ask the worker LLM to compose a whole grounded beat.
-
-        Returns ``None`` on any failure so the caller falls back to the
-        deterministic weighted draw. Grounds the model in the real room:
-        it must pick one of the actual location slugs, a posture from the
-        rig enum, a short free-text activity verb, and a first-person
-        summary clause.
-        """
-        from app.core.world.world_store import (
-            VALID_POSTURES,
-            normalize_activity,
-        )
-
-        if not locations:
-            return None
-        loc_by_slug = {
-            (getattr(loc, "slug", "") or "").lower(): loc for loc in locations
-        }
-        loc_lines = "; ".join(
-            f"{getattr(loc, 'slug', '')} ({getattr(loc, 'name', '')})"
-            for loc in locations
-        )
-        # K91 — the model sees each thing's live state, not just its name,
-        # so it can write a beat *about* the dry pot or the half-read book
-        # instead of inventing generic business around a noun.
-        item_names = beat_detail.describe_items_for_prompt(items, now=_utcnow())
-        recent = [
-            str(e.get("activity") or "")
-            for e in load_journal(self._kv_get)[-5:]
-            if e.get("activity")
-        ]
-        recent_line = ", ".join(recent) or "(none yet)"
-        period = self._read_period() or "unspecified"
-        intent_line = ""
-        if intention:
-            intent_line = (
-                "Today you meant to " + intention + " — lean that way if it "
-                "fits the hour. "
-            )
-        prompt = (
-            f"You are Aiko, alone in your cozy room while {user_name} is away. "
-            f"It's currently {period}. Your room's spots: {loc_lines}. "
-            f"Things around: {item_names}. "
-            f"{intent_line}"
-            f"Recently you did: {recent_line} — pick something different. "
-            "Choose one small, believable thing to do right now, grounded in "
-            "what's actually in the room — the states in brackets are real, "
-            "so prefer something they suggest. Reply with JSON only:\n"
-            '{"location_slug": "<one of the slugs above>", '
-            '"posture": "<sitting|lying|standing|curled_up|leaning>", '
-            '"activity": "<short verb phrase, e.g. repotting_the_basil>", '
-            '"summary": "<one first-person past-tense clause>", '
-            '"changed_item": "<exact name of the one thing you used up, '
-            'watered or read, or \\"\\" if none>"}'
-        )
-        try:
-            content, _usage = self._ollama.chat_json(
-                [
-                    {
-                        "role": "system",
-                        "content": "Reply with a single JSON object, nothing else.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                model=self._model,
-                options={"temperature": 0.9, "num_predict": 160},
-                format_json=True,
-                surface="away_activity_plan",
-            )
-        except Exception:
-            log.debug("away_activity plan compose failed", exc_info=True)
-            return None
-        try:
-            blob = json.loads(content or "{}")
-        except Exception:
-            return None
-        if not isinstance(blob, dict):
-            return None
-
-        activity = normalize_activity(blob.get("activity"))
-        summary = str(blob.get("summary") or "").strip()
-        if not activity or not summary:
-            return None
-        posture = str(blob.get("posture") or "").strip().lower()
-        if posture not in VALID_POSTURES:
-            posture = "sitting"
-        slug = str(blob.get("location_slug") or "").strip().lower()
-        loc = loc_by_slug.get(slug)
-        effect = self._resolve_named_effect(blob.get("changed_item"), items)
-        if str(blob.get("changed_item") or "").strip() and effect is None:
-            log.info("away activity rejected: unsupported item action")
-            return None
-        if loc is None:
-            log.info("away activity rejected: unknown location")
-            return None
-        # Free-text plans can otherwise invent arbitrary unsupported experiences.
-        if activity not in {"thinking", "idle", "napping"} and effect is None:
-            log.info("away activity rejected: no supported action for %s", activity)
-            return None
-        if effect is not None:
-            item = next(row for row in items if row.id == effect.item_id)
-            if effect.action == EFFECT_ADVANCE_BOOK:
-                from app.core.world.room_evolution import available_book_step
-
-                if available_book_step(item.state) is None:
-                    return None
-                activity, summary = "reading", beat_detail.read_book_summary(item)
-            elif effect.action == EFFECT_POUR_TEA:
-                tea_line = beat_detail.tea_summary(item)
-                if not tea_line:
-                    return None
-                activity, summary = "making_tea", tea_line
-            else:
-                activity, summary = "watering_plants", "watered " + item.name
-        else:
-            summary = {
-                "thinking": "let my thoughts wander for a while",
-                "idle": "rested quietly for a while",
-                "napping": "settled down for a little rest",
-            }[activity]
-        return ActivityPlan(
-            key="llm",
-            posture=posture,
-            activity=activity,
-            summary=summary,
-            aiko_location_id=(loc.id if loc is not None else None),
-            precomposed=True,
-            item_effect=effect,
-        )
-
-    def _resolve_named_effect(
-        self, raw_name: Any, items: list[Any],
-    ) -> ItemEffect | None:
-        """Turn the model's ``changed_item`` into a legal effect, or ``None``.
-
-        The action is *derived* from the matched row's kind rather than
-        taken from the model, so there is no way to ask for a transition
-        the item doesn't support. An unmatched or unsupported name is
-        rejected before the plan can be executed.
-        """
-        name = str(raw_name or "").strip().lower()
-        if not name:
-            return None
-        match = next(
-            (
-                i
-                for i in items
-                if (getattr(i, "name", "") or "").strip().lower() == name
-            ),
-            None,
-        )
-        if match is None:
-            return None
-        return self._effect_for_item(match)
-
-    @staticmethod
-    def _effect_for_item(item: Any) -> ItemEffect | None:
-        """The one transition an item supports, if any."""
-        kind = str(getattr(item, "kind", "") or "")
-        slug = str(getattr(item, "slug", "") or "")
-        lowered = (getattr(item, "name", "") or "").lower()
-        if kind == "plant":
-            return ItemEffect(item_id=int(item.id), action=EFFECT_WATER_PLANT)
-        if slug == "tea_pot" or "tea pot" in lowered:
-            return ItemEffect(item_id=int(item.id), action=EFFECT_POUR_TEA)
-        if kind == "book":
-            return ItemEffect(item_id=int(item.id), action=EFFECT_ADVANCE_BOOK)
-        return None
 
     # ── gates ────────────────────────────────────────────────────────
 

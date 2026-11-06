@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.world.idle_creations import CreationDraft
+
 
 # K91 — the effects a beat may have on the item it acted on. Deliberately
 # a closed set: the transition math is H20's (``room_evolution``) or the
@@ -74,6 +76,7 @@ class ActivityPlan:
     # K91 — the state this beat writes back, so what she says she did and
     # what her room shows stop drifting apart.
     item_effect: ItemEffect | None = None
+    creation: CreationDraft | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +86,7 @@ class RoomSnapshot:
     items: list[Any]
     locations: list[Any]
     candidates: dict[str, ActivityPlan]
+    scene_id: int | None = None
 
 
 def match_location(locations: list[Any], *keywords: str) -> Any | None:
