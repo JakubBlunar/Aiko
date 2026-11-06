@@ -77,3 +77,25 @@ remain retryable. Saved derivation is generation context, not new observations.
 
 Focused checks cover subject collisions, conditions, virtual scope, changed inputs
 during model/embedding calls, unchanged context and whole-output rejection.
+
+## Validation and next observation
+
+- Combined focused worker run: 242 tests and 6 subtests passed. Final map/source
+  receipt refinements: 46 tests and 6 subtests passed; growth source-change checks:
+  3 passed.
+- The affected selector identified 338 files through shared concept, cue and
+  session hubs. A representative integration selection covered those contracts,
+  diary tools, source lineage, question context and pursuit research: 1,457 tests
+  and 278 subtests passed, with one older clipping expectation failing. That
+  expectation was updated to require whole-message preservation or omission.
+- Final affected follow-up for the changed receipt code and corrected contract:
+  166 tests and 99 subtests passed. The dynamically dispatched post-turn search
+  distillation path also passed its 13 tests. These are focused/representative
+  checks, not a full-suite or timing-marker run.
+- `npm run lint` passed; tracked text retains LF. Tests used managed scratch
+  stores and did not rewrite historical live memories.
+
+A backend restart activates these changes. The worker backlog retains the fresh
+ordinary-use review: assess useful, correctly owned and dated output after new
+data arrives. Local source checks and synthetic completions do not establish
+live-model phrasing quality or an observed improvement rate.

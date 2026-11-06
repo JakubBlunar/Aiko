@@ -119,7 +119,7 @@ bulk rewritten; known source edits are checked when those receipts are consumed.
 
 ## Further worker quality review (6 Nov 2026)
 
-**Status: Reviewed; proposed implementation.** The
+**Status: Implemented; ordinary-use review pending after restart.** The
 [worker audit](../worker-quality-audit-2026-11-06.md) identifies five additional
 areas beyond the implemented memory intake/recall boundaries:
 
@@ -136,8 +136,22 @@ areas beyond the implemented memory intake/recall boundaries:
    recall activity from discussion/knowledge, and skip unchanged context.
 
 Source checks, read-only snapshot evidence, synthetic reproductions and acceptance
-scenarios are in the audit. These are not yet implemented or live-model quality
-measurements. L22's ordinary-use checkpoint remains open.
+scenarios are in the audit. The [implementation record](../worker-quality-improvements.md)
+describes the source packets, attribution, historical diary and qualified map
+context. Historical memories were not rewritten. L22's ordinary-use checkpoint
+remains open; local structural regressions do not measure live-model prose quality.
+
+After restart and fresh ordinary use, review new outputs for:
+
+- Dated growth cues that stay about Aiko's own feelings and are consumed once.
+- Diary entries that retain final qualifications and their original session,
+  without retelling unchanged conversations.
+- Research findings with selected excerpt support; inspect unattributed refusal
+  frequency and verify edited questions stay unresolved by older answers.
+- Evolution-diary entries about old changes that retain historical dates and
+  relationship subjects.
+- Knowledge-map reflections that preserve subject and conditional scope, and do
+  not recur merely because old memories were recalled or a cooldown expired.
 
 ## G-CLEANUP. `consolidator_state.last_cluster_index` is not dead weight — do not drop it
 

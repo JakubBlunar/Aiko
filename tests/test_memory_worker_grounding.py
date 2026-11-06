@@ -11,11 +11,14 @@ from tests.test_goal_worker import _harness
 from tests.test_shared_moment_detector_llm import _make
 
 
-def test_diary_keeps_date_and_subject_when_context_is_trimmed():
+def test_diary_keeps_whole_dated_message_or_omits_it_when_it_cannot_fit():
     row = SimpleNamespace(role="user", content="A long conversation " * 40,
                           created_at="2026-10-01T12:00:00+00:00")
     rendered = build_recent_context([row], "Noah", max_chars=120)
     assert len(rendered) <= 120
+    assert rendered == ""
+    rendered = build_recent_context([row], "Noah", max_chars=1200)
+    assert row.content.strip() in rendered
     assert rendered.startswith("[")
     assert "Noah:" in rendered
     assert timephrase.age_prefix(row.created_at, timephrase.now()) in rendered

@@ -609,6 +609,11 @@ class ConceptAnnotationTests(unittest.TestCase):
         graph = self._graph()
         concept = _Concept("prefers depth when debugging", .8)
         view = _FakeView({11: [concept]})
+        view.evidence_packet = lambda concept, **kw: {
+            "validity": {"tracked": True, "viable": True, "reason": "remaining_support",
+                         "confidence_bound": concept.confidence},
+            "evidence": [],
+        }
         llm = _FakeLLM()
         worker, _ = _make_worker(graph=graph, llm=llm, view_provider=lambda: view,
                                  cooldown_hours=0)

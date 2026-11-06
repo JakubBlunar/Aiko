@@ -15,9 +15,21 @@ def concept_record(concept, evidence=None):
     )}
     if evidence is not None:
         record["basis"] = {key: evidence.get(key) for key in (
-            "validity", "applicability", "applicability_sources_valid", "uncertainty",
+            "applicability", "applicability_sources_valid", "uncertainty",
             "source_issues", "truncated",
         )}
+        validity = evidence.get("validity") or {}
+        record["basis"]["validity"] = {key: validity.get(key) for key in (
+            "tracked", "viable", "reason", "valid_source_count",
+        )}
+        # Keep changes to the dependency set detectable without feeding the
+        # entire traversal ledger into a short reflection prompt. Numeric decay
+        # and traversal work counters are not new evidence.
+        source_state = {key: value for key, value in validity.items()
+                        if key not in {"confidence_bound", "visited"}}
+        record["basis"]["support_revision"] = hashlib.sha256(
+            json.dumps(source_state, sort_keys=True, default=str).encode(),
+        ).hexdigest()
         # Excerpts in the general projection are shortened for inspection. This
         # consumer keeps their scope and revisions, never an incomplete quotation.
         record["basis"]["sources"] = [
