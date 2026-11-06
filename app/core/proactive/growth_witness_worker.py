@@ -185,6 +185,12 @@ class GrowthWitnessWorker:
         rows = _md.deserialize_samples(self._kv_get_safe(_md.KV_SAMPLES))
         from app.core.relationship.growth_witness import comparison_receipt
 
+        if _gw.detect_growth(
+            rows, min_samples=self._min_samples,
+            min_valence_delta=self._min_valence_delta,
+            min_axis_delta=self._min_axis_delta, detail="",
+        ) != finding:
+            return {"drafted": 0, "source_changed": True}
         receipt = comparison_receipt(rows, now)
         if self._cues.store() is not None:
             if receipt is None:

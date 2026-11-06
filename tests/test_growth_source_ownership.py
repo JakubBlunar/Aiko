@@ -38,3 +38,23 @@ def test_missing_or_future_sample_period_cannot_become_a_fresh_cue():
     samples = [mood_drift.DriftSample("2026-11-07", 0, 0, 0, 0, 0)] * 2
     assert comparison_receipt(samples, now) is None
     assert comparison_receipt([], now) is None
+
+
+def test_changed_samples_cannot_be_paired_with_an_earlier_finding(tmp_path):
+    db = ChatDatabase(tmp_path / "changed-growth.db")
+    cues = CueStore(db)
+    now = datetime(2026, 11, 6, 12, tzinfo=timezone.utc)
+    samples = [mood_drift.DriftSample(
+        (now.date() - timedelta(days=14-i)).isoformat(), -.5+i/14, .2, .2, .2, .2,
+    ) for i in range(15)]
+    kv, reads = {}, []
+    def get(key):
+        if key != mood_drift.KV_SAMPLES:
+            return kv.get(key)
+        reads.append(key)
+        return mood_drift.serialize_samples(samples if len(reads) == 1 else [])
+    worker = GrowthWitnessWorker(kv_get=get, kv_set=kv.__setitem__,
+        user_display_name_provider=lambda: "User", cue_store_provider=lambda: cues)
+    with patch("app.core.proactive.growth_witness_worker._utcnow", return_value=now):
+        assert worker.run() == {"drafted": 0, "source_changed": True}
+    assert cues.pending("growth_witness") == []
