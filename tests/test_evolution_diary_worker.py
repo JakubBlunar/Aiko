@@ -374,11 +374,35 @@ class CompositionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.h = _harness()
 
+    def test_historical_relationship_changes_keep_subject_and_dates_in_prompt(self):
+        _event(self.h, 0, subject="relationship", created_at=_iso(120))
+        _event(self.h, 1, subject="aiko", created_at=_iso(119))
+        _event(self.h, 2, subject="user", created_at=_iso(118))
+        llm = FakeOllama(ENTRY)
+        _worker(self.h, ollama=llm).run()
+        prompt = "\n".join(message["content"] for message in llm.calls[0])
+        self.assertIn("about our relationship", prompt)
+        self.assertIn("about myself", prompt)
+        self.assertIn("about them", prompt)
+        self.assertIn(_iso(120), prompt)
+        self.assertIn(_iso(118), prompt)
+        self.assertIn("Historical period", prompt)
+        self.assertIn("not what you necessarily hold now", prompt)
+
+    def test_relative_or_overlong_output_does_not_consume_event_history(self):
+        _three(self.h)
+        for entry in ("I understood our relationship differently today.", "A change. " * 220):
+            self.h.kv.pop(KV_LAST_FIRED_AT, None)
+            stats = _worker(self.h, ollama=FakeOllama(entry)).run()
+            self.assertEqual(stats["reason"], "empty")
+            self.assertEqual(self.h.diary.latest_watermark(), 0)
+            self.assertEqual(self.h.diary.count(), 0)
+
     def test_the_entry_records_the_provenance_it_summarised(self) -> None:
         ids = _three(self.h)
-        _worker(self.h, ollama=FakeOllama("I stopped hedging this week.")).run()
+        _worker(self.h, ollama=FakeOllama("I stopped hedging during the recorded period.")).run()
         [entry] = self.h.diary.list()
-        self.assertEqual(entry.entry, "I stopped hedging this week.")
+        self.assertEqual(entry.entry, "I stopped hedging during the recorded period.")
         self.assertEqual(sorted(entry.learning_event_ids), sorted(ids))
         self.assertEqual(sorted(entry.concept_ids), [100, 101, 102])
         self.assertEqual(entry.shape_counts, {"emergence": 3})

@@ -45,3 +45,15 @@ establish attribution, not independent verification or entailment of the claim.
 
 Focused regressions cover selected-source lineage, uncited refusals, overlong
 facts and question edits during model generation and embedding.
+
+## Historical evolution diary
+
+The evolution diary remains its own append-only change log. Composition receives
+the original event dates, their historical period, and distinct user, Aiko,
+relationship and world subjects. A relationship change is no longer presented as
+a claim only about the user. The prompt anchors durable dates and past changes;
+relative or overlong output is rejected without consuming event history. Existing
+event links, period bounds and watermark behavior are preserved.
+
+Focused tests cover old relationship events in the prompt and rejected prose
+leaving the historical events available for a later pass.

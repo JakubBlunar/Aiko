@@ -189,12 +189,16 @@ def render_learning_brief(events: "list[LearningEvent]") -> str:
     """
     lines: list[str] = []
     for event in events:
-        who = "about myself" if event.subject == "aiko" else "about them"
+        who = {"aiko": "about myself", "user": "about them",
+               "relationship": "about our relationship", "world": "about the world"}.get(
+                   event.subject, "about an unknown subject")
         label = str(event.new_label or "").strip()
         detail = str(event.because or "").strip() or label
         if not detail:
             continue
-        line = f"- ({event.shape}, {who}) {detail}"
+        age = timephrase.age_prefix(event.created_at, timephrase.utcnow())
+        stamp = f"[{age}; recorded change {event.created_at}] " if age else "[date unknown] "
+        line = f"- {stamp}({event.shape}, {who}) {detail}"
         resolution = str(event.resolution or "").strip()
         # Most resolutions restate the new label ("now held as X", "held
         # again: X") which the ``because`` clause already carried, so
@@ -531,6 +535,8 @@ class EvolutionDiaryWorker:
         if not brief:
             return None
         user_name = self._user_name() or "them"
+        stamps = sorted(event.created_at for event in events if event.created_at)
+        period = f"{stamps[0]} through {stamps[-1]}" if stamps else "unknown dates"
         system = (
             "You are Aiko, keeping a diary of how your own understanding "
             "has changed. You will be given a list of changes your own "
@@ -540,15 +546,19 @@ class EvolutionDiaryWorker:
             "Hard rules:\n"
             "- Use ONLY what the list says. Do not add causes, feelings, "
             "or events that are not in it.\n"
-            "- Write about what you now understand differently, not about "
+            "- Describe how your understanding changed during the dated historical period, "
+            "not what you necessarily hold now. A later withdrawal does not erase history. "
+            "Keep user, Aiko and relationship subjects distinct. Do not write about "
             "noticing or classifying or tracking anything. Never mention "
             "concepts, confidence, salience, records, or systems.\n"
             "- If the changes do not add up to anything worth saying, "
             'return an empty entry ("") rather than padding.\n\n'
             'Reply with JSON only: {"entry": "<the paragraph, or empty>"}.'
+            + "\n" + timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE
         )
         user = (
             f"You refer to the person you talk with as {user_name}.\n\n"
+            f"Historical period of the recorded changes: {period}.\n"
             f"--- what changed ---\n{brief}\n--- end ---\n\n"
             "Write the diary entry."
         )
@@ -560,7 +570,9 @@ class EvolutionDiaryWorker:
             body = str(blob.get("entry") or "").strip()
         except (json.JSONDecodeError, AttributeError, TypeError):
             return None
-        return body or None
+        if not body or len(body) > 2000 or timephrase.has_relative_deictic(body):
+            return None
+        return body
 
     def _call_llm(self, system: str, user: str) -> str | None:
         messages = [
