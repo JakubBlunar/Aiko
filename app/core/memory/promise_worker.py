@@ -143,6 +143,12 @@ _SYSTEM_PROMPT = (
     "(YYYY-MM-DD) or date-time, resolved against the transcript's own "
     "timestamps. Use null when no time was stated or the wording was "
     "vague ('soon', 'sometime') -- do not invent one.\n"
+    "  - deadline_quote: exact timing phrase from the SAME commitment message, or null. "
+    "The message timestamp is never a deadline. Keep unstated times unknown.\n"
+    "  - commitment_type: follow_up or immediate. Keep only meaningful follow_up "
+    "commitments worth remembering beyond the current exchange. Immediate enactment, "
+    "affectionate invitations, reassurance and ordinary bedtime actions are not lasting "
+    "promises. Preserve a genuine request to follow up, deliver something or remember it.\n"
     "Rules:\n"
     "- A promise is a concrete intent to DO, find out, follow up on, or "
     "remember something specific. Idioms and figures of speech are NOT "
@@ -470,6 +476,13 @@ class PromiseExtractionWorker:
             )
             return {"skipped": True, "reason": "no_turns"}
 
+        from app.core.concepts.concept_support import revision_hash
+
+        window_key = "promise_worker.window:" + revision_hash(session_key)
+        window_revision = revision_hash(source_rows)
+        if self._chat_db.kv_get(window_key) == window_revision:
+            return {"skipped": True, "reason": "unchanged_source_window"}
+
         if not self._rate_limiter.allow(now):
             log.info(
                 "promise-worker skip: rate-limited session=%s", session_key,
@@ -549,9 +562,11 @@ class PromiseExtractionWorker:
             ),
         )
         existing = self._existing_promise_word_sets()
+        source_memories = list(self._memory_store.iter_by_kind("promise"))
         persisted = 0
         dropped_dup = 0
         dropped_quality = 0
+        write_failed = False
         for p in promises[:max_per_run]:
             if self._cancel_event.is_set():
                 break
@@ -559,6 +574,11 @@ class PromiseExtractionWorker:
                 dropped_quality += 1
                 continue
             body_words = _content_words(_tokenize(p.text))
+            from app.core.memory.promise_evidence import same_source_actions
+
+            if same_source_actions(p, source_memories, self._is_duplicate):
+                dropped_dup += 1
+                continue
             scope = (p.who, p.deadline)
             if self._is_duplicate(body_words, existing.get(scope, [])):
                 dropped_dup += 1
@@ -568,6 +588,12 @@ class PromiseExtractionWorker:
                 # Keep the in-run dedupe set fresh so two near-identical
                 # promises in one batch don't both land.
                 existing.setdefault(scope, []).append(body_words)
+                source_memories = list(self._memory_store.iter_by_kind("promise"))
+            else:
+                write_failed = True
+
+        if not self._cancel_event.is_set() and not write_failed:
+            self._chat_db.kv_set(window_key, window_revision)
 
         result = {
             "promises_returned": len(promises),
@@ -662,7 +688,11 @@ class PromiseExtractionWorker:
                 break
             lines.append(line)
             if source_rows is not None and type(mid) is int:
-                source_rows[mid] = {"role": row.role, "content": text, "created_at": created}
+                from app.core.memory.promise_evidence import source_revision
+
+                source_rows[mid] = {"role": row.role, "content": text, "created_at": created,
+                    "revision": source_revision({"role": row.role, "content": row.content,
+                                                 "created_at": created})}
             total += len(line) + 1
         lines.reverse()
         return "\n".join(lines)
@@ -800,6 +830,8 @@ class PromiseExtractionWorker:
         for item in parsed:
             if not isinstance(item, dict):
                 continue
+            if item.get("commitment_type") == "immediate":
+                continue
             who_raw = str(item.get("who") or "").strip().lower()
             who = resolve_promise_who(
                 who_raw,
@@ -839,6 +871,16 @@ class PromiseExtractionWorker:
                 deadline_raw if isinstance(deadline_raw, str) else None,
                 anchor=item_anchor,
             )
+            deadline_quote, precision, revision = "", "", ""
+            if source is not None:
+                from app.core.memory.promise_evidence import supported_deadline, source_revision
+
+                deadline_quote = item.get("deadline_quote")
+                when, precision = supported_deadline(deadline_quote, source["content"], item_anchor)
+                when_text = _format_deadline(when) if when else ""
+                revision = source.get("revision") or source_revision(source)
+                deadline_quote = (deadline_quote if isinstance(deadline_quote, str)
+                                  and deadline_quote in source["content"] else "")
             out.append(
                 Promise(
                     who=who,
@@ -849,6 +891,9 @@ class PromiseExtractionWorker:
                     raw_match=quote[:2000] if source is not None else "",
                     deadline=when,
                     deadline_text=when_text,
+                    deadline_quote=deadline_quote,
+                    deadline_precision=precision,
+                    source_revision=revision,
                 )
             )
         return out
@@ -902,6 +947,14 @@ class PromiseExtractionWorker:
             return False
         if promise.source == "llm" and (promise.source_turn_id is None or not promise.raw_match):
             return False
+        if promise.source_revision:
+            from app.core.memory.promise_evidence import source_revision
+
+            row = self._chat_db.get_message_row(promise.source_turn_id)
+            current = (source_revision({"role": row.role, "content": row.content,
+                                        "created_at": row.created_at}) if row else None)
+            if current != promise.source_revision:
+                return False
         display_name = (
             (self._user_display_name_provider() or "Jacob")
             if self._user_display_name_provider
@@ -918,6 +971,10 @@ class PromiseExtractionWorker:
             "promise_status": "open",
             "source_quote": promise.raw_match,
             "source_scope": "validated_message_quote",
+            "commitment_source": {"version": 1, "message_id": promise.source_turn_id,
+                                  "revision": promise.source_revision},
+            "deadline_quote": promise.deadline_quote,
+            "deadline_precision": promise.deadline_precision,
         }
         # The deadline lives here and nowhere else. ``event_time`` was the
         # obvious alternative and is the wrong shape: it means "when this

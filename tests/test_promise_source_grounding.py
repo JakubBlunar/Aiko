@@ -26,8 +26,10 @@ def test_missing_fabricated_wrong_actor_or_unanchored_source_cannot_persist(chan
 
 
 def test_exact_citation_reaches_storage_and_old_source_sets_relative_deadline():
-    payload = response(deadline="tomorrow")
-    worker, store, llm, _ = _build_world(responses=[payload])
+    payload = response(deadline="tomorrow", deadline_quote="tomorrow")
+    worker, store, llm, _ = _build_world(responses=[payload], messages=[
+        ("user", "I keep meaning to call the dentist about my filling tomorrow."),
+    ])
     worker._chat_db.execute_commit(
         "UPDATE messages SET created_at = ? WHERE id = ?", ("2026-10-01T12:00:00+00:00", 1))
     assert worker.run()["persisted"] == 1
@@ -50,7 +52,11 @@ def test_other_speaker_same_action_does_not_suppress_a_real_commitment():
 def test_same_actor_action_with_a_distinct_known_deadline_is_kept():
     existing = [_seed_promise("Jacob promised: call the dentist")]
     existing[0].metadata["promise_deadline"] = "2026-10-01T12:00:00+00:00"
-    worker, store, _, _ = _build_world(responses=[response(deadline="2026-10-02")],
-                                       existing=existing)
+    worker, store, _, _ = _build_world(responses=[response(deadline="2026-10-02",
+        deadline_quote="tomorrow")], existing=existing, messages=[
+            ("user", "I keep meaning to call the dentist tomorrow."),
+        ])
+    worker._chat_db.execute_commit(
+        "UPDATE messages SET created_at=? WHERE id=1", ("2026-10-01T12:00:00+00:00",))
     assert worker.run()["persisted"] == 1
     assert len(store.calls) == 1

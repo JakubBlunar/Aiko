@@ -43,6 +43,9 @@ class Promise:
     #: weekday-bearing, so a reader neither has to do calendar arithmetic
     #: nor trust a relative word written days ago.
     deadline_text: str = ""
+    deadline_quote: str = ""
+    deadline_precision: str = ""
+    source_revision: str = ""
 
     def to_memory_content(self, user_display_name: str = "Jacob") -> str:
         """Render to a natural-language memory string.
