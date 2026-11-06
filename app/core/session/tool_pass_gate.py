@@ -121,6 +121,7 @@ _TOOL_FAMILY: dict[str, str] = {
     # builtins
     "get_time": "time",
     "recall": "recall",
+    "inspect_memory": "recall",
     "recall_topic": "recall",
     "recall_concept": "recall",
     "recall_self_history": "recall",

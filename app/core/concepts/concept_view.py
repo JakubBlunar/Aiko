@@ -520,6 +520,7 @@ class ConceptView:
         kind: str | None = None,
         k: int = 8,
         min_sim: float = 0.0,
+        strict: bool = False,
     ) -> list[tuple["Concept", float]]:
         """Up to ``k`` active concepts nearest ``embedding`` by label
         cosine, each paired with its similarity (>= ``min_sim``).
@@ -540,6 +541,8 @@ class ConceptView:
         try:
             pairs = self._store.nearest(embedding, **kwargs)  # type: ignore[arg-type]
         except Exception:
+            if strict:
+                raise
             log.debug("ConceptView.relevant: nearest failed", exc_info=True)
             return []
         floor = float(min_sim)

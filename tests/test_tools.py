@@ -104,12 +104,13 @@ class RecallToolTests(unittest.TestCase):
         with self.assertRaises(ToolError):
             RecallTool(None).run({"query": "anything"})
 
-    def test_run_truncates_long_text(self) -> None:
+    def test_run_preserves_whole_bounded_text(self) -> None:
         long = "x" * 1000
         rag = _FakeRagRetriever([_FakeHit(text=long)])
         result = RecallTool(rag).run({"query": "anything"})
         payload = json.loads(result)
-        self.assertLessEqual(len(payload["hits"][0]["text"]), 280)
+        self.assertEqual(payload["hits"][0]["text"], long)
+        self.assertTrue(payload["hits"][0]["text_complete"])
 
 
 # ── web_search ────────────────────────────────────────────────────────────

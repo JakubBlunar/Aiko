@@ -76,7 +76,10 @@ def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
             lineages = memory_lineages(row)
             packet["evidence"].append({
                 "memory_id": ident, "revision": memory_revision(row),
-                "text": str(row.content or "")[:280],
+                "text": str(row.content or "") if len(str(row.content or "")) <= 1600 else "",
+                "text_complete": len(str(row.content or "")) <= 1600,
+                "text_omitted": len(str(row.content or "")) > 1600,
+                "inspection": {"tool": "inspect_memory", "memory_id": ident},
                 "subject": metadata.get("subject", admission.get("subject", "unknown")),
                 "observation_mode": metadata.get(
                     "observation_mode", admission.get("observation_mode", "unknown")),

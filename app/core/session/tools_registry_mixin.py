@@ -90,15 +90,17 @@ class ToolsRegistryMixin:
                 registry.register(GetTimeTool())
             has_retriever = getattr(self, "_rag_retriever", None) is not None
             if getattr(tools_cfg, "recall", True) and has_retriever:
-                registry.register(RecallTool(self._rag_retriever))
+                registry.register(RecallTool(self._rag_retriever, self._user_id))
             if (
                 getattr(tools_cfg, "recall", True)
                 and getattr(getattr(self._settings, "memory", None), "enabled", False)
                 and getattr(self, "_memory_store", None) is not None
             ):
                 from app.llm.tools.diary import ReadDiaryTool, WriteDiaryTool
+                from app.llm.tools.memory_inspection import InspectMemoryTool
 
                 registry.register(ReadDiaryTool(self))
+                registry.register(InspectMemoryTool(self.inspect_memory))
                 if getattr(self, "_embedder", None) is not None:
                     registry.register(WriteDiaryTool(self))
             # F10d cluster-scoped recall. Gated by its own switch but needs
@@ -106,12 +108,12 @@ class ToolsRegistryMixin:
             # (the tool returns an empty result otherwise, so it is safe to
             # register regardless).
             if getattr(tools_cfg, "recall_topic", True) and has_retriever:
-                registry.register(RecallTopicTool(self._rag_retriever))
+                registry.register(RecallTopicTool(self._rag_retriever, self._user_id))
             # L5 concept recall. Same retriever; useful once the concept
             # store is wired (empty result otherwise, so safe to register
             # regardless).
             if getattr(tools_cfg, "recall_concept", True) and has_retriever:
-                registry.register(RecallConceptTool(self._rag_retriever))
+                registry.register(RecallConceptTool(self._rag_retriever, self._user_id))
             # L19 self-history. Reads the concept + learning-event stores
             # rather than the retriever, so it is gated on those being
             # wired: without them the arc would always be a thin record,

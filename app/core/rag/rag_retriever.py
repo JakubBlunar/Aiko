@@ -27,6 +27,8 @@ Design notes:
 """
 from __future__ import annotations
 
+from app.core.rag.recall_reads import RecallReadsMixin
+
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -583,7 +585,7 @@ def _is_anniversary_today(metadata: dict | None) -> bool:
     return False
 
 
-class RagRetriever:
+class RagRetriever(RecallReadsMixin):
     def __init__(
         self,
         store: "RagStore",
@@ -913,6 +915,7 @@ class RagRetriever:
 
     def _search_all_sources(
         self, embedding: Sequence[float], *, per_source_k: int | None = None,
+        diagnostics: dict | None = None,
     ) -> tuple[list[RagHit], list[RagHit], list[RagHit]]:
         """Run the (up to) three per-source Lance searches concurrently.
 
@@ -955,6 +958,8 @@ class RagRetriever:
                     results[name] = fn()
                 except Exception:
                     log.debug("%s search failed", name, exc_info=True)
+                    if diagnostics is not None:
+                        diagnostics.setdefault("errors", []).append(name)
             return results["mem"], results["msg"], results["doc"]
 
         futures = {name: ex.submit(fn) for name, fn in tasks}
@@ -963,6 +968,8 @@ class RagRetriever:
                 results[name] = fut.result()
             except Exception:
                 log.debug("%s search failed", name, exc_info=True)
+                if diagnostics is not None:
+                    diagnostics.setdefault("errors", []).append(name)
         return results["mem"], results["msg"], results["doc"]
 
     def retrieve(
@@ -974,6 +981,7 @@ class RagRetriever:
         _limit: int | None = None,
         _embedding: "np.ndarray | None" = None,
         _mark_used: bool = True,
+        _diagnostics: dict | None = None,
     ) -> list[RagHit]:
         """Return up to ``top_k`` merged hits across all sources.
 
@@ -1004,6 +1012,8 @@ class RagRetriever:
                 embedding = self._embedder.embed(query)
             except Exception:
                 log.debug("rag retriever: embed failed", exc_info=True)
+                if _diagnostics is not None:
+                    _diagnostics.setdefault("errors", []).append("embedding")
                 return []
 
         # K1 — pre-fetch active goal vectors once per retrieval call so
@@ -1041,9 +1051,10 @@ class RagRetriever:
         # Widen the per-source fan-out to the requested pool size so the
         # unified budget pool (``candidates`` passes ``_limit=pool_k``) is
         # not starved by the small plain-``retrieve`` per-source default.
-        mem_hits, msg_hits, doc_hits = self._search_all_sources(
-            embedding, per_source_k=max(self._per_source_top_k, limit),
-        )
+        search_args = {"per_source_k": max(self._per_source_top_k, limit)}
+        if _diagnostics is not None:
+            search_args["diagnostics"] = _diagnostics
+        mem_hits, msg_hits, doc_hits = self._search_all_sources(embedding, **search_args)
 
         # K-time2 — parse a relative-time window from the *raw* user text
         # (not the recent-turns-expanded query, which could carry a stale
@@ -1288,9 +1299,13 @@ class RagRetriever:
                                     h.score += _temporal_boost(mem)
                     except Exception:
                         log.debug("pinned-bonus lookup failed", exc_info=True)
+                        if _diagnostics is not None:
+                            _diagnostics.setdefault("errors", []).append("memory_hydration")
                 merged.append(h)
         except Exception:
             log.debug("memory search failed", exc_info=True)
+            if _diagnostics is not None:
+                _diagnostics.setdefault("errors", []).append("memory_hydration")
 
         if self._include_messages:
             try:
@@ -1631,6 +1646,9 @@ class RagRetriever:
         limit: int = 8,
         all_evidence: bool = False,
         min_concept_sim: float = 0.20,
+        subject: str | None = None,
+        concept_id: int | None = None,
+        strict: bool = False,
     ) -> dict[str, Any] | None:
         """Nearest active concept, bundled with its evidence.
 
@@ -1653,15 +1671,10 @@ class RagRetriever:
         isn't wired or nothing clears ``min_concept_sim``.
         """
         text = (query or "").strip()
-        if not text or self._concept_store is None:
-            return None
-        try:
-            embedding = self._embedder.embed(text)
-        except Exception:
-            log.debug("recall_concept: embed failed", exc_info=True)
-            return None
-        q = np.asarray(embedding, dtype=np.float32).ravel()
-        if q.size == 0 or float(np.linalg.norm(q)) == 0.0:
+        if self._concept_store is None:
+            if strict:
+                from app.core.rag.recall_reads import RecallUnavailable
+                raise RecallUnavailable("Concept storage is unavailable.")
             return None
         # L24: nearest-concept lookup goes through the one ConceptView read
         # path; the specialised evidence hydration below (cluster -> member
@@ -1671,10 +1684,32 @@ class RagRetriever:
         view = concept_view_from(self)
         if view is None:
             return None
-        matches = view.relevant(q, k=1, min_sim=float(min_concept_sim))
-        if not matches:
-            return None
-        concept, sim = matches[0]
+        if concept_id is not None:
+            concept = self._concept_store.get(concept_id)
+            if concept is None or subject and concept.subject != subject:
+                return None
+            sim = None
+        else:
+            try:
+                embedding = self._embedder.embed(text)
+                q = np.asarray(embedding, dtype=np.float32).ravel()
+                if not q.size or not float(np.linalg.norm(q)):
+                    raise ValueError("unusable query vector")
+            except Exception as exc:
+                if strict:
+                    from app.core.rag.recall_reads import RecallUnavailable
+                    raise RecallUnavailable("Concept query failed; absence is unknown.") from exc
+                log.debug("recall_concept: embed failed", exc_info=True)
+                return None
+            kwargs = {"k": 1, "min_sim": float(min_concept_sim)}
+            if strict:
+                kwargs["strict"] = True
+            if subject is not None:
+                kwargs["subject"] = subject
+            matches = view.relevant(q, **kwargs)
+            if not matches:
+                return None
+            concept, sim = matches[0]
         cap = min(16, max(1, int(limit)))
 
         # Split the concept's evidence into memory ids + cluster reps.
@@ -1738,9 +1773,12 @@ class RagRetriever:
                 "subject": concept.subject,
                 "status": concept.status,
                 "confidence": round(float(concept.confidence), 3),
-                "rationale": (concept.rationale or "")[:500],
+                "rationale": (concept.rationale or "") if len(concept.rationale or "") <= 2000
+                             else "",
+                "rationale_omitted": len(concept.rationale or "") > 2000,
             },
-            "score": round(float(sim), 3),
+            "score": round(float(sim), 3) if sim is not None else None,
+            "score_meaning": "relevance, not confidence; null for exact-ID reads",
             "evidence": packet["evidence"],
             "support": packet["support"],
             "support_validity": packet["validity"],

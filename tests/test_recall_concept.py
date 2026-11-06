@@ -301,7 +301,7 @@ class RecallConceptRetrieverTests(unittest.TestCase):
 
         c.rationale = "r" * 600
         out2 = r.recall_concept("x")
-        self.assertEqual(len(out2["concept"]["rationale"]), 500)
+        self.assertEqual(len(out2["concept"]["rationale"]), 600)
 
     def test_none_when_store_not_wired(self) -> None:
         retriever = RagRetriever(
@@ -363,7 +363,9 @@ class RecallConceptToolTests(unittest.TestCase):
         props = schema.parameters["properties"]
         self.assertIn("query", props)
         self.assertIn("all_evidence", props)
-        self.assertEqual(schema.parameters["required"], ["query"])
+        self.assertEqual(schema.parameters["anyOf"], [
+            {"required": ["query"]}, {"required": ["concept_id"]},
+        ])
 
 
 class ToolFamilyTests(unittest.TestCase):

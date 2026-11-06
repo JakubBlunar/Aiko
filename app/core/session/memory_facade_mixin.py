@@ -13,6 +13,8 @@ State ownership (``self._memory_store``, ``self._memory_extractor``,
 """
 from __future__ import annotations
 
+from app.core.session.memory_reads_mixin import MemoryReadsMixin
+
 import json
 import logging
 from collections.abc import Callable
@@ -48,7 +50,7 @@ if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
 log = logging.getLogger("app.session")
 
 
-class MemoryFacadeMixin:
+class MemoryFacadeMixin(MemoryReadsMixin):
     """Memory CRUD + listener surface, peeled out of ``SessionController``."""
 
     @property

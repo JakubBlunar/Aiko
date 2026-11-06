@@ -72,8 +72,9 @@ class RecallTool:
     + uploaded documents) for snippets relevant to a query.
     """
 
-    def __init__(self, rag_retriever: Any) -> None:
+    def __init__(self, rag_retriever: Any, user_id: str | None = None) -> None:
         self._rag = rag_retriever
+        self._user_id = user_id
 
     def schema(self) -> ToolSchema:
         return ToolSchema(
@@ -82,7 +83,10 @@ class RecallTool:
                 "Search Aiko's long-term notebook for things she should "
                 "remember. Use this when the user asks 'do you remember...', "
                 "'what did I say about...', or you need to ground a reply "
-                "in something specific the user shared earlier."
+                "in something specific the user shared earlier. Results retain subjects, source "
+                "meaning and recorded/event dates. Relevance score is not confidence. Read "
+                "omitted memory text with inspect_memory; never infer its missing qualification. "
+                "Unavailable or partial search does not establish absence."
             ),
             parameters={
                 "type": "object",
@@ -114,19 +118,19 @@ class RecallTool:
         if self._rag is None:
             raise ToolError("recall: retrieval store is not available")
         try:
-            hits = self._rag.retrieve(query)
+            packet = getattr(self._rag, "recall_packet", None)
+            if callable(packet):
+                payload = packet(query, limit=limit, user_id=self._user_id)
+            else:
+                from app.core.memory.recall_records import pack_hits
+                hits = self._rag.retrieve(query)
+                payload = pack_hits(hits[:limit])
+                payload["status"] = "ok" if payload["hits"] else "no_match"
+            if payload.get("status") == "unavailable":
+                raise ToolError("recall unavailable; this does not establish missing memories")
         except Exception as exc:
             raise ToolError(f"recall failed: {exc}") from exc
-        if not hits:
-            return json.dumps({"hits": [], "note": "no relevant memories"})
-        out = []
-        for hit in hits[:limit]:
-            out.append({
-                "source": hit.source,
-                "score": round(float(hit.score), 3),
-                "text": (hit.text or "")[:280],
-            })
-        return json.dumps({"hits": out}, ensure_ascii=False)
+        return json.dumps(payload, ensure_ascii=False)
 
 
 # ── recall_topic ─────────────────────────────────────────────────────────────
@@ -144,19 +148,24 @@ class RecallTopicTool:
     subject, not for a one-off "did I mention Y?" lookup.
     """
 
-    def __init__(self, rag_retriever: Any) -> None:
+    def __init__(self, rag_retriever: Any, user_id: str | None = None) -> None:
         self._rag = rag_retriever
+        self._user_id = user_id
 
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="recall_topic",
             description=(
-                "Pull up everything Aiko remembers about one topic or theme "
+                "Browse a bounded page of Aiko's notes in one matching topic cluster "
                 "(a whole cluster of related notes), not just the single "
                 "closest line. Use this when the user asks her to round up / "
                 "summarise / go over what she knows about a subject (e.g. "
                 "'what do you remember about my job?', 'tell me everything "
-                "you know about my trip')."
+                "you know about my trip'). Results retain subjects, dates and source meaning. "
+                "Check coverage, withheld and alternatives; one cluster is not all knowledge. "
+                "Follow next_offset with offset and the same query, filters and revision. "
+                "Use include_historical only to inspect withdrawn/changed notes as history. "
+                "Read omitted text with inspect_memory before relying on its meaning."
             ),
             parameters={
                 "type": "object",
@@ -171,6 +180,10 @@ class RecallTopicTool:
                         "minimum": 1,
                         "maximum": 15,
                     },
+                    "offset": {"type": "integer", "minimum": 0, "maximum": 2000},
+                    "revision": {"type": "string", "maxLength": 128},
+                    "cluster_id": {"type": "integer", "minimum": 1},
+                    "include_historical": {"type": "boolean"},
                 },
                 "required": ["topic"],
             },
@@ -188,23 +201,21 @@ class RecallTopicTool:
         if self._rag is None or not hasattr(self._rag, "recall_topic"):
             raise ToolError("recall_topic: retrieval store is not available")
         try:
-            label, hits = self._rag.recall_topic(topic, limit=limit)
+            page = getattr(self._rag, "recall_topic_page", None)
+            if callable(page):
+                payload = page(topic, limit=limit, user_id=self._user_id, **{
+                    key: arguments[key] for key in (
+                        "offset", "revision", "cluster_id", "include_historical",
+                    ) if key in arguments})
+            else:
+                from app.core.memory.recall_records import pack_hits
+                label, hits = self._rag.recall_topic(topic, limit=limit)
+                payload = pack_hits(hits)
+                payload.update(topic_label=label, coverage="untracked_legacy_adapter",
+                               total=None, status="ok" if hits else "no_match")
         except Exception as exc:
             raise ToolError(f"recall_topic failed: {exc}") from exc
-        if not hits:
-            return json.dumps(
-                {"topic_label": label, "hits": [], "note": "no matching topic cluster"},
-                ensure_ascii=False,
-            )
-        out = []
-        for hit in hits:
-            out.append({
-                "score": round(float(hit.score), 3),
-                "text": (hit.text or "")[:280],
-            })
-        return json.dumps(
-            {"topic_label": label, "hits": out}, ensure_ascii=False
-        )
+        return json.dumps(payload, ensure_ascii=False)
 
 
 # ── recall_concept ───────────────────────────────────────────────────────────
@@ -227,8 +238,9 @@ class RecallConceptTool:
     supporting set is wanted rather than a few representative notes.
     """
 
-    def __init__(self, rag_retriever: Any) -> None:
+    def __init__(self, rag_retriever: Any, user_id: str | None = None) -> None:
         self._rag = rag_retriever
+        self._user_id = user_id
 
     def schema(self) -> ToolSchema:
         return ToolSchema(
@@ -251,8 +263,10 @@ class RecallConceptTool:
                 "question is about a settled understanding or self-image "
                 "rather than a one-off fact. Works for concepts about the "
                 "USER and about HERSELF; the result says whose it is. Set "
-                "'all_evidence' true to get the full supporting set instead "
-                "of a few representative notes."
+                "'all_evidence' true for a wider bounded sample (at most 16 sources), "
+                "not unlimited coverage. Use subject to disambiguate whose understanding, "
+                "or concept_id returned by a read for exact inspection (including historical "
+                "status). Open omitted evidence with inspect_memory; uncertainty still applies."
             ),
             parameters={
                 "type": "object",
@@ -266,6 +280,9 @@ class RecallConceptTool:
                             "like', 'what I value', 'how I've changed')."
                         ),
                     },
+                    "concept_id": {"type": "integer", "minimum": 1},
+                    "subject": {"type": "string", "enum": ["user", "aiko", "relationship",
+                                                               "world"]},
                     "limit": {
                         "type": "integer",
                         "description": (
@@ -278,18 +295,17 @@ class RecallConceptTool:
                     "all_evidence": {
                         "type": "boolean",
                         "description": (
-                            "Return every supporting memory for the concept "
-                            "instead of a capped sample. Defaults to false."
+                            "Widen the bounded sample to at most 16 sources. Defaults to false."
                         ),
                     },
                 },
-                "required": ["query"],
+                "anyOf": [{"required": ["query"]}, {"required": ["concept_id"]}],
             },
         )
 
     def run(self, arguments: dict[str, Any]) -> str:
         query = (arguments.get("query") or "").strip()
-        if not query:
+        if not query and "concept_id" not in arguments:
             raise ToolError(
                 "recall_concept: 'query' is required and must be non-empty"
             )
@@ -302,9 +318,14 @@ class RecallConceptTool:
         if self._rag is None or not hasattr(self._rag, "recall_concept"):
             raise ToolError("recall_concept: retrieval store is not available")
         try:
-            bundle = self._rag.recall_concept(
-                query, limit=limit, all_evidence=all_evidence
-            )
+            packet = getattr(self._rag, "recall_concept_packet", None)
+            options = {key: arguments[key] for key in ("subject", "concept_id") if key in arguments}
+            if callable(packet):
+                bundle = packet(query, limit=limit, all_evidence=all_evidence,
+                                user_id=self._user_id, **options)
+            else:
+                bundle = self._rag.recall_concept(
+                    query, limit=limit, all_evidence=all_evidence, **options)
         except Exception as exc:
             raise ToolError(f"recall_concept failed: {exc}") from exc
         if not bundle:
