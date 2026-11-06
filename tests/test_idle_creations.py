@@ -135,14 +135,17 @@ def test_worker_creates_exact_text_instead_of_narrating_an_unmade_object(world):
                 "creation": {"title": "Paper Boats", "form": "poem", "text": draft().text}}
 
     class Client:
+        calls = []
+
         def chat_json(self, messages, **kwargs):
+            self.calls.append(kwargs["surface"])
             assert timephrase.STORED_TEXT_TIME_RULE in messages[1]["content"]
             return json.dumps(response), None
 
     worker = IdleAwayActivityWorker(
         world_store=world, kv_get=kv.get, kv_set=kv.__setitem__,
         user_display_name_provider=lambda: "Jacob", ollama=Client(), model="fake",
-        llm_activity_ratio=1, cooldown_seconds=0, in_progress_ratio=0,
+        llm_activity_ratio=1, cooldown_seconds=0, in_progress_ratio=0, idle_seed_ratio=1,
     )
     result = worker.run()
     assert result["key"] == "writing"
@@ -151,6 +154,8 @@ def test_worker_creates_exact_text_instead_of_narrating_an_unmade_object(world):
     assert receipt["mode"] == "creative_fiction"
     assert revisions(world.get_item(receipt["item_id"]))[0]["text"] == draft().text
     assert "revision 1" in load_journal(kv.get)[0]["summary"]
+    assert Client.calls == ["away_activity_plan"]
+    assert "aiko.idle_seeds" not in kv
 
 
 @pytest.mark.parametrize("bad", [None, {"title": "x"},

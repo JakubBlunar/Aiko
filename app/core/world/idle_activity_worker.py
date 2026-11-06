@@ -712,6 +712,11 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         the one-shot ``_render_idle_seed_block`` cue producer so Aiko phrases
         the "while I was reading I started wondering ..." line herself.
         """
+        if plan.creation is not None:
+            # Saved writing already has an exact-revision journal receipt.
+            # A subject-specific offer needs cue-pool accounting, not a new
+            # entry in the legacy idle-seed ring.
+            return None
         if self._idle_seed_ratio <= 0.0:
             return None
         if self._ollama is None or not self._model:
