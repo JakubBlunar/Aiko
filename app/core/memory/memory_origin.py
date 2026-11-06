@@ -110,6 +110,10 @@ def stamp_origin(kind, content, metadata, temporal_type=None):
 
 
 def claim_source_refusal(memory, *, subject, kind) -> str | None:
+    if (getattr(memory, "metadata", None) or {}).get("hypothesis_answer"):
+        # Only the dedicated verdict/graduation path knows the exact target.
+        # A contextual yes/no cannot support an unrelated synthesized claim.
+        return "answer_requires_target"
     origin = memory_origin(memory)
     if origin.mode in {"hypothetical", "question", "summary", "unknown", "world_fact"}:
         return origin.mode
@@ -128,6 +132,10 @@ def claim_source_refusal(memory, *, subject, kind) -> str | None:
 def origin_annotation(memory) -> str:
     origin = memory_origin(memory)
     parts = [f"subject={origin.subject}", f"source={origin.mode}", f"domain={origin.domain}"]
+    if (getattr(memory, "metadata", None) or {}).get("hypothesis_answer"):
+        from app.core.memory.hypothesis_memory import answer_context
+
+        parts.append(answer_context(memory))
     parts.append("authority=" + str(getattr(memory, "provenance", "unknown") or "unknown"))
     if origin.writer.startswith("legacy_kind:"):
         parts.append("basis=kind_contract")

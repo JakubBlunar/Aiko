@@ -20,6 +20,8 @@ def recall_scope(hit) -> str:
     label = f"subject={origin.subject}; source={origin.mode}; domain={origin.domain}"
     if getattr(hit.record, "kind", "") == "catchphrase":
         label += "; recurring quotation, not a personal claim; authorship unproven"
+    if getattr(hit, "memory_context", ""):
+        label += "; " + hit.memory_context
     return f"[{label}] "
 
 

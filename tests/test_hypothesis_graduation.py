@@ -298,7 +298,7 @@ class AnchorTests(_Fixture):
         seen: list[str] = []
         row = self._hypothesis("Cold brew needs a coarser grind", subject=SUBJECT_WORLD)
 
-        self._graduate(row, memory_writer=lambda s: seen.append(s) or 7)
+        self._graduate(row, memory_writer=lambda r: seen.append(r.statement) or 7)
 
         self.assertEqual(seen, ["Cold brew needs a coarser grind"])
 
@@ -316,15 +316,13 @@ class AnchorTests(_Fixture):
         self.assertEqual(result.exit, hg.EXIT_ANCHORED)
         self.assertIsNone(row.linked_concept_id)
 
-    def test_a_missing_writer_still_closes_the_row(self) -> None:
-        """Better to lose the memory than strand a proven guess."""
+    def test_a_missing_writer_leaves_the_row_retryable(self) -> None:
         row = self._hypothesis(subject=SUBJECT_WORLD)
 
         result = self._graduate(row)
 
-        self.assertEqual(result.exit, hg.EXIT_ANCHORED)
-        self.assertIsNone(result.memory_id)
-        self.assertEqual(row.status, STATUS_GRADUATED)
+        self.assertIsNone(result)
+        self.assertEqual(row.status, STATUS_OPEN)
 
     def test_a_raising_writer_is_not_fatal(self) -> None:
         def _boom(_s: str) -> int:
@@ -334,8 +332,8 @@ class AnchorTests(_Fixture):
 
         result = self._graduate(row, memory_writer=_boom)
 
-        self.assertEqual(result.exit, hg.EXIT_ANCHORED)
-        self.assertEqual(row.status, STATUS_GRADUATED)
+        self.assertIsNone(result)
+        self.assertEqual(row.status, STATUS_OPEN)
 
 
 # ── the duplicate race ────────────────────────────────────────────────

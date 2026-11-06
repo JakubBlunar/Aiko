@@ -196,6 +196,7 @@ class RagHit:
     # Authoritative source meaning, joined from SQLite; never inferred from
     # the vector mirror when the join is unavailable.
     memory_origin: "MemoryOrigin | None" = None
+    memory_context: str = ""
     # F10c — topic multi-hop expansion flag. ``True`` for sibling
     # memories pulled from the same topic cluster as a strong query hit
     # (rather than matched directly on cosine). ``RagRetriever.format_block``

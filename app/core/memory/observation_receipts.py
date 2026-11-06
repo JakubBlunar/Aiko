@@ -128,6 +128,32 @@ def facet_scope(memory):
 def longitudinal_sources_current(memory, store, _seen=None):
     """Verify preserved quotes against SQLite before using enriched evidence."""
     metadata = getattr(memory, "metadata", None) or {}
+    answer = metadata.get("hypothesis_answer")
+    if isinstance(answer, dict) and answer.get("version") == 1:
+        if not receipt_sources_current(answer, store):
+            return False
+    support = metadata.get("hypothesis_support")
+    if support is not None:
+        from app.core.memory.reflective_evidence import current
+
+        seen = set(_seen or ())
+        mid = getattr(memory, "id", None)
+        if (mid in seen or not isinstance(support, dict) or support.get("version") != 1
+                or not isinstance(support.get("memory_inputs"), list)
+                or not support["memory_inputs"]):
+            return False
+        # Support packets contain answer receipts, never recursively anchored
+        # world hypotheses. This also makes cyclic/imported packets fail closed.
+        for item in support.get("memory_inputs", []):
+            if not isinstance(item, dict):
+                return False
+            source = store.get(item.get("memory_id"))
+            meta = getattr(source, "metadata", None) or {}
+            if (source is None or not meta.get("hypothesis_answer")
+                    or meta.get("hypothesis_support")):
+                return False
+        if not current(support, store):
+            return False
     if not receipt_sources_current(metadata.get("claim_fidelity"), store):
         return False
     if not receipt_sources_current(metadata.get("moment_evidence"), store):

@@ -347,7 +347,8 @@ class HypothesisResolveMixin:
             str(hit.statement or ""),
             body,
             confirming=verdict.verdict == "confirm",
-            evidence=verdict.evidence,
+            evidence=verdict.evidence, verdict=verdict.verdict,
+            subject=str(hit.subject), target_id=int(hit.hypothesis_id), target_type="hypothesis",
         )
         if memory_id is None:
             return
@@ -386,6 +387,8 @@ class HypothesisResolveMixin:
         memory_id = self._store_hypothesis_answer(
             belief, user_text, confirming=verdict.verdict == CONFIRM,
             evidence=verdict.evidence, question=str(row.payload.get("asked_text") or ""),
+            verdict=verdict.verdict, subject=str(getattr(target, "subject", "unknown")),
+            target_id=target_id, target_type=target_type,
         )
         if memory_id is None:
             return False
@@ -498,23 +501,32 @@ class HypothesisResolveMixin:
         except Exception:
             return True
 
-    def _anchor_world_hypothesis(self, statement: str) -> int | None:
-        """The ``world`` exit: a proven guess about how something works."""
+    def _anchor_world_hypothesis(self, row: Any) -> int | None:
+        """Anchor a world interpretation with its actual answer supports."""
+        from dataclasses import asdict
+        from app.core.memory.hypothesis_memory import world_support
+        from app.core.memory.memory_origin import MemoryOrigin
+        from app.core.memory.reflective_evidence import current
+
         memory_store = getattr(self, "_memory_store", None)
         embedder = getattr(self, "_embedder", None)
-        body = (statement or "").strip()
-        if memory_store is None or embedder is None or not body:
+        body = str(row.statement or "").strip()
+        if memory_store is None or embedder is None or not body or len(body) > 1000:
+            return None
+        support = world_support(row, memory_store)
+        if support is None:
             return None
         try:
+            embedding = embedder.embed(body)
+            if not current(support, memory_store):
+                return None
             memory = memory_store.add(
-                content=body[:1000],
-                kind="fact",
-                embedding=embedder.embed(body),
-                salience=0.6,
-                confidence=0.75,
-                tier="long_term",
+                content=body, kind="fact", embedding=embedding,
+                salience=0.6, confidence=0.75, tier="long_term", provenance="inferred",
                 source_session=getattr(self, "session_key", None),
-                metadata={"source": "hypothesis"},
+                metadata={"source": "hypothesis", "hypothesis_support": support,
+                          "memory_origin": asdict(MemoryOrigin(
+                              "world", "interpretation", "hypothesis_graduation", "external"))},
             )
         except Exception:
             log.warning("world hypothesis anchor failed", exc_info=True)
@@ -529,40 +541,41 @@ class HypothesisResolveMixin:
 
     def _store_hypothesis_answer(
         self, belief: str, user_text: str, *, confirming: bool,
-        evidence: str | None = None, question: str = "",
+        evidence: str | None = None, question: str = "", verdict: str | None = None,
+        subject: str = "unknown", target_id: int | None = None, target_type: str = "hypothesis",
     ) -> int | None:
-        """Persist what the user actually said, as an ordinary memory."""
+        """Persist a bounded reply receipt; never index the proposed belief."""
+        from app.core.memory.hypothesis_memory import answer_payload
+
         memory_store = getattr(self, "_memory_store", None)
         embedder = getattr(self, "_embedder", None)
         body = (user_text or "").strip()
         if memory_store is None or embedder is None or not body:
             return None
-        # Debug-forced verdicts retain their explicit source text. Runtime calls
-        # must supply the adjudicator's validated span, never a generated restatement.
-        quote = body if evidence is None else evidence.strip()
-        if not quote or quote not in body:
-            return None
-        content = f'User evidence concerning "{belief}": {quote}'[:1000]
         event = current_answer_event.get() or {}
         try:
+            payload = answer_payload(
+                belief, body, evidence=evidence, question=question,
+                verdict=verdict or ("confirm" if confirming else "deny"), subject=subject,
+                target_id=target_id, target_type=target_type, event=event,
+                db=getattr(self, "_chat_db", None),
+            )
+            if payload is None:
+                return None
+            embedding = embedder.embed(payload["content"])
+            refreshed = answer_payload(
+                belief, body, evidence=evidence, question=question,
+                verdict=verdict or ("confirm" if confirming else "deny"), subject=subject,
+                target_id=target_id, target_type=target_type, event=event,
+                db=getattr(self, "_chat_db", None),
+            )
+            if refreshed != payload:
+                return None
             memory = memory_store.add(
-                content=content,
-                kind="fact",
-                embedding=embedder.embed(content),
-                salience=0.65,
-                confidence=0.85,
-                tier="long_term",
+                **payload, kind="fact", embedding=embedding,
+                salience=0.65, confidence=0.85, tier="long_term",
                 source_session=event.get("session_id", getattr(self, "session_key", None)),
                 source_message_id=event.get("user_message_id"),
-                metadata={
-                    "answer_event": event,
-                    "hypothesis_answer": {
-                        "mode": "direct" if question else "observation",
-                        "question": question[:1000], "evidence": quote,
-                        "verdict": "confirm" if confirming else "response",
-                    },
-                },
-                event_time=event.get("observed_at"),
             )
         except Exception:
             log.warning("hypothesis answer memory write failed", exc_info=True)

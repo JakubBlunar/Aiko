@@ -360,6 +360,7 @@ class HypothesisDebugMixin:
 
         memory_id = self._store_hypothesis_answer(
             str(row.statement), body, confirming=wanted == "confirm",
+            verdict=wanted, subject=str(row.subject), target_id=int(row.hypothesis_id),
         )
         self._apply_invented_answer(
             row,

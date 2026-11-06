@@ -160,7 +160,7 @@ def graduate(
     concept_store: "ConceptStore",
     row: "Hypothesis",
     event_store: "ConceptEventStore | None" = None,
-    memory_writer: Callable[[str], int | None] | None = None,
+    memory_writer: Callable[["Hypothesis"], int | None] | None = None,
     memory_exists: Callable[[int], bool] | None = None,
 ) -> GraduationResult | None:
     """Close a proven guess by the exit that fits it. Never raises.
@@ -304,20 +304,19 @@ def _mint(
 def _anchor(
     hypothesis_store: "HypothesisStore",
     row: "Hypothesis",
-    memory_writer: Callable[[str], int | None] | None,
-) -> GraduationResult:
+    memory_writer: Callable[["Hypothesis"], int | None] | None,
+) -> GraduationResult | None:
     """Become a durable memory: the exit for a guess about the world.
 
-    ``memory_writer`` is a ``(statement) -> memory_id | None`` callable
+    ``memory_writer`` is a ``(hypothesis) -> memory_id | None`` callable
     the caller supplies, because embedding and notification belong to the
-    session, not here. Without one the row still closes — the
-    alternative is a proven guess sitting ``supported`` forever because a
-    plumbing handle was absent, which is worse than losing the memory.
+    session, not here. Missing or failed writes leave the supported row live
+    so a later attempt can persist its evidence instead of silently losing it.
     """
     memory_id: int | None = None
     if memory_writer is not None:
         try:
-            written = memory_writer(str(row.statement))
+            written = memory_writer(row)
             memory_id = int(written) if written else None
         except Exception:
             log.warning(
@@ -326,6 +325,8 @@ def _anchor(
                 exc_info=True,
             )
             memory_id = None
+    if memory_id is None:
+        return None
     hypothesis_store.close(
         row, status=STATUS_GRADUATED, memory_id=memory_id
     )

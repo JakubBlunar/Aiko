@@ -63,11 +63,13 @@ class _FakeOllama:
 class _FakeMemoryStore:
     def __init__(self) -> None:
         self.added: list[str] = []
+        self.payloads: list[dict] = []
         self._next_id = 500
         self._by_id: dict[int, Any] = {}
 
     def add(self, *, content: str, **_kw: Any):
         self.added.append(content)
+        self.payloads.append(_kw)
         self._next_id += 1
         row = SimpleNamespace(id=self._next_id, content=content)
         self._by_id[row.id] = row
@@ -266,8 +268,11 @@ class SettledVerdictTests(_Fixture):
 
         self.assertEqual(len(self.memories.added), 1)
         stored = self.memories.added[0]
-        self.assertIn(self.LABEL, stored)
+        self.assertNotIn(self.LABEL, stored)
         self.assertIn("yeah, pretty much", stored)
+        receipt = self.memories.payloads[0]["metadata"]["hypothesis_answer"]
+        self.assertEqual(receipt["question"], "Does walking help you think?")
+        self.assertEqual(receipt["proposed_statement"], self.LABEL)
 
     def test_each_verdict_leaves_a_concept_event(self) -> None:
         self._awaiting_cue()
