@@ -216,7 +216,12 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
                 raise HTTPException(400, "answer must be a string")
             if isinstance(raw_answer, str):
                 answer = raw_answer
-        snapshot = session.resolve_knowledge_gap(int(gap_id), answer=answer)
+        try:
+            snapshot = session.resolve_knowledge_gap(int(gap_id), answer=answer)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
         if snapshot is None:
             raise HTTPException(404, "knowledge gap not found")
         return JSONResponse({"gap": snapshot})

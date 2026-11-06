@@ -56,3 +56,16 @@ ordinary extraction path.
 Focused image/recall checks: 62 passed, plus 18 image-evidence and receipt checks.
 Lint passed. Live visual identification and summary entailment remain model
 quality questions, not proven by literal citation checks.
+
+## Manual knowledge-gap answers
+
+The manual path validates the gap before writing and rechecks the question after
+embedding. Supplied answers retain the question, manual source, gap identity and
+recording date. Their subject remains explicitly unknown: knowing who entered an
+answer does not identify what it describes or independently verify world facts.
+Occurrence dates are not inferred from entry time.
+
+Unavailable embedding, failed writes and changed questions report a retryable
+error without closing the gap. A deliberately blank answer still dismisses it
+without creating a memory. Invalid/non-gap IDs create no answer. Already closed
+gaps do not create another answer. Focused gap/REST checks: 70 passed; lint passed.

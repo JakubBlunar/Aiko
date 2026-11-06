@@ -634,40 +634,56 @@ class MemoryFacadeMixin:
         *,
         answer: str | None = None,
     ) -> dict[str, Any] | None:
-        """Mark a gap resolved.
+        """Save a contextual manual answer, or deliberately dismiss a gap."""
+        from app.core.memory.manual_gap_answer import answer_payload, gap_revision
 
-        If ``answer`` is provided, also writes a sibling ``fact`` memory
-        with the answer text (so the answer ends up in retrieval) and
-        backlinks the gap via ``resolved_by_memory_id``. Returns the
-        updated gap snapshot, or ``None`` on failure.
-        """
         store = getattr(self, "_knowledge_gap_store", None)
         memory_store = getattr(self, "_memory_store", None)
         embedder = getattr(self, "_embedder", None)
         if store is None or memory_store is None:
             return None
-        answer_memory_id: int | None = None
-        if answer is not None and embedder is not None:
-            cleaned = answer.strip()
-            if cleaned:
-                try:
-                    emb = embedder.embed(cleaned)
-                    mem = memory_store.add(
-                        content=cleaned,
-                        kind="fact",
-                        embedding=emb,
-                        salience=0.7,
-                        confidence=0.85,
-                        tier="long_term",
-                    )
-                    if mem is not None:
-                        answer_memory_id = int(mem.id)
-                        self._notify_memory_added(mem)
-                except Exception:
-                    log.warning("gap resolve answer write failed", exc_info=True)
-        ok = store.mark_resolved(int(gap_id), answer_memory_id=answer_memory_id)
-        if not ok:
+        gap = memory_store.get(int(gap_id))
+        if gap is None or gap.kind != "knowledge_gap":
             return None
+        if (gap.metadata or {}).get("resolved_at"):
+            return gap.to_dict()
+        cleaned = (answer or "").strip()
+        answer_memory_id: int | None = None
+        if cleaned:
+            if embedder is None:
+                raise RuntimeError("The answer could not be saved; the question remains open.")
+            payload = answer_payload(gap, cleaned, timephrase.utcnow())
+            before = gap_revision(gap)
+            try:
+                emb = embedder.embed(payload["content"])
+            except Exception as exc:
+                raise RuntimeError(
+                    "The answer could not be saved; the question remains open."
+                ) from exc
+            current = memory_store.get(int(gap_id))
+            if (current is None or gap_revision(current) != before
+                    or (current.metadata or {}).get("resolved_at")):
+                raise RuntimeError("The question changed while saving. Refresh and try again.")
+            try:
+                mem = memory_store.add(
+                    **payload, kind="fact", embedding=emb, salience=0.7, confidence=0.85,
+                    tier="long_term", skip_dedupe=True,
+                    source_session=getattr(self, "session_key", None),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "The answer could not be saved; the question remains open."
+                ) from exc
+            if mem is None:
+                raise RuntimeError("The answer could not be saved; the question remains open.")
+            answer_memory_id = int(mem.id)
+            self._notify_memory_added(mem)
+        ok = store.mark_resolved(
+            int(gap_id), answer_memory_id=answer_memory_id,
+            resolved_by="manual_answer" if cleaned else "manual_dismissal",
+        )
+        if not ok:
+            raise RuntimeError("The question could not be closed. Refresh and try again.")
         # Re-fetch the resolved gap snapshot for the response payload.
         try:
             gap = memory_store.get(int(gap_id))
