@@ -4,12 +4,10 @@ A low-cadence :class:`IdleWorker` that, during quiet windows, applies ONE
 small bounded micro-state transition to a seeded room item and broadcasts
 the ``world_updated`` patch so the World tab shows the drift:
 
-* **tea pot** — cycles full → half → empty → (brews a fresh flavour).
+* **tea pot** — brews a fresh flavour when empty; drinking belongs to activities.
 * **cookie jar** — refilled with a fresh batch once it runs low/empty
   (closes the loop with the away-beat "snack" that consumes it).
-* **paperback** — advances only through supplied passages, retaining the
-  latest excerpt. Finishing leaves the same book intact and emits a
-  concrete acknowledgement, never an invented plot reaction.
+* Reading progress belongs to the away activity worker, not background room drift.
 * **the kitchen** (K91) — folds duplicate food stacks that months of gifts
   scattered across rooms back into one row per slug, so an away beat isn't
   eating from an arbitrary one of four "cookies".
@@ -51,7 +49,7 @@ _COOKIE_REFILL_QTY = 3
 
 
 class RoomEvolutionWorker:
-    """IdleWorker that slowly evolves the room's consumables + book."""
+    """IdleWorker that maintains the room's consumables."""
 
     name = "room_evolution"
 
@@ -98,18 +96,7 @@ class RoomEvolutionWorker:
     def demand(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> "WorkSignal | None":
-        """Is there a room transition to make, and might it need the LLM?
-
-        Mirrors the candidate-building half of :meth:`run` without
-        applying anything -- ``list_items`` plus a kv read.
-
-        ``needs_llm`` is conservative: the only LLM path is composing a
-        seed when a book *finishes*, but which candidate gets picked is a
-        random choice made inside ``run()``, so the book merely being a
-        candidate is enough to charge the LLM lane. At a six-hour
-        heartbeat that over-charge costs nothing, while the opposite
-        error would put a generation in the compute lane.
-        """
+        """Probe maintenance only; it never consumes tea or reads a book."""
         if not bool(getattr(self._agent, "room_evolution_enabled", True)):
             return WorkSignal(pressure=0.0, reason="disabled")
         if not self._force and not self._gap_elapsed(now):
@@ -122,9 +109,7 @@ class RoomEvolutionWorker:
         jar = items.get(evo.COOKIE_JAR_SLUG)
         candidates = sum(
             (
-                evo.TEA_POT_SLUG in items,
-                evo.BOOK_SLUG in items
-                and evo.available_book_step(items[evo.BOOK_SLUG].state) is not None,
+                self._empty_pot(items.get(evo.TEA_POT_SLUG)),
                 jar is None or jar.quantity <= _COOKIE_LOW_AT,
                 self._duplicate_food_slugs(),
             )
@@ -151,13 +136,8 @@ class RoomEvolutionWorker:
         candidates: list[Callable[[datetime], dict[str, Any] | None]] = []
         items = {i.slug: i for i in self._world.list_items()}
 
-        if evo.TEA_POT_SLUG in items:
+        if self._empty_pot(items.get(evo.TEA_POT_SLUG)):
             candidates.append(lambda n: self._evolve_tea(items[evo.TEA_POT_SLUG]))
-        if (
-            evo.BOOK_SLUG in items
-            and evo.available_book_step(items[evo.BOOK_SLUG].state) is not None
-        ):
-            candidates.append(lambda n: self._evolve_book(items[evo.BOOK_SLUG], n))
         # Cookies: refill candidate only when low or missing entirely.
         jar = items.get(evo.COOKIE_JAR_SLUG)
         if jar is None or jar.quantity <= _COOKIE_LOW_AT:
@@ -179,6 +159,10 @@ class RoomEvolutionWorker:
         return {"skipped": True, "reason": "noop"}
 
     # ── transitions ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _empty_pot(item: Any) -> bool:
+        return item is not None and str((item.state or {}).get("fullness", "full")) == "empty"
 
     def _evolve_tea(self, item: Any) -> dict[str, Any] | None:
         new_state, new_desc, _event = evo.next_tea(item.state, self._rng)
@@ -263,38 +247,6 @@ class RoomEvolutionWorker:
                 self._broadcast({"item": kept.to_dict()})
         log.info("room-evolution kitchen: merged %d food stacks", len(merged))
         return {"kind": "kitchen", "merged": merged}
-
-    def _evolve_book(self, item: Any, now: datetime) -> dict[str, Any] | None:
-        step = evo.available_book_step(item.state)
-        if step is None:
-            return None
-        new_state, new_name, new_desc, finished = step
-        updated = self._world.update_item(
-            item.id, name=new_name, description=new_desc, state=new_state,
-        )
-        if updated is None:
-            return None
-        self._broadcast({"item": updated.to_dict()})
-
-        if finished:
-            seed = (
-                f"I finished the supplied passages of {finished}. "
-                "I can come back to the saved text."
-            )
-            if seed:
-                self._emit_seed(now, f"reading {finished}", seed)
-            log.info(
-                "room-evolution supplied book finished: %s", finished,
-            )
-            return {"kind": "book", "finished": finished, "status": "finished"}
-
-        log.info(
-            "room-evolution book: progress=%s/%s",
-            new_state.get("progress"), new_state.get("total"),
-        )
-        return {"kind": "book", "progress": new_state.get("progress")}
-
-    # ── helpers ───────────────────────────────────────────────────────
 
     def _emit_seed(self, now: datetime, activity: str, seed: str) -> None:
         append_idle_seed(

@@ -318,7 +318,7 @@ class WorkerTests(unittest.TestCase):
         # Gate stamp was advanced.
         self.assertIn(KV_LAST_EVOLVED_AT, kv.store)
 
-    def test_book_finish_emits_seed(self) -> None:
+    def test_background_drift_does_not_read_a_book(self) -> None:
         kv = _FakeKV()
         book = _FakeItem(
             1, "scifi_paperback", "Old Book",
@@ -334,17 +334,9 @@ class WorkerTests(unittest.TestCase):
         worker = _worker(world=world, kv=kv)
         worker._force = True
         r = worker.run()
-        self.assertEqual(r.get("kind"), "book")
-        self.assertEqual(r.get("finished"), "Old Book")
-        ring = load_idle_seeds(kv.kv_get)
-        self.assertTrue(ring)
-        self.assertEqual(ring[-1]["key"], "room_evolution")
-        self.assertIn("Old Book", ring[-1]["seed"])
-        self.assertNotIn("ending", ring[-1]["seed"])
-        self.assertEqual(book.state["title"], "Old Book")
-        self.assertEqual(book.state["status"], "finished")
-        self.assertEqual(book.state["progress"], 5)
-        self.assertIn("test passage", book.state["last_read_excerpt"])
+        self.assertEqual(r.get("reason"), "no_candidates")
+        self.assertEqual(book.state["progress"], 4)
+        self.assertFalse(load_idle_seeds(kv.kv_get))
 
     def test_title_and_counter_do_not_grant_reading(self) -> None:
         book = _FakeItem(
@@ -354,7 +346,7 @@ class WorkerTests(unittest.TestCase):
         self.assertIsNone(evo.available_book_step(book.state))
         kv = _FakeKV()
         worker = _worker(world=_FakeWorld([book]), kv=kv)
-        self.assertIsNone(worker._evolve_book(book, datetime.now(timezone.utc)))
+        worker.run()
         self.assertEqual(book.state["progress"], 4)
         self.assertEqual(load_idle_seeds(kv.kv_get), [])
 

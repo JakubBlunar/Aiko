@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.world.plant_growth_worker import PlantGrowthWorker
@@ -42,6 +43,15 @@ def _age_plant(store: WorldStore, item_id: int, *, hours_ago: float) -> None:
 
 
 class PlantGrowthWorkerTests(unittest.TestCase):
+    def test_failed_save_does_not_advance_live_mirror(self) -> None:
+        with _TempWorld() as store:
+            plant = store.list_items(kind="plant")[0]
+            _age_plant(store, plant.id, hours_ago=200)
+            before = dict(plant.state)
+            with patch.object(store, "update_item", side_effect=OSError("write failed")):
+                assert PlantGrowthWorker(store).run()["promoted"] == 0
+            assert store.get_item(plant.id).state == before
+
     def test_promotes_due_sprouts(self) -> None:
         with _TempWorld() as store:
             sprouts = [

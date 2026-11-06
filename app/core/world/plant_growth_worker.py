@@ -18,6 +18,7 @@ in place without a refetch.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -110,7 +111,10 @@ class PlantGrowthWorker:
         for item in plants:
             scanned += 1
             try:
-                next_stage = promote_stage(item)
+                # Store rows are live mirror references: prepare the transition
+                # separately so a failed save cannot advance only the mirror.
+                proposed = deepcopy(item)
+                next_stage = promote_stage(proposed)
             except Exception:
                 log.debug(
                     "plant growth: promote_stage raised for id=%s",
@@ -121,7 +125,10 @@ class PlantGrowthWorker:
             if next_stage is None:
                 continue
             try:
-                updated = self._store.update_item(item.id, state=dict(item.state))
+                updated = self._store.update_item(
+                    item.id, state=dict(proposed.state),
+                    expected_updated_at=proposed.updated_at,
+                )
             except Exception:
                 log.debug(
                     "plant growth: update_item failed for id=%s",
