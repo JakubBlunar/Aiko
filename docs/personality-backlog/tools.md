@@ -8,6 +8,22 @@ audit](shipped/audit-2026-10-24.md).
 D1 one-shot reminders are [implemented](shipped/tools.md#d1-local-one-shot-reminders--shipped);
 recurrence and OS notifications remain open follow-ups, not part of the one-shot implementation.
 
+## Fast brain tool quality review (6 Nov 2026)
+
+**Status: Reviewed; implementation proposed.** The
+[fast-tool audit](../fast-brain-tools-audit-2026-11-06.md) checks the live 34-tool
+inventory, return contracts, gate/router reachability and source inspection gaps.
+An offline synthetic probe reproduces lost recall qualifications, unmarked
+withdrawn topic records, failures reported as empty results, missing natural
+request routes, the explicit-timezone clock bypass and an obsolete tool reference.
+
+Priorities: qualified recall and exact source inspection; coverage/error status;
+natural grounding/action reachability; honest task status and terminal-result
+inspection; time/schema cleanup. Follow with focused current-interpretation and
+relationship/change-history reads through the existing stores. These are proposed
+improvements, not live-model accuracy measurements or implemented fixes. The audit
+records passing regression coverage and acceptance scenarios.
+
 ## D8. Conversation archive recall with daily overviews
 
 **Status: Partial.**
