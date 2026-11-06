@@ -77,28 +77,13 @@ def build_recent_context(
 
     ``rows`` are :class:`ChatDatabase.MessageRow`-shaped (oldest first);
     only ``role`` / ``content`` are read. The result is trimmed to the
-    last ``max_chars`` characters so a long session can't blow the
-    compose prompt budget. Returns ``""`` for empty / malformed input.
+    newest contiguous whole messages within ``max_chars``. A message's final
+    qualification must not be clipped. Returns ``""`` when no whole row fits.
     """
-    speaker = (user_name or "User").strip() or "User"
-    lines = [timephrase.format_transcript([row], role_labels={"user": speaker, "assistant": "Aiko"})
-             for row in rows or []]
-    lines = [line for line in lines if line]
-    text = "\n".join(lines).strip()
-    if max_chars > 0 and len(text) > max_chars:
-        # Keep each retained line's age/actor prefix when applying the budget.
-        kept: list[str] = []
-        remaining = max_chars
-        for line in reversed(lines):
-            if kept and len(line) + 1 > remaining:
-                break
-            clipped = line[:remaining]
-            kept.append(clipped)
-            remaining -= len(clipped) + 1
-            if remaining <= 0:
-                break
-        text = "\n".join(reversed(kept))
-    return text
+    from app.core.memory.worker_sources import transcript_packet
+
+    return transcript_packet(rows, user_name=user_name or "User",
+                             max_chars=max_chars if max_chars > 0 else 100000)["text"]
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -140,6 +125,7 @@ class DiaryWorker:
         embed: Callable[[str], "np.ndarray"],
         recent_context_provider: Callable[[], str],
         context_key_provider: Callable[[], str] | None = None,
+        source_snapshot_provider: Callable[[], dict] | None = None,
         is_away_provider: Callable[[], bool],
         user_display_name_provider: Callable[[], str],
         kv_get: Callable[[str], str | None],
@@ -159,6 +145,7 @@ class DiaryWorker:
         self._embed = embed
         self._recent_context_provider = recent_context_provider
         self._context_key_provider = context_key_provider
+        self._source_snapshot_provider = source_snapshot_provider
         self._is_away_provider = is_away_provider
         self._user_display_name_provider = user_display_name_provider
         self._kv_get = kv_get
@@ -282,9 +269,16 @@ class DiaryWorker:
         if blocker is not None:
             return DiaryResult(reason=blocker)
 
-        key = self._context_key()
-        context = self._recent_context()
-        entry = self._compose(context)
+        packet = self._source_snapshot_provider() if self._source_snapshot_provider else None
+        key = packet["key"] if packet is not None else self._context_key()
+        context = packet["text"] if packet is not None else self._recent_context()
+        source_session = (
+            packet.get("session_key") if packet is not None else
+            self._source_session_provider() if self._source_session_provider else None
+        )
+        if not context:
+            return DiaryResult(reason="no_context")
+        entry = self._compose(context, derivation=packet) if packet else self._compose(context)
         # Even an abstention spends a model call. A timer alone must not make
         # unchanged dialogue worth another entry (or retry an empty pass).
         self._mark_fired(now)
@@ -293,7 +287,12 @@ class DiaryWorker:
                 self._kv_set_safe(_KV_LAST_CONTEXT, key)
             return DiaryResult(reason="empty")
 
-        memory = self._persist(entry, source_key=key)
+        if packet is not None:
+            from app.core.memory.worker_sources import current
+
+            if not current(packet, self._memory_store):
+                return DiaryResult(fired=1, reason="source_changed")
+        memory = self._persist(entry, source_key=key, packet=packet, source_session=source_session)
         if memory is None:
             return DiaryResult(fired=1, reason="persist_failed", entry=entry)
         if key:
@@ -308,11 +307,16 @@ class DiaryWorker:
 
     # ── compose ──────────────────────────────────────────────────────
 
-    def _compose(self, context: str) -> str | None:
-        user_name = self._resolve(self._user_display_name_provider) or "them"
+    def _compose(self, context: str, *, derivation: dict | None = None) -> str | None:
+        user_name = (derivation.get("user_name") if derivation else None) or (
+            self._resolve(self._user_display_name_provider) or "them")
         try:
             previous = self._memory_store.list_recent(limit=3, kind="diary")
-            earlier = timephrase.format_memory_block(previous, _utcnow())
+            from app.core.memory.reflective_evidence import capture
+
+            earlier, previous_receipt, _ = capture(previous, max_chars=3000, limit=3)
+            if derivation is not None:
+                derivation["memory_inputs"] = previous_receipt["memory_inputs"]
         except Exception:
             earlier = "(no earlier entries available)"
         color = ""
@@ -387,7 +391,8 @@ class DiaryWorker:
             return None
         return entry
 
-    def _persist(self, entry: str, *, source_key: str = "") -> Any:
+    def _persist(self, entry: str, *, source_key: str = "", packet: dict | None = None,
+                 source_session: str | None = None) -> Any:
         if timephrase.has_relative_deictic(entry):
             return None
         try:
@@ -395,12 +400,10 @@ class DiaryWorker:
         except Exception:
             log.debug("diary worker embed failed", exc_info=True)
             return None
-        source_session = None
-        if self._source_session_provider is not None:
-            try:
-                source_session = self._source_session_provider()
-            except Exception:
-                source_session = None
+        from app.core.memory.worker_sources import current, receipt
+
+        if packet is not None and not current(packet, self._memory_store):
+            return None
         try:
             memory = self._memory_store.add(
                 content=entry,
@@ -411,7 +414,8 @@ class DiaryWorker:
                 tier="long_term",
                 temporal_type="past_event",
                 metadata={**journal_metadata("worker"),
-                          "context_key": source_key},
+                          "context_key": source_key,
+                          **({"reflective_derivation": receipt(packet)} if packet else {})},
                 # Each diary entry is preserved as its own moment.
                 skip_dedupe=True,
             )
@@ -443,6 +447,8 @@ class DiaryWorker:
             return ""
 
     def _context_key(self) -> str:
+        if self._source_snapshot_provider is not None:
+            return self._source_snapshot_provider()["key"]
         if self._context_key_provider is None:
             return ""
         try:

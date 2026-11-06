@@ -630,7 +630,17 @@ class IdleWorkersInitMixin:
                 )
 
                 mem = self._memory_settings
+                from app.core.memory.worker_sources import transcript_packet
+
+                def diary_snapshot():
+                    session_key = self.session_key
+                    return transcript_packet(
+                        self._chat_db.get_messages(session_key, limit=14),
+                        user_name=self.user_display_name, session_key=session_key,
+                    )
+
                 self._diary_worker = DiaryWorker(
+                    source_snapshot_provider=diary_snapshot,
                     memory_store=self._memory_store,
                     embed=lambda text: self._embedder.embed(text),
                     recent_context_provider=lambda: build_recent_context(

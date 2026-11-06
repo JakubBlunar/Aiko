@@ -125,6 +125,7 @@ class PostSleepDiaryWorker:
             + f"User name: {self._user_name_provider()}\nFacts: {facts}"
         )
         try:
+            source_session = self._session_provider()
             raw = self._client.chat(
                 [{"role": "user", "content": prompt}],
                 model=self._model_provider(),
@@ -132,8 +133,8 @@ class PostSleepDiaryWorker:
                 think=False,
                 surface="post_sleep_diary",
             )
-            content = " ".join(str(raw or "").strip().strip("\"'`").split())[:500]
-            if len(content) < 12 or timephrase.has_relative_deictic(content):
+            content = " ".join(str(raw or "").strip().strip("\"'`").split())
+            if not 12 <= len(content) <= 500 or timephrase.has_relative_deictic(content):
                 raise ValueError("unsafe or empty post-sleep diary output")
             embedding = self._embedder.embed(content)
             memory = self._memory_store.add(
@@ -141,7 +142,7 @@ class PostSleepDiaryWorker:
                 kind="diary",
                 embedding=embedding,
                 salience=0.68,
-                source_session=self._session_provider(),
+                source_session=source_session,
                 metadata={**journal_metadata("post_sleep_worker"), "sleep_episode_id": episode.id},
                 tier="long_term",
                 temporal_type="past_event",

@@ -101,7 +101,7 @@ class BuildRecentContextTests(unittest.TestCase):
     def test_skips_blank_and_trims_to_max(self) -> None:
         rows = [_Row("user", ""), _Row("assistant", "x" * 100)]
         out = build_recent_context(rows, "Jacob", max_chars=20)
-        self.assertEqual(len(out), 20)
+        self.assertEqual(out, "")
 
     def test_empty_rows(self) -> None:
         self.assertEqual(build_recent_context([], "Jacob"), "")
@@ -317,6 +317,7 @@ class JournalQualityTests(unittest.TestCase):
 
         worker = _make_worker()
         worker._memory_store.list_recent = lambda **_: [SimpleNamespace(
+            id=999, kind="diary", metadata={},
             content="I felt uncertain about offering another suggestion.",
             created_at="2026-11-01T10:00:00Z", temporal_type="past_event",
         )]

@@ -170,6 +170,13 @@ def _make_worker(db: _FakeDB, client: _FakeClient, *, agent=None,
 _GOOD_REPLY = '{"title": "Parser bug", "note": "Deep in a parser bug. Frustrated but close."}'
 
 
+def test_thread_input_keeps_the_final_negation_of_a_long_message():
+    text = "A proposed plan. " * 30 + "But this was imagined and I did not do it."
+    db = _FakeDB(count=20, messages=[_Msg("user", text)])
+    worker = _make_worker(db, _FakeClient(_GOOD_REPLY))
+    assert text in worker._build_transcript("default:abc")
+
+
 # ── trigger logic (_should_redraft / is_ready) ──────────────────────
 
 
