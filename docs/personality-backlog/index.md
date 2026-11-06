@@ -11,7 +11,7 @@ measurement.
 
 6 Nov follow-up: the post-restart memory/time-quality review is explicitly waiting
 for ordinary-use data under [L22's checklist](concepts.md#l22-follow-up-post-restart-memory-quality-cohort-6-nov-2026).
-Further producer-quality candidates are recorded under
+Reflective producer-quality improvements are implemented, with ordinary-use validation under
 [workers](workers.md#next-producer-quality-candidates-source-review-6-nov-2026).
 
 **Status meanings:** open = proposed work absent; partial = named implemented slice plus a concrete

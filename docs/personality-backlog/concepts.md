@@ -86,6 +86,10 @@ the actual source messages, not only metadata coverage or counts.
 - [ ] Trace a small resulting concept cohort back to its memories. Keep
   historical review candidates separate from post-restart generation results;
   document denominators and unresolved uncertainty before tuning promotion gates.
+- [ ] After the additional [reflective-producer restart](../reflective-producer-quality.md),
+  check goal-note novelty and genuine reported outcomes, narrow shared-moment
+  citations/event dates, and dream input qualifications/derivations. Record this
+  activation boundary separately from the earlier time-quality restart.
 
 References: [time/data-quality implementation](../memory-time-quality.md),
 [longitudinal evidence](../longitudinal-memory.md),

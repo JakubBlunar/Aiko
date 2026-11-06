@@ -61,43 +61,37 @@ Check fresh worker output against its actual sources after normal use, including
 missed important memories, and keep historical issues separate. Do not count a
 healthy startup or a sparse worker cohort as semantic quality validation.
 
-### Next producer-quality candidates (source review, 6 Nov 2026)
+<a id="next-producer-quality-candidates-source-review-6-nov-2026"></a>
 
-These are proposed improvements, not implemented fixes or new post-restart
-quality scores. The earlier producer inventory is historical; inspect current
-owners before carrying one of its findings forward.
+### Reflective producer quality (implemented 6 Nov 2026)
 
-1. **Goal reflections: ground novelty in something beyond earlier reflections.**
-   `GoalWorker._run_reflection` supplies a goal and its earlier generated notes,
-   without fresh conversation/action/result evidence. `GoalStore.add_progress`
-   stores worker notes long-term at confidence 0.8 with insert dedupe bypassed.
-   Recent stored examples repeat similar quiet/hum/continuity imagery across
-   different goals. Preserve Aiko's subjective voice and deliberate notes;
-   distinguish a changed intention, a reflection and a reported step/outcome.
-   Supply small relevant source packets when available, retain derivation IDs,
-   and permit no new entry when there is no meaningful change. Rewording the
-   same sentiment must not count as observed progress.
-2. **Shared moments: separate supporting exchange from event time.** The current
-   detector retains a `context_window` receipt for the offered messages, then
-   assigns `when` from the last offered timestamp. That does not establish which
-   lines support each clause or when a remembered earlier event occurred. Add
-   narrow supporting citations and explicit reported-event versus recording
-   time, with unknown occurrence time allowed. Preserve shared virtual and
-   interpersonal meaning; do not turn a broad window into proof of every detail.
-   See [shared moments](moments.md).
-3. **Dream derivations: retain input identity and whole qualifications.** The
-   current input seam already age-tags memories, but renders content prefixes
-   into strings; the stored dream retains a sleep episode ID without the actual
-   input-memory revisions. Keep bounded source identities/revisions, preserve
-   conditions through packet packing, and label the output as associative
-   reflection. Reprocessing old material must not become a fresh observation.
-   This is traceability for creative inner life, not a requirement for literal
-   reporting or a new confidence formula.
+**Status: Implemented; ordinary-use validation waiting.**
+[Implementation and limits](../reflective-producer-quality.md). Activation requires
+another backend restart; do not score older rows as output from these changes.
 
-Source checks: [goal_worker.py](../../app/core/goals/goal_worker.py),
-[goal_store.py](../../app/core/goals/goal_store.py),
+- Goal reflections now receive bounded relevant source records and deliberate
+  notes, distinguish reflection/intention/reported step/outcome, skip unchanged
+  context, and retain input revisions. Novelty checks preserve changed conditions
+  and negation. Existing generated notes do not become new observations.
+- Shared moments now retain narrow clause citations and an explicit exchange,
+  recalled-event or virtual scope. Unknown occurrence dates remain unknown;
+  recording time alone cannot create an anniversary. Source edits defer writes,
+  and deliberate revisions preserve old receipts as history.
+- Dreams now receive whole qualified memory rows with input identities/revisions.
+  Legacy text stays explicitly identity-unknown. Input edits defer output; derived
+  context supplies no additional observation roots or confidence votes.
+
+**Remaining:** Review usefulness and abstention in fresh normal use, including
+missed meaningful goal changes, repetitive imagery, genuine outcome retention,
+shared-moment source/time accuracy and preserved dream exceptions. The concrete
+checklist remains under [L22](concepts.md#l22-follow-up-post-restart-memory-quality-cohort-6-nov-2026).
+No worker was forced or live historical memory rewritten during implementation.
+
+Source checks: [goal_reflection_evidence.py](../../app/core/goals/goal_reflection_evidence.py),
+[goal_worker.py](../../app/core/goals/goal_worker.py),
+[moment_evidence.py](../../app/core/relationship/moment_evidence.py),
 [shared_moment_extractor.py](../../app/core/relationship/shared_moment_extractor.py),
-[chat_turn_mixin.py](../../app/core/session/chat_turn_mixin.py),
+[reflective_evidence.py](../../app/core/memory/reflective_evidence.py),
 [dream_worker.py](../../app/core/proactive/dream_worker.py).
 
 ## G-CLEANUP. `consolidator_state.last_cluster_index` is not dead weight — do not drop it

@@ -49,7 +49,7 @@ def test_long_dream_sources_keep_their_age_after_prompt_budgeting():
     payload = DreamWorker._compose_user_payload(None, hours_since_last=8,
         rolling_summary="", callbacks=[], self_memories=notes, affect=None)
     assert timephrase.humanize_past(row.created_at, timephrase.now()) in payload
-    assert len(notes[0]) < 300
+    assert len(notes[0]) > 600  # Whole source, not the old qualification-free prefix.
 
 
 def test_moment_receipt_names_only_the_history_actually_offered():

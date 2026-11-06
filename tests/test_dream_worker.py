@@ -275,7 +275,7 @@ class HotClusterTests(unittest.TestCase):
             )
             self.assertIsNotNone(mem)
             user = self._user(ollama)
-            self.assertIn("Threads that kept coming up lately:", user)
+            self.assertIn("Topic labels for orientation, not evidence of recurrence:", user)
             self.assertIn("rust borrow checker", user)
             self.assertIn("weekend cooking", user)
         finally:

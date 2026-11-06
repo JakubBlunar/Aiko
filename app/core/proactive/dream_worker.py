@@ -246,14 +246,27 @@ class DreamWorker:
             self._stats["skipped_recent"] += 1
             return None
         rolling = (rolling_summary or "").strip()
-        callbacks = [c.strip() for c in (recent_callbacks or []) if c and c.strip()]
-        selfs = [s.strip() for s in (recent_self_memories or []) if s and s.strip()]
+        from app.core.memory.reflective_evidence import capture
+        from app.core.memory.observation_receipts import longitudinal_sources_current
+
+        inputs = [*(recent_callbacks or []), *(recent_self_memories or [])]
+        structured = [row for row in inputs if not isinstance(row, str)
+                      and longitudinal_sources_current(row, self._memory_store)]
+        source_packet, derivation, _ = capture(structured, max_chars=5000, limit=6)
+        callbacks = [c.strip() for c in (recent_callbacks or [])
+                     if isinstance(c, str) and 0 < len(c.strip()) <= 1200][:3]
+        selfs = [s.strip() for s in (recent_self_memories or [])
+                 if isinstance(s, str) and 0 < len(s.strip()) <= 1200][:3]
+        if len(rolling) > 1200:
+            rolling = ""  # An omitted summary is safer than a qualification-free prefix.
+        derivation["note_kind"] = "associative_reflection"
+        derivation["unresolved_text_inputs"] = len(callbacks) + len(selfs) + bool(rolling)
         # K65e: the day's hot clusters are *flavour* — they ground the dream
         # on a recent topic but never on their own justify a dream (so a
         # boot with only cluster labels and no real recent content stays
         # silent, mirroring the K65d self-image stance).
         hot = [h.strip() for h in (hot_clusters or []) if h and h.strip()]
-        if not (rolling or callbacks or selfs):
+        if not (rolling or callbacks or selfs or source_packet):
             self._stats["skipped_no_context"] += 1
             return None
 
@@ -277,6 +290,7 @@ class DreamWorker:
             self_memories=selfs,
             hot_clusters=hot,
             affect=affect,
+            source_packet=source_packet,
         )
         try:
             t0 = time.monotonic()
@@ -341,6 +355,15 @@ class DreamWorker:
             log.debug("dream embed failed", exc_info=True)
             self._stats["failed"] += 1
             return None
+        from app.core.memory.reflective_evidence import current
+
+        if not current(derivation, self._memory_store):
+            if reserved_episode_id is not None:
+                self._sleep_store.finish_episode_output(
+                    reserved_episode_id, kind="dream", memory_id=None,
+                )
+            self._stats["failed"] += 1
+            return None
         try:
             memory = self._memory_store.add(
                 content=content,
@@ -349,11 +372,9 @@ class DreamWorker:
                 salience=self._salience,
                 source_session=session_key,
                 source_message_id=None,
-                metadata=(
-                    {"sleep_episode_id": int(active_episode.id)}
-                    if active_episode is not None
-                    else None
-                ),
+                metadata={"reflective_derivation": derivation,
+                          **({"sleep_episode_id": int(active_episode.id)}
+                             if active_episode is not None else {})},
                 # Schema v8: dream reflections are speculative
                 # LLM-journal output. Scratchpad so they decay fast
                 # unless they earn promotion.
@@ -403,6 +424,7 @@ class DreamWorker:
         self_memories: list[str],
         affect: "AffectState | None",
         hot_clusters: list[str] | None = None,
+        source_packet: str = "",
     ) -> str:
         parts: list[str] = [
             f"Hours since last conversation: {hours_since_last:.1f}",
@@ -417,16 +439,21 @@ class DreamWorker:
                 f"{felt_phrase(getattr(affect, 'valence', 0.0), getattr(affect, 'arousal', 0.4))}"
             )
         if rolling_summary:
-            parts.append("Rolling summary of last conversation:\n" + rolling_summary[:1200])
+            if len(rolling_summary) <= 1200:
+                parts.append("Derived conversation summary (unknown source revision):\n"
+                             + rolling_summary)
+        if source_packet:
+            parts.append("Dated memory context for association, not new testimony:\n"
+                         + source_packet)
         if callbacks:
-            joined = "; ".join(c[:512] for c in callbacks[:3])
-            parts.append(f"Threads you'd noted to come back to: {joined}")
+            joined = "; ".join(c for c in callbacks[:3] if len(c) <= 1200)
+            parts.append(f"Legacy thread context (unknown input identity): {joined}")
         if self_memories:
-            joined = "; ".join(s[:512] for s in self_memories[:3])
-            parts.append(f"Things you've been quietly thinking about yourself: {joined}")
+            joined = "; ".join(s for s in self_memories[:3] if len(s) <= 1200)
+            parts.append(f"Legacy self-context (unknown input identity): {joined}")
         if hot_clusters:
-            joined = ", ".join(h[:80] for h in hot_clusters[:3])
-            parts.append(f"Threads that kept coming up lately: {joined}")
+            joined = ", ".join(h for h in hot_clusters[:3] if len(h) <= 160)
+            parts.append(f"Topic labels for orientation, not evidence of recurrence: {joined}")
         return "\n\n".join(parts)
 
 

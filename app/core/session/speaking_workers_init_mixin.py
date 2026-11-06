@@ -119,10 +119,10 @@ class SpeakingWorkersInitMixin:
                     user_display_name_provider=lambda: self.user_display_name,
                     sleep_store=getattr(self, "_sleep_store", None),
                     context_provider=lambda: {
-                        "recent_callbacks": self._top_inner_life_contents(
+                        "recent_callbacks": self._top_inner_life_rows(
                             "callback", limit=3
                         ),
-                        "recent_self_memories": self._top_inner_life_contents(
+                        "recent_self_memories": self._top_inner_life_rows(
                             "self", limit=3
                         ),
                         "hot_clusters": self._dream_hot_clusters(),

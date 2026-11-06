@@ -563,8 +563,8 @@ class ChatTurnMixin:
                     rolling = (row.summary if row is not None else "") or ""
                 except Exception:
                     rolling = ""
-                callbacks = self._top_inner_life_contents("callback", limit=3)
-                self_memories = self._top_inner_life_contents("self", limit=3)
+                callbacks = self._top_inner_life_rows("callback", limit=3)
+                self_memories = self._top_inner_life_rows("self", limit=3)
                 hot_clusters = self._dream_hot_clusters()
                 affect = None
                 try:
@@ -615,16 +615,26 @@ class ChatTurnMixin:
             from types import SimpleNamespace
 
             rendered = timephrase.format_memory_line(SimpleNamespace(
-                content=mem.content[:160], created_at=getattr(mem, "created_at", None),
+                content=mem.content, created_at=getattr(mem, "created_at", None),
                 temporal_type=getattr(mem, "temporal_type", None),
                 event_time=getattr(mem, "event_time", None),
             )).strip()
-            if not rendered:
+            if not rendered or len(rendered) > 1200:
                 continue
             out.append(rendered)
             if len(out) >= limit:
                 break
         return out
+
+    def _top_inner_life_rows(self, kind: str, *, limit: int = 3) -> list:
+        """Keep identity and full qualifications until the dream worker packs them."""
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return []
+        try:
+            return list(store.list_top(limit=max(1, int(limit)), kind=kind))
+        except Exception:
+            return []
 
     def _dream_hot_clusters(self, *, limit: int = 2) -> list[str]:
         """K65e: labels of the day's most-active established K9 clusters.
