@@ -53,6 +53,53 @@ worker-owned reduction rules. The helper and summary cursor repair are already i
 [belief_worker.py](../../app/core/relationship/belief_worker.py),
 [test_summary_worker.py](../../tests/test_summary_worker.py).
 
+## Memory/time quality: ordinary-use follow-up
+
+**Status: Waiting for post-restart data (6 Nov 2026).** The concrete review
+checklist lives under [L22's post-restart memory cohort](concepts.md#l22-follow-up-post-restart-memory-quality-cohort-6-nov-2026).
+Check fresh worker output against its actual sources after normal use, including
+missed important memories, and keep historical issues separate. Do not count a
+healthy startup or a sparse worker cohort as semantic quality validation.
+
+### Next producer-quality candidates (source review, 6 Nov 2026)
+
+These are proposed improvements, not implemented fixes or new post-restart
+quality scores. The earlier producer inventory is historical; inspect current
+owners before carrying one of its findings forward.
+
+1. **Goal reflections: ground novelty in something beyond earlier reflections.**
+   `GoalWorker._run_reflection` supplies a goal and its earlier generated notes,
+   without fresh conversation/action/result evidence. `GoalStore.add_progress`
+   stores worker notes long-term at confidence 0.8 with insert dedupe bypassed.
+   Recent stored examples repeat similar quiet/hum/continuity imagery across
+   different goals. Preserve Aiko's subjective voice and deliberate notes;
+   distinguish a changed intention, a reflection and a reported step/outcome.
+   Supply small relevant source packets when available, retain derivation IDs,
+   and permit no new entry when there is no meaningful change. Rewording the
+   same sentiment must not count as observed progress.
+2. **Shared moments: separate supporting exchange from event time.** The current
+   detector retains a `context_window` receipt for the offered messages, then
+   assigns `when` from the last offered timestamp. That does not establish which
+   lines support each clause or when a remembered earlier event occurred. Add
+   narrow supporting citations and explicit reported-event versus recording
+   time, with unknown occurrence time allowed. Preserve shared virtual and
+   interpersonal meaning; do not turn a broad window into proof of every detail.
+   See [shared moments](moments.md).
+3. **Dream derivations: retain input identity and whole qualifications.** The
+   current input seam already age-tags memories, but renders content prefixes
+   into strings; the stored dream retains a sleep episode ID without the actual
+   input-memory revisions. Keep bounded source identities/revisions, preserve
+   conditions through packet packing, and label the output as associative
+   reflection. Reprocessing old material must not become a fresh observation.
+   This is traceability for creative inner life, not a requirement for literal
+   reporting or a new confidence formula.
+
+Source checks: [goal_worker.py](../../app/core/goals/goal_worker.py),
+[goal_store.py](../../app/core/goals/goal_store.py),
+[shared_moment_extractor.py](../../app/core/relationship/shared_moment_extractor.py),
+[chat_turn_mixin.py](../../app/core/session/chat_turn_mixin.py),
+[dream_worker.py](../../app/core/proactive/dream_worker.py).
+
 ## G-CLEANUP. `consolidator_state.last_cluster_index` is not dead weight — do not drop it
 
 **Status: Open implementation.**

@@ -54,6 +54,44 @@ drafts, Aiko goal reflections and public facts becoming user-event concepts.
 Preserving source subject/authority/purpose through memory-to-concept admission
 is the next foundation; evidence-count or lifecycle tuning cannot establish it.
 
+### L22 follow-up: post-restart memory quality cohort (6 Nov 2026)
+
+**Status: Waiting for ordinary-use data.** The backend was restarted after
+`0cdc8ab7` (five memory/time-quality commits). The initial process snapshot had
+the worker scheduler enabled and no reported worker errors; relevant workers
+had not run yet. Startup health is not evidence of generation quality.
+
+Review a bounded fresh cohort after a few days of normal conversation, keeping
+the activation boundary separate from older records. Do not force workers to
+fill sparse cohorts. Pair positive cases with abstention/error cases and inspect
+the actual source messages, not only metadata coverage or counts.
+
+- [ ] Expired plans keep intention/unknown outcome; elapsed time never supplies
+  completion. Distinguish recording time, stated event date, clock precision and
+  unknown occurrence time. Check current-state expiry and rescheduled plans.
+- [ ] Promises retain meaningful commitments without repeated extraction from
+  one source. Every deadline has literal supporting timing; casual immediate
+  actions and invented clocks do not become follow-up obligations.
+- [ ] Extracted memories preserve actor, conditions, exceptions, negation and
+  supported frequency. Plans plus return reports do not certify all planned
+  actions. Tentative inferences remain recognizably tentative.
+- [ ] Topic-summary clauses cite current eligible sources, distinguish history,
+  current states, intentions and reported patterns, and respect later resolution
+  reports and current-state validity windows.
+- [ ] Review optional situation/outcome receipts, follow-through links and
+  contextual relations when actual conversations supply them. A sparse or empty
+  cohort is not automatically a failure or a reason to manufacture data.
+- [ ] Check missed important information as well as false admissions; separate
+  valid abstention, malformed output, budget omission and missing source support.
+- [ ] Trace a small resulting concept cohort back to its memories. Keep
+  historical review candidates separate from post-restart generation results;
+  document denominators and unresolved uncertainty before tuning promotion gates.
+
+References: [time/data-quality implementation](../memory-time-quality.md),
+[longitudinal evidence](../longitudinal-memory.md),
+[concept cohort reviewer](../../scripts/review_concept_cohort.py),
+[read-only historical memory reviewer](../../scripts/review_memory_quality.py).
+
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l22).
 
 **Source check:** [concept_quality.py](../../app/core/concepts/concept_quality.py),

@@ -9,6 +9,11 @@ measurement.
 28 Oct implementation update: L29b, L30a/RS2, L36, L50 and K106 now have the
 [bounded concept/pattern rollout](../concept-pattern-rollout.md). Live-model evaluation remains.
 
+6 Nov follow-up: the post-restart memory/time-quality review is explicitly waiting
+for ordinary-use data under [L22's checklist](concepts.md#l22-follow-up-post-restart-memory-quality-cohort-6-nov-2026).
+Further producer-quality candidates are recorded under
+[workers](workers.md#next-producer-quality-candidates-source-review-6-nov-2026).
+
 **Status meanings:** open = proposed work absent; partial = named implemented slice plus a concrete
 remainder; validation = implementation exists but a specific acceptance check remains; deferred = a
 stated evidence/capability gate must be met. Opt-in or default-off implementation still counts as
