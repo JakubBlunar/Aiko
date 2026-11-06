@@ -239,6 +239,7 @@ class GoalStore:
         source: str = "worker",
         source_session: str | None = None,
         source_turn_id: int | None = None,
+        reflection_receipt: dict | None = None,
     ) -> "Memory | None":
         """Append a ``goal_progress`` row and mirror the latest note on the goal.
 
@@ -269,6 +270,20 @@ class GoalStore:
             "noted_at": _now_iso(),
             "source": source_norm,
         }
+        if reflection_receipt is not None:
+            from app.core.memory.reflective_evidence import current, revision
+
+            if not current(reflection_receipt, self._memory_store):
+                return None
+            parent = reflection_receipt.get("goal") or {}
+            live_goal = self._memory_store.get(goal.id)
+            if (live_goal is None or _is_archived(live_goal) or parent.get("memory_id") != goal.id
+                    or parent.get("revision") != revision(live_goal)):
+                return None
+            meta["reflective_derivation"] = reflection_receipt
+            meta["memory_origin"] = {"version": 1, "subject": "aiko",
+                "mode": "intention" if reflection_receipt.get("note_kind") == "intention"
+                else "reflection", "writer": "goal_worker", "domain": "conversation"}
         try:
             progress = self._memory_store.add(
                 content=cleaned,

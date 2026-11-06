@@ -138,6 +138,15 @@ def origin_annotation(memory) -> str:
     if isinstance(fidelity, dict):
         parts.append("claim_basis=" + str(fidelity.get("basis", "unknown")))
         parts.append("event_time_precision=" + str(fidelity.get("precision", "unknown")))
+    derivation = (getattr(memory, "metadata", None) or {}).get("reflective_derivation")
+    if isinstance(derivation, dict):
+        kind = derivation.get("note_kind", "associative_reflection")
+        parts.append("derived_inner_life=" + str(kind))
+        parts.append("derivation_is_not_new_testimony")
+    moment = (getattr(memory, "metadata", None) or {}).get("moment_evidence")
+    if isinstance(moment, dict):
+        parts.append("moment_scope=" + str(moment.get("event_scope", "unknown")))
+        parts.append("event_time_basis=" + str(moment.get("when_basis", "unknown")))
     from app.core.infra import timephrase
 
     event = getattr(memory, "event_time", None)

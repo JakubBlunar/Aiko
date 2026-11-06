@@ -3167,6 +3167,7 @@ class SpeakingWorkersInitMixin:
                             rate_limiter=self._goal_worker_rate_limiter,
                             persona_provider=_persona_provider_goal,
                             rolling_summary_provider=_summary_provider_goal,
+                            session_key_provider=lambda: self.session_key,
                             user_display_name_provider=(
                                 lambda: self.user_display_name
                             ),
