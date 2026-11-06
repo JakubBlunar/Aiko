@@ -239,7 +239,7 @@ class WatermarkTests(unittest.TestCase):
     def test_budgeted_backlog_advances_only_through_included_turns(self) -> None:
         db = _FakeDb()
         for index in range(8):
-            db.append(content=f"unique {index}: " + "detail " * 80)
+            db.append(content=f"unique {index}: " + "detail " * 160)
         ollama = _FakeOllama(['{"memories": []}', '{"memories": []}'])
         extractor = _build(
             db, ollama, context_messages=0, think=False,

@@ -169,6 +169,7 @@ class RagHit:
     temporal_type: str | None = None
     event_time: str | None = None
     relevance_until: str | None = None
+    event_time_precision: str | None = None
     # K7 — memory tier joined from the SQLite mirror for memory hits so
     # ``RagRetriever.format_block`` can stamp a "(faded)" suffix on
     # ``archive``-tier rows. ``None`` for non-memory hits or when the

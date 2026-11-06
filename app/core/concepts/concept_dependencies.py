@@ -63,7 +63,8 @@ class DependencyLedger:
     def _memory_revision(row):
         metadata = json.loads(row[3] or "{}")
         enriched = {key: metadata[key] for key in
-                    ("observation", "follow_through", "contextual_relation") if key in metadata}
+                    ("observation", "follow_through", "contextual_relation", "claim_fidelity")
+                    if key in metadata}
         # Keep every ordinary historical fingerprint byte-stable. New semantic
         # facets invalidate only the evidence records that actually carry them.
         if enriched:

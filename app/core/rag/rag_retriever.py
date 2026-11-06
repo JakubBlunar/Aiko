@@ -466,7 +466,12 @@ def _temporal_filter_drops(mem, now: datetime) -> bool:
         from app.core.memory.plan_timing import historical_plan
 
         return historical_plan(mem, now)
-    if temporal_type != "past_event":
+    if getattr(mem, "kind", None) == "topic_digest":
+        receipt = (getattr(mem, "metadata", None) or {}).get("summary_claims") or {}
+        until = _parse_temporal_iso(receipt.get("valid_until"))
+        if until and until < _to_aware(now):
+            return True
+    if temporal_type not in {"past_event", "ongoing"}:
         return False
     relevance_until = getattr(mem, "relevance_until", None)
     if not relevance_until:
@@ -1243,6 +1248,8 @@ class RagRetriever:
                                     mem, "temporal_type", None
                                 )
                                 h.event_time = getattr(mem, "event_time", None)
+                                h.event_time_precision = (getattr(mem, "metadata", None) or {}).get(
+                                    "claim_fidelity", {}).get("precision")
                                 h.relevance_until = getattr(
                                     mem, "relevance_until", None
                                 )
@@ -2372,6 +2379,7 @@ class RagRetriever:
                     event_time=getattr(hit, "event_time", None),
                     created_at=getattr(hit.record, "created_at", None),
                     now=now,
+                    precision=getattr(hit, "event_time_precision", None),
                 )
                 # K-time10: a row the tense tag skipped still gets an
                 # anchor, so nothing reaches the prompt claiming to be

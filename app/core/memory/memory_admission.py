@@ -70,6 +70,26 @@ def admit_memory(
         else "provisional_inference"
     )
     accepted = not rejected and destination == "memory"
+    fidelity = None
+    if validated and accepted:
+        from app.core.memory.claim_fidelity import refusal, event_support
+
+        basis = candidate.get("basis", "reported")
+        refused = refusal(content, [item["quote"] for item in validated], basis)
+        if refused:
+            return MemoryAdmission(False, "inferred", "scratchpad", None,
+                                   {"claim_fidelity_refusal": refused})
+        fidelity = {"version": 1, "basis": basis, **event_support(candidate, source_rows)}
+        from app.core.memory.shared_shorthand import source_receipt
+
+        citations = list(validated)
+        if fidelity["precision"] != "unknown":
+            citations.append({"message_id": fidelity["message_id"], "quote": fidelity["quote"]})
+        fidelity["sources"] = [
+            {**source_receipt(source_rows[item["message_id"]], item["quote"]),
+             "source_at": str(getattr(source_rows[item["message_id"]], "created_at", "") or "")}
+            for item in citations
+        ]
     source_ids = sorted({item["message_id"] for item in validated})
     identity = f"{writer}:{session_key}:{proposal_message_id}:{source_ids}:{content}"
     metadata = {
@@ -97,6 +117,8 @@ def admit_memory(
             return MemoryAdmission(False, "inferred", "scratchpad", None, {})
         if observation is not None:
             metadata["observation"] = observation
+    if fidelity is not None:
+        metadata["claim_fidelity"] = fidelity
     return MemoryAdmission(
         accepted=accepted, provenance="stated" if stated else "inferred",
         tier=(

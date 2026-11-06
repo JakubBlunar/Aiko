@@ -72,6 +72,7 @@ def memory_origin(memory) -> MemoryOrigin:
         return MemoryOrigin("aiko", "reflection", writer)
     if admission.get("subject") == "user":
         mode = ("intention" if getattr(memory, "temporal_type", None) == "future_plan"
+                else "interpretation" if meta.get("claim_fidelity", {}).get("basis") == "inferred"
                 else "observation")
         return MemoryOrigin("user", mode, writer)
     if kind == "self" or admission.get("subject") == "assistant":
@@ -133,6 +134,10 @@ def origin_annotation(memory) -> str:
     temporal = getattr(memory, "temporal_type", None)
     if temporal:
         parts.append(f"temporal={temporal}")
+    fidelity = (getattr(memory, "metadata", None) or {}).get("claim_fidelity")
+    if isinstance(fidelity, dict):
+        parts.append("claim_basis=" + str(fidelity.get("basis", "unknown")))
+        parts.append("event_time_precision=" + str(fidelity.get("precision", "unknown")))
     from app.core.infra import timephrase
 
     event = getattr(memory, "event_time", None)

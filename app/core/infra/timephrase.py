@@ -238,6 +238,7 @@ def temporal_suffix(
     event_time: str | None,
     created_at: str | None,
     now: datetime,
+    precision: str | None = None,
 ) -> str:
     """Build the parenthetical time tag for a retrieved memory bullet.
 
@@ -250,6 +251,11 @@ def temporal_suffix(
     if not temporal_type:
         return ""
     t = temporal_type.lower()
+    dated = parse_iso(event_time)
+    if precision == "day" and dated is not None and t in {"past_event", "future_plan"}:
+        day = dated.astimezone().date().isoformat()
+        return (f" (planned date {day}; outcome unknown)" if t == "future_plan"
+                else f" (event date {day}; day precision)")
     if t in ("durable", "preference"):
         return ""
     if t == "ongoing":
@@ -265,14 +271,16 @@ def temporal_suffix(
         anchor = event_time
         when = parse_iso(anchor) if anchor else None
         if when is None or when > to_aware(now):
-            anchor = created_at or anchor
+            if created_at:
+                return f" (recorded {humanize_past(created_at, now)}; occurrence time unknown)"
+            return " (occurrence time unknown)"
         if not anchor:
             return ""
         return f" ({humanize_past(anchor, now)})"
     if t == "future_plan":
         when = parse_iso(event_time)
         if when is None:
-            return f" (planned for {humanize_future(event_time, now)})"
+            return " (planned for an unspecified time; outcome unknown)"
         if when <= to_aware(now):
             return (
                 f" (was planned for {humanize_future(event_time, when - timedelta(seconds=1))}"
@@ -865,7 +873,13 @@ def format_memory_line(mem: Any, now_dt: datetime | None = None) -> str:
         event_time=getattr(mem, "event_time", None),
         created_at=created_at,
         now=when,
+        precision=((getattr(mem, "metadata", None) or {}).get("claim_fidelity") or {})
+        .get("precision"),
     )
+    until = parse_iso(getattr(mem, "relevance_until", None))
+    if getattr(mem, "temporal_type", None) == "ongoing" and until and until < when:
+        suffix = (f" (reported state; recorded {humanize_past(created_at, when)}; "
+                  "current applicability unknown)")
     if not suffix and created_at:
         suffix = f" ({humanize_past(str(created_at), when)})"
     return f"- {content}{suffix}"

@@ -356,7 +356,7 @@ class FollowUpWorker:
         for mem in candidates:
             from app.core.memory.plan_timing import historical_plan
 
-            if historical_plan(mem):
+            if historical_plan(mem, now):
                 continue
             from app.core.memory.plan_reports import plan_progress, CLOSED
 

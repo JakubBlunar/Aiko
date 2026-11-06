@@ -123,6 +123,8 @@ def facet_scope(memory):
 def longitudinal_sources_current(memory, store, _seen=None):
     """Verify preserved quotes against SQLite before using enriched evidence."""
     metadata = getattr(memory, "metadata", None) or {}
+    if not receipt_sources_current(metadata.get("claim_fidelity"), store):
+        return False
     if not receipt_sources_current(metadata.get("observation"), store):
         return False
     if metadata.get("follow_through") is not None:
@@ -148,10 +150,12 @@ def receipt_sources_current(value, store):
     try:
         conn = store._get_conn()
         for source in value["sources"]:
-            row = conn.execute("SELECT role, content, session_id FROM messages WHERE id = ?",
+            row = conn.execute("SELECT role, content, session_id, created_at "
+                               "FROM messages WHERE id = ?",
                                (source["message_id"],)).fetchone()
-            if (row is None or source["revision"] != revision_hash(list(row))
-                    or source["quote"] not in row[1]):
+            if (row is None or source["revision"] != revision_hash(list(row[:3]))
+                    or source["quote"] not in row[1]
+                    or source.get("source_at") and source["source_at"] != str(row[3])):
                 return False
     except (AttributeError, KeyError, TypeError, ValueError, sqlite3.Error):
         return False

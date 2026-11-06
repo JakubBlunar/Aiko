@@ -152,7 +152,7 @@ class TemporalSuffixTests(unittest.TestCase):
             temporal_type="past_event", event_time=None,
             created_at="2026-05-28T10:00:00+00:00", now=_NOW,
         )
-        self.assertEqual(out2, " (3 days ago)")
+        self.assertEqual(out2, " (recorded 3 days ago; occurrence time unknown)")
 
     def test_past_event_dated_ahead_falls_back_to_created_at(self) -> None:
         """H40. The store blocks this now, but stored rows still carry it.
@@ -169,7 +169,7 @@ class TemporalSuffixTests(unittest.TestCase):
             created_at=(_NOW - timedelta(hours=3)).isoformat(),
             now=_NOW,
         )
-        self.assertEqual(out, " (3 hours ago)")
+        self.assertEqual(out, " (recorded 3 hours ago; occurrence time unknown)")
 
     def test_past_event_dated_ahead_with_no_created_at(self) -> None:
         # Nothing better to anchor on, but still not "moments ago".
@@ -179,7 +179,7 @@ class TemporalSuffixTests(unittest.TestCase):
             created_at=None,
             now=_NOW,
         )
-        self.assertEqual(out, " (in the past)")
+        self.assertEqual(out, " (occurrence time unknown)")
 
     def test_past_event_still_prefers_a_valid_event_time(self) -> None:
         # The fallback must not fire when event_time is usable: it is the

@@ -120,123 +120,38 @@ def _build_system_prompt(
     valid_types = ", ".join(VALID_TEMPORAL_TYPES)
     valid_provenance = ", ".join(VALID_PROVENANCE)
     return (
-        f"You analyse a chat transcript between a user named {name} and his AI "
-        "companion Aiko. Your job is to extract DURABLE memories that would "
-        "still be relevant later, plus any time-bound events worth "
-        "remembering with their absolute timestamp.\n"
-        "\n"
-        f"Today is {today_human} ({today_iso}). Every transcript line is "
-        "prefixed with when it was said. Resolve a relative phrase "
-        "('yesterday', 'tonight at 8', 'next Monday', 'in two weeks') "
-        "against THAT LINE's timestamp rather than against today, and "
-        "write the result as an absolute ISO-8601 timestamp in the "
-        "``event_time`` field. This sweep can run hours after the words "
-        "were said and can cover more than one day, so the two anchors "
-        "are often different days: a 'tomorrow' said on Monday evening is "
-        "Tuesday, whichever day you are reading it on. If only a date is "
-        "given with no clock time, use noon local, except for something "
-        "that already happened on the current day — there, use the "
-        "line's own timestamp, because noon may not have come yet. If the "
-        "wording is vague ('soon', 'eventually'), leave ``event_time`` "
-        "null rather than guessing; a plan with no time is still useful, "
-        "a plan with an invented one is not.\n"
-        "\n"
-        "Do not write a weekday name or a calendar date into ``content`` "
-        "unless the user stated it outright. Say what happened and let "
-        "``event_time`` carry when; a date you worked out yourself is the "
-        "one part of this that is silently wrong when your arithmetic "
-        "slips, and it then outlives every correction.\n"
-        "\n"
-        "Two kinds of memories are allowed:\n"
-        f"  1. Facts about {name}: real preferences, opinions, ongoing projects, "
-        "     important events (past or future), relationships, recurring jokes. "
-        f"     One short sentence in THIRD person ('{name} ...').\n"
-        "  2. Aiko's notes about herself: a stance, a taste, a decision Aiko "
-        "     made about her own personality that she wants to keep next time. "
-        "     One short sentence in FIRST person ('I ...').\n"
-        "\n"
-        "WHO A CLAIM BELONGS TO. Half of this transcript is Aiko talking, so "
-        "every claim you extract needs an owner and the owner is whoever the "
-        "claim is *about*, not whoever happens to be nearby. A hobby, plan, "
-        "taste, feeling or intention that Aiko voiced about herself is "
-        "category 2 or nothing at all — never restate it as a fact about "
-        f"{name}. If Aiko says she has started collecting something, "
-        f"{name} has not started collecting anything. When you cannot tell "
-        "from the transcript which of the two it belongs to, drop it.\n"
-        "\n"
-        "Each memory ALSO carries a ``temporal_type`` that classifies how "
-        "it relates to time:\n"
-        "  - 'durable': timeless fact ('Jacob lives in Prague').\n"
-        "  - 'preference': taste / identity ('Jacob is vegetarian').\n"
-        "  - 'ongoing': active project or state with a soft expiry "
-        "    ('Jacob is learning Japanese').\n"
-        "  - 'past_event': already happened — should be referenced "
-        "    retrospectively ('Jacob worked on the dashboard yesterday'). "
-        "    Set ``event_time`` to when it happened if known.\n"
-        "  - 'future_plan': mentioned as upcoming ('Jacob is going to the "
-        "    gym tonight at 8'). Set ``event_time`` to when it is supposed "
-        "    to happen whenever the wording pins it down; leave it null if "
-        "    it genuinely does not ('sometime next month').\n"
-        "  The past / future split is the one that matters most, because "
-        "  the two are handled by different machinery downstream. Anything "
-        "  that has NOT happened yet is 'future_plan', however casually it "
-        "  came up — a delivery, an appointment, an intention for later "
-        "  today. Filing one of those as 'past_event' tells Aiko it is "
-        "  done, and she will talk as though it were.\n"
-        "\n"
-        "Each memory ALSO carries a ``provenance`` that records HOW it was "
-        "learned:\n"
-        "  - 'stated': the user said it outright, in so many words "
-        f"    ('{name} said he is vegetarian').\n"
-        "  - 'inferred': you concluded it by reading between the lines or "
-        "    adding up several things he said, but he never said it "
-        f"    directly ('{name} seems to prefer working late').\n"
-        "  Default to 'inferred' whenever you are not sure he said it "
-        "  outright. Claiming he stated something he only implied is the "
-        "  worse error, so lean 'inferred'. Aiko's own first-person "
-        "  'self' notes are always 'inferred'.\n"
-        "\n"
-        "Rules:\n"
-        "- Every candidate must include evidence: a list of at most four objects with "
-        "message_id and an exact quote from that source line. Cite only NEW turns. "
-        "User memories require user evidence; self notes require assistant evidence.\n"
-        "- Set destination to memory for durable retention or working for a temporary "
-        "question/premise. Working context is not a durable memory.\n"
-        "- For an explicit correction only, supersedes_memory_id may name the existing "
-        "memory being corrected. Otherwise leave it null; a difference is not a correction.\n"
-        "- Skip throwaway chitchat, single-turn moods, weather, jokes that are "
-        "  not recurring.\n"
-        "- Skip anything already in the existing memory list.\n"
-        "- If nothing is worth remembering, return an empty array.\n"
-        f"- Return AT MOST {max(1, int(max_memories))} memories — only the most "
-        "  durable / important ones. Fewer is better than padding.\n"
-        "- Keep each 'content' to a single short sentence under ~120 "
-        "  characters. Do not write paragraphs.\n"
-        "- Any private reasoning you do is separate and unlimited; this "
-        f"  length budget applies ONLY to the final JSON answer (at most "
-        f"  {max(1, int(max_memories))} memories, each under ~120 chars). "
-        "  Keep the answer compact.\n"
-        "- 'kind' must be one of: fact, preference, event, relationship, self. "
-        "  Use 'self' only for Aiko's first-person notes.\n"
-        f"- 'temporal_type' must be one of: {valid_types}. Default to "
-        "  'durable' when unsure — but only when the memory really has no "
-        "  time to it. If it has one, pick the side of now it falls on.\n"
-        f"- 'provenance' must be one of: {valid_provenance}. Default to "
-        "  'inferred' when unsure.\n"
-        "- 'salience' is 0..1 -- how much this should drive future conversation.\n"
-        "- Phrase the content with proper tense based on temporal_type. "
-        "  past_event: past tense ('Jacob finished the dashboard'). "
-        "  future_plan: future tense ('Jacob plans to go to the gym at 20:00'). "
-        "  Never leave a raw 'yesterday' / 'today' / 'tonight' / 'tomorrow' "
-        "  in content: it re-anchors to whenever the note is next read, so "
-        "  'the courier comes tomorrow' is still saying that a week later. "
-        "  The event_time field carries the moment; content carries what "
-        "  happened or is meant to.\n"
-        "\n"
-        'Reply with JSON only, exactly: {"memories": [{"content": "...", '
-        '"kind": "...", "salience": 0.5, "temporal_type": "...", '
-        '"provenance": "...", "event_time": "ISO-8601 or null", '
-        '"destination": "memory", "evidence": [{"message_id": 1, "quote": "..."}]}]}'
+        f"You extract useful memories from a dated chat between {name} and Aiko. "
+        "Keep durable preferences, projects, relationships, significant events and "
+        "specific unresolved intentions; skip throwaway chatter, single-turn moods, "
+        "nonrecurring jokes, and duplicates of existing memories. Abstain when nothing "
+        "new matters. Do not invent motives, outcomes, frequency or missing details.\n"
+        f"Today is {today_human} ({today_iso}). Resolve relative timing against THAT LINE's "
+        "timestamp, never the sweep time. Provide event_time_evidence:{message_id,quote} "
+        "for a literal temporal phrase. The server resolves it and preserves precision. "
+        "Unstated or vague event time stays null; recording time is not occurrence time. "
+        "Never invent a clock for a named day. Keep dates out of content unless stated.\n"
+        "Half of this transcript is Aiko talking. The claim owner is who it is ABOUT. "
+        f"An Aiko hobby, feeling, taste or intention: never restate it as a fact about {name}. "
+        "Drop unclear ownership. User memories are THIRD person; Aiko's 'self' notes "
+        "are FIRST person. Evidence must quote NEW turns from the actual owner, not "
+        "the other speaker's paraphrase. Earlier context only resolves references.\n"
+        "Each candidate needs content, kind, salience (0..1), temporal_type, provenance, "
+        "event_time (ISO or null), destination and evidence:[{message_id,quote}] (max 4). "
+        "kind: fact|preference|event|relationship|self. self is Aiko only. "
+        f"temporal_type: {valid_types}. durable is timeless; preference is enduring taste; "
+        "ongoing is a current state/project with soft expiry; past_event actually happened; "
+        "future_plan is an intention, including one whose planned date has passed without "
+        "a result report. Repeated intentions and elapsed time do not establish execution. "
+        "Keep transient states time-bound and conditions/negation in content.\n"
+        f"provenance: {valid_provenance}; stated means literal user testimony, inferred "
+        "means a conclusion/paraphrase or an Aiko self-note. Default inferred. "
+        "destination: memory for retention, working for a temporary question/premise. "
+        "Only an explicit correction may name supersedes_memory_id; different situations "
+        "can coexist. Preserve proper tense and never store bare today/tonight/currently.\n"
+        f"Return AT MOST {max(1, int(max_memories))} memories, each one short sentence "
+        "around 120 characters; retain qualifiers even if that needs more space. "
+        "This is an answer budget, not a requirement to produce entries. "
+        'Reply with JSON only: {"memories": [...]} or {"memories": []}.'
     )
 
 
@@ -550,8 +465,9 @@ class MemoryExtractor:
             max_memories=self._max_new_per_run,
         )
         from app.core.memory.observation_receipts import EXTRACTION_RULE as OBSERVATION_RULE
+        from app.core.memory.claim_fidelity import RULE as FIDELITY_RULE
 
-        system_content += "\n" + OBSERVATION_RULE
+        system_content += "\n" + OBSERVATION_RULE + "\n" + FIDELITY_RULE
         from app.core.memory.memory_relations import RULE as RELATION_RULE
 
         if references:
@@ -762,6 +678,8 @@ class MemoryExtractor:
             )
             if not admission.accepted:
                 continue
+            if "claim_fidelity" in admission.metadata:
+                cand["event_time"] = admission.metadata["claim_fidelity"]["event_time"]
             if cand.get("contextual_relation") is not None:
                 from app.core.memory.memory_relations import admit_relation
 
@@ -806,6 +724,12 @@ class MemoryExtractor:
         inserted = 0
         for cand in batch["candidates"]:
             if cand.get("applied"):
+                continue
+            from app.core.memory.observation_receipts import receipt_sources_current
+
+            if not receipt_sources_current((cand.get("metadata") or {}).get("claim_fidelity"),
+                                           self._store):
+                cand["applied"] = True
                 continue
             relation = (cand.get("metadata") or {}).get("contextual_relation")
             if relation is not None:
@@ -1061,6 +985,8 @@ class MemoryExtractor:
                     "provenance": provenance,
                     "event_time": event_time,
                     "evidence": entry.get("evidence"),
+                    "basis": entry.get("basis", "reported"),
+                    "event_time_evidence": entry.get("event_time_evidence"),
                     "destination": entry.get("destination", "memory"),
                     "supersedes_memory_id": entry.get("supersedes_memory_id"),
                     "shorthand": entry.get("shorthand"),

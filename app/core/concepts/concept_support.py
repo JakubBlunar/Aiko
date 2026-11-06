@@ -45,9 +45,10 @@ def memory_revision(memory: Any) -> str:
                     "observation",
                     "follow_through",
                     "contextual_relation",
+                    "claim_fidelity",
                 )
                 if key not in {"memory_origin", "observation", "follow_through",
-                               "contextual_relation"} or key in metadata
+                               "contextual_relation", "claim_fidelity"} or key in metadata
             },
         ]
     )

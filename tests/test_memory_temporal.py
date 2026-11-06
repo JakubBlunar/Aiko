@@ -392,7 +392,7 @@ class DeliveryRegressionTests(unittest.TestCase):
             created_at=wrote_at.isoformat(),
             now=timephrase.utcnow(),
         )
-        self.assertEqual(bullet, " (3 hours ago)")
+        self.assertEqual(bullet, " (recorded 3 hours ago; occurrence time unknown)")
 
     def test_the_pile_no_longer_reads_as_all_equally_fresh(self) -> None:
         """The compounding failure: four rows from two days, one timestamp.
