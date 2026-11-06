@@ -171,9 +171,15 @@ and the existing document path; this item scopes its open media UI/retrieval.
 **Implemented / available:** Saved research evidence, hobby progression from stored results,
 read_diary and Diary source inspection now exist; named activity is no longer the only foundation.
 
-**Remaining:** Add a stable versioned creation with draft/ready/failed state, exact
-referenced-revision opening, cancellation preservation and cross-session comparison. Research notes
-alone are not the full creation contract.
+2026-11-06: [saved original writing](../idle-life-quality-improvements.md) adds actual poems,
+fictional scenes, character sketches and wordplay, retained revisions, stale-edit protection,
+exact-revision `inspect_item` reads and a World-tab reader. Writing is optional and uses the
+existing away-activity model choice; it does not turn fiction into autobiographical facts.
+Restart and ordinary-use variety/surfacing checks remain pending.
+
+**Remaining:** Generalize beyond completed short writing to draft/ready/failed artifacts,
+cancellation preservation and explicit cross-session comparison. Validate ordinary-use exact-revision
+discussion. Research notes and the short-writing slice are not the full creation contract.
 
 [Implemented slice](shipped/audit-2026-10-24.md#immersion-im4).
 

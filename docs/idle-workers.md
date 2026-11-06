@@ -663,6 +663,11 @@ conservative while letting compute scale.
 
 ## Known gaps
 
+The [2026-11-06 away-life pass](idle-life-quality-improvements.md) preserves registered worker
+handles through detector bootstrap, adds saved original writing and long-away access to the home
+garden, and separates room maintenance from reading/drinking. Its ordinary-use checklist remains
+open after restart; scheduler budgets and sleep policies are unchanged.
+
 - **Nothing has been read back off a log since the last two batches.**
   Every worker reports demand now, and the four mis-rated probes the
   first log turned up are fixed, but both of those statements rest on
