@@ -33,7 +33,7 @@ class RecallReadsMixin:
         diagnostics = {}
         hits = self.retrieve(query, _limit=limit, _mark_used=False, _diagnostics=diagnostics)
         payload = pack_hits(hits, store=self._memory_store, db=self._chat_db, user_id=user_id)
-        errors = diagnostics.get("errors", [])
+        errors = sorted(set(diagnostics.get("errors", []) + payload["unavailable_sources"]))
         payload["status"] = ("partial" if errors and payload["hits"] else "unavailable" if errors
                              else "ok" if payload["hits"] else "no_match")
         payload["unavailable_sources"] = errors
@@ -58,7 +58,7 @@ class RecallReadsMixin:
                 raise ValueError("Choose a cluster_id returned by this topic query.")
             cid, label, _ = chosen
             members = list(self._topic_graph.cluster_member_ids(cid))
-            scored, state, withheld = [], [], 0
+            scored, state, withheld, unsearchable = [], [], 0, 0
             for mid in members[:2000]:
                 row = self._memory_store.get(mid)
                 if row is None or not owned(getattr(row, "source_session", None), user_id):
@@ -77,6 +77,7 @@ class RecallReadsMixin:
                 norm = float(np.linalg.norm(vec))
                 if vec.size != q.size or not norm or not np.isfinite(norm):
                     withheld += 1
+                    unsearchable += 1
                     continue
                 score = float(np.dot(q, vec) / norm)
                 scored.append((score, int(row.id), row))
@@ -90,12 +91,17 @@ class RecallReadsMixin:
             selected = scored[offset:offset + limit]
             hits = [self._memory_to_hit(row, score=score) for score, mid, row in selected]
             payload = pack_hits(hits, store=self._memory_store, db=self._chat_db, user_id=user_id)
+            if payload["unavailable_sources"] and not payload["hits"]:
+                raise RecallUnavailable("Selected topic sources became unavailable; retry.")
             next_offset = offset + len(selected)
             payload.update(
-                status="partial" if len(members) > 2000 else "ok" if scored else "no_match",
+                status="partial" if (len(members) > 2000 or unsearchable
+                                     or payload["unavailable_sources"])
+                else "ok" if scored else "no_match",
                 topic_label=label, cluster_id=cid, revision=key, offset=offset,
                 total=len(scored), cluster_members=len(members), scanned=min(2000, len(members)),
                 withheld=withheld + payload["withheld"], coverage="one_topic_cluster",
+                unsearchable=unsearchable,
                 has_more=next_offset < len(scored),
                 next_offset=next_offset if next_offset < len(scored) else None,
                 alternatives=[{"cluster_id": m[0], "label": m[1], "similarity": float(m[2])}

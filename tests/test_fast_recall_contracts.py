@@ -158,3 +158,23 @@ def test_concept_subject_and_exact_id_with_no_embedding_call(env):
     rag._embedder.embed = lambda text: (_ for _ in ()).throw(AssertionError("no model needed"))
     payload = json.loads(tool.run({"concept_id": ids[0]}))
     assert payload["concept"]["subject"] == "aiko" and payload["score"] is None
+
+
+def test_failed_memory_hydration_preserves_available_message_results(env):
+    from app.core.rag.rag_store import MessageRecord, RagHit
+
+    db, store, _, _ = env
+    mid = db.add_message("u:s", "user", "A source that remains readable.")
+    row = save(store, "A memory whose source join becomes unavailable")
+    memory_hit = RagRetriever._memory_to_hit(row, score=.9)
+    message_hit = RagHit("message", .8, MessageRecord(
+        "u:s:1", "u:s", mid, "user", "A source that remains readable.", row.created_at))
+    rag = retriever(store, db, [])
+    rag.retrieve = lambda *a, **kw: [memory_hit, message_hit]
+    def unavailable(mid):
+        raise RuntimeError("memory mirror unavailable")
+    rag._memory_store = NS(get=unavailable)
+    payload = json.loads(RecallTool(rag, "u").run({"query": "source"}))
+    assert payload["status"] == "partial"
+    assert payload["hits"][0]["source"] == "message"
+    assert payload["unavailable_sources"] == ["memory"]

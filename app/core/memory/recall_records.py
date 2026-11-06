@@ -90,14 +90,18 @@ def memory_record(row, *, store=None, db=None, user_id=None):
 
 
 def pack_hits(hits, *, store=None, db=None, user_id=None, max_chars=16000):
-    out, omitted, withheld = [], 0, 0
+    out, omitted, withheld, unavailable, omitted_sources = [], 0, 0, [], []
     used = 0
     for hit in hits:
         row = getattr(hit, "record", None) or SimpleNamespace(
             id=None, content=hit.text, kind=getattr(hit, "kind", "unknown"))
         if hit.source == "memory":
             if store is not None:
-                row = store.get(int(row.id))
+                try:
+                    row = store.get(int(row.id))
+                except Exception:
+                    unavailable.append("memory")
+                    continue
                 if row is None:
                     withheld += 1
                     continue
@@ -105,7 +109,11 @@ def pack_hits(hits, *, store=None, db=None, user_id=None, max_chars=16000):
                 withheld += 1
                 continue
             if store is not None:
-                item = memory_record(row, store=store, db=db, user_id=user_id)
+                try:
+                    item = memory_record(row, store=store, db=db, user_id=user_id)
+                except Exception:
+                    unavailable.append("memory_sources")
+                    continue
             else:
                 origin = getattr(hit, "memory_origin", None) or MemoryOrigin(
                     "unknown", "unknown", "unhydrated_recall")
@@ -121,7 +129,11 @@ def pack_hits(hits, *, store=None, db=None, user_id=None, max_chars=16000):
                 withheld += 1
                 continue
             if hit.source == "message" and db is not None:
-                row = db.get_message_row(row.message_id)
+                try:
+                    row = db.get_message_row(row.message_id)
+                except Exception:
+                    unavailable.append("messages")
+                    continue
                 if row is None or not owned(row.session_id, user_id):
                     withheld += 1
                     continue
@@ -147,10 +159,16 @@ def pack_hits(hits, *, store=None, db=None, user_id=None, max_chars=16000):
             size = len(json.dumps(item, default=str))
             if used + size > max_chars:
                 omitted += 1
+                omitted_sources.append({key: item[key] for key in (
+                    "source", "memory_id", "message_id", "document_id", "source_id",
+                ) if key in item})
                 continue
         out.append(item)
         used += size
     return {"hits": out, "coverage": "bounded_search_results", "omitted": omitted,
-            "withheld": withheld,
-            "note": "Missing event time is unknown. Source receipts are not entailment proof. "
+            "withheld": withheld, "omitted_sources": omitted_sources,
+            "unavailable_sources": sorted(set(unavailable)),
+            "note": "Missing event time is unknown. Source receipts are not entailment proof "
+                    "or proof that all surrounding source text is unchanged. Withdrawn, changed "
+                    "or outside-validity records are historical, not current supporting evidence. "
                     "Open omitted memory text with inspect_memory before relying on its meaning."}

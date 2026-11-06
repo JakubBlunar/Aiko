@@ -19,10 +19,12 @@ For things she can't just know:
 | Tool | Returns |
 |---|---|
 | `get_time` | Current ISO date/time. |
-| `recall` | Semantic search across memories, recent messages, and uploaded documents (LanceDB). |
-| `recall_topic` | Rounds up everything she remembers about a whole topic/theme (a cluster), not just the single closest line. No-op without a persistent topic graph. |
-| `recall_concept` | Explains *why* she thinks/believes something — a higher-order concept with its rationale, supporting memories, topic areas, and related concepts. No-op without the concept store wired in. |
-| `recall_self_history` | Walks how a belief *changed* — eras of formed / replaced / faded / revived / held-all-along, each with the reason recorded at the time. Returns `thin_record` rather than improvising when the trail is too sparse. |
+| `recall` | Bounded semantic search with subjects, source meaning, dates and source IDs. Whole text is preserved or explicitly omitted; failed/partial reads do not establish absence. |
+| `recall_topic` | Pages one matching topic cluster with coverage, alternatives and revision-bound continuation. Withdrawn/changed records require explicit historical inspection. |
+| `inspect_memory` | Opens an exact owned memory and bounded original-message context, without writing or confirming anything. Long text has revision-bound pages. |
+| `recall_concept` | Explains an understanding with qualified evidence, rationale and uncertainty. Supports explicit subject or concept ID; the wider evidence sample is capped at 16 sources. |
+| `recall_self_history` | Walks dated understanding changes, including relationship history. Can focus by query/concept and inspect evolution-diary paragraphs or learning events. Thin history remains explicitly incomplete. |
+| `recall_beliefs` | Reads relevant, unexpired situation-specific interpretations with uncertainty, expiry and cited user words. These are tentative readings, distinct from settled concepts and open hypotheses. |
 | `recall_hypotheses` | Lists what she is still **unsure** about: open guesses with a credence, and an `origin` marking whether she derived each from something she noticed (`grounded`) or invented it outright (`invented`). See [`hypotheses.md`](hypotheses.md). |
 | `read_diary` | Read-only local diary browsing and ID inspection, including subjective reflections and separately marked research notes. See [Reading the diary](#reading-the-diary) below. |
 | `web_search` | Web results, fetched **synchronously inside the turn** so she can answer from them in the same reply. See [Synchronous web search](#synchronous-web-search-d3) below. |
@@ -216,6 +218,31 @@ prompt block + worker), these let her *act* on goals mid-turn:
 | `update_goal_progress` | Log progress against an existing goal. |
 | `archive_goal` | Retire a goal she's done with. |
 | `list_goals` | Review her current goals. |
+
+## Inspecting sources and completed work
+
+Use `inspect_memory` with a memory ID returned by recall or concept evidence.
+It distinguishes the saved interpretation from original messages, recorded time
+from event time, and current source state from withdrawn/untracked support.
+Omitted text is not a complete statement. Follow `next_offset` using
+`content_offset` and the same `revision`; an edit requires restarting the read.
+Long original messages use `conversation_history` message mode with the supplied
+message ID. Source receipts do not prove an inference is true.
+
+`check_my_work` defaults to active work; `scope=recent` finds recent task IDs.
+An optional `task_id` reads the saved result, failure, cancellation or pending
+question, including terminal tasks. Long JSON details use the same revision-bound
+continuation fields. Reading a result never starts or restarts work. Missing or
+unavailable work is not a successful completion.
+
+`recall_self_history` defaults to its timeline mode. `mode=diary` lists the separate
+evolution diary with period/event links; use `diary_entry` plus `entry_id` to open
+one and `learning_event` plus `event_id` to inspect its recorded basis. This change
+log is separate from the subjective journal returned by `read_diary`. A change in
+Aiko's understanding does not prove a change in the user or relationship.
+
+See [implementation and validation](fast-brain-tool-improvements.md) for limits,
+including untracked full-message revisions in older belief receipts.
 
 ## Beyond the built-ins
 

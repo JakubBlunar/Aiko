@@ -3,6 +3,10 @@
 Reviewed 6 November 2026 at `4efe8d23`. This is an evaluation and proposed
 implementation order; production behavior has not changed in this review.
 
+Implemented subsequently: [changes and validation](fast-brain-tool-improvements.md).
+The reproductions below describe the audited baseline; the reusable probe now
+checks the repaired contracts.
+
 ## Scope and evidence
 
 The live read-only `list_agent_tools` diagnostic reported 34 registered tools:

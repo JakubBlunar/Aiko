@@ -10,19 +10,25 @@ recurrence and OS notifications remain open follow-ups, not part of the one-shot
 
 ## Fast brain tool quality review (6 Nov 2026)
 
-**Status: Reviewed; implementation proposed.** The
+**Status: Implemented; ordinary-use review pending after restart.** The
 [fast-tool audit](../fast-brain-tools-audit-2026-11-06.md) checks the live 34-tool
 inventory, return contracts, gate/router reachability and source inspection gaps.
 An offline synthetic probe reproduces lost recall qualifications, unmarked
 withdrawn topic records, failures reported as empty results, missing natural
 request routes, the explicit-timezone clock bypass and an obsolete tool reference.
 
-Priorities: qualified recall and exact source inspection; coverage/error status;
-natural grounding/action reachability; honest task status and terminal-result
-inspection; time/schema cleanup. Follow with focused current-interpretation and
-relationship/change-history reads through the existing stores. These are proposed
-improvements, not live-model accuracy measurements or implemented fixes. The audit
-records passing regression coverage and acceptance scenarios.
+The [implementation record](../fast-brain-tool-improvements.md) covers qualified
+recall and `inspect_memory`, topic coverage/error status, natural request routing,
+owned task-result inspection, clock/schema cleanup, `recall_beliefs` and focused
+relationship/evolution-history reads. Existing stores and execution-round limits
+remain authoritative. Structural checks do not establish live-model accuracy.
+
+After restart, review whether natural grounding questions select the right
+subject, omitted text is inspected before asserting its meaning, finished work is
+reported from its saved result, and current interpretations remain tentative.
+Historical understanding must retain its period rather than imply the user or
+relationship changed. Older belief quotes without full-message revisions remain
+explicitly unverified beyond the quoted span; no historical rows were rewritten.
 
 ## D8. Conversation archive recall with daily overviews
 

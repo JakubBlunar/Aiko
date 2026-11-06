@@ -245,6 +245,9 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"how (?:has|have) (?:your (?:picture|understanding|view)(?: of (?:me|us))?"
         r"|our relationship|we) changed\b",
         r"your (?:tentative |current )?(?:interpretation|impression)\b",
+        r"what(?:'s| is) your (?:current |tentative )?(?:reading|interpretation) "
+        r"(?:of|on) (?:this|that|me|us)\b",
+        r"what do you think i (?:mean|need|want|feel)\b",
         r"relationship history", r"evolution diary",
         r"diar(?:y|ies)", r"journal", r"research notes?", r"curiosity findings?",
         r"remember", r"recall", r"memor(?:y|ies)", r"forg[eo]t(?:ten)?",

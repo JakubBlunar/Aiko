@@ -208,6 +208,8 @@ class RecallTopicTool:
                     ) if key in arguments})
             else:
                 from app.core.memory.recall_records import pack_hits
+                if set(arguments) & {"offset", "revision", "cluster_id", "include_historical"}:
+                    raise ToolError("This topic adapter does not support scoped/paged reads")
                 label, hits = self._rag.recall_topic(topic, limit=limit)
                 payload = pack_hits(hits)
                 payload.update(topic_label=label, coverage="untracked_legacy_adapter",
@@ -444,6 +446,8 @@ class RecallSelfHistoryTool:
                 raise ToolError(f"recall_self_history unavailable: {exc}") from exc
         if mode != "timeline":
             raise ToolError("recall_self_history: recorded change inspection is unavailable")
+        if "query" in arguments or "concept_id" in arguments:
+            raise ToolError("recall_self_history: focused history inspection is unavailable")
         subject = str(arguments.get("subject") or "aiko").strip().lower()
         if subject not in ("aiko", "user", "relationship", "world"):
             subject = "aiko"

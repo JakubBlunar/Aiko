@@ -97,12 +97,17 @@ class ToolsRegistryMixin:
                 and getattr(self, "_memory_store", None) is not None
             ):
                 from app.llm.tools.diary import ReadDiaryTool, WriteDiaryTool
-                from app.llm.tools.memory_inspection import InspectMemoryTool
 
                 registry.register(ReadDiaryTool(self))
-                registry.register(InspectMemoryTool(self.inspect_memory))
                 if getattr(self, "_embedder", None) is not None:
                     registry.register(WriteDiaryTool(self))
+            if (any(getattr(tools_cfg, name, True) for name in (
+                    "recall", "recall_topic", "recall_concept"))
+                    and getattr(getattr(self._settings, "memory", None), "enabled", False)
+                    and getattr(self, "_memory_store", None) is not None):
+                from app.llm.tools.memory_inspection import InspectMemoryTool
+
+                registry.register(InspectMemoryTool(self.inspect_memory))
             # F10d cluster-scoped recall. Gated by its own switch but needs
             # the same retriever; only useful once the topic graph is wired
             # (the tool returns an empty result otherwise, so it is safe to
@@ -139,7 +144,8 @@ class ToolsRegistryMixin:
                 )
             if (getattr(tools_cfg, "recall", True)
                     and getattr(self, "_belief_store", None) is not None
-                    and getattr(self._settings.agent, "belief_tracking_enabled", True)):
+                    and getattr(getattr(self._settings, "agent", None),
+                                "belief_tracking_enabled", True)):
                 from app.llm.tools.belief_reads import RecallBeliefsTool
 
                 registry.register(RecallBeliefsTool(self.recall_beliefs))

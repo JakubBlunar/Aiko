@@ -11,6 +11,8 @@ from app.core.session.tool_pass_gate import (
     ("What have you figured out about me?", "recall_concept"),
     ("How has your picture of me changed?", "recall_self_history"),
     ("How has our relationship changed?", "recall_self_history"),
+    ("What is your current reading of this?", "recall_beliefs"),
+    ("What do you think I need from this conversation?", "recall_beliefs"),
     ("What are you up to?", "check_my_work"),
     ("Can you write a file with those notes?", "start_workflow"),
     ("Please read the notes.txt file", "start_workflow"),

@@ -78,3 +78,23 @@ and history records share revision-bound JSON paging.
 Focused understanding/history/belief/work checks: 243 tests and 3 subtests passed;
 lint passed. The updated offline audit probes pass all 18 targeted scenarios,
 which establishes these local contracts rather than a model accuracy rate.
+
+## Final validation and activation
+
+The affected selector reached 241 files through shared retrieval, concept and
+session imports. A representative integration selection passed 1,988 tests and
+183 subtests. Final source-unavailability/registration/routing refinements passed
+the affected follow-up of 330 tests and 6 subtests. The offline audit passes all
+18 scenarios. `npm run lint` passed, and tracked text retains LF. These were
+focused/representative checks, not a full-suite or timing-marker run. Managed test
+scratch was cleaned after each run.
+
+The separate private-reach architecture guard still has two baseline budget
+failures: web has 1 reach against a 0 budget; MCP debug tools have 471 against 466.
+Its test and both scanned directories are byte-identical to audit revision
+`447029fe`; this work did not add those reaches or raise the guard's budgets.
+
+A backend restart activates the code and new tool schemas. Ordinary-use tool
+selection/wording remains a backlog checkpoint. No live messages or model calls
+were sent for validation, and no historical memory, task or world rows were
+rewritten. Existing two-round/provider execution limits remain unchanged.
