@@ -104,7 +104,7 @@ class _StubOllamaClient:
                 "The violin originated in northern Italy in the early "
                 "16th century."
             ),
-            "confidence": 0.85,
+            "confidence": 0.85, "source_indices": [0],
         }
     )
     raise_on_call: bool = False
@@ -180,7 +180,7 @@ def _build_world(
                 "The violin originated in northern Italy in the early "
                 "16th century."
             ),
-            "confidence": 0.85,
+            "confidence": 0.85, "source_indices": [0],
         },
     )
     cancel_event = threading.Event()
@@ -234,6 +234,37 @@ def _seed_open_question(
 
 
 # ── _parse_answer ──────────────────────────────────────────────────────
+
+
+class TestQuestionSnapshot(unittest.TestCase):
+    def test_edit_during_generation_cannot_answer_or_resolve_a_new_question(self):
+        world = _build_world()
+        store = world["memory_store"]
+        try:
+            qid = _seed_open_question(store, world["embedder"], "When did the violin originate?")
+            original = world["ollama"].chat_stream
+            def generate(*args, **kwargs):
+                store.update(qid, content="How do I tune a violin?",
+                             embedding=world["embedder"].embed("violin tuning"))
+                yield from original(*args, **kwargs)
+            world["ollama"].chat_stream = generate
+            self.assertEqual(world["worker"].run()["outcome"], "question_changed")
+            self.assertFalse(store.get(qid).metadata.get("curiosity_resolved_at"))
+            self.assertEqual(store.count(), 1)
+        finally:
+            store.close()
+
+    def test_uncited_answer_stays_unresolved(self):
+        world = _build_world(answer_json={"answer": "An answer without attribution.",
+                                          "confidence": .9})
+        store = world["memory_store"]
+        try:
+            qid = _seed_open_question(store, world["embedder"], "When did the violin originate?")
+            self.assertEqual(world["worker"].run()["outcome"], "unattributed")
+            self.assertFalse(store.get(qid).metadata.get("curiosity_resolved_at"))
+            self.assertEqual(store.count(), 1)
+        finally:
+            store.close()
 
 
 class TestParseAnswer(unittest.TestCase):
@@ -452,7 +483,7 @@ class TestRunSuccessPath(unittest.TestCase):
         self.assertEqual(answer.metadata["evidence_type"], "search_excerpt")
         self.assertEqual(answer.metadata["research_evidence"][0]["title"], "Violin history")
         self.assertIn("northern Italy", answer.metadata["research_evidence"][0]["snippet"])
-        self.assertEqual(answer.metadata["evidence_support"], "unattributed")
+        self.assertEqual(answer.metadata["evidence_support"], "attributed")
         # Web search query was the (unchanged) question text — no
         # PII stripping was needed for this short, generic question.
         self.assertEqual(len(world["web_search"].calls), 1)

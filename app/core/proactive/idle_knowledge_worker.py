@@ -448,9 +448,14 @@ class IdleKnowledgeWorker:
         primary_url = source_urls[0] if source_urls else ""
         wrote: list[int] = []
         deduped = 0
+        unattributed = 0
         for fact in facts:
             if self._cancel_event.is_set():
                 break
+            evidence = evidence_metadata(snippets, fact.source_indices, now)
+            if not evidence["supporting_source_indices"]:
+                unattributed += 1
+                continue
             mem_id = self._write_knowledge(
                 fact=fact,
                 topic=safe_query,
@@ -473,9 +478,10 @@ class IdleKnowledgeWorker:
             "checked": 1,
             "cluster": pick.cluster_key,
             "topic": safe_query[:120],
-            "outcome": "wrote" if wrote else "deduped",
+            "outcome": "wrote" if wrote else "unattributed" if unattributed else "deduped",
             "wrote": len(wrote),
             "deduped": deduped,
+            "unattributed": unattributed,
             "memory_ids": wrote,
         }
 
@@ -1055,7 +1061,7 @@ class IdleKnowledgeWorker:
             if not text:
                 continue
             if len(text) > 240:
-                text = text[:237].rsplit(" ", 1)[0] + "…"
+                continue
             dedupe_key = text.lower()
             if dedupe_key in seen:
                 continue
@@ -1143,6 +1149,9 @@ class IdleKnowledgeWorker:
         now: datetime,
         snippets: list[dict[str, str]] | None = None,
     ) -> int | None:
+        evidence = evidence_metadata(snippets or [], fact.source_indices, now)
+        if snippets is not None and not evidence["supporting_source_indices"]:
+            return None
         try:
             embedding = self._embedder.embed(fact.text)
         except Exception:
@@ -1164,7 +1173,7 @@ class IdleKnowledgeWorker:
                     "source_urls": source_urls[:5],
                     "cluster_key": cluster_key,
                     "learned_at": now.isoformat(),
-                    **evidence_metadata(snippets or [], fact.source_indices, now),
+                    **evidence,
                 },
             )
         except Exception:

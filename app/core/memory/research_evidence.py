@@ -36,19 +36,49 @@ def evidence_metadata(
         }
         for row in snippets[:4]
     ]
-    supported = [index for index in indices if index < len(evidence)]
+    supported = [index for index in source_indices(list(indices)) if index < len(evidence)]
     urls = list(dict.fromkeys(row["url"] for row in evidence if row["url"]))
     # A legacy completion without citations must not attribute its conclusion
     # to the first of several unrelated search results.
-    primary = evidence[supported[0]]["url"] if supported else (
-        urls[0] if len(evidence) == 1 and urls else ""
-    )
+    support_urls = list(dict.fromkeys(evidence[i]["url"] for i in supported if evidence[i]["url"]))
+    primary = support_urls[0] if support_urls else ""
     return {
         "evidence_type": "search_excerpt",
         "research_evidence": evidence,
         "supporting_source_indices": supported,
         "evidence_support": "attributed" if supported else "unattributed",
         "source_url": primary,
-        "source_urls": urls,
+        "source_urls": support_urls,
+        "available_source_urls": urls,
         "retrieved_at": now.isoformat(),
     }
+
+
+def supporting_urls(metadata):
+    """None is the legacy contract; [] means no attributed excerpt support."""
+    rows = metadata.get("research_evidence")
+    if not isinstance(rows, list):
+        return None
+    if metadata.get("evidence_support") != "attributed":
+        return []
+    indices = source_indices(metadata.get("supporting_source_indices"))
+    return list(dict.fromkeys(str(rows[i].get("url") or "") for i in indices
+                             if i < len(rows) and isinstance(rows[i], dict)))
+
+
+def question_revision(question):
+    from app.core.concepts.concept_support import memory_revision, revision_hash
+
+    return revision_hash([memory_revision(question), {
+        key: (question.metadata or {}).get(key) for key in (
+            "curiosity_purpose", "curiosity_resolved_at", "research_origin",
+            "hobby_key", "hobby_started_at",
+        )}])
+
+
+def question_current(question, store):
+    current = store.get(question.id)
+    return (current is not None and current.kind == "open_question"
+            and question_revision(current) == question_revision(question)
+            and not (current.metadata or {}).get("curiosity_resolved_at")
+            and researchable_question(current.content, current.metadata or {}))

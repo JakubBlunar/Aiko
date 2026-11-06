@@ -29,3 +29,19 @@ or rejected, and retains the session captured before generation.
 Regression coverage includes source edits at both generation boundaries, session
 switches, long-message final negation and overlong sleep-diary output. The combined
 focused worker set passed 242 tests and 6 subtests; lint passed.
+
+## Research support and question revisions
+
+Research receipts separate all offered URLs from the excerpts selected as support.
+Lineage reads selected support even on historical receipts that still list all
+offered URLs. Missing citations no longer silently become support from the first
+result; runtime workers abstain and report unattributed output. Overlong distilled
+facts are rejected whole rather than shortened past an exception.
+
+Curiosity freezes its question before search/generation, rechecks it before and
+after embedding, and resolves only that unchanged question. Edits also prevent an
+old failed attempt from marking a different question inconclusive. These receipts
+establish attribution, not independent verification or entailment of the claim.
+
+Focused regressions cover selected-source lineage, uncited refusals, overlong
+facts and question edits during model generation and embedding.

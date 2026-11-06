@@ -94,7 +94,7 @@ class _StubOllamaClient:
                         "Italian roast is one of the darkest common roast "
                         "levels, producing a bittersweet, smoky flavour."
                     ),
-                    "confidence": 0.8,
+                    "confidence": 0.8, "source_indices": [0],
                 },
             ],
         }
@@ -441,6 +441,20 @@ class TestRunSuccessPath(unittest.TestCase):
 
 
 class TestRunNonWritePaths(unittest.TestCase):
+    def test_uncited_fact_is_refused_without_claiming_a_duplicate(self):
+        world = _build_world(facts_json={"facts": [
+            {"text": "Italian roast is dark.", "confidence": .9}]})
+        store = world["memory_store"]
+        try:
+            with _patched_snapshot(_snapshot(_cluster())):
+                result = world["worker"].run()
+            self.assertEqual(result["outcome"], "unattributed")
+            self.assertEqual(result["unattributed"], 1)
+            self.assertEqual(result["deduped"], 0)
+            self.assertEqual(store.iter_by_kind("knowledge"), [])
+        finally:
+            store.close()
+
     def test_no_search_results(self) -> None:
         world = _build_world()
         world["web_search"].payload = {"results": []}

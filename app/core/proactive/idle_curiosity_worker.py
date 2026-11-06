@@ -276,6 +276,9 @@ class IdleCuriosityWorker:
         question = self._pick_next_question(now=now)
         if question is None:
             return {"skipped": True, "reason": "no_unresolved_question"}
+        from copy import deepcopy
+
+        question = deepcopy(question)
 
         if not self._rate_limiter.allow(now):
             log.info(
@@ -398,6 +401,13 @@ class IdleCuriosityWorker:
                 "confidence": float(answer.confidence),
             }
 
+        from app.core.memory.research_evidence import question_current
+
+        if not question_current(question, self._memory_store):
+            return {"checked": 1, "memory_id": question.id, "outcome": "question_changed"}
+        if not evidence_metadata(snippets, answer.source_indices, now)["supporting_source_indices"]:
+            self._mark_inconclusive(question, when=now, reason="unattributed")
+            return {"checked": 1, "memory_id": question.id, "outcome": "unattributed"}
         wrote_id = self._write_finding(
             question=question,
             answer=answer,
@@ -411,11 +421,13 @@ class IdleCuriosityWorker:
                 "memory_id": question.id,
                 "outcome": "write_failed",
             }
-        self._mark_resolved(
+        resolved = self._mark_resolved(
             question,
             when=now,
             answer_memory_id=wrote_id,
         )
+        if resolved is False:
+            return {"checked": 1, "memory_id": question.id, "outcome": "question_changed"}
         log.info(
             "curiosity apply done: memory_id=%s wrote_memory_id=%s "
             "confidence=%.2f",
@@ -651,6 +663,14 @@ class IdleCuriosityWorker:
         now: datetime,
         snippets: list[dict[str, str]] | None = None,
     ) -> int | None:
+        from app.core.memory.research_evidence import question_current, question_revision
+        from copy import deepcopy
+
+        question = deepcopy(question)
+        evidence = evidence_metadata(snippets or [], answer.source_indices, now)
+        if (snippets is not None and not evidence["supporting_source_indices"]
+                or not question_current(question, self._memory_store)):
+            return None
         try:
             embedding = self._embedder.embed(answer.answer)
         except Exception:
@@ -658,6 +678,8 @@ class IdleCuriosityWorker:
             return None
         confidence = min(_MAX_FINDING_CONFIDENCE, float(answer.confidence))
         try:
+            if not question_current(question, self._memory_store):
+                return None
             new_mem = self._memory_store.add(
                 content=answer.answer,
                 kind="curiosity_finding",
@@ -670,7 +692,8 @@ class IdleCuriosityWorker:
                     "source_open_question_id": int(question.id),
                     "source_query": safe_query[:200],
                     "discovered_at": now.isoformat(),
-                    **evidence_metadata(snippets or [], answer.source_indices, now),
+                    **evidence,
+                    "source_question_revision": question_revision(question),
                     **{
                         key: question.metadata[key]
                         for key in ("research_origin", "hobby_key", "hobby_started_at")
@@ -701,7 +724,11 @@ class IdleCuriosityWorker:
         *,
         when: datetime,
         answer_memory_id: int,
-    ) -> None:
+    ) -> bool:
+        from app.core.memory.research_evidence import question_current
+
+        if not question_current(question, self._memory_store):
+            return False
         try:
             updated = self._memory_store.update(
                 question.id,
@@ -717,7 +744,7 @@ class IdleCuriosityWorker:
                 question.id,
                 exc_info=True,
             )
-            return
+            return False
         if updated is not None and self._notify_memory_updated is not None:
             try:
                 self._notify_memory_updated(updated.to_dict())
@@ -725,6 +752,7 @@ class IdleCuriosityWorker:
                 log.debug(
                     "curiosity notify updated failed", exc_info=True,
                 )
+        return updated is not None
 
     def _mark_inconclusive(
         self,
@@ -733,6 +761,10 @@ class IdleCuriosityWorker:
         when: datetime,
         reason: str,
     ) -> None:
+        from app.core.memory.research_evidence import question_current
+
+        if not question_current(question, self._memory_store):
+            return
         try:
             self._memory_store.update(
                 question.id,

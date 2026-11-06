@@ -58,10 +58,13 @@ def _memory_lineage(memory) -> SourceLineage:
         return SourceLineage(frozenset(), "unknown", complete=False)
     origin = memory_origin(memory)
     if origin.mode == "world_fact":
-        urls = metadata.get("source_urls", [])
+        from app.core.memory.research_evidence import supporting_urls
+
+        supported = supporting_urls(metadata)
+        urls = metadata.get("source_urls", []) if supported is None else supported
         urls = urls if isinstance(urls, list) else []
         roots = set()
-        for url in [metadata.get("source_url"), *urls]:
+        for url in ([metadata.get("source_url"), *urls] if supported is None else urls):
             if not isinstance(url, str):
                 continue
             try:
