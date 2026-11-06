@@ -47,6 +47,9 @@ import logging
 from datetime import datetime
 from typing import Any, Callable
 
+from app.core.infra import timephrase
+from app.core.vision.image_evidence import parse_note, source_current
+
 log = logging.getLogger("app.vision.memory")
 
 # Photos are worth keeping but shouldn't crowd out things he said.
@@ -99,17 +102,24 @@ def _build_distil_system(user_name: str, assistant_name: str) -> str:
         f"assume it is you; {sharer} also shares pictures of other "
         "characters, other people and places.\n"
         "Rules:\n"
-        "- One sentence, under 40 words, past tense.\n"
+        "- One sentence, under 40 words, describing the representation.\n"
         "- Lead with what was in the picture, not with the fact a picture "
         "was sent.\n"
         "- Keep the concrete specifics: place, subject, colours, text, "
         "anything countable. Those are the parts worth remembering.\n"
-        "- Drop hedging and photography talk (\"the image shows\", "
-        "\"appears to be\", \"in the foreground\").\n"
+        "- Preserve uncertainty, negation and conditions. A render, imagined "
+        "scene or old photo does not prove a physical event happened when shared.\n"
         f"- Refer to the sharer as {sharer}.\n"
         "- If the description is too vague to be worth remembering, reply "
         "with exactly: SKIP\n"
-        "Reply with the sentence only, no quotes, no preamble."
+        "Return JSON: {summary:string, subject:user|aiko|relationship|world|unknown, "
+        "subject_quote:literal caption span or empty, depicted_domain:real|virtual|unknown, "
+        "domain_quote:literal caption span or empty, caption_quote:literal caption span or empty, "
+        "visual_quote:literal description span or empty, depicted_time_quote:literal caption "
+        "timing span or empty}. Use unknown without support. Subject means who is depicted, "
+        "not who uploaded it. Separate caption testimony from visual interpretation. "
+        "A caption's date is not independently verified event occurrence.\n"
+        + timephrase.STORED_TEXT_TIME_RULE
     )
 
 
@@ -120,6 +130,7 @@ def distil_image_memory(
     user_name: str,
     chat: Callable[..., str],
     assistant_name: str = "Aiko",
+    shared_at: datetime | None = None,
 ) -> str:
     """Compress a vision description into one memory line, or ``""``.
 
@@ -134,13 +145,23 @@ def distil_image_memory(
     if not described:
         return ""
     caption = (user_text or "").strip()
+    shared_at = shared_at or timephrase.utcnow()
+    if len(caption) > 3000 or len(described) > 6000:
+        return ""
+    from types import SimpleNamespace
+
+    transcript = timephrase.format_transcript([
+        SimpleNamespace(role="user", content=caption, created_at=shared_at.isoformat()),
+        SimpleNamespace(role="assistant", content=described, created_at=shared_at.isoformat()),
+    ])
     said = (
-        f"{user_name} said to you while sharing it: \"{caption[:300]}\"\n"
+        f"{user_name} said to you while sharing it: \"{caption}\"\n"
         if caption else ""
     )
     prompt = (
-        f"{said}"
-        f"Description of the photo {user_name} shared:\n{described[:2000]}\n\n"
+        f"{timephrase.today_anchor()}\nSharing source recorded at {shared_at.isoformat()}.\n"
+        f"{said}Age-tagged caption and visual description (different source roles):\n"
+        f"{transcript}\n\n"
         "Write the memory line."
     )
     try:
@@ -159,15 +180,8 @@ def distil_image_memory(
         log.debug("image memory distil call failed", exc_info=True)
         return ""
 
-    line = " ".join((raw or "").strip().split())
-    if not line or line.upper().startswith("SKIP"):
-        return ""
-    # Models like to wrap a single-sentence answer in quotes.
-    if len(line) > 1 and line[0] in "\"'" and line[-1] == line[0]:
-        line = line[1:-1].strip()
-    if len(line) > MAX_MEMORY_CHARS:
-        line = line[:MAX_MEMORY_CHARS].rsplit(" ", 1)[0].rstrip(",;: ") + "…"
-    return line
+    return parse_note(raw, caption=caption, description=described, shared_at=shared_at,
+                      max_chars=MAX_MEMORY_CHARS)
 
 
 def write_image_memory(
@@ -180,6 +194,8 @@ def write_image_memory(
     embedder: Any,
     memory_store: Any,
     notify_memory_added: Callable[[dict[str, Any]], None] | None = None,
+    source_session: str | None = None,
+    caption_receipt: dict | None = None,
 ) -> int | None:
     """Persist one distilled image memory. Returns its id, or ``None``.
 
@@ -191,15 +207,29 @@ def write_image_memory(
     on a memory row anywhere in the system. It is what lets a later
     caller get from "she remembers the mountain" back to the actual file.
     """
-    text = (line or "").strip()
-    if not text:
+    from dataclasses import asdict
+    from app.core.memory.memory_origin import MemoryOrigin
+
+    summary = (line or "").strip()
+    if not summary or len(summary) > MAX_MEMORY_CHARS or not source_current(
+            caption_receipt, memory_store):
         return None
+    details = dict(getattr(line, "details", {}) or {})
+    details.update(shared_at=now.isoformat(), scope="depicted_content",
+                   sources=[caption_receipt] if caption_receipt else [])
+    subject = details.get("subject", "unknown")
+    domain = "virtual" if details.get("depicted_domain") == "virtual" else "conversation"
+    text = f"Image shared at {now.isoformat()}; visual interpretation: {summary}"
+    if details.get("caption_quote"):
+        text += f'; caption (quoted): "{details["caption_quote"]}"'
     try:
         embedding = embedder.embed(text)
     except Exception:
         log.warning("image memory embed failed", exc_info=True)
         return None
     try:
+        if not source_current(caption_receipt, memory_store):
+            return None
         memory = memory_store.add(
             content=text,
             kind="event",
@@ -207,12 +237,17 @@ def write_image_memory(
             salience=IMAGE_MEMORY_SALIENCE,
             tier="long_term",
             source_message_id=source_message_id,
-            event_time=now.isoformat(),
+            source_session=source_session,
+            temporal_type="past_event", event_time=None, provenance="inferred",
             metadata={
                 "source": "shared_image",
                 "source_attachment": rel_path,
                 "source_filename": filename,
                 "seen_at": now.isoformat(),
+                "image_evidence": details,
+                "memory_origin": asdict(MemoryOrigin(
+                    subject, "interpretation", "image_memory", domain,
+                )),
             },
         )
     except Exception:

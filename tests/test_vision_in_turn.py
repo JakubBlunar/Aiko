@@ -573,13 +573,12 @@ class ImageMemoryTests(unittest.TestCase):
         )
         self.assertEqual(line, "Jacob showed his new desk.")
 
-    def test_overlong_reply_is_truncated_on_a_word_boundary(self) -> None:
+    def test_overlong_reply_is_refused_without_losing_qualifications(self) -> None:
         line = distil_image_memory(
             description="d", user_text="", user_name="Jacob",
             chat=lambda *_a, **_k: "word " * 200,
         )
-        self.assertLessEqual(len(line), 321)
-        self.assertTrue(line.endswith("…"))
+        self.assertEqual(line, "")
 
     def test_distil_failure_writes_nothing(self) -> None:
         def boom(*_a: Any, **_k: Any) -> str:

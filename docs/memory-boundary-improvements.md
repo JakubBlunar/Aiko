@@ -36,3 +36,23 @@ or withdrawn supports invalidate it; failed writes leave the hypothesis live.
 Focused hypothesis checks: 164 tests and 3 subtests passed, plus 31 receipt,
 longitudinal and recall regressions. Lint passed. These deterministic checks do
 not validate the model's semantic judgement of an answer.
+
+## Shared images
+
+Queued image jobs capture the caption's original message, session and timestamp.
+The worker receives whole bounded, age-tagged inputs and the stored-text time
+rule. Structured notes distinguish caption quotes, visual interpretation,
+depicted subject/domain and caption-supported timing. Plain legacy responses
+remain interpretations of unknown subject. Oversized inputs/outputs are refused
+whole. Visual uncertainty and caption qualifications remain available.
+
+Image notes have an explicit sharing-date anchor; upload or processing time
+never fills the depicted event date. A separately recorded caption date is not
+external verification of occurrence. Caption edits invalidate the receipt, and
+an edit during embedding defers the write. Visual notes can be recalled but do
+not independently establish personal concepts; caption testimony retains the
+ordinary extraction path.
+
+Focused image/recall checks: 62 passed, plus 18 image-evidence and receipt checks.
+Lint passed. Live visual identification and summary entailment remain model
+quality questions, not proven by literal citation checks.

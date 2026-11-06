@@ -140,7 +140,9 @@ class SpeakingWindowJobsMixin:
         except Exception:
             log.debug("search distill submit failed", exc_info=True)
 
-    def _maybe_schedule_image_memory_job(self) -> None:
+    def _maybe_schedule_image_memory_job(
+        self, *, user_message_id: int | None = None, user_text: str | None = None,
+    ) -> None:
         """H25: remember what was in an image shared this turn.
 
         The vision pass already ran during the turn, so the description
@@ -157,7 +159,18 @@ class SpeakingWindowJobsMixin:
         if embedder is None or memory_store is None or client is None:
             return
         model = str(getattr(self, "_effective_worker_model", "") or "")
-        user_text = str(getattr(self, "_active_turn_user_text", "") or "")
+        db = getattr(self, "_chat_db", None)
+        source = db.get_message_row(user_message_id) if db and user_message_id else None
+        if source is None or source.role != "user" or source.session_id != self.session_key:
+            return
+        from app.core.memory.shared_shorthand import source_receipt
+
+        user_text = source.content
+        receipt = {**source_receipt(source, source.content), "source_at": source.created_at}
+        shared_at = timephrase.parse_iso(source.created_at)
+        if shared_at is None:
+            return
+        source_session = source.session_id
         user_name = self.user_display_name
         # Her own name has to reach the distiller: the caption is usually
         # addressed to her ("your new outfit"), and without a name to bind
@@ -184,6 +197,7 @@ class SpeakingWindowJobsMixin:
                         user_name=user_name,
                         assistant_name=assistant_name,
                         chat=_chat,
+                        shared_at=shared_at,
                     )
                     if not line:
                         continue
@@ -191,8 +205,10 @@ class SpeakingWindowJobsMixin:
                         line=line,
                         filename=item.filename,
                         rel_path=item.rel_path,
-                        source_message_id=None,
-                        now=timephrase.utcnow(),
+                        source_message_id=user_message_id,
+                        source_session=source_session,
+                        caption_receipt=receipt,
+                        now=shared_at,
                         embedder=embedder,
                         memory_store=memory_store,
                         notify_memory_added=getattr(

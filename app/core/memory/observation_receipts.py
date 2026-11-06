@@ -132,6 +132,10 @@ def longitudinal_sources_current(memory, store, _seen=None):
     if isinstance(answer, dict) and answer.get("version") == 1:
         if not receipt_sources_current(answer, store):
             return False
+    image = metadata.get("image_evidence")
+    if isinstance(image, dict) and image.get("sources"):
+        if not receipt_sources_current(image, store):
+            return False
     support = metadata.get("hypothesis_support")
     if support is not None:
         from app.core.memory.reflective_evidence import current

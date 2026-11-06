@@ -1349,7 +1349,9 @@ class PostTurnMixin(PostTurnHelpersMixin):
             log.debug("search distill schedule failed", exc_info=True)
         # H25: keep what she saw (no-op unless an image was shared).
         try:
-            self._maybe_schedule_image_memory_job()
+            self._maybe_schedule_image_memory_job(
+                user_message_id=user_message_id, user_text=user_text,
+            )
         except Exception:
             log.debug("image memory schedule failed", exc_info=True)
 
