@@ -236,7 +236,7 @@ class FormatBlockExpansionTests(unittest.TestCase):
         sib = _mem_hit(2, 0.8)
         sib.expansion = True
         block = RagRetriever.format_block([direct, sib], user_display_name="Jacob")
-        self.assertIn("What you know about Jacob", block)
+        self.assertIn("unresolved subject", block)
         self.assertIn("Related notes from the same topic", block)
         # The sibling text lives only under the expansion section.
         before, _, after = block.partition("Related notes from the same topic")

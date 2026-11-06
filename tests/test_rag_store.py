@@ -731,8 +731,8 @@ class RagRetrieverMergeTests(_TmpRagBase):
         block = retriever.block_for(
             "Jacob lives in Krakow", user_display_name="Jacob",
         )
-        # The "Jacob" header is required when any non-self memory is hit.
-        self.assertIn("What you know about Jacob", block)
+        # Without the SQLite join the vector kind cannot establish subject.
+        self.assertIn("unresolved subject", block)
 
 
 class RWLockTests(unittest.TestCase):

@@ -39,6 +39,8 @@ from app.core.infra.time_expr import TimeWindow, parse_time_window
 from app.core.memory import promise_lifecycle
 from app.core.rag.rag_store import MessageRecord, RagHit
 from app.core.infra import timephrase
+from app.core.memory.memory_origin import memory_origin
+from app.core.rag.recall_semantics import recall_origin, recall_scope, recall_sections
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -1152,6 +1154,7 @@ class RagRetriever:
                                 )
                                 h.score += _provenance_penalty(mem_provenance)
                                 h.memory_provenance = mem_provenance
+                                h.memory_origin = memory_origin(mem)
                                 # K25 — stamp the pinned flag on the
                                 # hit so the ``(distant)`` time-decay
                                 # suffix can bypass user-trusted rows
@@ -2101,6 +2104,13 @@ class RagRetriever:
             record=record,
             memory_tier=getattr(mem, "tier", None),
             expansion=bool(expansion),
+            memory_origin=memory_origin(mem),
+            memory_provenance=getattr(mem, "provenance", None),
+            confidence=getattr(mem, "confidence", None),
+            temporal_type=getattr(mem, "temporal_type", None),
+            event_time=getattr(mem, "event_time", None),
+            event_time_precision=((getattr(mem, "metadata", None) or {}).get("claim_fidelity")
+                                  or {}).get("precision"),
         )
 
     # ── alignment boost (H1 + K4) ───────────────────────────────────────
@@ -2250,8 +2260,7 @@ class RagRetriever:
         """
         if not hits:
             return ""
-        user_lines: list[str] = []
-        self_lines: list[str] = []
+        memory_lines: dict[str, list[str]] = {}
         message_lines: list[str] = []
         document_lines: list[str] = []
         expansion_lines: list[str] = []
@@ -2263,21 +2272,11 @@ class RagRetriever:
                     and getattr(hit, "memory_provenance", "") != "validated_pattern"):
                 continue
             if getattr(hit.record, "kind", "") in {"shared_term", "strategy"}:
-                user_lines.append("- " + text[:1000])
+                memory_lines.setdefault("relationship", []).append(
+                    "- [validated shared pattern] " + text
+                )
                 continue
             if not text:
-                continue
-            # F10c/F10g — associative pulls (sibling members + the cluster
-            # digest) render in their own sections, not the direct-recall
-            # list. A digest is a paragraph "what I know about X", so it
-            # gets a clearer label and a longer truncation than the bullet
-            # siblings.
-            if getattr(hit, "expansion", False):
-                kind = (getattr(hit.record, "kind", "") or "").lower()
-                if kind == "topic_digest":
-                    digest_lines.append(_truncate(text, 600))
-                else:
-                    expansion_lines.append(f"- {_truncate(text, 240)}")
                 continue
             if hit.source == "memory":
                 kind = (getattr(hit.record, "kind", "") or "").lower()
@@ -2389,10 +2388,22 @@ class RagRetriever:
                     time_suffix = _recorded_suffix(
                         getattr(hit.record, "created_at", None), now,
                     )
-                if kind in ("self", "self_tagged"):
-                    self_lines.append(f"- {text}{suffix}{time_suffix}")
+                scoped = recall_scope(hit)
+                if getattr(hit, "expansion", False):
+                    # Keep qualifications intact; the context selector can
+                    # omit a whole oversized record rather than cutting it.
+                    if len(text) > 1200:
+                        continue
+                    line = f"- {scoped}{text}{suffix}{time_suffix}"
+                    if kind == "topic_digest":
+                        digest_lines.append(line)
+                    else:
+                        expansion_lines.append(line)
                 else:
-                    user_lines.append(f"- {text}{suffix}{time_suffix}")
+                    subject = recall_origin(hit).subject
+                    memory_lines.setdefault(subject, []).append(
+                        f"- {scoped}{text}{suffix}{time_suffix}"
+                    )
             elif hit.source == "message":
                 role = (getattr(hit.record, "role", "") or "").lower()
                 speaker = (
@@ -2413,17 +2424,7 @@ class RagRetriever:
                 title = getattr(hit.record, "title", "")
                 head = f"({title}) " if title else ""
                 document_lines.append(f"- {head}{_truncate(text, 240)}")
-        sections: list[str] = []
-        if user_lines:
-            sections.append(
-                f"What you know about {user_display_name} (long-term memory):\n"
-                + "\n".join(user_lines)
-            )
-        if self_lines:
-            sections.append(
-                "Things you've shared / decided about yourself:\n"
-                + "\n".join(self_lines)
-            )
+        sections = recall_sections(memory_lines, user_display_name)
         if message_lines:
             sections.append(
                 "Snippets you remembered from past chats:\n"

@@ -32,6 +32,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from app.core.memory.memory_origin import MemoryOrigin
+
 import numpy as np
 import pyarrow as pa
 from app.core.infra import timephrase
@@ -191,6 +193,9 @@ class RagHit:
     # ``None`` for non-memory hits or when the join did not resolve
     # (treated as the unmarked/stated default downstream).
     memory_provenance: str | None = None
+    # Authoritative source meaning, joined from SQLite; never inferred from
+    # the vector mirror when the join is unavailable.
+    memory_origin: "MemoryOrigin | None" = None
     # F10c — topic multi-hop expansion flag. ``True`` for sibling
     # memories pulled from the same topic cluster as a strong query hit
     # (rather than matched directly on cosine). ``RagRetriever.format_block``
