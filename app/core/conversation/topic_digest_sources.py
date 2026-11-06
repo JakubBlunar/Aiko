@@ -25,8 +25,9 @@ class DigestSources:
     def render(self, *, max_chars, now):
         lines = []
         for row in self.rows:
-            short = SimpleNamespace(**{**vars(row), "content": row.content[:max_chars]})
-            lines.append(f"ID {row.id} " + timephrase.format_memory_line(short, now)
+            # The old soft target clipped trailing exceptions. Capture bounds
+            # whole records instead; never show a qualification-free prefix.
+            lines.append(f"ID {row.id} " + timephrase.format_memory_line(row, now)
                          + " [" + origin_annotation(row) + "]")
         return "\n".join(lines)
 
@@ -41,9 +42,11 @@ def capture_sources(cluster, store, *, limit=16):
             ("id", mid), ("content", ""), ("kind", ""), ("metadata", {}), ("created_at", ""),
             ("event_time", None), ("temporal_type", "durable"), ("provenance", "inferred"),
             ("salience", .5),
+            ("relevance_until", None),
         )})
         origin = memory_origin(row)
-        eligible = (topic_member_eligible(row) and origin.subject != "unknown"
+        eligible = (topic_member_eligible(row) and 0 < len(row.content) <= 1000
+                    and origin.subject != "unknown"
                     and origin.mode not in {"hypothetical", "question", "summary", "unknown"}
                     and longitudinal_sources_current(row, store))
         signature = revision_hash([memory_revision(row), asdict(origin), row.temporal_type,
@@ -75,4 +78,5 @@ def capture_sources(cluster, store, *, limit=16):
                 break
     selected = tuple(picked[:limit])
     revisions = tuple((row.id, dict(signatures)[row.id]) for row in selected)
-    return DigestSources(selected, revision_hash(signatures), len(rows), revisions)
+    return DigestSources(selected, revision_hash(["scope_clauses_v1", signatures]),
+                         len(rows), revisions)

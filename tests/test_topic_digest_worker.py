@@ -10,6 +10,7 @@ as the graph's mirror snapshot.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import threading
 import unittest
@@ -163,7 +164,12 @@ class _FakeOllama:
         for msg in messages:
             if msg.get("role") == "system":
                 self.last_system = msg.get("content", "")
-        yield json.dumps({"digest": self.digest})
+        packet = next(msg["content"] for msg in messages if msg["role"] == "user")
+        mid = int(re.search(r"ID (\d+)", packet).group(1))
+        first_line = next(line for line in packet.splitlines() if line.startswith(f"ID {mid} "))
+        scope = "interpretation" if "source=interpretation" in first_line else "history"
+        yield json.dumps({"claims": [{"text": self.digest, "source_ids": [mid],
+                                     "scope": scope, "subject": "user"}]})
 
 
 def _agent_settings(**over: Any) -> SimpleNamespace:

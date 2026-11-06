@@ -105,8 +105,7 @@ def _build_system_prompt(
         "something. Do not combine opposite or context-dependent claims into one trait; "
         "preserve the dated distinction or uncertainty. "
         + timephrase.STORED_TEXT_TIME_RULE
-        + ' Reply with ONE JSON object on a single line and nothing '
-        'else: {"digest": "<2-4 sentences>"}.'
+        + ' Reply with the requested source-cited JSON clauses and nothing else.'
     )
 
 
@@ -291,13 +290,15 @@ class TopicDigestWorker:
             snippets = sources.render(max_chars=_MAX_SNIPPET_CHARS, now=self._clock())
             if not snippets:
                 continue
-            digest_text = self._call_llm(snippets)
-            if not digest_text:
+            draft = self._call_llm(snippets, sources=sources)
+            if not draft:
                 continue
+            digest_text = draft["text"]
             if (capture_sources(cluster, self._memory_store).fingerprint != sources.fingerprint
                     or timephrase.has_relative_deictic(digest_text)):
                 continue
-            mem_id = self._write_digest(cluster, digest_text, existing_id, sources=sources)
+            mem_id = self._write_digest(cluster, digest_text, existing_id, sources=sources,
+                                        summary_receipt=draft)
             if mem_id is None:
                 continue
             self._write_cache(int(cluster.representative_id), mem_id, int(cluster.size),
@@ -469,6 +470,7 @@ class TopicDigestWorker:
 
     def _write_digest(
         self, cluster: Any, digest_text: str, existing_id: int | None, *, sources=None,
+        summary_receipt=None,
     ) -> int | None:
         if existing_id is not None:
             previous = self._memory_store.get(existing_id)
@@ -492,6 +494,7 @@ class TopicDigestWorker:
             "source_fingerprint": sources.fingerprint,
             "source_scope": "summary_inputs",
             "input_member_count": sources.member_count,
+            "summary_claims": summary_receipt,
         }
         # Refresh the existing row in place when we have one (keeps the same
         # memory id so the cluster→digest map and Memory-tab row are stable);
@@ -555,9 +558,11 @@ class TopicDigestWorker:
             self._assistant_display_name_provider, fallback="Aiko"
         )
 
-    def _call_llm(self, snippets: str) -> str:
+    def _call_llm(self, snippets: str, *, sources):
+        from app.core.conversation.digest_fidelity import RULE, parse_claims
+
         max_tokens = max(
-            32, int(getattr(self._agent_settings, "topic_digest_max_tokens", 256))
+            512, int(getattr(self._agent_settings, "topic_digest_max_tokens", 256))
         )
         # Anchor resolved per call, not at module import: ``_SYSTEM_PROMPT``
         # is built once at load and would freeze the date to whenever the
@@ -568,6 +573,7 @@ class TopicDigestWorker:
             + _build_system_prompt(
                 self._resolve_user_name(), self._resolve_assistant_name()
             )
+            + "\n" + RULE
         )
         messages = [
             {"role": "system", "content": system_prompt},
@@ -592,10 +598,10 @@ class TopicDigestWorker:
         if self._cancel_event.is_set():
             return ""
         raw = "".join(chunks).strip()
-        digest = self._parse_digest(raw)
+        digest = parse_claims(raw, sources.rows, self._clock())
         log.debug(
             "topic_digest generated: chars=%d llm_ms=%.0f",
-            len(digest),
+            len(digest["text"]) if digest else 0,
             (time.monotonic() - t0) * 1000.0,
         )
         return digest
