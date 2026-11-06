@@ -58,17 +58,16 @@ def evaluate() -> dict:
                {"keys": sorted(item), "end_qualification_retained": qualification in item["text"],
                 "input_characters": len(content), "output_characters": len(item["text"])})
 
-    # The payload cannot distinguish complete coverage from a capped sample.
-    payload = json.loads(RecallTopicTool(rag).run({"topic": "a scene", "limit": 1}))
+    graph = NS(best_clusters_for=lambda *a, **kw: [(77, "A scene", 1.)],
+               cluster_member_ids=lambda cid: [77])
+    retriever = RagRetriever(NS(), NS(embed=lambda text: np.array([1., 0.])),
+                             memory_store=NS(get=lambda mid: row), topic_graph=graph)
+    payload = json.loads(RecallTopicTool(retriever).run({"topic": "a scene", "limit": 1}))
     record("recall_topic:coverage_and_continuation",
            "coverage" in payload and any(key in payload for key in ("total", "has_more")),
            {"keys": sorted(payload)})
 
     row.metadata.update(superseded_by=78, belief_revision="inaccurate")
-    graph = NS(best_clusters_for=lambda *a, **kw: [(77, "Old interpretation", 1.)],
-               cluster_member_ids=lambda cid: [77])
-    retriever = RagRetriever(NS(), NS(embed=lambda text: np.array([1., 0.])),
-                             memory_store=NS(get=lambda mid: row), topic_graph=graph)
     payload = json.loads(RecallTopicTool(retriever).run({"topic": "a scene"}))
     items = payload["hits"]
     record("recall_topic:withdrawn_source_status",
@@ -85,7 +84,8 @@ def evaluate() -> dict:
         registry.register(tool)
         result = registry.dispatch(tool.schema().name, arguments)
         record(tool.schema().name + ":lookup_failure_differs_from_no_match", not result.ok,
-               {"ok": result.ok, "payload": json.loads(result.content)})
+               {"ok": result.ok, "payload": json.loads(result.content) if result.ok
+                else {"error": result.content}})
 
     shifted = datetime(2031, 2, 3, 12, tzinfo=timezone.utc)
     with patch("app.core.infra.timephrase.now", return_value=shifted), patch(
@@ -114,7 +114,8 @@ def evaluate() -> dict:
     properties = CheckMyWorkTool(NS()).schema().parameters.get("properties", {})
     record("check_my_work:completed_task_drilldown",
            "task_id" in properties or "status" in properties,
-           {"accepted_arguments": sorted(properties), "reads_active_rows_only": True})
+           {"accepted_arguments": sorted(properties), "reads_active_rows_only": "task_id"
+            not in properties})
 
     names = list(_TOOL_FAMILY)
     for text in ("Why do you think that about me?", "What have you figured out about me?",

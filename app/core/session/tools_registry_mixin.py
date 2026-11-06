@@ -124,7 +124,7 @@ class ToolsRegistryMixin:
                 and getattr(self, "_concept_learning_store", None) is not None
             ):
                 registry.register(
-                    RecallSelfHistoryTool(self.self_history)
+                    RecallSelfHistoryTool(self.self_history, self.understanding_history)
                 )
             # L30 Phase B open guesses. Gated on the concept store only:
             # the facade serves grounded candidates even with no invented
@@ -137,6 +137,12 @@ class ToolsRegistryMixin:
                 registry.register(
                     RecallHypothesesTool(self.open_hypotheses)
                 )
+            if (getattr(tools_cfg, "recall", True)
+                    and getattr(self, "_belief_store", None) is not None
+                    and getattr(self._settings.agent, "belief_tracking_enabled", True)):
+                from app.llm.tools.belief_reads import RecallBeliefsTool
+
+                registry.register(RecallBeliefsTool(self.recall_beliefs))
             # ``calculate`` moved to the bundled ``calculator`` plugin
             # (see ``plugins/calculator/``) — it now registers via the
             # ToolPlugin SDK fast-tool path below, not as a core builtin.

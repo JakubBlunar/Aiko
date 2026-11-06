@@ -169,7 +169,7 @@ class EvolutionDiaryStore:
         )
 
     def list(
-        self, *, limit: int = 50, before_id: int | None = None
+        self, *, limit: int = 50, before_id: int | None = None, strict: bool = False,
     ) -> list[DiaryEntry]:
         """Entries newest-first; ``before_id`` pages backwards."""
         conn = self._db._get_conn()  # type: ignore[attr-defined]
@@ -185,9 +185,17 @@ class EvolutionDiaryStore:
                 tuple(params),
             ).fetchall()
         except Exception:
+            if strict:
+                raise
             log.warning("diary list failed", exc_info=True)
             return []
         return [self._row_to_entry(r) for r in rows]
+
+    def get(self, entry_id: int) -> DiaryEntry | None:
+        row = self._db._get_conn().execute(
+            f"SELECT {_COLS} FROM evolution_diary WHERE id = ?", (int(entry_id),),
+        ).fetchone()
+        return self._row_to_entry(row) if row is not None else None
 
     def latest(self) -> DiaryEntry | None:
         entries = self.list(limit=1)

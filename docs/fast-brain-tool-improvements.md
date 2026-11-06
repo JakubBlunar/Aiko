@@ -55,3 +55,26 @@ Explicit-zone time reads convert the same `timephrase` instant as default reads,
 including a shifted debug clock. The world snapshot schema directs file work to
 the available background workflow rather than the retired `list_file_roots` tool.
 Focused time/world checks: 79 tests and 9 subtests passed; lint passed.
+
+## Current interpretations and relationship history
+
+`recall_beliefs` reads current, context-relevant structured interpretations from
+BeliefStore. It keeps the situation, uncertainty, revision conditions, expiry and
+cited user words, and rejects missing/changed quoted sources. It does not invent,
+confirm or write a belief. Existing receipts lack full-message revision hashes;
+the output explicitly marks that limitation and includes bounded original context
+or source IDs for archive inspection. A still-present quote is not proof the
+surrounding conversation was unchanged.
+
+`recall_self_history` now accepts relationship/world subjects and literal query or
+concept-ID focus. Its new modes browse the separate evolution diary, open an exact
+historical paragraph/period, or inspect a linked learning event. They preserve
+dates, event/concept IDs and thin-record semantics; an understanding change is not
+proof that the user or relationship changed. Unknown ownership is withheld when
+the historical concept cannot be resolved, and known foreign ownership is blocked.
+Read failures remain unavailable rather than fabricated empty history. Long work
+and history records share revision-bound JSON paging.
+
+Focused understanding/history/belief/work checks: 243 tests and 3 subtests passed;
+lint passed. The updated offline audit probes pass all 18 targeted scenarios,
+which establishes these local contracts rather than a model accuracy rate.

@@ -313,6 +313,12 @@ class ConceptLearningEventStore:
             created_at=str(r[19] or ""),
         )
 
+    def get(self, event_id: int) -> LearningEvent | None:
+        row = self._db._get_conn().execute(
+            f"SELECT {_COLS} FROM concept_learning_events WHERE id = ?", (int(event_id),),
+        ).fetchone()
+        return self._row_to_event(row) if row is not None else None
+
     def list(
         self,
         *,
@@ -323,6 +329,7 @@ class ConceptLearningEventStore:
         min_salience: float | None = None,
         before_id: int | None = None,
         after_id: int | None = None,
+        strict: bool = False,
     ) -> list[LearningEvent]:
         """Learning events newest-first.
 
@@ -363,6 +370,8 @@ class ConceptLearningEventStore:
                 tuple(params),
             ).fetchall()
         except Exception:
+            if strict:
+                raise
             log.warning("learning event list failed", exc_info=True)
             return []
         return [self._row_to_event(r) for r in rows]
@@ -568,7 +577,7 @@ class ConceptLearningEventStore:
             chain.append(resolved)
         return chain
 
-    def list_aliases(self, *, limit: int = 500) -> list[ConceptAlias]:
+    def list_aliases(self, *, limit: int = 500, strict: bool = False) -> list[ConceptAlias]:
         """Every recorded absorption, oldest first.
 
         The bulk companion to :meth:`absorbed_into`, for callers that need
@@ -585,6 +594,8 @@ class ConceptLearningEventStore:
                 (max(1, int(limit)),),
             ).fetchall()
         except Exception:
+            if strict:
+                raise
             log.debug("alias bulk read failed", exc_info=True)
             return []
         return [

@@ -241,6 +241,10 @@ def build_self_history(
     max_entries_per_era: int = 8,
     max_eras: int = 12,
     event_limit: int = 2000,
+    query: str = "",
+    concept_id: int | None = None,
+    user_id: str | None = None,
+    strict: bool = False,
 ) -> SelfHistoryArc:
     """Walk a subject's beliefs into eras of classified change.
 
@@ -255,21 +259,29 @@ def build_self_history(
             c
             for c in concept_store.list_by(subject=subject)
             if int(c.concept_id) > 0
+            and (user_id is None or getattr(c, "user_id", None) in (None, user_id))
+            and (concept_id is None or c.concept_id == concept_id)
         ]
     except Exception:
+        if strict:
+            raise
         log.debug("self-history concept read failed", exc_info=True)
         return SelfHistoryArc(subject=subject)
     if not concepts:
         return SelfHistoryArc(subject=subject)
 
-    events_by_concept = _group_events(learning_store, subject, event_limit)
-    absorbed_by_concept = _group_aliases(learning_store, concepts)
+    events_by_concept = _group_events(learning_store, subject, event_limit, strict=strict)
+    absorbed_by_concept = _group_aliases(learning_store, concepts, strict=strict)
 
     entries: list[tuple[datetime, HistoryEntry]] = []
     for concept in concepts:
         cid = int(concept.concept_id)
         events = events_by_concept.get(cid, [])
         change, prior, because = _classify(concept, events)
+        if query and query.casefold() not in " ".join((
+            concept.label, prior, because, *absorbed_by_concept.get(cid, ()),
+        )).casefold():
+            continue
         if not change:
             continue
         born = _parse(concept.first_evidence_at) or _parse(
@@ -343,6 +355,7 @@ def _group_events(
     learning_store: "ConceptLearningEventStore",
     subject: str,
     event_limit: int,
+    *, strict: bool = False,
 ) -> dict[int, "list[LearningEvent]"]:
     """One bulk read, grouped in memory, oldest-first per concept.
 
@@ -350,8 +363,13 @@ def _group_events(
     belief that faded *and* the one that replaced it.
     """
     try:
-        rows = learning_store.list(subject=subject, limit=event_limit)
+        kwargs = {"subject": subject, "limit": event_limit}
+        if strict:
+            kwargs["strict"] = True
+        rows = learning_store.list(**kwargs)
     except Exception:
+        if strict:
+            raise
         log.debug("self-history learning read failed", exc_info=True)
         return {}
     grouped: dict[int, list[Any]] = defaultdict(list)
@@ -367,12 +385,15 @@ def _group_events(
 def _group_aliases(
     learning_store: "ConceptLearningEventStore",
     concepts: "list[Concept]",
+    *, strict: bool = False,
 ) -> dict[int, list[str]]:
     """Labels of beliefs that were folded into each surviving concept."""
     live = {int(c.concept_id) for c in concepts}
     try:
-        aliases = learning_store.list_aliases()
+        aliases = learning_store.list_aliases(**({"strict": True} if strict else {}))
     except Exception:
+        if strict:
+            raise
         return {}
     grouped: dict[int, list[str]] = defaultdict(list)
     for alias in aliases:

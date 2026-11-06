@@ -1,8 +1,9 @@
 """Exact, read-only memory inspection for the brain lane."""
 from app.core.memory.recall_records import memory_record, owned
+from app.core.session.understanding_reads_mixin import UnderstandingReadsMixin
 
 
-class MemoryReadsMixin:
+class MemoryReadsMixin(UnderstandingReadsMixin):
     def inspect_memory(self, memory_id, *, content_offset=0, revision=None):
         store = getattr(self, "_memory_store", None)
         if store is None:

@@ -352,8 +352,9 @@ class RecallSelfHistoryTool:
     than a prompt block.
     """
 
-    def __init__(self, history_provider: Any) -> None:
+    def __init__(self, history_provider: Any, record_provider: Any = None) -> None:
         self._provider = history_provider
+        self._record_provider = record_provider
 
     def schema(self) -> ToolSchema:
         return ToolSchema(
@@ -375,7 +376,13 @@ class RecallSelfHistoryTool:
                 "recorded at the time. Synchronous and fast. IMPORTANT: if "
                 "the result says 'thin_record': true, she genuinely has no "
                 "recorded history for this yet and must say so plainly "
-                "rather than describing a past she cannot support."
+                "rather than describing a past she cannot support. Relationship is a distinct "
+                "subject. mode=diary lists historical change-log entry IDs; diary_entry opens "
+                "a paragraph and its period/event links; learning_event opens an exact change. "
+                "These are changes in understanding, separate from subjective read_diary entries "
+                "and not proof the user changed. query is a literal substring filter; concept_id "
+                "focuses an existing concept. Follow next_offset with content_offset and revision "
+                "for long JSON fragments. No LLM calls or writes."
             ),
             parameters={
                 "type": "object",
@@ -389,8 +396,19 @@ class RecallSelfHistoryTool:
                             "('how has your picture of me changed?'). "
                             "Defaults to 'aiko'."
                         ),
-                        "enum": ["aiko", "user"],
+                        "enum": ["aiko", "user", "relationship", "world"],
                     },
+                    "mode": {"type": "string", "enum": [
+                        "timeline", "diary", "diary_entry", "learning_event",
+                    ]},
+                    "query": {"type": "string", "maxLength": 200},
+                    "concept_id": {"type": "integer", "minimum": 1},
+                    "entry_id": {"type": "integer", "minimum": 1},
+                    "event_id": {"type": "integer", "minimum": 1},
+                    "before_id": {"type": "integer", "minimum": 1},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+                    "content_offset": {"type": "integer", "minimum": 0},
+                    "revision": {"type": "string", "maxLength": 128},
                     "eras": {
                         "type": "integer",
                         "description": (
@@ -406,8 +424,28 @@ class RecallSelfHistoryTool:
         )
 
     def run(self, arguments: dict[str, Any]) -> str:
+        mode = arguments.get("mode", "timeline")
+        allowed = {
+            "timeline": {"subject", "eras", "query", "concept_id"},
+            "diary": {"subject", "query", "concept_id", "limit", "before_id"},
+            "diary_entry": {"entry_id", "content_offset", "revision"},
+            "learning_event": {"event_id", "content_offset", "revision"},
+        }
+        if mode not in allowed or set(arguments) - (allowed[mode] | {"mode"}):
+            raise ToolError("recall_self_history: unsupported mode/argument combination")
+        if mode in {"diary_entry", "learning_event"} and (
+            "entry_id" if mode == "diary_entry" else "event_id"
+        ) not in arguments:
+            raise ToolError("recall_self_history: exact entry/event ID is required")
+        if self._record_provider is not None:
+            try:
+                return json.dumps(self._record_provider(**arguments), ensure_ascii=False)
+            except Exception as exc:
+                raise ToolError(f"recall_self_history unavailable: {exc}") from exc
+        if mode != "timeline":
+            raise ToolError("recall_self_history: recorded change inspection is unavailable")
         subject = str(arguments.get("subject") or "aiko").strip().lower()
-        if subject not in ("aiko", "user"):
+        if subject not in ("aiko", "user", "relationship", "world"):
             subject = "aiko"
         try:
             eras = int(arguments.get("eras", 6))

@@ -126,6 +126,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "recall_concept": "recall",
     "recall_self_history": "recall",
     "recall_hypotheses": "recall",
+    "recall_beliefs": "recall",
     "read_diary": "recall",
     "write_diary": "journal",
     "conversation_history": "recall",
