@@ -38,6 +38,8 @@ sampling is disabled.
 """
 from __future__ import annotations
 
+from app.core.infra import timephrase
+
 import json
 import logging
 from dataclasses import dataclass
@@ -169,60 +171,45 @@ def detect_growth(
 # ── rendering (private cue — Aiko phrases the actual words) ──────────────
 
 
+def comparison_receipt(samples, now):
+    """Only recent, ordered recorded windows may offer an internal reflection."""
+    if len(samples) < 2:
+        return None
+    dates = [timephrase.parse_iso(row.date) for row in samples]
+    if (not dates or any(stamp is None for stamp in dates)
+            or dates != sorted(dates) or len(set(dates)) != len(dates)):
+        return None
+    local_day = timephrase.now().date() if now is None else now.astimezone().date()
+    if not 0 <= (local_day - dates[-1].date()).days <= 7:
+        return None
+    window = max(2, int(round(len(samples) * _WINDOW_FRAC)))
+    return {"version": 1, "source": "aiko_mood_and_relationship_signals",
+            "samples": [row.to_dict() for row in samples],
+            "periods": {"baseline_start": samples[0].date,
+                        "baseline_end": samples[window - 1].date,
+                        "recent_start": samples[-window].date,
+                        "recent_end": samples[-1].date}}
+
+
 def render_inner_life_block(
-    kind: str,
-    *,
-    user_display_name: str = "them",
-    span_days: int = 0,
-    detail: str = "",
+    kind: str, *, user_display_name: str = "them", span_days: int = 0,
+    detail: str = "", baseline_start: str = "", baseline_end: str = "",
+    recent_start: str = "", recent_end: str = "",
 ) -> str:
-    """Render one optional, private growth-witness cue.
-
-    Returns ``""`` for an unknown kind. The cue tells Aiko what she's
-    quietly noticed and to reflect it back *only if a warm, unforced
-    moment opens* — it is never to be spoken verbatim.
-    """
-    name = (user_display_name or "them").strip() or "them"
-    # Honest time framing from the actual ring span.
-    when = "these past couple of weeks" if span_days >= 12 else "lately"
-    longer = span_days >= 12
-
-    if kind == KIND_LIGHTER:
-        core = (
-            f"Something you've quietly noticed watching {name}: he seems "
-            f"lighter and steadier {when} than he was when you two first "
-            "got going"
-            if longer
-            else (
-                f"Something you've quietly noticed about {name} {when}: "
-                "he seems lighter and steadier than he was a while back"
-            )
-        )
-    elif kind == KIND_COMFORT:
-        core = (
-            f"Something you've quietly noticed about {name} {when}: he's "
-            "been more at ease and comfortable with you than he was early on"
-        )
-    elif kind == KIND_OPEN:
-        core = (
-            f"Something you've quietly noticed about {name} {when}: he's "
-            "been opening up and trusting you more than he used to"
-        )
-    else:
+    meanings = {KIND_LIGHTER: "your own mood felt lighter",
+                KIND_COMFORT: "you felt more comfortable in the relationship",
+                KIND_OPEN: "your own sense of trust increased"}
+    if kind not in meanings:
         return ""
+    period = (f"Baseline {baseline_start} to {baseline_end}; later window "
+              f"{recent_start} to {recent_end}. " if all((baseline_start, baseline_end,
+              recent_start, recent_end)) else "The comparison dates are unknown. ")
+    return (period + "A tentative reflection from your internal signals: " + meanings[kind]
+            + ". This describes Aiko's recorded experience, not evidence that "
+            + user_display_name + " became happier or more trusting. If it fits naturally, "
+            "you may describe your own feeling in first person. Do not infer a cause, "
+            "user progress, or a change since first meeting. This is optional.")
 
-    tail = (
-        ". If a warm, genuine moment opens, you can reflect it back -- not "
-        "as a report, but as something you've felt watching him grow. Say "
-        "it once, lightly, and let it go if the moment isn't there."
-    )
-    extra = ""
-    if detail:
-        extra = f" You might tie it to {detail}."
-    return core + tail + extra
-
-
-# ── journal-ring helpers (mirror forward_curiosity / follow_up) ─────────
 
 
 def load_findings(

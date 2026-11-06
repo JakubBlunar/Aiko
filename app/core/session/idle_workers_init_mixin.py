@@ -108,6 +108,7 @@ class IdleWorkersInitMixin:
                 mem = self._memory_settings
                 agent = self._settings.agent
                 self._growth_witness_worker = GrowthWitnessWorker(
+                    cue_store_provider=lambda: self._cue_store,
                     kv_get=self._chat_db.kv_get,
                     kv_set=self._chat_db.kv_set,
                     user_display_name_provider=(

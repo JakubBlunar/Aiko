@@ -1,26 +1,7 @@
-"""K70 — Growth-witness worker (silent producer).
+"""Rare, dated reflections on Aiko's internal mood and relationship signals.
 
-During a quiet window this worker reads the H3 mood-drift daily ring
-(``aiko.mood_drift_samples``), runs the pure :func:`detect_growth`
-detector over an older-baseline-vs-recent window, and — only when a real
-durable **positive** shift clears a high bar and the multi-week cooldown
-has elapsed — drafts ONE private cue into the ``aiko.growth_witness`` kv
-ring. The consumer
-:meth:`InnerLifeProvidersMixin._render_growth_witness_block` surfaces the
-newest unseen cue on a later turn (watermark-gated). This worker never
-speaks or fires a proactive nudge.
-
-Pacing (kv watermarks, all swallow-and-log):
-  * ``growth_witness.last_fired_at``  — wall-clock cooldown (days).
-  * ``growth_witness.last_signature`` — same-finding suppression so the
-    identical "you seem lighter" never re-drafts back-to-back.
-
-The cue can be enriched with a deterministic corroborating detail (a goal
-the user has been chipping at) read from the optional goal store; the
-detail is woven into the rendered cue, never a standalone trigger.
-
-Every failure path is swallowed and logged at debug — the worst case is a
-missed beat, never a crashed tick.
+The pool owns delivery and expiry. The legacy journal is diagnostic history,
+never testimony of user growth. Aiko's goals do not corroborate user progress.
 """
 from __future__ import annotations
 
@@ -30,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.affect import mood_drift as _md
 from app.core.proactive.idle_worker import WorkSignal
+from app.core.proactive.cue_producer import CueProducer, StoreProvider
 from app.core.relationship import growth_witness as _gw
 from app.core.infra import timephrase
 
@@ -67,7 +49,7 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 class GrowthWitnessWorker:
-    """IdleWorker that drafts rare "you've grown" cues about the user."""
+    """Draft rare internal reflections with explicit comparison periods."""
 
     name = "growth_witness"
 
@@ -85,12 +67,14 @@ class GrowthWitnessWorker:
         min_valence_delta: float = _gw.DEFAULT_MIN_VALENCE_DELTA,
         min_axis_delta: float = _gw.DEFAULT_MIN_AXIS_DELTA,
         journal_max: int = 4,
+        cue_store_provider: StoreProvider | None = None,
     ) -> None:
         self._kv_get = kv_get
         self._kv_set = kv_set
         self._user_display_name_provider = user_display_name_provider
         self._enabled_provider = enabled_provider
         self._goal_store = goal_store
+        self._cues = CueProducer("growth_witness", cue_store_provider)
         self._interval_seconds = max(60.0, float(interval_seconds))
         self._cooldown_seconds = max(0.0, float(cooldown_days) * 86400.0)
         self._min_samples = max(2, int(min_samples))
@@ -145,7 +129,7 @@ class GrowthWitnessWorker:
             min_samples=self._min_samples,
             min_valence_delta=self._min_valence_delta,
             min_axis_delta=self._min_axis_delta,
-            detail=self._goal_detail(),
+            detail="",
         )
         if finding is None:
             return "no_finding", None, len(samples)
@@ -159,6 +143,8 @@ class GrowthWitnessWorker:
     def demand(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> "WorkSignal | None":
+        if self._cues.store() is not None and self._cues.stock() >= self._cues.inventory_target:
+            return WorkSignal(pressure=0.0, reason="stocked")
         """Binary: either the drift ring shows a durable shift or it doesn't.
 
         The 14-day cooldown is checked first and is the cheapest gate —
@@ -196,6 +182,24 @@ class GrowthWitnessWorker:
             return {"drafted": 0, "same_signature": finding.signature}
         assert finding is not None
 
+        rows = _md.deserialize_samples(self._kv_get_safe(_md.KV_SAMPLES))
+        from app.core.relationship.growth_witness import comparison_receipt
+
+        receipt = comparison_receipt(rows, now)
+        if self._cues.store() is not None:
+            if receipt is None:
+                return {"drafted": 0, "stale_samples": True}
+            if self._cues.stock() >= self._cues.inventory_target:
+                return {"drafted": 0, "stocked": True}
+            text = _gw.render_inner_life_block(finding.kind, **receipt["periods"])
+            cue_id = self._cues.publish(
+                f"Aiko's {finding.kind} feelings in the recorded comparison", text,
+                payload={"version": 2, "subject": "aiko", "kind": finding.kind,
+                         "comparison": receipt},
+            )
+            if not cue_id:
+                return {"drafted": 0, "publish_failed": True}
+
         _gw.append_finding(
             self._kv_get,
             self._kv_set,
@@ -206,6 +210,7 @@ class GrowthWitnessWorker:
                 "span_days": finding.span_days,
                 "signature": finding.signature,
                 "detail": finding.detail,
+                "subject": "aiko", "version": 2, "comparison": receipt,
             },
             max_entries=self._journal_max,
         )
@@ -228,28 +233,8 @@ class GrowthWitnessWorker:
     # ── corroboration ────────────────────────────────────────────────
 
     def _goal_detail(self) -> str:
-        """A short phrase for a goal the user has been chipping at, or ''."""
-        store = self._goal_store
-        if store is None:
-            return ""
-        try:
-            active = store.list_active()
-        except Exception:
-            return ""
-        for goal in active or []:
-            meta = getattr(goal, "metadata", None) or {}
-            note = str(meta.get("last_progress_note") or "").strip()
-            if not note:
-                continue
-            title = str(getattr(goal, "content", "") or "").strip()
-            if not title:
-                continue
-            if len(title) > 60:
-                title = title[:57].rsplit(" ", 1)[0] + "…"
-            return f"the work he's been putting into {title}"
+        """Aiko goals do not corroborate a change in the user's state."""
         return ""
-
-    # ── gates ────────────────────────────────────────────────────────
 
     def _cooldown_elapsed(self, now: datetime) -> bool:
         if self._cooldown_seconds <= 0:

@@ -2172,79 +2172,25 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         return line
 
     def _render_growth_witness_block(self) -> str:
-        """K70: surface one rare "you've grown since we met" cue.
-
-        Consumer side of the :class:`GrowthWitnessWorker` producer. The
-        worker drafts a finding (lighter mood / more comfortable / more
-        open) into the ``aiko.growth_witness`` kv ring at most once every
-        couple of weeks; this provider folds the newest unseen finding
-        into the prompt as one optional, private cue Aiko phrases herself
-        — NEVER spoken verbatim.
-
-        Watermark-only (``growth_witness.last_surfaced_at``), independent
-        of the gap-return cue family: a durable longitudinal observation
-        is rare enough that surfacing it on the next turn after drafting
-        is fine, and the cue copy tells Aiko to wait for a warm moment.
-        MCP debug: ``force_growth_witness_surface`` arms
-        ``_growth_witness_force_next`` to bypass the watermark (the ring
-        still has to be non-empty).
-        """
-        if not bool(
-            getattr(self._settings.agent, "growth_witness_enabled", True)
-        ):
+        """Only dated, source-owned pooled reflections may surface."""
+        if not bool(getattr(self._settings.agent, "growth_witness_enabled", True)):
             return ""
+        force = bool(self._debug_overrides.take("growth_witness_force_next", False))
+        from app.core.relationship.growth_witness import comparison_receipt
+        from app.core.affect.mood_drift import DriftSample
 
-        force_next = bool(
-            self._debug_overrides.take("growth_witness_force_next", False)
-        )
-
-        chat_db = getattr(self, "_chat_db", None)
-        if chat_db is None or not hasattr(chat_db, "kv_get"):
-            return ""
-
-        try:
-            from app.core.relationship import growth_witness as _gw
-        except Exception:
-            log.debug("growth_witness import failed", exc_info=True)
-            return ""
-
-        ring = _gw.load_findings(chat_db.kv_get)
-        if not ring:
-            return ""
-
-        newest = ring[-1]
-        at = str(newest.get("at") or "")
-        kind = str(newest.get("kind") or "").strip()
-        if not kind:
-            return ""
-
-        watermark_key = "growth_witness.last_surfaced_at"
-        if not force_next:
+        def valid(row):
+            data = row or {}
+            receipt = data.get("comparison") or {}
+            if data.get("version") != 2 or data.get("subject") != "aiko":
+                return False
             try:
-                last_surfaced = chat_db.kv_get(watermark_key)
-            except Exception:
-                last_surfaced = None
-            if last_surfaced and str(last_surfaced) == at:
-                return ""
-
-        line = _gw.render_inner_life_block(
-            kind,
-            user_display_name=self.user_display_name,
-            span_days=int(newest.get("span_days") or 0),
-            detail=str(newest.get("detail") or ""),
-        )
-        if not line:
-            return ""
-
-        # Advance the watermark so this cue doesn't resurface (only once
-        # we know it actually rendered).
-        try:
-            chat_db.kv_set(watermark_key, at)
-        except Exception:
-            log.debug("growth_witness watermark write failed", exc_info=True)
-
-        log.info("growth-witness fire: at=%s kind=%s", at, kind)
-        return line
+                samples = [DriftSample(**sample) for sample in receipt.get("samples", [])]
+                return comparison_receipt(samples, timephrase.utcnow()) == receipt
+            except (TypeError, ValueError, IndexError):
+                return False
+        row = self.take_pool_cue("growth_witness", force=force, still_valid=valid)
+        return row.text if row is not None else ""
 
     def _render_aspiration_momentum_block(self) -> str:
         """L14: surface one occasional "check in on where they're heading" cue.

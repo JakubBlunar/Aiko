@@ -687,6 +687,15 @@ CUE_POLICIES: dict[str, CuePolicy] = {
             block="forward_curiosity_block",
         ),
         CuePolicy(
+            "growth_witness", inventory_target=1, ttl_hours=72.0,
+            max_surfacings=1, surface_cooldown_hours=336.0,
+            fulfilment=FULFILMENT_SPOKEN, min_overlap=2,
+            block="growth_witness_block",
+            essential_handling=("This reflects Aiko's own recorded feelings over the dated "
+                "comparison, not proof of user growth. Keep it optional and tentative; "
+                "do not attribute Aiko goals, mood or trust to the user."),
+        ),
+        CuePolicy(
             "concept_hypothesis",
             # L30b: a belief she half-holds and wants settled. The answer
             # rarely repeats the label back ("do you find walking

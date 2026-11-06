@@ -99,26 +99,26 @@ class RenderTests(unittest.TestCase):
         )
         self.assertIn("Jacob", line)
         self.assertIn("lighter", line)
-        self.assertIn("these past couple of weeks", line)
+        self.assertIn("comparison dates are unknown", line)
 
     def test_lighter_short_span_uses_lately(self) -> None:
         line = gw.render_inner_life_block(
             gw.KIND_LIGHTER, user_display_name="Jacob", span_days=4,
         )
-        self.assertIn("lately", line)
+        self.assertNotIn("lately", line)
         self.assertNotIn("these past couple of weeks", line)
 
     def test_comfort_and_open_render(self) -> None:
         c = gw.render_inner_life_block(gw.KIND_COMFORT, span_days=14)
         o = gw.render_inner_life_block(gw.KIND_OPEN, span_days=14)
-        self.assertIn("at ease", c)
-        self.assertIn("trusting", o)
+        self.assertIn("you felt more comfortable", c)
+        self.assertIn("your own sense of trust", o)
 
     def test_detail_woven_in(self) -> None:
         line = gw.render_inner_life_block(
             gw.KIND_LIGHTER, span_days=14, detail="his new job",
         )
-        self.assertIn("his new job", line)
+        self.assertNotIn("his new job", line)
 
     def test_unknown_kind_empty(self) -> None:
         self.assertEqual(gw.render_inner_life_block("bogus"), "")
