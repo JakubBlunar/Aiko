@@ -117,6 +117,28 @@ are not a fresh post-restart quality measurement; L22's existing review remains
 pending. A backend restart activates the changes. Historical memories were not
 bulk rewritten; known source edits are checked when those receipts are consumed.
 
+## Further worker quality review (6 Nov 2026)
+
+**Status: Reviewed; proposed implementation.** The
+[worker audit](../worker-quality-audit-2026-11-06.md) identifies five additional
+areas beyond the implemented memory intake/recall boundaries:
+
+1. Growth witness: preserve ownership of affect, relationship signals and Aiko
+   goals; do not assert user growth from Aiko's internal state.
+2. Background diary: freeze/recheck one source packet and preserve whole message
+   qualifications, session identity and subjective derivation; include thread-note
+   message trimming in the input-packing work.
+3. Research: separate offered excerpts from cited support, preserve whole facts,
+   and recheck a question before attaching an answer/resolving it.
+4. Evolution diary: retain relationship subjects and historical dates in the
+   composition context, alongside the existing event links and period bounds.
+5. Knowledge-map reflection: retain qualified concept/source records, distinguish
+   recall activity from discussion/knowledge, and skip unchanged context.
+
+Source checks, read-only snapshot evidence, synthetic reproductions and acceptance
+scenarios are in the audit. These are not yet implemented or live-model quality
+measurements. L22's ordinary-use checkpoint remains open.
+
 ## G-CLEANUP. `consolidator_state.last_cluster_index` is not dead weight — do not drop it
 
 **Status: Open implementation.**
