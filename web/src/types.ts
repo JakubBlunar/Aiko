@@ -709,6 +709,7 @@ export interface TaskInputRequest {
 }
 
 export interface TaskSnapshot {
+  work?: WorkState | null;
   id: number;
   user_id: string;
   handler_name: string;
@@ -739,6 +740,38 @@ export interface TaskSnapshot {
    * top-level tasks. */
   parent_task_id?: number | null;
   metadata: Record<string, unknown> | null;
+}
+
+export interface WorkState {
+  contract: { objective: string; criteria: string[]; constraints: string[] };
+  profile: string;
+  plan: string[];
+  notes: string;
+  iteration: number;
+  children: number;
+  active_seconds: number;
+  tokens: number;
+  limits: Record<string, number>;
+  verification?: { status: string; reason?: string } | null;
+}
+
+export interface WorkDetail {
+  task: TaskSnapshot;
+  children: TaskSnapshot[];
+  messages: TaskEvent[];
+  oldest_event_id: number | null;
+  has_older: boolean;
+}
+
+export interface WorkResult {
+  task_id: number;
+  content: string;
+  next_offset: number | null;
+  revision: string;
+  total_characters: number;
+  truncated: boolean;
+  receipt: Record<string, unknown> | null;
+  error: string | null;
 }
 
 /** Patch payload carried by the ``task_progress`` WS event. The
@@ -2561,7 +2594,7 @@ export type WsServerEvent =
        * is one of ``done`` / ``failed`` / ``cancelled``. The strip
        * keeps the chip visible for a short grace window so the
        * user can see "done" before it slides out. */
-      type: "task_completed";
+      type: "task_completed" | "task_updated";
       task: TaskSnapshot;
     }
   | { type: "audio_amplitude"; level: number }

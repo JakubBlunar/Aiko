@@ -1106,6 +1106,22 @@ export const api = {
   },
   getTask: (id: number) =>
     jsonFetch<{ task: TaskSnapshot }>(`/api/tasks/${id}`),
+  listWork: (offset = 0) =>
+    jsonFetch<{ tasks: TaskSnapshot[]; has_more: boolean }>(`/api/work?offset=${offset}`),
+  getWork: (id: number, before?: number) =>
+    jsonFetch<import("@/types").WorkDetail>(`/api/tasks/${id}/work${before == null ? "" : `?before=${before}`}`),
+  getWorkResult: (id: number, offset = 0, revision?: string) =>
+    jsonFetch<import("@/types").WorkResult>(`/api/tasks/${id}/result?offset=${offset}${revision ? `&revision=${encodeURIComponent(revision)}` : ""}`),
+  postWorkMessage: (id: number, content: string, mode: string, clientId: string) =>
+    jsonFetch(`/api/tasks/${id}/work/messages`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, mode, client_id: clientId }),
+    }),
+  controlWork: (id: number, action: "pause" | "resume") =>
+    jsonFetch(`/api/tasks/${id}/work/control`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    }),
   /** Schema v17 task tree: the child tasks (workflow steps) of a
    * parent, ascending by spawn order. Fetched lazily when the user
    * expands a parent row in the Tasks tab. */

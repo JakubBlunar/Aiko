@@ -1,10 +1,20 @@
 # Plugin platform and durable agent jobs
 
-## Current implementation boundary: 24 Oct 2026
+## Current implementation boundary: 7 Nov 2026
 
 **Implemented:** P1/P2 discovery/enable gating, SDK-primary MCP/skill/middleware registration, bundled plugins and existing task orchestration. These are the foundation in [plugins.md](../plugins.md), not the platform proposed below.
 
-**Remaining by milestone:** P3 descriptors/ownership/grants; P4 exact-set bounded disclosure; P5 durable leases/steps/waits/budgets/effect journal/outbox; P6 hosted workers/model broker/namespaced storage; P7 read-only code/mail capabilities; P8 supervised processes, packaging and approved writes. All six remain open. Existing task persistence does not establish restart-safe side-effect execution. The roadmap's acceptance gates remain authoritative. Plugin P numbers are distinct from performance P numbers.
+**Partial runner implementation:** [Checkpointed work harness](../agent-harness.md)
+adds full operation schemas, exact-set bounded disclosure, saved child ownership,
+waits and cumulative budgets, automatic work profiles, evidence review and the
+desktop/mobile work drawer. These implement portions of P3-P5 over existing tasks.
+
+**Remaining by milestone:** P3 versioned descriptors/resource grants; P4 broader SDK
+contracts; P5 cross-process leases/resource locks/effect reconciliation/completion
+outbox; P6 hosted workers/model broker/namespaced storage; P7 read-only code/mail
+capabilities; P8 supervised processes, packaging and approved writes. These six
+milestones remain open in full. The roadmap's acceptance gates remain authoritative.
+Plugin P numbers are distinct from performance P numbers.
 
 **Source check:** [SDK](../../app/plugins/sdk.py), [runtime](../../app/plugins/runtime.py), [workflow handler](../../app/core/tasks/workflow/goal_workflow_handler.py), [recovery](../../app/core/tasks/recovery.py), [plugin regressions](../../tests/test_plugin_runtime.py).
 

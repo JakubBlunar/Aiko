@@ -702,6 +702,10 @@ export function useAssistantSocket(): {
         tasks.applyTaskInputNeeded(evt.task);
         break;
 
+      case "task_updated":
+        tasks.applyTaskUpdated(evt.task);
+        break;
+
       case "task_completed":
         // Terminal transition — ``status`` is one of
         // ``done`` / ``failed`` / ``cancelled``. The strip keeps

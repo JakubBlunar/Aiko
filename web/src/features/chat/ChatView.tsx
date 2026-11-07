@@ -9,7 +9,8 @@ import type { AttachmentRef, ChatMessage, WsClientCommand } from "@/types";
 import { ContextBadge } from "./ContextBadge";
 import { LiveModeToggle } from "./LiveModeToggle";
 import { MicButton } from "@/features/voice/MicButton";
-import { TaskStrip } from "@/features/tasks/TaskStrip";
+import { WorkStatusStrip } from "@/features/tasks/WorkStatusStrip";
+import { WorkToggle } from "@/features/tasks/WorkToggle";
 import { AttachmentTray } from "./AttachmentTray";
 import { ChatEmptyState } from "./ChatEmptyState";
 import { ConnectionBadge } from "./ConnectionBadge";
@@ -558,6 +559,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {isMobile ? null : <WorkToggle />}
           {isMobile ? null : <LiveModeToggle />}
           <ContextBadge />
           <ConnectionBadge />
@@ -568,7 +570,7 @@ export function ChatView({ send, sendBytes }: ChatViewProps) {
           least one task is active or recently completed; the
           component returns null otherwise so the chat layout stays
           unchanged when nothing is running. */}
-      <TaskStrip />
+      <WorkStatusStrip />
 
       <div className="flex min-h-0 flex-1 flex-col">
         {messages.length === 0 ? (

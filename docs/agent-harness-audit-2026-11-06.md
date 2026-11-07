@@ -1,6 +1,8 @@
 # Aiko's agent harness: source audit and proposed next steps
 
-Assessment only. Application behavior is unchanged. The accompanying
+Historical assessment from 2026-11-06. The subsequent
+[checkpointed harness implementation](agent-harness.md) addresses the first
+contract, evidence and continuation slices and documents what remains. The accompanying
 [offline probe](../scripts/probe_agent_harness.py) exercises existing contracts
 with simulated planner decisions, tasks and tools; it makes no model calls or
 external changes.

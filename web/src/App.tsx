@@ -22,6 +22,10 @@ import { usePresenceReporter } from "./hooks/usePresenceReporter";
 import { debugLog } from "./log";
 import { useAssistantStore } from "./store";
 import { useWorldStore } from "./stores/useWorldStore";
+import { useWorkStore } from "@/features/tasks/useWorkStore";
+import { workCanDock } from "@/features/tasks/workLayout";
+
+const WorkDrawer = lazy(() => import("@/features/tasks/WorkDrawer"));
 
 // Code-split the two heaviest, on-demand surfaces (phase 4b). The settings
 // drawer is a large tree only needed once the user opens it; the persona
@@ -153,6 +157,21 @@ export default function App() {
     (s) => s.leftSidebarCollapsed,
   );
   const toggleLeftSidebar = useAssistantStore((s) => s.toggleLeftSidebar);
+  const workOpen = useWorkStore((s) => s.open);
+  const [workMounted, setWorkMounted] = useState(false);
+  const [workWidth, setWorkWidth] = useState(420);
+  const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
+  useEffect(() => {
+    const resize = () => setViewportWidth(window.innerWidth);
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+  useEffect(() => { if (workOpen) setWorkMounted(true); }, [workOpen]);
+  const workDocked = workCanDock(viewportWidth, leftSidebarCollapsed,
+    personaVisible, personaPanelWidth, workWidth);
+  const workDrawer = workMounted ? <Suspense fallback={null}>
+    <WorkDrawer open={workOpen} mobile={isMobile} docked={workDocked} width={workWidth} />
+  </Suspense> : null;
 
   // Subscribe only on the main window. The persona window doesn't need
   // to know its own visibility (it can ask the OS / DOM directly) and
@@ -162,9 +181,9 @@ export default function App() {
   // it is open can be seen. Suspend rather than unmount: the model and
   // its textures stay resident and closing the drawer resumes instantly.
   useEffect(() => {
-    setAvatarCovered(settingsOpen);
+    setAvatarCovered(settingsOpen || (workOpen && (isMobile || !workDocked)));
     return () => setAvatarCovered(false);
-  }, [settingsOpen, setAvatarCovered]);
+  }, [settingsOpen, workOpen, isMobile, workDocked, setAvatarCovered]);
 
   // Tell the crash reporter what the app was doing when it died. The
   // provider runs *during* a crash, so it reads the store imperatively
@@ -352,6 +371,7 @@ export default function App() {
         {/* Phones: no corner popups (they cover the composer). Toasts
             are archived only and read from the top-bar bell drawer. */}
         <NotificationDrawer />
+        {workDrawer}
         <FirstRunOnboarding />
       </div>
     );
@@ -388,6 +408,9 @@ export default function App() {
           <AvatarPanel />
         </>
       )}
+      {workOpen && workDocked && <PanelResizeHandle ariaLabel="Resize work drawer"
+        onResize={(deltaX) => setWorkWidth((width) => Math.max(320, Math.min(640, width - deltaX)))} />}
+      {workDrawer}
       {settingsMounted ? (
         <Suspense fallback={null}>
           <SettingsDrawer

@@ -23,6 +23,7 @@ export interface TasksSlice {
   };
   /** Reducer for ``task_started``. */
   applyTaskStarted: (task: TaskSnapshot) => void;
+  applyTaskUpdated: (task: TaskSnapshot) => void;
   /** Reducer for ``task_progress``. */
   applyTaskProgress: (taskId: number, patch: TaskProgressPatch) => void;
   /** Reducer for ``task_input_needed``. */
@@ -58,6 +59,13 @@ export const useTasksStore = create<TasksSlice>()((set) => ({
     enabled: true,
     lastEventAt: 0,
   },
+  applyTaskUpdated: (task) => set((state) => ({
+    tasksView: {
+      ...state.tasksView,
+      tasksById: { ...state.tasksView.tasksById, [task.id]: task },
+      lastEventAt: Date.now(),
+    },
+  })),
   applyTaskStarted: (task) =>
     set((state) => {
       const view = state.tasksView;

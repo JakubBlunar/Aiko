@@ -1,6 +1,7 @@
 import { useAssistantStore } from "@/store";
 import { LiveModeToggle } from "@/features/chat/LiveModeToggle";
 import { NotificationBell } from "@/features/notifications/NotificationBell";
+import { WorkToggle } from "@/features/tasks/WorkToggle";
 
 interface MobileTopBarProps {
   /** Open the left navigation drawer (chat history + new + settings). */
@@ -88,6 +89,7 @@ export function MobileTopBar({
       </div>
 
       <LiveModeToggle variant="bar" />
+      <WorkToggle />
 
       <NotificationBell className="flex h-9 w-9 items-center justify-center rounded-md border border-white/10 text-ink-100/80 transition hover:border-ink-400 hover:text-ink-100" />
 
