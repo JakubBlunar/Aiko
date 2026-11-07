@@ -102,6 +102,9 @@ still belongs in the ordinary conversation with Aiko.
 
 ## Remaining platform work and live checks
 
+The [follow-up assessment](agent-harness-next-steps-2026-11-07.md) orders the next
+implementation slices and includes a short checklist for the next live session.
+
 The broader [plugin platform roadmap](personality-backlog/plugin-system.md)
 remains open: job-specific grants and resource locks, provider idempotency and
 read-back reconciliation, durable completion-delivery outbox, cross-process

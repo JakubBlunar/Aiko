@@ -27,6 +27,11 @@ for writing a plugin that works today.
 the central runner gaps with offline contract probes and proposes small delivery
 slices over P3–P6. No platform milestone was implemented by that audit.
 
+2026-11-07: the [follow-up sequence](../agent-harness-next-steps-2026-11-07.md)
+prioritizes durable result reporting, same-job steering from conversation,
+source-linked context and evidence-aware discussion before the scoped source
+pilot and parallel execution. It includes the next live-session checklist.
+
 ### Navigation
 
 - [Recommendation and invariants](#1-recommendation), [current baseline](#2-what-exists-today)
