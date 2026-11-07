@@ -566,16 +566,16 @@ class TaskOrchestrationMixin:
                     self, "_workflow_client", None
                 ),
                 model_provider=lambda: getattr(
-                    self, "_effective_worker_model", None
-                ),
+                    self._settings.llm.routes.get("workflow"), "model", None
+                ) or getattr(self, "_effective_worker_model", None),
                 user_name_provider=lambda: getattr(
                     self, "user_display_name", "the user"
                 ),
                 on_capability_gap=self._record_workflow_capability_gap,
                 max_iterations=int(
-                    getattr(agent, "workflow_max_iterations", 12)
+                    getattr(agent, "workflow_max_iterations", 32)
                 ),
-                max_children=int(getattr(agent, "workflow_max_children", 8)),
+                max_children=int(getattr(agent, "workflow_max_children", 48)),
                 child_wait_timeout_seconds=float(
                     getattr(agent, "workflow_child_wait_timeout_seconds", 120.0)
                 ),
@@ -601,7 +601,7 @@ class TaskOrchestrationMixin:
                     getattr(agent, "workflow_max_consecutive_failures", 2)
                 ),
                 max_wall_seconds=float(
-                    getattr(agent, "workflow_max_wall_seconds", 300)
+                    getattr(agent, "workflow_max_wall_seconds", 1800)
                 ),
                 # No-progress / loop detector.
                 loop_detection_enabled=bool(
@@ -756,7 +756,12 @@ class TaskOrchestrationMixin:
                 lambda: register_mcp_skills(skill_registry, manager)
             )
             self._task_orchestrator.register_handler(
-                McpToolHandler(manager=manager, middlewares=middlewares)
+                McpToolHandler(
+                    manager=manager, middlewares=middlewares,
+                    resolve_approval=self._resolve_task_approval,
+                    mark_session_approved=self._mark_capability_session_approved,
+                    can_dispatch=self._task_orchestrator.claim_operation_dispatch,
+                )
             )
             manager.start()
             # Best-effort immediate pass (usually 0 — connect is async);

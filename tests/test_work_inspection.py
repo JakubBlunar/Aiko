@@ -62,7 +62,9 @@ def test_result_pages_cannot_silently_mix_task_revisions(env):
     }).content)["task"]
     combined = json.loads(first["details_fragment"] + second["details_fragment"])
     assert combined["result"]["answer"].endswith("Except when declined.")
-    store.mark_failed(tid, error="A new outcome")
+    # Terminal states are immutable. A later diagnostic phase update still
+    # changes the inspection revision and must invalidate an in-flight page.
+    store.update_phase(tid, "reviewed")
     assert not registry.dispatch("check_my_work", {
         "task_id": tid, "content_offset": first["next_offset"], "revision": first["revision"],
     }).ok

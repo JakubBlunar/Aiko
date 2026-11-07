@@ -121,10 +121,10 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(d.findings, "found 3")
         self.assertEqual(d.outcome, OUTCOME_SUCCESS)
 
-    def test_finish_invalid_outcome_defaults_success(self) -> None:
+    def test_finish_invalid_outcome_defaults_partial(self) -> None:
         raw = json.dumps({"action": "finish", "outcome": "weird"})
         d = parse_planner_response(raw, valid_skill_names=_VALID)
-        self.assertEqual(d.outcome, OUTCOME_SUCCESS)
+        self.assertEqual(d.outcome, OUTCOME_PARTIAL)
 
     def test_missing_capability(self) -> None:
         raw = json.dumps(

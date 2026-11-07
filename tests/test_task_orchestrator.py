@@ -896,7 +896,7 @@ class SnapshotHelperTests(unittest.TestCase):
                 "visible_to_user", "created_at", "updated_at",
                 "completed_at", "metadata",
                 # v17 — Brain Orchestration Phase 2
-                "phase", "parent_task_id", "heartbeat_at",
+                "phase", "parent_task_id", "heartbeat_at", "work",
             },
         )
         self.assertEqual(snap["id"], 42)

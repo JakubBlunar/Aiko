@@ -65,6 +65,7 @@ from app.core.tasks.workflow.skill_registry import (
     SpawnContext,
     WorkflowSkillRegistry,
 )
+from app.core.tasks.workflow.harness_mixin import WorkflowHarnessMixin
 from app.core.tasks.workflow.skill_guidance import guidance_for_skills
 from app.core.tasks.workflow.workflow_skill_router import select_skill_groups
 from app.core.tasks.workflow.workflow_planner import (
@@ -172,7 +173,7 @@ def _canonical_args(args: dict[str, Any]) -> str:
         return str(sorted((args or {}).items()))
 
 
-class GoalWorkflowHandler:
+class GoalWorkflowHandler(WorkflowHarnessMixin):
     """Parent task handler driving the plan→act→observe loop.
 
     Dependencies are injected as *providers* (zero-arg callables) where
@@ -247,6 +248,8 @@ class GoalWorkflowHandler:
 
     def start(self, args: dict[str, Any], emit: TaskEmitFn) -> TaskState:
         """Validate args + launch the loop thread; return immediately."""
+        if callable(getattr(self._orchestrator, "checkpoint", None)):
+            return self._start_harness(args, emit)
         goal = str((args or {}).get("goal", "") or "").strip()
         if not goal:
             emit(TaskFailed(error="workflow goal is empty"))
@@ -286,6 +289,8 @@ class GoalWorkflowHandler:
         return {"args": args, "phase": "planning", "goal": goal}
 
     def resume(self, state: TaskState, emit: TaskEmitFn) -> TaskState:
+        if state.get("harness_version") == 1:
+            return self._start_harness(state["args"], emit, state=state)
         # A workflow surviving a restart in ``running`` can't safely
         # re-attach to its (now-orphaned) children, so fail gracefully.
         # The orchestrator's cascade-cancel handles any child rows.
@@ -302,6 +307,12 @@ class GoalWorkflowHandler:
     def on_input(
         self, state: TaskState, answer: str, emit: TaskEmitFn
     ) -> TaskState:
+        if state.get("harness_version") == 1:
+            task_id = _task_id_from_context()
+            self._orchestrator.append_work_message(
+                task_id, role="user", content=answer, kind="guidance",
+            )
+            return self._start_harness(state["args"], emit, state=state)
         # The parent workflow doesn't ask the user for input directly in
         # this phase (children may, but those are answered on the child).
         emit(TaskFailed(error="workflow does not accept direct input"))
@@ -389,7 +400,7 @@ class GoalWorkflowHandler:
                         guidance=self._planner_guidance(planner_skills),
                         already_tried=list(tried_calls),
                     ),
-                    valid_skill_names=set(self._skills.names()),
+                    valid_skill_names={s["name"] for s in planner_skills},
                     model=self._model(),
                     max_tokens=self._planner_max_tokens,
                 )
@@ -421,6 +432,22 @@ class GoalWorkflowHandler:
                 # Skill action. Repeat guard: an exact (skill, args)
                 # repeat means the planner is spinning — it's stuck, not
                 # done, so this is a BLOCKED outcome (asks for help).
+                if self._is_cancelled(task_id):
+                    return
+                validation = self._skills.validate_call(
+                    decision.skill, decision.args, {s["name"] for s in planner_skills},
+                )
+                if validation:
+                    steps.append(PlannerStep(
+                        skill=decision.skill, args=decision.args, status="rejected",
+                        observation="Validation: " + "; ".join(validation),
+                    ))
+                    consecutive_failures += 1
+                    if self._should_break(consecutive_failures):
+                        self._emit_failure_break(emit, steps, decision.skill, task_id,
+                                                 consecutive_failures)
+                        return
+                    continue
                 canon_args = _canonical_args(decision.args)
                 key = f"{decision.skill}:{canon_args}"
                 if key in seen:

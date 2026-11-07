@@ -54,6 +54,7 @@ def _arg_schema_from_input(input_schema: dict[str, Any]) -> dict[str, Any]:
         for name, spec in props.items():
             spec = spec if isinstance(spec, dict) else {}
             out[str(name)] = {
+                **spec,
                 "type": spec.get("type", "string"),
                 "description": str(spec.get("description", "") or ""),
                 "required": name in required,
@@ -86,10 +87,20 @@ def _make_spawn(server_id: str, tool_name: str):
 def _skill_from_descriptor(desc: "McpToolDescriptor") -> WorkflowSkill:
     description = desc.description.strip() or f"MCP tool {desc.name}"
     description = f"[{desc.server_id}] {description}"[:_DESC_CAP]
+    from app.core.tasks.workflow.operation_contract import mcp_effect
+    from app.core.tasks.capabilities import TaskCapability, register_capability
+
+    effect = mcp_effect(desc)
+    register_capability(TaskCapability(
+        id=f"mcp:{desc.server_id}:{desc.name}", label=f"use {desc.server_id}/{desc.name}",
+        destructive=effect != "read",
+    ))
     return WorkflowSkill(
         name=desc.qualified_name,
         description=description,
         arg_schema=_arg_schema_from_input(desc.input_schema),
+        input_schema=desc.input_schema,
+        effect=effect,
         spawn=_make_spawn(desc.server_id, desc.name),
         # Per-server router group so a server's tools are narrowed in/out
         # together (and the catalogue can grow without bloating each plan).

@@ -195,6 +195,7 @@ class TaskFailed:
 
     error: str = ""
     notify_aiko: bool | None = None
+    uncertain_effect: bool = False
 
 
 # Union of every outcome an emit can pass. Used by the orchestrator's

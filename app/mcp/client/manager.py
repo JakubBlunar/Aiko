@@ -57,6 +57,7 @@ class McpToolDescriptor:
     name: str
     description: str
     input_schema: dict[str, Any]
+    effect: str = "unknown"
 
     @property
     def qualified_name(self) -> str:
@@ -381,6 +382,8 @@ class ExternalMcpManager:
                     name=tool.name,
                     description=str(tool.description or ""),
                     input_schema=schema,
+                    effect=("read" if bool(getattr(getattr(tool, "annotations", None),
+                                                   "readOnlyHint", False)) else "unknown"),
                 )
             )
         state.tools = descriptors

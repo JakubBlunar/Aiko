@@ -1628,10 +1628,10 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
             mcp_clients_enabled=bool(agent_raw.get("mcp_clients_enabled", True)),
             workflow_enabled=bool(agent_raw.get("workflow_enabled", True)),
             workflow_max_iterations=max(
-                1, min(30, int(agent_raw.get("workflow_max_iterations", 12)))
+                1, min(128, int(agent_raw.get("workflow_max_iterations", 32)))
             ),
             workflow_max_children=max(
-                1, min(50, int(agent_raw.get("workflow_max_children", 8)))
+                1, min(128, int(agent_raw.get("workflow_max_children", 48)))
             ),
             workflow_max_concurrent=max(
                 1, min(8, int(agent_raw.get("workflow_max_concurrent", 2)))
@@ -1683,7 +1683,7 @@ def parse_agent_settings(agent_raw: dict[str, Any]) -> "AgentSettings":
                 0,
                 min(
                     3600,
-                    int(agent_raw.get("workflow_max_wall_seconds", 300)),
+                    int(agent_raw.get("workflow_max_wall_seconds", 1800)),
                 ),
             ),
             workflow_loop_detection_enabled=bool(

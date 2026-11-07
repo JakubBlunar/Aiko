@@ -486,14 +486,13 @@ class ParentChildSpawnTests(unittest.TestCase):
         f = _Fixture()
         try:
             f.orch.register_handler(_PhaseCompletingHandler())
-            parent_id = f.orch.start_task(
+            parent_id = f.store.create(
                 user_id="u",
                 handler_name="phase_completing",
                 args={},
                 title="p",
             )
             assert parent_id is not None
-            f.orch.wait_for_task(parent_id, timeout=2.0)
             child_id = f.orch.start_task(
                 user_id="u",
                 handler_name="phase_completing",
@@ -513,14 +512,13 @@ class ParentChildSpawnTests(unittest.TestCase):
         f = _Fixture()
         try:
             f.orch.register_handler(_PhaseCompletingHandler())
-            parent_id = f.orch.start_task(
+            parent_id = f.store.create(
                 user_id="u",
                 handler_name="phase_completing",
                 args={},
                 title="p",
             )
             assert parent_id is not None
-            f.orch.wait_for_task(parent_id, timeout=2.0)
             child_id = f.orch.start_task(
                 user_id="u",
                 handler_name="phase_completing",

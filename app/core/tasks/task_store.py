@@ -298,8 +298,21 @@ class TaskStore:
                 when,  # heartbeat_at seeded to created_at
             ),
         )
-        conn.commit()
         task_id = int(cursor.lastrowid or 0)
+        step_id = (metadata or {}).get("harness_step_id")
+        if parent_norm is not None and step_id:
+            # Child registration and its parent's durable association commit
+            # together. Recovery cannot lose a child in the spawn/checkpoint gap.
+            linked = conn.execute(
+                "UPDATE tasks SET state=json_set(state,'$.pending.child_id',?), updated_at=? "
+                "WHERE id=? AND status='running' AND json_extract(state,'$.pending.step_id')=? "
+                "AND json_extract(state,'$.epoch')=?",
+                (task_id, when, parent_norm, step_id, (metadata or {}).get("epoch")),
+            )
+            if linked.rowcount != 1:
+                conn.rollback()
+                raise ValueError("workflow step is no longer admitted")
+        conn.commit()
         log.info(
             "task created: task=%d user=%s handler=%s initiated_by=%s "
             "notify_aiko=%d visible_to_user=%d parent=%s",
@@ -313,6 +326,42 @@ class TaskStore:
         )
         return task_id
 
+    def child_for_step(self, parent_id: int, step_id: str) -> TaskRow | None:
+        conn = self._db._get_conn()
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE parent_task_id=? AND json_valid(metadata) "
+            "AND json_extract(metadata,'$.harness_step_id')=? ORDER BY id LIMIT 1",
+            (parent_id, step_id),
+        ).fetchone()
+        return self.get(int(row[0])) if row else None
+
+    def write_checkpoint(self, task_id: int, state: dict[str, Any]) -> bool:
+        conn = self._db._get_conn()
+        epoch = state.get("epoch")
+        cursor = conn.execute(
+            "UPDATE tasks SET state=?,updated_at=?,heartbeat_at=? WHERE id=? "
+            "AND status='running' AND (json_extract(state,'$.epoch')=? OR "
+            "(json_extract(state,'$.harness_version') IS NULL AND ?=1))",
+            (_encode_json(state), _now_iso(), _now_iso(), task_id, epoch, epoch),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+
+    def runtime_transition(self, task_id: int, *, status: str, phase: str,
+                           state: dict[str, Any] | None = None,
+                           expected: str = "running") -> bool:
+        if status not in {"running", "paused"}:
+            raise ValueError("invalid runtime transition")
+        conn = self._db._get_conn()
+        cursor = conn.execute(
+            "UPDATE tasks SET status=?,phase=?,updated_at=?,heartbeat_at=?,"
+            "state=COALESCE(?,state) WHERE id=? AND status=?",
+            (status, phase, _now_iso(), _now_iso(),
+             _encode_json(state) if state is not None else None, task_id, expected),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+
     def update_state(self, task_id: int, state: dict[str, Any]) -> bool:
         """Replace the handler-owned ``state`` blob.
 
@@ -323,9 +372,15 @@ class TaskStore:
         if task_id <= 0:
             return False
         conn = self._db._get_conn()  # type: ignore[attr-defined]
+        # Uncertain effects belong to the host outcome, not the handler's
+        # returned state. A synchronous handler can emit failure and then
+        # return an older state; it must not erase that dispatch uncertainty.
+        encoded = _encode_json(state)
         cursor = conn.execute(
-            "UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?",
-            (_encode_json(state), _now_iso(), int(task_id)),
+            "UPDATE tasks SET state = CASE WHEN json_extract(state,'$.uncertain_effect')=1 "
+            "THEN json_set(?,'$.uncertain_effect',json('true')) ELSE ? END, "
+            "updated_at = ? WHERE id = ?",
+            (encoded, encoded, _now_iso(), int(task_id)),
         )
         conn.commit()
         return bool(cursor.rowcount)
@@ -458,7 +513,7 @@ class TaskStore:
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         cursor = conn.execute(
             "UPDATE tasks SET status = ?, input_request = NULL, updated_at = ? "
-            "WHERE id = ?",
+            "WHERE id = ? AND status='awaiting_input'",
             (STATUS_RUNNING, _now_iso(), int(task_id)),
         )
         conn.commit()
@@ -479,7 +534,7 @@ class TaskStore:
         cursor = conn.execute(
             "UPDATE tasks SET status = ?, result = ?, error = NULL, "
             "progress = COALESCE(progress, 1.0), updated_at = ?, "
-            "completed_at = ? WHERE id = ?",
+            "completed_at = ? WHERE id = ? AND status IN ('running','paused','awaiting_input')",
             (STATUS_DONE, _encode_json(result), when, when, int(task_id)),
         )
         conn.commit()
@@ -492,7 +547,7 @@ class TaskStore:
             )
         return rowcount
 
-    def mark_failed(self, task_id: int, *, error: str) -> bool:
+    def mark_failed(self, task_id: int, *, error: str, uncertain_effect: bool = False) -> bool:
         """Persist a failure terminal transition.
 
         Sets ``status='failed'`` + ``error`` string +
@@ -505,10 +560,14 @@ class TaskStore:
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         cursor = conn.execute(
             "UPDATE tasks SET status = ?, error = ?, result = NULL, "
-            "updated_at = ?, completed_at = ? WHERE id = ?",
+            "state=CASE WHEN ? THEN json_set(state,'$.uncertain_effect',json('true')) "
+            "ELSE state END, "
+            "updated_at = ?, completed_at = ? WHERE id = ? "
+            "AND status IN ('running','paused','awaiting_input')",
             (
                 STATUS_FAILED,
                 str(error or "").strip() or "unspecified error",
+                uncertain_effect,
                 when,
                 when,
                 int(task_id),

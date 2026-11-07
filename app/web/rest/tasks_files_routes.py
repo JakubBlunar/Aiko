@@ -13,6 +13,9 @@ log = logging.getLogger("app.web.server")
 
 def register(app, session, hub, _broadcast_context_window, live_session) -> None:
     """REST routes: tasks files routes."""
+    from app.web.rest.work_routes import register_work_routes
+
+    register_work_routes(app, session)
     # Tracks task IDs whose ``task_started`` was suppressed because
     # ``visible_to_user=false``. ``task_progress`` events for those
     # IDs must also be filtered (the orchestrator dispatches them
@@ -152,7 +155,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         if store is None:
             raise HTTPException(503, "task subsystem unavailable")
         row = store.get(int(task_id))
-        if row is None or not bool(row.visible_to_user):
+        if (row is None or not bool(row.visible_to_user)
+                or row.user_id != session.user_id):
             raise HTTPException(404, "task not found")
         return JSONResponse({"task": _snapshot(row)})
 
@@ -169,7 +173,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(503, "task subsystem unavailable")
         if tasks.store is not None:
             row = tasks.store.get(int(task_id))
-            if row is None or not bool(row.visible_to_user):
+            if (row is None or not bool(row.visible_to_user)
+                or row.user_id != session.user_id):
                 raise HTTPException(404, "task not found")
         try:
             cancelled = tasks.orchestrator.cancel(int(task_id))
@@ -204,7 +209,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             raise HTTPException(503, "task subsystem unavailable")
         if tasks.store is not None:
             row = tasks.store.get(int(task_id))
-            if row is None or not bool(row.visible_to_user):
+            if (row is None or not bool(row.visible_to_user)
+                or row.user_id != session.user_id):
                 raise HTTPException(404, "task not found")
         try:
             accepted = tasks.orchestrator.answer(int(task_id), answer)
@@ -238,7 +244,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         if store is None or event_store is None:
             raise HTTPException(503, "task subsystem unavailable")
         row = store.get(int(task_id))
-        if row is None or not bool(row.visible_to_user):
+        if (row is None or not bool(row.visible_to_user)
+                or row.user_id != session.user_id):
             raise HTTPException(404, "task not found")
         order_norm = str(order or "").strip().lower()
         if order_norm not in ("asc", "desc"):
@@ -290,13 +297,14 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         if store is None:
             raise HTTPException(503, "task subsystem unavailable")
         row = store.get(int(task_id))
-        if row is None or not bool(row.visible_to_user):
+        if (row is None or not bool(row.visible_to_user)
+                or row.user_id != session.user_id):
             raise HTTPException(404, "task not found")
         try:
             children = [
                 c
                 for c in store.list_children(int(task_id))
-                if bool(c.visible_to_user)
+                if bool(c.visible_to_user) and c.user_id == session.user_id
             ]
         except Exception as exc:
             log.exception("list_task_children failed: task=%d", task_id)
@@ -322,7 +330,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         if store is None or input_store is None:
             raise HTTPException(503, "task subsystem unavailable")
         row = store.get(int(task_id))
-        if row is None or not bool(row.visible_to_user):
+        if (row is None or not bool(row.visible_to_user)
+                or row.user_id != session.user_id):
             raise HTTPException(404, "task not found")
         try:
             inputs = input_store.list_for_task(int(task_id), ascending=True)

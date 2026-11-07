@@ -154,6 +154,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "start_workflow": "tasks",
     "check_my_work": "tasks",
     "cancel_work": "tasks",
+    "control_work": "tasks",
     # H11 weather (own family so "weather"/"forecast" route here, not web)
     "get_weather": "weather",
     "get_forecast": "weather",

@@ -4,7 +4,12 @@ A clean shutdown sets every task to a terminal status before the
 process exits. A *crash* (SIGKILL, power loss, unhandled exception
 in the supervisor) leaves whatever was running stranded —
 ``tasks.status='running'`` with a connection that's now dead. This
-module scans non-terminal rows on next boot and:
+module scans non-terminal rows on next boot.
+
+Checkpointed ``harness_version=1`` roots are an exception: their saved steps,
+child links and cumulative budgets are reattached by the runtime. Interrupted
+reads may retry within a bound; uncertain writes are surfaced for review.
+Manual and budget pauses stay paused. Other task handlers retain this policy:
 
 * ``running`` → demoted to ``interrupted``; the orchestrator emits a
   :class:`TaskResultEvent` cue so Aiko sees "the file search I
@@ -96,8 +101,15 @@ def recover_interrupted_tasks(
         log.info("task recovery: scanned=0 interrupted=0 preserved=0")
         return RecoveryReport(interrupted, preserved, failed)
 
+    rows.sort(key=lambda row: (row.parent_task_id is None, row.id))
     for row in rows:
         try:
+            if (orchestrator is not None and resume_on_boot
+                    and row.state.get("harness_version") == 1
+                    and callable(getattr(orchestrator, "recover_work", None))
+                    and orchestrator.recover_work(row)):
+                preserved.append(row.id)
+                continue
             if row.status == STATUS_RUNNING:
                 ok = store.mark_interrupted(row.id)
                 if not ok:

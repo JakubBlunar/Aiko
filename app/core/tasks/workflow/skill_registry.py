@@ -74,6 +74,8 @@ class SpawnContext:
     orchestrator: Any
     user_id: str
     parent_task_id: int
+    step_id: str | None = None
+    epoch: int = 0
 
 
 # A child-spawn function. Returns the new child ``task_id`` or ``None``
@@ -96,6 +98,8 @@ class WorkflowSkill:
     # (``files`` / ``web`` / ``vision`` / a per-MCP-server label). Empty
     # means "uncategorised" — such skills are never hidden by the router.
     group: str = ""
+    input_schema: dict[str, Any] | None = None
+    effect: str = "unknown"
 
     @property
     def spawnable(self) -> bool:
@@ -171,6 +175,8 @@ class WorkflowSkillRegistry:
                     "args": dict(skill.arg_schema or {}),
                     "terminal": bool(skill.terminal),
                     "group": skill.group,
+                    "input_schema": self.schema_for(skill.name),
+                    "effect": skill.effect,
                 }
             )
         return out
@@ -178,6 +184,23 @@ class WorkflowSkillRegistry:
     def groups(self) -> set[str]:
         """Non-empty router groups present in the registry."""
         return {s.group for s in self._skills.values() if s.group}
+
+    def schema_for(self, name: str) -> dict[str, Any]:
+        from app.core.tasks.workflow.operation_contract import input_schema
+
+        skill = self.get(name)
+        return input_schema(skill) if skill else {}
+
+    def validate_call(self, name: str, args: Any,
+                      selected_names: set[str] | None = None) -> list[str]:
+        from app.core.tasks.workflow.operation_contract import validate_arguments
+
+        skill = self.get(name)
+        if skill is None or not skill.spawnable:
+            return ["unknown or non-executable operation"]
+        if selected_names is not None and name not in selected_names:
+            return ["operation is not in the selected capability set"]
+        return validate_arguments(skill, args)
 
     def spawn_child(
         self, name: str, args: dict[str, Any], ctx: SpawnContext
@@ -198,8 +221,18 @@ class WorkflowSkillRegistry:
                 "workflow spawn: skill is not spawnable name=%s", name
             )
             return None
+        if self.validate_call(name, args):
+            log.info("workflow operation rejected: invalid arguments skill=%s", name)
+            return None
         try:
-            return skill.spawn(dict(args or {}), ctx)
+            from app.core.tasks.workflow.step_context import current_step
+
+            token = current_step.set((ctx.parent_task_id, ctx.step_id, ctx.epoch)
+                                     if ctx.step_id else None)
+            try:
+                return skill.spawn(dict(args or {}), ctx)
+            finally:
+                current_step.reset(token)
         except Exception:
             log.exception("workflow spawn raised: skill=%s", name)
             return None
@@ -294,6 +327,7 @@ def _web_search_skill() -> WorkflowSkill:
         },
         spawn=_spawn_web_search,
         group="web",
+        effect="read",
     )
 
 
@@ -327,6 +361,7 @@ def _describe_image_skill() -> WorkflowSkill:
         },
         spawn=_spawn_describe_image,
         group="vision",
+        effect="read",
     )
 
 

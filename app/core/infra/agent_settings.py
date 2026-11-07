@@ -2138,10 +2138,10 @@ class AgentSettings:
     # genuinely stuck workflow early (as ``blocked``): the higher ceiling
     # gives a legitimately-long-but-progressing workflow room to finish,
     # while the loop detector — not the cap — catches spinning.
-    workflow_max_iterations: int = 12
+    workflow_max_iterations: int = 32
     # Hard cap on child tasks a single workflow may spawn. Clamped
-    # ``[1, 50]``.
-    workflow_max_children: int = 8
+    # ``[1, 128]``.
+    workflow_max_children: int = 48
     # RESERVED — parsed, but nothing reads it yet.
     #
     # The intent is a workflow-specific concurrency cap sitting under the
@@ -2172,10 +2172,12 @@ class AgentSettings:
     # misses — e.g. a browser workflow when Chrome / the extension isn't
     # running, where every varied call fails. Clamped ``[1, 20]``.
     workflow_max_consecutive_failures: int = 2
-    # Wall-clock budget for a whole workflow loop, in seconds. The loop
-    # force-finishes (partial) once exceeded so piled-up slow timeouts
-    # can't run for many minutes. ``0`` disables. Clamped ``[0, 3600]``.
-    workflow_max_wall_seconds: int = 300
+    # Active model-call time allowance for checkpointed work, in seconds.
+    # User/child waits do not consume it. Exhaustion pauses for explicit
+    # continuation. The legacy adapter uses elapsed wall time. A zero
+    # value retains legacy disabling; checkpointed work uses 1800 instead.
+    # Parsed ``[0, 3600]``; explicit continuation is bounded at 7200 total.
+    workflow_max_wall_seconds: int = 1800
     # ── No-progress / loop detection ───────────────────────────────────
     # Master switch for the rolling-signature loop detector. When on, a
     # workflow that keeps landing on the SAME result signature (even with

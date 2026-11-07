@@ -65,6 +65,8 @@ EVENT_FAILED = "failed"
 EVENT_CANCELLED = "cancelled"
 EVENT_INTERRUPTED = "interrupted"
 EVENT_CUSTOM = "custom"
+EVENT_WORK_MESSAGE = "work_message"
+EVENT_OPERATION_DISPATCH = "operation_dispatch"
 
 # Every type the orchestrator + protocol may produce. New types MUST
 # be added here so :func:`is_known_event_type` returns the right
@@ -83,6 +85,8 @@ KNOWN_EVENT_TYPES: frozenset[str] = frozenset(
         EVENT_CANCELLED,
         EVENT_INTERRUPTED,
         EVENT_CUSTOM,
+        EVENT_WORK_MESSAGE,
+        EVENT_OPERATION_DISPATCH,
     )
 )
 
@@ -170,6 +174,33 @@ class TaskEventStore:
 
     def __init__(self, db: "ChatDatabase") -> None:
         self._db = db
+
+    def list_after(self, task_id: int, *, after: int = 0, type: str,
+                   limit: int = 100) -> list[TaskEvent]:
+        rows = self._db._get_conn().execute(
+            "SELECT id,task_id,type,data,created_at FROM task_events "
+            "WHERE task_id=? AND id>? AND type=? ORDER BY id LIMIT ?",
+            (task_id, after, type, max(1, min(1000, limit))),
+        ).fetchall()
+        return [_row_to_event(row) for row in rows]
+
+    def find_work_message(self, task_id: int, client_id: str) -> TaskEvent | None:
+        row = self._db._get_conn().execute(
+            "SELECT id,task_id,type,data,created_at FROM task_events WHERE task_id=? "
+            "AND type='work_message' AND json_valid(data) AND json_extract(data,'$.client_id')=?",
+            (task_id, client_id),
+        ).fetchone()
+        return _row_to_event(row) if row else None
+
+    def latest_work_messages(self, task_id: int, *, before: int | None = None,
+                             limit: int = 100) -> list[TaskEvent]:
+        rows = self._db._get_conn().execute(
+            "SELECT id,task_id,type,data,created_at FROM task_events "
+            "WHERE task_id=? AND type='work_message' AND (? IS NULL OR id<?) "
+            "ORDER BY id DESC LIMIT ?",
+            (task_id, before, before, max(1, min(200, limit))),
+        ).fetchall()
+        return list(reversed([_row_to_event(row) for row in rows]))
 
     # ── writes ────────────────────────────────────────────────────────
 
@@ -315,6 +346,8 @@ __all__ = [
     "EVENT_CANCELLED",
     "EVENT_INTERRUPTED",
     "EVENT_CUSTOM",
+    "EVENT_WORK_MESSAGE",
+    "EVENT_OPERATION_DISPATCH",
     "KNOWN_EVENT_TYPES",
     "is_known_event_type",
 ]

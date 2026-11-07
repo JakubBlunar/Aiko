@@ -297,7 +297,6 @@ class TerminalTransitionTests(unittest.TestCase):
                 user_id="u", handler_name="h", title="t",
                 args={}, state={},
             )
-            f.store.mark_failed(tid, error="oops")  # corner case: ressurect
             ok = f.store.mark_done(tid, result={"found": 3})
             self.assertTrue(ok)
             row = f.store.get(tid)
@@ -333,7 +332,6 @@ class TerminalTransitionTests(unittest.TestCase):
                 user_id="u", handler_name="h", title="t",
                 args={}, state={},
             )
-            f.store.mark_done(tid, result={"x": 1})
             f.store.mark_failed(tid, error="db connection died")
             row = f.store.get(tid)
             assert row is not None

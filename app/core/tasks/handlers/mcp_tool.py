@@ -19,6 +19,8 @@ are surfaced to the background-worker lane only), so ``on_input`` /
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 from typing import TYPE_CHECKING, Any, Sequence
 
 from app.core.tasks.handler_names import HANDLER_MCP_TOOL
@@ -28,6 +30,8 @@ from app.core.tasks.task_handler import (
     TaskFailed,
     TaskState,
 )
+from app.core.tasks.approval import APPROVE_ALL, DENY, build_request, parse_decision
+from app.core.tasks.workflow import mcp_operation_gate as gate
 
 if TYPE_CHECKING:  # pragma: no cover - import-only
     from app.mcp.client.manager import ExternalMcpManager
@@ -38,7 +42,7 @@ log = logging.getLogger("app.tasks.mcp_tool")
 
 # Per-call content cap so a huge file/page can't blow the prompt when the
 # result is rendered. Generous (this is a real answer), bounded for safety.
-_CONTENT_CAP = 6000
+_CONTENT_CAP = 100000
 _SUMMARY_CAP = 200
 
 
@@ -71,8 +75,14 @@ class McpToolHandler:
         manager: "ExternalMcpManager",
         middlewares: "Sequence[ToolResultMiddleware] | None" = None,
         perception: Any = None,
+        resolve_approval: Any = None,
+        mark_session_approved: Any = None,
+        can_dispatch: Any = None,
     ) -> None:
         self._manager = manager
+        self._resolve_approval = resolve_approval
+        self._mark_session_approved = mark_session_approved
+        self._can_dispatch = can_dispatch
         # Ordered tool-result middleware chain. Each entry may reshape a
         # claimed (server_id, tool_name) result (parse -> dedup -> group ->
         # rank -> diff, etc.) before it reaches the planner; the first that
@@ -89,6 +99,19 @@ class McpToolHandler:
     # ── lifecycle ────────────────────────────────────────────────────
 
     def start(self, args: dict[str, Any], emit: TaskEmitFn) -> TaskState:
+        if self._resolve_approval is not None:
+            prepared, error = gate.prepare(self._manager, args)
+            if error:
+                emit(TaskFailed(error=error))
+                return {"args": args, "phase": "rejected"}
+            if (prepared["effect"] != "read"
+                    and self._resolve_approval(prepared["capability_id"]) != "auto"):
+                emit(build_request(gate.capability(args), gate.action_preview(args)))
+                return {"args": args, "phase": "awaiting_approval", "contract": prepared}
+        return self._perform(args, emit)
+
+    def _perform(self, args: dict[str, Any], emit: TaskEmitFn,
+                 approved_contract: dict | None = None) -> TaskState:
         server_id = str((args or {}).get("server_id", "") or "").strip()
         tool_name = str((args or {}).get("tool_name", "") or "").strip()
         tool_args = (args or {}).get("tool_args") or {}
@@ -99,24 +122,41 @@ class McpToolHandler:
             emit(TaskFailed(error="mcp_tool tool_args must be an object"))
             return {"args": args, "phase": "rejected"}
 
+        prepared = None
+        if self._resolve_approval is not None:
+            prepared, error = gate.prepare(self._manager, args)
+            if error or (approved_contract is not None
+                         and prepared["signature"] != approved_contract["signature"]):
+                emit(TaskFailed(error=error or "The approved operation contract changed."))
+                return {"args": args, "phase": "rejected"}
+        if self._can_dispatch is not None and not self._can_dispatch():
+            emit(TaskFailed(error="This operation was cancelled before dispatch."))
+            return {"args": args, "phase": "cancelled"}
+        uncertain = prepared is not None and prepared["effect"] != "read"
+        receipt = {"effect": prepared["effect"] if prepared else "unknown",
+                   "server_id": server_id, "tool_name": tool_name,
+                   "args_sha256": hashlib.sha256(
+                       json.dumps(tool_args, sort_keys=True).encode()).hexdigest(),
+                   "status": "acknowledged"}
         try:
             result = self._manager.call_tool(server_id, tool_name, tool_args)
         except Exception as exc:  # noqa: BLE001 - surface as a clean failure
-            emit(TaskFailed(error=f"MCP call failed: {exc}"[:200]))
+            emit(TaskFailed(error=f"MCP call failed: {exc}"[:200], uncertain_effect=uncertain))
             log.info(
                 "mcp_tool failed: server=%s tool=%s err=%s",
                 server_id, tool_name, exc,
             )
-            return {"args": args, "phase": "rejected"}
+            return {"args": args, "phase": "rejected", "uncertain_effect": uncertain}
 
         is_error = bool(getattr(result, "isError", False))
         text, non_text = _flatten_content(result)
         if is_error:
-            emit(TaskFailed(error=(text or "MCP tool reported an error")[:200]))
+            emit(TaskFailed(error=(text or "MCP tool reported an error")[:200],
+                            uncertain_effect=uncertain))
             log.info(
                 "mcp_tool tool-error: server=%s tool=%s", server_id, tool_name,
             )
-            return {"args": args, "phase": "failed"}
+            return {"args": args, "phase": "failed", "uncertain_effect": uncertain}
 
         # Tool-result middleware chain: the first middleware that claims this
         # (server_id, tool_name) and returns a non-None transform reshapes the
@@ -139,6 +179,8 @@ class McpToolHandler:
                 "tool_name": tool_name,
                 "content": content,
                 "summary": summary,
+                "receipt": receipt,
+                "truncated": len(perceived.content) > _CONTENT_CAP,
             }
             emit(TaskCompleted(result=payload))
             return {"args": args, "phase": "done"}
@@ -152,6 +194,9 @@ class McpToolHandler:
             "tool_name": tool_name,
             "content": content,
             "summary": summary,
+            "receipt": receipt,
+            "truncated": len(text) > _CONTENT_CAP or non_text > 0,
+            "non_text_blocks": non_text,
         }
         log.info(
             "mcp_tool completed: server=%s tool=%s chars=%d non_text=%d",
@@ -212,8 +257,16 @@ class McpToolHandler:
     def on_input(
         self, state: TaskState, answer: str, emit: TaskEmitFn
     ) -> TaskState:
-        emit(TaskFailed(error="mcp_tool does not accept input"))
-        return state
+        if state.get("phase") != "awaiting_approval":
+            emit(TaskFailed(error="This operation is not awaiting approval."))
+            return state
+        decision = parse_decision(answer)
+        if decision == DENY:
+            emit(TaskFailed(error="The operation was declined."))
+            return state
+        if decision == APPROVE_ALL and self._mark_session_approved is not None:
+            self._mark_session_approved(state["contract"]["capability_id"])
+        return self._perform(state["args"], emit, state["contract"])
 
     def cancel(self, state: TaskState) -> None:
         # The MCP call has its own read timeout; a cancelled row just

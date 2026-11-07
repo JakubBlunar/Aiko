@@ -287,11 +287,11 @@ class CancelWorkRunTests(unittest.TestCase):
 
 
 class BuildWorkflowToolsTests(unittest.TestCase):
-    def test_builds_three(self) -> None:
+    def test_builds_work_controls(self) -> None:
         tools = build_workflow_tools(_FakeSession(orchestrator=_FakeOrchestrator()))
         names = {t.name for t in tools}
         self.assertEqual(
-            names, {"start_workflow", "check_my_work", "cancel_work"}
+            names, {"start_workflow", "check_my_work", "cancel_work", "control_work"}
         )
 
 
