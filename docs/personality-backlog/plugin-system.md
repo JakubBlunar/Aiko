@@ -774,6 +774,12 @@ separate opt-ins, never bundled into "see her code".
 
 ## 13. Operational Experience
 
+The [plugin settings/runtime proposal](../plugin-settings-runtime-plan-2026-11-07.md)
+details declarative configuration fields, Settings controls, selective activation
+and reconfiguration, source workspaces/filesystem roots, ownership cleanup and
+configuration-bound job/approval generations. It is the next UX/lifecycle slice;
+the current runtime still requires restart for server/config changes.
+
 Extend the existing settings/task surfaces instead of requiring plugin-authored
 JavaScript for the first release. Schema-driven settings, status and account
 connection controls are sufficient for these pilots. Defer arbitrary UI panels,

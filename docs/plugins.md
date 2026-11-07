@@ -242,6 +242,10 @@ not imported. First-boot install can be slow (like an `npx` cold start).
 
 ## Config
 
+The [runtime settings proposal](plugin-settings-runtime-plan-2026-11-07.md) covers
+the planned schema-driven Settings UI and per-plugin enable/disable/reconfigure
+without restarting Aiko. The configuration mechanism below is the current one.
+
 ```json
 {
   "plugins": {
