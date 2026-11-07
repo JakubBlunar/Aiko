@@ -1,0 +1,12 @@
+{
+  "description": "Browser interaction and snapshot ranking. Applying settings reconnects this browser plugin; open browser state may be lost.",
+  "advanced": [
+    "snapshot_tools",
+    "disabled_tools",
+    "weight_role",
+    "weight_visibility",
+    "weight_position",
+    "weight_text",
+    "weight_context"
+  ]
+}

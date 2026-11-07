@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "workspaces": {
+      "type": "array",
+      "title": "Source workspaces",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "root",
+          "include_paths"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Workspace ID",
+            "pattern": "^[a-zA-Z0-9_-]+$",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Stable ID used by Aiko when choosing a workspace."
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "root": {
+            "type": "string",
+            "title": "Workspace folder",
+            "format": "host-directory",
+            "minLength": 1
+          },
+          "include_paths": {
+            "type": "array",
+            "title": "Allowed relative paths",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": [
+              "app",
+              "web/src"
+            ],
+            "minItems": 1,
+            "x-addLabel": "Add relative path"
+          },
+          "exclude_patterns": {
+            "type": "array",
+            "title": "Additional excluded patterns",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": [],
+            "x-addLabel": "Add exclusion"
+          }
+        },
+        "title": "Workspace"
+      },
+      "default": [],
+      "x-uniqueBy": "id",
+      "x-addLabel": "Add workspace",
+      "x-itemTitle": "name"
+    },
+    "max_file_bytes": {
+      "type": "integer",
+      "title": "Maximum file bytes",
+      "default": 524288,
+      "minimum": 1024,
+      "maximum": 16777216
+    },
+    "max_scan_bytes": {
+      "type": "integer",
+      "title": "Maximum bytes per scan",
+      "default": 8388608,
+      "minimum": 1024,
+      "maximum": 134217728
+    },
+    "max_scan_files": {
+      "type": "integer",
+      "title": "Maximum files per scan",
+      "default": 400,
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "max_walk_entries": {
+      "type": "integer",
+      "title": "Maximum directory entries",
+      "default": 12000,
+      "minimum": 1,
+      "maximum": 100000
+    },
+    "max_query_seconds": {
+      "type": "number",
+      "title": "Query time limit (seconds)",
+      "default": 3,
+      "minimum": 0.1,
+      "maximum": 30
+    }
+  }
+}

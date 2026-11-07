@@ -100,6 +100,7 @@ class WorkflowSkill:
     group: str = ""
     input_schema: dict[str, Any] | None = None
     effect: str = "unknown"
+    generation: str = ""
 
     @property
     def spawnable(self) -> bool:
@@ -133,6 +134,12 @@ class WorkflowSkillRegistry:
     def get(self, name: str) -> WorkflowSkill | None:
         return self._skills.get(str(name))
 
+    def replace_mcp(self, skills: list[WorkflowSkill]) -> None:
+        """Publish one immutable catalogue, removing disappeared MCP owners/tools."""
+        self._skills = {**{name: skill for name, skill in self._skills.items()
+                           if not skill.group.startswith("mcp:")},
+                        **{skill.name: skill for skill in skills}}
+
     def names(self) -> list[str]:
         """All registered skill names, sorted for stable prompts."""
         return sorted(self._skills.keys())
@@ -159,8 +166,9 @@ class WorkflowSkillRegistry:
         ``groups=None`` (the default) returns the full catalogue.
         """
         out: list[dict[str, Any]] = []
-        for name in self.names():
-            skill = self._skills[name]
+        catalogue = self._skills
+        for name in sorted(catalogue):
+            skill = catalogue[name]
             if (
                 groups is not None
                 and not skill.terminal
@@ -177,6 +185,7 @@ class WorkflowSkillRegistry:
                     "group": skill.group,
                     "input_schema": self.schema_for(skill.name),
                     "effect": skill.effect,
+                    "generation": skill.generation,
                 }
             )
         return out
@@ -203,7 +212,8 @@ class WorkflowSkillRegistry:
         return validate_arguments(skill, args)
 
     def spawn_child(
-        self, name: str, args: dict[str, Any], ctx: SpawnContext
+        self, name: str, args: dict[str, Any], ctx: SpawnContext, *,
+        expected_skill: WorkflowSkill | None = None,
     ) -> "int | None":
         """Spawn the child task for skill ``name``.
 
@@ -213,6 +223,9 @@ class WorkflowSkillRegistry:
         ``None`` so a single bad skill can't crash the workflow loop.
         """
         skill = self._skills.get(str(name))
+        if expected_skill is not None and skill is not expected_skill:
+            log.info("workflow operation rejected: catalogue changed skill=%s", name)
+            return None
         if skill is None:
             log.warning("workflow spawn: unknown skill name=%s", name)
             return None

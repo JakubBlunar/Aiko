@@ -31,6 +31,7 @@ are cleared before each test, and attempts to access the live config
 from this process fail without reading it (or mistaking external edits
 for writes by the tests).
 """
+
 from __future__ import annotations
 
 import os
@@ -44,6 +45,7 @@ import pytest
 _user_config_sandbox: tempfile.TemporaryDirectory[str] | None = None
 _original_user_config_env: str | None = None
 _protected_user_config_paths: set[str] = set()
+_protected_plugin_state_roots: set[str] = set()
 _live_config_accesses: list[str] = []
 _user_config_guard_active = False
 
@@ -61,7 +63,10 @@ def _reject_live_user_config_access(event: str, args: tuple[object, ...]) -> Non
         if not isinstance(path, (str, bytes, os.PathLike)):
             continue
         normalized = os.path.normcase(os.path.abspath(os.fsdecode(path)))
-        if normalized in _protected_user_config_paths:
+        if normalized in _protected_user_config_paths or any(
+            normalized == root or normalized.startswith(root + os.sep)
+            for root in _protected_plugin_state_roots
+        ):
             _live_config_accesses.append(event)
             raise AssertionError(f"tests must not access the live user config ({event})")
 
@@ -77,6 +82,16 @@ def pytest_configure(config: pytest.Config) -> None:
     _protected_user_config_paths.update(
         os.path.normcase(os.path.abspath(os.fspath(path)))
         for path in (live, live.with_suffix(live.suffix + ".tmp"))
+    )
+    repo = Path(__file__).resolve().parents[1]
+    for bundle in (repo / "plugins").iterdir():
+        for name in ("user.json", "user.json.tmp"):
+            _protected_user_config_paths.add(
+                os.path.normcase(os.path.abspath(os.fspath(bundle / "config" / name)))
+            )
+    _protected_plugin_state_roots.update(
+        os.path.normcase(os.path.abspath(os.fspath(path)))
+        for path in (repo / "data" / "plugins", repo / "data" / "plugins-deps")
     )
     _user_config_sandbox = tempfile.TemporaryDirectory(prefix="aiko-tests-cfg-")
     os.environ["AIKO_USER_CONFIG"] = str(Path(_user_config_sandbox.name) / "user.json")
@@ -99,9 +114,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         _user_config_sandbox.cleanup()
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Skip wall-clock budget tests inside xdist workers.
 
     ``-n auto`` cuts the suite from ~11 minutes to ~2, but it does it by
@@ -165,6 +178,35 @@ def _clear_test_user_config(_isolate_user_config: Path) -> None:
 
     _isolate_user_config.unlink(missing_ok=True)
     settings_mod._config_cache.pop(str(_isolate_user_config), None)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_plugin_state(tmp_path_factory):
+    """Bundle code/defaults are fixtures; developer plugin overrides/deps are not."""
+    from app.plugins import loader, runtime
+
+    sandbox = tmp_path_factory.mktemp("plugin-state")
+    original_reader = loader._read_json_object
+    original_root, original_deps = loader._USER_PLUGIN_ROOT, runtime._DEFAULT_DEPS_ROOT
+
+    def read(path):
+        normalized = os.path.normcase(os.path.abspath(os.fspath(path)))
+        if normalized in _protected_user_config_paths:
+            return {}
+        return original_reader(path)
+
+    loader._read_json_object = read
+    loader._USER_PLUGIN_ROOT = sandbox / "bundles"
+    runtime._DEFAULT_DEPS_ROOT = sandbox / "deps"
+    try:
+        yield sandbox
+    finally:
+        loader._read_json_object = original_reader
+        loader._USER_PLUGIN_ROOT, runtime._DEFAULT_DEPS_ROOT = original_root, original_deps
+    if _live_config_accesses:
+        raise AssertionError(
+            "tests accessed live install state: " + ", ".join(_live_config_accesses)
+        )
 
 
 @pytest.fixture(scope="session", autouse=True)

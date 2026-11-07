@@ -2,6 +2,7 @@ import type { AssistantSettings } from "@/types";
 import { Toggle } from "@/components/Toggle";
 import { Section } from "./SettingsSection";
 import { RemindersPanel } from "./RemindersPanel";
+import { PluginsSection } from "./plugins/PluginsSection";
 
 export interface ToolsTabProps {
   settings: AssistantSettings;
@@ -70,6 +71,7 @@ export function ToolsTab({ settings, apply }: ToolsTabProps) {
         </div>
       )}
       </Section>
+      <PluginsSection />
       <RemindersPanel />
     </div>
   );

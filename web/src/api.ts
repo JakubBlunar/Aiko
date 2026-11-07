@@ -1,6 +1,7 @@
 // Thin REST wrapper over the FastAPI endpoints.
 
 import { addBreadcrumb } from "./crashBreadcrumbs";
+import type { PluginRow, PluginsSnapshot, PluginUpdate } from "./features/settings/plugins/types";
 import { backendBase } from "./desktop/runtime";
 import type { ArchiveQuery, ArchiveResponse } from "./features/settings/archive/types";
 import type { ProviderUsage } from "./features/settings/providerUsage";
@@ -179,6 +180,16 @@ async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> 
 }
 
 export const api = {
+  getPlugins: () => jsonFetch<PluginsSnapshot>("/api/plugins"),
+  setPluginsEnabled: (enabled: boolean) => jsonFetch<PluginsSnapshot>("/api/plugins", {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+  }),
+  updatePlugin: (id: string, patch: PluginUpdate) => jsonFetch<PluginRow>(`/api/plugins/${encodeURIComponent(id)}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+  }),
+  retryPlugin: (id: string, revision: string) => jsonFetch<PluginRow>(`/api/plugins/${encodeURIComponent(id)}/retry`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision }),
+  }),
   getReminders: () => jsonFetch<{ reminders: Reminder[] }>("/api/reminders"),
   setReminder: (text: string, due_at: string) =>
     jsonFetch<{ reminder: Reminder }>("/api/reminders", {

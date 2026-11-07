@@ -5,6 +5,8 @@ import hashlib
 import json
 import logging
 import os
+import threading
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from app.core.infra.settings_basic import VisionSettings
@@ -1140,6 +1142,7 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 # expensive JSON parse on a genuine cache hit (config files are small,
 # so the read+hash is cheap relative to ``json.loads``).
 _config_cache: dict[str, tuple[bytes, dict[str, Any]]] = {}
+_user_override_lock = threading.RLock()
 
 
 def _read_config(path: Path) -> dict[str, Any]:
@@ -1185,6 +1188,13 @@ def read_user_overrides(*, path: Path | None = None) -> dict[str, Any]:
 
 
 def persist_user_overrides(
+    patch: dict[str, Any], *, path: Path | None = None,
+) -> None:
+    with _user_override_lock:
+        _persist_user_overrides_locked(patch, path=path)
+
+
+def _persist_user_overrides_locked(
     patch: dict[str, Any], *, path: Path | None = None
 ) -> None:
     """Deep-merge ``patch`` into ``user.json`` and write it back atomically.
@@ -1219,6 +1229,30 @@ def persist_user_overrides(
     # Drop the cache entry so the next ``_read_config`` re-reads from
     # disk instead of returning the stale pre-patch dict.
     _config_cache.pop(str(target), None)
+
+
+def replace_user_override(keys: tuple[str, ...], value: Any, *, path: Path | None = None) -> None:
+    """Replace one owned override branch, allowing removal/reset without deep-merge residue."""
+    if not keys or any(not isinstance(key, str) or not key for key in keys):
+        raise ValueError("Provide an owned override path")
+    target = path or USER_CONFIG_PATH
+    with _user_override_lock:
+        existing = deepcopy(_read_config(target)) if target.exists() else {}
+        branch = existing
+        for key in keys[:-1]:
+            if not isinstance(branch.get(key), dict):
+                branch[key] = {}
+            branch = branch[key]
+        if value is None:
+            branch.pop(keys[-1], None)
+        else:
+            branch[keys[-1]] = deepcopy(value)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(target.suffix + ".tmp")
+        temporary.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8", newline="\n")
+        temporary.replace(target)
+        _config_cache.pop(str(target), None)
 
 
 def _normalize_tts_length_scale(value: Any) -> float:

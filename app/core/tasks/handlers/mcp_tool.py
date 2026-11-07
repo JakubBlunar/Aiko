@@ -74,12 +74,14 @@ class McpToolHandler:
         *,
         manager: "ExternalMcpManager",
         middlewares: "Sequence[ToolResultMiddleware] | None" = None,
+        middlewares_provider: Any = None,
         perception: Any = None,
         resolve_approval: Any = None,
         mark_session_approved: Any = None,
         can_dispatch: Any = None,
     ) -> None:
         self._manager = manager
+        self._middlewares_provider = middlewares_provider
         self._resolve_approval = resolve_approval
         self._mark_session_approved = mark_session_approved
         self._can_dispatch = can_dispatch
@@ -105,7 +107,7 @@ class McpToolHandler:
                 emit(TaskFailed(error=error))
                 return {"args": args, "phase": "rejected"}
             if (prepared["effect"] != "read"
-                    and self._resolve_approval(prepared["capability_id"]) != "auto"):
+                    and self._resolve_approval(prepared["approval_id"]) != "auto"):
                 emit(build_request(gate.capability(args), gate.action_preview(args)))
                 return {"args": args, "phase": "awaiting_approval", "contract": prepared}
         return self._perform(args, emit)
@@ -138,8 +140,12 @@ class McpToolHandler:
                    "args_sha256": hashlib.sha256(
                        json.dumps(tool_args, sort_keys=True).encode()).hexdigest(),
                    "status": "acknowledged"}
+        middleware_snapshot = tuple(self._middlewares_provider() if self._middlewares_provider
+                                    else self._middlewares)
         try:
-            result = self._manager.call_tool(server_id, tool_name, tool_args)
+            options = ({"generation": prepared["generation"]}
+                       if prepared and prepared.get("generation") else {})
+            result = self._manager.call_tool(server_id, tool_name, tool_args, **options)
         except Exception as exc:  # noqa: BLE001 - surface as a clean failure
             emit(TaskFailed(error=f"MCP call failed: {exc}"[:200], uncertain_effect=uncertain))
             log.info(
@@ -164,7 +170,8 @@ class McpToolHandler:
         # we fall through to the raw flatten so every other tool (and an
         # unparseable / unclaimed result) is byte-identical to the no-middleware
         # path.
-        perceived = self._run_middlewares(server_id, tool_name, text, tool_args)
+        perceived = self._run_middlewares(server_id, tool_name, text, tool_args,
+                                         chain=middleware_snapshot)
         if perceived is not None:
             content = perceived.content[:_CONTENT_CAP]
             if len(perceived.content) > _CONTENT_CAP:
@@ -211,9 +218,13 @@ class McpToolHandler:
         tool_name: str,
         text: str,
         tool_args: dict[str, Any],
+        *, chain=None,
     ) -> Any | None:
         """First middleware that claims + returns non-None wins. Best-effort."""
-        for mw in self._middlewares:
+        if chain is None:
+            chain = (self._middlewares_provider() if self._middlewares_provider
+                     else self._middlewares)
+        for mw in chain:
             try:
                 if not mw.claims(server_id, tool_name):
                     continue
@@ -265,7 +276,8 @@ class McpToolHandler:
             emit(TaskFailed(error="The operation was declined."))
             return state
         if decision == APPROVE_ALL and self._mark_session_approved is not None:
-            self._mark_session_approved(state["contract"]["capability_id"])
+            self._mark_session_approved(state["contract"].get(
+                "approval_id", state["contract"]["capability_id"]))
         return self._perform(state["args"], emit, state["contract"])
 
     def cancel(self, state: TaskState) -> None:

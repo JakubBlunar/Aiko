@@ -242,9 +242,10 @@ not imported. First-boot install can be slow (like an `npx` cold start).
 
 ## Config
 
-The [runtime settings proposal](plugin-settings-runtime-plan-2026-11-07.md) covers
-the planned schema-driven Settings UI and per-plugin enable/disable/reconfigure
-without restarting Aiko. The configuration mechanism below is the current one.
+Use **Settings > Tools > Plugins** to enable, disable and configure plugins while
+Aiko runs. The [settings and lifecycle SDK guide](plugin-settings.md) describes
+plugin-owned schemas, shared controls, persistence and generation-bound dispatch.
+The JSON configuration below remains supported for installation and migration.
 
 ```json
 {
@@ -272,15 +273,15 @@ default** (they would otherwise auto-launch `npx` servers). Enable a bundled
 plugin by setting its `plugin.json` `enabled` (or
 `plugins.entries.<id>.enabled = true`):
 
-- **filesystem** — pure server + skills. Needs a `root`; put it in
-  `plugins/filesystem/config/user.json` (see `config/user.example.json`). Gates
-  out via `require_config("root")` until set.
+- **filesystem** — pure server + skills. Add allowed `roots` in Settings. A
+  legacy plugin-local `root` is adapted to a single-folder list until explicitly
+  replaced, including with an empty list.
 - **browser** — server + skills + the `BrowserPerception` tool-result
   middleware. Tune adapter / ranking weights in `plugins/browser/config/`.
 - **self_code** — read-only source inspection with explicit root/include scope,
   revision-aware search/reads and Python/JS/TS/TSX syntax navigation. See its
   [setup and tool reference](../plugins/self_code/README.md). It is disabled by
-  default; enabling a new server requires an app restart.
+  default; named source workspaces and runtime activation are configured in Settings.
 
 The legacy global `browser_perception` config block still works (back-compat);
 when the browser plugin registers its own middleware for the same `server_id`,
@@ -301,10 +302,9 @@ a declarative `mcp` block with `api.register_mcp_server(...)`, `requires` with
   `gated_out` / `unsupported` / `invalid`), reason, middleware/skill counts,
   deps status, warnings.
 - `get_plugin(id)` — full detail incl. the synthesised server + guidance.
-- `reload_plugins()` — re-run discovery + activation and refresh planner
-  **guidance** live (an edited `SKILL.md` lands on the next workflow).
-  Adding/removing a plugin's MCP **server**, changing its middleware, or editing
-  `entry.py` **code** still needs an app restart.
+- `reload_plugins()` — reapply enabled bundles through managed lifecycle,
+  refreshing service registrations, middleware, fast tools and guidance. Native
+  dependency/code upgrades and new bundle discovery may still need a restart.
 - `get_external_mcp_instructions(server_id="")` — the runtime-captured
   instructions/prompts, or the merged `{group: guidance}` the planner reads.
 

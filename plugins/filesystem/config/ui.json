@@ -1,0 +1,17 @@
+{
+  "description": "Read and write files inside the allowed folders. Writes follow your task approval rules. Folder paths refer to the computer running Aiko.",
+  "required_for_activation": [
+    "roots"
+  ],
+  "resources": [
+    {
+      "field": "roots",
+      "mode": "read_write"
+    }
+  ],
+  "legacy_single": {
+    "roots": {
+      "from": "root"
+    }
+  }
+}

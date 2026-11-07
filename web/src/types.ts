@@ -2341,6 +2341,7 @@ export interface WeatherSettingsSnapshot {
 }
 
 export type WsServerEvent =
+  | { type: "plugins_updated"; plugin_id: string }
   | {
       type: "hello";
       session: string;

@@ -6,5 +6,6 @@
   "max_scan_bytes": 8388608,
   "max_scan_files": 400,
   "max_walk_entries": 12000,
-  "max_query_seconds": 3
+  "max_query_seconds": 3,
+  "workspaces": []
 }

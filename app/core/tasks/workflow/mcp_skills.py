@@ -62,7 +62,7 @@ def _arg_schema_from_input(input_schema: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _make_spawn(server_id: str, tool_name: str):
+def _make_spawn(server_id: str, tool_name: str, generation: str = ""):
     """Build the child-spawn function for one MCP tool."""
 
     def _spawn(args: dict[str, Any], ctx: SpawnContext) -> "int | None":
@@ -73,6 +73,7 @@ def _make_spawn(server_id: str, tool_name: str):
                 "server_id": server_id,
                 "tool_name": tool_name,
                 "tool_args": dict(args or {}),
+                **({"_config_generation": generation} if generation else {}),
             },
             title=f"workflow mcp: {server_id}/{tool_name}"[:_TITLE_CAP],
             initiated_by=INITIATED_BY_BACKGROUND,
@@ -101,7 +102,8 @@ def _skill_from_descriptor(desc: "McpToolDescriptor") -> WorkflowSkill:
         arg_schema=_arg_schema_from_input(desc.input_schema),
         input_schema=desc.input_schema,
         effect=effect,
-        spawn=_make_spawn(desc.server_id, desc.name),
+        generation=desc.generation,
+        spawn=_make_spawn(desc.server_id, desc.name, desc.generation),
         # Per-server router group so a server's tools are narrowed in/out
         # together (and the catalogue can grow without bloating each plan).
         group=f"mcp:{desc.server_id}",
@@ -123,10 +125,12 @@ def register_mcp_skills(
     returned here is meant to be exposed.
     """
     names: list[str] = []
+    skills = []
     for desc in manager.list_available_tools():
         skill = _skill_from_descriptor(desc)
-        skill_registry.register(skill)
+        skills.append(skill)
         names.append(skill.name)
+    skill_registry.replace_mcp(skills)
     log.info("mcp skills registered: count=%d names=%s", len(names), names)
     return names
 

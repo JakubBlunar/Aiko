@@ -58,6 +58,7 @@ class McpToolDescriptor:
     description: str
     input_schema: dict[str, Any]
     effect: str = "unknown"
+    generation: str = ""
 
     @property
     def qualified_name(self) -> str:
@@ -79,6 +80,9 @@ class _ServerState:
     # ``prompts`` is a best-effort ``list_prompts()`` snapshot.
     instructions: str = ""
     prompts: list[dict[str, Any]] = field(default_factory=list)
+    generation: str = ""
+    retired: bool = False
+    supervisor: Any = None
 
 
 class _StderrPump:
@@ -187,6 +191,8 @@ class ExternalMcpManager:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._shutdown = False
+        self._blocked: set[str] = set()
+        self._configuration_lock = threading.RLock()
         self._lock = threading.Lock()
         # Optional callback fired (on the loop thread) whenever a server's
         # tool catalogue changes, so the controller can re-register skills.
@@ -227,7 +233,7 @@ class ExternalMcpManager:
                     state.status = STATUS_DISABLED
                     continue
                 state.restart_event = asyncio.Event()
-                loop.create_task(self._supervise(state))
+                state.supervisor = loop.create_task(self._supervise(state))
             self._ready.set()
             loop.run_forever()
         finally:
@@ -241,7 +247,7 @@ class ExternalMcpManager:
         """Per-server connect → list_tools → hold-open → reconnect loop."""
         server = state.server
         backoff = self._reconnect_min
-        while not self._shutdown:
+        while not self._shutdown and not state.retired:
             state.status = STATUS_CONNECTING
             try:
                 await self._connect_once(state)
@@ -252,11 +258,12 @@ class ExternalMcpManager:
                 state.status = STATUS_FAILED
                 state.error = str(exc)
                 state.session = None
+                self._notify_tools_changed()
                 log.warning(
                     "external-mcp connect failed: server=%s err=%s",
                     server.id, exc,
                 )
-            if self._shutdown:
+            if self._shutdown or state.retired:
                 break
             # Reconnect with capped exponential backoff.
             await asyncio.sleep(backoff)
@@ -329,6 +336,10 @@ class ExternalMcpManager:
                     state.restart_event.clear()
         finally:
             state.session = None
+            if state.status == STATUS_CONNECTED:
+                state.status = (STATUS_STOPPED if self._shutdown or state.retired
+                                else STATUS_CONNECTING)
+            self._notify_tools_changed()
             if pump is not None:
                 pump.close()
 
@@ -382,6 +393,7 @@ class ExternalMcpManager:
                     name=tool.name,
                     description=str(tool.description or ""),
                     input_schema=schema,
+                    generation=state.generation,
                     effect=("read" if bool(getattr(getattr(tool, "annotations", None),
                                                    "readOnlyHint", False)) else "unknown"),
                 )
@@ -419,6 +431,64 @@ class ExternalMcpManager:
         loop.call_soon_threadsafe(state.restart_event.set)
         return True
 
+    def block_server(self, server_id: str) -> None:
+        """Immediately revoke visibility/dispatch, before asynchronous disposal."""
+        with self._configuration_lock:
+            self._blocked.add(server_id)
+        self._notify_tools_changed()
+
+    def _notify_tools_changed(self) -> None:
+        if self._on_tools_changed is not None:
+            try:
+                self._on_tools_changed()
+            except Exception:
+                log.debug("tools-changed callback raised", exc_info=True)
+
+    def replace_server(self, server_id: str, server: Any | None, *, generation: str = "",
+                       expose: bool = True) -> None:
+        """Replace only one owned service. Call from a lifecycle worker, never its loop."""
+        self.block_server(server_id)
+        self.start()
+        if self._loop is None or self._shutdown:
+            raise McpToolError("MCP manager is stopping")
+
+        async def replace():
+            old = self._states.pop(server_id, None)
+            if old is not None:
+                old.retired = True
+                old.tools = []
+                old.status = STATUS_DISABLED
+                if old.supervisor is not None:
+                    old.supervisor.cancel()
+                    await asyncio.wait_for(
+                        asyncio.gather(old.supervisor, return_exceptions=True), timeout=8,
+                    )
+            if server is not None:
+                state = _ServerState(server=server, generation=generation)
+                self._states[server_id] = state
+                if expose:
+                    with self._configuration_lock:
+                        self._blocked.discard(server_id)
+                state.restart_event = asyncio.Event()
+                state.supervisor = asyncio.create_task(self._supervise(state))
+            self._notify_tools_changed()
+
+        future = asyncio.run_coroutine_threadsafe(replace(), self._loop)
+        try:
+            future.result(timeout=12)
+        except TimeoutError:
+            future.cancel()
+            raise
+
+    def release_server(self, server_id: str, generation: str) -> None:
+        """Expose transport only after its owner's other registrations are published."""
+        with self._configuration_lock:
+            state = self._states.get(server_id)
+            if state is None or state.generation != generation or state.retired:
+                raise McpToolError("Plugin configuration changed before publication")
+            self._blocked.discard(server_id)
+        self._notify_tools_changed()
+
     # ── tool dispatch ────────────────────────────────────────────────
 
     def call_tool(
@@ -428,6 +498,7 @@ class ExternalMcpManager:
         arguments: dict[str, Any] | None = None,
         *,
         timeout: float | None = None,
+        generation: str | None = None,
     ) -> Any:
         """Call a tool on a connected server and return its ``CallToolResult``.
 
@@ -445,11 +516,25 @@ class ExternalMcpManager:
                 f"MCP server {server_id!r} not connected (status={state.status})"
             )
         call_timeout = float(timeout if timeout else state.server.timeout_seconds)
-        coro = session.call_tool(
-            tool_name,
-            arguments or {},
-            read_timeout_seconds=timedelta(seconds=call_timeout),
-        )
+        async def invoke():
+            def valid():
+                return (server_id not in self._blocked and not state.retired
+                        and self._states.get(server_id) is state
+                        and state.session is session
+                        and state.status == STATUS_CONNECTED
+                        and (generation is None or generation == state.generation))
+            with self._configuration_lock:
+                if not valid():
+                    raise McpToolError("Plugin configuration changed before dispatch")
+            result = await session.call_tool(
+                tool_name, arguments or {},
+                read_timeout_seconds=timedelta(seconds=call_timeout),
+            )
+            with self._configuration_lock:
+                if not valid():
+                    raise McpToolError("Plugin configuration changed during the operation")
+            return result
+        coro = invoke()
         try:
             fut = asyncio.run_coroutine_threadsafe(coro, loop)
             return fut.result(timeout=call_timeout + 5.0)
@@ -465,7 +550,9 @@ class ExternalMcpManager:
     def list_available_tools(self) -> list[McpToolDescriptor]:
         """All tools across connected servers (namespaced, dedupe-safe)."""
         out: list[McpToolDescriptor] = []
-        for state in self._states.values():
+        for state in tuple(self._states.values()):
+            if state.server.id in self._blocked:
+                continue
             if state.status == STATUS_CONNECTED:
                 out.extend(state.tools)
         return out
@@ -488,7 +575,9 @@ class ExternalMcpManager:
         actually shipped instructions and/or prompts appear.
         """
         out: dict[str, str] = {}
-        for state in self._states.values():
+        for state in tuple(self._states.values()):
+            if state.server.id in self._blocked:
+                continue
             if state.status != STATUS_CONNECTED:
                 continue
             blocks: list[str] = []
@@ -511,13 +600,15 @@ class ExternalMcpManager:
     def server_status(self) -> list[dict[str, Any]]:
         """Debug snapshot of every configured server."""
         snapshot: list[dict[str, Any]] = []
-        for state in self._states.values():
+        for state in tuple(self._states.values()):
             snapshot.append(
                 {
                     "id": state.server.id,
                     "name": state.server.name,
                     "transport": state.server.transport,
                     "status": state.status,
+                    "available": state.server.id not in self._blocked,
+                    "generation": state.generation,
                     "error": state.error,
                     "tool_count": len(state.tools),
                     "tools": [t.name for t in state.tools],

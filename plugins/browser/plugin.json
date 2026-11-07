@@ -2,5 +2,9 @@
   "plugin_api_version": 1,
   "id": "browser",
   "name": "Browser",
-  "enabled": false
+  "enabled": false,
+  "settings": {
+    "schema": "config/schema.json",
+    "ui": "config/ui.json"
+  }
 }

@@ -45,6 +45,40 @@ def code(tmp_path, modules):
     return root, service.CodeTools(config), policy.SourceError, config
 
 
+def test_named_workspaces_require_selection_and_never_fall_back_to_legacy_root(code, tmp_path):
+    from aiko_code.workspaces import WorkspaceTools
+
+    root, _, error, config = code
+    second = tmp_path / "second"
+    (second / "src").mkdir(parents=True)
+    (second / "src" / "main.py").write_text("SECOND = True\n", encoding="utf-8")
+    service = WorkspaceTools({**config, "workspaces": [
+        {"id": "first", "name": "First", "root": str(root), "include_paths": ["src"]},
+        {"id": "second", "name": "Second", "root": str(second), "include_paths": ["src"]},
+    ]})
+    assert [row["id"] for row in service.info()["workspaces"]] == ["first", "second"]
+    assert "SECOND" in json.dumps(service.call("second", "read_code", path="src/main.py"))
+    assert "SECOND" not in json.dumps(service.call("first", "read_code", path="src/main.py"))
+    with pytest.raises(error, match="workspace_id"):
+        service.call("", "read_code", path="src/main.py")
+    with pytest.raises(error, match="workspace_id"):
+        service.call("unknown", "read_code", path="src/main.py")
+    with pytest.raises(error, match="Add at least"):
+        WorkspaceTools({**config, "workspaces": []})
+
+
+@pytest.mark.anyio
+async def test_named_workspace_mcp_schemas_and_dispatch(code):
+    root, _, _, config = code
+    server = _server_module().create_server({**config, "workspaces": [
+        {"id": "source", "name": "Source", "root": str(root), "include_paths": ["src"]}]})
+    for descriptor in await server.list_tools():
+        assert "workspace_id" in descriptor.inputSchema["properties"]
+    result = await server.call_tool("read_code", {"workspace_id": "source", "path": "src/main.py"})
+    blocks = result[0] if isinstance(result, tuple) else result
+    assert "Garden" in blocks[0].text
+
+
 def test_plugin_is_disabled_and_discovery_does_not_import_or_install():
     from app.plugins.loader import discover_plugins
     from app.plugins.runtime import activate_plugin

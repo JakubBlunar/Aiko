@@ -174,6 +174,36 @@ class StderrPumpTests(unittest.TestCase):
 
 
 class ManagerLifecycleTests(unittest.TestCase):
+    def test_replace_one_server_preserves_other_session_and_rejects_old_generation(self):
+        p1, p2 = _patch_mcp()
+        with p1, p2:
+            manager = ExternalMcpManager([_stdio_server("one"), _stdio_server("other")])
+            manager.start()
+            try:
+                self.assertTrue(self._wait_connected(manager, "one"))
+                self.assertTrue(self._wait_connected(manager, "other"))
+                other_session = manager._states["other"].session
+                manager.replace_server("one", _stdio_server("one"), generation="fresh",
+                                       expose=False)
+                self.assertTrue(self._wait_connected(manager, "one"))
+                self.assertFalse(any(item.server_id == "one"
+                                     for item in manager.list_available_tools()))
+                manager.release_server("one", "fresh")
+                self.assertIs(manager._states["other"].session, other_session)
+                descriptors = [item for item in manager.list_available_tools()
+                               if item.server_id == "one"]
+                self.assertTrue(descriptors)
+                self.assertEqual(descriptors[0].generation, "fresh")
+                with self.assertRaises(McpToolError):
+                    manager.call_tool("one", descriptors[0].name, {}, generation="old")
+                manager.block_server("one")
+                self.assertFalse(any(item.server_id == "one"
+                                     for item in manager.list_available_tools()))
+                manager.replace_server("one", None)
+                self.assertIs(manager._states["other"].session, other_session)
+            finally:
+                manager.stop()
+
     def _wait_connected(self, manager, server_id="filesystem", timeout=3.0):
         deadline = time.time() + timeout
         while time.time() < deadline:

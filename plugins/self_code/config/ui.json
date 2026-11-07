@@ -1,0 +1,42 @@
+{
+  "description": "Read-only source inspection. Each workspace has its own root and permitted relative paths. Source code is never executed. Paths refer to the computer running Aiko.",
+  "required_for_activation": [
+    "workspaces"
+  ],
+  "advanced": [
+    "max_file_bytes",
+    "max_scan_bytes",
+    "max_scan_files",
+    "max_walk_entries",
+    "max_query_seconds"
+  ],
+  "resources": [
+    {
+      "field": "workspaces",
+      "name_field": "name",
+      "path_field": "root",
+      "mode": "read_only",
+      "scope_field": "include_paths"
+    }
+  ],
+  "legacy_single": {
+    "workspaces": {
+      "from": "root",
+      "item": {
+        "id": "default",
+        "name": "Default workspace",
+        "root": {
+          "from": "root"
+        },
+        "include_paths": {
+          "from": "include_paths",
+          "default": []
+        },
+        "exclude_patterns": {
+          "from": "exclude_patterns",
+          "default": []
+        }
+      }
+    }
+  }
+}

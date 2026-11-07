@@ -22,6 +22,8 @@ def prepare(manager, args: dict) -> tuple[dict | None, str | None]:
     )
     if descriptor is None:
         return None, "The operation is no longer exposed by its capability."
+    if args.get("_config_generation", "") != descriptor.generation:
+        return None, "The plugin configuration changed; this operation needs a fresh plan."
     errors = list(
         Draft202012Validator(descriptor.input_schema).iter_errors(args.get("tool_args") or {})
     )
@@ -30,14 +32,19 @@ def prepare(manager, args: dict) -> tuple[dict | None, str | None]:
     effect = mcp_effect(descriptor)
     signature = hashlib.sha256(
         json.dumps(
-            [descriptor.server_id, descriptor.name, descriptor.input_schema, effect],
+            [descriptor.server_id, descriptor.name, descriptor.input_schema,
+             effect, descriptor.generation],
             sort_keys=True,
         ).encode()
     ).hexdigest()
+    capability_id = f"mcp:{descriptor.server_id}:{descriptor.name}"
     return {
         "effect": effect,
+        "generation": descriptor.generation,
         "signature": signature,
-        "capability_id": f"mcp:{descriptor.server_id}:{descriptor.name}",
+        "capability_id": capability_id,
+        "approval_id": (f"{capability_id}@{descriptor.generation}"
+                        if descriptor.generation else capability_id),
     }, None
 
 

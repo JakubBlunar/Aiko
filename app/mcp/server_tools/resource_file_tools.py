@@ -630,15 +630,12 @@ def register(mcp, session: "SessionController") -> None:
 
     @mcp.tool()
     def reload_plugins() -> str:
-        """Re-run plugin discovery + activation and refresh planner GUIDANCE.
+        """Reapply enabled plugin bundles through their managed runtime lifecycle.
 
-        Hot-reloads the plugin SKILL.md guidance (read live by the planner
-        on the next workflow), so editing a bundled ``SKILL.md`` takes
-        effect without a restart. NOTE: adding/removing a plugin's MCP
-        SERVER, changing its tool-result middleware, or editing ``entry.py``
-        code still needs an app restart — the manager's connections + the
-        middleware chain are built once at boot, and Python does not reliably
-        re-import a changed module. Returns the refreshed plugin summary.
+        Reconnects only the affected services and republishes guidance, middleware
+        and fast tools. Old queued operations/approvals require a fresh plan.
+        New bundle installations or native dependency/code upgrades may still
+        require an app restart; use Settings > Tools > Plugins for normal edits.
         """
         try:
             return json.dumps(session.reload_plugin_guidance(), indent=2, default=str)

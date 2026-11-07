@@ -31,6 +31,7 @@ Two-phase lifecycle with the trust gate between them:
 So a disabled plugin is completely inert (its code is never imported). MCP tools
 reach the background planner only -- never the brain's fast ``ToolRegistry``.
 """
+
 from __future__ import annotations
 
 from app.plugins.loader import (
@@ -56,6 +57,7 @@ from app.plugins.sdk import (
     PluginGatedError,
     ToolResultMiddleware,
 )
+from app.plugins.settings_contract import PluginSettings
 
 
 __all__ = [
@@ -74,6 +76,7 @@ __all__ = [
     "ensure_dependencies",
     "MiddlewareResult",
     "PluginApi",
+    "PluginSettings",
     "PluginGatedError",
     "ToolResultMiddleware",
 ]

@@ -10,7 +10,10 @@ code paths connect. It is available in background work, not as a synchronous cha
 scan. Choose the reader/researcher/reviewer profile as useful; the user need not
 configure a work profile.
 
-1. Read workspace_info. Its explicit include_paths are the access scope; never
+1. Read workspace_info to list named workspaces. Choose the workspace matching
+   the user's request and pass its stable workspace_id to every source tool.
+   If the intended workspace is ambiguous, ask rather than choosing a root.
+   Each workspace's explicit include_paths are the access scope; never
    infer a root from the app's working directory. Checkout HEAD is not proof of
    a clean tree or the code executing in the running app.
 2. Find filenames or search literal text, narrowing the pattern when a scan is

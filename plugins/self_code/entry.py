@@ -9,11 +9,9 @@ import sys
 
 
 def define_plugin(api) -> None:
-    api.require_config("root")
-    api.require_config("include_paths")
-    from aiko_code.policy import SourceScope
+    from aiko_code.workspaces import WorkspaceTools
 
-    SourceScope(api.config)
+    WorkspaceTools(api.config)
     # The plugin runtime installs parsers in its isolated dependency target.
     # Stdio children do not inherit the parent's sys.path; pass only those
     # trusted dependency roots, never the inspected checkout's import paths.
@@ -24,6 +22,7 @@ def define_plugin(api) -> None:
             raise RuntimeError(f"Source parser dependency is unavailable: {name}")
         dependencies.add(str(Path(spec.origin).parent.parent))
     fields = {
+        "workspaces",
         "root",
         "include_paths",
         "exclude_patterns",

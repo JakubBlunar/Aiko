@@ -569,6 +569,24 @@ def test_progress_uses_full_result_not_common_header(work, different_tail):
         assert row.status == "done" and row.result["outcome"] == "blocked"
 
 
+def test_plugin_configuration_changed_during_planning_requires_fresh_plan(work):
+    from dataclasses import replace
+
+    store, _, orchestrator, registry = work
+    registry.register(replace(registry.get("read_source"), generation="old"))
+
+    class Client:
+        def chat_json(self, messages, **kwargs):
+            registry.register(replace(registry.get("read_source"), generation="new"))
+            return json.dumps({"action": "read_source", "profile": "reader",
+                               "args": {"path": "first"}, "reason": "Inspect source"}), None
+
+    task_id, _ = start_work(work, Client())
+    finished = wait_status(store, task_id, {"done", "failed"})
+    assert finished.result["outcome"] == "blocked"
+    assert not store.list_children(task_id)
+
+
 def test_work_discussion_uses_saved_evidence_without_dispatching_operations(work):
     store, events, orchestrator, _ = work
 

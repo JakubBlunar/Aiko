@@ -24,6 +24,7 @@ resolved to ``enabled=True`` here.
 ``SKILL.md`` parsing helpers live here (pure) and are reused by the runtime
 when composing a plugin's planner guidance.
 """
+
 from __future__ import annotations
 
 import json
@@ -50,6 +51,7 @@ _CONFIG_USER = "user.json"
 _REQUIREMENTS_FILE = "requirements.txt"
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_USER_PLUGIN_ROOT = _REPO_ROOT / "data" / "plugins"
 
 # Tolerant-manifest helpers: strip ``//`` / ``/* */`` comments and trailing
 # commas so a hand-written json5-ish manifest / config doesn't hard-fail.
@@ -90,6 +92,8 @@ class PluginStub:
     python_dependencies: list[str] = field(default_factory=list)
     unsupported: bool = False
     warnings: list[str] = field(default_factory=list)
+    settings: Any = None
+    settings_error: str = ""
 
 
 # ── JSON parsing ──────────────────────────────────────────────────────
@@ -161,9 +165,7 @@ def parse_skill_md(text: str, *, source_path: str = "") -> LoadedSkill:
     )
 
 
-def load_skill_dirs(
-    root: Path, dirs: list[str], warnings: list[str]
-) -> list[LoadedSkill]:
+def load_skill_dirs(root: Path, dirs: list[str], warnings: list[str]) -> list[LoadedSkill]:
     """Load every ``SKILL.md`` under the named sub-dirs (or the dir itself)."""
     out: list[LoadedSkill] = []
     for rel in dirs:
@@ -200,20 +202,14 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     """Recursively merge ``overlay`` onto ``base`` (overlay wins)."""
     out = dict(base)
     for key, value in overlay.items():
-        if (
-            key in out
-            and isinstance(out[key], dict)
-            and isinstance(value, dict)
-        ):
+        if key in out and isinstance(out[key], dict) and isinstance(value, dict):
             out[key] = _deep_merge(out[key], value)
         else:
             out[key] = value
     return out
 
 
-def resolve_plugin_config(
-    root: Path, entry_config: dict[str, Any] | None
-) -> dict[str, Any]:
+def resolve_plugin_config(root: Path, entry_config: dict[str, Any] | None) -> dict[str, Any]:
     """Merge plugin-local + central config in precedence order.
 
     ``config/default.json`` (committed) < ``config/user.json`` (gitignored) <
@@ -253,7 +249,7 @@ def default_plugin_roots() -> list[str]:
     """Bundled (repo) + user (``data/``) plugin roots, in precedence order."""
     return [
         str(_REPO_ROOT / "plugins"),
-        str(_REPO_ROOT / "data" / "plugins"),
+        str(_USER_PLUGIN_ROOT),
     ]
 
 
@@ -266,9 +262,7 @@ def _load_one(
     root = manifest_path.parent
     warnings: list[str] = []
     try:
-        manifest = parse_manifest(
-            manifest_path.read_text(encoding="utf-8", errors="replace")
-        )
+        manifest = parse_manifest(manifest_path.read_text(encoding="utf-8", errors="replace"))
     except Exception as exc:  # noqa: BLE001
         log.warning("plugin manifest parse failed: %s (%s)", manifest_path, exc)
         return None
@@ -287,17 +281,27 @@ def _load_one(
     override = entry_overrides.get(plugin_id, {}) or {}
     override_enabled = override.get("enabled")
     manifest_enabled = bool(manifest.get("enabled", True))
-    enabled = (
-        bool(override_enabled) if override_enabled is not None else manifest_enabled
-    )
+    enabled = bool(override_enabled) if override_enabled is not None else manifest_enabled
     config = resolve_plugin_config(root, override.get("config") or {})
+    from app.plugins.settings_contract import PluginSettings
+
+    settings = PluginSettings()
+    settings_error = ""
+    try:
+        settings = PluginSettings.from_manifest(root, manifest)
+        explicit = set(_read_json_object(root / _CONFIG_DIR / _CONFIG_USER))
+        explicit.update((override.get("config") or {}).keys())
+        config = settings.normalize(config, explicit)
+    except Exception as exc:
+        settings = PluginSettings()
+        settings_error = f"settings metadata invalid: {exc}"
+        warnings.append(settings_error)
     python_dependencies = _manifest_dependencies(manifest, root)
 
     unsupported = api_version > SUPPORTED_PLUGIN_API_VERSION
     if unsupported:
         warnings.append(
-            f"plugin_api_version {api_version} > supported "
-            f"{SUPPORTED_PLUGIN_API_VERSION}"
+            f"plugin_api_version {api_version} > supported {SUPPORTED_PLUGIN_API_VERSION}"
         )
         log.warning(
             "plugin %s needs api v%d (we support v%d) -- will not activate",
@@ -316,6 +320,8 @@ def _load_one(
         python_dependencies=python_dependencies,
         unsupported=unsupported,
         warnings=warnings,
+        settings=settings,
+        settings_error=settings_error,
     )
 
 

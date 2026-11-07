@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { notifyPluginsUpdated } from "@/features/settings/plugins/updates";
 import { api } from "../api";
 import { AudioOutputManager } from "../audio/AudioOutputManager";
 import {
@@ -501,6 +502,10 @@ export function useAssistantSocket(): {
 
       case "memory_updated":
         memory.applyMemoryUpdated(evt.memory);
+        break;
+
+      case "plugins_updated":
+        notifyPluginsUpdated();
         break;
 
       case "memory_deleted":

@@ -1,5 +1,11 @@
 {
-  "root": "F:/Projects/assistant",
-  "include_paths": ["app", "web/src", "tests", "scripts", "docs", "plugins", "pyproject.toml"],
-  "exclude_patterns": []
+  "workspaces": [
+    {
+      "id": "aiko",
+      "name": "Aiko source",
+      "root": "F:/Projects/assistant",
+      "include_paths": ["app", "web/src", "tests", "scripts", "docs", "plugins", "pyproject.toml"],
+      "exclude_patterns": []
+    }
+  ]
 }

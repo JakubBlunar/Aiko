@@ -22,14 +22,18 @@ Trust model: there is no sandbox. A plugin's entrypoint runs in-process, so
 already resolved to ``enabled=True`` from JSON alone (never importing code to
 decide), so a disabled plugin's ``entry.py`` is never imported.
 """
+
 from __future__ import annotations
 
 import logging
+import json
+from copy import deepcopy
 import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence, runtime_checkable
+from app.plugins.settings_contract import PluginSettings
 
 
 # ── tool-result middleware contract ───────────────────────────────────
@@ -90,9 +94,7 @@ class _FilteredMiddleware:
     ) -> None:
         self._target = target
         self.server_id = server_id
-        self._tool_names = (
-            frozenset(str(t) for t in tool_names) if tool_names else None
-        )
+        self._tool_names = frozenset(str(t) for t in tool_names) if tool_names else None
 
     def claims(self, server_id: str, tool_name: str) -> bool:
         if self.server_id is not None and server_id != self.server_id:
@@ -183,7 +185,7 @@ class PluginApi:
     ) -> None:
         self._plugin_id = plugin_id
         self._plugin_root = plugin_root
-        self._config = dict(config or {})
+        self._config = deepcopy(config or {})
         self._log = logger or logging.getLogger(f"app.plugins.{plugin_id}")
         # Collected registrations (read back by the runtime).
         self._server_spec: dict[str, Any] | None = None
@@ -191,6 +193,21 @@ class PluginApi:
         self._inline_skills: list[_InlineSkill] = []
         self._middlewares: list[Any] = []
         self._fast_tools: list[_FastToolSpec] = []
+        self._cleanups: list[Callable[[], None]] = []
+
+    @property
+    def settings(self) -> PluginSettings:
+        """Manifest-declared settings contract; also readable by disabled discovery."""
+        manifest = json.loads((self._plugin_root / "plugin.json").read_text(encoding="utf-8"))
+        return PluginSettings.from_manifest(self._plugin_root, manifest)
+
+    def register_cleanup(self, callback: Callable[[], None]) -> None:
+        """Dispose resources owned by this activation on disable/reconfiguration."""
+        self._cleanups.append(callback)
+
+    @property
+    def cleanups(self) -> list[Callable[[], None]]:
+        return list(self._cleanups)
 
     # ── accessors ────────────────────────────────────────────────────
 
@@ -315,9 +332,7 @@ class PluginApi:
         AND-gate (handy for a middleware that has no ``claims`` of its own).
         """
         if server_id is not None or tool_names is not None:
-            middleware = _FilteredMiddleware(
-                middleware, server_id=server_id, tool_names=tool_names
-            )
+            middleware = _FilteredMiddleware(middleware, server_id=server_id, tool_names=tool_names)
         self._middlewares.append(middleware)
 
     def register_fast_tool(
@@ -357,9 +372,7 @@ class PluginApi:
                 tool_name,
             )
             return
-        patterns = tuple(
-            str(p).strip() for p in (gate_patterns or ()) if str(p).strip()
-        )
+        patterns = tuple(str(p).strip() for p in (gate_patterns or ()) if str(p).strip())
         fam = str(family).strip() if family else None
         self._fast_tools.append(
             _FastToolSpec(

@@ -437,6 +437,12 @@ class GoalWorkflowHandler(WorkflowHarnessMixin):
                 validation = self._skills.validate_call(
                     decision.skill, decision.args, {s["name"] for s in planner_skills},
                 )
+                skill = self._skills.get(decision.skill)
+                disclosed = next((s for s in planner_skills if s["name"] == decision.skill), {})
+                if skill and skill.generation != disclosed.get("generation", ""):
+                    self._emit_blocked(emit, steps, task_id, reason="configuration_changed",
+                                       findings="Plugin settings changed; start a fresh plan.")
+                    return
                 if validation:
                     steps.append(PlannerStep(
                         skill=decision.skill, args=decision.args, status="rejected",
@@ -487,6 +493,7 @@ class GoalWorkflowHandler(WorkflowHarnessMixin):
                         user_id=user_id,
                         parent_task_id=task_id,
                     ),
+                    expected_skill=skill,
                 )
                 if child_id is None:
                     steps.append(
@@ -511,6 +518,14 @@ class GoalWorkflowHandler(WorkflowHarnessMixin):
                     continue
                 children_spawned += 1
                 status, row = self._wait_child(task_id, child_id)
+                current = self._skills.get(decision.skill)
+                if skill and skill.generation and (
+                    current is None or current.generation != skill.generation
+                ):
+                    self._emit_blocked(emit, steps, task_id, reason="configuration_changed",
+                                       findings="Plugin settings changed during this step; "
+                                       "review its result before starting a fresh plan.")
+                    return
                 observation = _summarize_child(row, status)
                 steps.append(
                     PlannerStep(

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "roots": {
+      "type": "array",
+      "title": "Allowed folders",
+      "items": {
+        "type": "string",
+        "title": "Folder",
+        "format": "host-directory",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "default": [],
+      "x-addLabel": "Add folder"
+    }
+  }
+}

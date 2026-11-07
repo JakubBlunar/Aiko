@@ -1,9 +1,20 @@
 # Plugin settings and runtime lifecycle
 
-Source-backed proposal, 2026-11-07. This describes the next implementation, not
-an available settings UI or a claim of tested hot reconfiguration. It extends
+Design recorded 2026-11-07. The first implementation is now available; see the
+[runtime settings and SDK guide](plugin-settings.md) for shipped behavior and
+verification boundaries. The historical diagnosis below describes the earlier
+startup-only implementation. This design extends
 the existing [plugin platform roadmap](personality-backlog/plugin-system.md)
 and [SDK](plugins.md), rather than introducing a second plugin system.
+
+First-pass verification: 739 representative affected Python checks, 232 related
+frontend checks, real source-plugin stdio/workflow execution with isolated pinned
+parsers, and an isolated browser preview covering editing, conflicts, validation,
+toggles, reset, retry, advanced fields and 375px-wide forms. Later focused lifecycle
+checks cover publication and cleanup changes. Two existing private-reach budget
+failures remain unchanged from committed HEAD (web 1/0, MCP 471/466); ownership
+guards pass. Browser/filesystem `npx` services and physical mobile devices were
+not exercised against the live install. No live plugin configuration was changed.
 
 ## Current implementation and why restarts are needed
 

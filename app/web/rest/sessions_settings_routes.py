@@ -44,6 +44,8 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     provider_usage_routes.register(app, session)
     message_history_routes.register(app, session, hub)
     archive_routes.register(app, session)
+    from app.web.rest import plugin_routes
+    plugin_routes.register(app, session, hub)
 
     @app.get("/api/sessions")
     def list_sessions() -> JSONResponse:

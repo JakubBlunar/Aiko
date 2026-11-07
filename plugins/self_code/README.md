@@ -36,15 +36,20 @@ does not maintain an embedding index or background watcher.
 
 The bundle is disabled by default. It has no implicit source root or scope.
 
-1. Copy `config/user.example.json` to the ignored `config/user.json`, selecting
-   the actual checkout root and relative directories/files Aiko may inspect.
-   The example uses `F:/Projects/assistant` with app/frontend/test/script/docs
-   source; change it for another installation. `include_paths` is required.
-2. Set `plugins.entries.self_code.enabled` to `true` in the app's ignored
-   `config/user.json` (and ensure the `plugins.enabled` master switch is on),
-   then restart Aiko. Activation installs the pinned parser wheels into the
-   existing per-plugin dependency target. Guidance reload alone does not add a
-   new MCP server to an already-running app.
+1. Open **Settings > Tools > Plugins > Source code** and add a workspace. Give
+   it a name, a stable ID, the absolute checkout folder on Aiko's computer, and
+   the relative directories/files Aiko may inspect. Each workspace has its own
+   explicit `include_paths`; additional workspaces can point to other projects.
+2. Apply settings and enable the plugin. Activation installs pinned parsers in
+   its isolated dependency target and connects in the background. No Aiko
+   restart is needed for configuration or enable/disable changes.
+3. `workspace_info` lists the named workspaces. Aiko must pass `workspace_id`
+   to source operations so the same relative path cannot select the wrong project.
+
+Existing plugin-local `root`/`include_paths` configurations become a `default`
+workspace until explicitly replaced. An explicit empty `workspaces` list revokes
+access and never falls back to the legacy root. See the shared
+[settings SDK guide](../../docs/plugin-settings.md) for lifecycle and approval behavior.
 
 The root must exist and be absolute. Include paths may name files or directories;
 `.` explicitly admits permitted source throughout that root. Include order sets

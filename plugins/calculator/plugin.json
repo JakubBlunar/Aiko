@@ -2,5 +2,9 @@
   "plugin_api_version": 1,
   "id": "calculator",
   "name": "Calculator",
-  "enabled": true
+  "enabled": true,
+  "settings": {
+    "schema": "config/schema.json",
+    "ui": "config/ui.json"
+  }
 }

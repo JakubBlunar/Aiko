@@ -24,9 +24,10 @@ log = logging.getLogger("app.tasks.harness")
 def _signature(skill) -> str:
     from app.core.tasks.workflow.operation_contract import input_schema
 
-    return hashlib.sha256(
-        json.dumps([input_schema(skill), skill.effect], sort_keys=True).encode()
-    ).hexdigest()
+    parts = [input_schema(skill), skill.effect]
+    if skill.generation:
+        parts.append(skill.generation)
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
 
 def _short_args(args: dict) -> dict:
@@ -357,6 +358,16 @@ class WorkflowHarnessMixin:
                     decision.skill, decision.args, {row["name"] for row in skills}
                 )
                 skill = self._skills.get(decision.skill)
+                disclosed = next((row for row in skills if row["name"] == decision.skill), {})
+                if skill and skill.generation != disclosed.get("generation", ""):
+                    self._finish_work(
+                        task_id,
+                        state,
+                        emit,
+                        "blocked",
+                        "Plugin settings changed while planning; please start a fresh plan.",
+                    )
+                    return
                 if skill and not supports(skill, state["profile"]):
                     errors.append("Switch to a profile that supports this operation.")
                 if errors:
@@ -365,7 +376,8 @@ class WorkflowHarnessMixin:
                     continue
                 canonical = hashlib.sha256(
                     json.dumps(
-                        [decision.skill, decision.args],
+                        [decision.skill, decision.args]
+                        + ([skill.generation] if skill.generation else []),
                         sort_keys=True,
                     ).encode()
                 ).hexdigest()
@@ -453,6 +465,16 @@ class WorkflowHarnessMixin:
                 args=_short_args(pending["args"]),
                 profile=pending["profile"],
             )
+            live_skill = self._skills.get(pending["skill"])
+            if live_skill is None or _signature(live_skill) != pending["schema_revision"]:
+                self._finish_work(
+                    task_id,
+                    state,
+                    emit,
+                    "blocked",
+                    "Plugin settings changed during this step; please start a fresh plan.",
+                )
+                return False
             state["pending"] = None
             state["failures"] = 0 if status == "done" else state["failures"] + 1
             if not self._save(task_id, state):
@@ -527,8 +549,19 @@ class WorkflowHarnessMixin:
                 pending["step_id"],
                 state["epoch"],
             ),
+            expected_skill=skill,
         )
         if child_id is None:
+            current = self._skills.get(pending["skill"])
+            if current is None or _signature(current) != pending["schema_revision"]:
+                self._finish_work(
+                    task_id,
+                    state,
+                    emit,
+                    "blocked",
+                    "Plugin settings changed before dispatch; start a fresh plan.",
+                )
+                return False
             self._record_observation(
                 state, pending["skill"], "rejected", "Operation admission rejected this step."
             )

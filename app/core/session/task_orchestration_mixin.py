@@ -70,6 +70,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from app.core.session.plugin_settings_mixin import PluginSettingsMixin
 from app.core.brain import (
     BrainEventQueue,
     BrainLoop,
@@ -134,7 +135,9 @@ if TYPE_CHECKING:  # pragma: no cover - import-only
 log = logging.getLogger("app.session")
 
 
-class TaskOrchestrationMixin:
+
+
+class TaskOrchestrationMixin(PluginSettingsMixin):
     """Wires the brain-orchestration subsystem onto its host class.
 
     The host calls :meth:`_init_task_orchestration` once during
@@ -165,6 +168,7 @@ class TaskOrchestrationMixin:
         if getattr(self, "_task_orchestration_inited", False):
             log.debug("task-orchestration init ignored: already inited")
             return
+        self._plugin_runtime = None
         # Ids of tasks whose result was folded into the spawning turn
         # (inline fast path); consumed by ``_on_task_result_event`` to
         # suppress the duplicate proactive reply. Lives regardless of
@@ -205,6 +209,8 @@ class TaskOrchestrationMixin:
             self._task_cue_store = None
             self._task_escalation_manager = None
             self._external_mcp_manager = None
+            from app.core.tasks.workflow.skill_registry import WorkflowSkillRegistry
+            self._init_external_mcp(agent, WorkflowSkillRegistry())
             log.info("task-orchestration init: disabled (agent.tasks_enabled=False)")
             return
 
@@ -299,6 +305,9 @@ class TaskOrchestrationMixin:
         #     rebuild the handler and re-register (re-registration
         #     overwrites the same name slot).
         self._register_builtin_task_handlers(agent)
+        if self.plugins is None:
+            from app.core.tasks.workflow.skill_registry import WorkflowSkillRegistry
+            self._init_external_mcp(agent, WorkflowSkillRegistry())
 
         # 4. Register brain-loop handlers.
         # Chunks 5-6 wired the task-side kinds (results, input-needed,
@@ -636,147 +645,12 @@ class TaskOrchestrationMixin:
         self._init_external_mcp(agent, skill_registry)
 
     def _init_external_mcp(self, agent: Any, skill_registry: Any) -> None:
-        """Build + start the external MCP manager and register its skills.
-
-        Best-effort: any failure here downgrades to "no MCP tools" and
-        leaves the built-in workflow skills fully working. The manager's
-        ``tools_changed`` callback re-runs ``register_mcp_skills`` so a
-        server that finishes connecting after boot (``npx`` cold start,
-        slow handshake) lands its tools without a restart.
-        """
-        self._external_mcp_manager = None
-        self._browser_perception = None
-        # Plugin-provided planner guidance keyed by ``mcp:<id>`` group.
-        # Merged live (plugin wins) with captured server instructions in
-        # ``_mcp_group_guidance_live``.
-        self._mcp_plugin_guidance: dict[str, str] = {}
-        self._loaded_plugins = []
-        # Tool-result middlewares registered by code plugins (fed to the
-        # McpToolHandler chain alongside the legacy global browser_perception).
-        self._plugin_middlewares: list[Any] = []
-        # Brain-lane fast tools contributed by code plugins + their P14 gate
-        # maps. Consumed by ``rebuild_tool_registry`` (registry) and pushed
-        # to ``TurnRunner.set_plugin_tool_gate`` (gate families / patterns).
-        self._plugin_fast_tools: list[Any] = []
-        self._plugin_tool_families: dict[str, str] = {}
-        self._plugin_family_patterns: dict[str, Any] = {}
-        if not bool(getattr(agent, "mcp_clients_enabled", True)):
-            return
-        mcp_clients = getattr(self._settings, "mcp_clients", None)  # type: ignore[attr-defined]
-        servers = list(getattr(mcp_clients, "servers", []) or [])
-        enabled_servers = [s for s in servers if getattr(s, "enabled", True)]
-
-        # SDK-primary plugin bundles: the loader reads only the JSON stub +
-        # plugin-local config (no code); the runtime then imports entry.py and
-        # runs define_plugin(api) for enabled plugins, which register their MCP
-        # server, planner guidance, and any tool-result middleware. A plugin's
-        # server id shadows a same-id config server (plugin wins).
         try:
-            plugins_cfg = getattr(self._settings, "plugins", None)  # type: ignore[attr-defined]
-            if plugins_cfg is None or bool(getattr(plugins_cfg, "enabled", True)):
-                from app.plugins.loader import (
-                    default_plugin_roots,
-                    discover_plugins,
-                )
-                from app.plugins.runtime import activate_all
+            self._start_plugin_runtime(agent, skill_registry)
+        except Exception:
+            log.warning("plugin runtime init failed", exc_info=True)
 
-                extra_paths = list(getattr(plugins_cfg, "paths", []) or []) if plugins_cfg else []
-                roots = default_plugin_roots() + extra_paths
-                entries_cfg = (
-                    getattr(plugins_cfg, "entries", {}) or {} if plugins_cfg else {}
-                )
-                entries = {
-                    pid: {
-                        "enabled": getattr(entry, "enabled", None),
-                        "config": dict(getattr(entry, "config", {}) or {}),
-                    }
-                    for pid, entry in entries_cfg.items()
-                }
-                stubs = discover_plugins(roots, entries=entries)
-                activated = activate_all(stubs)
-                self._loaded_plugins = activated
-                plugin_servers = []
-                for plugin in activated:
-                    if plugin.status != "active":
-                        continue
-                    self._mcp_plugin_guidance.update(plugin.group_guidance)
-                    if plugin.middlewares:
-                        self._plugin_middlewares.extend(plugin.middlewares)
-                    if getattr(plugin, "fast_tools", None):
-                        self._collect_plugin_fast_tools(plugin.fast_tools)
-                    if plugin.server is not None:
-                        plugin_servers.append(plugin.server)
-                if plugin_servers:
-                    plugin_ids = {s.id for s in plugin_servers}
-                    # Plugin shadows a same-id config server (plugin wins).
-                    enabled_servers = [
-                        s
-                        for s in enabled_servers
-                        if getattr(s, "id", None) not in plugin_ids
-                    ] + plugin_servers
-                    log.info(
-                        "external-mcp: %d plugin server(s) loaded: %s",
-                        len(plugin_ids),
-                        sorted(plugin_ids),
-                    )
-        except Exception as exc:
-            log.warning("external-mcp: plugin discovery failed: %r", exc)
-
-        # Remember the final server set so playbook root-lookup can consult
-        # plugin-synthesised servers (not just mcp_clients.servers).
-        self._active_mcp_servers = {
-            getattr(s, "id", ""): s for s in enabled_servers
-        }
-
-        if not enabled_servers:
-            log.debug("external-mcp: no enabled servers configured")
-            return
-        try:
-            from app.core.tasks.handlers.mcp_tool import McpToolHandler
-            from app.core.tasks.workflow.mcp_skills import register_mcp_skills
-            from app.mcp.client.manager import ExternalMcpManager
-
-            # Tool-result middleware chain: registered entirely by plugins
-            # (e.g. the browser plugin's BrowserPerception). Core no longer
-            # builds any perception itself.
-            middlewares = list(self._plugin_middlewares)
-
-            # Expose a perception-style middleware (one with ``debug_state``)
-            # to the browser debug MCP tools.
-            for mw in middlewares:
-                if hasattr(mw, "debug_state"):
-                    self._browser_perception = mw
-                    break
-
-            manager = ExternalMcpManager(enabled_servers)
-            # Re-register skills whenever a server's catalogue changes
-            # (initial connect or reconnect). Fired on the manager loop
-            # thread; ``register`` is dict-write cheap + GIL-atomic.
-            manager.set_tools_changed_callback(
-                lambda: register_mcp_skills(skill_registry, manager)
-            )
-            self._task_orchestrator.register_handler(
-                McpToolHandler(
-                    manager=manager, middlewares=middlewares,
-                    resolve_approval=self._resolve_task_approval,
-                    mark_session_approved=self._mark_capability_session_approved,
-                    can_dispatch=self._task_orchestrator.claim_operation_dispatch,
-                )
-            )
-            manager.start()
-            # Best-effort immediate pass (usually 0 — connect is async);
-            # the callback above lands the real catalogue once connected.
-            register_mcp_skills(skill_registry, manager)
-            self._external_mcp_manager = manager
-            log.info(
-                "external-mcp: manager started servers=%d",
-                len(enabled_servers),
-            )
-        except Exception as exc:
-            log.warning("external-mcp: manager init failed: %r", exc)
-            self._external_mcp_manager = None
-
-    def _collect_plugin_fast_tools(self, specs: list[Any]) -> None:
+    def _collect_plugin_fast_tools(self, specs: list[Any], *, target=None) -> None:
         """Collect plugin fast-tool specs + fold their P14 gate maps.
 
         Each spec becomes a brain ``Tool`` at ``rebuild_tool_registry`` time.
@@ -788,27 +662,28 @@ class TaskOrchestrationMixin:
         to always-run for it (safe, just un-optimized).
         """
         from app.core.session.tool_pass_gate import _compile
+        target = self if target is None else target
 
         # Accumulate raw pattern strings per family across plugins, then
         # (re)compile the affected families into one alternation each.
         pattern_strs: dict[str, list[str]] = getattr(
-            self, "_plugin_family_pattern_strs", {}
+            target, "_plugin_family_pattern_strs", {}
         )
         for spec in specs or []:
             name = str(getattr(spec, "name", "") or "").strip()
             if not name:
                 continue
-            self._plugin_fast_tools.append(spec)
+            target._plugin_fast_tools.append(spec)
             family = getattr(spec, "family", None)
             patterns = tuple(getattr(spec, "gate_patterns", ()) or ())
             if family and patterns:
-                self._plugin_tool_families[name] = str(family)
+                target._plugin_tool_families[name] = str(family)
                 pattern_strs.setdefault(str(family), []).extend(patterns)
-        self._plugin_family_pattern_strs = pattern_strs
+        target._plugin_family_pattern_strs = pattern_strs
         for family, words in pattern_strs.items():
             if words:
                 try:
-                    self._plugin_family_patterns[family] = _compile(words)
+                    target._plugin_family_patterns[family] = _compile(words)
                 except Exception:
                     log.warning(
                         "plugin fast-tool gate patterns invalid for family %s",
@@ -837,67 +712,9 @@ class TaskOrchestrationMixin:
 
     def loaded_plugins(self) -> list[Any]:
         """Snapshot of discovered plugin bundles (for the MCP debug tools)."""
+        if self.plugins is not None:
+            return self.plugins.activations()
         return list(getattr(self, "_loaded_plugins", []) or [])
-
-    def reload_plugin_guidance(self) -> dict[str, Any]:
-        """Re-run plugin discovery and refresh planner guidance live.
-
-        Guidance only — the planner reads ``_mcp_plugin_guidance`` live via
-        ``_mcp_group_guidance_live``, so an edited ``SKILL.md`` lands on the
-        next workflow. Adding/removing an MCP SERVER still needs a restart
-        (the manager's connections are built once at boot).
-        """
-        plugins_cfg = getattr(getattr(self, "_settings", None), "plugins", None)
-        summary: dict[str, Any] = {
-            "active": [], "gated_out": [], "invalid": [], "disabled": [],
-        }
-        try:
-            from app.plugins.loader import (
-                default_plugin_roots,
-                discover_plugins,
-            )
-            from app.plugins.runtime import activate_all
-
-            if plugins_cfg is not None and not bool(
-                getattr(plugins_cfg, "enabled", True)
-            ):
-                return {"enabled": False, "reason": "plugins disabled"}
-            extra_paths = (
-                list(getattr(plugins_cfg, "paths", []) or []) if plugins_cfg else []
-            )
-            entries_cfg = (
-                getattr(plugins_cfg, "entries", {}) or {} if plugins_cfg else {}
-            )
-            entries = {
-                pid: {
-                    "enabled": getattr(entry, "enabled", None),
-                    "config": dict(getattr(entry, "config", {}) or {}),
-                }
-                for pid, entry in entries_cfg.items()
-            }
-            stubs = discover_plugins(
-                default_plugin_roots() + extra_paths, entries=entries
-            )
-            activated = activate_all(stubs)
-            self._loaded_plugins = activated
-            new_guidance: dict[str, str] = {}
-            for plugin in activated:
-                bucket = summary.get(plugin.status)
-                if bucket is not None:
-                    bucket.append(plugin.id)
-                if plugin.status == "active":
-                    new_guidance.update(plugin.group_guidance)
-            self._mcp_plugin_guidance = new_guidance
-            log.info(
-                "plugins reloaded: active=%s gated=%s invalid=%s",
-                summary["active"],
-                summary["gated_out"],
-                summary["invalid"],
-            )
-        except Exception as exc:
-            summary["error"] = repr(exc)
-            log.warning("plugin guidance reload failed: %r", exc)
-        return summary
 
     def _record_workflow_capability_gap(self, gap: dict[str, Any]) -> None:
         """Sink for goal-workflow capability gaps (bounded ring).
@@ -942,6 +759,13 @@ class TaskOrchestrationMixin:
             mode = str(getattr(agent, "task_approval_mode", "ask") or "ask")
             overrides = dict(getattr(agent, "task_approval_overrides", {}) or {})
             session_approved = getattr(self, "_approved_capabilities", None)
+            # Session grants bind the plugin generation, while explicit persistent
+            # policy continues to address its stable capability id.
+            if capability_id.startswith("mcp:") and "@" in capability_id:
+                if capability_id in (session_approved or ()):
+                    return "auto"
+                capability_id = capability_id.rsplit("@", 1)[0]
+                session_approved = {"all"} if "all" in (session_approved or ()) else ()
             return resolve_approval(
                 capability_id,
                 mode=mode,
@@ -1012,6 +836,10 @@ class TaskOrchestrationMixin:
         if not getattr(self, "_task_orchestration_inited", False):
             return
         if not getattr(self, "_task_orchestration_enabled", False):
+            if self.plugins is not None:
+                self.plugins.close()
+            if getattr(self, "_external_mcp_manager", None) is not None:
+                self._external_mcp_manager.stop()
             self._task_orchestration_inited = False
             return
         if getattr(self, "_task_escalation_manager", None) is not None:
@@ -1036,6 +864,8 @@ class TaskOrchestrationMixin:
         # External MCP manager last: closes sessions + terminates the
         # child processes (stdio servers). After the orchestrator stops
         # so no handler thread is mid-``call_tool``.
+        if self.plugins is not None:
+            self.plugins.close()
         if getattr(self, "_external_mcp_manager", None) is not None:
             try:
                 self._external_mcp_manager.stop()
