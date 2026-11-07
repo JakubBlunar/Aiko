@@ -22,6 +22,12 @@ runs — automatically.
 > the **background workflow planner only** — never the brain's fast
 > `ToolRegistry`. This matches the existing external-MCP contract.
 
+The opt-in [source code bundle](../plugins/self_code/README.md) provides nine
+read-only editor-style operations: bounded search/reads, Python and JS/TS/TSX
+syntax navigation, identifier candidates and syntax problems. It uses this same
+SDK and workflow lane. Editing/execution and full language-server intelligence
+remain separate capabilities.
+
 ## Trust model (no sandbox)
 
 A plugin's `entry.py` runs **in-process** — there is no sandbox. The model is
@@ -267,6 +273,10 @@ plugin by setting its `plugin.json` `enabled` (or
   out via `require_config("root")` until set.
 - **browser** — server + skills + the `BrowserPerception` tool-result
   middleware. Tune adapter / ranking weights in `plugins/browser/config/`.
+- **self_code** — read-only source inspection with explicit root/include scope,
+  revision-aware search/reads and Python/JS/TS/TSX syntax navigation. See its
+  [setup and tool reference](../plugins/self_code/README.md). It is disabled by
+  default; enabling a new server requires an app restart.
 
 The legacy global `browser_perception` config block still works (back-compat);
 when the browser plugin registers its own middleware for the same `server_id`,

@@ -1,0 +1,11 @@
+{
+  "plugin_api_version": 1,
+  "id": "self_code",
+  "name": "Source code",
+  "enabled": false,
+  "python_dependencies": [
+    "tree-sitter==0.26.0",
+    "tree-sitter-javascript==0.25.0",
+    "tree-sitter-typescript==0.23.2"
+  ]
+}

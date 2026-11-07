@@ -18,6 +18,11 @@ Plugin P numbers are distinct from performance P numbers.
 
 **Source check:** [SDK](../../app/plugins/sdk.py), [runtime](../../app/plugins/runtime.py), [workflow handler](../../app/core/tasks/workflow/goal_workflow_handler.py), [recovery](../../app/core/tasks/recovery.py), [plugin regressions](../../tests/test_plugin_runtime.py).
 
+**Prepared source pilot:** the opt-in [self_code bundle](../../plugins/self_code/README.md)
+adds scoped reads/searches and Python/JS/TS/TSX syntax tools through the current
+SDK. It is disabled by default. General resource grants, language-server semantic
+resolution and the full P7 acceptance gates remain future work.
+
 Status: design and implementation guide, reviewed against source on 2026-09-28.
 P1/P2 are historical shipped milestones; P3 onward below is proposed, not an
 available API. [The current plugin manual](../plugins.md) remains the reference

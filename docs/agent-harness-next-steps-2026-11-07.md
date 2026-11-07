@@ -5,6 +5,11 @@ follow-up sequence, not an implementation or a live-Aiko test result. The curren
 [implementation boundary](agent-harness.md) still applies. No app restart, model
 call, production mutation or overnight job is needed for this assessment.
 
+Update: the [source code plugin](../plugins/self_code/README.md) now prepares the
+read-only pilot through the existing SDK: explicit source scope, bounded editor
+tools and syntax adapters. It is disabled by default. This does not complete the
+broader P3 grants system, semantic language-server work or live-model validation.
+
 ## Recommended order
 
 | Slice | Practical improvement | Can develop without live testing? |
