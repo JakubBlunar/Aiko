@@ -13,6 +13,9 @@ log = logging.getLogger("app.tasks.runtime")
 
 
 class TaskRuntimeMixin:
+    def add_shutdown_callback(self, callback):
+        self._shutdown_callbacks.append(callback)
+
     @property
     def result_artifacts(self):
         from app.core.tasks.result_artifacts import ResultArtifacts
@@ -170,6 +173,7 @@ class TaskRuntimeMixin:
         content: str,
         kind: str = "update",
         profile: str = "general",
+        evidence_ids: list[int] | None = None,
     ) -> int:
         if self._event_store is None:
             return 0
@@ -181,6 +185,7 @@ class TaskRuntimeMixin:
                 "content": content[:12000],
                 "kind": kind,
                 "profile": profile,
+                "evidence_ids": evidence_ids or [],
             },
         )
         self._runtime_snapshot(task_id)

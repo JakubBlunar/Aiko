@@ -108,6 +108,7 @@ from app.core.tasks.report_decision import (
     PROVENANCE_USER,
     decide_task_report,
 )
+from app.core.session.work_reporting_mixin import WorkReportingMixin
 from app.core.tasks.sandbox import FileTaskRoot, validate_roots
 from app.core.tasks.task_handler import INITIATED_BY_AIKO
 
@@ -137,7 +138,7 @@ log = logging.getLogger("app.session")
 
 
 
-class TaskOrchestrationMixin(PluginSettingsMixin):
+class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
     """Wires the brain-orchestration subsystem onto its host class.
 
     The host calls :meth:`_init_task_orchestration` once during
@@ -384,6 +385,8 @@ class TaskOrchestrationMixin(PluginSettingsMixin):
                     exc_info=True,
                 )
 
+        if getattr(self, "_prompt_assembler", None) is not None:
+            self._init_work_reporting()
         self._task_orchestration_inited = True
         self._task_orchestration_enabled = True
         log.info(
@@ -579,6 +582,7 @@ class TaskOrchestrationMixin(PluginSettingsMixin):
                 ) or getattr(self, "_effective_worker_model", None),
                 context_window_provider=lambda: getattr(self, "_workflow_context_window",
                                                          lambda: None)(),
+                speaking_context_provider=self._work_speaking_context,
                 user_name_provider=lambda: getattr(
                     self, "user_display_name", "the user"
                 ),
@@ -1540,6 +1544,14 @@ class TaskOrchestrationMixin(PluginSettingsMixin):
             return
         cue_store = getattr(self, "_task_cue_store", None)
         escalation = getattr(self, "_task_escalation_manager", None)
+        reports = getattr(self, "_work_reports", None)
+        if reports is not None:
+            try:
+                row = self._task_orchestrator.get(int(str(event.task_id), 16))
+                if reports.owns(row):
+                    return  # local outbox owns narration, including failed drafts
+            except (TypeError, ValueError):
+                pass
         if cue_store is None or escalation is None:
             return
         self._dispatch_task_report(event, cue_store, escalation)
@@ -1911,6 +1923,11 @@ class TaskOrchestrationMixin(PluginSettingsMixin):
             )
             return
         source = getattr(event, "source", "")
+        if source == "work_report":
+            reports = getattr(self, "_work_reports", None)
+            if reports is not None and len(event.parked_cue_ids) == 1:
+                reports.deliver(event.session_key, int(event.parked_cue_ids[0]))
+            return
         if source in ("voice_silence", "typed_silence"):
             if source == "typed_silence" and bool(
                 getattr(self, "_live_voice_session_active", False),

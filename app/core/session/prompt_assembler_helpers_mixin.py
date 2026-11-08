@@ -958,6 +958,10 @@ class PromptAssemblerHelpersMixin:
         core, _sections = self._persona_split()
         return self._render_persona_text(core)
 
+    def task_speaking_persona(self) -> str:
+        """Effective editable persona for bounded local reporting consumers."""
+        return self._load_persona()
+
     def persona_handling_notes(self, block: str) -> str:
         """The handling note for one prompt block, or ``""``.
 

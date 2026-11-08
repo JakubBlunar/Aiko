@@ -195,6 +195,7 @@ class TaskOrchestrator(TaskExecutionMixin, TaskRuntimeMixin):
         :class:`SessionController` reconfigure if needed.
         """
         self._store = store
+        self._shutdown_callbacks = []
         self._event_store = event_store
         self._input_store = input_store
         self._cascade_cancel = bool(cascade_cancel_children)
@@ -520,10 +521,11 @@ class TaskOrchestrator(TaskExecutionMixin, TaskRuntimeMixin):
         status: str | None = None,
         limit: int = 50,
         offset: int = 0,
+        roots_only: bool = False,
     ) -> list[TaskRow]:
         """REST + UI history pagination. Pass-through to the store."""
         return self._store.list_for_user(
-            user_id, status=status, limit=limit, offset=offset
+            user_id, status=status, limit=limit, offset=offset, roots_only=roots_only
         )
 
     def count_active_for_user(self, user_id: str) -> int:
@@ -580,6 +582,9 @@ class TaskOrchestrator(TaskExecutionMixin, TaskRuntimeMixin):
         idempotent so callers can invoke shutdown multiple times.
         """
         self._runtime_shutting_down = True
+        for callback in self._shutdown_callbacks:
+            callback()
+        self._shutdown_callbacks.clear()
         stop = getattr(self, "_work_wake_stop", None)
         if stop is not None:
             stop.set()

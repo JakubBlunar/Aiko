@@ -111,6 +111,19 @@ _PROACTIVE_HINT_TYPED = _build_proactive_hint_typed()
 
 
 class ProactiveDirector:
+    def present_work_report(self, session_key, text, message_id, reaction="neutral"):
+        """Present already-committed work speech; never invokes a model or persists twice."""
+        if self._is_busy():
+            return False
+        self._emit_notify("Assistant (proactive)", text, message_id)
+        if self._is_live():
+            spoken = prepare_tts_text(text)
+            if spoken:
+                self._speak(spoken, reaction)
+        else:
+            self._maybe_speak_typed(text, reaction)
+        return True
+
     def __init__(
         self,
         ollama: OllamaClient,

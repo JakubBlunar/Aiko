@@ -158,7 +158,9 @@ class WorkflowHarnessMixin:
             return child is None or child.status not in {"running", "awaiting_input", "paused"}
         return self._skills.get(pending["skill"]) is not None
 
-    def _message(self, task_id: int, text: str, *, kind="update", profile="general") -> None:
+    def _message(
+        self, task_id: int, text: str, *, kind="update", profile="general", evidence_ids=None
+    ) -> None:
         from app.core.services.response_text_service import strip_all_meta_tags
 
         self._orchestrator.append_work_message(
@@ -167,6 +169,7 @@ class WorkflowHarnessMixin:
             content=strip_all_meta_tags(text),
             kind=kind,
             profile=profile,
+            evidence_ids=evidence_ids,
         )
 
     def _running(self, task_id: int, state: dict) -> bool:
@@ -433,6 +436,18 @@ class WorkflowHarnessMixin:
                 if self._guidance(task_id, state):
                     self._save(task_id, state)
                     continue  # Fresh user guidance supersedes an action planned without it.
+                if decision.report and decision.evidence_ids:
+                    evidence = [self._orchestrator.get(cid) for cid in decision.evidence_ids]
+                    if all(
+                        row and row.parent_task_id == task_id and row.status == "done"
+                        for row in evidence
+                    ):
+                        self._message(
+                            task_id,
+                            decision.report,
+                            kind="milestone",
+                            evidence_ids=decision.evidence_ids,
+                        )
                 if decision.plan:
                     state["plan"] = decision.plan
                 if decision.notes:

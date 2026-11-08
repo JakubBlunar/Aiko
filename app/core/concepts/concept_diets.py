@@ -563,6 +563,12 @@ for _consumer in ("pre_thought", "conversation_curiosity"):
     ))
 
 
+register_diet(ConceptDiet(
+    consumer="work_speech", kinds=("communication_style", "boundary", "value", "taste", "pursuit"),
+    min_confidence=.65, weight=.25, max_concepts=4, per_kind_cap=2,
+    rationale="Grounded delivery preferences guide local reports, never establish task facts.",
+))
+
 __all__ = [
     "CONCEPT_DIETS",
     "DEFAULT_DIET_TUNING",

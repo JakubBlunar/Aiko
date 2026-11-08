@@ -110,6 +110,7 @@ class WorkDiscussion:
                 system,
                 {
                     "contract": row.state.get("contract") or {"objective": frame["goal"]},
+                    "speaking_context": self.handler._speaking_context_provider(),
                     "current_time": timephrase.today_anchor(),
                     "latest_message": (question.data or {}).get("content", ""),
                     "requested_at": row.created_at,
