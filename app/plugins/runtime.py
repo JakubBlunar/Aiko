@@ -85,6 +85,8 @@ class ActivatedPlugin:
     reason: str = ""
     warnings: list[str] = field(default_factory=list)
     cleanups: list[Callable[[], None]] = field(default_factory=list)
+    playbooks: list[dict[str, Any]] = field(default_factory=list)
+    procedures: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ── dependency install (isolated per-plugin dir) ──────────────────────
@@ -314,9 +316,11 @@ def activate_plugin(
 
         middlewares = api.middlewares
         fast_tools = api.fast_tools
-        skill_count = len(api.skill_dirs) + len(api.inline_skills)
+        skill_count = (len(api.skill_dirs) + len(api.inline_skills)
+                       + len(api.playbooks) + len(api.procedures))
 
-        if server is None and not group_guidance and not middlewares and not fast_tools:
+        if (server is None and not group_guidance and not middlewares and not fast_tools
+                and not api.playbooks and not api.procedures):
             _cleanup(api.cleanups)
             return ActivatedPlugin(
                 **base,
@@ -345,6 +349,8 @@ def activate_plugin(
             deps_status=deps_status,
             warnings=warnings,
             cleanups=api.cleanups,
+            playbooks=api.playbooks,
+            procedures=api.procedures,
         )
     except Exception:
         _cleanup(api.cleanups)

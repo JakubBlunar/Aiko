@@ -4,6 +4,9 @@ Research date: 2026-11-08. Compared NousResearch's public Hermes Agent source an
 documentation with Aiko at `ab1d2382`. This is a proposal, not a runtime change
 or a benchmark of Hermes against Aiko. Public `main` and documentation can move.
 
+Implementation follow-up: [local harness optimizations](task-harness-optimizations.md)
+records what was built, its validation boundary and live checks still needed.
+
 The useful direction for the shared 9B model is fewer inference turns, reusable
 prompt prefixes, recoverable evidence and narrowly selected speaking context.
 More concurrent agents or more summarization calls would not automatically help.

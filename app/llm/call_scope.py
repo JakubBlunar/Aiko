@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import time
 from typing import Callable
+from typing import Any
 
 
 class LlmCallCancelled(Exception):
@@ -15,6 +16,35 @@ class LlmCallCancelled(Exception):
 
 class LlmCallDeferred(Exception):
     """Higher-priority work occupied the model; retry this inference later."""
+
+
+@dataclass(frozen=True)
+class BoundRoute:
+    client: Any
+    model: str | None
+    window: int | None
+    signature: tuple
+    resolve: Callable[[], tuple]
+
+    def acquired(self):
+        if self.resolve() != self.signature:
+            raise LlmCallDeferred("Inference route changed; repack before dispatch")
+
+
+def bind_route(client_provider, model_provider, window_provider):
+    def resolve():
+        client = client_provider()
+        model, window = model_provider(), window_provider()
+        revision = getattr(client, "routing_revision", None)
+        identity = (
+            (id(client), revision)
+            if type(revision) is int
+            else (None, getattr(client, "base_url", None))
+        )
+        return client, model, window, (*identity, model, window)
+
+    client, model, window, signature = resolve()
+    return BoundRoute(client, model, window, signature, lambda: resolve()[3])
 
 
 @dataclass

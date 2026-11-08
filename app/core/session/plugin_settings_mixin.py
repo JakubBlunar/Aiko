@@ -94,6 +94,8 @@ class PluginSettingsMixin:
     def _reset_plugin_registrations(self):
         self._loaded_plugins = []
         self._mcp_plugin_guidance = {}
+        self._plugin_playbooks = {}
+        self._plugin_procedures = {}
         self._plugin_middlewares = []
         self._plugin_fast_tools = []
         self._plugin_tool_families = {}
@@ -107,6 +109,7 @@ class PluginSettingsMixin:
             return
         with self._plugin_publish_lock:
             loaded, guidance, middlewares, fast_tools = [], {}, [], []
+            playbooks, procedures = {}, {}
             collection = SimpleNamespace(
                 _plugin_fast_tools=[],
                 _plugin_tool_families={},
@@ -117,6 +120,14 @@ class PluginSettingsMixin:
             for pid, generation, plugin in runtime.active_plugins():
                 loaded.append(plugin)
                 guidance.update(plugin.group_guidance)
+                for target, entries in (
+                    (playbooks, getattr(plugin, "playbooks", [])),
+                    (procedures, getattr(plugin, "procedures", [])),
+                ):
+                    for item in entries:
+                        name = f"{pid}:{item['name']}"
+                        target[name] = {**item, "name": name, "owner": pid,
+                                        "generation": generation, "group": f"mcp:{pid}"}
                 middlewares.extend(plugin.middlewares)
                 for spec in plugin.fast_tools:
 
@@ -138,6 +149,8 @@ class PluginSettingsMixin:
             # dispatch must never capture an empty/half-built middleware chain.
             self._loaded_plugins = loaded
             self._mcp_plugin_guidance = guidance
+            self._plugin_playbooks = playbooks
+            self._plugin_procedures = procedures
             self._plugin_middlewares = middlewares
             self._plugin_fast_tools = collection._plugin_fast_tools
             self._plugin_tool_families = collection._plugin_tool_families

@@ -137,6 +137,11 @@ Tool-result middleware can also provide a generic `planner_context` projection
 for important current state. See [task context budgeting](task-context-budget.md)
 for ownership, freshness and prompt sizing; browser formatting stays in its bundle.
 
+The SDK also provides `register_playbook` and `register_procedure` for on-demand
+instructions and bounded compound operations. Definitions, configuration and
+domain semantics remain plugin-owned; common generation, admission and checkpoint
+rules remain in the host. See [local task execution](task-harness-optimizations.md).
+
 ## Dispatch and approval boundaries
 
 Changing configuration immediately revokes the old generation. The host retires

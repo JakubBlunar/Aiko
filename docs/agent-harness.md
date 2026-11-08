@@ -5,6 +5,10 @@ through `start_workflow` during the ordinary conversation, answers through the
 existing task-input path, and reports through the existing task-result lane.
 No separate agent service or vendor framework is required.
 
+[Local harness optimizations](task-harness-optimizations.md) describes direct
+worker speech, learned speaking guides, recoverable results, plugin procedures,
+discovery and evidence-backed procedural reuse added on 2026-11-08.
+
 ## What a job saves
 
 The existing SQLite task owns the objective, completion criteria, constraints,

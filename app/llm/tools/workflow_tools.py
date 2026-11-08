@@ -119,6 +119,12 @@ class StartWorkflowTool:
                         ],
                         "description": "Optional initial work role; auto lets the workflow choose.",
                     },
+                    "reporting": {
+                        "type": "string",
+                        "enum": ["meaningful", "quiet", "frequent"],
+                        "description": "Progress preference from the conversation; defaults to "
+                        "meaningful findings. Quiet still reports the final result and questions.",
+                    },
                 },
                 "required": ["goal"],
             },
@@ -143,6 +149,9 @@ class StartWorkflowTool:
         profile = arguments.get("profile", "auto")
         if profile != "auto" and profile not in PROFILES:
             raise ToolError("start_workflow: unknown work profile")
+        reporting = arguments.get("reporting", "meaningful")
+        if reporting not in {"meaningful", "quiet", "frequent"}:
+            raise ToolError("start_workflow: unknown reporting preference")
         orch = _orchestrator(self._session)
         if orch is None:
             raise ToolError(
@@ -168,6 +177,15 @@ class StartWorkflowTool:
         if origin:
             metadata["origin_prompt"] = origin
         metadata["source_session"] = getattr(self._session, "session_key", None)
+        db = getattr(self._session, "_chat_db", None)
+        if db is not None and metadata["source_session"] and origin:
+            sources = [
+                row
+                for row in db.get_messages(metadata["source_session"], limit=6)
+                if row.role == "user" and row.content.strip() == origin
+            ]
+            if sources:
+                metadata["source_message_id"] = sources[-1].id
         try:
             task_id = orch.start_task(
                 user_id=_user_id(self._session),
@@ -177,6 +195,7 @@ class StartWorkflowTool:
                     "user_id": _user_id(self._session),
                     "contract": contract,
                     "profile": profile,
+                    "reporting": reporting,
                 },
                 title=f"workflow: {goal[:60]}",
                 initiated_by="aiko",
@@ -385,18 +404,23 @@ class ControlWorkTool:
         return ToolSchema(
             name="control_work",
             description=(
-                "Pause or resume an existing work task when the user requests it. Returns the "
+                "Pause, resume or guide an existing work task when the user requests it. "
+                "Returns the "
                 "actual saved status synchronously. Pause stops new steps; an operation already "
                 "dispatched may finish. Resume preserves results and consumed budget. If a work "
                 "budget was exhausted, an explicit user request can add a bounded allowance. "
                 "Use cancel_work to cancel, check_my_work to inspect, "
                 "and start_workflow for new work."
+                " Guide saves message as new constraints on the same job, including a request "
+                "for quieter or more frequent progress reports. Already dispatched operations "
+                "cannot be undone by guidance."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "integer", "minimum": 1},
-                    "action": {"type": "string", "enum": ["pause", "resume"]},
+                    "action": {"type": "string", "enum": ["pause", "resume", "guide"]},
+                    "message": {"type": "string", "maxLength": 8000},
                 },
                 "required": ["task_id", "action"],
                 "additionalProperties": False,
@@ -405,12 +429,33 @@ class ControlWorkTool:
 
     def run(self, arguments: dict) -> str:
         task_id, action = arguments.get("task_id"), arguments.get("action")
-        if type(task_id) is not int or task_id < 1 or action not in {"pause", "resume"}:
-            raise ToolError("control_work: provide task_id and pause or resume")
+        if type(task_id) is not int or task_id < 1 or action not in {"pause", "resume", "guide"}:
+            raise ToolError("control_work: provide task_id and pause, resume or guide")
         orch = _orchestrator(self._session)
         row = orch.get(task_id) if orch else None
         if row is None or row.user_id != _user_id(self._session) or not row.visible_to_user:
             raise ToolError("control_work: work not found")
+        if action == "guide":
+            import hashlib
+
+            message = arguments.get("message")
+            if not isinstance(message, str) or not 1 <= len(message.strip()) <= 8000:
+                raise ToolError("control_work: provide a short guidance message")
+            session = getattr(self._session, "session_key", "")
+            db = getattr(self._session, "_chat_db", None)
+            recent = db.get_messages(session, limit=1) if db is not None else []
+            identity = [task_id, session, recent[-1].id if recent else None, message.strip()]
+            client_id = "brain-guide:" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+            try:
+                message_id, created = orch.post_work_message(
+                    task_id,
+                    message.strip(),
+                    mode="guidance",
+                    client_id=client_id,
+                )
+            except ValueError as exc:
+                raise ToolError(str(exc)) from exc
+            return json.dumps({"task_id": task_id, "message_id": message_id, "saved": created})
         changed = orch.pause_work(task_id) if action == "pause" else orch.resume_work(task_id)
         return json.dumps(
             {"task_id": task_id, "changed": changed, "status": orch.get(task_id).status}

@@ -301,6 +301,7 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\b(?:files?|folders?|documents?|[\w-]+\.(?:txt|md|json|csv|py|pdf|docx))\b",
         r"(?:read|write|create|edit|save|open)\s+[\w-]+\.(?:txt|md|json|csv|py|pdf|docx)\b",
         r"tasks?", r"workflows?", r"cancel", r"status", r"running",
+        r"progress (?:updates?|reports?)", r"(?:quieter|more frequent) updates?",
         r"done yet", r"finished?", r"check (?:my|your|the|on)",
         r"work on", r"start(?:ed)? (?:the|a|that)",
     ]),

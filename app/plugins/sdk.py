@@ -195,6 +195,8 @@ class PluginApi:
         self._middlewares: list[Any] = []
         self._fast_tools: list[_FastToolSpec] = []
         self._cleanups: list[Callable[[], None]] = []
+        self._playbooks: list[dict[str, Any]] = []
+        self._procedures: list[dict[str, Any]] = []
 
     @property
     def settings(self) -> PluginSettings:
@@ -326,15 +328,59 @@ class PluginApi:
         server_id: str | None = None,
         tool_names: Sequence[str] | None = None,
     ) -> None:
-        """Register a tool-result middleware (see :class:`ToolResultMiddleware`).
-
-        With no ``server_id`` / ``tool_names`` the middleware's own
-        ``claims`` decides everything. Passing either wraps it in an extra
-        AND-gate (handy for a middleware that has no ``claims`` of its own).
-        """
+        """Register a plugin-owned projection of returned tool data."""
         if server_id is not None or tool_names is not None:
             middleware = _FilteredMiddleware(middleware, server_id=server_id, tool_names=tool_names)
         self._middlewares.append(middleware)
+
+    def register_playbook(self, name: str, description: str, body: str) -> None:
+        """Optional instructions loaded on demand; required safety stays in SKILL.md."""
+        if not name or ":" in name or len(body) > 16000:
+            raise ValueError("Invalid optional playbook")
+        self._playbooks.append({"name": name, "description": description[:300], "body": body})
+
+    @property
+    def playbooks(self):
+        return deepcopy(self._playbooks)
+
+    @property
+    def procedures(self):
+        return deepcopy(self._procedures)
+
+    def register_procedure(
+        self,
+        name: str,
+        description: str,
+        *,
+        input_schema: dict,
+        steps: Sequence[dict],
+        requires_observation: bool = False,
+    ) -> None:
+        """Declare 1-4 local MCP calls. Arguments may bind {'$input': 'parameter'}.
+
+        The host checkpoints each child and retains ordinary schema, generation,
+        effect and approval checks. No Python code or cross-plugin calls run here.
+        """
+        if (not name or ":" in name or not isinstance(input_schema, dict)
+                or not 1 <= len(steps) <= 4):
+            raise ValueError("Invalid bounded procedure")
+        if not all(
+            isinstance(step, dict)
+            and isinstance(step.get("tool"), str)
+            and isinstance(step.get("arguments", {}), dict)
+            for step in steps
+        ):
+            raise ValueError("Procedure steps need a tool and argument object")
+        item = {
+            "name": name,
+            "description": description[:300],
+            "input_schema": input_schema,
+            "steps": list(steps),
+            "requires_observation": bool(requires_observation),
+        }
+        if len(json.dumps(item)) > 24000:
+            raise ValueError("Procedure definition exceeds the size limit")
+        self._procedures.append(deepcopy(item))
 
     def register_fast_tool(
         self,

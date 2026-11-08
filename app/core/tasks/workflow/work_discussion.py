@@ -100,11 +100,14 @@ class WorkDiscussion:
             " Relative dates in the original request refer to requested_at, not this new turn."
         )
         from app.core.tasks.workflow.context_budget import TaskBudget, pack_review
-        from app.llm.call_scope import CallScope, call_scope, LlmCallCancelled
+        from app.llm.call_scope import CallScope, call_scope, LlmCallCancelled, bind_route
 
-        budget = TaskBudget.resolve(
-            self.handler._context_window_provider(), answer=600, routine=True
+        route = bind_route(
+            self.handler._worker_client_provider,
+            self.handler._model,
+            self.handler._context_window_provider,
         )
+        budget = TaskBudget.resolve(route.window, answer=600, routine=True)
         try:
             messages, _ = pack_review(
                 system,
@@ -124,11 +127,16 @@ class WorkDiscussion:
                 budget,
             )
             with call_scope(
-                CallScope(cancelled=self.closed.is_set, queue_timeout=None, reasoning_tokens=0)
+                CallScope(
+                    cancelled=self.closed.is_set,
+                    queue_timeout=None,
+                    reasoning_tokens=0,
+                    on_acquired=route.acquired,
+                )
             ):
-                raw, _ = self.handler._worker_client_provider().chat_json(
+                raw, _ = route.client.chat_json(
                     messages,
-                    model=self.handler._model(),
+                    model=route.model,
                     options={"num_predict": budget.answer},
                     format_json=True,
                     think=False,

@@ -13,6 +13,7 @@ glue with fakes:
 * ``check_my_work`` projects running rows + capability gaps;
 * ``cancel_work`` validates the id and threads through.
 """
+
 from __future__ import annotations
 
 import json
@@ -149,9 +150,7 @@ class StartWorkflowSchemaTests(unittest.TestCase):
 class StartWorkflowRunTests(unittest.TestCase):
     def setUp(self) -> None:
         self.orch = _FakeOrchestrator()
-        self.session = _FakeSession(
-            orchestrator=self.orch, active_user_text="go find new files"
-        )
+        self.session = _FakeSession(orchestrator=self.orch, active_user_text="go find new files")
         self.tool = StartWorkflowTool(self.session)
 
     def test_happy_path(self) -> None:
@@ -183,7 +182,8 @@ class StartWorkflowRunTests(unittest.TestCase):
         )
         tool.run({"goal": "find new files"})
         self.assertNotIn(
-            "reply_when_done", self.orch.start_calls[0]["metadata"] or {},
+            "reply_when_done",
+            self.orch.start_calls[0]["metadata"] or {},
         )
 
     def test_reply_on_complete_defaults_on_without_settings(self) -> None:
@@ -296,9 +296,37 @@ class BuildWorkflowToolsTests(unittest.TestCase):
     def test_builds_work_controls(self) -> None:
         tools = build_workflow_tools(_FakeSession(orchestrator=_FakeOrchestrator()))
         names = {t.name for t in tools}
-        self.assertEqual(
-            names, {"start_workflow", "check_my_work", "cancel_work", "control_work"}
-        )
+        self.assertEqual(names, {"start_workflow", "check_my_work", "cancel_work", "control_work"})
+
+
+def test_start_captures_actual_request_id_and_reporting_preference(tmp_path):
+    from app.core.infra.chat_database import ChatDatabase
+
+    db = ChatDatabase(tmp_path / "request.db")
+    mid = db.add_message("jacob:s", "user", "Read the source quietly")
+    orch = _FakeOrchestrator()
+    session = _FakeSession(orchestrator=orch, active_user_text="Read the source quietly")
+    session.session_key, session._chat_db = "jacob:s", db
+    StartWorkflowTool(session).run({"goal": "Read source", "reporting": "quiet"})
+    assert orch.start_calls[0]["metadata"]["source_message_id"] == mid
+    assert orch.start_calls[0]["args"]["reporting"] == "quiet"
+    db._get_conn().close()
+
+
+def test_control_can_save_guidance_on_the_same_owned_job():
+    from app.llm.tools.workflow_tools import ControlWorkTool
+
+    captured = []
+    row = SimpleNamespace(user_id="jacob", visible_to_user=True)
+    orch = SimpleNamespace(
+        get=lambda tid: row,
+        post_work_message=lambda *a, **kw: captured.append((a, kw)) or (12, True),
+    )
+    tool = ControlWorkTool(_FakeSession(orchestrator=orch))
+    result = json.loads(tool.run({"task_id": 1, "action": "guide", "message": "Quieter updates"}))
+    assert result["message_id"] == 12 and captured[0][1]["mode"] == "guidance"
+    tool.run({"task_id": 1, "action": "guide", "message": "Quieter updates"})
+    assert captured[0][1]["client_id"] == captured[1][1]["client_id"]
 
 
 if __name__ == "__main__":

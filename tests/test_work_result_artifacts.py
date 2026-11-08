@@ -54,8 +54,11 @@ def test_handler_preserves_raw_tail_and_review_can_use_owned_excerpt(tmp_path, m
     verdict, _ = verify_completion(
         SimpleNamespace(chat_json=review),
         None,
-        {"contract": {"objective": "Read orchard"}, "inspections": [excerpt],
-         "steps": [{"child_id": child, "status": "done"}]},
+        {
+            "contract": {"objective": "Read orchard"},
+            "inspections": [excerpt],
+            "steps": [{"child_id": child, "status": "done"}],
+        },
         host,
         parent,
         "Blue orchard",
@@ -86,4 +89,31 @@ def test_unicode_quotas_are_atomic_and_cleanup_follows_owner(tmp_path):
     assert artifacts.read(parent, child)["content"].strip("猫") == ""
     store.delete(parent)
     assert db._get_conn().execute("SELECT COUNT(*) FROM work_result_artifacts").fetchone()[0] == 0
+    db._get_conn().close()
+
+
+def test_artifact_rest_paging_keeps_parent_owner_and_revision_checks(tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.web.rest.work_routes import register_work_routes
+
+    db, store, parent, child, artifacts = setup(tmp_path)
+    body = "source " * 20000 + "TAIL"
+    artifacts.save(child, body)
+    store.mark_done(child, result={"content": "compact view", "truncated": True})
+    session = SimpleNamespace(
+        user_id="u",
+        tasks=SimpleNamespace(
+            store=store, event_store=None, orchestrator=SimpleNamespace(result_artifacts=artifacts)
+        ),
+    )
+    app = FastAPI()
+    register_work_routes(app, session)
+    with TestClient(app) as client:
+        response = client.get(f"/api/tasks/{child}/result?view=source&offset=139998")
+        assert response.status_code == 200 and "TAIL" in response.json()["content"]
+        assert not response.json()["truncated"]
+        assert client.get(f"/api/tasks/{child}/result?view=source&revision=old").status_code == 409
+        session.user_id = "other"
+        assert client.get(f"/api/tasks/{child}/result?view=source").status_code == 404
     db._get_conn().close()

@@ -30,6 +30,20 @@ def define_plugin(api) -> None:
         timeout_seconds=60,
     )
     api.register_skills("skills")
+    api.register_procedure(
+        "navigate_and_observe", "Navigate to a requested URL and inspect its resulting page.",
+        input_schema={"type": "object", "properties": {"url": {"type": "string"}},
+                      "required": ["url"], "additionalProperties": False},
+        steps=[{"tool": "browser_navigate", "arguments": {"url": {"$input": "url"}}},
+               {"tool": "browser_snapshot", "arguments": {}}],
+    )
+    api.register_playbook(
+        "dynamic_controls", "Recover menus, portals and stale browser targets.",
+        "After opening a menu or dialog, obtain a fresh snapshot before selecting an option. "
+        "Use visible text or a fresh observed ref. If a target vanished, observe again rather "
+        "than guessing a replacement. Prefer a narrowed snapshot for long pages. Verify the "
+        "resulting visible state after acting; acknowledgement alone is not completion.",
+    )
 
     # The plugin runtime put this plugin's root on sys.path, so the local
     # ``aiko_browser`` package imports cleanly and stays out of app core.

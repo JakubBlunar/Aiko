@@ -20,6 +20,7 @@ from app.core.tasks.workflow.harness_results import inspect_result, result_text,
 from app.core.tasks.workflow.profiles import PROFILES, catalogue, supports
 from app.core.tasks.workflow.skill_registry import SpawnContext
 from app.core.tasks.workflow.workflow_planner import PlannerInput, PlannerStep, decide_next_action
+from app.core.tasks.workflow.extensions_mixin import WorkflowExtensionsMixin
 
 log = logging.getLogger("app.tasks.harness")
 
@@ -39,7 +40,7 @@ def _short_args(args: dict) -> dict:
     }
 
 
-class WorkflowHarnessMixin:
+class WorkflowHarnessMixin(WorkflowExtensionsMixin):
     manages_state = True
 
     def discuss_work(self, task_id: int, message_id: int) -> None:
@@ -72,6 +73,8 @@ class WorkflowHarnessMixin:
             emit(TaskFailed(error="Work task identity is unavailable."))
             return {}
         row = self._orchestrator.get(task_id)
+        if state is not None:
+            state["local_reporting"] = True
         if state is not None and state.get("current_observation"):
             previous = state["current_observation"]
             state["current_observation"] = {
@@ -87,6 +90,7 @@ class WorkflowHarnessMixin:
             contract = args.get("contract") or {}
             state = {
                 "harness_version": 1,
+                "local_reporting": True,
                 "epoch": 1,
                 "args": args,
                 "goal": goal,
@@ -101,6 +105,7 @@ class WorkflowHarnessMixin:
                     "conversation_session": (row.metadata or {}).get("source_session"),
                 },
                 "profile": args.get("profile") if args.get("profile") in PROFILES else "general",
+                "reporting": args.get("reporting", "meaningful"),
                 "plan": [],
                 "notes": "",
                 "steps": [],
@@ -349,6 +354,10 @@ class WorkflowHarnessMixin:
                     if not self._continue_pending(task_id, state, emit):
                         return
                     continue
+                if state.get("procedure"):
+                    if not self._advance_procedure(task_id, state):
+                        return
+                    continue
                 if any(
                     state[key] >= state["limits"][limit]
                     for key, limit in (
@@ -377,6 +386,7 @@ class WorkflowHarnessMixin:
                     query=state.get("query") or state["goal"],
                     page=state.get("catalogue_page", 0),
                     page_size=6,
+                    preferred=state.get("pinned_tools", []),
                 )
                 emit(TaskProgress(message=f"Planning with {state['profile']}", phase="planning"))
                 with self._task_inference(task_id, state, emit, "planning"):
@@ -407,13 +417,15 @@ class WorkflowHarnessMixin:
                             user_name=self._user_name(),
                             guidance=self._planner_guidance(skills),
                             work={
+                                **self._extension_context(state),
                                 "contract": state["contract"],
                                 "profile": state["profile"],
+                                "reporting": state.get("reporting", "meaningful"),
                                 "failures": state["failures"] + state.get("admission_failures", 0),
                                 "current_observation": self._current_context(state),
                                 "profile_instructions": PROFILES[state["profile"]],
                                 "profiles": PROFILES,
-                                "capability_groups": sorted(self._skills.groups())[:40],
+                                "capability_groups": self._capability_manifest(),
                                 "plan": state["plan"],
                                 "notes": state["notes"],
                                 "inspected_results": state["inspections"][-3:],
@@ -448,6 +460,8 @@ class WorkflowHarnessMixin:
                             kind="milestone",
                             evidence_ids=decision.evidence_ids,
                         )
+                if decision.recipe_id in decision.budget.get("selected_recipes", []):
+                    state["adopted_recipe"] = decision.recipe_id
                 if decision.plan:
                     state["plan"] = decision.plan
                 if decision.notes:
@@ -659,6 +673,11 @@ class WorkflowHarnessMixin:
                 )
                 return False
             state["pending"] = None
+            if pending.get("procedure"):
+                if status != "done":
+                    state.pop("procedure", None)
+                elif state.get("procedure"):
+                    state["procedure"]["index"] += 1
             state["failures"] = 0 if status == "done" else state["failures"] + 1
             if not self._save(task_id, state):
                 return False
@@ -748,6 +767,8 @@ class WorkflowHarnessMixin:
             self._record_observation(
                 state, pending["skill"], "rejected", "Operation admission rejected this step."
             )
+            if pending.get("procedure"):
+                state.pop("procedure", None)
             state["pending"] = None
             return self._save(task_id, state)
         pending["child_id"] = child_id
@@ -787,9 +808,28 @@ class WorkflowHarnessMixin:
                     task_id, f"I’m switching to {profile} for this part.", profile=profile
                 )
         elif action == "discover":
+            names = args.get("names")
+            if "query" in args and not isinstance(names, list):
+                state["pinned_tools"] = []
+            if isinstance(names, list):
+                state["pinned_tools"] = [
+                    name for name in names[:6] if isinstance(name, str) and self._skills.get(name)
+                ]
             state["query"] = str(args.get("query") or "")[:200]
             page = args.get("page", 0)
             state["catalogue_page"] = max(0, min(100, page)) if type(page) is int else 0
+        elif action == "read_playbook":
+            if not self._load_playbook(state, args):
+                state["notes"] = "That playbook is unavailable; discover the current capabilities."
+        elif action == "set_reporting":
+            if args.get("mode") in {"meaningful", "quiet", "frequent"}:
+                state["reporting"] = args["mode"]
+        elif action == "run_procedure":
+            error = self._start_procedure(
+                task_id, state, args, decision.budget.get("selected_procedures", [])
+            )
+            if error:
+                state["notes"] = error
         elif action == "inspect_result":
             result = inspect_result(self._orchestrator, task_id, args)
             state["inspections"] = [*state["inspections"], result][-4:]

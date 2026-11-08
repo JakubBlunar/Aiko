@@ -78,6 +78,8 @@ SLEEP_CONTINUE_WORKER_NAMES = frozenset(
         "topic_graph_rebuild",
         "vitality",
         "weather",
+        "work_speech_guide",
+        "work_procedural_learning",
     }
 )
 

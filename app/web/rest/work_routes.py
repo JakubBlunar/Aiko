@@ -80,11 +80,21 @@ def register_work_routes(app, session) -> None:
         }
 
     @app.get("/api/tasks/{task_id}/result")
-    def work_result(task_id: int, offset: int = 0, revision: str | None = None):
+    def work_result(
+        task_id: int, offset: int = 0, revision: str | None = None, view: str = "rendered"
+    ):
         row = owned(task_id)
         if row.parent_task_id is not None:
             owned(row.parent_task_id, root=True)
-        text = result_text(row)
+        if view not in {"rendered", "source", "projection"}:
+            raise HTTPException(400, "Unknown result view")
+        artifacts = getattr(getattr(session.tasks, "orchestrator", None), "result_artifacts", None)
+        artifact = (
+            artifacts.read(row.parent_task_id, task_id, view=view)
+            if artifacts and row.parent_task_id is not None and view != "rendered"
+            else None
+        )
+        text = artifact["content"] if artifact else result_text(row)
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if revision is not None and revision != digest:
             raise HTTPException(409, "The result changed; reopen it to read the current version")
@@ -98,7 +108,11 @@ def register_work_routes(app, session) -> None:
             "revision": digest,
             "next_offset": end if end < len(text) else None,
             "total_characters": len(text),
-            "truncated": bool((row.result or {}).get("truncated")),
+            "truncated": bool(
+                artifact["source_partial"] if artifact else (row.result or {}).get("truncated")
+            ),
+            "view": view if artifact else "rendered",
+            "source_artifact": (row.result or {}).get("source_artifact"),
             "receipt": (row.result or {}).get("receipt"),
             "error": row.error,
         }

@@ -35,6 +35,7 @@ def catalogue(
     page: int = 0,
     budget: int = 18000,
     page_size: int = 12,
+    preferred=(),
 ) -> list[dict]:
     import json
 
@@ -43,13 +44,10 @@ def catalogue(
         for row in registry.describe_for_planner()
         if supports(registry.get(row["name"]), profile)
     ]
-    if query:
-        words = query.lower().split()
-        rows.sort(
-            key=lambda row: (
-                -sum(word in (row["name"] + " " + row["description"]).lower() for word in words)
-            )
-        )
+    if query or preferred:
+        from app.core.tasks.workflow.discovery import rank
+
+        rows = rank(rows, query, preferred)
     selected, used = [], 0
     for row in rows[max(0, page) * page_size : (max(0, page) + 1) * page_size]:
         cost = len(json.dumps(row, ensure_ascii=False))

@@ -110,6 +110,7 @@ def pack_planner(ctx, budget):
         for key in (
             "contract",
             "profile",
+            "reporting",
             "profile_instructions",
             "user_guidance",
             "remaining_steps",
@@ -204,7 +205,17 @@ def pack_planner(ctx, budget):
             return False
         return True
 
-    for key in ("inspected_results", "plan", "notes", "capability_groups", "profiles"):
+    for key in (
+        "procedures",
+        "recipes",
+        "playbooks",
+        "playbook_index",
+        "inspected_results",
+        "plan",
+        "notes",
+        "capability_groups",
+        "profiles",
+    ):
         value = source.get(key)
         if value is None:
             continue
@@ -234,6 +245,8 @@ def pack_planner(ctx, budget):
         omitted_tools=len(ctx.skills) - len(state.skills),
         retained_steps=len(state.steps),
         omitted_steps=len(ctx.steps) - len(state.steps),
+        selected_procedures=[row["name"] for row in work.get("procedures", [])],
+        selected_recipes=[row["id"] for row in work.get("recipes", [])],
     )
     if report["estimated_input_tokens"] > budget.input_limit:
         raise TaskContextOverflow("The task prompt cannot fit safely.")

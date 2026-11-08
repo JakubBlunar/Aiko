@@ -583,6 +583,11 @@ class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
                 context_window_provider=lambda: getattr(self, "_workflow_context_window",
                                                          lambda: None)(),
                 speaking_context_provider=self._work_speaking_context,
+                methods_provider=lambda: getattr(self, "_work_methods", None),
+                extensions_provider=lambda: {
+                    "playbooks": getattr(self, "_plugin_playbooks", {}),
+                    "procedures": getattr(self, "_plugin_procedures", {}),
+                },
                 user_name_provider=lambda: getattr(
                     self, "user_display_name", "the user"
                 ),
