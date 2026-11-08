@@ -34,6 +34,23 @@ def skill(name="browser__click"):
     }
 
 
+def test_task_system_prefix_is_stable_across_clock_changes(monkeypatch):
+    from app.core.infra import timephrase
+    from app.core.tasks.workflow.workflow_planner import render_planner_messages
+
+    ctx = context()
+    monkeypatch.setattr(timephrase, "today_anchor", lambda: "TIME_ONE")
+    first, _, _ = pack_planner(ctx, TaskBudget.resolve(8192))
+    monkeypatch.setattr(timephrase, "today_anchor", lambda: "TIME_TWO")
+    second, _, _ = pack_planner(ctx, TaskBudget.resolve(8192))
+    assert first[0] == second[0]
+    assert "TIME_ONE" in first[1]["content"] and "TIME_TWO" in second[1]["content"]
+    assert first[1]["content"].startswith("CONTRACT:")
+    assert first[1]["content"].count('"constraints"') == 1
+    assert timephrase.STORED_TEXT_TIME_RULE in first[0]["content"]
+    assert render_planner_messages(ctx)[1]["content"].count("TIME_TWO") == 1
+
+
 def context(**patch):
     contract = {
         "objective": "Find the orchard settings",

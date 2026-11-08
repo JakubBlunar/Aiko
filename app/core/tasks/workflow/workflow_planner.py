@@ -254,7 +254,7 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
     if ctx.work is not None:
         from app.core.infra import timephrase
 
-        system = timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE + "\n" + system
+        system = timephrase.STORED_TEXT_TIME_RULE + "\n" + system
         system += (
             "\nYou organize this job's profiles yourself; the user need not select them. "
             "Profile instructions and available profiles are in WORK. Keep a short plan "
@@ -278,8 +278,15 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
             "not the current day after a wait or restart. Preserve the original subjects, "
             "deliverable and constraints when changing profiles."
         )
+        work = dict(ctx.work)
+        if ctx.compact:
+            contract = work.pop("contract", {})
+            user_block = (
+                "CONTRACT:\n" + json.dumps(contract, ensure_ascii=False) + "\n\n" + user_block
+            )
+        user_block += "\nCURRENT_TIME: " + timephrase.today_anchor()
         user_block += "\nWORK (saved state and source data):\n" + json.dumps(
-            ctx.work,
+            work,
             ensure_ascii=False,
         )
     return [
