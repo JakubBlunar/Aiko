@@ -13,6 +13,12 @@ log = logging.getLogger("app.tasks.runtime")
 
 
 class TaskRuntimeMixin:
+    @property
+    def result_artifacts(self):
+        from app.core.tasks.result_artifacts import ResultArtifacts
+
+        return ResultArtifacts(self._store._db)
+
     def emit_work_outcome(self, task_id: int, epoch: int, outcome) -> None:
         with self._lock:
             row = self._store.get(task_id)

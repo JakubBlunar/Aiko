@@ -36,8 +36,15 @@ def inspect_result(orchestrator, parent_id: int, args: dict) -> dict:
     row = orchestrator.get(child_id)
     if row is None or row.parent_task_id != parent_id:
         return {"error": "result is not owned by this work task"}
-    text = result_text(row)
-    revision = hashlib.sha256(text.encode()).hexdigest()
+    view = args.get("view", "source")
+    if view not in {"source", "projection", "rendered"}:
+        return {"error": "view must be source, projection or rendered"}
+    artifacts = getattr(orchestrator, "result_artifacts", None)
+    artifact = (
+        artifacts.read(parent_id, child_id, view=view) if artifacts and view != "rendered" else None
+    )
+    text = artifact["content"] if artifact else result_text(row)
+    revision = artifact["revision"] if artifact else hashlib.sha256(text.encode()).hexdigest()
     if args.get("revision") not in (None, revision):
         return {"error": "result revision changed; restart at offset 0"}
     query = args.get("query")
@@ -57,7 +64,10 @@ def inspect_result(orchestrator, parent_id: int, args: dict) -> dict:
         "content": text[offset:end],
         "total_characters": len(text),
         "next_offset": end if end < len(text) else None,
-        "source_partial": bool((row.result or {}).get("truncated")),
+        "source_partial": bool(
+            artifact["source_partial"] if artifact else (row.result or {}).get("truncated")
+        ),
+        "view": view if artifact else "rendered",
         "recorded_at": row.completed_at,
     }
 
@@ -99,11 +109,24 @@ def verify_completion(
     for excerpt in state.get("inspections", [])[-4:]:
         cid = excerpt.get("task_id")
         row = orchestrator.get(cid) if type(cid) is int else None
+        artifact_store = getattr(orchestrator, "result_artifacts", None)
+        artifact = (
+            artifact_store.read(task_id, cid, view=excerpt.get("view"))
+            if artifact_store and row and excerpt.get("view") in {"source", "projection"}
+            else None
+        )
+        revision = (
+            artifact["revision"]
+            if artifact
+            else hashlib.sha256(result_text(row).encode()).hexdigest()
+            if row
+            else ""
+        )
         if (
             row is not None
             and row.parent_task_id == task_id
             and row.status == "done"
-            and excerpt.get("revision") == hashlib.sha256(result_text(row).encode()).hexdigest()
+            and excerpt.get("revision") == revision
         ):
             evidence.append(excerpt)
     evidence.sort(key=lambda item: "content" not in item)

@@ -267,6 +267,8 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
             "ask_user {question:string}; reply {message:string}; wait {seconds:int}. "
             "Use inspect_result to inspect omitted text or find a fact in a child result. "
             "inspect_result {list:true,offset:int} lists owned result IDs when history is omitted. "
+            "inspect_result view:'source' reads recoverable original text; view:'rendered' "
+            "reads the compact tool view. Artifact pages never refresh browser targets. "
             "Only current_observation contains current targets; historical refs may be stale. "
             "discover exposes another bounded catalogue, and use_profile changes your work role. "
             "Choose skills only from this turn's catalogue. "

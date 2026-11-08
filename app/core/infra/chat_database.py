@@ -13,10 +13,11 @@ from typing import Any
 from app.core.infra import timephrase
 from app.core.infra.archive_schema import ARCHIVE_SCHEMA
 from app.core.infra.message_outcomes import MessageOutcomesMixin, OUTCOME_SCHEMA
+from app.core.tasks.result_artifacts import RESULT_SCHEMA
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 48
+_SCHEMA_VERSION = 49
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -1511,6 +1512,7 @@ class ChatDatabase(MessageOutcomesMixin):
         conn.executescript(_CREATE_TABLES)
         conn.executescript(OUTCOME_SCHEMA)
         conn.executescript(ARCHIVE_SCHEMA)
+        conn.executescript(RESULT_SCHEMA)
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
             # Fresh database: CREATE TABLE memories above already

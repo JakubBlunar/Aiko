@@ -79,12 +79,14 @@ class McpToolHandler:
         resolve_approval: Any = None,
         mark_session_approved: Any = None,
         can_dispatch: Any = None,
+        result_artifacts: Any = None,
     ) -> None:
         self._manager = manager
         self._middlewares_provider = middlewares_provider
         self._resolve_approval = resolve_approval
         self._mark_session_approved = mark_session_approved
         self._can_dispatch = can_dispatch
+        self._result_artifacts = result_artifacts
         # Ordered tool-result middleware chain. Each entry may reshape a
         # claimed (server_id, tool_name) result (parse -> dedup -> group ->
         # rank -> diff, etc.) before it reaches the planner; the first that
@@ -156,6 +158,7 @@ class McpToolHandler:
 
         is_error = bool(getattr(result, "isError", False))
         text, non_text = _flatten_content(result)
+        artifact = self._save_artifact(text, partial=non_text > 0)
         if is_error:
             emit(TaskFailed(error=(text or "MCP tool reported an error")[:200],
                             uncertain_effect=uncertain))
@@ -187,6 +190,7 @@ class McpToolHandler:
                 "content": content,
                 "summary": summary,
                 "receipt": receipt,
+                "source_artifact": artifact,
                 "truncated": len(perceived.content) > _CONTENT_CAP,
             }
             projection = getattr(perceived, "planner_context", None)
@@ -195,6 +199,8 @@ class McpToolHandler:
                 # the plugin; core attaches provenance and enforces size only.
                 projection = dict(projection)
                 projected_text = str(projection.get("content", ""))
+                if len(projected_text) > _CONTENT_CAP:
+                    projection["artifact"] = self._save_artifact(projected_text, view="projection")
                 projection["content"] = projected_text[:_CONTENT_CAP]
                 if len(projected_text) > _CONTENT_CAP:
                     projection["partial"] = True
@@ -212,6 +218,7 @@ class McpToolHandler:
             "content": content,
             "summary": summary,
             "receipt": receipt,
+            "source_artifact": artifact,
             "truncated": len(text) > _CONTENT_CAP or non_text > 0,
             "non_text_blocks": non_text,
         }
@@ -221,6 +228,20 @@ class McpToolHandler:
         )
         emit(TaskCompleted(result=payload))
         return {"args": args, "phase": "done"}
+
+    def _save_artifact(self, text, *, view="source", partial=False):
+        if self._result_artifacts is None:
+            return None
+        from app.core.tasks.workflow.goal_workflow_handler import _task_id_from_context
+
+        task_id = _task_id_from_context()
+        if task_id is None:
+            return None
+        try:
+            return self._result_artifacts.save(task_id, text, view=view, partial=partial)
+        except Exception:
+            log.warning("result artifact unavailable: task=%s", task_id, exc_info=True)
+            return {"available": False, "source_partial": True}
 
     def _run_middlewares(
         self,

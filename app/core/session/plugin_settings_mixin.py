@@ -77,6 +77,7 @@ class PluginSettingsMixin:
                     resolve_approval=self._resolve_task_approval,
                     mark_session_approved=self._mark_capability_session_approved,
                     can_dispatch=orchestrator.claim_operation_dispatch,
+                    result_artifacts=orchestrator.result_artifacts,
                 )
             )
         manager.start()
