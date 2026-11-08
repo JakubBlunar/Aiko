@@ -5,7 +5,7 @@ import { useTasksStore } from "@/stores/useTasksStore";
 import { workCanDock } from "./workLayout";
 import { mergeMessages } from "./useWorkController";
 import type { TaskSnapshot, WorkDetail } from "@/types";
-import WorkDrawer from "./WorkDrawer";
+import WorkDrawer, { WorkUsage } from "./WorkDrawer";
 
 const data = vi.hoisted(() => ({ detail: null as WorkDetail | null }));
 vi.mock("./useWorkController", async (original) => {
@@ -70,6 +70,24 @@ describe("work drawer", () => {
       data: { content }, created_at: "2026-11-07T09:00:00Z" });
     expect(mergeMessages([row(2, "old"), row(1, "first")], [row(2, "new"), row(3, "last")])
       .map((m) => m.data!.content)).toEqual(["first", "new", "last"]);
+  });
+  it("shows model waiting separately from active calls and distinguishes measured context", () => {
+    data.detail!.task.phase = "waiting_model";
+    data.detail!.task.work = {
+      contract: { objective: "Inspect source", criteria: [], constraints: [] },
+      profile: "browser", plan: [], notes: "", iteration: 2, children: 1,
+      active_seconds: 3, queue_seconds: 18, tokens: 300,
+      limits: { iterations: 32, tokens: 40000, active_seconds: 1800 },
+      context_budget: { stage: "planner", context_window: 65536, estimated_input_tokens: 900,
+        actual_input_tokens: 1000, input_limit: 55000, answer_reserved: 384,
+        reasoning_reserved: 0, safety_reserved: 8192 },
+    };
+    const html = renderToStaticMarkup(<WorkDrawer open mobile={false} docked width={420} />);
+    expect(html).toContain("Waiting for the shared model");
+    const usage = renderToStaticMarkup(<WorkUsage work={data.detail!.task.work!} />);
+    expect(usage).toContain("18s waiting for the model");
+    expect(usage).toContain("1000 reported");
+    expect(usage).toContain("This total is separate from each request");
   });
   it("task updates preserve history totals and pagination", () => {
     const store = useTasksStore.getState();

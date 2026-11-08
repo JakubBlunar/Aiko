@@ -221,11 +221,25 @@ class LlmClientsMixin:
             return self._build_route_client(
                 route, role=LLM_ROLE_WORKER_DEFAULT,
             )
-        return OllamaClient(
-            transport_for_provider(provider, route=route),
-            base_url=provider.base_url,
-            keep_alive=provider.keep_alive,
-        )
+        return self._build_local_route_client(provider, route)
+
+    @staticmethod
+    def _build_local_route_client(provider, route):
+        from app.llm.factory import resolve_provider_api_key
+
+        return OllamaClient(transport_for_provider(provider, route=route),
+            base_url=provider.base_url, keep_alive=provider.keep_alive,
+            api_key=resolve_provider_api_key(provider) or None,
+            extra_headers=dict(provider.extra_headers or {}) or None)
+
+    def _workflow_context_window(self):
+        missing = object()
+        actual = getattr(getattr(self, "_workflow_client", None), "request_context_window", missing)
+        if actual is not missing and (actual is None or type(actual) is int):
+            return actual
+        route = (self._route_or_none(LLM_ROLE_WORKFLOW)
+                 or self._route_or_none(LLM_ROLE_WORKER_DEFAULT))
+        return route.context_window if route is not None else None
 
     def _install_worker_clients(self, raw_worker_client: ChatClient) -> None:
         """Wrap the raw worker client in the priority gate (Phase 6).
@@ -251,11 +265,18 @@ class LlmClientsMixin:
         max_conc = max(1, int(getattr(agent, "worker_llm_max_concurrency", 1)))
         overrides = dict(getattr(agent, "worker_llm_priority_overrides", {}) or {})
         self._worker_client_inner = raw_worker_client
-        gate = (
-            LlmPriorityGate(max_concurrency=max_conc, name="worker")
-            if gate_enabled
-            else None
-        )
+        routes = getattr(getattr(self._settings, "llm", None), "routes", {}) or {}
+        resource = self._route_resource_key(routes.get(LLM_ROLE_WORKER_DEFAULT))
+        previous = getattr(self, "_worker_llm_gate", None)
+        if gate_enabled and resource is not None and resource == getattr(
+            self, "_worker_llm_gate_resource", None
+        ) and previous is not None:
+            gate = previous
+            gate.set_max_concurrency(max_conc)
+        else:
+            gate = (LlmPriorityGate(max_concurrency=max_conc, name="worker")
+                    if gate_enabled else None)
+        self._worker_llm_gate_resource = resource
         self._worker_llm_gate = gate
         conv_prio = tier_from_name(overrides.get("conversation", ""), CONVERSATION_WORKER)
         maint_prio = tier_from_name(overrides.get("maintenance", ""), MAINTENANCE_WORKER)
@@ -333,9 +354,11 @@ class LlmClientsMixin:
                 self._worker_client_inner, worker_gate, task_priority, name="task"
             )
         try:
-            client = build_client_for_route(
-                self._client_cache, route=route, settings=self._settings.llm
-            )
+            provider = self._find_llm_provider(route.provider_id)
+            client = (self._build_local_route_client(provider, route)
+                      if provider is not None and provider.kind == "ollama"
+                      else build_client_for_route(self._client_cache, route=route,
+                                                  settings=self._settings.llm))
             workflow_key = self._route_resource_key(route)
             worker_key = self._route_resource_key(worker_route)
             shares_resource = (

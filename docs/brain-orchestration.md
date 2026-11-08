@@ -1,8 +1,9 @@
 # Brain orchestration: BrainEventQueue, BrainLoop, and the Task system
 
-For the current source audit and proposed next execution layer, see the
-[2026-11-06 agent harness assessment](agent-harness-audit-2026-11-06.md).
-Persistent task rows do not currently provide resumable goal-workflow execution.
+For the current resumable goal-workflow execution layer, see the
+[checkpointed work harness](agent-harness.md) and its
+[context and scheduling policy](task-context-budget.md). The
+[2026-11-06 assessment](agent-harness-audit-2026-11-06.md) records the earlier audit.
 
 *Schema v17 (Phase 2 — scaling foundations on top of phase 1). Phase 1
 introduced the queue, loop, and the v16 `tasks` table. Phase 2 keeps

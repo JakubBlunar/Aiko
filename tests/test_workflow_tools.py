@@ -166,6 +166,12 @@ class StartWorkflowRunTests(unittest.TestCase):
         self.assertTrue(call["metadata"]["reply_when_done"])
         self.assertEqual(call["metadata"]["origin_prompt"], "go find new files")
 
+    def test_original_request_keeps_constraints_beyond_the_old_excerpt_limit(self) -> None:
+        original = "source context " * 200 + "Never submit the order."
+        self.session._active_turn_user_text = original
+        self.tool.run({"goal": "Inspect the order"})
+        self.assertEqual(self.orch.start_calls[0]["metadata"]["origin_prompt"], original)
+
     def test_reply_on_complete_switch_gates_the_metadata(self) -> None:
         """A7: the switch existed and the behaviour was permanently on."""
         agent = SimpleNamespace(task_reply_on_complete_enabled=False)

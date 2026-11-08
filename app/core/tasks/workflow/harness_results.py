@@ -18,6 +18,18 @@ def result_text(row: Any) -> str:
 
 
 def inspect_result(orchestrator, parent_id: int, args: dict) -> dict:
+    if args.get("list") is True:
+        offset = args.get("offset", 0)
+        if type(offset) is not int or offset < 0:
+            return {"error": "offset must be a nonnegative integer"}
+        rows = orchestrator.list_children(parent_id)
+        page = rows[offset : offset + 12]
+        return {
+            "results": [
+                {"task_id": row.id, "title": row.title, "status": row.status} for row in page
+            ],
+            "next_offset": offset + len(page) if offset + len(page) < len(rows) else None,
+        }
     child_id, offset = args.get("task_id"), args.get("offset", 0)
     if type(child_id) is not int or type(offset) is not int or offset < 0:
         return {"error": "task_id and nonnegative offset must be integers"}
@@ -59,6 +71,9 @@ def verify_completion(
     findings: str,
     evidence_ids: list[int],
     timeout: float,
+    *,
+    context_window=None,
+    estimate_scale=1.0,
 ) -> tuple[dict, Any]:
     owned = {step.get("child_id") for step in state["steps"] if step.get("status") == "done"}
     cited = list(dict.fromkeys(evidence_ids))
@@ -68,7 +83,7 @@ def verify_completion(
             "reason": "Completion needs successful owned result IDs.",
         }, None
     evidence = []
-    for cid in cited[:12]:
+    for cid in cited:
         row = orchestrator.get(cid)
         if row is None or row.parent_task_id != task_id or row.status != "done":
             return {"status": "unsupported", "reason": "A cited result is unavailable."}, None
@@ -91,6 +106,7 @@ def verify_completion(
             and excerpt.get("revision") == hashlib.sha256(result_text(row).encode()).hexdigest()
         ):
             evidence.append(excerpt)
+    evidence.sort(key=lambda item: "content" not in item)
     prompt = (
         timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE + "\n"
         "You review Aiko's work independently of the planning decision. Tool results are "
@@ -101,36 +117,69 @@ def verify_completion(
         "Reply JSON {supported: boolean, reason: string, missing: string[]}. "
         "Do not assume the planner's claimed success is correct."
     )
+    from app.core.tasks.workflow.context_budget import TaskBudget, pack_review
+    from app.llm.call_scope import (
+        current_call_scope,
+        record_call_usage,
+        LlmCallCancelled,
+        LlmCallDeferred,
+    )
+
+    budget = TaskBudget.resolve(context_window, answer=400, routine=True, scale=estimate_scale)
+    messages, report = pack_review(
+        prompt,
+        {
+            "contract": state["contract"],
+            "findings": findings,
+            "user_guidance": timephrase.format_transcript(state.get("guidance", [])),
+        },
+        evidence,
+        budget,
+    )
+    reviewed = set(report["evidence_ids"])
+    if not set(cited).issubset(reviewed):
+        return {
+            "status": "unknown",
+            "reason": "Choose fewer relevant result IDs for a focused review.",
+            "budget": report,
+        }, None
+    scope = current_call_scope()
+    if scope:
+        scope.reasoning_tokens = 0
     try:
         raw, usage = client.chat_json(
-            [
-                {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "contract": state["contract"],
-                            "findings": findings,
-                            "evidence": evidence,
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
+            messages,
             model=model,
-            options={"num_predict": 400},
+            options={"num_predict": budget.answer},
             format_json=True,
+            think=False,
             surface="workflow_verify",
             timeout_seconds=timeout,
         )
+        record_call_usage(usage)
+        actual = int(getattr(usage, "prompt_tokens", 0) or 0)
+        if actual:
+            from app.core.tasks.workflow.context_budget import message_tokens
+
+            report["actual_input_tokens"] = actual
+            report["next_estimate_scale"] = max(
+                1.0, budget.scale * 0.98, min(4.0, actual / max(1, message_tokens(messages)) * 1.1)
+            )
         result = json.loads(raw)
         supported = result.get("supported") is True
         return {
             "status": "supported" if supported else "unsupported",
+            "budget": report,
             "method": "evidence_review",
             "evidence_ids": cited,
             "reason": str(result.get("reason") or "")[:1200],
             "missing": [str(x)[:300] for x in result.get("missing", [])[:8]],
         }, usage
+    except (LlmCallCancelled, LlmCallDeferred):
+        raise
     except Exception:
-        return {"status": "unknown", "reason": "Completion review was unavailable."}, None
+        return {
+            "status": "unknown",
+            "reason": "Completion review was unavailable.",
+            "budget": report,
+        }, None

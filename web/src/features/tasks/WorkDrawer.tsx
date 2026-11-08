@@ -10,11 +10,26 @@ function stateLabel(task: TaskSnapshot) {
   if (task.phase === "budget_exhausted") return "Allowance reached";
   if (task.phase === "user_pause") return "Paused by you";
   if (task.phase === "waiting_child") return "Operation in progress";
+  if (task.phase === "waiting_model") return "Waiting for the shared model";
   if (task.phase === "scheduled") return "Waiting to continue";
   if (task.status === "awaiting_input") return "Needs your answer";
   if (task.result?.outcome === "partial") return "Partial result";
   if (task.result?.outcome === "uncertain") return "Needs review";
   return task.status === "done" ? "Completed" : task.status;
+}
+
+
+export function WorkUsage({ work }: { work: NonNullable<TaskSnapshot["work"]> }) {
+  return <details>
+            <summary className="cursor-pointer text-xs">Usage and allowance</summary>
+            <p className="mt-2 text-xs text-ink-100/60">{work.iteration} planning turns · {work.children} operations · {Math.round(work.active_seconds)}s active calls · {work.tokens} reported tokens</p>
+            <p className="mt-1 text-xs text-ink-100/50">{Math.round(work.queue_seconds ?? 0)}s waiting for the model. Model, user and operation waits do not use the planning time allowance.</p>
+            {work.limits.tokens != null && <p className="mt-1 text-xs text-ink-100/50">Job allowance: {work.limits.iterations} planning turns, {work.limits.tokens} reported tokens, {work.limits.active_seconds}s active calls. This total is separate from each request's context window.</p>}
+            {work.context_budget && <p className="mt-2 text-xs text-ink-100/60">
+              Latest {work.context_budget.stage}: {work.context_budget.actual_input_tokens != null ? `${work.context_budget.actual_input_tokens} reported` : `~${work.context_budget.estimated_input_tokens} estimated`} input tokens / {work.context_budget.context_window} context.
+              {" "}{work.context_budget.answer_reserved} answer + {work.context_budget.reasoning_reserved} reasoning tokens reserved, with {work.context_budget.safety_reserved} safety headroom.
+            </p>}
+  </details>;
 }
 
 interface Props { open: boolean; mobile: boolean; docked: boolean; width: number }
@@ -152,7 +167,7 @@ export default function WorkDrawer({ open, mobile, docked, width }: Props) {
           {task.work?.verification && <div className="rounded border border-white/15 p-3 text-xs">Evidence review: {task.work.verification.status}<p className="mt-1">{task.work.verification.reason}</p></div>}
           {task.work?.contract.criteria?.length ? <details><summary className="cursor-pointer text-xs">Completion criteria</summary><ul className="mt-2 list-disc pl-4 text-xs">{task.work.contract.criteria.map((c, i) => <li key={i}>{c}</li>)}</ul></details> : null}
           <WorkResultView key={`${task.id}:${task.status}`} taskId={task.id} />
-          {task.work && <details><summary className="cursor-pointer text-xs">Usage and allowance</summary><p className="mt-2 text-xs text-ink-100/60">{task.work.iteration} planning turns · {task.work.children} operations · {Math.round(task.work.active_seconds)}s active calls · {task.work.tokens} reported tokens</p><p className="mt-1 text-xs text-ink-100/50">User and operation waits do not use the planning time allowance.</p></details>}
+          {task.work && <WorkUsage work={task.work} />}
         </div>}
       </div>
       {(task.handler_name === "goal_workflow" || question) && <form onSubmit={(e) => { e.preventDefault(); void send(); }} className="max-h-[45dvh] shrink-0 space-y-2 overflow-y-auto border-t border-white/10 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">

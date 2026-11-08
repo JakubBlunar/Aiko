@@ -9,4 +9,5 @@ Browser skills — how to use them well:
 - To act: click/type/press_key/scroll/select using a ref from the LATEST snapshot. Submit with press_key Enter.
 - Dropdowns / menus / React portals: click the trigger, wait briefly, then click the option by visible text (a click-by-text skill if available). Avoid the evaluate/JavaScript skill for UI — it breaks on strict-CSP sites and can steal focus.
 - After an action, re-snapshot (or find) to confirm the result before the next step.
+- The harness's current_observation is the latest owned page projection. Use its refs only while it is current. Older step history and inspected saved results are historical evidence, not a refreshed target list. If the projection is partial, obtain a narrower snapshot rather than guessing unseen controls.
 - Safety: NEVER close tabs you didn't open, and don't navigate away from the page the user is on unless the goal requires it.

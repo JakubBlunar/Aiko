@@ -52,6 +52,7 @@ class MiddlewareResult:
     content: str
     summary: str
     element_count: int = 0
+    planner_context: dict[str, Any] | None = None
 
 
 @runtime_checkable

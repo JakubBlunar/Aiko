@@ -29,6 +29,7 @@ class PerceptionResult:
     content: str
     summary: str
     element_count: int
+    planner_context: dict[str, Any] | None = None
 
 
 _PAGE_KEY_ARGS = ("url", "tab", "tab_id", "tabId", "target")
@@ -157,7 +158,9 @@ class BrowserPerception:
             page_key[:60],
         )
         return PerceptionResult(
-            content=content, summary=summary, element_count=len(ranked)
+            content=content, summary=summary, element_count=len(ranked),
+            planner_context={"kind": "current_page", "resource": page_key,
+                             "content": content, "summary": summary},
         )
 
     @staticmethod

@@ -750,6 +750,12 @@ export interface WorkState {
   iteration: number;
   children: number;
   active_seconds: number;
+  queue_seconds?: number | null;
+  context_budget?: {
+    stage: string; estimated_input_tokens: number; input_limit: number;
+    input_target?: number; context_window: number; actual_input_tokens?: number;
+    answer_reserved: number; reasoning_reserved: number; safety_reserved: number;
+  } | null;
   tokens: number;
   limits: Record<string, number>;
   verification?: { status: string; reason?: string } | null;

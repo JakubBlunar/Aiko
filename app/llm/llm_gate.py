@@ -45,8 +45,10 @@ Logging contract:
 * DEBUG ``llm-gate acquire: tier=<n> name=<s> waited_ms=<ms> inflight=<n> queued=<n>``
 * DEBUG ``llm-gate release: tier=<n> name=<s> held_ms=<ms> inflight=<n>``
 """
+
 from __future__ import annotations
 
+from contextlib import contextmanager
 import heapq
 import itertools
 import logging
@@ -54,6 +56,9 @@ import threading
 import time
 from collections.abc import Generator
 from typing import Any
+
+
+from app.llm.call_scope import current_call_scope, LlmCallCancelled, LlmCallDeferred
 
 
 log = logging.getLogger("app.llm_gate")
@@ -143,7 +148,15 @@ class LlmPriorityGate:
 
     # ── acquire / release ────────────────────────────────────────────
 
-    def acquire(self, priority: int, timeout: float | None = None) -> float | None:
+    def set_max_concurrency(self, value: int) -> None:
+        """Reconfigure admission without losing existing holders or waiters."""
+        with self._cond:
+            self._max = max(1, int(value))
+            self._cond.notify_all()
+
+    def acquire(
+        self, priority: int, timeout: float | None = None, *, cancelled=None
+    ) -> float | None:
         """Block until granted. Returns the wait in seconds.
 
         With ``timeout`` set, returns ``None`` if the slot did not come
@@ -168,37 +181,49 @@ class LlmPriorityGate:
             # Wake any waiters so a newly-arrived higher-priority entry
             # re-orders the head correctly.
             self._cond.notify_all()
-            while True:
-                if self._inflight < self._max and self._heap and self._heap[0] == me:
-                    heapq.heappop(self._heap)
-                    self._inflight += 1
-                    break
-                if deadline is not None:
-                    left = deadline - time.monotonic()
-                    if left <= 0.0:
-                        try:
-                            self._heap.remove(me)
-                            heapq.heapify(self._heap)
-                        except ValueError:
-                            pass
-                        self._timeouts[prio] = self._timeouts.get(prio, 0) + 1
-                        # We may have been the head others were waiting
-                        # behind; hand the position on.
+            try:
+                while True:
+                    if cancelled is not None and cancelled():
+                        self._heap.remove(me)
+                        heapq.heapify(self._heap)
                         self._cond.notify_all()
-                        queued = len(self._heap)
-                        log.info(
-                            "llm-gate timeout: tier=%d name=%s waited_ms=%.0f "
-                            "inflight=%d queued=%d",
-                            prio,
-                            self._name,
-                            (time.monotonic() - wait_start) * 1000.0,
-                            self._inflight,
-                            queued,
-                        )
-                        return None
-                    self._cond.wait(timeout=left)
-                    continue
-                self._cond.wait()
+                        raise LlmCallCancelled()
+                    if self._inflight < self._max and self._heap and self._heap[0] == me:
+                        heapq.heappop(self._heap)
+                        self._inflight += 1
+                        break
+                    if deadline is not None:
+                        left = deadline - time.monotonic()
+                        if left <= 0.0:
+                            try:
+                                self._heap.remove(me)
+                                heapq.heapify(self._heap)
+                            except ValueError:
+                                pass
+                            self._timeouts[prio] = self._timeouts.get(prio, 0) + 1
+                            # We may have been the head others were waiting
+                            # behind; hand the position on.
+                            self._cond.notify_all()
+                            queued = len(self._heap)
+                            log.info(
+                                "llm-gate timeout: tier=%d name=%s waited_ms=%.0f "
+                                "inflight=%d queued=%d",
+                                prio,
+                                self._name,
+                                (time.monotonic() - wait_start) * 1000.0,
+                                self._inflight,
+                                queued,
+                            )
+                            return None
+                        self._cond.wait(timeout=min(left, 0.1) if cancelled else left)
+                        continue
+                    self._cond.wait(timeout=0.1 if cancelled else None)
+            except BaseException:
+                if me in self._heap:
+                    self._heap.remove(me)
+                    heapq.heapify(self._heap)
+                    self._cond.notify_all()
+                raise
             waited = time.monotonic() - wait_start
             waited_ms = waited * 1000.0
             self._grants[prio] = self._grants.get(prio, 0) + 1
@@ -248,21 +273,22 @@ class LlmPriorityGate:
                 }
             for prio, count in self._timeouts.items():
                 # A tier that only ever timed out has no grants row.
-                per_tier.setdefault(tier_label(prio), {
-                    "priority": prio,
-                    "grants": 0,
-                    "avg_wait_ms": 0.0,
-                    "max_wait_ms": 0.0,
-                    "timeouts": count,
-                })
+                per_tier.setdefault(
+                    tier_label(prio),
+                    {
+                        "priority": prio,
+                        "grants": 0,
+                        "avg_wait_ms": 0.0,
+                        "max_wait_ms": 0.0,
+                        "timeouts": count,
+                    },
+                )
             return {
                 "name": self._name,
                 "max_concurrency": self._max,
                 "inflight": self._inflight,
                 "queued": len(self._heap),
-                "queued_by_tier": {
-                    tier_label(p): c for p, c in queued_by_tier.items()
-                },
+                "queued_by_tier": {tier_label(p): c for p, c in queued_by_tier.items()},
                 "tiers": per_tier,
             }
 
@@ -292,6 +318,8 @@ class GatedChatClient:
         self._gate = gate
         self._priority = int(priority)
         self._name = name or tier_label(priority)
+        self._target = (inner, gate, self._priority)
+        self._routing_revision = 0
 
     def retarget(
         self,
@@ -311,62 +339,78 @@ class GatedChatClient:
         self._gate = gate
         if priority is not None:
             self._priority = int(priority)
+        self._target = (inner, gate, self._priority)
+        self._routing_revision += 1
+
+    @property
+    def routing_revision(self):
+        return self._routing_revision
 
     # ── gated generating calls ───────────────────────────────────────
 
-    def chat(self, *args: Any, **kwargs: Any) -> Any:
-        if self._gate is None:
-            return self._inner.chat(*args, **kwargs)
-        self._gate.acquire(self._priority)
-        t0 = time.monotonic()
+    @contextmanager
+    def _admitted(self):
+        # One immutable target: retargeting cannot release a different gate or
+        # send an already-admitted call to a different provider.
+        inner, gate, priority = self._target
+        scope = current_call_scope()
+        if scope and scope.cancelled():
+            raise LlmCallCancelled()
+        if gate is None:
+            if scope:
+                scope.on_acquired()
+            yield inner
+            return
+        queued = time.monotonic()
+        if scope:
+            scope.on_wait()
         try:
-            return self._inner.chat(*args, **kwargs)
+            waited = (
+                gate.acquire(priority, timeout=scope.queue_timeout, cancelled=scope.cancelled)
+                if scope
+                else gate.acquire(priority)
+            )
         finally:
-            self._log_held(t0)
-            self._gate.release(self._priority)
+            if scope:
+                scope.queue_seconds += time.monotonic() - queued
+        if waited is None:
+            raise LlmCallDeferred()
+        started = time.monotonic()
+        try:
+            if scope:
+                if scope.cancelled():
+                    raise LlmCallCancelled()
+                scope.on_acquired()
+            yield inner
+        finally:
+            self._log_held(started, priority)
+            gate.release(priority)
+
+    def chat(self, *args: Any, **kwargs: Any) -> Any:
+        with self._admitted() as inner:
+            return inner.chat(*args, **kwargs)
 
     def chat_with_tools(self, *args: Any, **kwargs: Any) -> Any:
-        if self._gate is None:
-            return self._inner.chat_with_tools(*args, **kwargs)
-        self._gate.acquire(self._priority)
-        t0 = time.monotonic()
-        try:
-            return self._inner.chat_with_tools(*args, **kwargs)
-        finally:
-            self._log_held(t0)
-            self._gate.release(self._priority)
+        with self._admitted() as inner:
+            return inner.chat_with_tools(*args, **kwargs)
 
     def chat_json(self, *args: Any, **kwargs: Any) -> Any:
-        if self._gate is None:
-            return self._inner.chat_json(*args, **kwargs)
-        self._gate.acquire(self._priority)
-        t0 = time.monotonic()
-        try:
-            return self._inner.chat_json(*args, **kwargs)
-        finally:
-            self._log_held(t0)
-            self._gate.release(self._priority)
+        with self._admitted() as inner:
+            scope = current_call_scope()
+            timeout = kwargs.get("timeout_seconds")
+            if scope and isinstance(timeout, (int, float)):
+                scope.request_deadline = time.monotonic() + timeout
+            return inner.chat_json(*args, **kwargs)
 
     def chat_stream(self, *args: Any, **kwargs: Any) -> Generator[str, None, None]:
-        if self._gate is None:
-            yield from self._inner.chat_stream(*args, **kwargs)
-            return
-        # Acquire on entry; release when the generator is exhausted or
-        # closed (GeneratorExit) so a caller that abandons the stream
-        # still frees the slot.
-        self._gate.acquire(self._priority)
-        t0 = time.monotonic()
-        try:
-            yield from self._inner.chat_stream(*args, **kwargs)
-        finally:
-            self._log_held(t0)
-            self._gate.release(self._priority)
+        with self._admitted() as inner:
+            yield from inner.chat_stream(*args, **kwargs)
 
-    def _log_held(self, t0: float) -> None:
+    def _log_held(self, t0: float, priority: int) -> None:
         held_ms = (time.monotonic() - t0) * 1000.0
         log.debug(
             "llm-gate held: tier=%d name=%s held_ms=%.1f",
-            self._priority,
+            priority,
             self._name,
             held_ms,
         )

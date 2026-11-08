@@ -189,6 +189,16 @@ class McpToolHandler:
                 "receipt": receipt,
                 "truncated": len(perceived.content) > _CONTENT_CAP,
             }
+            projection = getattr(perceived, "planner_context", None)
+            if isinstance(projection, dict):
+                # Optional SDK result projection. Meaning/formatting belong to
+                # the plugin; core attaches provenance and enforces size only.
+                projection = dict(projection)
+                projected_text = str(projection.get("content", ""))
+                projection["content"] = projected_text[:_CONTENT_CAP]
+                if len(projected_text) > _CONTENT_CAP:
+                    projection["partial"] = True
+                payload["planner_context"] = projection
             emit(TaskCompleted(result=payload))
             return {"args": args, "phase": "done"}
 

@@ -264,6 +264,11 @@ class OllamaClient:
     def base_url(self) -> str:
         return self._base_url
 
+    @property
+    def request_context_window(self) -> int | None:
+        """Configured default num_ctx, without loading/probing a model."""
+        return self._settings.context_window
+
     def _request_headers(self) -> dict[str, str] | None:
         return dict(self._headers) if self._headers else None
 
@@ -284,11 +289,17 @@ class OllamaClient:
         current = options.get("num_predict")
         if not isinstance(current, int) or current <= 0:
             return
-        bumped = current + self._think_headroom
+        from app.llm.call_scope import current_call_scope
+
+        scope = current_call_scope()
+        headroom = self._think_headroom
+        if scope is not None and scope.reasoning_tokens is not None:
+            headroom = min(headroom, max(0, scope.reasoning_tokens))
+        bumped = current + headroom
         options["num_predict"] = bumped
         log.debug(
             "think headroom: surface=%s num_predict %d -> %d (+%d for trace)",
-            surface, current, bumped, self._think_headroom,
+            surface, current, bumped, headroom,
         )
 
     def _retry_body_without_think(
@@ -310,6 +321,15 @@ class OllamaClient:
         answer. Failures here are swallowed on purpose; the caller keeps
         the (empty) first result and its existing error path.
         """
+        from app.llm.call_scope import current_call_scope
+
+        scope = current_call_scope()
+        if scope is not None:
+            if scope.cancelled():
+                return None
+            timeout = scope.remaining_timeout(timeout)
+            if timeout <= 0:
+                return None
         retry = dict(payload)
         retry["think"] = False
         _warn_thinking_starved(surface=surface, model=model)
@@ -816,6 +836,9 @@ class OllamaClient:
                 label="chat_json",
             )
             if retry_body is not None:
+                from app.llm.call_scope import record_call_usage
+
+                record_call_usage(usage)  # charge the reported failed attempt as well
                 body = retry_body
                 message = body.get("message", {})
                 if not isinstance(message, dict):

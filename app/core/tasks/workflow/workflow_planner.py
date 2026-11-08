@@ -11,16 +11,14 @@ Design constraints:
 * **Worker LLM, not the chat model.** The planner runs on
   ``worker_client`` (the gated background model), so it never competes
   with the conversational reply for the chat model's slot.
-* **Budgeted blackboard.** The step history is rendered most-recent-
-  first and truncated to ``history_budget_chars`` so a long workflow
-  can't blow the worker model's context. Observations are individually
-  capped before the global budget so one giant file-read result can't
-  starve the rest of the history.
+* **Budgeted blackboard.** Whole-request accounting reserves generation
+  headroom, preserves the goal and constraints, and selects current evidence,
+  complete schemas and recent history. The renderer also retains its legacy
+  character caps for callers that render without dynamic packing.
 * **Strict validation + safe fallback.** The LLM returns JSON; we parse
-  defensively. Any malformed / unparseable / unknown-action response
-  degrades to a ``finish`` decision (the workflow stops and reports what
-  it has) rather than raising — a planner that can't be understood must
-  not wedge the loop.
+  defensively. A malformed or unknown-action response gets one bounded
+  inference-only repair, then degrades to a partial ``finish`` decision.
+  No dispatched operation is repeated by this repair.
 * **Missing-capability is a first-class outcome.** When the goal needs
   something no registered skill provides (e.g. "open this URL and click
   the login button" with no browser skill), the planner returns
@@ -29,14 +27,16 @@ Design constraints:
   user "I don't know how to do that yet" and names the missing piece.
 
 This module is pure: no orchestrator, no settings, no I/O beyond the
-single ``worker_client.chat_json`` call. The handler passes everything
+bounded ``worker_client.chat_json`` calls. The handler passes everything
 in via :class:`PlannerInput`.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -53,9 +53,7 @@ ACTION_MISSING_CAPABILITY = "missing_capability"
 OUTCOME_SUCCESS = "success"
 OUTCOME_PARTIAL = "partial"
 OUTCOME_NOTHING_FOUND = "nothing_found"
-_VALID_OUTCOMES = frozenset(
-    (OUTCOME_SUCCESS, OUTCOME_PARTIAL, OUTCOME_NOTHING_FOUND)
-)
+_VALID_OUTCOMES = frozenset((OUTCOME_SUCCESS, OUTCOME_PARTIAL, OUTCOME_NOTHING_FOUND))
 
 # Per-observation char cap applied BEFORE the global history budget.
 _OBSERVATION_CAP = 600
@@ -102,6 +100,7 @@ class PlannerInput:
     # on the same call. Empty = no ALREADY TRIED block.
     already_tried: list[str] = field(default_factory=list)
     work: dict[str, Any] | None = None
+    compact: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +119,7 @@ class PlannerDecision:
     notes: str = ""
     evidence_ids: list[int] = field(default_factory=list)
     usage_tokens: int = 0
+    budget: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_finish(self) -> bool:
@@ -133,7 +133,7 @@ class PlannerDecision:
 # ── blackboard render ─────────────────────────────────────────────────
 
 
-def _render_skill_catalogue(skills: list[dict[str, Any]]) -> str:
+def _render_skill_catalogue(skills: list[dict[str, Any]], *, compact=False) -> str:
     """Render the skill catalogue as a compact, planner-readable block."""
     lines: list[str] = []
     for skill in skills:
@@ -142,10 +142,7 @@ def _render_skill_catalogue(skills: list[dict[str, Any]]) -> str:
         args = skill.get("args", {}) or {}
         arg_bits: list[str] = []
         for arg_name, spec in args.items():
-            required = (
-                "required" if isinstance(spec, dict) and spec.get("required")
-                else "optional"
-            )
+            required = "required" if isinstance(spec, dict) and spec.get("required") else "optional"
             arg_bits.append(f"{arg_name} ({required})")
         arg_str = ", ".join(arg_bits) if arg_bits else "no args"
         schema = skill.get("input_schema")
@@ -154,8 +151,10 @@ def _render_skill_catalogue(skills: list[dict[str, Any]]) -> str:
             from types import SimpleNamespace
 
             schema = input_schema(SimpleNamespace(arg_schema=args))
-        lines.append(f"- {name}: {desc} [args: {arg_str}]\n"
-                     + json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
+        lines.append(
+            (f"- {name}: {desc}\n" if compact else f"- {name}: {desc} [args: {arg_str}]\n")
+            + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        )
     return "\n".join(lines)
 
 
@@ -205,7 +204,7 @@ _SYSTEM_PROMPT = (
     "result, then decide again. Be efficient — use the fewest steps that "
     "actually answer the goal.\n\n"
     "Respond with ONE JSON object and nothing else:\n"
-    '{\n'
+    "{\n"
     '  "action": "<skill name> | finish | missing_capability",\n'
     '  "args": { ... },            // arguments for the chosen skill\n'
     '  "reason": "<one short sentence on why>",\n'
@@ -215,34 +214,30 @@ _SYSTEM_PROMPT = (
     "}\n\n"
     "Rules:\n"
     "- Pick a skill from the catalogue by its exact name to make progress.\n"
-    "- Pick \"finish\" when you have enough to answer the goal, OR when no "
-    "further step would help. Put a concise summary in \"findings\".\n"
-    "- Pick \"missing_capability\" ONLY when the goal genuinely requires "
+    '- Pick "finish" when you have enough to answer the goal, OR when no '
+    'further step would help. Put a concise summary in "findings".\n'
+    '- Pick "missing_capability" ONLY when the goal genuinely requires '
     "something none of the skills can do; name the missing capability "
-    "plainly (e.g. \"open and interact with a web page\"). Do NOT use it "
+    'plainly (e.g. "open and interact with a web page"). Do NOT use it '
     "just because a step failed.\n"
     "- Do NOT repeat an action that already ran with the same args.\n"
     "- Do NOT invent skills or args that aren't in the catalogue.\n"
     "- Be HONEST about failure. If steps failed and you could not actually "
-    "complete the goal, finish with outcome \"partial\" or \"nothing_found\" "
-    "and say plainly what went wrong in \"findings\". NEVER claim an action "
-    "succeeded (e.g. \"copied the file\") when its step status was failed."
+    'complete the goal, finish with outcome "partial" or "nothing_found" '
+    'and say plainly what went wrong in "findings". NEVER claim an action '
+    'succeeded (e.g. "copied the file") when its step status was failed.'
 )
 
 
 def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
     """Build the ``messages`` list for the planner's ``chat_json`` call."""
-    catalogue = _render_skill_catalogue(ctx.skills)
+    catalogue = _render_skill_catalogue(ctx.skills, compact=ctx.compact)
     history = _render_history(ctx.steps, ctx.history_budget_chars)
-    guidance_block = (
-        f"GUIDANCE:\n{ctx.guidance.strip()}\n\n" if ctx.guidance.strip() else ""
-    )
+    guidance_block = f"GUIDANCE:\n{ctx.guidance.strip()}\n\n" if ctx.guidance.strip() else ""
     tried = [t for t in (ctx.already_tried or []) if str(t).strip()]
     tried_block = (
         "ALREADY TRIED (do NOT repeat these exact calls — either try a "
-        "materially different action or finish):\n"
-        + "\n".join(f"- {t}" for t in tried)
-        + "\n\n"
+        "materially different action or finish):\n" + "\n".join(f"- {t}" for t in tried) + "\n\n"
         if tried
         else ""
     )
@@ -271,6 +266,8 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
             "inspect_result {task_id:int,offset:int,revision?:string,query?:string}; "
             "ask_user {question:string}; reply {message:string}; wait {seconds:int}. "
             "Use inspect_result to inspect omitted text or find a fact in a child result. "
+            "inspect_result {list:true,offset:int} lists owned result IDs when history is omitted. "
+            "Only current_observation contains current targets; historical refs may be stale. "
             "discover exposes another bounded catalogue, and use_profile changes your work role. "
             "Choose skills only from this turn's catalogue. "
             "Finish success requires owned successful "
@@ -282,7 +279,8 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
             "deliverable and constraints when changing profiles."
         )
         user_block += "\nWORK (saved state and source data):\n" + json.dumps(
-            ctx.work, ensure_ascii=False,
+            ctx.work,
+            ensure_ascii=False,
         )
     return [
         {"role": "system", "content": system},
@@ -293,9 +291,7 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
 # ── decision parsing ──────────────────────────────────────────────────
 
 
-def _parse_planner_response(
-    raw: str, *, valid_skill_names: set[str]
-) -> PlannerDecision:
+def _parse_planner_response(raw: str, *, valid_skill_names: set[str]) -> PlannerDecision:
     """Parse + validate the planner's raw JSON into a decision.
 
     Defensive: on any parse failure or unknown action, returns a
@@ -395,16 +391,21 @@ def parse_planner_response(raw: str, *, valid_skill_names: set[str]) -> PlannerD
         data = {}
     native = {"use_profile", "discover", "inspect_result", "ask_user", "reply", "wait"}
     action = data.get("action")
-    decision = (PlannerDecision(action=action, args=data.get("args") or {})
-                if isinstance(action, str) and action in native
-                else _parse_planner_response(raw, valid_skill_names=valid_skill_names))
+    decision = (
+        PlannerDecision(action=action, args=data.get("args") or {})
+        if isinstance(action, str) and action in native
+        else _parse_planner_response(raw, valid_skill_names=valid_skill_names)
+    )
     return replace(
-        decision, profile=str(data.get("profile") or "")[:40],
+        decision,
+        profile=str(data.get("profile") or "")[:40],
         plan=[str(x)[:300] for x in data.get("plan", [])[:12]]
-             if isinstance(data.get("plan"), list) else [],
+        if isinstance(data.get("plan"), list)
+        else [],
         notes=str(data.get("notes") or "")[:3000],
         evidence_ids=[x for x in data.get("evidence_ids", [])[:20] if type(x) is int]
-                     if isinstance(data.get("evidence_ids"), list) else [],
+        if isinstance(data.get("evidence_ids"), list)
+        else [],
     )
 
 
@@ -416,46 +417,132 @@ def decide_next_action(
     model: str | None = None,
     max_tokens: int = 512,
     timeout_seconds: float | None = None,
+    context_window: int | None = None,
+    estimate_scale: float = 1.0,
 ) -> PlannerDecision:
     """Run one planner decision via ``worker_client.chat_json``.
 
     Returns a validated :class:`PlannerDecision`. Any transport / LLM
-    failure degrades to a ``finish`` decision (the workflow stops and
-    reports what it has) — the planner must never raise back into the
-    handler loop.
+    failure degrades to a ``finish`` decision. Cancellation, admission
+    deferral and immutable-context overflow propagate to the handler so it
+    can checkpoint, pause or request input without claiming completion.
     """
-    messages = render_planner_messages(ctx)
-    options: dict[str, object] = {"num_predict": int(max_tokens)}
-    try:
-        raw, _usage = worker_client.chat_json(
-            messages,
-            model=model,
-            options=options,
-            timeout_seconds=timeout_seconds,
-            format_json=True,
-            # Picking the next workflow step from available skills is a
-            # planning decision; reasoning improves it. num_predict stays
-            # the answer budget — the client adds think headroom.
-            think=True,
-            surface="workflow_planner",
-        )
-    except Exception:
-        log.warning("planner: chat_json failed -> finishing", exc_info=True)
-        return PlannerDecision(
-            action=ACTION_FINISH,
-            outcome=OUTCOME_PARTIAL,
-            reason="planner LLM call failed",
-        )
-    decision = parse_planner_response(raw, valid_skill_names=valid_skill_names)
-    decision = replace(decision, usage_tokens=int(getattr(_usage, "total_tokens", 0) or 0))
-    log.info(
-        "planner decision: iter=%d action=%s skill=%s reason=%s",
-        ctx.iteration,
-        decision.action,
-        decision.skill or "-",
-        (decision.reason or "")[:80],
+    from app.core.tasks.workflow.context_budget import (
+        TaskBudget,
+        message_tokens,
+        pack_planner,
     )
-    return decision
+    from app.llm.call_scope import (
+        record_call_usage,
+        CallScope,
+        call_scope,
+        current_call_scope,
+        LlmCallCancelled,
+        LlmCallDeferred,
+    )
+
+    routine = bool(
+        ctx.work and ctx.work.get("profile") == "browser" and not ctx.work.get("failures")
+    )
+    budget = TaskBudget.resolve(
+        context_window, answer=max_tokens, routine=routine, scale=estimate_scale
+    )
+    messages, selected, report = pack_planner(ctx, budget)
+    valid = valid_skill_names & {row["name"] for row in selected}
+    options: dict[str, object] = {"num_predict": budget.answer}
+    scope = current_call_scope() or CallScope()
+    scope.reasoning_tokens = budget.reasoning
+    total_tokens, decision, repair = 0, None, False
+    started, queued_at_start = time.monotonic(), scope.queue_seconds
+    # The repair is an inference-only retry. No child operation has been admitted.
+    with call_scope(scope):
+        for attempt in range(2):
+            elapsed = time.monotonic() - started - (scope.queue_seconds - queued_at_start)
+            remaining = None if timeout_seconds is None else timeout_seconds - elapsed
+            if remaining is not None and remaining <= 0:
+                break
+            try:
+                raw, usage = worker_client.chat_json(
+                    messages,
+                    model=model,
+                    options=options,
+                    timeout_seconds=remaining,
+                    format_json=True,
+                    think=bool(budget.reasoning and not attempt),
+                    surface="workflow_planner",
+                )
+            except (LlmCallCancelled, LlmCallDeferred):
+                raise
+            except Exception:
+                log.warning("planner: chat_json failed -> finishing", exc_info=True)
+                decision = PlannerDecision(
+                    action=ACTION_FINISH, outcome=OUTCOME_PARTIAL, reason="planner LLM call failed"
+                )
+                break
+            record_call_usage(usage)
+            total_tokens += int(getattr(usage, "total_tokens", 0) or 0)
+            actual = int(getattr(usage, "prompt_tokens", 0) or 0)
+            report.pop("actual_input_tokens", None)
+            if actual:
+                report["actual_input_tokens"] = actual
+                estimate = message_tokens(messages)
+                report["next_estimate_scale"] = max(
+                    1.0, budget.scale * 0.98, min(4.0, actual / max(1, estimate) * 1.1)
+                )
+            decision = parse_planner_response(raw, valid_skill_names=valid)
+            try:
+                match = _JSON_OBJECT_RE.search(raw or "")
+                data = json.loads(match.group(0)) if match else None
+                known = valid | {
+                    "finish",
+                    "missing_capability",
+                    "use_profile",
+                    "discover",
+                    "inspect_result",
+                    "ask_user",
+                    "reply",
+                    "wait",
+                }
+                malformed = (
+                    not isinstance(data, dict)
+                    or not isinstance(data.get("action"), str)
+                    or data["action"] not in known
+                )
+            except (TypeError, ValueError):
+                malformed = True
+            if not malformed or attempt:
+                break
+            correction = [
+                {"role": "assistant", "content": (raw or "")[:2000]},
+                {
+                    "role": "user",
+                    "content": "No operation was executed. Correct the response to "
+                    "one JSON object using an exact exposed action name and valid args. "
+                    "Keep the original goal and constraints. Use finish with partial if blocked.",
+                },
+            ]
+            if message_tokens(messages + correction, budget.scale) > budget.input_limit:
+                break
+            messages += correction
+            scope.reasoning_tokens = 0
+            repair = True
+    decision = decision or PlannerDecision(
+        action=ACTION_FINISH, outcome=OUTCOME_PARTIAL, reason="planner inference budget exhausted"
+    )
+    report["repair_attempted"] = repair
+    report["estimated_input_tokens"] = message_tokens(messages, budget.scale)
+    report["queue_seconds"] = round(scope.queue_seconds - queued_at_start, 3)
+    log.info(
+        "workflow context: window=%d input=%d limit=%d answer=%d reasoning=%d tools=%d repair=%s",
+        budget.window,
+        report["estimated_input_tokens"],
+        budget.input_limit,
+        budget.answer,
+        budget.reasoning,
+        len(selected),
+        repair,
+    )
+    return replace(decision, usage_tokens=total_tokens, budget=report)
 
 
 __all__ = [

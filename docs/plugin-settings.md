@@ -133,6 +133,10 @@ routes are generic adapters. They do not know about browser weights, file roots
 or code workspaces. A plugin cannot add host settings branches or its own REST
 settings handlers through this API.
 
+Tool-result middleware can also provide a generic `planner_context` projection
+for important current state. See [task context budgeting](task-context-budget.md)
+for ownership, freshness and prompt sizing; browser formatting stays in its bundle.
+
 ## Dispatch and approval boundaries
 
 Changing configuration immediately revokes the old generation. The host retires

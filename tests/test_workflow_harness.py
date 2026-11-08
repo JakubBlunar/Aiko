@@ -578,13 +578,282 @@ def test_plugin_configuration_changed_during_planning_requires_fresh_plan(work):
     class Client:
         def chat_json(self, messages, **kwargs):
             registry.register(replace(registry.get("read_source"), generation="new"))
-            return json.dumps({"action": "read_source", "profile": "reader",
-                               "args": {"path": "first"}, "reason": "Inspect source"}), None
+            return json.dumps(
+                {
+                    "action": "read_source",
+                    "profile": "reader",
+                    "args": {"path": "first"},
+                    "reason": "Inspect source",
+                }
+            ), None
 
     task_id, _ = start_work(work, Client())
     finished = wait_status(store, task_id, {"done", "failed"})
     assert finished.result["outcome"] == "blocked"
     assert not store.list_children(task_id)
+
+
+def test_pause_while_queued_never_dispatches_inference_or_reserves_wait_time(work):
+    from app.llm.llm_gate import CONVERSATION_WORKER, TASK, GatedChatClient, LlmPriorityGate
+
+    store, _, orchestrator, _ = work
+    gate, calls = LlmPriorityGate(), []
+    gate.acquire(CONVERSATION_WORKER)
+    client = GatedChatClient(
+        SimpleNamespace(chat_json=lambda *a, **k: calls.append(True)), gate, TASK
+    )
+    task_id, _ = start_work(work, client)
+    try:
+        deadline = time.monotonic() + 3
+        while gate.stats()["queued"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert gate.stats()["queued"] == 1
+        assert store.get(task_id).state["active_reserved"] == 0
+        assert orchestrator.pause_work(task_id)
+        deadline = time.monotonic() + 3
+        while gate.stats()["queued"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert gate.stats()["queued"] == 0
+        assert calls == []
+        assert store.get(task_id).state["active_reserved"] == 0
+    finally:
+        gate.release(CONVERSATION_WORKER)
+
+
+def test_route_edit_while_queued_replans_with_new_context_and_preserves_contract(work):
+    from app.llm.llm_gate import CONVERSATION_WORKER, TASK, GatedChatClient, LlmPriorityGate
+
+    store, _, _, _ = work
+    gate, old_calls, new_calls, window = LlmPriorityGate(), [], [], [4096]
+    gate.acquire(CONVERSATION_WORKER)
+
+    def old(*a, **k):
+        old_calls.append(True)
+        return json.dumps(PARTIAL), None
+
+    def new(*a, **k):
+        new_calls.append(True)
+        return json.dumps(PARTIAL), None
+
+    client = GatedChatClient(SimpleNamespace(chat_json=old), gate, TASK)
+    task_id, _ = start_work(work, client, context_window_provider=lambda: window[0])
+    deadline = time.monotonic() + 3
+    while gate.stats()["queued"] == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    window[0] = 8192
+    client.retarget(SimpleNamespace(chat_json=new), None)
+    gate.release(CONVERSATION_WORKER)
+    finished = wait_status(store, task_id, {"done", "failed"}, timeout=7)
+    assert finished.status == "done", finished.error
+    assert old_calls == [] and new_calls == [True]
+    assert finished.state["contract"]["objective"] == "Inspect the source"
+    assert finished.state["context_budget"]["context_window"] == 8192
+    assert finished.state["iteration"] == 1
+
+
+def test_deferred_review_resumes_without_repeating_planner(work, monkeypatch):
+    from app.llm.call_scope import CallScope
+    from app.llm.llm_gate import CONVERSATION_WORKER, TASK, GatedChatClient, LlmPriorityGate
+
+    monkeypatch.setattr(
+        "app.core.tasks.workflow.harness_mixin.CallScope",
+        lambda **kwargs: CallScope(queue_timeout=0.05, **kwargs),
+    )
+    store, _, _, _ = work
+    gate, finish_entered, occupied, release = (
+        LlmPriorityGate(),
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
+    calls = {"planner": 0, "review": 0}
+
+    def holder():
+        assert finish_entered.wait(4)
+        gate.acquire(CONVERSATION_WORKER)
+        occupied.set()
+        release.wait(4)
+        gate.release(CONVERSATION_WORKER)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+
+    class Client:
+        def chat_json(self, messages, **kwargs):
+            if kwargs["surface"] == "workflow_verify":
+                calls["review"] += 1
+                return '{"supported":true,"reason":"Saved evidence supports the answer."}', None
+            calls["planner"] += 1
+            if calls["planner"] == 1:
+                return json.dumps(READ), None
+            assert calls["planner"] == 2
+            child = next(row for row in store.list_for_user("u") if row.parent_task_id)
+            finish_entered.set()
+            deadline = time.monotonic() + 3
+            while not gate.stats()["queued"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+            return json.dumps(
+                {
+                    "action": "finish",
+                    "outcome": "success",
+                    "findings": "The orchard is blue.",
+                    "evidence_ids": [child.id],
+                }
+            ), None
+
+    task_id, _ = start_work(work, GatedChatClient(Client(), gate, TASK))
+    try:
+        assert occupied.wait(4)
+        deadline = time.monotonic() + 3
+        row = store.get(task_id)
+        while row.phase != "waiting_model" or row.status != "paused":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+            row = store.get(task_id)
+        assert row.state["review_request"]["findings"] == "The orchard is blue."
+        assert row.state["active_reserved"] == 0
+        release.set()
+        done = wait_status(store, task_id, {"done", "failed"}, timeout=7)
+        assert done.status == "done", done.error
+        assert done.result["outcome"] == "success"
+        assert calls == {"planner": 2, "review": 1}
+        assert done.state["iteration"] == 2
+    finally:
+        release.set()
+        thread.join(3)
+
+
+def test_browser_projection_survives_compaction_then_becomes_stale_after_action(work):
+    store, _, orchestrator, registry = work
+    page = "Page: orchard\n" + "\n".join(f'[button] "Action {n}" ref=e{n}' for n in range(1, 41))
+
+    class Browser:
+        name = "fake_browser"
+
+        def start(self, args, emit):
+            result = {"content": "Clicked", "summary": "Click acknowledged"}
+            if args["operation"] == "snapshot":
+                result = {
+                    "content": page,
+                    "summary": "Page observed",
+                    "planner_context": {
+                        "kind": "current_page",
+                        "resource": "tab-one",
+                        "content": page,
+                    },
+                }
+            emit(TaskCompleted(result=result))
+            return {}
+
+        def cancel(self, state):
+            pass
+
+    orchestrator.register_handler(Browser())
+    for operation in ("snapshot", "click"):
+        registry.register(
+            WorkflowSkill(
+                name=f"browser__{operation}",
+                description=operation,
+                group="mcp:browser",
+                generation="one",
+                effect="read",
+                input_schema={"type": "object"},
+                spawn=lambda args, ctx, op=operation: ctx.orchestrator.start_task(
+                    user_id=ctx.user_id,
+                    handler_name="fake_browser",
+                    title=op,
+                    args={"operation": op, "server_id": "browser", "_config_generation": "one"},
+                    parent_task_id=ctx.parent_task_id,
+                    notify_aiko=False,
+                ),
+            )
+        )
+
+    class Client:
+        calls = 0
+
+        def chat_json(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps({"action": "browser__snapshot", "profile": "browser"}), None
+            if self.calls == 2:
+                assert "ref=e40" in messages[1]["content"]
+                return json.dumps({"action": "browser__click", "args": {"ref": "e40"}}), None
+            assert '"status": "stale"' in messages[1]["content"]
+            assert "ref=e40" not in messages[1]["content"]
+            return json.dumps(PARTIAL), None
+
+    task_id, _ = start_work(work, Client(), context_window_provider=lambda: 8192)
+    done = wait_status(store, task_id, {"done", "failed"})
+    assert done.status == "done", done.error
+    assert done.state["current_observation"]["status"] == "stale"
+    assert store.list_children(task_id)[0].result["planner_context"]["content"] == page
+
+
+def test_guidance_arriving_during_review_discards_old_completion(work):
+    store, events, _, _ = work
+    entered, release = threading.Event(), threading.Event()
+
+    class Client:
+        calls = 0
+
+        def chat_json(self, messages, **kwargs):
+            if kwargs["surface"] == "workflow_verify":
+                entered.set()
+                assert release.wait(5)
+                return '{"supported":true,"reason":"The original answer is supported."}', None
+            self.calls += 1
+            if self.calls == 1:
+                return json.dumps(READ), None
+            if self.calls == 2:
+                child = next(row for row in store.list_for_user("u") if row.parent_task_id)
+                return json.dumps(
+                    {
+                        "action": "finish",
+                        "outcome": "success",
+                        "findings": "Original answer",
+                        "evidence_ids": [child.id],
+                    }
+                ), None
+            assert "Also check the second source" in messages[1]["content"]
+            return json.dumps(PARTIAL), None
+
+    client = Client()
+    task_id, _ = start_work(work, client)
+    try:
+        assert entered.wait(3)
+        events.append(
+            task_id,
+            type="work_message",
+            data={"role": "user", "kind": "guidance", "content": "Also check the second source"},
+        )
+        release.set()
+        done = wait_status(store, task_id, {"done", "failed"})
+        assert done.status == "done", done.error
+        assert done.result["outcome"] == "partial"
+        assert done.result["content"] == PARTIAL["findings"]
+        assert done.state["verification"]["status"] == "outdated"
+        assert client.calls == 3
+    finally:
+        release.set()
+
+
+def test_all_explicit_guidance_is_preserved_even_after_ten_messages(work):
+    _, _, orchestrator, registry = work
+    handler = GoalWorkflowHandler(
+        orchestrator=orchestrator, skill_registry=registry, worker_client_provider=lambda: None
+    )
+    state = {"message_cursor": 0, "guidance": []}
+    orchestrator.work_messages = lambda *a, **k: [
+        SimpleNamespace(
+            id=n,
+            created_at="2026-11-07",
+            data={"role": "user", "kind": "guidance", "content": f"Constraint {n}"},
+        )
+        for n in range(12)
+    ]
+    assert handler._guidance(1, state)
+    assert [row["content"] for row in state["guidance"]] == [f"Constraint {n}" for n in range(12)]
 
 
 def test_work_discussion_uses_saved_evidence_without_dispatching_operations(work):

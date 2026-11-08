@@ -99,29 +99,48 @@ class WorkDiscussion:
             "operation. Be conversational and concise. JSON {reply: string}."
             " Relative dates in the original request refer to requested_at, not this new turn."
         )
+        from app.core.tasks.workflow.context_budget import TaskBudget, pack_review
+        from app.llm.call_scope import CallScope, call_scope, LlmCallCancelled
+
+        budget = TaskBudget.resolve(
+            self.handler._context_window_provider(), answer=600, routine=True
+        )
         try:
-            raw, _ = self.handler._worker_client_provider().chat_json(
+            messages, _ = pack_review(
+                system,
+                {
+                    "contract": row.state.get("contract") or {"objective": frame["goal"]},
+                    "latest_message": (question.data or {}).get("content", ""),
+                    "requested_at": row.created_at,
+                    "status": row.status,
+                    "phase": row.phase,
+                },
                 [
-                    {"role": "system", "content": system},
-                    {
-                        "role": "user",
-                        "content": json.dumps(frame, ensure_ascii=False)
-                        + "\nWORK CONVERSATION:\n"
-                        + transcript,
-                    },
+                    {"task_id": task_id, "content": "WORK CONVERSATION:\n" + transcript},
+                    {"task_id": task_id, "content": json.dumps(frame, ensure_ascii=False)},
                 ],
-                model=self.handler._model(),
-                options={"num_predict": 600},
-                format_json=True,
-                surface="work_discussion",
-                timeout_seconds=120,
+                budget,
             )
+            with call_scope(
+                CallScope(cancelled=self.closed.is_set, queue_timeout=None, reasoning_tokens=0)
+            ):
+                raw, _ = self.handler._worker_client_provider().chat_json(
+                    messages,
+                    model=self.handler._model(),
+                    options={"num_predict": budget.answer},
+                    format_json=True,
+                    think=False,
+                    surface="work_discussion",
+                    timeout_seconds=30,
+                )
             reply = json.loads(raw).get("reply")
             if not isinstance(reply, str) or not reply.strip():
                 raise ValueError("empty discussion reply")
             reply = strip_all_meta_tags(reply.strip())[:5000].strip()
             if not reply:
                 raise ValueError("discussion reply contained only hidden tags")
+        except LlmCallCancelled:
+            return
         except Exception:
             reply = (
                 "I couldn’t answer that work question. Your message is saved; you can try again."

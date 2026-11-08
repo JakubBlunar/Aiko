@@ -191,6 +191,7 @@ class GoalWorkflowHandler(WorkflowHarnessMixin):
         skill_registry: WorkflowSkillRegistry,
         worker_client_provider: Callable[[], Any],
         model_provider: Callable[[], str | None] | None = None,
+        context_window_provider: Callable[[], int | None] | None = None,
         user_name_provider: Callable[[], str] | None = None,
         on_capability_gap: Callable[[dict[str, Any]], None] | None = None,
         max_iterations: int = 6,
@@ -210,6 +211,7 @@ class GoalWorkflowHandler(WorkflowHarnessMixin):
         self._skills = skill_registry
         self._worker_client_provider = worker_client_provider
         self._model_provider = model_provider
+        self._context_window_provider = context_window_provider or (lambda: None)
         self._user_name_provider = user_name_provider
         self._on_capability_gap = on_capability_gap
         # Worker-lane skill router: when the provider returns True, the

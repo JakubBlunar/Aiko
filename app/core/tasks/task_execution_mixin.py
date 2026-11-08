@@ -71,6 +71,8 @@ def task_snapshot(row: TaskRow) -> dict[str, Any]:
                     "iteration",
                     "children",
                     "active_seconds",
+                    "queue_seconds",
+                    "context_budget",
                     "tokens",
                     "limits",
                     "pending",

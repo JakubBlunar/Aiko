@@ -577,6 +577,8 @@ class TaskOrchestrationMixin(PluginSettingsMixin):
                 model_provider=lambda: getattr(
                     self._settings.llm.routes.get("workflow"), "model", None
                 ) or getattr(self, "_effective_worker_model", None),
+                context_window_provider=lambda: getattr(self, "_workflow_context_window",
+                                                         lambda: None)(),
                 user_name_provider=lambda: getattr(
                     self, "user_display_name", "the user"
                 ),

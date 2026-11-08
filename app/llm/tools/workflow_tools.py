@@ -166,7 +166,7 @@ class StartWorkflowTool:
             metadata["reply_when_done"] = True
         origin = (getattr(self._session, "_active_turn_user_text", "") or "").strip()
         if origin:
-            metadata["origin_prompt"] = origin[:2000]
+            metadata["origin_prompt"] = origin
         metadata["source_session"] = getattr(self._session, "session_key", None)
         try:
             task_id = orch.start_task(

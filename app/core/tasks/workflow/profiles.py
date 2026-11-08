@@ -28,7 +28,13 @@ def supports(skill, profile: str) -> bool:
 
 
 def catalogue(
-    registry, profile: str, *, query: str = "", page: int = 0, budget: int = 18000
+    registry,
+    profile: str,
+    *,
+    query: str = "",
+    page: int = 0,
+    budget: int = 18000,
+    page_size: int = 12,
 ) -> list[dict]:
     import json
 
@@ -45,11 +51,11 @@ def catalogue(
             )
         )
     selected, used = [], 0
-    for row in rows[max(0, page) * 12 :]:
+    for row in rows[max(0, page) * page_size : (max(0, page) + 1) * page_size]:
         cost = len(json.dumps(row, ensure_ascii=False))
         if cost > budget:
             continue  # A schema is omitted whole, never truncated into an invalid contract.
-        if used + cost > budget or len(selected) >= 12:
+        if used + cost > budget or len(selected) >= page_size:
             break
         selected.append(row)
         used += cost

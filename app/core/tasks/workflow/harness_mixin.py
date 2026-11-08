@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from copy import deepcopy
 import contextvars
 from dataclasses import asdict
@@ -11,6 +12,8 @@ import logging
 import threading
 import time
 
+from app.llm.call_scope import CallScope, call_scope, LlmCallCancelled, LlmCallDeferred
+from app.core.tasks.workflow.context_budget import TaskContextOverflow
 from app.core.infra import timephrase
 from app.core.tasks.task_handler import TaskCompleted, TaskFailed, TaskInputNeeded, TaskProgress
 from app.core.tasks.workflow.harness_results import inspect_result, result_text, verify_completion
@@ -69,6 +72,13 @@ class WorkflowHarnessMixin:
             emit(TaskFailed(error="Work task identity is unavailable."))
             return {}
         row = self._orchestrator.get(task_id)
+        if state is not None and state.get("current_observation"):
+            previous = state["current_observation"]
+            state["current_observation"] = {
+                "status": "stale",
+                "server_id": previous.get("server_id"),
+                "instruction": "Work resumed. Obtain a new observation before using old targets.",
+            }
         if state is None:
             goal = str(args.get("goal") or "").strip()
             if not goal:
@@ -160,6 +170,8 @@ class WorkflowHarnessMixin:
         )
 
     def _running(self, task_id: int, state: dict) -> bool:
+        if getattr(self, "_harness_stopped", False):
+            return False
         row = self._orchestrator.get(task_id)
         return (
             not getattr(self, "_harness_stopped", False)
@@ -185,8 +197,138 @@ class WorkflowHarnessMixin:
                         "created_at": event.created_at,
                     }
                 )
-        state["guidance"] = state["guidance"][-10:]
         return changed
+
+    def _inference_identity(self):
+        revision = getattr(self._worker_client_provider(), "routing_revision", 0)
+        return [
+            self._model(),
+            self._context_window_provider(),
+            revision if type(revision) is int else 0,
+        ]
+
+    def _context_options(self, state):
+        identity = self._inference_identity()
+        if state.get("context_identity") != identity:
+            state["context_identity"], state["context_scale"] = identity, 1.0
+        return {"context_window": identity[1], "estimate_scale": state.get("context_scale", 1.0)}
+
+    def _current_context(self, state):
+        observation = state.get("current_observation")
+        if observation and observation.get("status") == "current":
+            generation = observation.get("generation", "")
+            owner = observation.get("server_id")
+            if not any(
+                row.get("group") == f"mcp:{owner}" and row.get("generation", "") == generation
+                for row in self._skills.describe_for_planner()
+            ):
+                observation = {
+                    "status": "stale",
+                    "server_id": owner,
+                    "instruction": "Capability changed. Obtain a new observation before acting.",
+                }
+                state["current_observation"] = observation
+        return observation
+
+    @contextmanager
+    def _task_inference(self, task_id, state, emit, phase):
+        def waiting():
+            state["active_reserved"] = 0
+            if not self._save(task_id, state):
+                raise LlmCallCancelled()
+            emit(
+                TaskProgress(
+                    message="Waiting for the shared model; cognition has priority.",
+                    phase="waiting_model",
+                )
+            )
+
+        def acquired():
+            if not self._running(task_id, state):
+                raise LlmCallCancelled()
+            identity = self._inference_identity()
+            if state.get("context_identity") != identity:
+                raise LlmCallDeferred()
+            if self._guidance(task_id, state):
+                self._save(task_id, state)
+                raise LlmCallDeferred()
+            state["active_reserved"] = min(
+                30, max(0, state["limits"]["active_seconds"] - state["active_seconds"])
+            )
+            if not self._save(task_id, state):
+                raise LlmCallCancelled()
+            emit(
+                TaskProgress(
+                    message="Reviewing evidence" if phase == "reviewing" else "Planning next step",
+                    phase=phase,
+                )
+            )
+
+        scope = CallScope(
+            cancelled=lambda: not self._running(task_id, state),
+            on_wait=waiting,
+            on_acquired=acquired,
+        )
+        try:
+            with call_scope(scope):
+                yield scope
+        finally:
+            state["active_seconds"] += scope.active_seconds
+            state["tokens"] += scope.reported_tokens
+            state["queue_seconds"] = state.get("queue_seconds", 0.0) + scope.queue_seconds
+            state["active_reserved"] = 0
+            if self._running(task_id, state):
+                self._save(task_id, state)
+
+    def _record_context_budget(self, state, emit, stage, report):
+        from app.core.tasks.task_handler import TaskEventEmit
+
+        state["context_budget"] = {"stage": stage, **report}
+        state["context_scale"] = report.get("next_estimate_scale", state.get("context_scale", 1.0))
+        emit(TaskEventEmit(type="work_context_budget", data=state["context_budget"]))
+
+    def _review_work(self, task_id, state, emit):
+        request = state["review_request"]
+        remaining = state["limits"]["active_seconds"] - state["active_seconds"]
+        if remaining < 1:
+            self._orchestrator.suspend_work(task_id, phase="budget_exhausted")
+            return False
+        with self._task_inference(task_id, state, emit, "reviewing"):
+            check, usage = verify_completion(
+                self._worker_client_provider(),
+                self._model(),
+                state,
+                self._orchestrator,
+                task_id,
+                request["findings"],
+                request["evidence_ids"],
+                min(30, remaining),
+                **self._context_options(state),
+            )
+        state["verification"] = check
+        if check.get("budget"):
+            self._record_context_budget(state, emit, "review", check["budget"])
+        if not self._running(task_id, state):
+            return False
+        if self._guidance(task_id, state):
+            state.pop("review_request", None)
+            state["verification"] = {
+                "status": "outdated",
+                "reason": "User guidance changed during review.",
+            }
+            return self._save(task_id, state)
+        state.pop("review_request", None)
+        if check["status"] != "supported":
+            state["review_attempts"] += 1
+            state["notes"] = "Completion review needs: " + check["reason"]
+            self._message(task_id, state["notes"], kind="review", profile="reviewer")
+            if state["review_attempts"] < 3:
+                self._save(task_id, state)
+                return True
+            self._finish_work(task_id, state, emit, "partial", state["notes"])
+            return False
+        self._finish_work(task_id, state, emit, request["outcome"], request["findings"])
+        return False
 
     def _harness_slice(self, task_id: int, state: dict, emit) -> None:
         try:
@@ -196,6 +338,10 @@ class WorkflowHarnessMixin:
                         task_id, state, emit, "partial", "This work expired while waiting."
                     )
                     return
+                if state.get("review_request"):
+                    if not self._review_work(task_id, state, emit):
+                        return
+                    continue
                 if state.get("pending"):
                     if not self._continue_pending(task_id, state, emit):
                         return
@@ -219,72 +365,69 @@ class WorkflowHarnessMixin:
                     return
                 self._guidance(task_id, state)
                 state["iteration"] += 1
-                state["active_reserved"] = min(
-                    120,
-                    max(
-                        1,
-                        state["limits"]["active_seconds"] - state["active_seconds"],
-                    ),
-                )
+                state["active_reserved"] = 0
                 if not self._save(task_id, state):
                     return
                 skills = catalogue(
                     self._skills,
                     state["profile"],
-                    query=state.get("query", ""),
+                    query=state.get("query") or state["goal"],
                     page=state.get("catalogue_page", 0),
+                    page_size=6,
                 )
                 emit(TaskProgress(message=f"Planning with {state['profile']}", phase="planning"))
-                started = time.monotonic()
-                decision = decide_next_action(
-                    self._worker_client_provider(),
-                    PlannerInput(
-                        goal=state["goal"],
-                        skills=skills,
-                        steps=[
-                            PlannerStep(
-                                **{
-                                    key: step[key]
-                                    for key in (
-                                        "skill",
-                                        "args",
-                                        "status",
-                                        "observation",
-                                        "child_id",
-                                        "profile",
-                                    )
-                                }
-                            )
-                            for step in state["steps"]
-                        ],
-                        iteration=state["iteration"] - 1,
-                        max_iterations=state["limits"]["iterations"],
-                        history_budget_chars=max(8000, self._history_budget),
-                        user_name=self._user_name(),
-                        guidance=self._planner_guidance(skills),
-                        work={
-                            "contract": state["contract"],
-                            "profile": state["profile"],
-                            "profile_instructions": PROFILES[state["profile"]],
-                            "profiles": PROFILES,
-                            "capability_groups": sorted(self._skills.groups())[:40],
-                            "plan": state["plan"],
-                            "notes": state["notes"],
-                            "inspected_results": state["inspections"][-3:],
-                            "user_guidance": timephrase.format_transcript(state["guidance"]),
-                            "remaining_steps": state["limits"]["iterations"] - state["iteration"],
-                        },
-                    ),
-                    valid_skill_names={row["name"] for row in skills},
-                    model=self._model(),
-                    max_tokens=max(800, self._planner_max_tokens),
-                    timeout_seconds=min(
-                        120, max(1, state["limits"]["active_seconds"] - state["active_seconds"])
-                    ),
-                )
-                state["active_seconds"] += time.monotonic() - started
-                state["active_reserved"] = 0
-                state["tokens"] += decision.usage_tokens
+                with self._task_inference(task_id, state, emit, "planning"):
+                    decision = decide_next_action(
+                        self._worker_client_provider(),
+                        PlannerInput(
+                            goal=state["goal"],
+                            skills=skills,
+                            steps=[
+                                PlannerStep(
+                                    **{
+                                        key: step[key]
+                                        for key in (
+                                            "skill",
+                                            "args",
+                                            "status",
+                                            "observation",
+                                            "child_id",
+                                            "profile",
+                                        )
+                                    }
+                                )
+                                for step in state["steps"]
+                            ],
+                            iteration=state["iteration"] - 1,
+                            max_iterations=state["limits"]["iterations"],
+                            history_budget_chars=max(8000, self._history_budget),
+                            user_name=self._user_name(),
+                            guidance=self._planner_guidance(skills),
+                            work={
+                                "contract": state["contract"],
+                                "profile": state["profile"],
+                                "failures": state["failures"] + state.get("admission_failures", 0),
+                                "current_observation": self._current_context(state),
+                                "profile_instructions": PROFILES[state["profile"]],
+                                "profiles": PROFILES,
+                                "capability_groups": sorted(self._skills.groups())[:40],
+                                "plan": state["plan"],
+                                "notes": state["notes"],
+                                "inspected_results": state["inspections"][-3:],
+                                "user_guidance": timephrase.format_transcript(state["guidance"]),
+                                "remaining_steps": state["limits"]["iterations"]
+                                - state["iteration"],
+                            },
+                        ),
+                        valid_skill_names={row["name"] for row in skills},
+                        model=self._model(),
+                        max_tokens=self._planner_max_tokens,
+                        **self._context_options(state),
+                        timeout_seconds=min(
+                            30, max(1, state["limits"]["active_seconds"] - state["active_seconds"])
+                        ),
+                    )
+                self._record_context_budget(state, emit, "planner", decision.budget)
                 if not self._running(task_id, state):
                     return
                 if self._guidance(task_id, state):
@@ -298,40 +441,14 @@ class WorkflowHarnessMixin:
                     state["profile"] = decision.profile
                 if decision.is_finish:
                     if decision.outcome in {"success", "nothing_found"}:
-                        remaining = state["limits"]["active_seconds"] - state["active_seconds"]
-                        if remaining < 1:
-                            if self._save(task_id, state):
-                                self._orchestrator.suspend_work(task_id, phase="budget_exhausted")
-                            return
-                        state["active_reserved"] = min(120, remaining)
+                        state["review_request"] = {
+                            "findings": decision.findings,
+                            "evidence_ids": decision.evidence_ids,
+                            "outcome": decision.outcome,
+                        }
                         if not self._save(task_id, state):
                             return
-                        started = time.monotonic()
-                        check, usage = verify_completion(
-                            self._worker_client_provider(),
-                            self._model(),
-                            state,
-                            self._orchestrator,
-                            task_id,
-                            decision.findings,
-                            decision.evidence_ids,
-                            state["active_reserved"],
-                        )
-                        state["active_seconds"] += time.monotonic() - started
-                        state["active_reserved"] = 0
-                        state["tokens"] += int(getattr(usage, "total_tokens", 0) or 0)
-                        state["verification"] = check
-                        if check["status"] != "supported":
-                            state["review_attempts"] += 1
-                            state["notes"] = "Completion review needs: " + check["reason"]
-                            self._message(
-                                task_id, state["notes"], kind="review", profile="reviewer"
-                            )
-                            if state["review_attempts"] < 3:
-                                self._save(task_id, state)
-                                continue
-                            self._finish_work(task_id, state, emit, "partial", state["notes"])
-                            return
+                        continue
                     self._finish_work(
                         task_id,
                         state,
@@ -371,9 +488,21 @@ class WorkflowHarnessMixin:
                 if skill and not supports(skill, state["profile"]):
                     errors.append("Switch to a profile that supports this operation.")
                 if errors:
+                    state["admission_failures"] = state.get("admission_failures", 0) + 1
                     self._record_observation(state, decision.skill, "rejected", "; ".join(errors))
+                    if state["admission_failures"] >= 2:
+                        self._finish_work(
+                            task_id,
+                            state,
+                            emit,
+                            "blocked",
+                            "I could not form a valid operation after a correction. "
+                            "The original request and results are saved for a fresh plan.",
+                        )
+                        return
                     self._save(task_id, state)
                     continue
+                state["admission_failures"] = 0
                 canonical = hashlib.sha256(
                     json.dumps(
                         [decision.skill, decision.args]
@@ -406,6 +535,25 @@ class WorkflowHarnessMixin:
                     return
                 self._message(
                     task_id, decision.reason or f"Using {decision.skill}.", profile=state["profile"]
+                )
+        except LlmCallCancelled:
+            return
+        except LlmCallDeferred:
+            if self._running(task_id, state):
+                if not state.get("review_request"):
+                    state["iteration"] = max(0, state["iteration"] - 1)
+                state["wake_at"] = time.time() + 2
+                if self._save(task_id, state):
+                    self._orchestrator.suspend_work(task_id, phase="waiting_model")
+        except TaskContextOverflow:
+            if self._running(task_id, state):
+                self._save(task_id, state)
+                emit(
+                    TaskInputNeeded(
+                        prompt="The original request and constraints cannot fit "
+                        "safely in this model's context. Please narrow this step "
+                        "or select a larger context."
+                    )
                 )
         except Exception:
             log.exception("work slice failed: task=%s", task_id)
@@ -456,6 +604,26 @@ class WorkflowHarnessMixin:
                 if child and child.result
                 else (child.error if child else "Result unavailable")
             )
+            server_id = (child.args or {}).get("server_id") if child else None
+            current = state.get("current_observation") or {}
+            if server_id and current.get("server_id") == server_id:
+                state["current_observation"] = {
+                    "status": "stale",
+                    "server_id": server_id,
+                    "after_task_id": pending["child_id"],
+                    "instruction": "Resource changed. Obtain a new observation before acting.",
+                }
+            projection = (child.result or {}).get("planner_context") if child else None
+            if status == "done" and isinstance(projection, dict):
+                state["current_observation"] = {
+                    **projection,
+                    "status": "current",
+                    "server_id": server_id,
+                    "source_task_id": child.id,
+                    "recorded_at": child.completed_at,
+                    "generation": (child.args or {}).get("_config_generation", ""),
+                }
+                text = str((child.result or {}).get("summary") or "Observation saved")
             self._record_observation(
                 state,
                 pending["skill"],

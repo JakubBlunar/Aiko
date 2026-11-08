@@ -8,7 +8,7 @@ No separate agent service or vendor framework is required.
 ## What a job saves
 
 The existing SQLite task owns the objective, completion criteria, constraints,
-initiating user/session, bounded original conversation request, profile, short
+initiating user/session, full original conversation request, profile, short
 plan, factual notes, result references, pending operation and usage counters.
 Companion memories are not a scratchpad for work. Work messages live in the task
 event log; private reasoning is not requested.
@@ -18,11 +18,14 @@ reviewer. They change role instructions and available operations, using the
 configured `workflow` model route and host worker gate. They are sequential work
 roles, not concurrent autonomous agents. No user profile setup is necessary.
 
-Each planning call sees at most 12 complete operation contracts and 18,000
-catalogue characters. Aiko can discover another page or search the catalogue.
+Each planning call sees up to six complete operation contracts within a dynamic
+context budget. Aiko can discover another page or search the catalogue.
 Full JSON schemas, including nested fields and enums, are validated before
 dispatch; an undisclosed operation cannot be invoked. Legacy native operations
 with an empty v1 schema remain explicitly open object contracts.
+
+[Task context and scheduling](task-context-budget.md) describes prompt selection,
+generation reserves, shared-model admission and the work drawer's diagnostics.
 
 Child creation and the parent's step-to-child link commit together. A step
 surviving restart can adopt its existing child. Checkpoint epochs fence old
@@ -40,7 +43,7 @@ when their next execution slice starts.
 Defaults for new configurations are 32 planning decisions, 48 children, 1,800
 seconds of active model-call time and 40,000 reported tokens. Existing explicit
 nonzero limits remain effective; a legacy zero time budget uses the new bounded
-default. Time spent waiting for a user or child is not
+default. Time spent waiting for a user, child or shared-model admission is not
 charged to active planning time. A model call interrupted by pause/restart is
 conservatively charged its saved time reservation. Provider token usage can be
 missing, and usage from a lost response cannot be reconstructed: this is not a
