@@ -10,6 +10,10 @@ read-only pilot through the existing SDK: explicit source scope, bounded editor
 tools and syntax adapters. It is disabled by default. This does not complete the
 broader P3 grants system, semantic language-server work or live-model validation.
 
+The [2026-11-08 Hermes comparison](hermes-harness-review-2026-11-08.md) adds a
+prioritized proposal for worker-authored speech using Aiko's style/concepts,
+stable task prompts, recoverable outputs and bounded plugin procedures.
+
 ## Recommended order
 
 | Slice | Practical improvement | Can develop without live testing? |
