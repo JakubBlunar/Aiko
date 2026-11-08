@@ -63,6 +63,91 @@ context when drafting a report, and budget it alongside evidence and output.
 Version persona/concept inputs so a delayed draft can be refreshed when needed.
 Keep task facts, concept interpretations and speaking preferences distinguishable.
 
+### Infrequent learning from actual replies
+
+The user additionally proposed learning the speaking guide from Aiko's last X
+responses. This should be a small derived cache consumed by local reporters,
+not a new always-on brain prompt or a replacement for grounded concepts.
+
+Existing pieces have different jobs: `AikoStylePatternTracker` detects opener,
+question and length ruts; `style_signal.py` measures the user's current register;
+`communication_style_aiko.py` proposes grounded concepts about Aiko's deliberate
+delivery choices. None currently supplies the proposed compact guide for a
+small task-reporting model. Reuse their signals and concept facade rather than
+changing their meanings or treating frequent phrasing as a new identity fact.
+
+Proposed starting policy, to tune from usage:
+
+- Sample up to 128 eligible ordinary conversational replies within a bounded
+  recent period, balanced across sessions and situations. A count limit alone
+  is insufficient: also cap source tokens and retain complete short examples.
+  Include a small paired user excerpt when needed to explain the register,
+  clearly labeled as the user's words rather than Aiko's style evidence.
+- Bootstrap after roughly 24 eligible replies. Subsequently refresh no more
+  than once per day and only after roughly 32 new eligible replies, or a
+  material persona/style change. Count and source-signature probes are cheap;
+  no new evidence means no LLM call. These numbers are proposed defaults, not
+  implemented settings or measured optimal thresholds.
+- Run only when idle, using the cheap worker route and low inference priority.
+  Thinking is unnecessary for distilling delivery patterns. Save the result
+  across restarts; do not rebuild it for each task or progress message.
+- Store a compact structured guide, a handful of short source-linked examples,
+  source message/session IDs and timestamps, persona/concept revisions and
+  generation provenance. Budget the model-facing guide to roughly 400-600
+  tokens; the source sample can be larger without being copied into each job.
+- Learn delivery: register, rhythm, contractions, detail by situation, warmth,
+  playfulness, uncertainty and how questions are used. Retain distinct modes
+  for casual exchange, technical explanation and serious/sensitive discussion
+  when the evidence supports them. Task progress gets concise, specific speech;
+  it does not copy the length or intimacy of an unrelated conversation.
+
+Prevent feedback loops by recording response origin at assistant-message
+commit. By default, exclude locally generated task reports, prepared nudges,
+notifications, tool text, quoted material and failed/truncated answers from
+the teacher sample. Do not assume that an old `role=assistant` row is ordinary
+brain conversation when provenance is unavailable. The initial bootstrap needs
+an explicit eligibility rule for historical data, not silent reclassification.
+User/session scope and source deletion must invalidate affected cached samples.
+
+Use the existing rut detectors as negative signals: repeated openers or a
+temporary question-ending habit are not instructions to imitate. A short-lived
+mood should not become the global voice. Remove inline tags before analysis;
+age-tag transcripts and include `today_anchor` and `STORED_TEXT_TIME_RULE`.
+Generated guide text stores stable descriptions rather than bare relative dates.
+
+Validate the generated fields, length and cited source IDs. Source snippets are
+evidence, not new instructions. Do not invent biographical claims or convert
+sample topics into facts. Keep concepts and their lifecycle as the source for
+identity/relationship interpretations; the guide describes delivery only.
+Live persona edits and explicit user guidance take precedence immediately.
+Preserve the previous valid guide if inference fails, and avoid changing its
+model-facing revision for a no-op refresh. Deleted sources or incompatible
+persona changes require invalidation and a persona-based fallback.
+
+### Keep the saved guide off the cloud reporting path
+
+The cost-saving contract is explicit: eligible progress and final task reports
+are composed locally and delivered directly. The cloud brain does not rewrite,
+approve or polish each local report. Learning the guide also uses the cheap
+route. A failed local draft remains saved/retryable; it must not silently fall
+back to a paid cloud report. The next ordinary conversation turn sees committed
+reports as history so Aiko can answer follow-ups coherently.
+
+Select report milestones by new, useful information, with deduplication and
+coalescing. Allow more natural progress speech when the work earns it, while
+keeping tool starts, model waits and repetitive status in the drawer. Respect
+an explicit request for quieter or more frequent updates. Spoken reports use
+the shared text cleanup, supported reaction/prosody handling, normal TTS queue,
+voice ownership and interruption behavior; do not force all reports into a
+generic narrator voice.
+
+Acceptance additionally covers learner cadence/no-new-data skips, exclusion of
+its own reports, source deletion, cross-session/user isolation, persona edits,
+bad source citations, empty/failed refreshes and restart reuse. Test that a
+normal local progress/final delivery invokes the cloud reporting model zero
+times. Measure cloud reporting calls avoided, style fidelity and added local
+inference time separately from tool/task correctness.
+
 ### Draft once, then deliver
 
 The goal worker should produce an explicit user-facing `report` field, distinct
