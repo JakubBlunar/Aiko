@@ -113,7 +113,7 @@ The runtime constructs a [`PluginApi`](../app/plugins/sdk.py), calls
   - `api.register_tool_result_middleware(mw, *, server_id=None, tool_names=None)`
     — see below.
   - `api.register_fast_tool(*, name, description, parameters, handler,
-    family=None, gate_patterns=None)` — a **brain-lane fast tool** (see
+    family=None, gate_patterns=None, workflow_read_only=False)` — a **brain-lane fast tool** (see
     below). Call it any number of times to ship a family of tools.
 
 Zero-import basic plugins work because `api` is injected — a plugin needs no
@@ -180,6 +180,10 @@ Key points:
   always run (`reason="unknown_tool"`).
 - **Multiple tools per plugin.** Call `register_fast_tool` as many times as you
   like; each becomes its own tool in the brain `ToolRegistry`.
+- **Workflow sharing (explicit opt-in).** Set `workflow_read_only=True` for
+  reads/calculations without external writes. The same fast implementation and
+  full schema become available as saved workflow children. Settings and plugin
+  generation changes revoke old calls. The calculator enables this option.
 
 The bundled **calculator** plugin (`plugins/calculator/`) is the reference: it
 moves the old core `calculate` builtin into a plugin, shipping its evaluator in

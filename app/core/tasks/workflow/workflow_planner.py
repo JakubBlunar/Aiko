@@ -285,6 +285,10 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
             "Only current_observation contains current targets; historical refs may be stale. "
             "discover exposes another bounded catalogue, and use_profile changes your work role. "
             "Choose skills only from this turn's catalogue. "
+            "Names in capability_groups are discovery hints, not callable contracts. "
+            "If a needed tool is named there but absent from SKILLS, first use "
+            "discover {names:[exact_tool_name]}; do not call it or give up yet. "
+            "The goal and conversation can contain assumptions; verify them against sources. "
             "Finish success requires owned successful "
             "result IDs in evidence_ids and an independent completion review. Read back mutations "
             "when the goal requires exact saved contents. If blocked, ask a specific question. "
@@ -392,7 +396,7 @@ def _parse_planner_response(raw: str, *, valid_skill_names: set[str]) -> Planner
 
     # Unknown / empty action: stop cleanly.
     log.warning(
-        "planner: unknown action=%r (valid=%s) -> finishing",
+        "planner: unknown action=%r (valid=%s); no operation executed",
         action_raw,
         sorted(valid_skill_names),
     )
@@ -448,6 +452,7 @@ def decide_next_action(
     ctx: PlannerInput,
     *,
     valid_skill_names: set[str],
+    discoverable_skill_names: set[str] | None = None,
     model: str | None = None,
     max_tokens: int = 512,
     timeout_seconds: float | None = None,
@@ -524,6 +529,7 @@ def decide_next_action(
                     1.0, budget.scale * 0.98, min(4.0, actual / max(1, estimate) * 1.1)
                 )
             decision = parse_planner_response(raw, valid_skill_names=valid)
+            data = None
             try:
                 match = _JSON_OBJECT_RE.search(raw or "")
                 data = json.loads(match.group(0)) if match else None
@@ -547,6 +553,16 @@ def decide_next_action(
                 )
             except (TypeError, ValueError):
                 malformed = True
+            requested = data.get("action") if isinstance(data, dict) else None
+            if (
+                malformed and ctx.work is not None and isinstance(requested, str)
+                and requested in (discoverable_skill_names or set()) and requested not in valid
+            ):
+                # The model saw a manifest hint, not its full contract. Expose it
+                # on the next planning turn; never dispatch undisclosed arguments.
+                log.info("planner: undisclosed action=%s -> discovering contract", requested)
+                decision = PlannerDecision(action="discover", args={"names": [requested]})
+                break
             if not malformed or attempt:
                 break
             correction = [
@@ -555,7 +571,9 @@ def decide_next_action(
                     "role": "user",
                     "content": "No operation was executed. Correct the response to "
                     "one JSON object using an exact exposed action name and valid args. "
-                    "Keep the original goal and constraints. Use finish with partial if blocked.",
+                    "Keep the original goal and constraints. If the desired tool is absent "
+                    "from SKILLS, use discover {names:[exact_tool_name]} to expose it first. "
+                    "Use finish with partial only if discovery cannot help.",
                 },
             ]
             if message_tokens(messages + correction, budget.scale) > budget.input_limit:

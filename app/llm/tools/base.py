@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from dataclasses import dataclass
+from copy import deepcopy
 from typing import Any, Protocol
 
 from jsonschema.validators import validator_for
@@ -79,12 +81,16 @@ class ToolRegistry:
     calls; the registry is read-only after build).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, workflow_scope: str = "") -> None:
         self._tools: dict[str, Tool] = {}
         self._validators: dict[str, Any] = {}
         self._schemas: dict[str, ToolSchema] = {}
+        self._workflow: dict[str, str] = {}
+        self._workflow_scope = workflow_scope
 
-    def register(self, tool: Tool) -> None:
+    def register(
+        self, tool: Tool, *, workflow_read_only: bool = False, workflow_generation: str = ""
+    ) -> None:
         schema = tool.schema()
         parameters = dict(schema.parameters)
         # Tool parameter objects name their accepted arguments. Explicit
@@ -97,6 +103,22 @@ class ToolRegistry:
         self._validators[schema.name] = validator(parameters)
         self._schemas[schema.name] = schema
         self._tools[schema.name] = tool
+        self._workflow.pop(schema.name, None)
+        if workflow_read_only:
+            self._workflow[schema.name] = hashlib.sha256(json.dumps(
+                [self._workflow_scope, workflow_generation, schema.to_ollama()], sort_keys=True
+            ).encode()).hexdigest()
+
+    def workflow_tools(self) -> list[dict[str, Any]]:
+        """Explicitly shared read operations; reuse the registered, validated contracts."""
+        return [
+            {"name": name, "description": self._schemas[name].description,
+             "input_schema": deepcopy(self._schemas[name].parameters), "generation": generation}
+            for name, generation in sorted(self._workflow.items())
+        ]
+
+    def workflow_revision(self, name: str) -> str | None:
+        return self._workflow.get(name)
 
     def names(self) -> list[str]:
         return sorted(self._tools.keys())
@@ -133,7 +155,12 @@ class ToolRegistry:
             names = [n for n in names if n in allow]
         return [self._schemas[n].to_ollama() for n in names]
 
-    def dispatch(self, name: str, arguments: dict[str, Any], *, call_id: str = "") -> ToolResult:
+    def dispatch(
+        self, name: str, arguments: dict[str, Any], *, call_id: str = "",
+        workflow_generation: str | None = None,
+    ) -> ToolResult:
+        if workflow_generation is not None and self._workflow.get(name) != workflow_generation:
+            return ToolResult(name, call_id, "Tool settings changed; discover it again.", ok=False)
         tool = self._tools.get(name)
         if tool is None:
             return ToolResult(
@@ -153,7 +180,8 @@ class ToolRegistry:
         if error is not None:
             return ToolResult(name=name, call_id=call_id, content=error, ok=False)
         try:
-            content = tool.run(arguments or {})
+            run = getattr(tool, "run_for_workflow", tool.run) if workflow_generation else tool.run
+            content = run(arguments or {})
         except ToolError as exc:
             return ToolResult(name=name, call_id=call_id, content=str(exc), ok=False)
         except Exception as exc:

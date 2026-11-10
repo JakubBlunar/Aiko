@@ -98,6 +98,137 @@ def test_guide_uses_completed_teacher_replies_not_its_own_reports(env, invalidat
     assert guide.context()["revision"] != context["revision"]
 
 
+@pytest.fixture
+def teacher_guide(env):
+    db, _, _ = env
+    for i in range(26):
+        question = db.add_message("u:s", "user", f"Explain switch {i}")
+        db.add_message(
+            "u:s",
+            "assistant",
+            f"Switch {i} controls the garden lighting. Change it to see the lamps brighten, "
+            "then choose whichever level feels comfortable while you read.",
+            outcome=TurnOutcome(provider_id="brain", status="completed", user_message_id=question),
+        )
+    client = SimpleNamespace(chat_json=None)
+    guide = SpeechGuide(
+        db,
+        user=lambda: "u",
+        session=lambda: "u:s",
+        persona=lambda: "You are Aiko.\n\nHow you talk:\n- Natural, specific sentences.",
+        client=lambda: client,
+        model=lambda: "small",
+        window=lambda: 4096,
+    )
+    return guide, client
+
+
+@pytest.mark.parametrize("window", [4096, 8192, 32768])
+def test_guide_can_finish_a_full_sized_valid_refresh(teacher_guide, monkeypatch, window):
+    from app.core.persona import speech_guide
+    from app.core.tasks.workflow.context_budget import message_tokens, tokens
+
+    guide, client = teacher_guide
+    guide.window = lambda: window
+    original_pack = speech_guide.pack_review
+
+    def pack(system, frame, evidence, budget):
+        messages, report = original_pack(system, frame, evidence, budget)
+        assert budget.reasoning == 0
+        assert budget.input_limit + budget.answer + budget.margin == window
+        assert message_tokens(messages) <= budget.input_limit
+        return messages, report
+
+    monkeypatch.setattr(speech_guide, "pack_review", pack)
+
+    def learn(messages, **kwargs):
+        frame = json.loads(messages[1]["content"])
+        ids = [row["task_id"] for row in frame["evidence"][:3]]
+        samples = {row["id"]: row["content"] for row in guide._samples()}
+        raw = json.dumps(
+            {
+                "modes": [
+                    {
+                        "when": situation,
+                        "guidance": "Name the concrete effect first, then offer one useful detail "
+                        "in a natural sentence without repeating a stock opener "
+                        "or inventing facts.",
+                        "source_ids": ids,
+                    }
+                    for situation in (
+                        "explaining how a setting changes the shared environment",
+                        "answering a practical question about the garden lighting",
+                        "helping choose a comfortable level for a quiet activity",
+                        "responding to a follow-up about a particular control",
+                    )
+                ],
+                "examples": [{"message_id": mid, "text": samples[mid]} for mid in ids[:2]],
+            }
+        )
+        required = tokens(raw)
+        assert 384 < required <= 600
+        # Simulate a provider cutting the JSON when its output allowance is too small.
+        cap = kwargs["options"]["num_predict"]
+        if cap < required:
+            return raw[: len(raw) * cap // required], SimpleNamespace(done_reason="length")
+        return raw, SimpleNamespace(done_reason="stop")
+
+    client.chat_json = learn
+    assert guide.run()["learned"]
+    assert len(guide.context(max_tokens=2000)["learned_delivery"]["modes"]) == 4
+
+
+@pytest.mark.parametrize("failure", ["truncated", "malformed", "missing_usage"])
+def test_bad_guide_refresh_preserves_previous_guide_and_backs_off(teacher_guide, caplog, failure):
+    guide, client = teacher_guide
+
+    def learn(messages, **kwargs):
+        frame = json.loads(messages[1]["content"])
+        ids = [row["task_id"] for row in frame["evidence"][:3]]
+        return json.dumps(
+            {
+                "modes": [{"when": "explaining", "guidance": "Be specific.", "source_ids": ids}],
+                "examples": [],
+            }
+        ), None
+
+    client.chat_json = learn
+    assert guide.run()["learned"]
+    stored = guide._stored()
+    context = guide.context()
+    calls = []
+
+    def fail(*args, **kwargs):
+        calls.append(kwargs)
+        if failure == "truncated":
+            # Even syntactically complete JSON must be rejected when the provider
+            # says it ran out of output room.
+            raw, _ = learn(*args, **kwargs)
+            return raw, SimpleNamespace(done_reason="length", completion_tokens=1024)
+        return '{"modes":[{"when":"unfinished', (
+            None if failure == "missing_usage" else SimpleNamespace(done_reason="stop")
+        )
+
+    client.chat_json = fail
+    guide._retry_after = 0
+    # Make the refresh due without changing the retained guide or its sources.
+    from unittest.mock import patch
+
+    with patch.object(guide, "demand", return_value=SimpleNamespace(pressure=0.2)):
+        result = guide.run()
+    assert result["skipped"]
+    assert result["reason"] == (
+        "truncated refresh" if failure == "truncated" else "invalid refresh JSON"
+    )
+    assert guide._stored() == stored
+    assert guide.context() == context
+    assert guide.run()["skipped"] and len(calls) == 1
+    warning = next(record for record in caplog.records if record.name == "app.speech_guide")
+    assert warning.exc_info is None
+    assert "answer_limit=" in warning.getMessage()
+    assert "unfinished" not in warning.getMessage()
+
+
 def make_reports(env, *, fail=False):
     db, store, orch = env
     tid = store.create(
@@ -124,6 +255,8 @@ def make_reports(env, *, fail=False):
 
     def local(messages, **kwargs):
         calls.append(kwargs)
+        if kwargs.get("surface") == "work_report_review":
+            return json.dumps({"supported": True}), None
         assert "orchard" in messages[1]["content"]
         if fail:
             raise RuntimeError("local model unavailable")
@@ -148,7 +281,7 @@ def make_reports(env, *, fail=False):
 def test_report_commits_once_without_cloud_and_survives_restart(env):
     reports, tid, calls, queued, shown, _ = make_reports(env)
     reports.tick()
-    assert len(calls) == len(queued) == 1
+    assert len(calls) == 2 and len(queued) == 1
     session, rid = queued[0]
     assert reports.deliver(session, rid)
     assert not reports.deliver(session, rid)
@@ -159,7 +292,7 @@ def test_report_commits_once_without_cloud_and_survives_restart(env):
     assert db.get_turn_outcomes(session) == []  # cannot become teacher evidence
     reports._notified.clear()
     reports.tick()
-    assert len(calls) == 1 and len(shown) == 1
+    assert len(calls) == 2 and len(shown) == 1
     db.delete_message_rows(session, [messages[0].id])
     reports.tick()
     assert db.get_messages(session) == []  # deletion is not permission to replay

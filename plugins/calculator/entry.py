@@ -82,4 +82,5 @@ def define_plugin(api) -> None:
         handler=_calculate,
         family="math",
         gate_patterns=_GATE_PATTERNS,
+        workflow_read_only=True,
     )

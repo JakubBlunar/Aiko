@@ -11,9 +11,12 @@ from __future__ import annotations
 import json
 import random
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
+
+from app.core.infra import timephrase
 
 from app.core.proactive.hobby_worker import (
     KV_CURRENT_HOBBY,
@@ -121,7 +124,7 @@ def _write_hobby(db: _FakeChatDb, **fields: Any) -> dict[str, Any]:
         "artifact_detail": "an epistolary novel about two botanists and a war",
         "progress": 0,
         "advances": 0,
-        "started_at": "2026-07-01T10:00:00+00:00",
+        "started_at": timephrase.utcnow().isoformat(),
         "last_advanced_at": None,
         "progress_source": "research",
     }
@@ -274,6 +277,21 @@ class HobbyMathTests(unittest.TestCase):
             recent_artifacts=("the skyline from the window",),
         ))
 
+    def test_admit_rejects_renamed_subject_even_in_another_kind(self) -> None:
+        for kind, title in (
+            ("making", "Basil Leaf Vein Map: Trial 5"),
+            ("tending", "Basil Leaf Polishing & Scent Mapping Ritual"),
+        ):
+            with self.subTest(title=title):
+                self.assertIsNone(hobby_mod.admit_proposal(
+                    {"kind": kind, "artifact": title}, leaving_kind="learning",
+                    recent_artifacts=("Basil Leaf Vein Chroma Resonance Analysis: Trial 4",),
+                ))
+        self.assertIsNotNone(hobby_mod.admit_proposal(
+            {"kind": "making", "artifact": "Map of the evening skyline"},
+            leaving_kind="learning", recent_artifacts=("Basil Leaf Vein Map",),
+        ))
+
     def test_admit_accepts_a_named_other_kind(self) -> None:
         proposal = hobby_mod.admit_proposal(
             {
@@ -306,6 +324,51 @@ class HobbyMathTests(unittest.TestCase):
 
 
 class HobbyWorkerTests(unittest.TestCase):
+    def test_stalled_project_rotates_despite_recent_failed_attempt(self) -> None:
+        db = _FakeChatDb()
+        now = timephrase.utcnow()
+        _write_hobby(
+            db, kind="learning", advances=2, progress=2,
+            started_at=(now - timedelta(days=33)).isoformat(),
+            last_advanced_at=(now - timedelta(days=15)).isoformat(),
+            last_research_attempt_at=now.isoformat(),
+        )
+        worker = _worker(db=db)
+        worker._research = None
+        self.assertEqual(worker.demand(now=now, last_run_at=None).reason, "rotate")
+        self.assertTrue(worker.is_ready(now=now, last_run_at=None))
+        self.assertTrue(worker.run()["rotated"])
+        self.assertNotEqual(load_hobby(db.kv_get)["kind"], "learning")
+        self.assertEqual(len(load_hobby_history(db.kv_get)), 1)
+
+    def test_recent_progress_keeps_an_old_project_alive(self) -> None:
+        db = _FakeChatDb()
+        now = timephrase.utcnow()
+        _write_hobby(
+            db, started_at=(now - timedelta(days=30)).isoformat(),
+            last_advanced_at=now.isoformat(),
+        )
+        worker = _worker(db=db)
+        self.assertEqual(worker.demand(now=now, last_run_at=None).reason, "pacing")
+        self.assertTrue(worker.run()["waiting"])
+
+    def test_late_saved_finding_is_applied_before_stall_rotation(self) -> None:
+        db = _FakeChatDb()
+        _write_hobby(db, started_at=(timephrase.utcnow() - timedelta(days=10)).isoformat())
+        worker = _worker(db=db)
+        self.assertTrue(worker.run()["advanced"])
+        self.assertEqual(load_hobby(db.kv_get)["progress"], 1)
+        self.assertEqual(load_hobby_history(db.kv_get), [])
+
+    def test_never_started_progress_can_stall_and_legacy_dates_are_safe(self) -> None:
+        now = timephrase.utcnow()
+        for stamp in (None, "invalid"):
+            self.assertFalse(hobby_mod.is_stalled({"started_at": stamp}, now=now))
+        self.assertTrue(hobby_mod.is_stalled(
+            {"started_at": (now - timedelta(days=7)).replace(tzinfo=None).isoformat()},
+            now=now,
+        ))
+
     def test_first_run_starts_hobby(self) -> None:
         db = _FakeChatDb()
         worker = _worker(db=db)
@@ -681,6 +744,31 @@ class _Host(InnerLifeProvidersMixin):
 
 
 class HobbyProviderTests(unittest.TestCase):
+    def test_stalled_project_is_silent_before_worker_rotates(self) -> None:
+        host = _Host(state={
+            "label": "studying leaves", "last_result": "An old finding.",
+            "last_advanced_at": "2026-10-25T03:29:41+00:00",
+            "last_research_attempt_at": "2026-11-09T17:09:47+00:00",
+        })
+        with patch.object(timephrase, "utcnow", return_value=datetime(
+            2026, 11, 9, tzinfo=timezone.utc,
+        )):
+            self.assertEqual(host._render_hobby_block(), "")
+
+    def test_saved_finding_is_dated_and_is_not_a_fresh_update(self) -> None:
+        host = _Host(state={
+            "label": "studying leaves", "last_result": "A saved finding.",
+            "last_result_at": "2026-11-08T10:00:00+00:00",
+            "last_advanced_at": "2026-11-08T11:00:00+00:00",
+        })
+        with patch.object(timephrase, "utcnow", return_value=datetime(
+            2026, 11, 9, tzinfo=timezone.utc,
+        )):
+            out = host._render_hobby_block()
+        self.assertIn("(14 hours ago)", out)
+        self.assertIn("let it rest", out)
+        self.assertIn("not direct observation", out)
+
     def test_empty_when_no_hobby(self) -> None:
         host = _Host()
         self.assertEqual(host._render_hobby_block(), "")

@@ -11,6 +11,7 @@ from app.core.infra import timephrase
 from app.core.persona.speech_guide import digest
 from app.core.services.response_text_service import strip_all_meta_tags, parse_reaction_at_start
 from app.core.tasks.workflow.context_budget import TaskBudget, pack_review
+from app.core.tasks.work_report_grounding import owned_evidence, fallback, review_report
 from app.llm.call_scope import (
     CallScope,
     call_scope,
@@ -110,6 +111,7 @@ class WorkReports:
         )
         return digest(
             [
+                "grounded-report-v1",
                 row.status,
                 row.result,
                 row.input_request,
@@ -227,6 +229,16 @@ class WorkReports:
             self.lock.release()
 
     def _draft(self, row, rid, basis, facts):
+        sources = owned_evidence(row, self.orchestrator, facts)
+        result = row.result or {}
+        if facts["kind"] == "final" and not sources and not (
+            result.get("outcome") == "success"
+            and result.get("verification", {}).get("status") == "supported"
+        ):
+            # A job with no successful evidence cannot suddenly acquire an answer
+            # in the narration model. No generative call is needed for this case.
+            self._save_draft(row, rid, basis, fallback(row), "neutral")
+            return
         system = (
             "You are the companion in speaking_context reporting your own background work. "
             "Use the speaking context as delivery guidance; examples are not facts. "
@@ -235,14 +247,14 @@ class WorkReports:
             "partial result success. Lead with the useful finding or specific question; no "
             "greeting or generic progress filler. Progress: one or two natural sentences. "
             "Final: give the requested answer, or a clear result and a pointer to longer saved "
-            "work. Do not invent anything omitted from excerpts. Return JSON "
-            "{text:string,reaction:string}; reaction is neutral, cheerful, calm, serious, "
-            "gentle or confused as fits the finding.\n" + timephrase.STORED_TEXT_TIME_RULE
+            "work. Do not invent anything omitted from excerpts. "
+            "The contract describes what was requested, including potentially false "
+            "assumptions; it is not evidence that any claim is true. "
+            "Return JSON {text:string,reaction:string}; reaction is neutral, cheerful, calm, "
+            "serious, gentle or confused as fits the finding.\n" + timephrase.STORED_TEXT_TIME_RULE
         )
         route = bind_route(self.client, self.model, self.window)
         budget = TaskBudget.resolve(route.window, answer=768, routine=False)
-        recent = self.db.get_messages(self.session(), limit=6)
-        transcript = timephrase.format_transcript(recent)
         frame = {
             "contract": row.state.get("contract", {"objective": row.title}),
             "current_time": timephrase.today_anchor(),
@@ -252,7 +264,7 @@ class WorkReports:
         }
         evidence = [
             {"task_id": row.id, "content": json.dumps(facts, ensure_ascii=False)},
-            {"task_id": row.id, "content": "Recent conversation:\n" + transcript},
+            *sources,
         ]
         messages, _ = pack_review(system, frame, evidence, budget)
         conn = self.db._get_conn()
@@ -283,6 +295,15 @@ class WorkReports:
                     surface="work_report",
                 )
                 record_call_usage(usage)
+                parsed = json.loads(raw)
+                text = parsed.get("text") if isinstance(parsed, dict) else None
+                if not isinstance(text, str) or not 5 <= len(text) <= 6000:
+                    raise ValueError("Invalid local work report")
+                if not review_report(
+                    route, text, facts, sources, timeout=max(1, 30 - scope.active_seconds)
+                ):
+                    log.warning("Ungrounded work report rejected: task=%s report=%s", row.id, rid)
+                    raw = json.dumps({"text": fallback(row), "reaction": "neutral"})
         except (LlmCallDeferred, LlmCallCancelled):
             deferred = True
             raise
@@ -320,13 +341,16 @@ class WorkReports:
         cleaned = strip_all_meta_tags(text).strip()
         if not cleaned or scope.cancelled():
             return
+        self._save_draft(row, rid, basis, cleaned, reaction or "neutral")
+
+    def _save_draft(self, row, rid, basis, text, reaction):
         current = self.orchestrator.get(row.id)
         if current is None or self._basis(current) != basis:
             return
         self.db.execute_commit(
             "UPDATE work_reports SET draft=?,reaction=? "
             "WHERE id=? AND status='pending' AND basis=?",
-            (cleaned, reaction or "neutral", rid, basis),
+            (text, reaction, rid, basis),
         )
 
     def deliver(self, session, report_id):

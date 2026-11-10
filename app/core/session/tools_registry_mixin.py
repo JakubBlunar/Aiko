@@ -31,6 +31,17 @@ class ToolsRegistryMixin:
         except Exception:
             return []
 
+    def _sync_workflow_fast_tools(self):
+        from app.core.tasks.workflow.fast_tools import shared_fast_skills
+
+        skills = getattr(self, "_workflow_skill_registry", None)
+        if skills is not None:
+            tools = getattr(self._settings, "tools", None)
+            skills.set_web_search_enabled(
+                bool(getattr(tools, "enabled", True) and getattr(tools, "web_search", True))
+            )
+            skills.replace_fast(shared_fast_skills(self._tool_registry))
+
     def rebuild_tool_registry(self) -> None:
         """Rebuild the tool registry after settings change.
 
@@ -42,6 +53,7 @@ class ToolsRegistryMixin:
         except Exception:
             log.warning("tool registry import failed", exc_info=True)
             self._tool_registry = None
+            self._sync_workflow_fast_tools()
             if hasattr(self, "_turn_runner"):
                 self._turn_runner.set_tool_registry(None)
             return
@@ -49,10 +61,16 @@ class ToolsRegistryMixin:
         tools_cfg = getattr(self._settings, "tools", None)
         if tools_cfg is None or not getattr(tools_cfg, "enabled", True):
             self._tool_registry = ToolRegistry()
+            self._sync_workflow_fast_tools()
             self._turn_runner.set_tool_registry(self._tool_registry)
             return
 
-        registry = ToolRegistry()
+        from app.core.persona.speech_guide import digest
+
+        registry = ToolRegistry(workflow_scope=digest([
+            self._user_id, self.session_key, repr(tools_cfg),
+            repr(getattr(self._settings, "search", None)),
+        ]))
         try:
             if (
                 getattr(tools_cfg, "conversation_history", True)
@@ -63,7 +81,7 @@ class ToolsRegistryMixin:
                 registry.register(ConversationHistoryTool(
                     self._chat_db, self._user_id,
                     getattr(tools_cfg, "archive_timezone", "system"),
-                ))
+                ), workflow_read_only=True)
             if (
                 getattr(tools_cfg, "calendar", False)
                 and getattr(self, "_chat_db", None) is not None
@@ -87,10 +105,11 @@ class ToolsRegistryMixin:
                 RecallTopicTool,
             )
             if getattr(tools_cfg, "get_time", True):
-                registry.register(GetTimeTool())
+                registry.register(GetTimeTool(), workflow_read_only=True)
             has_retriever = getattr(self, "_rag_retriever", None) is not None
             if getattr(tools_cfg, "recall", True) and has_retriever:
-                registry.register(RecallTool(self._rag_retriever, self._user_id))
+                registry.register(RecallTool(self._rag_retriever, self._user_id),
+                                  workflow_read_only=True)
             if (
                 getattr(tools_cfg, "recall", True)
                 and getattr(getattr(self._settings, "memory", None), "enabled", False)
@@ -98,7 +117,7 @@ class ToolsRegistryMixin:
             ):
                 from app.llm.tools.diary import ReadDiaryTool, WriteDiaryTool
 
-                registry.register(ReadDiaryTool(self))
+                registry.register(ReadDiaryTool(self), workflow_read_only=True)
                 if getattr(self, "_embedder", None) is not None:
                     registry.register(WriteDiaryTool(self))
             if (any(getattr(tools_cfg, name, True) for name in (
@@ -107,18 +126,20 @@ class ToolsRegistryMixin:
                     and getattr(self, "_memory_store", None) is not None):
                 from app.llm.tools.memory_inspection import InspectMemoryTool
 
-                registry.register(InspectMemoryTool(self.inspect_memory))
+                registry.register(InspectMemoryTool(self.inspect_memory), workflow_read_only=True)
             # F10d cluster-scoped recall. Gated by its own switch but needs
             # the same retriever; only useful once the topic graph is wired
             # (the tool returns an empty result otherwise, so it is safe to
             # register regardless).
             if getattr(tools_cfg, "recall_topic", True) and has_retriever:
-                registry.register(RecallTopicTool(self._rag_retriever, self._user_id))
+                registry.register(RecallTopicTool(self._rag_retriever, self._user_id),
+                                  workflow_read_only=True)
             # L5 concept recall. Same retriever; useful once the concept
             # store is wired (empty result otherwise, so safe to register
             # regardless).
             if getattr(tools_cfg, "recall_concept", True) and has_retriever:
-                registry.register(RecallConceptTool(self._rag_retriever, self._user_id))
+                registry.register(RecallConceptTool(self._rag_retriever, self._user_id),
+                                  workflow_read_only=True)
             # L19 self-history. Reads the concept + learning-event stores
             # rather than the retriever, so it is gated on those being
             # wired: without them the arc would always be a thin record,
@@ -129,7 +150,8 @@ class ToolsRegistryMixin:
                 and getattr(self, "_concept_learning_store", None) is not None
             ):
                 registry.register(
-                    RecallSelfHistoryTool(self.self_history, self.understanding_history)
+                    RecallSelfHistoryTool(self.self_history, self.understanding_history),
+                    workflow_read_only=True,
                 )
             # L30 Phase B open guesses. Gated on the concept store only:
             # the facade serves grounded candidates even with no invented
@@ -140,7 +162,7 @@ class ToolsRegistryMixin:
                 and getattr(self, "_concept_store", None) is not None
             ):
                 registry.register(
-                    RecallHypothesesTool(self.open_hypotheses)
+                    RecallHypothesesTool(self.open_hypotheses), workflow_read_only=True,
                 )
             if (getattr(tools_cfg, "recall", True)
                     and getattr(self, "_belief_store", None) is not None
@@ -148,7 +170,7 @@ class ToolsRegistryMixin:
                                 "belief_tracking_enabled", True)):
                 from app.llm.tools.belief_reads import RecallBeliefsTool
 
-                registry.register(RecallBeliefsTool(self.recall_beliefs))
+                registry.register(RecallBeliefsTool(self.recall_beliefs), workflow_read_only=True)
             # ``calculate`` moved to the bundled ``calculator`` plugin
             # (see ``plugins/calculator/``) — it now registers via the
             # ToolPlugin SDK fast-tool path below, not as a core builtin.
@@ -162,7 +184,7 @@ class ToolsRegistryMixin:
                     from app.llm.tools.weather import build_weather_tools
 
                     for tool in build_weather_tools(self):
-                        registry.register(tool)
+                        registry.register(tool, workflow_read_only=True)
                 except Exception:
                     log.warning(
                         "weather tools failed to register", exc_info=True
@@ -172,7 +194,7 @@ class ToolsRegistryMixin:
                     from app.llm.tools.activity import GetActivityTool
 
                     registry.register(
-                        GetActivityTool(self.pull_activity_for_tool)
+                        GetActivityTool(self.pull_activity_for_tool), workflow_read_only=True,
                     )
                 except Exception:
                     log.warning(
@@ -205,7 +227,7 @@ class ToolsRegistryMixin:
                             assistant_name_provider=self._fact_check_assistant_name,
                             on_results=self._stash_turn_search_results,
                         )
-                    ))
+                    ), workflow_read_only=True)
                 except Exception:
                     log.warning(
                         "brain web_search failed to register", exc_info=True
@@ -274,7 +296,11 @@ class ToolsRegistryMixin:
                 try:
                     from app.llm.tools.plugin_tool import PluginFastTool
 
-                    registry.register(PluginFastTool(spec))
+                    registry.register(
+                        PluginFastTool(spec),
+                        workflow_read_only=getattr(spec, "workflow_read_only", False),
+                        workflow_generation=getattr(spec, "workflow_generation", ""),
+                    )
                 except Exception:
                     log.warning(
                         "plugin fast tool failed to register: %s",
@@ -284,6 +310,7 @@ class ToolsRegistryMixin:
         except Exception:
             log.warning("tool registry build failed", exc_info=True)
         self._tool_registry = registry
+        self._sync_workflow_fast_tools()
         if hasattr(self, "_turn_runner"):
             self._turn_runner.set_tool_registry(registry)
             self._turn_runner.set_plugin_tool_gate(

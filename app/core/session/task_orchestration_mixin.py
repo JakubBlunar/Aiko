@@ -569,6 +569,12 @@ class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
             )
             # Future MCP-provided skills register onto this same object.
             self._workflow_skill_registry = skill_registry
+            from app.core.tasks.handlers.fast_tool import FastToolHandler
+
+            self._task_orchestrator.register_handler(FastToolHandler(
+                lambda user, session: getattr(self, "_tool_registry", None)
+                if user == self._user_id and session in {None, self.session_key} else None
+            ))
             handler = GoalWorkflowHandler(
                 orchestrator=self._task_orchestrator,
                 skill_registry=skill_registry,

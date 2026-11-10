@@ -162,6 +162,8 @@ class _FastToolSpec:
     handler: Callable[[dict[str, Any]], str]
     family: str | None = None
     gate_patterns: tuple[str, ...] = ()
+    workflow_read_only: bool = False
+    workflow_generation: str = ""
 
 
 # ── the api handed to define_plugin ───────────────────────────────────
@@ -391,6 +393,7 @@ class PluginApi:
         handler: Callable[[dict[str, Any]], str],
         family: str | None = None,
         gate_patterns: Sequence[str] | None = None,
+        workflow_read_only: bool = False,
     ) -> None:
         """Register a brain-lane fast tool (synchronous, called inline).
 
@@ -404,6 +407,10 @@ class PluginApi:
         the gate can skip / narrow when the turn has no matching signal. A
         tool with no ``family`` still works, but forces the gate to always
         run (``reason="unknown_tool"``).
+
+        ``workflow_read_only=True`` also shares this operation with background
+        workflows. Declare it only for reads/calculations without external writes;
+        calls keep the same schema, lifecycle generation and saved task results.
         """
         tool_name = str(name or "").strip()
         if not tool_name:
@@ -429,6 +436,7 @@ class PluginApi:
                 handler=handler,
                 family=fam or None,
                 gate_patterns=patterns,
+                workflow_read_only=workflow_read_only is True,
             )
         )
 

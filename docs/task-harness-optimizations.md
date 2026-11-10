@@ -50,6 +50,14 @@ changes and model waits remain drawer status. Identical progress is deduplicated
 newer pending progress supersedes older updates, and completion supersedes
 pending progress.
 
+Reporting hardening (2026-11-09): the narrator receives saved task facts and
+successful owned sources, not recent conversation as evidence. Unverified runs
+without successful source results use a deterministic failure report, with no
+narration call. Generated drafts receive a separate local grounding review;
+rejected drafts fall back to the saved verified finding or an honest incomplete
+result. The review's tokens/time count in the same attempt record. Old pending
+drafts require a fresh source basis; already committed reports are not replayed.
+
 The original session/user owns each report. The durable outbox stores its
 milestone identity, source basis, draft and committed assistant-message ID.
 Guidance, task state, persona/concept changes and session ownership are checked

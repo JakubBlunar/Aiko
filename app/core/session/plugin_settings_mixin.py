@@ -141,7 +141,9 @@ class PluginSettingsMixin:
                             raise RuntimeError("Plugin configuration changed during this operation")
                         return result
 
-                    fast_tools.append(replace(spec, handler=guarded))
+                    fast_tools.append(replace(
+                        spec, handler=guarded, workflow_generation=generation,
+                    ))
                 if plugin.server is not None:
                     servers[pid] = plugin.server
             self._collect_plugin_fast_tools(fast_tools, target=collection)

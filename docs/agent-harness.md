@@ -28,6 +28,17 @@ Full JSON schemas, including nested fields and enums, are validated before
 dispatch; an undisclosed operation cannot be invoked. Legacy native operations
 with an empty v1 schema remain explicitly open object contracts.
 
+Read-only fast tools from the current brain registry are also available to the
+planner: search, time, recall/history/inspection, weather/activity and explicitly
+opted-in plugin tools such as the calculator. They execute as saved child tasks,
+with the same argument validation and current user/session/settings checks.
+The compact fast search retains its privacy scrubber and skips the chat turn's
+memory-results sink. Native background search remains a fallback when the fast
+search lane is disabled. Write tools and workflow controls are not shared.
+Names in the capability manifest are discovery hints; a request for a registered
+tool absent from the six exposed contracts becomes a discovery step, then a
+fresh planning decision using its full schema. It never executes hidden args.
+
 [Task context and scheduling](task-context-budget.md) describes prompt selection,
 generation reserves, shared-model admission and the work drawer's diagnostics.
 
@@ -77,6 +88,14 @@ planner's verdict, and distinguishes tool acknowledgement from read-back proof.
 Unsupported claims get bounded repair opportunities, then become partial.
 This is a model's evidence review, not a guarantee that arbitrary claims or
 external effects have been independently proven correct.
+
+The spoken reporter cannot supply missing evidence. An unverified terminal run
+with no successful owned results gets a deterministic incomplete-check message.
+Other generated reports receive a separate bounded grounding review on the
+workflow route, using saved task facts and owned source results. The objective,
+conversation and speaking examples do not establish factual claims. Rejected
+wording falls back to the verified saved answer, or an incomplete-check message;
+model review is an additional check, not a factual guarantee.
 
 Generic external MCP operations now pass through the host's existing approval
 policy per concrete operation. Filesystem reads and server read-only annotations

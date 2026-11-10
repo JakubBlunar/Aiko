@@ -160,6 +160,13 @@ class BrainWebSearchTool:
     # ── dispatch ─────────────────────────────────────────────────────
 
     def run(self, arguments: dict[str, Any]) -> str:
+        return self._run(arguments, capture_results=True)
+
+    def run_for_workflow(self, arguments: dict[str, Any]) -> str:
+        """Keep background evidence on the task, outside the live turn's memory sink."""
+        return self._run(arguments, capture_results=False)
+
+    def _run(self, arguments: dict[str, Any], *, capture_results: bool) -> str:
         query = (arguments.get("query") or "").strip()
         if not query:
             raise ToolError("web_search: 'query' is required")
@@ -196,7 +203,7 @@ class BrainWebSearchTool:
         if not results:
             return json.dumps({"results": [], "note": "no results"})
 
-        if self._on_results is not None:
+        if capture_results and self._on_results is not None:
             try:
                 self._on_results(safe_query, [dict(r) for r in results])
             except Exception:

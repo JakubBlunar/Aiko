@@ -33,10 +33,9 @@ HANDLER_VISION_DESCRIBE = "vision_describe"
 
 # Nested-workflow handlers.
 #
-# * ``web_search`` — background DuckDuckGo lookup. Lives as a task
-#   handler (not a brain builtin) because the network round-trip is
-#   too slow for the fast conversational lane; it's reachable only as
-#   a ``WorkflowSkill`` child of a goal workflow.
+# * ``web_search`` — background search fallback. When compact fast search
+#   is shared from the current brain registry, workflows use ``fast_tool``
+#   instead, retaining its privacy boundary and result shape.
 # * ``goal_workflow`` — the parent multi-step orchestrator. Plans →
 #   spawns children (web_search / describe_image / MCP tools / …) →
 #   observes → replies with an aggregated summary.
@@ -49,6 +48,7 @@ HANDLER_GOAL_WORKFLOW = "goal_workflow"
 # ride in the task args. Reachable only as a ``WorkflowSkill`` child of a
 # goal workflow (MCP tools are surfaced to the background lane only).
 HANDLER_MCP_TOOL = "mcp_tool"
+HANDLER_FAST_TOOL = "fast_tool"
 
 
 # Every handler this build is aware of. Used by the MCP debug surface
@@ -61,6 +61,7 @@ KNOWN_HANDLER_NAMES: tuple[str, ...] = (
     HANDLER_WEB_SEARCH,
     HANDLER_GOAL_WORKFLOW,
     HANDLER_MCP_TOOL,
+    HANDLER_FAST_TOOL,
 )
 
 
@@ -69,5 +70,6 @@ __all__ = [
     "HANDLER_WEB_SEARCH",
     "HANDLER_GOAL_WORKFLOW",
     "HANDLER_MCP_TOOL",
+    "HANDLER_FAST_TOOL",
     "KNOWN_HANDLER_NAMES",
 ]

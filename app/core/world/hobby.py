@@ -22,7 +22,10 @@ from __future__ import annotations
 import random
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+
+from app.core.memory.echo_detector import tokens
 
 
 HOBBY_KINDS: tuple[str, ...] = (
@@ -172,6 +175,50 @@ HOBBY_CATALOGUE: tuple[HobbyTemplate, ...] = (
 )
 
 HISTORY_CAP = 8
+# Research can decline, fail, or stop finding anything new. Successful
+# advances alone must not keep such a project current indefinitely.
+STALL_DAYS = 7
+
+
+def is_stalled(state: dict[str, Any], *, now: datetime) -> bool:
+    """A week without recorded progress lets her put a project aside.
+
+    Attempts are deliberately not progress. Legacy states without a usable
+    timestamp are left alone rather than silently inventing their age.
+    """
+    stamp = state.get("last_advanced_at") or state.get("started_at")
+    try:
+        last = datetime.fromisoformat(str(stamp))
+    except (TypeError, ValueError):
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (now - last).total_seconds() >= STALL_DAYS * 86400
+
+
+def repeats_subject(artifact: str, recent: tuple[str, ...]) -> bool:
+    """Catch close title rewrites, including a new trial or project kind.
+
+    This is a conservative lexical check, not a claim to detect arbitrary
+    paraphrases. One shared word alone must not exclude a different project.
+    """
+    words = tokens(artifact)
+    ordered = [word for word in re.findall(r"[a-z]+", artifact.lower()) if word in words]
+    phrases = set(zip(ordered, ordered[1:], strict=False))
+    for previous in recent:
+        if artifact.strip().casefold() == previous.strip().casefold():
+            return True
+        other = tokens(previous)
+        shared = words & other
+        if len(shared) >= 2:
+            previous_order = [
+                word for word in re.findall(r"[a-z]+", previous.lower()) if word in other
+            ]
+            if phrases & set(zip(previous_order, previous_order[1:], strict=False)):
+                return True
+            if len(shared) / min(len(words), len(other)) >= 0.6:
+                return True
+    return False
 
 
 def template_for(key: str) -> HobbyTemplate | None:
@@ -299,7 +346,8 @@ def should_rotate(
 ) -> bool:
     """Whether the current hobby has run long enough to rotate out.
 
-    ``max_advances <= 0`` disables rotation (she stays on it forever).
+    ``max_advances <= 0`` disables count-based rotation. Stalled projects
+    have a separate exit so failed research cannot keep one current forever.
     """
     if max_advances <= 0:
         return False
@@ -372,7 +420,7 @@ def admit_proposal(
     if is_genre_artifact(artifact):
         return None
     recent = {s.strip().lower() for s in recent_artifacts if s and str(s).strip()}
-    if artifact.lower() in recent:
+    if repeats_subject(artifact, tuple(recent)):
         return None
     unit = str(raw.get("unit") or KIND_UNITS.get(kind) or "step").strip() or "step"
     detail = str(raw.get("artifact_detail") or "").strip()
@@ -480,6 +528,9 @@ __all__ = [
     "HOBBY_KINDS",
     "KIND_UNITS",
     "HISTORY_CAP",
+    "STALL_DAYS",
+    "is_stalled",
+    "repeats_subject",
     "template_for",
     "pick_hobby",
     "pick_artifact",

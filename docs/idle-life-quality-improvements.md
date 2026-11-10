@@ -121,7 +121,9 @@ After restart and several normal away periods, check:
 4. Pauses remain pauses, book completion is earned, and awake rest never implies sleep.
 5. Sleep suppresses waking activities while permitted passive/synthesis work continues.
 
-The next useful separate pass is hobby reassessment: let Aiko put aside a stalled
-or poorly framed project without claiming to have completed it. Inspect actual
-research outcomes first; do not fix a stalled idea by awarding timer progress.
+The 2026-11-09 hobby follow-up adds a seven-day stall exit without awarding timer
+progress, omits stale standing updates, and rejects close rewrites of recent
+project subjects. A late saved finding is applied before stall retirement. See
+`idle-workers.md` for the behavior and limits; ordinary-use pacing still needs
+observation after restart.
 General draft/ready/failed artifacts and intentional gifts remain in IM4/H12.

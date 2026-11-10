@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 from app.core.infra import timephrase
@@ -1926,7 +1927,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
 
         try:
             from app.core.proactive.hobby_worker import load_hobby
-            from app.core.world.hobby import prompt_progress, render_hobby_line
+            from app.core.world.hobby import is_stalled, prompt_progress, render_hobby_line
             from app.core.world.room_evolution import BOOK_SLUG
         except Exception:
             log.debug("hobby block import failed", exc_info=True)
@@ -1934,6 +1935,10 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
 
         state = load_hobby(chat_db.kv_get)
         if not state:
+            return ""
+        # The idle scheduler may not have rotated it yet. Do not keep
+        # presenting an abandoned project as fresh activity while it waits.
+        if is_stalled(state, now=timephrase.utcnow()):
             return ""
 
         label = str(state.get("label") or "").strip()
@@ -1960,10 +1965,17 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         return (
             f"Lately, in your own time, you've been {line}. Bring it up only "
             "if it comes up naturally — don't force it. "
+            "This is background continuity, not a new update each time you talk. "
+            "If you've already discussed it, let it rest until there is new recorded "
+            "progress or he asks about it. "
             "Project descriptions are interests or ideas, not evidence of completed "
             "lessons, experiments, or book contents. "
             + (
-                f"Your latest saved research result: {state['last_result']}. "
+                "Your latest saved research result:\n"
+                + timephrase.format_memory_block([SimpleNamespace(
+                    content=state["last_result"],
+                    created_at=state.get("last_result_at") or state.get("last_advanced_at"),
+                )], timephrase.utcnow()) + " "
                 "This came from search excerpts, not direct observation."
                 if state.get("last_result") else
                 "No research result is recorded for this project yet."

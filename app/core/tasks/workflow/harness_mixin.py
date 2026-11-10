@@ -435,6 +435,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                             },
                         ),
                         valid_skill_names={row["name"] for row in skills},
+                        discoverable_skill_names=set(self._skills.names()),
                         model=self._model(),
                         max_tokens=self._planner_max_tokens,
                         **self._context_options(state),

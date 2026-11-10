@@ -16,11 +16,9 @@ skill carries
 Why a registry separate from the brain's :class:`ToolRegistry`?
 
 * **Different lane.** Brain tools must be fast (they run inside the
-  conversational turn). Workflow skills run in the background, so they
-  can be slow + heavy (web search, and later browser-MCP, code
-  execution, …). Keeping the two catalogues apart is what lets us move
-  ``web_search`` OFF the brain and onto the workflow without it
-  leaking back into the fast lane.
+  conversational turn). Workflow skills can also be slow or heavy.
+  Explicitly shared read-only fast tools overlay native operations,
+  while workflow/MCP operations never leak into the conversational lane.
 * **Child-spawn, not direct-call.** A workflow skill *spawns a task*
   (so it gets a row, heartbeat, cancel path, event log, and shows up
   in the task tree under its parent), whereas a brain tool returns a
@@ -118,6 +116,22 @@ class WorkflowSkillRegistry:
 
     def __init__(self) -> None:
         self._skills: dict[str, WorkflowSkill] = {}
+        self._fast_skills: dict[str, WorkflowSkill] = {}
+
+    def replace_fast(self, skills: list[WorkflowSkill]) -> None:
+        """Atomically publish shared fast tools, preserving native fallbacks."""
+        self._fast_skills = {skill.name: skill for skill in skills}
+
+    def _catalogue(self) -> dict[str, WorkflowSkill]:
+        return {**self._skills, **self._fast_skills}
+
+    def set_web_search_enabled(self, enabled: bool) -> None:
+        if enabled:
+            if WORKFLOW_SKILL_WEB_SEARCH not in self._skills:
+                self._skills = {**self._skills, WORKFLOW_SKILL_WEB_SEARCH: _web_search_skill()}
+        else:
+            self._skills = {name: skill for name, skill in self._skills.items()
+                            if name != WORKFLOW_SKILL_WEB_SEARCH}
 
     def register(self, skill: WorkflowSkill) -> None:
         name = str(getattr(skill, "name", "") or "").strip()
@@ -132,7 +146,7 @@ class WorkflowSkillRegistry:
         )
 
     def get(self, name: str) -> WorkflowSkill | None:
-        return self._skills.get(str(name))
+        return self._fast_skills.get(str(name)) or self._skills.get(str(name))
 
     def replace_mcp(self, skills: list[WorkflowSkill]) -> None:
         """Publish one immutable catalogue, removing disappeared MCP owners/tools."""
@@ -142,11 +156,11 @@ class WorkflowSkillRegistry:
 
     def names(self) -> list[str]:
         """All registered skill names, sorted for stable prompts."""
-        return sorted(self._skills.keys())
+        return sorted(self._catalogue())
 
     def spawnable_names(self) -> list[str]:
         """Names of skills that spawn a child (excludes ``finish``)."""
-        return sorted(n for n, s in self._skills.items() if s.spawnable)
+        return sorted(n for n, s in self._catalogue().items() if s.spawnable)
 
     def describe_for_planner(
         self, groups: "set[str] | None" = None
@@ -166,7 +180,7 @@ class WorkflowSkillRegistry:
         ``groups=None`` (the default) returns the full catalogue.
         """
         out: list[dict[str, Any]] = []
-        catalogue = self._skills
+        catalogue = self._catalogue()
         for name in sorted(catalogue):
             skill = catalogue[name]
             if (
@@ -192,7 +206,7 @@ class WorkflowSkillRegistry:
 
     def groups(self) -> set[str]:
         """Non-empty router groups present in the registry."""
-        return {s.group for s in self._skills.values() if s.group}
+        return {s.group for s in self._catalogue().values() if s.group}
 
     def schema_for(self, name: str) -> dict[str, Any]:
         from app.core.tasks.workflow.operation_contract import input_schema
@@ -222,7 +236,7 @@ class WorkflowSkillRegistry:
         spawn function that throws is caught here and downgraded to
         ``None`` so a single bad skill can't crash the workflow loop.
         """
-        skill = self._skills.get(str(name))
+        skill = self.get(name)
         if expected_skill is not None and skill is not expected_skill:
             log.info("workflow operation rejected: catalogue changed skill=%s", name)
             return None

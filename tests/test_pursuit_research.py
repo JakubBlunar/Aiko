@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from app.core.memory.memory_store import MemoryStore
+from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.proactive.hobby_worker import HobbyWorker, KV_CURRENT_HOBBY, load_hobby
 from app.core.proactive.pursuit_research import PursuitResearch
@@ -17,7 +18,7 @@ from app.core.session.cue_pool_mixin import CuePoolMixin
 def state():
     return {
         "key": "basil", "artifact": "basil light requirements", "kind": "learning",
-        "label": "learning about basil", "started_at": "2026-10-01T10:00:00+00:00",
+        "label": "learning about basil", "started_at": timephrase.utcnow().isoformat(),
         "progress": 0, "advances": 0,
     }
 

@@ -215,7 +215,12 @@ class HobbyWorker:
             return None, False
         if state is None:
             return "start", False
-        if self._force_rotate or hobby_mod.should_rotate(
+        # A result can arrive after a long research wait but before this
+        # worker's next tick. Apply it rather than discarding earned progress.
+        stalled = hobby_mod.is_stalled(state, now=now) and (
+            self._research is None or self._research.result(state) is None
+        )
+        if self._force_rotate or stalled or hobby_mod.should_rotate(
             progress=int(state.get("progress", 0)),
             advances=int(state.get("advances", 0)),
             max_advances=int(getattr(self._mem, "hobby_max_advances", 12)),
@@ -455,8 +460,10 @@ class HobbyWorker:
         prompt = (
             timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE + "\n"
             "You are choosing Aiko's next personal project — one named "
-            "thing she will keep up in her own time for a few days. She "
-            f"is wrapping {wrapped} (kind: {leaving_kind}). She is allowed "
+            "thing she will keep up in her own time for a few days. "
+            "Choose a different subject, not another trial, renamed version, or "
+            "different medium for the same recent project. "
+            f"She is leaving {wrapped} (kind: {leaving_kind}). She is allowed "
             "to leave it unfinished; a paperback stays on the shelf with "
             "its supplied text. Propose an interest or plan, not an existing artifact "
             "or completed experiment. She can research public questions with web search "

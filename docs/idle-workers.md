@@ -34,6 +34,16 @@ Old timer-earned project counters are not presented as completed work and are
 reset when the first result-backed advance arrives. Project rotation never
 replaces a book's supplied contents with a proposed title.
 
+A project with no recorded advance for seven days is put aside even if research
+keeps retrying. A matching saved finding waiting to be applied takes precedence
+over this stall exit. The standing prompt omits stalled projects before the idle
+scheduler rotates them, age-tags saved findings, and treats an already discussed
+project as background until there is new progress or the user asks. This is not
+a hard limit on model mentions. Rotation also rejects close lexical rewrites of
+recent project subjects across kinds (such as another numbered trial or a
+different activity with the same subject phrase); arbitrary paraphrases can
+still escape that check. Existing history and research are retained.
+
 Aiko does most of her thinking when you are not looking. Roughly fifty
 background workers grow the garden, decay memory salience, synthesise
 concepts, resummarise threads, and pick what she was doing while you were
