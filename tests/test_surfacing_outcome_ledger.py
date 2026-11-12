@@ -1217,6 +1217,19 @@ class EchoMarkTests(unittest.TestCase):
 
 
 class McpReportTests(unittest.TestCase):
+    def test_header_counts_share_the_requested_window_with_the_breakdowns(self) -> None:
+        self.f.store.add_many(101, _concepts(1, 2))
+        self.f.store.add_many(102, _concepts(3))
+        self.f.backdate(1, 20)
+        self.f.backdate(2, 20)
+        host = _Host(self.f.store)
+        recent = self._report(host, window_days=6)
+        self.assertEqual(recent["rows_total"], 1)
+        self.assertEqual(recent["rows_unsettled"], 1)
+        lifetime = self._report(host)
+        self.assertEqual(lifetime["rows_total"], 3)
+        self.assertEqual(lifetime["rows_unsettled"], 3)
+
     def setUp(self) -> None:
         self.f = _Fixture()
 

@@ -52,7 +52,7 @@ is not *what* they do but *when* they are allowed to.
 
 This document describes the scheduler as it works after P36. For the
 config values themselves see [`configuration.md`](configuration.md); for
-the backlog history see [P36](personality-backlog/shipped/audit-2026-10-24.md#perf-p36).
+the backlog history see [P36](../backlog/personality/shipped/audit-2026-10-24.md#perf-p36).
 
 - [The problem the old design had](#the-problem-the-old-design-had)
 - [The quiet gate](#the-quiet-gate)
@@ -592,7 +592,7 @@ for reformatting.**
 Before this was handled at the client, 98 calls across 10 surfaces had
 returned empty answers, and the two workers most affected wrote nothing at
 all for eight and ten weeks respectively (H27 in
-[`health.md`](personality-backlog/health.md)).
+[`health.md`](../backlog/personality/health.md)).
 
 ## Observability
 
@@ -685,13 +685,13 @@ open after restart; scheduler budgets and sleep policies are unchanged.
   does not catch. The next long session's `app.log` wants the same
   runs-per-worker tally: divide each worker's run count by wall time
   and compare against its configured interval.
-- **LLM/web spend caps stay.** [P45](personality-backlog/shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
+- **LLM/web spend caps stay.** [P45](../backlog/personality/shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
   retired the remaining *speaking* daily-count caps (world notice, away
   activities, idle seed, outing, diary) in favour of demand + cooldown.
   The `*_per_hour_cap` / `*_per_day_cap` keys on fact-check, idle
   curiosity searches, consolidation, and the rest bound API spend, not
   how often she talks, and live on `FactCheckRateLimiter`.
-- **[P46](personality-backlog/perf.md#p46-parallel-compute-lane-drain)**
+- **[P46](../backlog/personality/perf.md#p46-parallel-compute-lane-drain)**
   — the compute lane drains sequentially. True parallelism is blocked on
   shared mutable state, notably the `WorldStore` in-memory mirror and
   SQLite connection affinity; lane-major ordering was the cheap way to

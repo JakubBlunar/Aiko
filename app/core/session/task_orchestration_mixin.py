@@ -1574,7 +1574,7 @@ class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
     ) -> None:
         """Route a finished, reportable task through the C6 decision.
 
-        Three tiers (see ``docs/personality-backlog`` C6):
+        Three tiers (see ``backlog/personality`` C6):
 
         * **floor** — the user explicitly asked for this
           (``initiated_by == 'aiko'`` and not ``metadata.self_initiated``).

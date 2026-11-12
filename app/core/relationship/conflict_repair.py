@@ -11,7 +11,7 @@ These helpers are pure (no I/O, no controller) so the recovery predicate
 and the summary phrasing are unit-testable in isolation. The watch state
 itself lives in-memory on the SessionController.
 
-Tone guard (see ``docs/personality-backlog/moments.md`` § J6): the record
+Tone guard (see ``backlog/personality/moments.md`` § J6): the record
 captures "we're good at sorting things out", never a grievance ledger.
 """
 from __future__ import annotations

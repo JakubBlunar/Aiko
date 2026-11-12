@@ -23,6 +23,12 @@ def admit_memory(
     candidate: dict, rows, *, session_key: str, writer: str, proposal_message_id: int | None = None,
 ) -> MemoryAdmission:
     content = str(candidate.get("content") or "").strip()
+    if writer == "extractor":
+        from app.core.infra import timephrase
+
+        if timephrase.has_relative_deictic(content):
+            return MemoryAdmission(False, "inferred", "scratchpad", None,
+                                   {"claim_fidelity_refusal": "relative_time"})
     subject = "assistant" if candidate.get("kind") == "self" else "user"
     destination = str(candidate.get("destination") or "memory")
     evidence = candidate.get("evidence")
@@ -73,9 +79,12 @@ def admit_memory(
     fidelity = None
     if validated and accepted:
         from app.core.memory.claim_fidelity import refusal, event_support
+        from app.core.memory.promise_evidence import source_clause
 
         basis = candidate.get("basis", "reported")
-        refused = refusal(content, [item["quote"] for item in validated], basis)
+        clauses = [source_clause(item["quote"], source_rows[item["message_id"]].content)
+                   for item in validated]
+        refused = refusal(content, clauses, basis)
         if refused:
             return MemoryAdmission(False, "inferred", "scratchpad", None,
                                    {"claim_fidelity_refusal": refused})

@@ -22,7 +22,7 @@ and could not: emoji peaked at 0.000 (he writes ``:D``, not U+1F604),
 slang peaked at 0.009 against a 0.15 bar because it was measured per
 *word*, and the question rate topped out at 0.333 against a 0.40 bar.
 The two live axes were pinned -- window-mean formality never once fell
-below its own threshold. See ``docs/personality-backlog/health.md`` H21.
+below its own threshold. See ``backlog/personality/health.md`` H21.
 
 So each axis is now scored as a **deviation from his own baseline**: the
 window mean is compared against an exponentially-weighted long-run mean

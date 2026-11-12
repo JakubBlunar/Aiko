@@ -1,6 +1,6 @@
 # Fast brain tool improvements
 
-Implementation of the [6 November audit](fast-brain-tools-audit-2026-11-06.md).
+Implementation of the [6 November audit](../backlog/reviews/fast-brain-tools-audit-2026-11-06.md).
 Historical stores remain authoritative and are not bulk rewritten.
 
 ## Qualified recall and exact source inspection

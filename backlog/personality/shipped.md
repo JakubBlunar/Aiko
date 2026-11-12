@@ -1,0 +1,320 @@
+# Shipped (kept for reference)
+
+## 24 Oct 2026 backlog audit
+
+[Implemented slices and retired proposals](shipped/audit-2026-10-24.md) now hold the completed work removed from the active queue, including B7, C2/C4/C7-C9, concept foundations, vocal-tone input and staged scheduling/performance work. Partial slices link back to concrete remaining work. Mobile/PWA implementation is archived there while its device/deployment checks remain I9. [Live baseline/design](shipped/live-mode.md), [initiative phases](shipped/live-initiative.md), [historical review evidence](shipped/live-initiative-review.md), [pattern catalogue](shipped/pattern-status-history.md), [health patterns](shipped/health-patterns.md) and [dated front-page reviews](shipped/review-history.md) are reference records, not new open tasks. Retained target designs do not imply every target shipped.
+
+Completed work, split by family so each file stays small (the combined log had grown past 4k lines). One paragraph per entry; detail lives in the linked implementation files. This page is the index — the entries themselves live under [`shipped/`](shipped).
+
+When an entry lands, move its write-up here and leave the open file only a one-line status row. An entry that ships *in halves* keeps the open half where it was and links back. Run [`scripts/check_backlog_links.py`](../../scripts/check_backlog_links.py) afterwards — the anchors are what break, silently.
+
+---
+
+## [Shipped slice — K102/K103 social understanding](shipped/social-understanding.md)
+
+- [K102 pragmatic frames](shipped/social-understanding.md#k102-pragmatic-frames) — bounded cited context; broader behavioral validation open.
+- [K103 specific conversational repair](shipped/social-understanding.md#k103-specific-conversational-repair) — same-turn correction guidance and a cited target.
+- [T5 synthetic baseline](shipped/social-understanding.md#t5-baseline-and-reproducible-probes) — 12 scenarios, 15 checkpoints; no general naturalness claim.
+
+## [Shipped — Avatar & expressiveness (B-series)](shipped/avatar.md)
+
+- [B1 / B2. Continuous expressiveness + listening micro-nods](shipped/avatar.md#b1--b2-continuous-expressiveness--listening-micro-nods)
+- [B4. Alexia visual-identity audit](shipped/avatar.md#b4-alexia-visual-identity-audit)
+- [B5. Auto-cascade safety — voice mode / backchannel must not pick "heavy" expressions](shipped/avatar.md#b5-auto-cascade-safety--voice-mode--backchannel-must-not-pick-heavy-expressions)
+- [B6. UI debug logging bridge](shipped/avatar.md#b6-ui-debug-logging-bridge)
+- [B8. Live "listening" face — visual backchannel while you type](shipped/avatar.md#b8-live-listening-face--visual-backchannel-while-you-type)
+
+## [Shipped — Proactive, tasks & tools (C/D-series)](shipped/proactive-tasks.md)
+
+- [C1. Typed-mode proactive ping + activity awareness](shipped/proactive-tasks.md#c1-typed-mode-proactive-ping--activity-awareness)
+- [C6. Companion-mode collection pipeline (phases 1–2)](shipped/proactive-tasks.md#c6-companion-mode-collection-pipeline-phases-12)
+- [C7. Live activity pull / `get_activity` tool](shipped/proactive-tasks.md#c7-live-activity-pull--get_activity-tool)
+- [C9. Activity duration as wellbeing evidence (K72)](shipped/proactive-tasks.md#c9-activity-duration-as-wellbeing-evidence-k72)
+- [Nested goal workflows + P13 route-driven worker model + worker-LLM priority gate](shipped/proactive-tasks.md#nested-goal-workflows--p13-route-driven-worker-model--worker-llm-priority-gate)
+- [Task capabilities + approvals + file_write + calculate](shipped/proactive-tasks.md#task-capabilities--approvals--file_write--calculate)
+- [D2 (Part A). Local-vision `describe_image` task — one model, no cloud image tokens](shipped/proactive-tasks.md#d2-part-a-local-vision-describe_image-task--one-model-no-cloud-image-tokens)
+- [D2 (Part B). In-chat file attachments — images + text, routed through workflows](shipped/proactive-tasks.md#d2-part-b-in-chat-file-attachments--images--text-routed-through-workflows)
+- [Forced task-escalation delivery — a finished task always reports](shipped/proactive-tasks.md#forced-task-escalation-delivery--a-finished-task-always-reports)
+- [Worker-model task-report decision + angle cue (C6)](shipped/proactive-tasks.md#worker-model-task-report-decision--angle-cue-c6)
+
+## [Shipped — Awareness & memory grounding (F/G-series)](shipped/awareness.md)
+
+- [F1. Background fact-checker worker](shipped/awareness.md#f1-background-fact-checker-worker)
+- [F2. Knowledge-gap journal](shipped/awareness.md#f2-knowledge-gap-journal)
+- [F2.1. Knowledge-gap auto-resolver (memory-match + user-answer)](shipped/awareness.md#f21-knowledge-gap-auto-resolver-memory-match--user-answer)
+- [F12. Semantic echo — revival stops only crediting what Aiko quotes](shipped/awareness.md#f12-semantic-echo--revival-stops-only-crediting-what-aiko-quotes)
+- [F3. Confidence column on memories](shipped/awareness.md#f3-confidence-column-on-memories)
+- [F5. Conflicting-memory detector (schema v11)](shipped/awareness.md#f5-conflicting-memory-detector-schema-v11)
+- [F13. The contradiction family's fourth corner — the user corrects Aiko](shipped/awareness.md#f13-the-contradiction-familys-fourth-corner--the-user-corrects-aiko)
+- [F14. "I was wrong about that" — let fact-check reversals reach the user](shipped/awareness.md#f14-i-was-wrong-about-that--let-fact-check-reversals-reach-the-user)
+- [F16. Testimony vs. inference — did he tell her, or did she guess?](shipped/awareness.md#f16-testimony-vs-inference--did-he-tell-her-or-did-she-guess)
+- [G2. Schedule-learning worker](shipped/awareness.md#g2-schedule-learning-worker)
+- [G3. Idle curiosity worker](shipped/awareness.md#g3-idle-curiosity-worker)
+- [F6. Privacy-preserving query *reformulation* (not reject) — SHIPPED](shipped/awareness.md#f6-privacy-preserving-query-reformulation-not-reject--shipped)
+- [F8. `knowledge` memory kind + web→RAG retrieval boost (+ F4 source-citing)](shipped/awareness.md#f8-knowledge-memory-kind--webrag-retrieval-boost--f4-source-citing)
+- [F9. Interest-driven knowledge enrichment worker](shipped/awareness.md#f9-interest-driven-knowledge-enrichment-worker)
+- [K61. `knowledge_grounding` inner-life block (commit to specifics)](shipped/awareness.md#k61-knowledge_grounding-inner-life-block-commit-to-specifics)
+- [F10. Topic-graph utilisation (RAG / prompt / knowledge integration)](shipped/awareness.md#f10-topic-graph-utilisation-rag--prompt--knowledge-integration)
+- [K64a. Associative wandering ("funny, this reminds me of ...")](shipped/awareness.md#k64a-associative-wandering-funny-this-reminds-me-of)
+- [K64b. Interest drift ("I've been weirdly into X lately")](shipped/awareness.md#k64b-interest-drift-ive-been-weirdly-into-x-lately)
+- [K64c. Curiosity gradient ("I keep brushing past X, I'm curious")](shipped/awareness.md#k64c-curiosity-gradient-i-keep-brushing-past-x-im-curious)
+- [K64d. Knowledge-map self-reflection ("the shape of what I know")](shipped/awareness.md#k64d-knowledge-map-self-reflection-the-shape-of-what-i-know)
+- [K-time2. Date-anchored retrieval for relative-time queries — SHIPPED](shipped/awareness.md#k-time2-date-anchored-retrieval-for-relative-time-queries--shipped)
+- [K-time3. Upcoming-horizon block — pre-computed future relative times — SHIPPED](shipped/awareness.md#k-time3-upcoming-horizon-block--pre-computed-future-relative-times--shipped)
+- [K-time4. Session-elapsed & mid-session gap awareness — SHIPPED](shipped/awareness.md#k-time4-session-elapsed--mid-session-gap-awareness--shipped)
+- [K-time5–9. Temporal toolkit + worker time-awareness — SHIPPED](shipped/awareness.md#k-time59-temporal-toolkit--worker-time-awareness--shipped)
+- [K-time10. Finishing the wiring K-time7 shipped unused — SHIPPED](shipped/awareness.md#k-time10-finishing-the-wiring-k-time7-shipped-unused--shipped)
+- [G4. Cue outcome accounting — which of the 50-odd workers earn their keep?](shipped/awareness.md#g4-cue-outcome-accounting--which-of-the-50-odd-workers-earn-their-keep)
+
+## [Shipped — Performance & observability (P-series)](shipped/perf.md)
+
+- [P1. Per-turn embed budget + timing](shipped/perf.md#p1-per-turn-embed-budget--timing)
+- [P2. Prompt-build phase telemetry](shipped/perf.md#p2-prompt-build-phase-telemetry)
+- [P3. Cheap slice-cache validation (skip two SQLite reads on a hit)](shipped/perf.md#p3-cheap-slice-cache-validation-skip-two-sqlite-reads-on-a-hit)
+- [P4. RAG memory-hit batch lookup (`get_many`)](shipped/perf.md#p4-rag-memory-hit-batch-lookup-get_many)
+- [P18. Streaming accumulator is no longer quadratic](shipped/perf.md#p18-streaming-accumulator-is-no-longer-quadratic) — was `O(n²)` per token
+- [P15. (Invalid) One user-text embed per turn — already handled by the LRU](shipped/perf.md#p15-invalid-one-user-text-embed-per-turn--already-handled-by-the-lru)
+- [P21. K29 borderline gate moved off the hot path](shipped/perf.md#p21-k29-borderline-gate-moved-off-the-hot-path)
+- [P5 + P23. Lance scan push-down for `list_recent_user_vectors`](shipped/perf.md#p5--p23-lance-scan-push-down-for-list_recent_user_vectors)
+- [P17. K22 callback detector: filtered mirror walk, not a full copy](shipped/perf.md#p17-k22-callback-detector-filtered-mirror-walk-not-a-full-copy)
+- [P10. `(role, created_at)` index for the schedule learner](shipped/perf.md#p10-role-created_at-index-for-the-schedule-learner)
+- [P19. RAG reader-writer lock + parallel per-source searches](shipped/perf.md#p19-rag-reader-writer-lock--parallel-per-source-searches)
+- [P20. Synchronous LLM compaction no longer stalls the turn](shipped/perf.md#p20-synchronous-llm-compaction-no-longer-stalls-the-turn)
+- [P6. MessageIndexer queue/stats visibility](shipped/perf.md#p6-messageindexer-queuestats-visibility)
+- [P22. Inner-life shared recent-history memo](shipped/perf.md#p22-inner-life-shared-recent-history-memo)
+- [P8. Idle-worker queue visibility + multi-worker drain](shipped/perf.md#p8-idle-worker-queue-visibility--multi-worker-drain)
+- [P12. Bulk memory-mirror on startup](shipped/perf.md#p12-bulk-memory-mirror-on-startup)
+- [P14. Heuristic tool-pass gate — skip the forced decision pass on banter turns](shipped/perf.md#p14-heuristic-tool-pass-gate--skip-the-forced-decision-pass-on-banter-turns)
+- [P23. Context-compaction hardening + adaptive token estimator](shipped/perf.md#p23-context-compaction-hardening--adaptive-token-estimator)
+- [P9. Streaming tokens no longer clone the message array](shipped/perf.md#p9-streaming-tokens-no-longer-clone-the-message-array)
+- [P25. Client audio is flushed when speech is cut off](shipped/perf.md#p25-client-audio-is-flushed-when-speech-is-cut-off)
+- [P27. STT loads on use, not at boot (the biggest resident-RAM lever)](shipped/perf.md#p27-stt-loads-on-use-not-at-boot-the-biggest-resident-ram-lever)
+- [P28. TTS respects `tts.enabled`, and the runtime toggle frees the weights](shipped/perf.md#p28-tts-respects-ttsenabled-and-the-runtime-toggle-frees-the-weights)
+- [P29. `get_memory_breakdown` — process-tree RSS + per-subsystem attribution](shipped/perf.md#p29-get_memory_breakdown--process-tree-rss--per-subsystem-attribution)
+- [P31a. `get_prompt_block_costs` — per-block prompt cost, weighted by tier](shipped/perf.md#p31a-get_prompt_block_costs--per-block-prompt-cost-weighted-by-tier)
+- [P41. Two missing `messages` indexes](shipped/perf.md#p41-two-missing-messages-indexes)
+- [P47. `GET /api/concepts` returned the whole graph, untruncated](shipped/perf.md#p47-get-apiconcepts-returned-the-whole-graph-untruncated)
+- [P48. The avatar and the audio graph ran flat out on phones](shipped/perf.md#p48-the-avatar-and-the-audio-graph-ran-flat-out-on-phones)
+- [P37. Residual per-token and per-mic-frame React re-renders](shipped/perf.md#p37-residual-per-token-and-per-mic-frame-react-re-renders)
+- [P38. Live2D channels allocate a store snapshot several times per frame](shipped/perf.md#p38-live2d-channels-allocate-a-store-snapshot-several-times-per-frame)
+- [P44. Migrate the remaining idle workers to `demand()`](shipped/perf.md#p44-migrate-the-remaining-idle-workers-to-demand)
+- [P45. Retire the per-hour / per-day caps in favour of satisfaction](shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
+- [P40. Engine swaps leak the previous model](shipped/perf.md#p40-engine-swaps-leak-the-previous-model)
+
+## [Shipped — Companion patterns K1–K15](shipped/patterns-k01-k15.md)
+
+- [K2. Theory-of-mind / belief tracking (schema v12)](shipped/patterns-k01-k15.md#k2-theory-of-mind--belief-tracking-schema-v12)
+- [K6. Surprise / novelty detector](shipped/patterns-k01-k15.md#k6-surprise--novelty-detector)
+- [K3. Routine / ritual awareness](shipped/patterns-k01-k15.md#k3-routine--ritual-awareness)
+- [K13. Stylometric mirror (Jacob-side typing register)](shipped/patterns-k01-k15.md#k13-stylometric-mirror-jacob-side-typing-register)
+- [K7 + K17 + K8. Noticing-and-repair (forgetting / clarification / rupture)](shipped/patterns-k01-k15.md#k7--k17--k8-noticing-and-repair-forgetting--clarification--rupture)
+- [K14. Implicit engagement signals (latency + length)](shipped/patterns-k01-k15.md#k14-implicit-engagement-signals-latency--length)
+- [K5. Mood shell tilt (only-when-notable)](shipped/patterns-k01-k15.md#k5-mood-shell-tilt-only-when-notable)
+- [K1. Long-term goals tracker (goal + goal_progress kinds, GoalStore + GoalWorker)](shipped/patterns-k01-k15.md#k1-long-term-goals-tracker-goal--goal_progress-kinds-goalstore--goalworker)
+- [K7. Forgetting protocol (graded `(faded)` predicate + persona-rule rewrite)](shipped/patterns-k01-k15.md#k7-forgetting-protocol-graded-faded-predicate--persona-rule-rewrite)
+- [K-time1. Wall-clock prefixes on chat history](shipped/patterns-k01-k15.md#k-time1-wall-clock-prefixes-on-chat-history)
+- [K15. Self-disclosure / vulnerability budget](shipped/patterns-k01-k15.md#k15-self-disclosure--vulnerability-budget)
+- [K9. Topic-graph browser — observability surface](shipped/patterns-k01-k15.md#k9-topic-graph-browser--observability-surface)
+- [K10. Persona regression tests — SHIPPED](shipped/patterns-k01-k15.md#k10-persona-regression-tests--shipped)
+- [K11. Counterfactual / pre-thought cache — SHIPPED](shipped/patterns-k01-k15.md#k11-counterfactual--pre-thought-cache--shipped)
+
+## [Shipped — Companion patterns K16–K30](shipped/patterns-k16-k30.md)
+
+- [K16. Unified ambient grounding line](shipped/patterns-k16-k30.md#k16-unified-ambient-grounding-line)
+- [K18. Topic stagnation detector](shipped/patterns-k16-k30.md#k18-topic-stagnation-detector)
+- [K22. Callback / inside-joke detector (post-turn cosine pass + read-side bonus)](shipped/patterns-k16-k30.md#k22-callback--inside-joke-detector-post-turn-cosine-pass--read-side-bonus)
+- [K20. Metacognitive calibration — per-user trust scalar + topic slots](shipped/patterns-k16-k30.md#k20-metacognitive-calibration--per-user-trust-scalar--topic-slots)
+- [K24. Sensory anchoring layer — adaptive per-arc cadence + posture-kind matrix](shipped/patterns-k16-k30.md#k24-sensory-anchoring-layer--adaptive-per-arc-cadence--posture-kind-matrix)
+- [K23. Subtle misattunement detection](shipped/patterns-k16-k30.md#k23-subtle-misattunement-detection)
+- [K25. Memory confidence time-decay](shipped/patterns-k16-k30.md#k25-memory-confidence-time-decay)
+- [K28. "What I've been turning over" — between-session thought thread](shipped/patterns-k16-k30.md#k28-what-ive-been-turning-over--between-session-thought-thread)
+- [K29. Opinion injection — push back when she has a stance](shipped/patterns-k16-k30.md#k29-opinion-injection--push-back-when-she-has-a-stance)
+- [K30. Self-noticing cues — agreement-streak / flat-affect / repeated-thought](shipped/patterns-k16-k30.md#k30-self-noticing-cues--agreement-streak--flat-affect--repeated-thought)
+- [K27. Aiko's day — daily personality colour](shipped/patterns-k16-k30.md#k27-aikos-day--daily-personality-colour)
+- [K21. Fresh-eyes thread re-summarisation](shipped/patterns-k16-k30.md#k21-fresh-eyes-thread-re-summarisation)
+- [K26. Aiko-side voice evolution — she starts to talk like him a little](shipped/patterns-k16-k30.md#k26-aiko-side-voice-evolution--she-starts-to-talk-like-him-a-little)
+
+## [Shipped — Companion patterns K31–K91](shipped/patterns-k31-k60.md)
+
+*(The filename says K31–K60; the file actually runs to K91. Left alone rather
+than renamed, because every inbound link in the backlog points at it.)*
+
+- [K31 + K32. Soft physicality round-trip — virtual touch + user-side reactions](shipped/patterns-k31-k60.md#k31--k32-soft-physicality-round-trip--virtual-touch--user-side-reactions)
+- [K36. "Things I did while you were away" — idle-time world activities](shipped/patterns-k31-k60.md#k36-things-i-did-while-you-were-away--idle-time-world-activities)
+- [K34. Forward curiosity worker — "I've been wondering"](shipped/patterns-k31-k60.md#k34-forward-curiosity-worker--ive-been-wondering)
+- [K35. Memory consolidation worker — nightly near-duplicate merge](shipped/patterns-k31-k60.md#k35-memory-consolidation-worker--nightly-near-duplicate-merge)
+- [K38. Self-correction cue — next-turn contradiction catch](shipped/patterns-k31-k60.md#k38-self-correction-cue--next-turn-contradiction-catch)
+- [K43. Promise follow-through — close the loop on "I'll look into that"](shipped/patterns-k31-k60.md#k43-promise-follow-through--close-the-loop-on-ill-look-into-that)
+- [K44. Felt-language affect block — stop leaking robot coordinates](shipped/patterns-k31-k60.md#k44-felt-language-affect-block--stop-leaking-robot-coordinates)
+- [K45. Mood inertia — instant face, lagging heart](shipped/patterns-k31-k60.md#k45-mood-inertia--instant-face-lagging-heart)
+- [K46. Stance persistence — don't cave on taste pushback](shipped/patterns-k31-k60.md#k46-stance-persistence--dont-cave-on-taste-pushback)
+- [K63. Long-arc callbacks — "weeks ago you said..."](shipped/patterns-k31-k60.md#k63-long-arc-callbacks--weeks-ago-you-said)
+- [K65. Worker modernization for the topic-cluster era (audit)](shipped/patterns-k31-k60.md#k65-worker-modernization-for-the-topic-cluster-era-audit)
+- [K65a. Cluster-scope the F5 conflict-detector pair scan (shipped via F10j)](shipped/patterns-k31-k60.md#k65a-cluster-scope-the-f5-conflict-detector-pair-scan-shipped-via-f10j)
+- [K65b. Bias the belief worker toward high-mass interests](shipped/patterns-k31-k60.md#k65b-bias-the-belief-worker-toward-high-mass-interests)
+- [K65c. Modernise the Phase-4c CuriosityWorker — cluster-aware re-anchor](shipped/patterns-k31-k60.md#k65c-modernise-the-phase-4c-curiosityworker--cluster-aware-re-anchor)
+- [K65d. Seed self-image from the interest map](shipped/patterns-k31-k60.md#k65d-seed-self-image-from-the-interest-map)
+- [K65e. Ground the DreamWorker in the day's hot cluster](shipped/patterns-k31-k60.md#k65e-ground-the-dreamworker-in-the-days-hot-cluster)
+- [K66. Earned familiarity — "well-trodden ground between us"](shipped/patterns-k31-k60.md#k66-earned-familiarity--well-trodden-ground-between-us)
+- [K67. Dormant-interest re-opener — "we haven't talked about X in ages"](shipped/patterns-k31-k60.md#k67-dormant-interest-re-opener--we-havent-talked-about-x-in-ages)
+- [K68. Embodied vitality — a body that livens up when the conversation is interesting](shipped/patterns-k31-k60.md#k68-embodied-vitality--a-body-that-livens-up-when-the-conversation-is-interesting)
+- [K69. Implicit-need reading — vent vs fix vs reassure](shipped/patterns-k31-k60.md#k69-implicit-need-reading--vent-vs-fix-vs-reassure)
+- [K70. Longitudinal growth witness — "you've changed since we met"](shipped/patterns-k31-k60.md#k70-longitudinal-growth-witness--youve-changed-since-we-met)
+- [K71. Self-callback — her own continuity over time](shipped/patterns-k31-k60.md#k71-self-callback--her-own-continuity-over-time)
+- [K72. Wellbeing concern — gentle care, never a nag](shipped/patterns-k31-k60.md#k72-wellbeing-concern--gentle-care-never-a-nag)
+- [K73. Shared ritual formation — "this is becoming our thing"](shipped/patterns-k31-k60.md#k73-shared-ritual-formation--this-is-becoming-our-thing)
+- [K75. User-expertise calibration — match explanation depth](shipped/patterns-k31-k60.md#k75-user-expertise-calibration--match-explanation-depth)
+- [K76. Affective memory salience — flashbulb encoding](shipped/patterns-k31-k60.md#k76-affective-memory-salience--flashbulb-encoding)
+- [K74. Humor-style calibration — what kind of funny lands](shipped/patterns-k31-k60.md#k74-humor-style-calibration--what-kind-of-funny-lands)
+- [K51. Cue-register rotation — de-"Heads-up" the inner life](shipped/patterns-k31-k60.md#k51-cue-register-rotation--de-heads-up-the-inner-life)
+- [K56. Persona counterweight — the "leading vs following" rewrite](shipped/patterns-k31-k60.md#k56-persona-counterweight--the-leading-vs-following-rewrite)
+- [K52. Wants ledger — desire with pressure](shipped/patterns-k31-k60.md#k52-wants-ledger--desire-with-pressure)
+- [K53. Initiative turns — deterministic floor-taking](shipped/patterns-k31-k60.md#k53-initiative-turns--deterministic-floor-taking)
+- [K55. Thread ownership — she defends what she opened](shipped/patterns-k31-k60.md#k55-thread-ownership--she-defends-what-she-opened)
+- [K54. Aiko-side topic appetite — she's allowed to be bored](shipped/patterns-k31-k60.md#k54-aiko-side-topic-appetite--shes-allowed-to-be-bored)
+- [K57. Directed emotion episodes — feelings *at* the user, with a cause](shipped/patterns-k31-k60.md#k57-directed-emotion-episodes--feelings-at-the-user-with-a-cause)
+- [K58. Emotion speech weighting — moods that actually land in the voice](shipped/patterns-k31-k60.md#k58-emotion-speech-weighting--moods-that-actually-land-in-the-voice)
+- [K59. Tease economy — "you'll pay for that one"](shipped/patterns-k31-k60.md#k59-tease-economy--youll-pay-for-that-one)
+- [K60. Tsundere mask — warmth expressed through denial](shipped/patterns-k31-k60.md#k60-tsundere-mask--warmth-expressed-through-denial)
+- [K37. Emotional contagion — Jacob's affect tilts Aiko's affect](shipped/patterns-k31-k60.md#k37-emotional-contagion--jacobs-affect-tilts-aikos-affect)
+- [K47. Question/share balance — stop interviewing](shipped/patterns-k31-k60.md#k47-questionshare-balance--stop-interviewing)
+- [K48. Tease rhythm — banter as a budget, not random snark](shipped/patterns-k31-k60.md#k48-tease-rhythm--banter-as-a-budget-not-random-snark)
+- [K80. Inside-joke birth — bless the moment a bit becomes "ours"](shipped/patterns-k31-k60.md#k80-inside-joke-birth--bless-the-moment-a-bit-becomes-ours)
+- [K81. Taste formation — topics she *likes*, not just topics she's seen](shipped/patterns-k31-k60.md#k81-taste-formation--topics-she-likes-not-just-topics-shes-seen)
+- [K82. The dropped sub-topic — he said three things, she answered one](shipped/patterns-k31-k60.md#k82-the-dropped-sub-topic--he-said-three-things-she-answered-one)
+- [The second pass at leading (K85–K90) — why the family exists](shipped/patterns-k31-k60.md#the-second-pass-at-leading-k85k90--why-the-family-exists)
+- [K85. The third subject — interests that aren't him](shipped/patterns-k31-k60.md#k85-the-third-subject--interests-that-arent-him)
+- [K86. Immortal future plans — asking about things that already happened](shipped/patterns-k31-k60.md#k86-immortal-future-plans--asking-about-things-that-already-happened)
+- [K87. Curiosity that isn't about him](shipped/patterns-k31-k60.md#k87-curiosity-that-isnt-about-him)
+- [K88. Anaphoric-opener detector — the measurable tell for following](shipped/patterns-k31-k60.md#k88-anaphoric-opener-detector--the-measurable-tell-for-following)
+- [K89. Sustained thread — leading past one turn](shipped/patterns-k31-k60.md#k89-sustained-thread--leading-past-one-turn)
+- [K90. Lead/follow metrics — make the whole family measurable](shipped/patterns-k31-k60.md#k90-leadfollow-metrics--make-the-whole-family-measurable)
+- [K91. Lived-in away life — a day she had, not a day she narrated](shipped/patterns-k31-k60.md#k91-lived-in-away-life--a-day-she-had-not-a-day-she-narrated)
+
+## [Shipped — Companion patterns K92–K95, the third pass at leading](shipped/patterns-k92-k95.md)
+
+- [Why the family exists](shipped/patterns-k92-k95.md#why-the-family-exists) — and what the week taught: all three items filed as features turned out to be duplicated or unenforced decisions
+- [K92. Conversational stance — phases 1 and 2](shipped/patterns-k92-k95.md#k92-conversational-stance--phases-1-and-2) *(phase 3 still open in [patterns.md](patterns.md))*
+- [K93. The substance floor — the ledger half](shipped/patterns-k92-k95.md#k93-the-substance-floor--the-ledger-half) *(cue-pool half still open in [patterns.md](patterns.md))*
+- [K94. Sequencing — answer first, then add, and say where the addition goes](shipped/patterns-k92-k95.md#k94-sequencing--answer-first-then-add-and-say-where-the-addition-goes)
+- [K95. Interruption cost — a direct question is not an opening](shipped/patterns-k92-k95.md#k95-interruption-cost--a-direct-question-is-not-an-opening)
+
+## [Shipped — Immersion polish (H-series)](shipped/immersion.md)
+
+- [H0. Intentional-placement hold — workers defer to deliberate choices](shipped/immersion.md#h0-intentional-placement-hold--workers-defer-to-deliberate-choices)
+- [H3. Mood-drift narrator](shipped/immersion.md#h3-mood-drift-narrator)
+- [H4. Document-recall recency boost](shipped/immersion.md#h4-document-recall-recency-boost)
+- [H5. User-owned scenes — she can be in your room](shipped/immersion.md#h5-user-owned-scenes--she-can-be-in-your-room)
+- [H8. Topic mood-origin memory](shipped/immersion.md#h8-topic-mood-origin-memory)
+- [H9. Aiko's diary — a readable window into her inner life](shipped/immersion.md#h9-aikos-diary--a-readable-window-into-her-inner-life)
+- [H11. Real-world co-location — weather + season sync](shipped/immersion.md#h11-real-world-co-location--weather--season-sync)
+- [H13. Idle worker actually moves Aiko around the room](shipped/immersion.md#h13-idle-worker-actually-moves-aiko-around-the-room)
+- [H14. Model-generated idle activities — open-vocab verbs, grounded in the room](shipped/immersion.md#h14-model-generated-idle-activities--open-vocab-verbs-grounded-in-the-room)
+- [H15. Needs-driven, richer garden + outdoor life](shipped/immersion.md#h15-needs-driven-richer-garden--outdoor-life)
+- [H16. Circadian "where you find her" — believable default location on arrival](shipped/immersion.md#h16-circadian-where-you-find-her--believable-default-location-on-arrival)
+- [H17. Idle life feeds the idea machine — beats become conversational seeds](shipped/immersion.md#h17-idle-life-feeds-the-idea-machine--beats-become-conversational-seeds)
+- [H18. Weighted, anti-repetition activity selection](shipped/immersion.md#h18-weighted-anti-repetition-activity-selection)
+- [H19. Hobbies & ongoing personal projects](shipped/immersion.md#h19-hobbies--ongoing-personal-projects)
+- [H20. A room that evolves — depleting + accruing micro-state](shipped/immersion.md#h20-a-room-that-evolves--depleting--accruing-micro-state)
+- [H21. Sleep & overnight rhythm — and dreams that surface](shipped/immersion.md#h21-sleep--overnight-rhythm--and-dreams-that-surface)
+- [H22. Light outings — "I stepped out for a bit"](shipped/immersion.md#h22-light-outings--i-stepped-out-for-a-bit)
+- [H25. Show-and-tell — share an image, she reacts and remembers](shipped/immersion.md#h25-show-and-tell--share-an-image-she-reacts-and-remembers)
+- [H26. Caught mid-something — she was busy when you opened the app](shipped/immersion.md#h26-caught-mid-something--she-was-busy-when-you-opened-the-app)
+- [H28. Ground inner life in named artifacts](shipped/immersion.md#h28-ground-inner-life-in-named-artifacts)
+
+## [Closed — health-audit entries (H-series, the *other* one)](shipped/health.md)
+
+The original 43 closed findings remain in [the health archive](shipped/health.md).
+H2 and H8 were additionally retired in the [24 Oct audit](shipped/audit-2026-10-24.md).
+The [active health queue](health.md#status-index) contains only remaining work,
+including follow-ups carried from closed entries. The
+[recurring-shapes catalogue](shipped/health-patterns.md#recurring-shapes) is reference
+material to read before implementing a related change.
+
+**The H numbers collide with the immersion section above**, and always have:
+immersion H0-H28 are features, health H1-H54 are audit findings. They are
+unrelated sequences that happen to share a letter, so "H22" is ambiguous
+without its file — say "immersion H22" or "health H22".
+
+## [Shipped — Standalone features](shipped/features.md)
+
+- [User-facing memory editor](shipped/features.md#user-facing-memory-editor)
+- [Aiko's room — virtual space with locations + items](shipped/features.md#aikos-room--virtual-space-with-locations--items)
+- [Aiko's living garden — outdoor plot + plant growth loop](shipped/features.md#aikos-living-garden--outdoor-plot--plant-growth-loop)
+- [Shared moments + relationship axes (schema v7)](shipped/features.md#shared-moments--relationship-axes-schema-v7)
+- [Memory tiers + revival drift + IdleWorker framework (schema v8)](shipped/features.md#memory-tiers--revival-drift--idleworker-framework-schema-v8)
+- [Temporal memory awareness (schema v10)](shipped/features.md#temporal-memory-awareness-schema-v10)
+- [H1 + K4. Conversation-arc self-tag + dialogue-act tagging (schema v13)](shipped/features.md#h1--k4-conversation-arc-self-tag--dialogue-act-tagging-schema-v13)
+- [Aiko expressive speech (Pocket-TTS prosody overlay)](shipped/features.md#aiko-expressive-speech-pocket-tts-prosody-overlay)
+- [Aiko response variability — anti-rut layer](shipped/features.md#aiko-response-variability--anti-rut-layer)
+- [Reliability pass — I1 + I2 + I4 + I5 (finish-the-wiring batch)](shipped/features.md#reliability-pass--i1--i2--i4--i5-finish-the-wiring-batch)
+
+## [Shipped — Higher-order concepts (L-series)](shipped/concepts.md)
+
+- [L1. Concept store + schema (kind-parameterized)](shipped/concepts.md#l1-concept-store--schema-kind-parameterized)
+- [L3. The lifecycle engine — accrual, promotion, and the single writer](shipped/concepts.md#l3-the-lifecycle-engine--accrual-promotion-and-the-single-writer)
+- [L7. Relationship concepts (SHIPPED)](shipped/concepts.md#l7-relationship-concepts-shipped)
+- [L8. Narrative concepts (SHIPPED — both subjects)](shipped/concepts.md#l8-narrative-concepts-shipped--both-subjects)
+- [L29a. Episodic shared arcs — the "both of us" narrative (SHIPPED)](shipped/concepts.md#l29a-episodic-shared-arcs--the-both-of-us-narrative-shipped)
+- [L11. Subject=aiko enablement — Aiko's self-model (SHIPPED)](shipped/concepts.md#l11-subjectaiko-enablement--aikos-self-model-shipped)
+- [L13. Affective concepts (SHIPPED)](shipped/concepts.md#l13-affective-concepts-shipped)
+- [L14. Aspiration / trajectory concepts (SHIPPED — both subjects + momentum)](shipped/concepts.md#l14-aspiration--trajectory-concepts-shipped--both-subjects--momentum)
+- [L15. Bidirectional confidence / belief revision (concept -> evidence re-check)](shipped/concepts.md#l15-bidirectional-confidence--belief-revision-concept---evidence-re-check)
+- [L16. Concept plasticity (bounded, believable drift)](shipped/concepts.md#l16-concept-plasticity-bounded-believable-drift)
+- [L17a. Concept trajectory from the event log (the history read layer)](shipped/concepts.md#l17a-concept-trajectory-from-the-event-log-the-history-read-layer)
+- [L17b. Change-salience classifier — "what deserves interpretation"](shipped/concepts.md#l17b-change-salience-classifier--what-deserves-interpretation)
+- [L17c. Change + why — the learning-event record](shipped/concepts.md#l17c-change--why--the-learning-event-record)
+- [L17d. Self-correction meta-concepts — noticing a pattern in her own mistakes](shipped/concepts.md#l17d-self-correction-meta-concepts--noticing-a-pattern-in-her-own-mistakes)
+- [L17e. Surfacing + the "history of thought" debugger](shipped/concepts.md#l17e-surfacing--the-history-of-thought-debugger)
+- [L17f. Evolution diary — a human-readable change log](shipped/concepts.md#l17f-evolution-diary--a-human-readable-change-log)
+- [L18. Boundary concepts (SHIPPED — both subjects + anchor sourcing + composite surfacing)](shipped/concepts.md#l18-boundary-concepts-shipped--both-subjects--anchor-sourcing--composite-surfacing)
+- [L18a. Boundary trust-modulation (carries the deferred L16 piece) — SHIPPED](shipped/concepts.md#l18a-boundary-trust-modulation-carries-the-deferred-l16-piece--shipped)
+- [L18b. Boundary behaviour-subsystem gating — SHIPPED (reframed)](shipped/concepts.md#l18b-boundary-behaviour-subsystem-gating--shipped-reframed)
+- [L18c. Boundary-vs-conversation conflict steer (fast-follow) — SHIPPED](shipped/concepts.md#l18c-boundary-vs-conversation-conflict-steer-fast-follow--shipped)
+- [L18d. Concept-vs-concept conflict detection (under meta concepts)](shipped/concepts.md#l18d-concept-vs-concept-conflict-detection-under-meta-concepts)
+- [L18e. Boundary evidence broadening (SHIPPED — both halves, then corrected)](shipped/concepts.md#l18e-boundary-evidence-broadening-shipped--both-halves-then-corrected)
+- [L19. Aiko's autobiography — self-history as a traversable timeline](shipped/concepts.md#l19-aikos-autobiography--self-history-as-a-traversable-timeline)
+- [L21. Cold-start + anti-premature-proposal guard](shipped/concepts.md#l21-cold-start--anti-premature-proposal-guard)
+- [L25. Edge referential integrity across the memory lifecycle](shipped/concepts.md#l25-edge-referential-integrity-across-the-memory-lifecycle)
+- [L26. Concept trace + "how Aiko is thinking" observability](shipped/concepts.md#l26-concept-trace--how-aiko-is-thinking-observability)
+- [L35. Surface-reason labels -- "why did I surface this?" on every item](shipped/concepts.md#l35-surface-reason-labels----why-did-i-surface-this-on-every-item)
+- [L40. Habituation reaches the core lane through order, not relevance](shipped/concepts.md#l40-habituation-reaches-the-core-lane-through-order-not-relevance)
+- [L37. Surfacing outcome ledger -- did what I brought up actually land?](shipped/concepts.md#l37-surfacing-outcome-ledger----did-what-i-brought-up-actually-land)
+- [L38. Earned standing -- let outcomes move the surfacing score](shipped/concepts.md#l38-earned-standing----let-outcomes-move-the-surfacing-score)
+- [L41. Reason-conditioned phrasing -- use the L35 signal without narrating it](shipped/concepts.md#l41-reason-conditioned-phrasing----use-the-l35-signal-without-narrating-it)
+- [L42. A self-model of her own surfacing behaviour](shipped/concepts.md#l42-a-self-model-of-her-own-surfacing-behaviour)
+- [L32. Concept importance -- a second axis, distinct from confidence](shipped/concepts.md#l32-concept-importance----a-second-axis-distinct-from-confidence)
+- [L30a. Hypothesis surfacing lane](shipped/concepts.md#l30a-hypothesis-surfacing-lane)
+- [L30b/L30c. The hypothesis testing loop -- ask, then learn from the answer](shipped/concepts.md#l30bl30c-the-hypothesis-testing-loop----ask-then-learn-from-the-answer)
+- [L30 Phase B. Inventing a hypothesis -- the forward direction](shipped/concepts.md#l30-phase-b-inventing-a-hypothesis----the-forward-direction)
+- [L31. Evidence admission control -- what a concept may accept](shipped/concepts.md#l31-evidence-admission-control----what-a-concept-may-accept)
+- [L10. Value concepts (SHIPPED — both subjects)](shipped/concepts.md#l10-value-concepts-shipped--both-subjects)
+- [L12. Tension / contradiction concepts (SHIPPED — the first meta kind)](shipped/concepts.md#l12-tension--contradiction-concepts-shipped--the-first-meta-kind)
+- [L17. Self-drift noticing (Aiko compares her own concepts over time)](shipped/concepts.md#l17-self-drift-noticing-aiko-compares-her-own-concepts-over-time)
+- [L20. Concept abstraction hierarchy (generalization)](shipped/concepts.md#l20-concept-abstraction-hierarchy-generalization)
+- [L27. Kind-aware always-on core-concept selection (generalise the identity lane)](shipped/concepts.md#l27-kind-aware-always-on-core-concept-selection-generalise-the-identity-lane)
+- [L28. Roll remaining derivers/workers onto the `ConceptView` contract](shipped/concepts.md#l28-roll-remaining-deriversworkers-onto-the-conceptview-contract)
+- [L46. Concept twin fusion and graph outflow](shipped/concepts.md#l46-concept-twin-fusion-and-graph-outflow)
+
+## [Shipped — Integration & wiring (I-series)](shipped/integration.md)
+
+- [I3. Agenda has no REST endpoint or UI — SHIPPED](shipped/integration.md#i3-agenda-has-no-rest-endpoint-or-ui--shipped)
+- [I6. Chat history is hard-capped at 200 messages with no "load older" — SHIPPED](shipped/integration.md#i6-chat-history-is-hard-capped-at-200-messages-with-no-load-older--shipped)
+- [I7. Embedding-model swap wipes LanceDB with only a log line — SHIPPED](shipped/integration.md#i7-embedding-model-swap-wipes-lancedb-with-only-a-log-line--shipped)
+- [I8. No React error boundary — SHIPPED](shipped/integration.md#i8-no-react-error-boundary--shipped)
+- [I10. Make `llm.routes` the single runtime source; retire the legacy `chat_llm` mirror — SHIPPED](shipped/integration.md#i10-make-llmroutes-the-single-runtime-source-retire-the-legacy-chat_llm-mirror--shipped)
+
+## [Shipped — Shared moments & relationship (J-series)](shipped/moments.md)
+
+- [J4. Relationship-stage register](shipped/moments.md#j4-relationship-stage-register)
+- [J5. Reconnection ritual after a long absence](shipped/moments.md#j5-reconnection-ritual-after-a-long-absence)
+- [J6. Conflict-repair memory — "we worked through this"](shipped/moments.md#j6-conflict-repair-memory--we-worked-through-this)
+- [J9. Reciprocal vulnerability — Aiko leans on the user (rarely)](shipped/moments.md#j9-reciprocal-vulnerability--aiko-leans-on-the-user-rarely)
+- [J10. Appreciation beats — unprompted, specific gratitude](shipped/moments.md#j10-appreciation-beats--unprompted-specific-gratitude)
+- [J11. Affection-style learning — "how he likes to be cared for" — SHIPPED](shipped/moments.md#j11-affection-style-learning--how-he-likes-to-be-cared-for--shipped)
+- [J8. Milestone celebration beats](shipped/moments.md#j8-milestone-celebration-beats)
+
+## [Shipped — Tools & dev tooling (D / DT-series)](shipped/tools.md)
+
+- [D3. Fast synchronous web-search brain tool (+ knowledge write-back) — SHIPPED](shipped/tools.md#d3-fast-synchronous-web-search-brain-tool--knowledge-write-back--shipped)
+- [DT1. Virtual clock / time-travel for time-gated features — SHIPPED](shipped/tools.md#dt1-virtual-clock--time-travel-for-time-gated-features--shipped)

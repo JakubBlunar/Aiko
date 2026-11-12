@@ -7,7 +7,7 @@ copies are two pocket-tts speaker states, so generating from them is not a
 shortcut past recording -- it is the only path that keeps *her* voice at
 all. The alternative is a different voice.
 
-What that costs is documented in ``docs/tts-engine-options.md`` and worth
+What that costs is documented in ``backlog/reviews/tts-engine-options.md`` and worth
 restating once: the set inherits a 24 kHz ceiling and pocket-tts's own
 habits, so a model fine-tuned on it cannot exceed pocket-tts in fidelity.
 It can still be better in the ways that matter here -- native rate

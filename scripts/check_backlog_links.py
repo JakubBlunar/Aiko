@@ -1,4 +1,4 @@
-"""Check the personality-backlog docs for broken internal links.
+"""Check the backlog docs for broken internal links.
 
 The backlog is a web of cross-references between open entries, their shipped
 write-ups, and the code they touch, and every migration of a shipped entry out
@@ -10,7 +10,7 @@ Markdown renderer complains about.
 Usage::
 
     python scripts/check_backlog_links.py            # backlog docs
-    python scripts/check_backlog_links.py docs rules # any roots
+    python scripts/check_backlog_links.py docs backlog rules # any roots
 
 Exits non-zero when anything is unresolved.
 """
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_ROOTS = ("docs/personality-backlog",)
+DEFAULT_ROOTS = ("backlog",)
 #: Vendored markdown is not ours to fix and drowns the signal.
 SKIP_DIRS = frozenset(
     {".git", ".venv", "node_modules", "site-packages", "target", "dist", "build"}

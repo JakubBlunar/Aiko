@@ -1,6 +1,6 @@
 # Longitudinal memory evidence
 
-This implements the four follow-ups in [memory-topic-correctness.md](memory-topic-correctness.md).
+This implements the four follow-ups in [memory-topic-correctness.md](../backlog/reviews/memory-topic-correctness.md).
 These records enrich the basis of an interpretation; they are not confidence votes.
 
 ## Topic evidence profiles

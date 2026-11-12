@@ -6,7 +6,7 @@ actual voice and our actual pipeline constraints without touching the
 production audio path.
 
 Candidate list and the reasoning behind it:
-[`docs/tts-engine-options.md`](../../docs/tts-engine-options.md).
+[`backlog/reviews/tts-engine-options.md`](../../backlog/reviews/tts-engine-options.md).
 
 ## Her voice, and the two places it comes from
 

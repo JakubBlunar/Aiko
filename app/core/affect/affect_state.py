@@ -151,7 +151,7 @@ class AffectState:
         snapshot against a post-:meth:`AffectUpdater.apply_turn` value has
         to decay it first or it measures the passage of time and calls it
         an emotional event (see K8's misfires in
-        ``docs/personality-backlog/health.md`` § H36).
+        ``backlog/personality/health.md`` § H36).
         """
         elapsed_s = _seconds_since(self.updated_at)
         return (

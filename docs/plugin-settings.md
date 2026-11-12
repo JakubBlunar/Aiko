@@ -140,7 +140,7 @@ for ownership, freshness and prompt sizing; browser formatting stays in its bund
 The SDK also provides `register_playbook` and `register_procedure` for on-demand
 instructions and bounded compound operations. Definitions, configuration and
 domain semantics remain plugin-owned; common generation, admission and checkpoint
-rules remain in the host. See [local task execution](task-harness-optimizations.md).
+rules remain in the host. See [local task execution](agent-harness.md).
 
 ## Dispatch and approval boundaries
 

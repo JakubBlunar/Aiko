@@ -15,7 +15,7 @@ three resolutions:
 - **(c) memory fine, the concept was a bad inference** -> no memory write
   (the concept was already penalised by L9).
 
-Design guardrails (see ``docs/personality-backlog/concepts.md`` L15):
+Design guardrails (see ``backlog/personality/concepts.md`` L15):
 
 - **Trigger, not a blind write.** A concept's confidence never directly
   overwrites a memory's confidence -- that back-edge is an undamped loop

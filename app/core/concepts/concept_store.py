@@ -2,7 +2,7 @@
 
 A **concept** is a cross-cluster abstraction that sits above topic
 clusters -- a first-class, long-lived entity with a lifecycle, evidence,
-and confidence (see ``docs/personality-backlog/concepts.md``). This
+and confidence (see ``backlog/personality/concepts.md``). This
 store owns two kind-agnostic SQLite tables:
 
 - ``concepts`` -- one row per concept (label, ``kind`` / ``subject`` /

@@ -13,7 +13,7 @@ rewards memories Aiko actually cites with persistent salience drift.
 This document covers the runtime model, the configuration knobs, and
 the producer rules every new worker should follow.
 
-The [5 November producer audit](memory-producer-audit-2026-11-05.md) reviews the
+The [5 November producer audit](../backlog/reviews/memory-producer-audit-2026-11-05.md) reviews the
 current source/time/subject contracts and remaining gaps across writers and
 rewriters. A tier describes retention and retrieval; long-term storage alone
 does not establish that a memory is verified or suitable evidence for a personal
@@ -55,7 +55,7 @@ evicted from. `prune()` deletes rows rather than demoting them, so
 a cap forgets rather than tidies; set one only if you want that.
 The cost of an unbounded corpus is the in-memory mirror's size and
 load time, not query time — see
-[P30](personality-backlog/perf.md#p30-raise--disable-the-memorymax_memories-cap)
+[P30](../backlog/personality/perf.md#p30-raise--disable-the-memorymax_memories-cap)
 for the measured curve.
 
 The RAG offset is a small additive nudge applied in

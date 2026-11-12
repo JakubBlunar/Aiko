@@ -15,7 +15,7 @@ small samples Chatterbox looked three times worse than pocket-tts, and on
 equal footing the two are indistinguishable. What *is* specific to
 Chatterbox is a high-frequency deficit (about 59% of pocket-tts's energy
 above 4 kHz), and no amount of gain fixes that -- see
-``docs/tts-engine-options.md``.
+``backlog/reviews/tts-engine-options.md``.
 
 Normalising each clip to a fixed target collapses the spread to nothing.
 It also makes the *deliberate* level changes work properly for the first

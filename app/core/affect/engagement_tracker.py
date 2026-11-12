@@ -31,7 +31,7 @@ Per-turn cost: a few deque ops + the K13 word-count provider call. No
 embedder, no LLM, no SQLite write of its own (the cumulative effect
 persists via ``RelationshipAxesState`` already).
 
-See [`docs/personality-backlog/patterns.md`](../../docs/personality-backlog/patterns.md)
+See [`backlog/personality/patterns.md`](../../backlog/personality/patterns.md)
 "K14. Implicit engagement signals" for the original sketch, and the
 project AGENTS.md / config-documentation rule for the agent-settings
 contract.

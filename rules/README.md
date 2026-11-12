@@ -14,5 +14,7 @@ points here for the rest.
 | [`code-conventions.md`](code-conventions.md) | To change **any subsystem** — the reference catalogue of architecture conventions and per-feature design notes: LLM provider routing + prompt-cache tiers, memory tiers + RAG, the K-series personality/affect/relationship features, avatar/Live2D channels, Tauri shell, tasks / brain orchestration, external MCP clients, and more. Grep it for the area you're about to touch. |
 | [`debugging.md`](debugging.md) | To diagnose a **runtime problem** — the log stream (where to look, line shape + canonical fields), the symptom → grep-target table, the level cheat sheet, and the practical workflow. |
 
-Deeper design docs live under [`docs/`](../docs/) and are linked from the files
-above.
+Current subsystem guides live under [`docs/`](../docs/README.md). Reviews,
+audits, future plans and rollout records belong in [`backlog/`](../backlog/README.md).
+Update the owning current guide when behavior changes instead of adding a new
+implementation-pass document to `docs/`.

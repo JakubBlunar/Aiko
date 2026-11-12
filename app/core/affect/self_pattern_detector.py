@@ -28,7 +28,7 @@ frozen-dataclass results so callers can render any subset, and so the
 All three short-circuit cleanly on empty / under-warmup input and
 never raise -- the inner-life provider should be able to call them in
 sequence without try/except. See
-[`docs/personality-backlog/patterns.md`](../../../docs/personality-backlog/patterns.md)
+[`backlog/personality/patterns.md`](../../../backlog/personality/patterns.md)
 "K30. Self-noticing cues" for the design rationale and the
 ``neutral / calm / friendly`` low-band reaction list.
 """
@@ -57,7 +57,7 @@ DEFAULT_REPEATED_COSINE_THRESHOLD: float = 0.85
 # Reactions that count as "even-keel" for the flat-affect detector.
 # A reply tagged with one of these does NOT count as "Aiko actually
 # landed somewhere". Per the K30 spec at
-# ``docs/personality-backlog/patterns.md`` L315-316 (deliberately
+# ``backlog/personality/patterns.md`` L315-316 (deliberately
 # excludes ``thoughtful`` -- that's a real landing, not a flat one;
 # see K8's separate ``DEFAULT_EXCLUDED_REACTIONS`` for the empathetic
 # group, which overlaps but is not the same set).
@@ -268,7 +268,7 @@ def detect_flat_affect(
     * no sampled reaction label lies outside ``low_band_reactions``.
 
     The AND clause matches the K30 spec at
-    ``docs/personality-backlog/patterns.md`` L313-318: a reply with a
+    ``backlog/personality/patterns.md`` L313-318: a reply with a
     real reaction (e.g. ``playful``, ``annoyed``, ``thoughtful``)
     counts as Aiko landing somewhere, even if the scalar affect
     happens to be inside the threshold band that turn. Conversely, a

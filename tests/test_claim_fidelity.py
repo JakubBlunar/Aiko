@@ -40,6 +40,24 @@ def test_inferred_meaning_is_tentative_and_keeps_its_basis():
     assert not admit("I am back.", "Noah returned", basis=[]).accepted
 
 
+@pytest.mark.parametrize("source,content", [
+    ("I'm on the bus.", "Noah is currently travelling by bus."),
+    ("I need an appointment around May next year.", "Noah needs an appointment next year."),
+    ("We spoke four weeks ago.", "Noah spoke to Mira four weeks ago."),
+])
+def test_unanchored_extraction_is_refused_with_a_reason_instead_of_stored(source, content):
+    result = admit(source, content)
+    assert not result.accepted
+    assert result.metadata["claim_fidelity_refusal"] == "relative_time"
+
+
+def test_dated_paraphrase_can_retain_a_relative_source_quote():
+    result = admit("I need an appointment around May next year.",
+                   "Noah needs an appointment around May 2027.", temporal_type="future_plan")
+    assert result.accepted
+    assert "next year" in result.metadata["claim_fidelity"]["sources"][0]["quote"]
+
+
 def test_event_time_requires_source_timing_and_does_not_inherit_model_precision():
     assert admit("I returned.", "Noah returned", event_time="2026-10-01T12:07:22Z"
                  ).metadata["claim_fidelity"]["event_time"] is None

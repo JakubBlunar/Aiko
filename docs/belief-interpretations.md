@@ -1,7 +1,7 @@
 # Beliefs as tentative interpretations
 
 Implemented 5 November 2026, following
-[the investigation](belief-quality-proposal-2026-11-05.md).
+[the investigation](../backlog/reviews/belief-quality-proposal-2026-11-05.md).
 
 Beliefs are **Aiko's tentative, situation-specific interpretation of what an
 exchange means now**. They can introduce a new possibility or conversational

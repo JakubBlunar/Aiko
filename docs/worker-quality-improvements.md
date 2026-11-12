@@ -1,6 +1,6 @@
 # Further worker quality improvements
 
-Implementation of the [6 Nov worker audit](worker-quality-audit-2026-11-06.md).
+Implementation of the [6 Nov worker audit](../backlog/reviews/worker-quality-audit-2026-11-06.md).
 The existing stores remain authoritative; historical records are not rewritten.
 
 ## Internal growth reflections

@@ -215,6 +215,13 @@ memories.
 
 User-editable defaults live in `config/default.json`; personal overrides go in `config/user.json` and are deep-merged on top (the Settings drawer in the UI writes `config/user.json` for you). Every knob — LLM routing, voice, memory tiers, the personality/worker toggles, tools, weather, avatar — is documented in the **[configuration reference](docs/configuration.md)**, which stays in lock-step with `app/core/infra/settings.py`.
 
+## Documentation
+
+The [documentation index](docs/README.md) maps current behavior and subsystem
+contracts. Start with the [agent harness](docs/agent-harness.md) for background
+workflows. Reviews, future plans and rollout history live in the
+[backlog](backlog/README.md).
+
 ## Tools
 
 Aiko calls tools via the LLM's native function-calling (time, memory recall, web search, weather, her room, her goals, plus bundled plugins and external MCP servers). See the **[tools catalog](docs/tools.md)** for the full list and [`docs/configuration.md`](docs/configuration.md#tools--toolssettings) for the per-family toggles.

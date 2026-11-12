@@ -103,6 +103,14 @@ _REFLECTION_SYSTEM_PROMPT = (
     "\"evidence_memory_ids\": []}}. Only cite offered IDs. Reported steps need "
     "actual reported action; reported outcomes need a recorded outcome receipt. "
     "A new wish may remain an intention without proof it was carried out."
+    " Advice or an unaccepted offer does not establish a commitment. Preserve "
+    "who would act and any conditions; a cited memory must support the relation "
+    "you assert, not merely mention the same action. Your reflection does not "
+    "establish another person's motive or a causal improvement."
+    " 'Has not asked' means no request, not refusal, unwanted help or cancellation. "
+    "It does not undo Aiko's definite commitment. A conditional offer stays open "
+    "until accepted; a definite commitment stays distinct from that offer. "
+    "Do not decide a person's needs, wishes or reactions from missing evidence."
 )
 
 _REFLECTION_USER_TEMPLATE = (

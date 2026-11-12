@@ -12,7 +12,7 @@ threshold on its own.
 The result was nine remembered arguments, every one anchored on a reunion
 greeting ("Where is my love?", "Good morning aiko. Have you slept well?"),
 with salience up to 0.97 and mirrored into LanceDB where RAG could recall
-them. See ``docs/personality-backlog/health.md`` § H36.
+them. See ``backlog/personality/health.md`` § H36.
 
 The detector is fixed, so no new ones can be written; this clears the ones
 already filed. Deletion rather than a status flip: unlike a hypothesis,

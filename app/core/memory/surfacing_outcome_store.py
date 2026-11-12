@@ -759,17 +759,20 @@ class SurfacingOutcomeStore:
             })
         return out
 
-    def count(self) -> int:
+    def count(self, *, window_days: int | None = None) -> int:
         conn = self._db._get_conn()  # type: ignore[attr-defined]
+        query, params = "SELECT COUNT(*) FROM surfacing_outcomes", ()
+        if window_days is not None:
+            cutoff = timephrase.utcnow() - timedelta(days=max(0, int(window_days)))
+            query += " WHERE created_at >= ?"
+            params = (cutoff.isoformat(),)
         try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM surfacing_outcomes"
-            ).fetchone()
+            row = conn.execute(query, params).fetchone()
         except Exception:
             return 0
         return int(row[0]) if row else 0
 
-    def unsettled_count(self) -> int:
+    def unsettled_count(self, *, window_days: int | None = None) -> int:
         """Rows still awaiting an outcome.
 
         A steady trickle is expected -- the last turn of every session
@@ -778,11 +781,14 @@ class SurfacingOutcomeStore:
         starve the ledger.
         """
         conn = self._db._get_conn()  # type: ignore[attr-defined]
+        query = "SELECT COUNT(*) FROM surfacing_outcomes WHERE settled_at IS NULL"
+        params = ()
+        if window_days is not None:
+            cutoff = timephrase.utcnow() - timedelta(days=max(0, int(window_days)))
+            query += " AND created_at >= ?"
+            params = (cutoff.isoformat(),)
         try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM surfacing_outcomes "
-                "WHERE settled_at IS NULL"
-            ).fetchone()
+            row = conn.execute(query, params).fetchone()
         except Exception:
             return 0
         return int(row[0]) if row else 0

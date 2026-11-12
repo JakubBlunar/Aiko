@@ -7,6 +7,21 @@ from __future__ import annotations
 
 from app.core.infra import timephrase
 
+def source_check_declined(answer):
+    """Respect an explicit abstention even if the model also emits concepts.
+
+    These checks are requested before labels, but the generic array parser
+    previously discarded them. Missing checks retain the other proposers'
+    contracts; a positive check still does not prove semantic entailment.
+    """
+    if not isinstance(answer, dict):
+        return False
+    return any(isinstance(value := answer.get(key), str)
+               and (value.strip().lower() == "none"
+                    or value.strip().lower().startswith("none:"))
+               for key in ("source_change", "source_conflict"))
+
+
 ASPIRATION_GROUNDING = """
 Evidence test for a direction (apply before proposing OR reinforcing):
 - Date order establishes chronology, not development. Identify what actually

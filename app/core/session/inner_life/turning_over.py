@@ -37,7 +37,7 @@ Decision flow:
 The simple picker is the v1 ship -- a weighted scorer
 (``recency * w_r + cosine(goals) * w_g + cosine(threads) * w_t``)
 is documented as a fast-follow in
-``docs/personality-backlog/shipped.md``. The simple picker's
+``backlog/personality/shipped.md``. The simple picker's
 "topical-or-nothing" gate keeps the v1 conservative: false
 silences are vastly preferred to false fires here, because a
 "hey, I was turning over your interview" cue that doesn't fit

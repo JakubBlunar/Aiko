@@ -23,7 +23,7 @@ questions:
   `get_activity` tool (Pass 18) forces a collector snapshot on the
   same ingest + redact path; timeout returns the last stored session.
   Memories and UIA remain later consumers — see
-  [`docs/personality-backlog/proactive.md`](personality-backlog/proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel).
+  [`backlog/personality/proactive.md`](../backlog/personality/proactive.md#c6-companion-mode--the-desktop-as-a-sensory-channel).
 
 ## What gets sent over the wire
 

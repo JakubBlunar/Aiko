@@ -611,7 +611,7 @@ inert — so if your consumer has a cap, the bar in front of it wants a
 
 Only read-side bars are applied. Anything that *writes* to the concept store is
 measured and recorded but left alone; see **L45** in
-[`docs/personality-backlog/concepts.md`](personality-backlog/concepts.md) for
+[`backlog/personality/concepts.md`](../backlog/personality/concepts.md) for
 why that line is drawn there.
 
 ## Dependency-aware retraction (L52)
@@ -721,7 +721,7 @@ the `recall_concept` tool — read those for the end-to-end pattern; for a
 diet-shaped worker read `ForwardCuriosityWorker` or
 `_render_opinion_injection_block`.
 
-See also [`docs/personality-backlog/concepts.md`](personality-backlog/concepts.md)
+See also [`backlog/personality/concepts.md`](../backlog/personality/concepts.md)
 (L24 contract, L28 rollout — shipped), [`docs/configuration.md`](configuration.md)
 for the diet / openness knobs, and
 [`rules/code-conventions.md`](../rules/code-conventions.md).

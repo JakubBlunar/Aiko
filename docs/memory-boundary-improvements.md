@@ -1,6 +1,6 @@
 # Memory source meaning and recall improvements
 
-Implementation of the [6 Nov boundary audit](memory-boundary-audit-2026-11-06.md).
+Implementation of the [6 Nov boundary audit](../backlog/reviews/memory-boundary-audit-2026-11-06.md).
 SQLite remains authoritative. Historical rows are not bulk rewritten.
 
 ## Recall

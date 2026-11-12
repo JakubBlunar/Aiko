@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from app.core.infra import timephrase
 from app.core.memory.claim_fidelity import event_support, refusal
 from app.core.memory.shared_shorthand import source_receipt
+from app.core.memory.promise_evidence import source_clause
 
 
 RULE = """
@@ -16,6 +17,9 @@ Recalled offline events require a user report. Never turn a plan into completion
 For a recalled event's time, optionally give event_time_evidence:{message_id,quote}
 with a literal timing phrase in a supporting message. Unknown occurrence time is
 allowed. Message timestamps date the exchange, not an earlier recalled event.
+Advice, unaccepted offers and future intentions are not a shared action already
+experienced. A citation must support the actor, action status and every condition
+in the stored clause, not just contain related words.
 """
 
 
@@ -56,7 +60,7 @@ def admit(candidate, offered):
             receipts[(row.id, quote)] = {**source_receipt(row, quote),
                                         "source_at": str(row.created_at or "")}
             supported.append(row)
-            quotes.append(quote)
+            quotes.append(source_clause(quote, row.content))
         if refusal(text, quotes, "reported"):
             return False
         if scope == "recalled_event" and not any(

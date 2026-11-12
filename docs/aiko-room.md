@@ -424,7 +424,7 @@ in the World tab: create the scene, add spots, drop objects, then
 scene she is in, so idle workers will not walk her to *her* bed while
 she is visiting. Force-reseed resets the apartment only.
 
-See [H5 in `shipped/immersion.md`](personality-backlog/shipped/immersion.md#h5-user-owned-scenes--she-can-be-in-your-room).
+See [H5 in `shipped/immersion.md`](../backlog/personality/shipped/immersion.md#h5-user-owned-scenes--she-can-be-in-your-room).
 
 ---
 

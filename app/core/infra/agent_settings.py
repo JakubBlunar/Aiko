@@ -1209,7 +1209,7 @@ class AgentSettings:
     # than seven separate facts to recite.
     #
     # Three modes (the canonical reference; mirrored verbatim in
-    # docs/personality-backlog/shipped.md and AGENTS.md):
+    # backlog/personality/shipped.md and AGENTS.md):
     #
     # ``off`` (default): no grounding line; the seven granular blocks
     #   render as today. Safe rollback target. Use this until you've

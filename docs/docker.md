@@ -106,7 +106,7 @@ deliberate on three counts:
   also the only one that reproduces her exactly, so the default costs nothing.
 
 If you want Chatterbox, run from source — `python -m tools.tts_lab.envs install
-chatterbox` — and see [`tts-engine-options.md`](tts-engine-options.md). The
+chatterbox` — and see [`tts-engine-options.md`](../backlog/reviews/tts-engine-options.md). The
 container has no `tools/` directory, so there is nothing to install against;
 `registry.availability()` reports that rather than pointing you at a command
 that cannot work.

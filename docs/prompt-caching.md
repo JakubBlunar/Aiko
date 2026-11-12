@@ -431,7 +431,7 @@ measuring session.
 
 Also settled by the same run: the persona measures **35,938 chars / 8,103
 tokens**, not the "~78k chars, ~19.5k tokens" recorded in
-[`perf.md`](personality-backlog/perf.md) under P31. And because T0 now
+[`perf.md`](../backlog/personality/perf.md) under P31. And because T0 now
 caches, `get_prompt_block_costs` ranks it *third* by effective cost behind
 `relevant_context` (2,027) and `handling_notes_block` (1,216) — so the
 persona trim is no longer where the value is. Note the shape of the loss
@@ -702,7 +702,7 @@ if they break:
 - **T3's 5.6% is `relevant_context` re-retrieving on 94% of turns**, and
   chasing it is a dead end. The boundary covers 66k chars, so the
   arithmetic is tempting, but the follow-up measurement under
-  [P51](personality-backlog/perf.md) found T3 is *structurally* volatile
+  [P51](../backlog/personality/perf.md) found T3 is *structurally* volatile
   rather than accidentally so: its concept lanes share **zero** items with
   the previous turn on all 1,160 measured pairs (habituation rotating on
   purpose), and its memories are 67% new per turn because the query

@@ -27,7 +27,7 @@ sentence that merely *sounds* tool-shaped only re-runs today's
 behaviour. The win comes from the large share of turns with no
 tool-shaped token at all.
 
-Escalation ladder (documented in ``docs/personality-backlog/shipped.md``):
+Escalation ladder (documented in ``backlog/personality/shipped.md``):
 if real-world tool recall regresses, the next levers are option D
 (route the decision pass to ``routes.worker_default``) and option B
 (speculative parallel stream) — NOT loosening this gate further.

@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from app.core.infra import timephrase
 from app.core.memory.memory_origin import memory_origin
+from app.core.memory.claim_fidelity import refusal
 
 
 RULE = """
@@ -19,6 +20,10 @@ Recording span is not symptom duration. Aiko's reflections remain hers, virtual
 events remain virtual, and public advice remains attributed world knowledge.
 Keep qualifications and exceptions. Use dated historical wording when current
 applicability is unknown. No hidden extra digest text: only these clauses are stored.
+Keep advice, unaccepted offers, conditional arrangements and definite commitments
+distinct. The source must support who is expected to act and the relation asserted,
+not merely mention the same future action. Do not turn an interpretation into a
+reported event, or a suggested benefit into an observed outcome.
 """
 
 
@@ -47,6 +52,8 @@ def parse_claims(raw, rows, now):
                         "user", "aiko", "relationship", "world"}):
                 return None
             sources = [offered[mid] for mid in ids]
+            if refusal(text, [row.content for row in sources], "reported"):
+                return None
             if scope != "current_state" and re.search(
                 r"\b(?:ongoing state|is experiencing|continues to|still suffers|"
                 r"persistent cycle)\b",

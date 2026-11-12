@@ -20,7 +20,7 @@ from __future__ import annotations
 # silent reaction drops. The Phase 5 expression overhaul added five
 # entries (``cry``, ``confused``, ``embarrassed``, ``nervous``,
 # ``defiant``) on top of the original 22 — see
-# ``docs/personality-backlog/shipped.md`` §B4.
+# ``backlog/personality/shipped.md`` §B4.
 REACTIONS: tuple[str, ...] = (
     "neutral",
     "cheerful",

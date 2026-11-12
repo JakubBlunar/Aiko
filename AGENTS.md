@@ -56,5 +56,8 @@ Read on demand; don't load all of it up front:
 - [`rules/code-conventions.md`](rules/code-conventions.md) — the **subsystem reference catalogue**: architecture conventions plus per-feature design notes (LLM providers & prompt cache, memory tiers & RAG, the K-series personality/affect/relationship features, avatar / Live2D, Tauri shell, tasks / brain orchestration, external MCP clients, …). Grep it for the area you're about to change.
 - [`rules/debugging.md`](rules/debugging.md) — the **log stream**: where to look, line shape + canonical fields, the symptom → grep-target table, level cheat sheet, and workflow.
 
-Deeper design docs live under [`docs/`](docs/) (linked from the files above).
+Current behavior and subsystem contracts live under [`docs/`](docs/README.md).
+Reviews, audits, future plans and rollout records belong in [`backlog/`](backlog/README.md);
+update the owning current guide when behavior changes instead of adding a new
+implementation-pass document to `docs/`.
 The Cursor-specific short ruleset is in [`.cursorrules`](.cursorrules).

@@ -1,7 +1,7 @@
 """L1 higher-order concept layer.
 
 A concept is a cross-cluster abstraction that sits above topic clusters
-(see ``docs/personality-backlog/concepts.md``). This package owns the
+(see ``backlog/personality/concepts.md``). This package owns the
 data substrate only: the persistence store (:mod:`concept_store`) and
 the kind registry (:mod:`concept_kinds`). The proposer (L2), lifecycle
 engine (L3), and prompt surfacing (L5) build on top of these.

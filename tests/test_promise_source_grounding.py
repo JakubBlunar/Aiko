@@ -60,3 +60,37 @@ def test_same_actor_action_with_a_distinct_known_deadline_is_kept():
         "UPDATE messages SET created_at=? WHERE id=1", ("2026-10-01T12:00:00+00:00",))
     assert worker.run()["persisted"] == 1
     assert len(store.calls) == 1
+
+
+@pytest.mark.parametrize("role,text,quote,action", [
+    ("assistant", "You just have to get to Thursday and survive the appointment.",
+     "get to Thursday and survive the appointment", "survive the appointment"),
+    ("assistant", "I'm glad you're here. Now play the episode before I get maudlin.",
+     "Now play the episode", "play the episode"),
+    ("user", "I look forward to your cookies on Thursday.",
+     "look forward to your cookies on Thursday", "make cookies together"),
+    ("user", "Both would be lovely. I don't know which one would be more tasty.",
+     "I don't know which one would be more tasty", "be the taste tester"),
+])
+def test_advice_commands_and_anticipation_do_not_become_owned_promises(role, text, quote, action):
+    worker, store, _, _ = _build_world(messages=[(role, text)], responses=[response(
+        who=role, what=action, source_quote=quote,
+    )])
+    assert worker.run()["persisted"] == 0
+    assert not store.calls
+
+
+@pytest.mark.parametrize("role,text,quote,action", [
+    ("assistant", "I'll review the route with you before the appointment.",
+     "review the route with you", "review the route with Jacob"),
+    ("user", "I will let you know when I am sitting inside the bus.",
+     "I will let you know when I am sitting inside the bus", "text Aiko from the bus"),
+    ("assistant", "Tomorrow night we go over the route and timing.",
+     "Tomorrow night we go over the route and timing", "review the route and timing"),
+])
+def test_owned_follow_up_survives_shortened_quotes_and_shared_actions(role, text, quote, action):
+    worker, store, _, _ = _build_world(messages=[(role, text)], responses=[response(
+        who=role, what=action, source_quote=quote,
+    )])
+    assert worker.run()["persisted"] == 1
+    assert store.calls[0]["metadata"]["promise_who"] == role

@@ -5,6 +5,6 @@ engines against Aiko's actual voice and actual pipeline constraints
 without touching the production audio path, and to make the comparison
 reproducible enough that a decision can be defended later.
 
-See ``docs/tts-engine-options.md`` for the candidate list and
+See ``backlog/reviews/tts-engine-options.md`` for the candidate list and
 ``tools/tts_lab/README.md`` for how to add an engine.
 """

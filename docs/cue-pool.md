@@ -259,7 +259,7 @@ pool so it does not redraft one it is already holding.
 
 This retired five config keys (`*_daily_cap` for associative wander,
 interest drift, dormant interest, curiosity gradient, and forward
-curiosity). [P45](personality-backlog/shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
+curiosity). [P45](../backlog/personality/shipped/perf.md#p45-retire-the-per-hour--per-day-caps-in-favour-of-satisfaction)
 then retired the five remaining *speaking* daily counts on workers
 that never joined the pool (world notice, away activities, idle seed,
 outing, diary).
@@ -403,7 +403,7 @@ text does not age with them, so a worker that wrote "you mentioned this
 morning that…" is putting a claim into Aiko's mouth that was true when
 drafted and false when spoken. This is the same class of bug as the
 untagged-memory regression (K-time10 in
-[`shipped/awareness.md`](personality-backlog/shipped/awareness.md)) but it
+[`shipped/awareness.md`](../backlog/personality/shipped/awareness.md)) but it
 needs a different fix, because the staleness is in the pool row rather
 than in the memory it came from.
 

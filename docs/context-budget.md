@@ -21,7 +21,7 @@ Design source: the shipped "unified context budget" plan (a local, untracked
 `.cursor/plans/` file — this document is the durable record).
 North-star context: this is the delivery vehicle for progressively lightening
 the fixed persona prompt so Aiko is more model-agnostic and driven by remembered
-context (see [Concept backlog L23](personality-backlog/concepts.md) and the
+context (see [Concept backlog L23](../backlog/personality/concepts.md) and the
 "future style concepts" follow-on).
 
 ## Data flow
@@ -194,7 +194,7 @@ the underlying concept moves, which is what the cache-prefix-sensitive tier
 requires. `0` restores the pre-L28 lane exactly.
 
 Three properties of the draw were corrected once it was measured on a real
-graph (see **L28m** in [`concepts.md`](personality-backlog/concepts.md)):
+graph (see **L28m** in [`concepts.md`](../backlog/personality/concepts.md)):
 
 - **Kinds rotate before subjects.** Drawing flat `(kind, subject)` buckets by
   confidence gave both of the live graph's two slots to `aspiration`

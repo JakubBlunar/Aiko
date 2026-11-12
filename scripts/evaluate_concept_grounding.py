@@ -25,6 +25,7 @@ from app.core.concepts.proposers.base import (  # noqa: E402
     NarrativeCandidate, ProposerContext, TensionBase,
 )
 from app.core.concepts.proposers import CONCEPT_PROPOSERS  # noqa: E402
+from app.core.concepts.proposers.grounding import source_check_declined  # noqa: E402
 from app.core.concepts.concept_synthesis_routing import ROUTING_RULE  # noqa: E402
 from app.core.infra import timephrase  # noqa: E402
 from scripts.evaluate_social_reasoning import configured_clients  # noqa: E402
@@ -74,7 +75,7 @@ def parse_answer(raw):
     blob = json.loads(raw)
     if not isinstance(blob, dict) or not isinstance(blob.get("concepts"), list):
         raise ValueError("invalid concepts object")
-    return blob["concepts"]
+    return [] if source_check_declined(blob) else blob["concepts"]
 
 
 def score(case, raw):

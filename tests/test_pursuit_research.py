@@ -201,3 +201,69 @@ def test_neutral_question_still_cannot_contain_private_contact_data(tmp_path):
     ))
     assert researcher.request(state(), datetime.now(timezone.utc)) is None
     assert store.iter_by_kind("open_question") == []
+
+
+def test_resolved_question_cannot_be_reissued_as_new_progress(tmp_path):
+    store, researcher = research(tmp_path)
+    current = state()
+    first = researcher.request(current, timephrase.utcnow())
+    store.update(first, metadata={**store.get(first).metadata,
+                                  "curiosity_resolved_at": timephrase.utcnow().isoformat()})
+    assert researcher.request(current, timephrase.utcnow()) is None
+    assert len(store.iter_by_kind("open_question")) == 1
+
+
+def test_reworded_finding_does_not_advance_hobby_but_new_answer_does(tmp_path):
+    store, researcher = research(tmp_path)
+    current = state()
+    meta = {"hobby_key": current["key"], "hobby_started_at": current["started_at"],
+            "research_evidence": [{"snippet": "Example source"}]}
+    old = store.add("Basil plants need six hours of direct sunlight for healthy growth.",
+                    "curiosity_finding", embed(""), metadata=meta, skip_dedupe=True)
+    store.add("For healthy growth basil plants need six hours of direct sunlight.",
+              "curiosity_finding", embed(""), metadata=meta, skip_dedupe=True)
+    current["research_result_ids"] = [old.id]
+    assert researcher.result(current) is None
+    new = store.add("Basil should be watered when the top layer of soil dries out.",
+                    "curiosity_finding", embed(""), metadata=meta, skip_dedupe=True)
+    assert researcher.result(current).id == new.id
+
+
+def test_research_context_keeps_project_and_multiple_dated_findings(tmp_path):
+    store, researcher = research(tmp_path)
+    current = state()
+    for content in ["Earlier result about leaf shape.", "Later result about sunlight."]:
+        store.add(content, "curiosity_finding", embed(""), skip_dedupe=True,
+                  metadata={"hobby_key": current["key"],
+                            "hobby_started_at": current["started_at"]})
+    calls = []
+    def compose(messages, **kwargs):
+        calls.extend(messages)
+        return json.dumps({"researchable": False}), None
+    researcher._client = SimpleNamespace(chat_json=compose)
+    assert researcher.request(current, timephrase.utcnow()) is None
+    prompt = calls[0]["content"]
+    assert "basil light requirements" in prompt
+    assert "Earlier result about leaf shape." in prompt
+    assert "Later result about sunlight." in prompt
+    assert "cannot redefine it" in prompt
+
+
+@pytest.mark.parametrize("other", [
+    "Basil plants need 8 hours of direct sunlight for healthy growth.",
+    "Basil plants do not need 6 hours of direct sunlight for healthy growth.",
+    "Basil plants don't need 6 hours of direct sunlight for healthy growth.",
+    "Basil plants don\u2019t need 6 hours of direct sunlight for healthy growth.",
+])
+def test_changed_number_or_negation_is_not_a_repeat(other):
+    from app.core.proactive.pursuit_research import _near_repeat
+
+    assert not _near_repeat("Basil plants need 6 hours of direct sunlight for healthy growth.",
+                            other)
+
+
+def test_number_words_in_findings_are_preserved():
+    from app.core.proactive.pursuit_research import _near_repeat
+
+    assert not _near_repeat("Basil plants need six hours of direct sunlight for healthy growth.",
+                            "Basil plants need eight hours of direct sunlight for healthy growth.")

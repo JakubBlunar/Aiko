@@ -37,7 +37,7 @@ stashing the result on the ``SessionController``; the provider
 clears the slot after a single render.
 
 **Two things the "pre/post delta" must not be** (both were live bugs —
-see ``docs/personality-backlog/health.md`` § H36):
+see ``backlog/personality/health.md`` § H36):
 
 *   *The passage of time.* ``AffectUpdater.apply_turn`` decays valence
     toward baseline for the elapsed gap **before** applying the reaction

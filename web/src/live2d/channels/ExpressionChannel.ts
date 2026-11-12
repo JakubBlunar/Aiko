@@ -174,7 +174,7 @@ export const _REACTION_NEIGHBOURS: Record<string, string[]> = {
 // turns a routine backchannel or thinking-pause into Aiko visibly
 // crying. The LLM's explicit ``[[reaction:concerned]]`` still routes
 // to whatever the rig has mapped — this list only covers the auto
-// fallbacks. See ``docs/personality-backlog/shipped.md`` §B5.
+// fallbacks. See ``backlog/personality/shipped.md`` §B5.
 const _BACKCHANNEL_TO_REACTION: Record<BackchannelHint, string[]> = {
   agreement: ["cheerful", "friendly", "warm"],
   // Disagreement reads as a serious / thoughtful face, not a sob.

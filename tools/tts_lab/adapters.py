@@ -3,7 +3,7 @@
 Why a seam rather than a script per engine
 ------------------------------------------
 The question this lab exists to answer is *not* "which engine sounds
-best". It is the one in ``docs/tts-engine-options.md``: **which engine
+best". It is the one in ``backlog/reviews/tts-engine-options.md``: **which engine
 exposes a control surface that :class:`ProsodyParams` can be mapped
 onto?** Aiko already derives per-sentence pacing and emotion from
 affect; today the speed channel is permanently dark because the only

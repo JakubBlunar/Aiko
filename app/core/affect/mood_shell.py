@@ -23,7 +23,7 @@ stays sparse.
 The K16 unified grounding line subsumes the same surface area, so the
 prompt assembler drops this block in ``replace`` mode (kept in
 ``split`` because mood-shell lives in the trend/phase cluster that
-``split`` preserves). See [`docs/personality-backlog/patterns.md`]
+``split`` preserves). See [`backlog/personality/patterns.md`]
 "K5. Mood shell tilt".
 """
 from __future__ import annotations

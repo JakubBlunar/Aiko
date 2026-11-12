@@ -1,7 +1,7 @@
 # ToolPlugins (SDK-primary MCP plugins)
 
 For the proposed next-generation platform, see the
-[plugin platform and durable agent-job guide](personality-backlog/plugin-system.md).
+[plugin platform and durable agent-job guide](../backlog/personality/plugin-system.md).
 It covers workers, hooks, storage, model access, bounded tool discovery and long
 jobs; those additions are design work, not part of the current SDK below.
 

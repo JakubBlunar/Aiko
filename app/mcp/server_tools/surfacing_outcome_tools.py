@@ -48,8 +48,8 @@ def build_report(
             ),
         }
 
-    total = store.count()
-    unsettled = store.unsettled_count()
+    total = store.count(window_days=window_days)
+    unsettled = store.unsettled_count(window_days=window_days)
     report: dict[str, Any] = {
         "enabled": True,
         "window_days": window_days,

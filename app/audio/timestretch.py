@@ -51,7 +51,7 @@ numpy against a dependency with a licence question.
 
 One-shot, and why that is not a shortcut
 ----------------------------------------
-The design note in ``docs/tts-engine-options.md`` requires the stage to
+The design note in ``backlog/reviews/tts-engine-options.md`` requires the stage to
 work incrementally on ~50 ms chunks, which ruled out offline helpers like
 ``librosa.effects.time_stretch``. That constraint turned out not to bind:
 pocket-tts **does not stream generation**. ``generate_audio`` returns a

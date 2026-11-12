@@ -1,173 +1,97 @@
-# External MCP-server clients (Phase 1)
+# External MCP-server clients
 
-Aiko has always been an MCP **server** (`app/mcp/server.py` exposes debug
-tools over SSE). This adds the **client** half: the app launches / connects
-to external MCP servers at boot, discovers their tools, and registers those
-tools as **background-worker skills only**.
+Aiko exposes an [embedded debug MCP server](../rules/mcp-server.md) and consumes
+external MCP servers through a separate client runtime. External tools execute
+as background workflow children. They are not automatically added to the
+conversation's fast-tool registry; explicit SDK fast tools use a different API.
+Start with [the agent harness](agent-harness.md) for the complete work flow.
 
-> **Lane rule.** MCP tools land **only** in the `WorkflowSkillRegistry`
-> (the goal-workflow planner / background lane). They are **never** added to
-> the brain's fast `ToolRegistry`. The brain keeps its existing custom file
-> tools; the filesystem MCP server (when configured) runs *alongside* them,
-> used only by background workers.
+## Connection and dispatch
 
-> **ToolPlugins.** As well as hand-writing `mcp_clients.servers[]`, you can
-> drop a **ToolPlugin** (a `plugin.json` stub + `entry.py`) whose
-> `define_plugin(api)` registers its MCP server, planner guidance, and
-> optional tool-result middleware in code. See [`docs/plugins.md`](plugins.md).
-> A plugin's server is built into exactly the same `ExternalMcpServer` shape
-> described here and flows through the same manager (a disabled plugin's code
-> is never imported).
+[`ExternalMcpManager`](../app/mcp/client/manager.py) owns a dedicated asyncio loop
+on a daemon thread. Per-server supervisors connect, initialize the MCP session,
+discover tools and maintain/reconnect the transport with backoff. Synchronous
+handler threads call `call_tool`, which marshals onto that loop. Server startup
+and dependency preparation do not run inline in a conversation turn.
 
-## Runtime-captured guidance (fallback)
+[`register_mcp_skills`](../app/core/tasks/workflow/mcp_skills.py) bridges live
+descriptors into `WorkflowSkillRegistry` as `<server_id>__<tool_name>` entries.
+The tools-changed callback refreshes the catalogue after asynchronous connection;
+workflow menus expose bounded complete schemas with discovery for omitted tools.
+The namespace is a capability definition, not a running task.
 
-On connect the manager captures each server's `initialize()`
-`instructions` and a best-effort `list_prompts()` snapshot
-(`server_instructions(id)` / `list_prompts(id)` / `captured_group_guidance()`,
-surfaced in `server_status()` as `has_instructions` / `prompt_count`).
-This is the runtime-captured guidance source the planner uses when a
-server (plugin or plain config) has no `SKILL.md` — precedence is **plugin
-`SKILL.md` > captured server instructions > hardcoded playbook**. Inspect
-it with the MCP tool `get_external_mcp_instructions`.
+The planner spawns a child through the existing orchestrator.
+[`McpToolHandler`](../app/core/tasks/handlers/mcp_tool.py) validates and dispatches
+one concrete operation through the manager. Plugin ownership/configuration
+generations follow the descriptor, pending step, approval contract and dispatch.
+Tools that disappeared or changed generation require a fresh plan. See
+[operation approvals](task-approvals.md) for effect classification and waits.
 
-## Architecture
+## Plugins and runtime configuration
 
-```
-config: mcp_clients.servers[]
-        │
-        ▼
-ExternalMcpManager  (daemon thread + asyncio loop)
-  • per-server supervisor coroutine: stdio_client → ClientSession.initialize → list_tools
-  • holds the session open; reconnects with backoff on drop
-  • call_tool(...) via run_coroutine_threadsafe  (thread-safe for handler threads)
-        │ discovered tools
-        ▼
-register_mcp_skills()  →  WorkflowSkillRegistry  (background lane only)
-        │
-        ▼
-GoalWorkflowHandler planner (worker LLM) picks skills via describe_for_planner()
-        │ spawn child task
-        ▼
-TaskOrchestrator → McpToolHandler.start() → manager.call_tool() → result → TaskCompleted
-```
+Bundled filesystem, browser and source-inspection tools are supplied by
+[SDK plugins](plugins.md). [`PluginManager`](../app/plugins/manager.py) owns
+selective activation, replacement/removal of registrations, cleanup and desired
+versus applied revisions. Settings > Tools > Plugins can enable, disable or apply
+configuration without restarting Aiko or unrelated services.
 
-### Components
+An access reduction revokes the old generation. Pending work cannot reinterpret
+old relative paths under replacement roots, even when tool schemas are identical.
+An operation already sent may finish; a returned acknowledgement does not undo
+revocation or make an uncertain mutation safe to repeat. Current lifecycle and
+failure semantics belong to [plugin settings](plugin-settings.md).
 
-| File | Role |
-|------|------|
-| [`app/core/infra/settings.py`](../app/core/infra/settings.py) | `ExternalMcpServer` / `ExternalMcpSettings` dataclasses + parsers; `agent.mcp_clients_enabled`. |
-| [`app/mcp/client/manager.py`](../app/mcp/client/manager.py) | `ExternalMcpManager` — owns the asyncio loop on a daemon thread, supervises each server, exposes `call_tool` / `list_available_tools` / `server_status` / `restart` / `stop`. |
-| [`app/core/tasks/handlers/mcp_tool.py`](../app/core/tasks/handlers/mcp_tool.py) | `McpToolHandler` (`HANDLER_MCP_TOOL`) — one generic handler proxies every MCP tool call; flattens text content, emits `TaskCompleted` / `TaskFailed`. |
-| [`app/core/tasks/workflow/mcp_skills.py`](../app/core/tasks/workflow/mcp_skills.py) | `register_mcp_skills()` — converts discovered tools into namespaced `WorkflowSkill`s whose `spawn` starts a `HANDLER_MCP_TOOL` child task. |
-| [`app/core/session/task_orchestration_mixin.py`](../app/core/session/task_orchestration_mixin.py) | `_init_external_mcp()` builds + starts the manager after the workflow handler, registers the handler + skills; `_shutdown_task_orchestration()` stops it. |
+Legacy `mcp_clients.servers` configuration remains available for directly
+configured servers, gated by `agent.mcp_clients_enabled`. Plugin setup uses
+`api.register_mcp_server` rather than the retired declarative plugin manifest.
+File read/search/write come from the filesystem plugin, not built-in file
+handlers. The core allowed-root sandbox still serves vision/managed attachments;
+it is not a second active file-operation catalogue.
 
-## Lifecycle
+## Results and observations
 
-1. **Boot** (`_init_external_mcp`, gated on `agent.mcp_clients_enabled` + a non-empty enabled server list, only reached when `agent.workflow_enabled`): build `ExternalMcpManager`, register `McpToolHandler`, `start()` the manager, and run `register_mcp_skills` once.
-2. **Connect (async).** Each server's supervisor coroutine launches the child (stdio) / connects (sse), `initialize()`s, `list_tools()`, caches the catalogue, fires the **tools-changed callback** (which re-runs `register_mcp_skills`), then holds the session open. Because connection is async (an `npx` cold start can take seconds), the immediate boot-time registration usually finds 0 tools — the callback lands the real catalogue moments later, no restart needed.
-3. **Call.** A handler worker thread calls `manager.call_tool(server_id, tool, args)`, which marshals the coroutine onto the manager loop with `run_coroutine_threadsafe` and blocks for the result.
-4. **Reconnect.** On a dropped session the supervisor loops with capped exponential backoff (`status='failed'` in between).
-5. **Shutdown.** `manager.stop()` wakes every supervisor, stops the loop, and tears down the async context managers — which terminate the child processes.
+Original MCP text is retained as an owned SQLite result artifact when available.
+The inline tool view is capped at 100,000 characters; artifact quotas are
+2,000,000 UTF-8 bytes per item and 8,000,000 per job. Unsupported media, truncation
+and storage failure remain explicit partiality. Paging saved text does not rerun
+the tool or refresh browser targets.
 
-## Secrets
+The first claiming tool-result middleware can provide a compact rendered view
+and an optional `planner_context` projection. The host attaches task/source/
+configuration identity; browser interpretation belongs to the plugin. Old
+observations are invalidated across resume/reconfiguration or intervening owner
+operations. See [browser perception](browser-perception.md),
+[task context](task-context-budget.md) and
+[result storage](agent-harness.md#evidence-storage).
 
-`env` values support `${ENV:NAME}` indirection, resolved from the process
-environment at launch (`resolve_env` in the manager). So a token lives in an
-env var, not in `config/user.json`:
+## Secrets and logs
 
-```json
-"env": { "GITHUB_TOKEN": "${ENV:GITHUB_TOKEN}" }
-```
+Direct-server `env` supports `${ENV:NAME}` indirection from the host environment.
+SDK plugins read configuration through `api.config` and environment values through
+`api.env`; do not copy credentials into committed manifests. Provider API keys
+use the separate provider-credential boundary. This transport guide does not
+promise a generic secret editor for every plugin field.
 
-Keychain-backed write-only secret storage + a Settings UI is deferred to
-Phase 3.
+MCP JSON-RPC uses private transport pipes/sessions. Child stderr is forwarded to
+per-server `app.mcp.client.<id>` DEBUG logs instead of raw console chatter.
+Manager lifecycle uses `app.mcp.client` (`external-mcp connected:` and
+`external-mcp connect failed:`). Inspect metadata/status before enabling verbose
+logs or making a remote call.
 
-For **ToolPlugins** there is no manifest placeholder syntax: an `entry.py`
-reads machine-specific paths from its plugin-local `config/user.json`
-(`api.config[...]`, gitignored) and secret tokens from the environment
-(`api.env("MY_TOKEN")`), so a committed `plugin.json` (a bare stub) never
-carries either — see [`docs/plugins.md`](plugins.md).
+## Debug tools
 
-## Log hygiene
+- `list_external_mcp_servers` and `list_external_mcp_tools`: current connection
+  status and exposed descriptors.
+- `get_external_mcp_instructions`: captured runtime guidance.
+- `get_browser_perception_state` and `preview_browser_perception`: inspect or
+  preview perception without a production browser mutation.
+- `restart_external_mcp_server`: reconnect one server; this changes runtime state.
+- `call_external_mcp_tool`: direct debug invocation, outside task recording and
+  the normal workflow approval/reporting path. Use only for explicitly intended
+  operations; it is not the read-only status check.
 
-The JSON-RPC protocol runs over each child's **private** stdin/stdout pipes
-(the SDK owns them), so protocol traffic never reaches our console /
-`app.log` / ring buffer. The one noise source is the child's **stderr**
-(server diagnostics + `npx` install/progress chatter), which
-`stdio_client(errlog=...)` would otherwise dump raw to `sys.stderr`. The
-manager passes a line-buffered writer that forwards each line into a
-per-server logger `app.mcp.client.<id>` at **DEBUG** — silent at the default
-INFO level, lands in `app.log`, grep-able via
-`tail_logs(module_contains="mcp.client")`. The manager itself logs lifecycle
-lines under `app.mcp.client` (`external-mcp connected:`, `external-mcp
-connect failed:`).
-
-## MCP debug tools
-
-On the embedded debug server (`app/mcp/server.py`):
-
-- `list_external_mcp_servers()` — status + tool counts per configured server.
-- `list_external_mcp_tools()` — every discovered tool (`server_id`, `name`, `qualified_name`, `description`, `input_schema`).
-- `call_external_mcp_tool(server_id, tool, args_json)` — call a tool end-to-end, no task row, no Aiko. Fastest reachability check.
-- `restart_external_mcp_server(server_id)` — force one server to reconnect (re-reads tools).
-- `get_browser_perception_state()` — perception layer status (enabled / server_id / adapter / memory pages / last summary). See [browser-perception.md](browser-perception.md).
-- `preview_browser_perception(raw_text, args_json)` — run the perception pipeline on a pasted snapshot, no live browser.
-
-## Tool filtering: allow-list vs deny-list
-
-Each server row supports two complementary filters (applied in
-`ExternalMcpManager._refresh_tools`, before tools become skills):
-
-- `expose_tools` — *allow-list*. When non-empty, ONLY these tool names register.
-- `disabled_tools` — *deny-list*. Tool names to drop even if they pass the allow-list. Convenient for hiding a few unwanted tools without enumerating everything you keep.
-
-```json
-{ "id": "browser", "command": "npx", "args": ["-y", "real-browser-mcp"],
-  "disabled_tools": ["browser_console", "browser_network", "browser_evaluate", "browser_handle_dialog"] }
-```
-
-## Filesystem MCP proof
-
-Add to `config/user.json` (gitignored):
-
-```json
-{
-  "agent": { "mcp_clients_enabled": true, "workflow_enabled": true },
-  "mcp_clients": {
-    "servers": [
-      {
-        "id": "filesystem",
-        "name": "Filesystem",
-        "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/you/Documents"]
-      }
-    ]
-  }
-}
-```
-
-Restart the app, then verify over the debug MCP:
-
-1. `list_external_mcp_servers()` → the `filesystem` row shows `status: "connected"` and a non-zero `tool_count`.
-2. `list_external_mcp_tools()` → tools like `filesystem__read_text_file`, `filesystem__list_directory`, … (namespaced).
-3. `call_external_mcp_tool("filesystem", "list_directory", "{\"path\": \"C:/Users/you/Documents\"}")` → directory listing.
-4. The tools are visible to the **background planner only** — a `start_workflow` run can pick `filesystem__*` skills; the brain's fast tool list is unchanged.
-
-The custom file tools (`FileRead/Search/Write`) keep working alongside the
-filesystem MCP server; retiring them is Phase 4.
-
-## Browser MCP + perception layer
-
-`real-browser-mcp` (`npx -y real-browser-mcp` + a Chrome extension) is just
-another stdio server row. On top of it, the optional **browser perception
-layer** reshapes the raw accessibility snapshot into a compact, ranked,
-deduped, form-grouped, change-diffed page model before it reaches the
-planner — and it's **server-agnostic** (swap the MCP server, keep the
-optimizations). See [browser-perception.md](browser-perception.md) for the
-full design, the adapter contract, and the swap runbook.
-
-## Later phases (not built)
-
-- **Settings UI + keychain.** A drawer panel + `/api/mcp/servers` CRUD + `mcp_servers_changed` WS, cloning the `llm.providers` pattern, plus keychain-backed secret env vars.
-- **Retire the custom file tools** once the filesystem MCP server is validated.
+Session wiring lives in
+[`task_orchestration_mixin.py`](../app/core/session/task_orchestration_mixin.py)
+and [`plugin_settings_mixin.py`](../app/core/session/plugin_settings_mixin.py).
+The [platform backlog](../backlog/personality/plugin-system.md) owns proposed
+extensions; it does not override these implemented contracts.

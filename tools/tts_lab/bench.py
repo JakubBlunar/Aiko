@@ -438,7 +438,7 @@ you know which one it is.</p>
 {unavailable}
 <h2>Control surface &mdash; what each engine can be told</h2>
 <p class="sub">The selection criterion from
-<code>docs/tts-engine-options.md</code>: not which engine sounds best,
+<code>backlog/reviews/tts-engine-options.md</code>: not which engine sounds best,
 but which one <code>ProsodyParams</code> can be mapped onto. Gain and
 pauses are post-processing and survive any swap; the top three rows are
 the ones that need the engine's cooperation.</p>

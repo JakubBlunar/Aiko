@@ -28,6 +28,15 @@ def test_new_schema_stores_only_cited_clauses_not_unchecked_digest_text():
     assert not parse_claims('{"digest":"An unreviewed old shape"}', [row()], timephrase.utcnow())
 
 
+@pytest.mark.parametrize("text", [
+    "Noah reported a headache four weeks ago.",
+    "Noah reported a headache one week ago.",
+    "Noah plans an appointment in May next year.",
+])
+def test_relative_intervals_cannot_enter_stored_summary_clauses(text):
+    assert parse_claims(draft(text=text), [row()], timephrase.utcnow()) is None
+
+
 @pytest.mark.parametrize("payload,sources", [
     (draft(source_ids=[99]), [row()]),
     (draft(subject="aiko"), [row()]),

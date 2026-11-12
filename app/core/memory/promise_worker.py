@@ -149,6 +149,9 @@ _SYSTEM_PROMPT = (
     "commitments worth remembering beyond the current exchange. Immediate enactment, "
     "affectionate invitations, reassurance and ordinary bedtime actions are not lasting "
     "promises. Preserve a genuine request to follow up, deliver something or remember it.\n"
+    "An actual reminder or delivery owed later is follow_up even when no due date "
+    "is known or it is due later the same day. Immediate means enacting the action "
+    "in this exchange, not merely mentioning a nearby future action.\n"
     "Rules:\n"
     "- A promise is a concrete intent to DO, find out, follow up on, or "
     "remember something specific. Idioms and figures of speech are NOT "
@@ -156,6 +159,15 @@ _SYSTEM_PROMPT = (
     "'I hope so').\n"
     "- Skip vague feelings with no action, and skip anything you cannot "
     "make self-contained from the transcript.\n"
+    "- The speaker must own the action in the quoted sentence. Advice to the "
+    "other person ('you just have to survive Thursday'), commands ('play the "
+    "episode'), and looking forward to someone else's cookies are NOT the "
+    "speaker's promises. Quote enough to retain I/we and the actual intention. "
+    "Do not convert reassurance, a wish or an invitation into an obligation.\n"
+    "- An offer ('If you want, I can remind you') is not an accepted promise. "
+    "Only extract definite, unconditional follow-up commitments. Preserve "
+    "conditional arrangements in ordinary memories instead; this promise ledger "
+    "cannot decide whether their conditions have been fulfilled.\n"
     "- Paraphrase to the action; do not echo the literal sentence.\n"
     '- 0-5 items max. Return {"promises": []} when nothing qualifies.\n'
     "- Output the JSON object and nothing else."
@@ -859,6 +871,12 @@ class PromiseExtractionWorker:
                 if (source is None or source["role"] != who or len(quote) < 8
                         or " ".join(quote.split()) not in " ".join(source["content"].split())):
                     log.info("promise-worker refused source: missing/mismatched message or quote")
+                    continue
+                from app.core.memory.promise_evidence import ownership_refusal
+
+                refusal = ownership_refusal(quote, source["content"])
+                if refusal:
+                    log.info("promise-worker refused ownership: %s", refusal)
                     continue
                 item_anchor = timephrase.parse_iso(source["created_at"])
                 if timephrase.has_relative_deictic(what):

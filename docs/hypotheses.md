@@ -110,7 +110,7 @@ and the worker cursor/budget/last result. `include_rows=true` opts into personal
 claim snapshots and evidence; `after_id` and `limit` page them. Historical belief
 statuses are not backfilled into resolutions and these counts are not accuracy
 scores. No automatic L44 calibration is enabled. Live quality evaluation and
-additional reflection probes remain in the [L33 backlog](personality-backlog/concepts.md#l33-introspective-reflection----structured-self-questioning-that-feeds-concepts).
+additional reflection probes remain in the [L33 backlog](../backlog/personality/concepts.md#l33-introspective-reflection----structured-self-questioning-that-feeds-concepts).
 
 ### The two measures
 

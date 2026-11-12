@@ -490,7 +490,7 @@ CREATE INDEX IF NOT EXISTS idx_topic_assign_cluster
 
 -- Schema v21: L1 higher-order concept layer -- a cross-cluster
 -- abstraction that sits *above* topic clusters (see
--- ``docs/personality-backlog/concepts.md``). A concept is a
+-- ``backlog/personality/concepts.md``). A concept is a
 -- first-class, long-lived entity with a lifecycle, evidence, and
 -- confidence -- not an atomic fact -- so it gets its own tables rather
 -- than living in ``memories``. Two kind-agnostic tables back it:

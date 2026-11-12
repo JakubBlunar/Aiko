@@ -349,6 +349,19 @@ class DiaryWorker:
             "including uncertainty if that is what remains. The conversation may contain "
             "imagined shared scenes: preserve that framing rather than treating them as "
             "observed physical events. No new meaningful reflection means an empty entry."
+            " A source's existence does not justify changing what it means: keep who "
+            "would act, advice versus a promise, unaccepted offers and their conditions, "
+            "and intentions versus reported actions distinct. Your own interpretation "
+            "can remain a feeling or question; do not turn it into the user's motive "
+            "or an objective outcome. Earlier diary imagery is not evidence that the "
+            "same action happened again in this conversation."
+            " Speaker labels are literal: Aiko's lines are YOUR words, and "
+            f"{user_name}'s lines are THEIR words. If Aiko gave advice, write "
+            "'I suggested', not 'you reminded me'. Not having asked for help is "
+            "not refusing it, feeling pressured, or cancelling an explicit promise. "
+            "Keep those unknown unless said. A timestamp dates a line, not a "
+            "new action or an exact duration. If the distinction is unclear, keep "
+            "your uncertainty rather than supplying an explanation."
         )
         try:
             content, _usage = self._ollama.chat_json(

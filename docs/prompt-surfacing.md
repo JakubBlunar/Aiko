@@ -350,7 +350,7 @@ it must not substitute a sibling when the selected source disappeared. L17
 can reconsider a missed cue once on a real new opportunity, not every
 heartbeat. A valid share is not an ask, and neither is permission to start an
 external activity. K97, K98 and K99 contracts are recorded in
-[shipped/cognitive-continuity.md](personality-backlog/shipped/cognitive-continuity.md).
+[shipped/cognitive-continuity.md](../backlog/personality/shipped/cognitive-continuity.md).
 
 ## What to memorize
 
@@ -588,8 +588,8 @@ This is the prerequisite for tuning: 528 `provider` declines cannot tell us
 whether to fix stock, refresh stale material, repair code, or change admission.
 Retain counts of unknown reasons and unjoinable outcomes so observability
 coverage cannot masquerade as better behavior. Do not learn block value from
-copied turn-engagement labels. See [workers.md](personality-backlog/workers.md)
-and [P43](personality-backlog/perf.md#p43-105-blocks-no-arbitration----replace-the-aggressive-denylist).
+copied turn-engagement labels. See [workers.md](../backlog/personality/workers.md)
+and [P43](../backlog/personality/perf.md#p43-105-blocks-no-arbitration----replace-the-aggressive-denylist).
 
 ### S2. Collect, choose, render, then commit
 
@@ -609,7 +609,7 @@ Evaluate direct questions, a fresh support turn, a lull, a correction and a
 task completion at equal token budgets. Measure answer completeness, distinct
 optional moves, source use, unspent losing cues and stale/repeated content.
 Following well and appropriate silence are successes. This is the next scope
-of [K92](personality-backlog/patterns.md#k92-conversational-stance--one-decision-per-turn-not-ten-permission-slips),
+of [K92](../backlog/personality/patterns.md#k92-conversational-stance--one-decision-per-turn-not-ten-permission-slips),
 not a new universal cognitive controller.
 
 ### S3. Evidence-bound remembering
@@ -624,7 +624,7 @@ Begin with plain remember tags and the existing batch extractor, not every
 worker at once. Preserve readable-empty watermark behavior while making partial
 application retryable and idempotent. Never relabel the live corpus wholesale
 from a missing source field. Detailed scope and acceptance are in
-[K100](personality-backlog/patterns.md#k100-evidence-bound-memory-admission).
+[K100](../backlog/personality/patterns.md#k100-evidence-bound-memory-admission).
 
 ### S4. Use uncertainty to choose the next useful step
 
@@ -638,7 +638,7 @@ LLM planner or request private chain-of-thought.
 Expose only a needed, enabled capability after freshness and relevance checks.
 Knowing that information is missing does not grant access or permission to act.
 Keep healthy uncertainty as a valid answer when the information is unnecessary
-or unavailable. See [K101](personality-backlog/patterns.md#k101-route-an-unresolved-premise-to-a-bounded-next-step).
+or unavailable. See [K101](../backlog/personality/patterns.md#k101-route-an-unresolved-premise-to-a-bounded-next-step).
 
 ### S5. Keep essential handling attached to the selected content
 
@@ -649,7 +649,7 @@ fit its essential warning, omit the bundle without spending it. An owed repair
 or safety-critical fact instead needs an explicit compact protected form.
 Record note omission reasons separately from block omission.
 
-Reuse [P50](personality-backlog/perf.md#p50-the-persona-hoist-has-no-cap-and-it-is-the-second-largest-block)
+Reuse [P50](../backlog/personality/perf.md#p50-the-persona-hoist-has-no-cap-and-it-is-the-second-largest-block)
 and K92/P43 admission. First run isolated tight-budget fixtures; the current
 3,276-character sample is below the default budget and does not demonstrate
 that a critical note was lost in production.
@@ -708,4 +708,4 @@ Implementation experiments should reuse
 [test_conversation_situation.py](../tests/test_conversation_situation.py),
 and the existing memory/cue tests before the repository's full code gates.
 Compare multi-turn behavior with the
-[T5 naturalness track](personality-backlog/testing.md#27-sep-2026-multi-turn-naturalness-track).
+[T5 naturalness track](../backlog/personality/testing.md#27-sep-2026-multi-turn-naturalness-track).

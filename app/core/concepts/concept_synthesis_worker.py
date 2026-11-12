@@ -4283,9 +4283,11 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         parsed = self._parse(text)
         if not parsed:
             try:
+                from app.core.concepts.proposers.grounding import source_check_declined
+
                 answer = json.loads(text)
                 usable = isinstance(answer, dict) and (
-                    answer == {} or answer.get("concepts") == []
+                    answer == {} or answer.get("concepts") == [] or source_check_declined(answer)
                 )
             except (TypeError, ValueError):
                 usable = False
@@ -4301,6 +4303,10 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             try:
                 parsed = json.loads(match.group(0))
                 if isinstance(parsed, dict):
+                    from app.core.concepts.proposers.grounding import source_check_declined
+
+                    if source_check_declined(parsed):
+                        return []
                     concepts = parsed.get("concepts")
                     if isinstance(concepts, list):
                         return concepts

@@ -133,7 +133,7 @@ The first three follow-ups are implemented:
   the completed source still exists. Existing legacy evidence stays unknown.
   The route fingerprint identifies configuration, not a provider's model weights.
   Plain-text declines still cannot be reliably classified from wording alone. See
-  [K107](personality-backlog/patterns.md#k107-provider-outcomes-are-not-character-evidence).
+  [K107](../backlog/personality/patterns.md#k107-provider-outcomes-are-not-character-evidence).
 - **Tool argument validation:** malformed JSON stays an error through OpenAI,
   Responses and Ollama parsing; it cannot execute a no-argument tool by becoming
   an empty object. The registry validates required fields, types, enums, bounds

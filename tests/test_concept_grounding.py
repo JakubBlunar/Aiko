@@ -9,6 +9,7 @@ import pytest
 
 from app.core.concepts.proposers.base import ExistingConcept, ProposerContext
 from app.core.concepts.proposers.narrative_user import propose_narrative_user
+from app.core.concepts.concept_synthesis_worker import ConceptSynthesisWorker
 from scripts import evaluate_concept_grounding as evaluation
 
 
@@ -132,3 +133,19 @@ def test_contrast_corpus_contains_positive_and_negative_controls_in_both_splits(
         selected = [case for case in cases.values() if case["split"] == split]
         assert {case["expected"] for case in selected} == {True, False}
         assert {case["contrast"] for case in selected} == {"repetition", "conflict", "promise"}
+
+
+@pytest.mark.parametrize("field", ["source_change", "source_conflict"])
+@pytest.mark.parametrize("verdict", ["none", "none: both can be respected", " NONE: repeats only "])
+def test_explicit_source_abstention_wins_over_inconsistent_concept_array(field, verdict):
+    raw = json.dumps({field: verdict, "concepts": [{"label": "Invented development"}]})
+    assert ConceptSynthesisWorker._parse(raw) == []
+    assert evaluation.parse_answer(raw) == []
+
+
+def test_positive_source_check_and_other_proposer_contracts_keep_their_concepts():
+    concepts = [{"label": "A supported direction"}]
+    for extra in [{}, {"source_change": "Completed increasingly difficult exercises"}]:
+        raw = json.dumps({**extra, "concepts": concepts})
+        assert ConceptSynthesisWorker._parse(raw) == concepts
+        assert evaluation.parse_answer(raw) == concepts

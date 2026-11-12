@@ -12,6 +12,11 @@ Source fidelity:
   planned step was completed. Store only the supported part; do not fill gaps.
 - Do not add often/always/usually/repeatedly to a single episode or turn a
   situational request into an enduring preference. Preserve conditions and negation.
+- A real citation does not prove its interpretation. Preserve the actor and
+  speech act: advice is not the speaker's commitment, an unaccepted offer is
+  not a promise, capability is not intention, and intention is not completion.
+  Keep if/unless conditions and uncertainty; do not assert a result or causal
+  benefit merely because someone predicted or hoped for it.
 - event_time requires event_time_evidence:{message_id,quote}: a literal temporal
   phrase in a NEW owner's message. Message timestamps are recording times, never
   invented event times. Leave event_time null when occurrence time is unknown.
@@ -19,7 +24,7 @@ Source fidelity:
 """
 _COMPLETE = re.compile(r"\b(?:completed?|finished?|submitted|accomplished|fulfilled)\b", re.I)
 _RECUR = re.compile(r"\b(?:always|usually|often|repeatedly|routinely|regularly|every day)\b", re.I)
-_CONDITION = re.compile(r"\b(?:when|while|during|unless|except)\b", re.I)
+_CONDITION = re.compile(r"\b(?:when|while|during|unless|except|if|provided)\b", re.I)
 _NONACTUAL = re.compile(r"\b(?:not|never|didn't|haven't|would|could|might|will|if|plan|need to)\b",
                         re.I)
 
@@ -27,6 +32,17 @@ _NONACTUAL = re.compile(r"\b(?:not|never|didn't|haven't|would|could|might|will|i
 def refusal(content, quotes, basis):
     if not isinstance(basis, str) or basis not in {"reported", "inferred"}:
         return "invalid_claim_basis"
+    if re.search(r"\b(?:promis\w*|committ\w*|vowed|pledged)\b", content, re.I):
+        from app.core.memory.promise_evidence import ownership_refusal
+
+        supported = any(
+            not ownership_refusal(quote, quote, allow_conditional=True)
+            or (re.search(r"\b(?:promis\w*|committ\w*|vowed|pledged)\b", quote, re.I)
+                and not _NONACTUAL.search(quote))
+            for quote in quotes
+        )
+        if quotes and not supported:
+            return "unsupported_commitment"
     if basis == "inferred" and not re.search(
         r"\b(?:may|might|seems?|appears?|possibly|possible|perhaps)\b", content, re.I,
     ):

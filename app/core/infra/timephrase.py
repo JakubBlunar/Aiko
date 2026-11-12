@@ -350,6 +350,11 @@ def _deictic_re(words: tuple[str, ...]) -> re.Pattern[str]:
 _DEICTIC_RE = _deictic_re(_RELATIVE_DEICTICS)
 _PAST_DEICTIC_RE = _deictic_re(_PAST_DEICTICS)
 _FUTURE_DEICTIC_RE = _deictic_re(_FUTURE_DEICTICS)
+_RELATIVE_INTERVAL_RE = re.compile(
+    r"\b(?:(?:next|last|this)\s+(?:year|month|week)|"
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"\s+(?:days?|weeks?|months?|years?)\s+ago)\b", re.I,
+)
 
 
 def has_relative_deictic(text: str | None) -> bool:
@@ -363,7 +368,8 @@ def has_relative_deictic(text: str | None) -> bool:
     """
     if not text:
         return False
-    return _DEICTIC_RE.search(str(text)) is not None
+    return (_DEICTIC_RE.search(str(text)) is not None
+            or _RELATIVE_INTERVAL_RE.search(str(text)) is not None)
 
 
 def deictic_direction(text: str | None) -> str | None:
@@ -818,7 +824,8 @@ def today_anchor(now_dt: datetime | None = None) -> str:
 STORED_TEXT_TIME_RULE: str = (
     "What you write here gets stored and read back weeks or months from "
     "now, so it must not contain a relative time word. Resolve "
-    "'today' / 'tonight' / 'tomorrow' / 'currently' / 'recently' against "
+    "'today' / 'tonight' / 'tomorrow' / 'currently' / 'recently', 'next year' "
+    "and 'four weeks ago' against "
     "the date above and write the concrete day instead, or leave the "
     "timing out entirely when it does not matter. Write finished events "
     "in the past tense."

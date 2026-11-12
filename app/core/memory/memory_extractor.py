@@ -135,6 +135,10 @@ def _build_system_prompt(
         "Drop unclear ownership. User memories are THIRD person; Aiko's 'self' notes "
         "are FIRST person. Evidence must quote NEW turns from the actual owner, not "
         "the other speaker's paraphrase. Earlier context only resolves references.\n"
+        "Aiko advising the user is Aiko's speech, not the user's plan or promise. "
+        "An unaccepted offer remains an offer with its condition. If worth keeping, "
+        "write an Aiko self note in first person ('I offered ... if asked'), never "
+        "a user event. No request yet means no request, not refusal of a promise.\n"
         "Each candidate needs content, kind, salience (0..1), temporal_type, provenance, "
         "event_time (ISO or null), destination and evidence:[{message_id,quote}] (max 4). "
         "kind: fact|preference|event|relationship|self. self is Aiko only. "
@@ -467,7 +471,8 @@ class MemoryExtractor:
         from app.core.memory.observation_receipts import EXTRACTION_RULE as OBSERVATION_RULE
         from app.core.memory.claim_fidelity import RULE as FIDELITY_RULE
 
-        system_content += "\n" + OBSERVATION_RULE + "\n" + FIDELITY_RULE
+        system_content += ("\n" + OBSERVATION_RULE + "\n" + FIDELITY_RULE
+                           + "\n" + timephrase.STORED_TEXT_TIME_RULE)
         from app.core.memory.memory_relations import RULE as RELATION_RULE
 
         if references:
@@ -481,12 +486,12 @@ class MemoryExtractor:
         from app.core.memory.pattern_accounting import count_intake
 
         if re.search(r"\b(?:call|calling|mean|means|rename)\b", offered_text, re.I):
-            system_content += "\n" + EXTRACTION_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
+            system_content += "\n" + EXTRACTION_RULE
             count_intake(self._db, pattern_owner, shorthand_schema_batches=1)
         from app.core.memory.strategy_outcomes import outcome_schema_needed
 
         if outcome_schema_needed([*context_rows, *rows]):
-            system_content += "\n" + STRATEGY_RULE + "\n" + timephrase.STORED_TEXT_TIME_RULE
+            system_content += "\n" + STRATEGY_RULE
             count_intake(self._db, pattern_owner, strategy_schema_batches=1)
         try:
             context_window = self._context_window()
@@ -677,6 +682,9 @@ class MemoryExtractor:
                 proposal_message_id=rows[-1].id,
             )
             if not admission.accepted:
+                reason = admission.metadata.get("claim_fidelity_refusal")
+                if reason:
+                    log.info("extractor refused memory: reason=%s", reason)
                 continue
             if "claim_fidelity" in admission.metadata:
                 cand["event_time"] = admission.metadata["claim_fidelity"]["event_time"]
