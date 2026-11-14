@@ -154,6 +154,12 @@ class HomeAction:
         bathroom = bathroom_view(self.targets[0], now=now)
         if bathroom is not None:
             payload["home_bathroom"] = bathroom
+        if self.action in {"new_sketch", "revise_sketch"}:
+            from app.core.world.home_sketches import sketch_context
+
+            payload["sketch_context"] = sketch_context(
+                self.targets[0], self.parameters.get("page_id"),
+            )
         return payload
 
 

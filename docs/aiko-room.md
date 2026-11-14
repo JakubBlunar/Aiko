@@ -117,8 +117,49 @@ pot-only tea beat. Legacy pots remain separate items maintained by the existing
 room-evolution worker; they are not silently converted into mugs or treated as
 proof of drink temperature or consumption.
 
-Sketchbook drawing is not yet available; it must extend the shared validated
-capability path before a drawing can be claimed as a completed experience.
+## Editable sketchbooks
+
+The next-start household migration provides a blank sketchbook and portable
+pencil/eraser set. It does not reconstruct a previously narrated sketch. Extra
+books or materials can come from the virtual shop or the user's Give form:
+`sketchbook` initializes blank editable pages; `art_supply` recognizes explicitly
+named pencils/erasers. Both are portable and use the existing two-slot carry cap.
+
+`new_sketch` and `revise_sketch` are shared home actions. They require the book
+and a pencil at the same spot, or carried; revision additionally requires an
+eraser. A valid action includes actual bounded drawing data: a title, note and
+strokes with points, width, one of four graphite shades, and optional filled
+polygons. A title or narration alone creates nothing. The existing language
+model produces those drawing instructions, and the app renders them locally;
+no separate image-generation model or service is required.
+
+The drawing surface is 512 by 320, with at most 24 strokes and 256 points per
+revision. A book holds sixteen pages and four immutable revisions per page;
+the shared daily drawing allowance is three saves across all books, including
+stored books. Revisions retain timestamps and content hashes. Stale versions
+are rejected; an exact retry recovers the original receipt, while different
+drawing data submitted with an already-used token is rejected.
+
+The book includes a stable authored fictional rooftop reference. It is not an
+image of real buildings or a visual observation. The idle model sees that
+reference, relevant saved drawing data and its optional ongoing interest, then
+must supply a real draft to use the action. Its bounded output budget grows for
+drawing-capable turns. Deterministic fallback does not invent drawings when no
+model draft is available. No timer awards drawing skill or claims improvement.
+
+The World tab renders the actual saved strokes, with page/revision selectors.
+`inspect_item(page=..., revision=...)` returns one selected drawing, without
+dumping every page into look-around context. It also returns an exact revision
+preview URL under `GET /api/world/items/{id}/sketch.svg`. That endpoint renders
+validated geometry using fixed SVG elements, escaped text, no external assets
+or executable markup, and a restrictive content security policy. Saved work can
+be revisited or opened separately. Visual judgment still needs actual vision;
+structured inspection alone supports explaining intended marks.
+
+Saved creative work is protected from autonomous disposal; it can be stored
+and retrieved through the normal bounded household lifecycle. This is the
+simple sketch backend. More polished image generation/editing, arbitrary crafts,
+and automatic visual critique remain possible extensions, not current abilities.
 
 ## Virtual shopping, storage and the bin
 
@@ -233,7 +274,8 @@ world_state      (id=1 singleton, scene_id, location_id, posture, activity,
 
 - `location_id IS NULL` on a `world_items` row means **Aiko is holding
   that item**. Only pocketable kinds can land there: `food`, `book`,
-  `toy`, `keepsake`, `seed`. Not gadgets, furniture, decor, plants, or
+  `toy`, `keepsake`, `seed`, `vessel`, `art_supply`, `sketchbook`.
+  Not gadgets, furniture, decor, plants, or
   `other`. Cap is **2**, excluding seeds (they live in inventory until
   planted). Constants: `PORTABLE_KINDS` / `CARRY_CAP` in
   [`app/core/world/carry.py`](../app/core/world/carry.py).
@@ -357,7 +399,7 @@ blocked.
 
 ## Agent tools
 
-Eleven tools in [`app/llm/tools/world.py`](../app/llm/tools/world.py)
+Fourteen tools in [`app/llm/tools/world.py`](../app/llm/tools/world.py)
 (take/put live in [`world_carry.py`](../app/llm/tools/world_carry.py)),
 gated by `tools.world` in config (default `true`). The garden three are
 documented under [Garden](#garden-living-plants-outside-the-apartment):
@@ -373,6 +415,9 @@ documented under [Garden](#garden-living-plants-outside-the-apartment):
 | `water_plant` / `plant_seed` / `harvest_plant` | The garden loop. Each takes a plant/seed name and is restricted to rows of that `kind`, so `lavender` can't resolve to the cooking sprigs in the kitchenette. |
 | `take_item` | Pick up one pocketable thing (food / book / toy / keepsake / seed). Cap 2 excluding seeds; furniture and gadgets stay put. |
 | `put_item` | Put a held item down at the current spot, a named spot, or home. |
+| `available_home_actions` | Read supported household actions and live execution tokens, including drink, bathroom, shopping, storage/bin, and drawing capabilities. |
+| `perform_home_action` | Execute one validated household action; drawing actions require actual structured strokes. |
+| `browse_home_catalogue` | Inspect the virtual shop, wishlist, orders, storage, bin, and recent disposal records. |
 
 Each tool description includes the same "only when natural" tonal
 nudge so Aiko doesn't spray tool calls.
@@ -516,7 +561,7 @@ in `web/src/store.ts` (`applyWorldPatch`) handles each shape:
 
 Settings drawer tab id: `"world"`, icon 🏠. The `WorldTab` component
 is in [`web/src/components/SettingsDrawer.tsx`](../web/src/features/settings/SettingsDrawer.tsx)
-and renders four sections:
+and includes these sections:
 
 1. **Right now** — Aiko's current location / posture / activity, with
    inline `<select>`s that fire `PATCH /api/world/state`.

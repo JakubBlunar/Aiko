@@ -2130,6 +2130,8 @@ export type WorldKind =
   | "plant"
   | "seed"
   | "vessel"
+  | "art_supply"
+  | "sketchbook"
   | "other";
 
 export const WORLD_KINDS: readonly WorldKind[] = [
@@ -2143,6 +2145,8 @@ export const WORLD_KINDS: readonly WorldKind[] = [
   "plant",
   "seed",
   "vessel",
+  "art_supply",
+  "sketchbook",
   "other",
 ];
 
@@ -2153,6 +2157,8 @@ export const WORLD_PORTABLE_KINDS: readonly WorldKind[] = [
   "keepsake",
   "seed",
   "vessel",
+  "art_supply",
+  "sketchbook",
 ];
 
 export function isWorldPortableKind(kind: string): boolean {

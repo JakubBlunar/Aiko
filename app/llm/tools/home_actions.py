@@ -50,6 +50,8 @@ class PerformHomeActionTool:
                 "Use the same action tokens to order/wishlist things at the computer, unpack "
                 "deliveries, store/retrieve possessions, mark favorites, or discard/restore "
                 "ordinary things. Virtual shopping spends no real money. Gifts are protected. "
+                "new_sketch/revise_sketch require the drawing argument with actual bounded "
+                "strokes; the app renders these locally, with no image-generation model. "
                 "Move to its required spot first. Effects and receipt are saved together. "
                 "Stale actions fail: inspect available actions again. already_applied means "
                 "the original action was recovered, not another completed experience. "
@@ -57,6 +59,20 @@ class PerformHomeActionTool:
             ),
             parameters={"type": "object", "properties": {
                 "token": {"type": "string", "minLength": 64, "maxLength": 64},
+                "drawing": {"type": "object", "properties": {
+                    "title": {"type": "string", "minLength": 2, "maxLength": 80},
+                    "note": {"type": "string", "maxLength": 240},
+                    "strokes": {"type": "array", "minItems": 1, "maxItems": 24,
+                                "items": {"type": "object", "properties": {
+                                    "points": {"type": "array", "minItems": 2, "maxItems": 32,
+                                               "items": {"type": "array", "minItems": 2,
+                                                         "maxItems": 2,
+                                                         "items": {"type": "number"}}},
+                                    "width": {"type": "number", "minimum": 0.5, "maximum": 8},
+                                    "shade": {"type": "integer", "minimum": 0, "maximum": 3},
+                                    "filled": {"type": "boolean"},
+                                }, "required": ["points"]}},
+                }, "required": ["title", "strokes"]},
             }, "required": ["token"]},
         )
 
@@ -65,7 +81,9 @@ class PerformHomeActionTool:
         if store is None:
             raise ToolError("The home is unavailable")
         try:
-            receipt = store.perform_home_action(arguments.get("token"))
+            receipt = store.perform_home_action(
+                arguments.get("token"), drawing=arguments.get("drawing"),
+            )
         except ValueError as exc:
             raise ToolError(str(exc)) from exc
         self._session._notify_world({"snapshot": store.snapshot()})

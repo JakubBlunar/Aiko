@@ -136,6 +136,9 @@ class ActivityCompositionMixin:
             + json.dumps(list(home_actions.values())[:24], ensure_ascii=True)
             + "\nTo choose one, return its exact home_action_token with creation=null "
             "and changed_item empty. Its stored summary defines what actually happens. "
+            "For a drawing action, include drawing={title,strokes,note} with actual bounded "
+            "drawing data as described above. Other actions use drawing=null. Fictional "
+            "references are authored material, not an actual visual observation. "
             "Otherwise home_action_token must be empty. "
         ) if home_actions else ""
         intent_line = ""
@@ -144,12 +147,24 @@ class ActivityCompositionMixin:
                 "Today you meant to " + intention + " — lean that way if it "
                 "fits the hour. "
             )
+        hobby_line = ""
+        hobby_provider = getattr(self, "_hobby_provider", None)
+        if hobby_provider is not None:
+            try:
+                hobby = str(hobby_provider() or "").strip()[:500]
+                if hobby:
+                    hobby_line = (
+                        "An optional ongoing interest (not proof of completed practice): "
+                        + hobby + ". Let it inform a choice when it fits; other subjects are fine. "
+                    )
+            except Exception:
+                log.debug("away activity hobby context unavailable", exc_info=True)
         prompt = (
             timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE + "\n"
             f"You are Aiko, alone in your cozy room while {user_name} is away. "
             f"It's currently {period}. Your room's spots: {loc_lines}. "
             f"Things around: {item_names}. {home_context}"
-            f"{intent_line}"
+            f"{intent_line}{hobby_line}"
             f"Recently you did: {recent_line} — pick something different. "
             "You may also write an original short poem, fictional scene, character sketch "
             "or wordplay, or revise one of your own saved writings below. Choose your own "
@@ -167,7 +182,8 @@ class ActivityCompositionMixin:
             '"posture": "<sitting|lying|standing|curled_up|leaning>", '
             '"activity": "<thinking|idle|stretching|reading|making_tea|watering_plants|writing>", '
             '"changed_item": "<exact supported item name; empty string for none>", '
-            '"home_action_token": "", "creation": null}. For writing, replace creation=null with '
+            '"home_action_token": "", "drawing": null, "creation": null}. '
+            'For writing, replace creation=null with '
             '{"title": "<2-100 chars>", '
             '"form": "<poem|short_scene|character_sketch|wordplay>", '
             '"text": "<actual original text, 40-1400 chars>", '
@@ -186,7 +202,10 @@ class ActivityCompositionMixin:
                     {"role": "user", "content": prompt},
                 ],
                 model=self._model,
-                options={"temperature": 0.9, "num_predict": 600 if can_write else 160},
+                options={"temperature": 0.9, "num_predict": (
+                    1200 if any(row.get("parameters", {}).get("drawing_required")
+                                for row in home_actions.values()) else 600 if can_write else 160
+                )},
                 format_json=True,
                 surface="away_activity_plan",
             )
@@ -205,10 +224,21 @@ class ActivityCompositionMixin:
             if (action is None or blob.get("creation") is not None
                     or str(blob.get("changed_item") or "").strip()):
                 return None
+            drawing = blob.get("drawing")
+            if action.get("parameters", {}).get("drawing_required"):
+                from app.core.world.home_sketches import validate_drawing
+
+                try:
+                    drawing = validate_drawing(drawing)
+                except ValueError:
+                    return None
+            elif drawing is not None:
+                return None
             return ActivityPlan(
                 key="home_" + action["action"], posture="standing", activity=action["action"],
                 summary=action["summary"], aiko_location_id=action["location_id"],
                 home_action_token=action["token"], precomposed=True,
+                home_action_drawing=drawing,
             )
 
         activity = normalize_activity(blob.get("activity"))

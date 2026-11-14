@@ -11,8 +11,8 @@ from app.core.world.home_drinks import HomeAction, _version, new_vessel, parse_a
 PRODUCTS = {
     "lidded_mug": ("ceramic mug with lid", "vessel", "kitchenette"),
     "thermos": ("insulated thermos", "vessel", "kitchenette"),
-    "sketchbook": ("sketchbook", "book", "bookshelf"),
-    "pencils": ("pencil and eraser set", "gadget", "desk"),
+    "sketchbook": ("sketchbook", "sketchbook", "bookshelf"),
+    "pencils": ("pencil and eraser set", "art_supply", "desk"),
     "cushion": ("small soft cushion", "toy", "beanbag"),
     "frame": ("small picture frame", "decor", "bookshelf"),
     "plant_pot": ("little ceramic plant pot", "decor", "window_seat"),
@@ -38,8 +38,9 @@ def protected_item(item: dict[str, Any]) -> bool:
 
 
 def occupies_space(item: dict[str, Any]) -> bool:
-    return item["kind"] in {"book", "toy", "keepsake", "decor", "vessel", "other"} or bool(
-        item["state"].get("home_origin"))
+    return item["kind"] in {
+        "book", "toy", "keepsake", "decor", "vessel", "art_supply", "sketchbook", "other",
+    } or bool(item["state"].get("home_origin"))
 
 
 def organizer(items):

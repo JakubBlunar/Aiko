@@ -8,7 +8,7 @@ and do not count against the cap.
 from __future__ import annotations
 
 PORTABLE_KINDS: frozenset[str] = frozenset(
-    {"food", "book", "toy", "keepsake", "seed", "vessel"}
+    {"food", "book", "toy", "keepsake", "seed", "vessel", "art_supply", "sketchbook"}
 )
 CARRY_CAP = 2
 

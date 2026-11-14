@@ -12,13 +12,17 @@ from app.core.world.home_routines import ROUTINE_ACTIONS, apply_routine_action, 
 from app.core.world.home_belongings import (
     LIFECYCLE_ACTIONS, PRODUCTS, active_item, apply_lifecycle_action, lifecycle_actions,
 )
+from app.core.world.home_sketches import (
+    SKETCH_ACTIONS, apply_sketch_action, drawing_hash, sketch_actions, validate_drawing,
+)
 
 
 def _actions(items, locations, room, at):
     active = [item for item in items if active_item(item)]
     return (drink_actions(active, locations, room, at)
             + routine_actions(active, locations, room, at)
-            + lifecycle_actions(items, locations, room, at))
+            + lifecycle_actions(items, locations, room, at)
+            + sketch_actions(items, locations, room, at))
 
 RECEIPTS_KEY = "home_actions.receipts.v1"
 SEED_KEY = "home_actions.drinks_seed.v1"
@@ -79,6 +83,13 @@ class HomeActionsMixin:
                 "or discard ordinary possessions into a bin recoverable for 48 hours. "
                 "Gifts and keepsakes are protected. Space, supplies and acquisition pacing "
                 "are bounded."
+                " Drawing: new_sketch/revise_sketch require an actual drawing payload: "
+                "{title,strokes:[{points:[[x,y],...],width:2,shade:0,filled:false}],note}. "
+                "Page coordinates are 0..512 by 0..320, at most 24 strokes/256 total points. "
+                "Use saved drawing data and the authored fictional reference; a title alone "
+                "is not a drawing. Inspect saved pages with inspect_item."
+                " A sketchbook and pencil must be at the same spot or carried; revising "
+                "also needs an eraser. Missing materials are available in the virtual shop."
             ),
             "actions": [action.to_dict(now=at) for action in actions],
             "here": room.get("location_id"),
@@ -94,11 +105,12 @@ class HomeActionsMixin:
     def perform_home_action(
         self, token: str, *, now: datetime | None = None,
         autonomous: bool = False, admit: Callable[[], bool] | None = None,
-        relocate: bool = False,
+        relocate: bool = False, drawing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(token, str) or len(token) != 64:
             raise ValueError("Choose an exact token from available_home_actions")
         at = now or timephrase.utcnow()
+        parsed_drawing = validate_drawing(drawing) if drawing is not None else None
         conn = self._get_conn()
         with self._home_action_lock:
             conn.execute("BEGIN IMMEDIATE")
@@ -108,6 +120,9 @@ class HomeActionsMixin:
                 receipts = json.loads(saved[0]) if saved else []
                 prior = next((entry for entry in receipts if entry["token"] == token), None)
                 if prior is not None:
+                    if (parsed_drawing is not None
+                            and prior.get("drawing_sha256") != drawing_hash(parsed_drawing)):
+                        raise ValueError("This token already saved different drawing data")
                     conn.rollback()
                     self._reload_mirror()
                     return {**prior, "already_applied": True}
@@ -125,7 +140,13 @@ class HomeActionsMixin:
                 if target["location_id"] not in (None, action.location_id):
                     raise ValueError("Bring the target item to the action's location first")
                 additions = []
-                if action.action in LIFECYCLE_ACTIONS:
+                if parsed_drawing is not None and action.action not in SKETCH_ACTIONS:
+                    raise ValueError("This action does not accept drawing data")
+                if action.action in SKETCH_ACTIONS:
+                    changes = apply_sketch_action(
+                        action, {item["id"]: item for item in items}, at, parsed_drawing,
+                    )
+                elif action.action in LIFECYCLE_ACTIONS:
                     changes, additions = apply_lifecycle_action(
                         action, {item["id"]: item for item in items}, at,
                     )
@@ -188,6 +209,7 @@ class HomeActionsMixin:
                     "at": at.isoformat(), "mode": "simulated_home_action",
                     "changed_item_ids": [item["id"] for item in changes],
                     "created_item_ids": created_ids,
+                    "drawing_sha256": drawing_hash(parsed_drawing) if parsed_drawing else None,
                 }
                 conn.execute(
                     "INSERT INTO kv_meta (key,value,updated_at) VALUES (?,?,?) "
@@ -259,10 +281,13 @@ class HomeActionsMixin:
         conn = self._get_conn()
         from app.core.world.home_bathroom_mixin import BATHROOM_SEED_KEY
         from app.core.world.home_lifecycle_mixin import LIFECYCLE_SEED_KEY
+        from app.core.world.home_sketchbook_mixin import SKETCH_SEED_KEY
 
-        conn.execute("DELETE FROM kv_meta WHERE key IN (?,?,?,?)",
-                     (SEED_KEY, RECEIPTS_KEY, BATHROOM_SEED_KEY, LIFECYCLE_SEED_KEY))
+        conn.execute("DELETE FROM kv_meta WHERE key IN (?,?,?,?,?)",
+                     (SEED_KEY, RECEIPTS_KEY, BATHROOM_SEED_KEY, LIFECYCLE_SEED_KEY,
+                      SKETCH_SEED_KEY))
         conn.commit()
         self.ensure_home_drinks()
         self.ensure_home_bathroom()
         self.ensure_home_lifecycle()
+        self.ensure_home_sketchbook()

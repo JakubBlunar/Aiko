@@ -78,6 +78,7 @@ class ActivityPlan:
     item_effect: ItemEffect | None = None
     creation: CreationDraft | None = None
     home_action_token: str = ""
+    home_action_drawing: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

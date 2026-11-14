@@ -26,6 +26,7 @@ import { WorldCreation } from "./WorldCreation";
 import { WorldDrink } from "./WorldDrink";
 import { WorldBathroom } from "./WorldBathroom";
 import { WorldHousehold } from "./WorldHousehold";
+import { WorldSketchbook } from "./WorldSketchbook";
 
 export interface GiveDraft {
   name: string;
@@ -491,7 +492,7 @@ export function WorldTab({
                 >
                   {WORLD_KINDS.map((k) => (
                     <option key={k} value={k}>
-                      {k}
+                      {k.replace(/_/g, " ")}
                     </option>
                   ))}
                 </select>
@@ -1097,7 +1098,7 @@ function ItemRow({
               >
                 {WORLD_KINDS.map((k) => (
                   <option key={k} value={k}>
-                    {k}
+                    {k.replace(/_/g, " ")}
                   </option>
                 ))}
               </select>
@@ -1183,11 +1184,12 @@ function ItemRow({
               </div>
             ) : null}
             <WorldCreation item={item} />
+            <WorldSketchbook item={item} />
             <WorldDrink item={item} />
             <WorldBathroom item={item} />
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
               <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
-                {item.kind}
+                {item.kind.replace(/_/g, " ")}
               </span>
               {item.consumable ? <span>consumable</span> : null}
               {item.kind === "plant" &&

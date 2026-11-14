@@ -79,6 +79,22 @@ def _format_item(item: "Item") -> dict[str, Any]:
         bathroom = bathroom_view(item)
         if bathroom is not None:
             payload["home_bathroom"] = bathroom
+        from app.core.world.home_sketches import sketchbook_state
+
+        sketchbook = sketchbook_state(item)
+        if sketchbook is not None:
+            payload["state"]["home_sketchbook"] = {
+                "schema": 1, "page_count": len(sketchbook["pages"]),
+                "reference": sketchbook.get("reference"),
+            }
+            payload["sketch_hint"] = "inspect_item returns a saved page and render_url"
+        household = item.state.get("home_household")
+        if isinstance(household, dict):
+            payload["state"]["home_household"] = {
+                "schema": household.get("schema"), "capacity": household.get("capacity"),
+                "wishlist": household.get("wishlist", []),
+            }
+            payload["household_hint"] = "browse_home_catalogue inspects orders, storage and bin"
         from app.core.world.idle_creations import revisions
 
         saved = revisions(item)
@@ -455,6 +471,10 @@ class InspectItemTool:
                 " For your saved original writings, omit revision for the latest, or pass "
                 "an exact revision number to revisit older text. Returns up to 1000 "
                 "characters, with next_offset for more. These are creative works."
+                " Sketchbooks use page (1-based) and revision, defaulting to latest. "
+                "Returns actual strokes and a render_url; preview is also in the World tab. "
+                "The drawing reference is fictional. Structured inspection supports describing "
+                "your intended marks, not claiming a visual assessment without vision."
             ),
             parameters={
                 "type": "object",
@@ -478,9 +498,11 @@ class InspectItemTool:
                     "revision": {
                         "type": "integer", "minimum": 1,
                         "description": (
-                            "Saved original writings only: exact revision; latest if omitted."
+                            "Saved original writing or sketch: exact revision; latest if omitted."
                         ),
                     },
+                    "page": {"type": "integer", "minimum": 1,
+                             "description": "Sketchbook: saved page, 1-based; latest if omitted."},
                 },
                 "required": ["item"],
             },
@@ -503,6 +525,20 @@ class InspectItemTool:
         )
         out = _format_item(item)
         out["location"] = loc.name if loc is not None else "carried"
+        from app.core.world.home_sketches import inspect_sketch, sketchbook_state
+
+        if sketchbook_state(item) is not None:
+            if "passage" in arguments or "offset" in arguments:
+                raise ToolError("Sketchbooks use page/revision, not book passage/offset")
+            try:
+                out["sketch"] = inspect_sketch(
+                    item, arguments.get("page"), arguments.get("revision"),
+                )
+            except ValueError as exc:
+                raise ToolError(str(exc)) from exc
+            return json.dumps(out, ensure_ascii=False)
+        if "page" in arguments:
+            raise ToolError("This item is not a saved sketchbook")
         from app.core.world.idle_creations import inspect_revision, revisions
 
         if revisions(item):

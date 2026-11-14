@@ -20,9 +20,12 @@ are not left open merely to simulate a longer activity window.
 The legacy pot-only tea candidate is suppressed when a drink station is present
 in the current scene. Existing reading, writing, garden visits, quiet rest,
 conversation-owned room leases, and sleep admission retain their own contracts.
-The current household catalogue is a capability boundary; future drawing
-activities need implemented executors and worker context
-before they can be described as completed experiences.
+Drawing now uses the same catalogue too: the model receives an authored fictional
+reference and relevant saved revision, and must return bounded actual strokes.
+Successful execution saves a page/revision before it can reach the away journal.
+Fallback does not claim artwork without a draft. Other unsupported activities
+still need implemented executors and worker context before they can be described
+as completed experiences. See [Editable sketchbooks](aiko-room.md#editable-sketchbooks).
 
 Virtual computer shopping, unpacking, storage, favorite protection and recoverable
 disposal share that same catalogue. Model planning receives a bounded sample

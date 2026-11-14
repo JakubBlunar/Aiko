@@ -27,7 +27,8 @@ class TakeItemTool:
             name="take_item",
             description=(
                 "Pick up one pocketable thing so you are holding it: a "
-                "cookie, a book, a mug or glass, a plush, a keepsake, or a seed packet. "
+                "cookie, a book/sketchbook, drawing supplies, a mug or glass, a plush, "
+                "a keepsake, or a seed packet. "
                 "Not the monitors, not a plant, not furniture, not the "
                 "lamp. You can hold at most two of these at once (seed "
                 "packets don't count). Put it down with put_item when "

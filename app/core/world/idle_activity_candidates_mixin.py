@@ -86,6 +86,8 @@ class ActivityCandidatesMixin:
                 candidates.pop("tea", None)
             grouped: dict[str, list[dict[str, Any]]] = {}
             for action in offered["actions"]:
+                if action.get("parameters", {}).get("drawing_required"):
+                    continue  # Creative output needs a real model draft, not a fabricated fallback.
                 grouped.setdefault(action["action"], []).append(action)
             for name, choices in grouped.items():
                 action = self._rng.choice(choices)

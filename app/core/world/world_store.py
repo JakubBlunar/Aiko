@@ -16,8 +16,9 @@ place. It has four tables (created in :mod:`app.core.infra.chat_database`):
 The store keeps a thread-safe in-memory mirror of every row so
 :meth:`render_block` (the inner-life prompt provider) costs a dict scan
 rather than a SQL roundtrip. Cross-session by design: there's exactly one
-world per assistant. Capacity is bounded by good taste (the room is small,
-~25 items max in practice) — no pruning loop, no LanceDB.
+world per assistant. Household actions enforce bounded active/storage space
+and recoverable disposal; the passive maintenance worker clears expired bin
+rows. There is no LanceDB mirror of world items.
 
 The default "rich" room is seeded once via :meth:`seed_default` if the
 store is empty (locations table count == 0). The seed mirrors the persona
@@ -49,6 +50,7 @@ from app.core.world.world_scenes_mixin import WorldScenesMixin
 from app.core.world.home_actions_mixin import HomeActionsMixin
 from app.core.world.home_bathroom_mixin import HomeBathroomMixin
 from app.core.world.home_lifecycle_mixin import HomeLifecycleMixin
+from app.core.world.home_sketchbook_mixin import HomeSketchbookMixin
 from app.core.world.home_belongings import active_item
 
 
@@ -72,6 +74,8 @@ VALID_KINDS = (
     "plant",     # living plants in the garden (stage in state)
     "seed",      # seed packets in inventory waiting to be planted
     "vessel",    # reusable mugs and glasses; contents live in state
+    "art_supply", # portable drawing materials
+    "sketchbook", # original editable drawing pages
     "other",
 )
 
@@ -891,7 +895,8 @@ _DEFAULT_INITIAL_STATE = {
 
 
 class WorldStore(
-    HomeActionsMixin, HomeBathroomMixin, HomeLifecycleMixin, WorldCarryMixin, WorldScenesMixin,
+    HomeActionsMixin, HomeBathroomMixin, HomeLifecycleMixin, HomeSketchbookMixin,
+    WorldCarryMixin, WorldScenesMixin,
 ):
     """Thread-safe room model backed by ``world_*`` SQLite tables."""
 
@@ -1404,6 +1409,15 @@ class WorldStore(
             from app.core.world.home_drinks import new_vessel
 
             clean_state.setdefault("home_vessel", new_vessel(clean_name))
+        if clean_kind == "sketchbook":
+            from app.core.world.home_sketches import new_sketchbook
+
+            clean_state.setdefault("home_sketchbook", new_sketchbook())
+        if clean_kind == "art_supply":
+            clean_state.setdefault("home_drawing_tools", [
+                tool for tool in ("pencil", "eraser")
+                if re.search(r"\b" + tool + r"s?\b", clean_name.lower())
+            ])
 
         with self._lock:
             existing: Item | None = None
@@ -1541,6 +1555,15 @@ class WorldStore(
             from app.core.world.home_drinks import new_vessel
 
             new_state.setdefault("home_vessel", new_vessel(new_name))
+        if new_kind == "sketchbook":
+            from app.core.world.home_sketches import new_sketchbook
+
+            new_state.setdefault("home_sketchbook", new_sketchbook())
+        if new_kind == "art_supply":
+            new_state.setdefault("home_drawing_tools", [
+                tool for tool in ("pencil", "eraser")
+                if re.search(r"\b" + tool + r"s?\b", new_name.lower())
+            ])
         now = _now_iso()
         conn = self._get_conn()
         cursor = conn.execute(

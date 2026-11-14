@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 from fastapi import HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.core.session.web_facade_mixin import WorkerUnavailable
 
@@ -1033,6 +1033,27 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     @app.get("/api/world")
     def get_world() -> JSONResponse:
         return JSONResponse(session.world_snapshot())
+
+    @app.get("/api/world/items/{item_id}/sketch.svg")
+    def get_world_sketch(item_id: int, page: int | None = None,
+                         revision: int | None = None) -> Response:
+        from app.core.world.home_sketches import inspect_sketch, render_sketch_svg, sketchbook_state
+
+        store = session.world_store
+        item = store.get_item(item_id) if store is not None else None
+        if item is None or sketchbook_state(item) is None:
+            raise HTTPException(404, "sketchbook not found")
+        try:
+            selected = inspect_sketch(item, page, revision)
+            if "drawing" not in selected:
+                raise ValueError("The sketchbook has no saved drawing yet")
+            svg = render_sketch_svg(selected["drawing"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return Response(svg, media_type="image/svg+xml", headers={
+            "Content-Security-Policy": "default-src 'none'",
+            "X-Content-Type-Options": "nosniff",
+        })
 
     @app.get("/api/world/home")
     def get_home_household() -> JSONResponse:

@@ -1149,6 +1149,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             # a posture/activity change before discovering a stale action failed.
             receipt = self._world_store.perform_home_action(
                 plan.home_action_token, autonomous=True,
+                drawing=plan.home_action_drawing,
                 admit=lambda: not self._mutation_block_reason(_utcnow()),
             )
             self._broadcast({"snapshot": self._world_store.snapshot()})
