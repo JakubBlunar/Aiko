@@ -1454,7 +1454,7 @@ class WorldMixin:
             user_display_name=self.user_display_name,
         )
         if force:
-            store.reset_home_drinks()
+            store.reset_home_life()
         else:
             store.ensure_home_drinks()
         snap = store.snapshot()

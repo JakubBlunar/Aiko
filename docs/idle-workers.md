@@ -3,9 +3,10 @@
 ## Shared household capabilities
 
 The away-activity worker uses the same live home-action catalogue and executor
-as conversation tools. The first supported household loop covers reusable
+as conversation tools. The supported household loops cover reusable
 drink vessels, tea/coffee/other recipes, temperature, sipping, washing, lids,
-and bounded supply replenishment. See [Household drinks](aiko-room.md#household-drinks-and-shared-actions)
+and bounded supply replenishment, plus bathroom routines with staged baths.
+See [Household drinks](aiko-room.md#household-drinks-and-shared-actions)
 for the object state and provisioning contract.
 
 Both model-planned activities and deterministic fallback selection receive
@@ -20,7 +21,7 @@ The legacy pot-only tea candidate is suppressed when a drink station is present
 in the current scene. Existing reading, writing, garden visits, quiet rest,
 conversation-owned room leases, and sleep admission retain their own contracts.
 The current household catalogue is a capability boundary; future drawing,
-shopping, or bathroom activities need implemented executors and worker context
+or shopping activities need implemented executors and worker context
 before they can be described as completed experiences.
 
 ## Research grounding

@@ -143,6 +143,11 @@ class HomeAction:
         view = drink_view(self.targets[0], now=now)
         if view is not None:
             payload["home_drink"] = view
+        from app.core.world.home_routines import bathroom_view
+
+        bathroom = bathroom_view(self.targets[0], now=now)
+        if bathroom is not None:
+            payload["home_bathroom"] = bathroom
         return payload
 
 

@@ -24,6 +24,7 @@ import { Section } from "./SettingsSection";
 import { WorldSceneBar } from "./WorldSceneBar";
 import { WorldCreation } from "./WorldCreation";
 import { WorldDrink } from "./WorldDrink";
+import { WorldBathroom } from "./WorldBathroom";
 
 export interface GiveDraft {
   name: string;
@@ -1181,6 +1182,7 @@ function ItemRow({
             ) : null}
             <WorldCreation item={item} />
             <WorldDrink item={item} />
+            <WorldBathroom item={item} />
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
               <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
                 {item.kind}

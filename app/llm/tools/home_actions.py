@@ -18,8 +18,10 @@ class AvailableHomeActionsTool:
                 "Read the supported household actions and exact live tokens, including making "
                 "tea, coffee, hot chocolate, water or juice, sipping, reheating, emptying and "
                 "washing reusable vessels. Synchronous, read-only. Use when choosing a home "
-                "activity or checking what is possible. Each action names its required location "
-                "and item. Move there and bring the vessel with take_item/put_item if needed, "
+                "activity, brushing teeth/hair, washing your face, showering or "
+                "starting/ending a bath. "
+                "Use the returned live state to check what is possible. Each action names its "
+                "location and item. Bring a vessel with take_item/put_item if needed, "
                 "then refresh actions. Missing supplies/equipment never count as available."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
@@ -43,6 +45,8 @@ class PerformHomeActionTool:
                 "Execute one small simulated household action synchronously using an exact "
                 "token returned by available_home_actions. Call when actually preparing or "
                 "drinking a drink, reheating it, washing a vessel, or caring for supplies. "
+                "Also executes supported bathroom routines. Starting a bath records the start; "
+                "finish_bath is eligible after its soak window, or drain_bath ends it early. "
                 "Move to its required spot first. Effects and receipt are saved together. "
                 "Stale actions fail: inspect available actions again. already_applied means "
                 "the original action was recovered, not another completed experience. "

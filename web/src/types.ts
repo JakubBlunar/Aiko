@@ -2244,6 +2244,15 @@ export interface WorldItem {
     lid_closed: boolean;
     as_of: string;
   };
+  home_bathroom?: {
+    as_of: string;
+    bath_phase: string;
+    bath_ready_to_finish: boolean;
+    bath_ready_at: string | null;
+    water_temperature_band: string;
+    towel: string;
+    last_brushed_teeth_at: string | null;
+  };
 }
 
 export interface WorldState {

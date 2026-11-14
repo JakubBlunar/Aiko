@@ -8,6 +8,11 @@ from typing import Any
 
 from app.core.infra import timephrase
 from app.core.world.home_drinks import RECIPES, apply_drink_action, drink_actions
+from app.core.world.home_routines import ROUTINE_ACTIONS, apply_routine_action, routine_actions
+
+
+def _actions(items, locations, room, at):
+    return drink_actions(items, locations, room, at) + routine_actions(items, locations, room, at)
 
 RECEIPTS_KEY = "home_actions.receipts.v1"
 SEED_KEY = "home_actions.drinks_seed.v1"
@@ -41,7 +46,7 @@ class HomeActionsMixin:
         conn = self._get_conn()
         items, locations, room = self._home_rows(conn)
         at = now or timephrase.utcnow()
-        actions = drink_actions(items, locations, room, at)
+        actions = _actions(items, locations, room, at)
         return {
             "capabilities": (
                 "Reusable vessels: prepare tea, coffee, hot chocolate, water or juice; "
@@ -51,6 +56,11 @@ class HomeActionsMixin:
                 "Actions are small synchronous simulated steps. Move to the named "
                 "location first; the target vessel must be there or carried. "
                 "Only a successful execution establishes an experience."
+                " Bathroom routines: brush teeth or hair, wash face, take a short shower, "
+                "start a bath, "
+                "finish after its 20-minute soak window, or end early and drain. "
+                "Baths persist stages; starting is not finishing. Supplies and fixtures "
+                "must exist in this scene. Routines are voluntary; omissions have no penalty."
             ),
             "actions": [action.to_dict(now=at) for action in actions],
             "here": room.get("location_id"),
@@ -58,6 +68,8 @@ class HomeActionsMixin:
                 "Missing recipes need a clean heat-compatible vessel and a drink station "
                 "with supplies/equipment. Wash empty used vessels; replenish low supplies "
                 "at most once per 24 hours. Objects in another scene are unavailable."
+                " Bathroom routines need their fixtures and toothpaste/soap; replenish "
+                "low supplies through the supported household action."
             ),
         }
 
@@ -81,7 +93,7 @@ class HomeActionsMixin:
                     self._reload_mirror()
                     return {**prior, "already_applied": True}
                 items, locations, room = self._home_rows(conn)
-                action = next((candidate for candidate in drink_actions(
+                action = next((candidate for candidate in _actions(
                     items, locations, room, at,
                 ) if candidate.token == token), None)
                 if action is None:
@@ -92,17 +104,26 @@ class HomeActionsMixin:
                     raise ValueError("Move to the action's location first")
                 target = next(item for item in items if item["id"] == action.item_id)
                 if target["location_id"] not in (None, action.location_id):
-                    raise ValueError("Bring the vessel to the action's location first")
-                changes = apply_drink_action(action, {item["id"]: item for item in items}, at)
+                    raise ValueError("Bring the target item to the action's location first")
+                apply_action = (apply_routine_action if action.action in ROUTINE_ACTIONS
+                                else apply_drink_action)
+                changes = apply_action(action, {item["id"]: item for item in items}, at)
                 if autonomous:
                     conn.execute(
-                        "UPDATE world_state SET location_id=?,posture='standing',activity=?,"
+                        "UPDATE world_state SET location_id=?,posture=?,activity=?,"
                         "updated_at=? WHERE id=1",
-                        (action.location_id, action.action, at.isoformat()),
+                        (action.location_id,
+                         "lying" if action.action == "start_bath" else "standing",
+                         action.action, at.isoformat()),
                     )
                 else:
-                    conn.execute("UPDATE world_state SET activity=?,updated_at=? WHERE id=1",
-                                 (action.action, at.isoformat()))
+                    posture = room.get("posture", "standing")
+                    if action.action in ROUTINE_ACTIONS:
+                        posture = "lying" if action.action == "start_bath" else "standing"
+                    conn.execute(
+                        "UPDATE world_state SET activity=?,posture=?,updated_at=? WHERE id=1",
+                        (action.action, posture, at.isoformat()),
+                    )
                     conn.execute(
                         "INSERT INTO kv_meta (key,value,updated_at) VALUES "
                         "('world.intentional_state_at',?,?) ON CONFLICT(key) DO UPDATE SET "
@@ -188,9 +209,13 @@ class HomeActionsMixin:
             self._reload_mirror()
         return True
 
-    def reset_home_drinks(self) -> None:
+    def reset_home_life(self) -> None:
         """Only the explicit whole-room reset may recreate discarded provisions."""
         conn = self._get_conn()
-        conn.execute("DELETE FROM kv_meta WHERE key IN (?,?)", (SEED_KEY, RECEIPTS_KEY))
+        from app.core.world.home_bathroom_mixin import BATHROOM_SEED_KEY
+
+        conn.execute("DELETE FROM kv_meta WHERE key IN (?,?,?)",
+                     (SEED_KEY, RECEIPTS_KEY, BATHROOM_SEED_KEY))
         conn.commit()
         self.ensure_home_drinks()
+        self.ensure_home_bathroom()

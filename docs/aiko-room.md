@@ -117,9 +117,43 @@ pot-only tea beat. Legacy pots remain separate items maintained by the existing
 room-evolution worker; they are not silently converted into mugs or treated as
 proof of drink temperature or consumption.
 
-This first home-life slice does not yet add sketchbook drawing, virtual computer
-shopping, storage/bin lifecycle, or bathroom routines. Those must extend the
+These home-life slices do not yet add sketchbook drawing, virtual computer
+shopping, or storage/bin lifecycle. Those must extend the
 shared validated capability path rather than introduce narration-only actions.
+
+## Bathroom routines
+
+An additive, one-time migration creates one compact bathroom location in the
+existing apartment and a household fixture kit: sink/mirror, toothbrush,
+hairbrush, small bath, towel, and toothpaste/soap. It preserves existing
+locations, including the mirror corner. Deleted fixtures do not respawn at
+every restart; an explicit World reset restores the household kits.
+
+The same home-action catalogue exposes brushing teeth, brushing hair, washing
+the face, taking a short shower, starting a bath, finishing it, and draining it
+early. Fixtures and
+supplies must exist in the current scene, and execution requires the bathroom.
+Toothpaste and soap are consumed by their respective routines; bounded household
+restocking replenishes low stock at most once per 24 hours. Brushing teeth is
+eligible at most once per eight hours, face/hair routines per four hours, and
+a shower per eight hours, and a bath per twelve hours. These are pacing gates,
+not required chores, health
+meters, or penalties for being away.
+
+Starting a bath persists `soaking`, the start time, and a readiness time twenty
+minutes later. It records only the start, not a completed bath. While this
+uninterrupted activity still owns her bathroom location, the away worker waits
+and then prioritizes the supported finish action over its general cooldown.
+An early drain is separately available to chat. Ending the bath drains the tub
+and leaves a drying towel. Water cools and the towel dries as passive state;
+inspection or elapsed time never finishes a bath by itself.
+
+Sleep and shared-conversation admission remain higher authority. A deliberate
+move or activity change ends the automatic continuation; the stored bath remains
+inspectable and can be drained later without inventing continuous soaking or a
+completed routine. Restart likewise preserves the actual phase. The World tab
+shows phase, readiness, towel state, and the recorded toothbrushing time, with
+no forced bathroom report in chat.
 
 A small, persistent "virtual apartment" that gives Aiko a sense of
 place. The room is a *background* feature — she knows where she is and

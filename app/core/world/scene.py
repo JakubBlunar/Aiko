@@ -54,6 +54,7 @@ BUILTIN_LOCATION_SLUGS: frozenset[str] = frozenset(
         "beanbag",
         "mirror_corner",
         "garden",
+        "bathroom",
     }
 )
 

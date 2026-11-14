@@ -840,6 +840,16 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         if forced and forced in candidates:
             return candidates[forced]
 
+        followup = getattr(self._world_store, "home_activity_followup", None)
+        pending = followup(now=now) if callable(followup) else None
+        if pending and pending.get("action"):
+            action = pending["action"]
+            return ActivityPlan(
+                key="home_" + action["action"], posture="standing", activity=action["action"],
+                summary=action["summary"], aiko_location_id=action["location_id"],
+                home_action_token=action["token"],
+            )
+
         open_intent = (
             intention.text
             if intention is not None and not intention.satisfied
@@ -1334,6 +1344,10 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         return "intentional_hold" if self._intentional_hold_active(now) else ""
 
     def _cooldown_elapsed(self, now: datetime) -> bool:
+        followup = getattr(self._world_store, "home_activity_followup", None)
+        pending = followup(now=now) if callable(followup) else None
+        if pending:
+            return not pending["waiting"]
         if self._cooldown_seconds <= 0:
             return True
         last = _parse_iso(self._kv_get_safe(_KV_LAST_FIRED_AT))

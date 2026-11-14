@@ -74,6 +74,11 @@ def _format_item(item: "Item") -> dict[str, Any]:
         drink = drink_view(item)
         if drink is not None:
             payload["home_drink"] = drink
+        from app.core.world.home_routines import bathroom_view
+
+        bathroom = bathroom_view(item)
+        if bathroom is not None:
+            payload["home_bathroom"] = bathroom
         from app.core.world.idle_creations import revisions
 
         saved = revisions(item)

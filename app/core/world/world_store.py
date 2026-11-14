@@ -47,6 +47,7 @@ from app.core.world.carry import CARRY_CAP
 from app.core.world.world_carry_mixin import WorldCarryMixin
 from app.core.world.world_scenes_mixin import WorldScenesMixin
 from app.core.world.home_actions_mixin import HomeActionsMixin
+from app.core.world.home_bathroom_mixin import HomeBathroomMixin
 
 
 log = logging.getLogger("app.world_store")
@@ -367,6 +368,11 @@ class Item:
         view = drink_view(self)
         if view is not None:
             payload["home_drink"] = view
+        from app.core.world.home_routines import bathroom_view
+
+        bathroom = bathroom_view(self)
+        if bathroom is not None:
+            payload["home_bathroom"] = bathroom
         return payload
 
 
@@ -882,7 +888,7 @@ _DEFAULT_INITIAL_STATE = {
 # ── Store ───────────────────────────────────────────────────────────────
 
 
-class WorldStore(HomeActionsMixin, WorldCarryMixin, WorldScenesMixin):
+class WorldStore(HomeActionsMixin, HomeBathroomMixin, WorldCarryMixin, WorldScenesMixin):
     """Thread-safe room model backed by ``world_*`` SQLite tables."""
 
     def __init__(self, db_path: Path) -> None:
@@ -1884,10 +1890,21 @@ class WorldStore(HomeActionsMixin, WorldCarryMixin, WorldScenesMixin):
                 )
             )
             lines.append(f"{item.name}: {contents}.")
+        from app.core.world.home_routines import bathroom_view
+
+        for item in items:
+            if item.id not in visible_ids:
+                continue
+            bath = bathroom_view(item)
+            if bath and bath["bath_phase"] == "soaking":
+                lines.append(
+                    f"Your bath has been started; the water is {bath['water_temperature_band']}. "
+                    "Finishing or ending early requires a supported home action."
+                )
         if any("home_drink_station" in item.state for item in items if item.id in visible_ids):
             lines.append(
-                "Household actions: available_home_actions lists supported drink recipes and "
-                "vessel care with exact tokens; perform_home_action executes one. "
+                "Household actions: available_home_actions lists drink recipes, bathroom routines "
+                "and vessel care with exact tokens; perform_home_action executes one. "
                 "Use these when actually making or drinking something."
             )
         # Tonal nudge — keep Aiko from force-mentioning the room every turn,

@@ -860,6 +860,7 @@ class SessionController(
                 log.warning("world ensure_garden_seed failed", exc_info=True)
             try:
                 self._world_store.ensure_home_drinks()
+                self._world_store.ensure_home_bathroom()
             except Exception:
                 log.warning("world ensure_home_drinks failed", exc_info=True)
         except Exception:
