@@ -6,17 +6,18 @@ roles like `main_chat` and `worker_default` to them through
 `llm.routes`. Two routes pointing at the same provider share a
 single underlying connection through the shared client cache.
 
-Switch between providers at runtime from **Settings → Chat** — no
-restart required. The chat tab includes these provider sections:
+Switch between providers at runtime from **Settings → Models → Routes** — no
+restart required. Models includes these subtabs:
 
-1. **Role assignments** — the role → provider/model table. One row
+1. **Routes** — the role → provider/model table. One row
    per active role; pick a provider, a model, a context window, a
    max-tokens budget. Saving rebuilds the live clients immediately.
-2. **Saved providers** — the catalogue list: add from a template,
+2. **Providers** — the catalogue list: add from a template,
    edit, test credentials, delete entries.
-3. **Provider usage** — Venice account tokens, prompt caching, billed request
+3. **Usage** — Venice account tokens, prompt caching, billed request
    counts, spend, balances and current prices. Billing access requires a separate
    Admin key; see [Provider usage](provider-usage.md) for setup and accounting scope.
+4. **Diagnostics** — context use, latency, prompt inspection and UI debug logs.
 
 Each role targets a provider independently, so a Gemini free-tier
 quota survives a long conversation by keeping `worker_default` on
@@ -48,7 +49,7 @@ that size doesn't fit on a consumer GPU alongside the weights.
 ## Gemini walkthrough (free-tier)
 
 1. Visit [ai.google.dev](https://ai.google.dev), grab a free API key.
-2. Open **Settings → Chat → Saved providers → + Add provider** and
+2. Open **Settings → Models → Providers → + Add provider** and
    click the **Google Gemini** card.
 3. Hit **Edit** on the new row and paste the key into **API key** (a
    password input; the key is never echoed back through any GET
@@ -693,7 +694,7 @@ re-filed onto the `main_chat` provider's account rather than orphaned.
 
 Nothing is required of you, but be aware the migration reads what was
 on disk: if you had hand-edited both blocks into disagreement, check
-**Settings → Chat** afterwards. Deleting `llm` from `user.json`
+**Settings → Models → Routes** afterwards. Deleting `llm` from `user.json`
 re-runs the migration on the next boot only if the legacy keys are
 still there; otherwise you fall back to the shipped defaults.
 

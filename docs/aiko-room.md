@@ -559,9 +559,20 @@ in `web/src/store.ts` (`applyWorldPatch`) handles each shape:
 
 ## Frontend
 
-Settings drawer tab id: `"world"`, icon 🏠. The `WorldTab` component
-is in [`web/src/components/SettingsDrawer.tsx`](../web/src/features/settings/SettingsDrawer.tsx)
-and includes these sections:
+Settings drawer section id: `"world"`. The
+[`WorldTab`](../web/src/features/settings/WorldTab.tsx) component groups its
+controls into sticky subtabs:
+
+- **Overview** — Right now and Scenes.
+- **Belongings** — Give Aiko something and Items, including drink, bathroom,
+  creation and sketchbook controls on the relevant objects.
+- **Home shop** — catalogue, orders, wishlist, storage, bin and available space.
+- **Rhythm** — sleep rhythm, proactive room notices and companion feel.
+- **Weather** — shared sky, home city and units.
+- **Places** — locations and the room reset.
+
+Switching subtabs preserves drafts and returns the content scroll to the top.
+The underlying editors retain these actions:
 
 1. **Right now** — Aiko's current location / posture / activity, with
    inline `<select>`s that fire `PATCH /api/world/state`.

@@ -298,7 +298,7 @@ export function LlmRoutesSection() {
 
       {providers.length === 0 ? (
         <div className="rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-          No saved providers yet. Pick a preset above to add one — then
+          No saved providers yet. Add one from a preset in Providers, then
           come back here to wire roles to it.
         </div>
       ) : null}

@@ -55,7 +55,7 @@ to whoever shared the build with you.
    choice — subsequent launches behave like a normal app.
 7. On first launch Aiko asks for **your display name**. Type whatever
    you want her to call you. You can change it anytime from
-   *Settings → Chat → Your display name*.
+   *Settings → General → What Aiko calls you*.
 
 That's it. The Tauri shell starts the Python backend in the background
 the moment you open the app and shuts it down when you close it.

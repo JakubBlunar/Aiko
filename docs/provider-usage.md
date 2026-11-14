@@ -1,6 +1,6 @@
 # Provider usage in settings
 
-Settings -> Chat -> Provider usage reads Venice account statistics using the
+Settings -> Models -> Usage reads Venice account statistics using the
 saved provider key on the backend. It sends only authenticated metadata GETs to
 `https://api.venice.ai/api/v1`: no prompts, messages, persona, or inference probes.
 The provider must use that official HTTPS base URL. Keys never reach the browser.

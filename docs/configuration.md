@@ -26,6 +26,29 @@ exists to keep them in lock-step.
 
 ---
 
+## Settings navigation
+
+The Settings drawer uses a grouped sidebar on wide screens and a section
+picker on smaller screens. **Models** and **Behavior** are top-level sections;
+your display name is under **General**, and uploaded knowledge is under
+**Documents**.
+
+The longer sections have focused subtabs:
+
+| Section | Subtabs |
+|---|---|
+| Models | Routes, Providers, Usage, Diagnostics |
+| Behavior | Interaction, Initiative, Awareness |
+| Voice | Speech, Devices, Microphone, Turn detection |
+| Avatar | Appearance, Accessories, Desktop window, Touch & reactions (when available) |
+| Tools | Permissions, Plugins, Reminders |
+| World | Overview, Belongings, Home shop, Rhythm, Weather, Places |
+
+Subtabs stay visible while their content scrolls. Arrow keys, Home and End
+move between subtabs. Switching subtabs keeps unsaved forms mounted; returning
+to a top-level section remembers its selected subtab for the drawer's lifetime.
+Saving and applying individual controls works as before.
+
 ## Cheatsheet — the knobs you'll actually want to turn
 
 | Goal | Knob | Default |
@@ -1888,7 +1911,7 @@ Backend log discipline. The companion file `data/app.log` is the source of truth
 - `logging.prompt_cache_log_path` *(string, `"data/prompt-cache.jsonl"`)* — where those records go.
 - `logging.prompt_cache_log_max_bytes` *(int, `2097152`, min `65 536`)* — rotate at this many bytes. At roughly 300 bytes per turn, 2 MB holds ~7k turns.
 - `logging.prompt_cache_log_backup_count` *(int, `2`, min `0`)* — rotated siblings to keep.
-- `logging.ui_log_enabled` *(bool, `false`)* — UI debug-log bridge: when on, the browser POSTs structured events (WS dispatch, avatar channel decisions, settings changes) to `/api/logs/ui` which interleaves them into `data/app.log` with a `[ui]` prefix. Flip on via Settings drawer → Diagnostics when reproducing a bug.
+- `logging.ui_log_enabled` *(bool, `false`)* — UI debug-log bridge: when on, the browser POSTs structured events (WS dispatch, avatar channel decisions, settings changes) to `/api/logs/ui` which interleaves them into `data/app.log` with a `[ui]` prefix. Flip on via Settings → Models → Diagnostics when reproducing a bug.
 - `logging.ui_log_categories` *(list, `["ws", "channel", "settings", "voice", "audio"]`)* — allow-list of `source` values the endpoint accepts. Keeps a misbehaving client from spamming arbitrary lines. Entries outside it are dropped **silently**, so a missing token looks exactly like a client that never logged: `"audio"` was absent from `config/default.json` for the whole life of the iOS playback diagnostics (`contextDead`, `dropSuspended`, `firstPcm`, `clipStart`), which made every one of them unreachable while `rules/debugging.md` told you to grep for them.
 - `logging.ui_log_max_batch` *(int, `50`, clamped `[1, 500]`)* — max entries per request.
 - `logging.ui_log_max_payload_bytes` *(int, `2048`, clamped `[256, 65 536]`)* — truncates oversized payloads before they hit the rotating log.

@@ -1,6 +1,7 @@
 import type { AssistantSettings } from "@/types";
 import { Toggle } from "@/components/Toggle";
 import { Section } from "./SettingsSection";
+import { SettingsSections } from "./SettingsSections";
 import { RemindersPanel } from "./RemindersPanel";
 import { PluginsSection } from "./plugins/PluginsSection";
 
@@ -10,14 +11,13 @@ export interface ToolsTabProps {
 }
 
 /**
- * The "Tools" settings tab: tool switches and pending reminders. Extracted from SettingsDrawer
- * (phase 4c) so the drawer shell stays a thin tab dispatcher.
+ * Tool permissions, plugins and reminders in focused settings subtabs.
  */
 export function ToolsTab({ settings, apply }: ToolsTabProps) {
   const toolsEnabled = settings.tools?.enabled ?? true;
   return (
-    <div className="space-y-6">
-      <Section title="Tools">
+    <SettingsSections area="Tools" sections={[
+      { id: "permissions", label: "Permissions", content: (<Section title="Tools">
       <p className="text-[11px] text-ink-100/50">
         Tools let Aiko reach for fresh facts before answering: the current
         time, your notebook, or the public web. Disable any she shouldn't use.
@@ -70,9 +70,9 @@ export function ToolsTab({ settings, apply }: ToolsTabProps) {
           No tools currently available.
         </div>
       )}
-      </Section>
-      <PluginsSection />
-      <RemindersPanel />
-    </div>
+      </Section>) },
+      { id: "plugins", label: "Plugins", content: <PluginsSection /> },
+      { id: "reminders", label: "Reminders", content: <RemindersPanel /> },
+    ]} />
   );
 }

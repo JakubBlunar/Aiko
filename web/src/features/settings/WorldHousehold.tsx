@@ -47,8 +47,8 @@ export function WorldHouseholdContents({ view, error, busy, onRestore }: {
 }) {
   const names = new Map(view.catalogue.map((product) => [product.id, product.name]));
   return (
-    <details className="rounded border border-white/10 p-3 text-xs text-ink-100/75">
-      <summary className="cursor-pointer font-medium text-ink-100">Home shop and belongings</summary>
+    <section aria-label="Home shop and belongings" className="rounded border border-white/10 p-3 text-xs text-ink-100/75">
+      <h3 className="font-medium text-ink-100">Home shop and belongings</h3>
       <p className="mt-2 text-[11px] text-ink-100/50">
         {view.active_space_used} / {view.capacity} active belongings · storage {view.stored.length} / 8
       </p>
@@ -85,6 +85,6 @@ export function WorldHouseholdContents({ view, error, busy, onRestore }: {
         </ul> : <p className="text-ink-100/40">Empty</p>}
       </div>)}
       {error ? <p role="alert" className="mt-2 text-rose-200">{error}</p> : null}
-    </details>
+    </section>
   );
 }

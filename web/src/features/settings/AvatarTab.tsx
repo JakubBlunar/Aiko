@@ -10,6 +10,7 @@ import type {
   CompanionSettings,
 } from "../../types";
 import { Section } from "./SettingsSection";
+import { SettingsSections } from "./SettingsSections";
 import { ReactionLegend } from "./ReactionLegend";
 
 export interface AvatarTabProps {
@@ -225,9 +226,8 @@ export function AvatarTab({
 }: AvatarTabProps) {
   const moodMistEnabled = useAssistantStore((s) => s.moodMistEnabled);
   const setMoodMistEnabled = useAssistantStore((s) => s.setMoodMistEnabled);
-  return (
-    <>
-      <Section title="Avatar (Live2D)">
+  return <SettingsSections area="Avatar" sections={[
+    { id: "appearance", label: "Appearance", content: (<Section title="Avatar (Live2D)">
         <Toggle
           checked={moodMistEnabled}
           onChange={setMoodMistEnabled}
@@ -438,10 +438,9 @@ export function AvatarTab({
             gitignored so each developer drops their own copy in.
           </p>
         )}
-        <AccessoriesSubSection avatarLoaded={!!avatar?.loaded} />
-      </Section>
-
-      <Section title="Persona window (desktop)">
+      </Section>) },
+    { id: "accessories", label: "Accessories", content: <Section title="Accessories"><AccessoriesSubSection avatarLoaded={!!avatar?.loaded} /></Section> },
+    { id: "window", label: "Desktop window", content: (<Section title="Persona window (desktop)">
         {personaError ? (
           <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
             {personaError}
@@ -505,10 +504,8 @@ export function AvatarTab({
             Reset window position
           </button>
         </div>
-      </Section>
-
-      {companion ? (
-        <Section title="Touch & reactions">
+      </Section>) },
+    ...(companion ? [{ id: "touch", label: "Touch & reactions", content: (<Section title="Touch & reactions">
           <p className="text-[11px] text-ink-100/50">
             Soft-physicality round-trip: Aiko can send little gestures
             (a wave, a hug) and you can react to her messages with
@@ -648,8 +645,6 @@ export function AvatarTab({
           >
             Let Aiko follow your pace on closeness
           </Toggle>
-        </Section>
-      ) : null}
-    </>
-  );
+        </Section>) }] : []),
+  ]} />;
 }

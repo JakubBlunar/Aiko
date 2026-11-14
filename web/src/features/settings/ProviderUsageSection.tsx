@@ -133,7 +133,7 @@ export function ProviderUsageSection() {
         Create an Admin API key in <a href="https://venice.ai/settings/api" target="_blank"
           rel="noreferrer" className="text-violet-300 underline">Venice settings</a>.
         {" "}Saving adds a separate provider named Venice statistics using the existing credential storage.
-        It stays unassigned to chat roles. Manage or remove it in Saved providers above.
+        It stays unassigned to chat roles. Manage or remove it in the Providers subtab.
       </p>
       <div className="flex flex-wrap gap-2">
         <input aria-label="Venice Admin API key" type="password" autoComplete="new-password"
@@ -146,7 +146,7 @@ export function ProviderUsageSection() {
       {keyError && <p className="mt-2 text-xs text-rose-200" role="alert">{keyError}</p>}
     </details>
     {!providerId ? <p className="text-xs text-ink-100/50">
-      Add a Venice provider above to view account usage, cache statistics, pricing and balances.
+      Add a Venice provider in Providers to view account usage, cache statistics, pricing and balances.
       Account statistics for other providers are not available yet.
     </p> : <>
       <p className="text-[11px] text-ink-100/50">

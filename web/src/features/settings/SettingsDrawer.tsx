@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { api } from "@/api";
 import { desktop as desktopCommands } from "@/desktop/commands";
 import { isTauri } from "@/desktop/runtime";
@@ -7,14 +7,15 @@ import type {
   AvatarSettingsKnobs,
   MetricsResponse,
 } from "@/types";
-import { TabStrip } from "@/components/TabStrip";
+import { SettingsNavigation, type SettingsTabId } from "./SettingsNavigation";
+import { SettingsNavigationProvider, SettingsSections, useSettingsScrollRoot } from "./SettingsSections";
 import { useAssistantStore } from "@/store";
 import { useWeatherStore } from "@/stores/useWeatherStore";
 import { IdentitySection } from "./IdentitySection";
 import { LlmProvidersListSection } from "./LlmProvidersListSection";
 import { ProviderUsageSection } from "./ProviderUsageSection";
 import { LlmRoutesSection } from "./LlmRoutesSection";
-import { VoiceTab } from "./VoiceTab";
+import { VoiceTab, type VoiceTabProps } from "./VoiceTab";
 import { AvatarTab } from "./AvatarTab";
 import { DiagnosticsSection } from "./DiagnosticsSection";
 import { MemoryTab } from "./MemoryTab";
@@ -36,40 +37,12 @@ interface SettingsDrawerProps {
   onClose: () => void;
 }
 
-type SettingsTabId =
-  | "chat"
-  | "voice"
-  | "tools"
-  | "avatar"
-  | "memory"
-  | "diary"
-  | "archive"
-  | "world"
-  | "together"
-  | "knowledge"
-  | "tasks";
-
-interface TabSpec {
-  id: SettingsTabId;
-  label: string;
-  icon: string;
+export function SettingsDrawer(props: SettingsDrawerProps) {
+  return <SettingsNavigationProvider><SettingsDrawerContent {...props} /></SettingsNavigationProvider>;
 }
 
-const SETTINGS_TABS: ReadonlyArray<TabSpec> = [
-  { id: "chat", label: "Chat", icon: "💬" },
-  { id: "voice", label: "Voice", icon: "🎙️" },
-  { id: "tools", label: "Tools", icon: "🛠️" },
-  { id: "avatar", label: "Avatar", icon: "🌸" },
-  { id: "memory", label: "Memory", icon: "📒" },
-  { id: "diary", label: "Diary", icon: "📓" },
-  { id: "archive", label: "Archive", icon: "" },
-  { id: "world", label: "World", icon: "🏠" },
-  { id: "together", label: "Together", icon: "💞" },
-  { id: "knowledge", label: "Knowledge", icon: "📚" },
-  { id: "tasks", label: "Tasks", icon: "🧰" },
-];
-
-export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
+function SettingsDrawerContent({ open, onClose }: SettingsDrawerProps) {
+  const scrollRoot = useSettingsScrollRoot();
   const [settings, setSettings] = useState<AssistantSettings | null>(null);
   // H11: live weather settings (updated by ``weather_settings_changed``);
   // falls back to the GET-settings snapshot until a WS frame lands.
@@ -96,6 +69,9 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("chat");
+  useLayoutEffect(() => {
+    if (scrollRoot?.current) scrollRoot.current.scrollTop = 0;
+  }, [activeTab, scrollRoot]);
 
   // ── Memory tab ────────────────────────────────────────────────────
   const {
@@ -434,6 +410,12 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
     }
   };
 
+  const voiceProps: VoiceTabProps | null = settings ? {
+    settings, voices, deviceLists, setDeviceLists, inputDeviceId, setInputDeviceId,
+    outputDeviceId, setOutputDeviceId, micPermission, setMicPermission, dspPrefs, setDspPrefs,
+    tauri, liveActiveApp, liveActiveTitle, apply,
+  } : null;
+
   if (!open) return null;
 
   return (
@@ -443,7 +425,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
         onClick={onClose}
         role="presentation"
       />
-      <div className="flex h-full w-full max-w-2xl lg:max-w-3xl flex-col border-l border-white/10 bg-[#0f0a1f] shadow-2xl">
+      <div className="flex h-full w-full max-w-3xl lg:max-w-4xl flex-col border-l border-white/10 bg-[#0f0a1f] shadow-2xl">
         <header className="flex items-center justify-between border-b border-white/5 px-5 py-4">
           <div>
             <h2 className="text-base font-semibold text-ink-100">Settings</h2>
@@ -460,14 +442,9 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
           </button>
         </header>
 
-        <TabStrip
-          tabs={SETTINGS_TABS}
-          activeId={activeTab}
-          onSelect={setActiveTab}
-          ariaLabel="Settings sections"
-        />
-
-        <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5 text-sm">
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          <SettingsNavigation active={activeTab} onSelect={setActiveTab} />
+          <div ref={scrollRoot} className="min-w-0 flex-1 space-y-6 overflow-y-auto px-5 py-5 text-sm">
           {error ? (
             <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
               {error}
@@ -477,45 +454,17 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
             <div className="text-xs text-ink-100/50">Loading...</div>
           ) : settings ? (
             <>
-              {activeTab === "chat" ? (
-                <>
-                  <IdentitySection />
+              {activeTab === "chat" ? <IdentitySection /> : null}
+              {activeTab === "models" ? <SettingsSections area="Models" sections={[
+                { id: "routes", label: "Routes", content: <LlmRoutesSection /> },
+                { id: "providers", label: "Providers", content: <LlmProvidersListSection /> },
+                { id: "usage", label: "Usage", content: <ProviderUsageSection /> },
+                { id: "diagnostics", label: "Diagnostics", content: <DiagnosticsSection
+                  metrics={metrics} liveLastMetrics={liveMetrics} onApplyPatch={apply} busy={busy} /> },
+              ]} /> : null}
 
-                  <LlmRoutesSection />
-
-                  <LlmProvidersListSection />
-
-                  <ProviderUsageSection />
-
-                  <DiagnosticsSection
-                    metrics={metrics}
-                    liveLastMetrics={liveMetrics}
-                    onApplyPatch={apply}
-                    busy={busy}
-                  />
-                </>
-              ) : null}
-
-              {activeTab === "voice" ? (
-                <VoiceTab
-                  settings={settings}
-                  voices={voices}
-                  deviceLists={deviceLists}
-                  setDeviceLists={setDeviceLists}
-                  inputDeviceId={inputDeviceId}
-                  setInputDeviceId={setInputDeviceId}
-                  outputDeviceId={outputDeviceId}
-                  setOutputDeviceId={setOutputDeviceId}
-                  micPermission={micPermission}
-                  setMicPermission={setMicPermission}
-                  dspPrefs={dspPrefs}
-                  setDspPrefs={setDspPrefs}
-                  tauri={tauri}
-                  liveActiveApp={liveActiveApp}
-                  liveActiveTitle={liveActiveTitle}
-                  apply={apply}
-                />
-              ) : null}
+              {activeTab === "voice" && voiceProps ? <VoiceTab {...voiceProps} /> : null}
+              {activeTab === "behavior" && voiceProps ? <VoiceTab {...voiceProps} view="behavior" /> : null}
 
               {activeTab === "tools" ? (
                 <ToolsTab settings={settings} apply={apply} />
@@ -775,6 +724,7 @@ export function SettingsDrawer({ open, onClose }: SettingsDrawerProps) {
               ) : null}
             </>
           ) : null}
+          </div>
         </div>
       </div>
     </div>

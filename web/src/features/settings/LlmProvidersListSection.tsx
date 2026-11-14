@@ -25,7 +25,7 @@ import { Section } from "./SettingsSection";
  * "Add provider" picks one of the curated templates from
  * ``/api/llm/presets`` and appends a new catalogue row; the template
  * seeds the endpoint and links out to wherever that provider hands out
- * API keys. Assign the new entry to a role in the routes table above.
+ * API keys. Assign the new entry to a role in the Routes subtab.
  */
 
 interface ProviderDraft {
@@ -346,7 +346,7 @@ export function LlmProvidersListSection() {
     <Section title="Saved providers">
       <p className="text-[11px] text-ink-100/50">
         Catalogue of LLM endpoints + credentials. Each entry shows up in
-        the role-assignment dropdowns above. Two roles pointing at the
+        the role-assignment dropdowns in Routes. Two roles pointing at the
         same provider share one underlying connection.
       </p>
 

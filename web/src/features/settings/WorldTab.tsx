@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useAssistantStore } from "../../store";
 import {
   WORLD_ACTIVITIES,
@@ -7,110 +7,22 @@ import {
   isWorldPortableKind,
 } from "../../types";
 import type {
-  CompanionSettings,
   GroundingLineMode,
-  WeatherSettingsSnapshot,
   WorldActivity,
   WorldItem,
-  WorldKind,
-  WorldLocation,
   WorldPosture,
-  WorldScene,
-  WorldSnapshot,
 } from "../../types";
 import { CheckboxField } from "@/components/CheckboxField";
 import { Toggle } from "@/components/Toggle";
 import { Section } from "./SettingsSection";
 import { WorldSceneBar } from "./WorldSceneBar";
-import { WorldCreation } from "./WorldCreation";
-import { WorldDrink } from "./WorldDrink";
-import { WorldBathroom } from "./WorldBathroom";
 import { WorldHousehold } from "./WorldHousehold";
-import { WorldSketchbook } from "./WorldSketchbook";
+import { SettingsSections } from "./SettingsSections";
+import { WorldItemRow as ItemRow } from "./world/WorldItemRow";
+import { WorldWeatherSection as WeatherSection } from "./world/WorldWeatherSection";
 
-export interface GiveDraft {
-  name: string;
-  kind: WorldKind | string;
-  quantity: number;
-  description: string;
-  location_id: number | null;
-  consumable: boolean;
-}
-
-export interface ItemDraft {
-  name: string;
-  description: string;
-  kind: string;
-  location_id: number | null;
-  quantity: number;
-}
-
-export interface LocationDraft {
-  name: string;
-  description: string;
-}
-
-export interface WorldTabProps {
-  world: WorldSnapshot | null;
-  busy: boolean;
-  error: string | null;
-  onRefresh: () => void;
-  onPatchState: (patch: {
-    location_id?: number | null;
-    posture?: string;
-    activity?: string;
-    mood_note?: string;
-  }) => void;
-  giveOpen: boolean;
-  setGiveOpen: (open: boolean) => void;
-  giveDraft: GiveDraft;
-  setGiveDraft: (draft: GiveDraft) => void;
-  onGiveItem: () => void;
-  locationsOpen: boolean;
-  setLocationsOpen: (open: boolean) => void;
-  itemsOpen: boolean;
-  setItemsOpen: (open: boolean) => void;
-  newLocationOpen: boolean;
-  setNewLocationOpen: (open: boolean) => void;
-  newLocationDraft: LocationDraft;
-  setNewLocationDraft: (draft: LocationDraft) => void;
-  onAddLocation: () => void;
-  editingItemId: number | null;
-  setEditingItemId: (id: number | null) => void;
-  itemDraft: ItemDraft;
-  setItemDraft: (draft: ItemDraft) => void;
-  onSaveItemEdit: (item: WorldItem) => void;
-  onDeleteItem: (item: WorldItem) => void;
-  onConsumeItem: (item: WorldItem) => void;
-  editingLocationId: number | null;
-  setEditingLocationId: (id: number | null) => void;
-  locationDraft: LocationDraft;
-  setLocationDraft: (draft: LocationDraft) => void;
-  onSaveLocationEdit: (loc: WorldLocation) => void;
-  onDeleteLocation: (loc: WorldLocation) => void;
-  onReseedWorld: () => void;
-  viewingSceneId: number | null;
-  setViewingSceneId: (id: number | null) => void;
-  newSceneOpen: boolean;
-  setNewSceneOpen: (open: boolean) => void;
-  newSceneDraft: { name: string; description: string };
-  setNewSceneDraft: (draft: { name: string; description: string }) => void;
-  onAddScene: () => void;
-  onSaveSceneEdit: (
-    scene: WorldScene,
-    name: string,
-    description: string,
-  ) => void;
-  onDeleteScene: (scene: WorldScene) => void;
-  onTravelToScene: (scene: WorldScene) => void;
-  /** Companion-feel knobs (proactive room nudges + grounding-line mode).
-   * ``null`` until the settings snapshot loads. */
-  companion: CompanionSettings | null;
-  onPatchCompanion: (patch: Partial<CompanionSettings>) => void;
-  /** H11 weather sync snapshot (``null`` until settings load). */
-  weather: WeatherSettingsSnapshot | null;
-  onPatchWeather: (patch: Record<string, unknown>) => void;
-}
+import type { GiveDraft, WorldTabProps } from "./world/WorldTabTypes";
+export type { GiveDraft, ItemDraft, LocationDraft, WorldTabProps } from "./world/WorldTabTypes";
 
 export function buildQuickGivePresets(
   userDisplayName: string,
@@ -271,30 +183,9 @@ export function WorldTab({
 
   return (
     <div className="space-y-4">
-      <WorldHousehold world={world} />
-      <Section title="Scenes">
-        <p className="text-[11px] text-ink-100/50">
-          Her apartment and garden stay as they are. Create another scene
-          (your room, a café) to place objects there and invite her over.
-        </p>
-        <WorldSceneBar
-          scenes={scenes}
-          viewingSceneId={viewing?.id ?? null}
-          currentSceneId={state.scene_id ?? null}
-          busy={busy}
-          newOpen={newSceneOpen}
-          setNewOpen={setNewSceneOpen}
-          newDraft={newSceneDraft}
-          setNewDraft={setNewSceneDraft}
-          onSelect={(id) => setViewingSceneId(id)}
-          onAdd={onAddScene}
-          onTravel={onTravelToScene}
-          onDelete={onDeleteScene}
-          onRename={onSaveSceneEdit}
-        />
-      </Section>
-
-      <Section title="Right now">
+      {error ? <p role="alert" className="text-xs text-rose-200">{error}</p> : null}
+      <SettingsSections area="World" sections={[
+        { id: "overview", label: "Overview", content: (<><Section title="Right now">
         <p className="text-xs text-ink-100/70">
           Aiko is{" "}
           <span className="font-medium text-ink-100">
@@ -399,33 +290,28 @@ export function WorldTab({
             "{state.mood_note}"
           </p>
         ) : null}
-      </Section>
-
-      {companion ? (
-        <Section title="Sleep rhythm">
-          <p className="text-[11px] text-ink-100/50">
-            Sleep follows her persistent energy and body clock. A message can
-            interrupt her without automatically waking her.
-          </p>
-          <Toggle
-            checked={companion.sleep_enabled}
-            onChange={(checked) => onPatchCompanion({ sleep_enabled: checked })}
-          >
-            Enable sleep continuity
-          </Toggle>
-          <Toggle
-            checked={companion.sleep_naps_enabled}
-            disabled={!companion.sleep_enabled}
-            onChange={(checked) =>
-              onPatchCompanion({ sleep_naps_enabled: checked })
-            }
-          >
-            Allow afternoon naps
-          </Toggle>
-        </Section>
-      ) : null}
-
-      <Section title="Give Aiko something">
+      </Section><Section title="Scenes">
+        <p className="text-[11px] text-ink-100/50">
+          Her apartment and garden stay as they are. Create another scene
+          (your room, a café) to place objects there and invite her over.
+        </p>
+        <WorldSceneBar
+          scenes={scenes}
+          viewingSceneId={viewing?.id ?? null}
+          currentSceneId={state.scene_id ?? null}
+          busy={busy}
+          newOpen={newSceneOpen}
+          setNewOpen={setNewSceneOpen}
+          newDraft={newSceneDraft}
+          setNewDraft={setNewSceneDraft}
+          onSelect={(id) => setViewingSceneId(id)}
+          onAdd={onAddScene}
+          onTravel={onTravelToScene}
+          onDelete={onDeleteScene}
+          onRename={onSaveSceneEdit}
+        />
+      </Section></>) },
+        { id: "items", label: "Belongings", content: (<><Section title="Give Aiko something">
         <p className="text-[11px] text-ink-100/50">
           Drops an item into the scene you're viewing, attributed to you.
           Aiko notices on her next reply — no proactive ping.
@@ -563,78 +449,7 @@ export function WorldTab({
             </div>
           </div>
         ) : null}
-      </Section>
-
-      {companion ? (
-        <Section title="Proactive room notices">
-          <p className="text-[11px] text-ink-100/50">
-            When on, Aiko occasionally reaches out about her room — when
-            you've left her something, or after a long quiet stretch.
-            Cooldown keeps it subtle, not chatty.
-          </p>
-          <Toggle
-            checked={companion.world_notice_enabled}
-            onChange={(checked) =>
-              onPatchCompanion({ world_notice_enabled: checked })
-            }
-          >
-            Enable proactive room / gift notices
-          </Toggle>
-          <label className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
-            <span>Cooldown (s)</span>
-            <input
-              type="number"
-              min={0}
-              step={60}
-              value={companion.world_notice_cooldown_seconds}
-              disabled={!companion.world_notice_enabled}
-              onChange={(e) =>
-                onPatchCompanion({
-                  world_notice_cooldown_seconds: Math.max(
-                    0,
-                    Number(e.target.value) || 0,
-                  ),
-                })
-              }
-              className="w-20 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
-            />
-          </label>
-        </Section>
-      ) : null}
-
-      {companion ? (
-        <Section title="Companion feel">
-          <label className="flex flex-col gap-1 text-[11px] text-ink-100/60">
-            <span>
-              Ambient grounding line — how Aiko's surroundings / mood are
-              woven into her prompt.
-            </span>
-            <select
-              value={companion.grounding_line_mode}
-              onChange={(e) =>
-                onPatchCompanion({
-                  grounding_line_mode: e.target.value as GroundingLineMode,
-                })
-              }
-              className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
-            >
-              <option value="off">off — granular blocks (default)</option>
-              <option value="replace">replace — one fused line</option>
-              <option value="split">split — fuse situational only</option>
-            </select>
-          </label>
-        </Section>
-      ) : null}
-
-      <WeatherSection weather={weather} onPatch={onPatchWeather} />
-
-      {error ? (
-        <div className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-          {error}
-        </div>
-      ) : null}
-
-      <Section title="Items">
+      </Section><Section title="Items">
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -728,9 +543,84 @@ export function WorldTab({
             ) : null}
           </div>
         ) : null}
-      </Section>
-
-      <Section title="Locations">
+      </Section></>) },
+        { id: "home", label: "Home shop", content: (<WorldHousehold world={world} />) },
+        { id: "rhythm", label: "Rhythm", content: (<>{companion ? <><Section title="Sleep rhythm">
+          <p className="text-[11px] text-ink-100/50">
+            Sleep follows her persistent energy and body clock. A message can
+            interrupt her without automatically waking her.
+          </p>
+          <Toggle
+            checked={companion.sleep_enabled}
+            onChange={(checked) => onPatchCompanion({ sleep_enabled: checked })}
+          >
+            Enable sleep continuity
+          </Toggle>
+          <Toggle
+            checked={companion.sleep_naps_enabled}
+            disabled={!companion.sleep_enabled}
+            onChange={(checked) =>
+              onPatchCompanion({ sleep_naps_enabled: checked })
+            }
+          >
+            Allow afternoon naps
+          </Toggle>
+        </Section><Section title="Proactive room notices">
+          <p className="text-[11px] text-ink-100/50">
+            When on, Aiko occasionally reaches out about her room — when
+            you've left her something, or after a long quiet stretch.
+            Cooldown keeps it subtle, not chatty.
+          </p>
+          <Toggle
+            checked={companion.world_notice_enabled}
+            onChange={(checked) =>
+              onPatchCompanion({ world_notice_enabled: checked })
+            }
+          >
+            Enable proactive room / gift notices
+          </Toggle>
+          <label className="flex items-center justify-between gap-2 rounded-md bg-white/[0.02] px-3 py-1.5 text-[11px] text-ink-100/60">
+            <span>Cooldown (s)</span>
+            <input
+              type="number"
+              min={0}
+              step={60}
+              value={companion.world_notice_cooldown_seconds}
+              disabled={!companion.world_notice_enabled}
+              onChange={(e) =>
+                onPatchCompanion({
+                  world_notice_cooldown_seconds: Math.max(
+                    0,
+                    Number(e.target.value) || 0,
+                  ),
+                })
+              }
+              className="w-20 rounded border border-white/10 bg-black/30 px-2 py-1 text-right text-ink-100/80 disabled:opacity-40"
+            />
+          </label>
+        </Section><Section title="Companion feel">
+          <label className="flex flex-col gap-1 text-[11px] text-ink-100/60">
+            <span>
+              Ambient grounding line — how Aiko's surroundings / mood are
+              woven into her prompt.
+            </span>
+            <select
+              value={companion.grounding_line_mode}
+              onChange={(e) =>
+                onPatchCompanion({
+                  grounding_line_mode: e.target.value as GroundingLineMode,
+                })
+              }
+              className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
+            >
+              <option value="off">off — granular blocks (default)</option>
+              <option value="replace">replace — one fused line</option>
+              <option value="split">split — fuse situational only</option>
+            </select>
+          </label>
+        </Section></> : <p>Companion settings are unavailable.</p>}</>) },
+        { id: "weather", label: "Weather", content: (<WeatherSection weather={weather} onPatch={onPatchWeather} />) },
+        { id: "places", label: "Places", content: (<><Section title="Locations">
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -887,9 +777,7 @@ export function WorldTab({
             ) : null}
           </ul>
         ) : null}
-      </Section>
-
-      <Section title="Reset">
+      </Section><Section title="Reset">
         <button
           type="button"
           onClick={onReseedWorld}
@@ -903,346 +791,8 @@ export function WorldTab({
           cozy default. Scenes you created are kept. Memories are not
           affected.
         </p>
-      </Section>
+      </Section></>) },
+      ]} />
     </div>
-  );
-}
-
-interface WeatherSectionProps {
-  weather: WeatherSettingsSnapshot | null;
-  onPatch: (patch: Record<string, unknown>) => void;
-}
-
-/** H11 weather sync settings. Toggle the shared real-world sky, set a
- * coarse home city (geocoded server-side on save), and pick units. The
- * latest cached conditions show as a small readout. */
-function WeatherSection({ weather, onPatch }: WeatherSectionProps) {
-  const [locationInput, setLocationInput] = useState(
-    weather?.location_name ?? "",
-  );
-  // Keep the input in sync when a settings frame lands (e.g. the server
-  // canonicalised "tokyo" -> "Tokyo, Japan" after geocoding).
-  useEffect(() => {
-    setLocationInput(weather?.location_name ?? "");
-  }, [weather?.location_name]);
-
-  const syncOn = Boolean(weather?.sync_enabled);
-  const units = weather?.units ?? "metric";
-  const current = weather?.current ?? null;
-  const dirty = (weather?.location_name ?? "") !== locationInput.trim();
-  const lat = weather?.latitude ?? null;
-  const lon = weather?.longitude ?? null;
-  const hasCoords =
-    typeof lat === "number" && typeof lon === "number";
-
-  return (
-    <Section title="Weather (shared sky)">
-      <p className="text-[11px] text-ink-100/50">
-        When on, Aiko quietly knows the real-world weather + season at your
-        location and can let it colour her mood. Coarse city only — never
-        GPS, off by default. She can also answer forecast questions for any
-        place you name.
-      </p>
-      <Toggle
-        checked={syncOn}
-        onChange={(checked) => onPatch({ sync_enabled: checked })}
-      >
-        Share my real-world weather with Aiko
-      </Toggle>
-
-      <label className="block text-[11px] text-ink-100/60">
-        <span>Your location (city)</span>
-        <div className="mt-1 flex gap-2">
-          <input
-            value={locationInput}
-            onChange={(e) => setLocationInput(e.target.value)}
-            placeholder="e.g. Kamenná Poruba, Žilina, Slovakia"
-            className="flex-1 rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
-          />
-          <button
-            type="button"
-            onClick={() => onPatch({ location_name: locationInput.trim() })}
-            disabled={!dirty}
-            className="rounded border border-ink-400/40 bg-ink-500/20 px-3 py-1 text-[11px] text-ink-100 hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Save
-          </button>
-        </div>
-        <span className="mt-1 block text-[10px] text-ink-100/40">
-          If several places share a name, add the region and country to
-          disambiguate — e.g. "City, Region, Country". Check the
-          coordinates below resolved to the right spot.
-        </span>
-      </label>
-
-      {hasCoords ? (
-        <p className="flex items-center gap-2 text-[10px] text-ink-100/45">
-          <span>
-            Resolved: {lat!.toFixed(4)}, {lon!.toFixed(4)}
-          </span>
-          <a
-            href={`https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=11/${lat}/${lon}`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-ink-300 underline decoration-dotted hover:text-ink-100"
-          >
-            verify on map ↗
-          </a>
-        </p>
-      ) : weather?.location_name ? (
-        <p className="text-[10px] text-amber-300/70">
-          Couldn't resolve coordinates for this name — try adding the
-          region and country.
-        </p>
-      ) : null}
-
-      <label className="flex items-center gap-2 text-[11px] text-ink-100/60">
-        <span>Units:</span>
-        <select
-          value={units}
-          onChange={(e) => onPatch({ units: e.target.value })}
-          className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
-        >
-          <option value="metric">Metric (°C, km/h)</option>
-          <option value="imperial">Imperial (°F, mph)</option>
-        </select>
-      </label>
-
-      {current ? (
-        <p className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-[11px] text-ink-100/60">
-          Right now in{" "}
-          <span className="text-ink-100/90">
-            {current.location_label || weather?.location_name || "your area"}
-          </span>
-          : {current.description}, {Math.round(current.temperature)}°
-          {current.temp_unit}
-          {current.season ? ` · ${current.season}` : ""}
-        </p>
-      ) : syncOn && weather?.location_name ? (
-        <p className="text-[11px] text-ink-100/40">
-          Fetching conditions…
-        </p>
-      ) : null}
-    </Section>
-  );
-}
-
-interface ItemRowProps {
-  item: WorldItem;
-  locations: WorldLocation[];
-  editing: boolean;
-  draft: ItemDraft;
-  setDraft: (draft: ItemDraft) => void;
-  onStartEdit: () => void;
-  onCancelEdit: () => void;
-  onSave: () => void;
-  onDelete: () => void;
-  onConsume: () => void;
-  busy: boolean;
-}
-
-function ItemRow({
-  item,
-  locations,
-  editing,
-  draft,
-  setDraft,
-  onStartEdit,
-  onCancelEdit,
-  onSave,
-  onDelete,
-  onConsume,
-  busy,
-}: ItemRowProps) {
-  return (
-    <li
-      className={`rounded-md border px-3 py-2 text-xs ${
-        item.given_by === "user"
-          ? "border-emerald-400/30 bg-emerald-500/5"
-          : "border-white/5 bg-white/[0.03]"
-      }`}
-    >
-      {editing ? (
-        <div className="space-y-2">
-          <input
-            value={draft.name}
-            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
-          />
-          <input
-            value={draft.description}
-            onChange={(e) =>
-              setDraft({ ...draft, description: e.target.value })
-            }
-            placeholder="description"
-            className="w-full rounded border border-white/10 bg-black/30 px-2 py-1 text-xs text-ink-100"
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
-              <span>kind:</span>
-              <select
-                value={draft.kind}
-                onChange={(e) => {
-                  const kind = e.target.value;
-                  const next: ItemDraft = { ...draft, kind };
-                  if (
-                    !isWorldPortableKind(kind) &&
-                    next.location_id == null &&
-                    locations[0]
-                  ) {
-                    next.location_id = locations[0].id;
-                  }
-                  setDraft(next);
-                }}
-                className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
-              >
-                {WORLD_KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {k.replace(/_/g, " ")}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
-              <span>where:</span>
-              <select
-                value={draft.location_id ?? ""}
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    location_id: e.target.value
-                      ? Number(e.target.value)
-                      : null,
-                  })
-                }
-                className="rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
-              >
-                {locations.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    {l.name}
-                  </option>
-                ))}
-                {isWorldPortableKind(draft.kind) ? (
-                  <option value="">in her hands</option>
-                ) : null}
-              </select>
-            </label>
-            <label className="flex items-center gap-1 text-[11px] text-ink-100/60">
-              <span>qty:</span>
-              <input
-                type="number"
-                min={0}
-                max={99}
-                value={draft.quantity}
-                onChange={(e) =>
-                  setDraft({
-                    ...draft,
-                    quantity: Math.max(0, Number(e.target.value) || 0),
-                  })
-                }
-                className="w-14 rounded border border-white/10 bg-black/30 px-2 py-1 text-[11px] text-ink-100/80"
-              />
-            </label>
-            <div className="ml-auto flex gap-1">
-              <button
-                type="button"
-                onClick={onCancelEdit}
-                className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-white/30"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={onSave}
-                disabled={busy || !draft.name.trim()}
-                className="rounded border border-ink-400/40 bg-ink-500/20 px-2 py-0.5 text-[11px] text-ink-100 hover:border-ink-400 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="text-ink-100/90">
-              <span className="font-medium">{item.name}</span>
-              {item.consumable || item.quantity > 1 ? (
-                <span className="ml-1 text-[10px] uppercase tracking-wide text-ink-100/50">
-                  ×{item.quantity}
-                </span>
-              ) : null}
-              {item.given_by === "user" ? (
-                <span className="ml-1 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-emerald-200">
-                  gift
-                </span>
-              ) : null}
-            </div>
-            {item.description ? (
-              <div className="text-[11px] text-ink-100/50">
-                {item.description}
-              </div>
-            ) : null}
-            <WorldCreation item={item} />
-            <WorldSketchbook item={item} />
-            <WorldDrink item={item} />
-            <WorldBathroom item={item} />
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
-              <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
-                {item.kind.replace(/_/g, " ")}
-              </span>
-              {item.consumable ? <span>consumable</span> : null}
-              {item.kind === "plant" &&
-              typeof item.state?.stage === "string" ? (
-                <span
-                  className={`rounded px-1.5 py-0.5 ${
-                    item.state.stage === "mature"
-                      ? "bg-amber-500/20 text-amber-200"
-                      : "bg-emerald-500/15 text-emerald-200/80"
-                  }`}
-                >
-                  {item.state.stage === "mature"
-                    ? "ready to harvest"
-                    : String(item.state.stage)}
-                </span>
-              ) : null}
-              {item.kind === "seed" &&
-              typeof item.state?.species === "string" ? (
-                <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-200/80">
-                  {String(item.state.species)} seed
-                </span>
-              ) : null}
-            </div>
-          </div>
-          <div className="flex shrink-0 flex-col gap-1">
-            {item.consumable && item.quantity > 0 ? (
-              <button
-                type="button"
-                onClick={onConsume}
-                className="rounded border border-amber-400/30 bg-amber-500/5 px-2 py-0.5 text-[11px] text-amber-200 hover:border-amber-400/60"
-              >
-                consume
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={onStartEdit}
-              className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-ink-400 hover:text-ink-100"
-            >
-              edit
-            </button>
-            <button
-              type="button"
-              onClick={onDelete}
-              disabled={Boolean(item.state.home_essential)}
-              title={item.state.home_essential ? "Managed household fixture" : undefined}
-              className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
-            >
-              remove
-            </button>
-          </div>
-        </div>
-      )}
-    </li>
   );
 }

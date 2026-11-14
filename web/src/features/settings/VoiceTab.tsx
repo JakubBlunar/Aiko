@@ -1,4 +1,5 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
+import { SettingsSections } from "./SettingsSections";
 import type { AssistantSettings } from "../../types";
 import { Toggle } from "@/components/Toggle";
 import { useAssistantStore } from "../../store";
@@ -22,6 +23,7 @@ export interface DspPrefs {
 export type MicPermission = "granted" | "denied" | "prompt" | "unknown";
 
 export interface VoiceTabProps {
+  view?: "voice" | "behavior";
   settings: AssistantSettings;
   voices: string[];
   deviceLists: DeviceLists;
@@ -68,6 +70,7 @@ function VoiceOwnerRow() {
 }
 
 export function VoiceTab({
+  view = "voice",
   settings,
   voices,
   deviceLists,
@@ -98,9 +101,307 @@ export function VoiceTab({
   const [liveConsentOpen, setLiveConsentOpen] = useState(false);
   return (
     <>
-      <MobileAudioSection />
+      <SettingsSections area={view === "voice" ? "Voice" : "Behavior"} sections={view === "voice" ? [
+        { id: "speech", label: "Speech", content: (<><MobileAudioSection /><Section title="Voice (TTS)">
+        <TtsEnginePicker settings={settings} apply={apply} />
 
-      <Section title="Interaction">
+        <label className="mt-3 block text-xs text-ink-100/60">Voice</label>
+        <select
+          value={settings.tts.voice}
+          onChange={(e) =>
+            void apply({ tts: { voice: e.target.value } })
+          }
+          className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
+        >
+          {(voices.length > 0 ? voices : [settings.tts.voice]).map(
+            (v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ),
+          )}
+        </select>
+        <Toggle
+          className="mt-3"
+          checked={settings.tts.enabled}
+          onChange={(checked) => void apply({ tts: { enabled: checked } })}
+        >
+          Speak responses out loud
+        </Toggle>
+      </Section></>) },
+        { id: "devices", label: "Devices", content: (<Section title="Audio devices">
+        <p className="mb-3 text-[11px] text-ink-100/50">
+          Audio capture and playback now run in this browser /
+          desktop window. Aiko's voice plays through the device
+          you pick here, and the microphone is shared across
+          all connected windows with a one-at-a-time lock
+          (whoever clicks the mic last gets the floor).
+        </p>
+        {micPermission !== "granted" ? (
+          <div className="mb-3 rounded-md border border-amber-300/40 bg-amber-500/10 p-3 text-[11px] text-amber-100/90">
+            <div className="font-medium">
+              Microphone permission required
+            </div>
+            <div className="mt-1 text-amber-100/70">
+              Click the mic button (or grant access here) so we
+              can list the available input devices with their
+              real names.
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                const mod = await import("../../audio/DeviceManager");
+                const ok = await mod.requestMicPermission();
+                if (ok) {
+                  setMicPermission("granted");
+                  setDeviceLists(await mod.listDevices());
+                } else {
+                  setMicPermission("denied");
+                }
+              }}
+              className="mt-2 rounded-md border border-amber-300/60 bg-amber-500/20 px-3 py-1 text-amber-100 hover:bg-amber-500/30"
+            >
+              Grant microphone access
+            </button>
+          </div>
+        ) : null}
+        <label className="block text-xs text-ink-100/60">
+          Microphone
+        </label>
+        <select
+          value={inputDeviceId}
+          onChange={async (e) => {
+            const id = e.target.value;
+            setInputDeviceId(id);
+            const mod = await import("../../audio/DeviceManager");
+            mod.setStoredInputDeviceId(id);
+          }}
+          className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
+        >
+          <option value="">System default</option>
+          {deviceLists.inputs.map((d, idx) => (
+            <option key={d.deviceId || `in-${idx}`} value={d.deviceId}>
+              {d.label || `Microphone ${idx + 1}`}
+            </option>
+          ))}
+        </select>
+        <label className="mt-3 block text-xs text-ink-100/60">
+          Output
+        </label>
+        <select
+          value={outputDeviceId}
+          onChange={async (e) => {
+            const id = e.target.value;
+            setOutputDeviceId(id);
+            const mod = await import("../../audio/DeviceManager");
+            mod.setStoredOutputDeviceId(id);
+          }}
+          className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
+        >
+          <option value="">System default</option>
+          {deviceLists.outputs.map((d, idx) => (
+            <option key={d.deviceId || `out-${idx}`} value={d.deviceId}>
+              {d.label || `Speaker ${idx + 1}`}
+            </option>
+          ))}
+        </select>
+        <Row label="STT model" value={settings.stt.model} />
+        <Toggle
+          className="mt-3"
+          checked={settings.audio.barge_in_enabled}
+          onChange={(checked) =>
+            void apply({ audio: { barge_in_enabled: checked } })
+          }
+        >
+          Allow barge-in (interrupt while Aiko is speaking)
+        </Toggle>
+        <Toggle
+          className="mt-3"
+          checked={settings.audio.earcons_enabled ?? true}
+          onChange={(checked) =>
+            void apply({ audio: { earcons_enabled: checked } })
+          }
+        >
+          Earcons (little [[laugh]] / [[sigh]] sound effects)
+        </Toggle>
+        <Toggle
+          className="mt-3"
+          checked={settings.audio.backchannel_audio_enabled ?? true}
+          onChange={(checked) =>
+            void apply({ audio: { backchannel_audio_enabled: checked } })
+          }
+        >
+          Listen-along sounds (soft mm-hm while you talk)
+        </Toggle>
+      </Section>) },
+        { id: "microphone", label: "Microphone", content: (<Section title="Microphone DSP">
+        <p className="text-[11px] text-ink-100/50">
+          Browser-level audio processing applied before frames
+          are sent to the server. Defaults match modern
+          videoconferencing clients; turn one off if your model
+          already cleans up the signal itself.
+        </p>
+        <label className="mt-3 flex items-center justify-between gap-3 text-xs text-ink-100/80">
+          <div>
+            <div className="font-medium">Echo cancellation</div>
+            <div className="text-[10px] text-ink-100/50">
+              Removes the assistant's voice from the
+              microphone feed when you have her on speakers.
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={dspPrefs.echoCancellation}
+            onChange={async (e) => {
+              const next = {
+                ...dspPrefs,
+                echoCancellation: e.target.checked,
+              };
+              setDspPrefs(next);
+              const mod = await import("../../audio/DeviceManager");
+              mod.setStoredDspPreferences({
+                echoCancellation: next.echoCancellation,
+              });
+            }}
+          />
+        </label>
+        <label className="mt-2 flex items-center justify-between gap-3 text-xs text-ink-100/80">
+          <div>
+            <div className="font-medium">Noise suppression</div>
+            <div className="text-[10px] text-ink-100/50">
+              Cuts steady background noise (fans, traffic) at
+              the cost of softer breaths/whispers.
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={dspPrefs.noiseSuppression}
+            onChange={async (e) => {
+              const next = {
+                ...dspPrefs,
+                noiseSuppression: e.target.checked,
+              };
+              setDspPrefs(next);
+              const mod = await import("../../audio/DeviceManager");
+              mod.setStoredDspPreferences({
+                noiseSuppression: next.noiseSuppression,
+              });
+            }}
+          />
+        </label>
+        <label className="mt-2 flex items-center justify-between gap-3 text-xs text-ink-100/80">
+          <div>
+            <div className="font-medium">Auto gain control</div>
+            <div className="text-[10px] text-ink-100/50">
+              Keeps your level steady as you move toward / away
+              from the mic. Disable for studio-quality input.
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={dspPrefs.autoGainControl}
+            onChange={async (e) => {
+              const next = {
+                ...dspPrefs,
+                autoGainControl: e.target.checked,
+              };
+              setDspPrefs(next);
+              const mod = await import("../../audio/DeviceManager");
+              mod.setStoredDspPreferences({
+                autoGainControl: next.autoGainControl,
+              });
+            }}
+          />
+        </label>
+        <VoiceOwnerRow />
+      </Section>) },
+        { id: "listening", label: "Turn detection", content: (<Section title="Endpointing (when do I stop listening?)">
+        <p className="text-[11px] text-ink-100/50">
+          Aiko waits for silence to know your turn is over. With
+          hesitation extension on, words like "um", "and...", or
+          "you know" reset the silence clock so you have the full
+          end-of-thought window to find the next word.
+        </p>
+        <Row
+          label="End-of-thought wait (s)"
+          value={
+            <input
+              type="number"
+              min={1}
+              max={5}
+              step={0.1}
+              value={
+                settings.endpointing?.turn_silence_seconds ?? 3.0
+              }
+              onChange={(e) =>
+                void apply({
+                  endpointing: {
+                    turn_silence_seconds: Number(e.target.value),
+                  },
+                })
+              }
+              className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+            />
+          }
+        />
+        <Row
+          label="Quick-close wait (s)"
+          value={
+            <input
+              type="number"
+              min={0.4}
+              max={2}
+              step={0.1}
+              value={
+                settings.endpointing?.phrase_silence_seconds ?? 1.0
+              }
+              onChange={(e) =>
+                void apply({
+                  endpointing: {
+                    phrase_silence_seconds: Number(e.target.value),
+                  },
+                })
+              }
+              className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+            />
+          }
+        />
+        <Row
+          label="Sustained-speech for barge-in (s)"
+          value={
+            <input
+              type="number"
+              min={0.2}
+              max={1.5}
+              step={0.1}
+              value={
+                settings.endpointing?.barge_in_min_speech_seconds ?? 0.7
+              }
+              onChange={(e) =>
+                void apply({
+                  endpointing: {
+                    barge_in_min_speech_seconds: Number(e.target.value),
+                  },
+                })
+              }
+              className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
+            />
+          }
+        />
+        <Toggle
+          className="mt-1"
+          checked={settings.endpointing?.hesitation_extend_to_turn ?? true}
+          onChange={(checked) =>
+            void apply({
+              endpointing: { hesitation_extend_to_turn: checked },
+            })
+          }
+        >
+          Extend capture on hesitation words ("um", "and", "you know"…)
+        </Toggle>
+      </Section>) },
+      ] : [
+        { id: "interaction", label: "Interaction", content: (<Section title="Interaction">
         <p className="text-[11px] text-ink-100/50">
           Text and Speak still answer every submitted line. Live is a
           third mode: presence, not a more talkative proactive. The
@@ -214,248 +515,8 @@ export function VoiceTab({
             />
           }
         />
-      </Section>
-      {liveConsentOpen ? (
-        <LiveMicConsentDialog
-          onCancel={() => setLiveConsentOpen(false)}
-          onConfirm={() => {
-            void apply({
-              companion: {
-                behavior_posture: "live_presence",
-                live_mic_consented: true,
-              },
-            });
-            setLiveConsentOpen(false);
-          }}
-          onVisualOnly={() => {
-            void apply({
-              companion: {
-                behavior_posture: "live_presence",
-                live_unprompted_speech: false,
-              },
-            });
-            setLiveConsentOpen(false);
-          }}
-        />
-      ) : null}
-
-      <Section title="Voice (TTS)">
-        <TtsEnginePicker settings={settings} apply={apply} />
-
-        <label className="mt-3 block text-xs text-ink-100/60">Voice</label>
-        <select
-          value={settings.tts.voice}
-          onChange={(e) =>
-            void apply({ tts: { voice: e.target.value } })
-          }
-          className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
-        >
-          {(voices.length > 0 ? voices : [settings.tts.voice]).map(
-            (v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ),
-          )}
-        </select>
-        <Toggle
-          className="mt-3"
-          checked={settings.tts.enabled}
-          onChange={(checked) => void apply({ tts: { enabled: checked } })}
-        >
-          Speak responses out loud
-        </Toggle>
-      </Section>
-
-      <Section title="Audio devices">
-        <p className="mb-3 text-[11px] text-ink-100/50">
-          Audio capture and playback now run in this browser /
-          desktop window. Aiko's voice plays through the device
-          you pick here, and the microphone is shared across
-          all connected windows with a one-at-a-time lock
-          (whoever clicks the mic last gets the floor).
-        </p>
-        {micPermission !== "granted" ? (
-          <div className="mb-3 rounded-md border border-amber-300/40 bg-amber-500/10 p-3 text-[11px] text-amber-100/90">
-            <div className="font-medium">
-              Microphone permission required
-            </div>
-            <div className="mt-1 text-amber-100/70">
-              Click the mic button (or grant access here) so we
-              can list the available input devices with their
-              real names.
-            </div>
-            <button
-              type="button"
-              onClick={async () => {
-                const mod = await import("../../audio/DeviceManager");
-                const ok = await mod.requestMicPermission();
-                if (ok) {
-                  setMicPermission("granted");
-                  setDeviceLists(await mod.listDevices());
-                } else {
-                  setMicPermission("denied");
-                }
-              }}
-              className="mt-2 rounded-md border border-amber-300/60 bg-amber-500/20 px-3 py-1 text-amber-100 hover:bg-amber-500/30"
-            >
-              Grant microphone access
-            </button>
-          </div>
-        ) : null}
-        <label className="block text-xs text-ink-100/60">
-          Microphone
-        </label>
-        <select
-          value={inputDeviceId}
-          onChange={async (e) => {
-            const id = e.target.value;
-            setInputDeviceId(id);
-            const mod = await import("../../audio/DeviceManager");
-            mod.setStoredInputDeviceId(id);
-          }}
-          className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
-        >
-          <option value="">System default</option>
-          {deviceLists.inputs.map((d, idx) => (
-            <option key={d.deviceId || `in-${idx}`} value={d.deviceId}>
-              {d.label || `Microphone ${idx + 1}`}
-            </option>
-          ))}
-        </select>
-        <label className="mt-3 block text-xs text-ink-100/60">
-          Output
-        </label>
-        <select
-          value={outputDeviceId}
-          onChange={async (e) => {
-            const id = e.target.value;
-            setOutputDeviceId(id);
-            const mod = await import("../../audio/DeviceManager");
-            mod.setStoredOutputDeviceId(id);
-          }}
-          className="mt-1 w-full rounded-md border border-white/10 bg-black/40 px-3 py-2 text-sm text-ink-100"
-        >
-          <option value="">System default</option>
-          {deviceLists.outputs.map((d, idx) => (
-            <option key={d.deviceId || `out-${idx}`} value={d.deviceId}>
-              {d.label || `Speaker ${idx + 1}`}
-            </option>
-          ))}
-        </select>
-        <Row label="STT model" value={settings.stt.model} />
-        <Toggle
-          className="mt-3"
-          checked={settings.audio.barge_in_enabled}
-          onChange={(checked) =>
-            void apply({ audio: { barge_in_enabled: checked } })
-          }
-        >
-          Allow barge-in (interrupt while Aiko is speaking)
-        </Toggle>
-        <Toggle
-          className="mt-3"
-          checked={settings.audio.earcons_enabled ?? true}
-          onChange={(checked) =>
-            void apply({ audio: { earcons_enabled: checked } })
-          }
-        >
-          Earcons (little [[laugh]] / [[sigh]] sound effects)
-        </Toggle>
-        <Toggle
-          className="mt-3"
-          checked={settings.audio.backchannel_audio_enabled ?? true}
-          onChange={(checked) =>
-            void apply({ audio: { backchannel_audio_enabled: checked } })
-          }
-        >
-          Listen-along sounds (soft mm-hm while you talk)
-        </Toggle>
-      </Section>
-
-      <Section title="Microphone DSP">
-        <p className="text-[11px] text-ink-100/50">
-          Browser-level audio processing applied before frames
-          are sent to the server. Defaults match modern
-          videoconferencing clients; turn one off if your model
-          already cleans up the signal itself.
-        </p>
-        <label className="mt-3 flex items-center justify-between gap-3 text-xs text-ink-100/80">
-          <div>
-            <div className="font-medium">Echo cancellation</div>
-            <div className="text-[10px] text-ink-100/50">
-              Removes the assistant's voice from the
-              microphone feed when you have her on speakers.
-            </div>
-          </div>
-          <input
-            type="checkbox"
-            checked={dspPrefs.echoCancellation}
-            onChange={async (e) => {
-              const next = {
-                ...dspPrefs,
-                echoCancellation: e.target.checked,
-              };
-              setDspPrefs(next);
-              const mod = await import("../../audio/DeviceManager");
-              mod.setStoredDspPreferences({
-                echoCancellation: next.echoCancellation,
-              });
-            }}
-          />
-        </label>
-        <label className="mt-2 flex items-center justify-between gap-3 text-xs text-ink-100/80">
-          <div>
-            <div className="font-medium">Noise suppression</div>
-            <div className="text-[10px] text-ink-100/50">
-              Cuts steady background noise (fans, traffic) at
-              the cost of softer breaths/whispers.
-            </div>
-          </div>
-          <input
-            type="checkbox"
-            checked={dspPrefs.noiseSuppression}
-            onChange={async (e) => {
-              const next = {
-                ...dspPrefs,
-                noiseSuppression: e.target.checked,
-              };
-              setDspPrefs(next);
-              const mod = await import("../../audio/DeviceManager");
-              mod.setStoredDspPreferences({
-                noiseSuppression: next.noiseSuppression,
-              });
-            }}
-          />
-        </label>
-        <label className="mt-2 flex items-center justify-between gap-3 text-xs text-ink-100/80">
-          <div>
-            <div className="font-medium">Auto gain control</div>
-            <div className="text-[10px] text-ink-100/50">
-              Keeps your level steady as you move toward / away
-              from the mic. Disable for studio-quality input.
-            </div>
-          </div>
-          <input
-            type="checkbox"
-            checked={dspPrefs.autoGainControl}
-            onChange={async (e) => {
-              const next = {
-                ...dspPrefs,
-                autoGainControl: e.target.checked,
-              };
-              setDspPrefs(next);
-              const mod = await import("../../audio/DeviceManager");
-              mod.setStoredDspPreferences({
-                autoGainControl: next.autoGainControl,
-              });
-            }}
-          />
-        </label>
-        <VoiceOwnerRow />
-      </Section>
-
-      <Section title="Proactive nudges">
+      </Section>) },
+        { id: "initiative", label: "Initiative", content: (<Section title="Proactive nudges">
         <p className="text-[11px] text-ink-100/50">
           When you've been quiet, Aiko can pick up a thread on her
           own. Voice mode and typed chat are tuned independently
@@ -587,9 +648,8 @@ export function VoiceTab({
         >
           Chime in even when I'm not at the window
         </Toggle>
-      </Section>
-
-      <Section title="Activity awareness (desktop)">
+      </Section>) },
+        { id: "awareness", label: "Awareness", content: (<Section title="Activity awareness (desktop)">
         <p className="text-[11px] text-ink-100/50">
           Desktop only. Aiko can see which app is in the foreground
           and, for apps you name below, the window title. Titles of
@@ -645,93 +705,31 @@ export function VoiceTab({
             />
           </>
         ) : null}
-      </Section>
-
-      <Section title="Endpointing (when do I stop listening?)">
-        <p className="text-[11px] text-ink-100/50">
-          Aiko waits for silence to know your turn is over. With
-          hesitation extension on, words like "um", "and...", or
-          "you know" reset the silence clock so you have the full
-          end-of-thought window to find the next word.
-        </p>
-        <Row
-          label="End-of-thought wait (s)"
-          value={
-            <input
-              type="number"
-              min={1}
-              max={5}
-              step={0.1}
-              value={
-                settings.endpointing?.turn_silence_seconds ?? 3.0
-              }
-              onChange={(e) =>
-                void apply({
-                  endpointing: {
-                    turn_silence_seconds: Number(e.target.value),
-                  },
-                })
-              }
-              className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
-            />
-          }
-        />
-        <Row
-          label="Quick-close wait (s)"
-          value={
-            <input
-              type="number"
-              min={0.4}
-              max={2}
-              step={0.1}
-              value={
-                settings.endpointing?.phrase_silence_seconds ?? 1.0
-              }
-              onChange={(e) =>
-                void apply({
-                  endpointing: {
-                    phrase_silence_seconds: Number(e.target.value),
-                  },
-                })
-              }
-              className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
-            />
-          }
-        />
-        <Row
-          label="Sustained-speech for barge-in (s)"
-          value={
-            <input
-              type="number"
-              min={0.2}
-              max={1.5}
-              step={0.1}
-              value={
-                settings.endpointing?.barge_in_min_speech_seconds ?? 0.7
-              }
-              onChange={(e) =>
-                void apply({
-                  endpointing: {
-                    barge_in_min_speech_seconds: Number(e.target.value),
-                  },
-                })
-              }
-              className="w-24 rounded border border-white/10 bg-black/40 px-2 py-1 text-right text-xs text-ink-100"
-            />
-          }
-        />
-        <Toggle
-          className="mt-1"
-          checked={settings.endpointing?.hesitation_extend_to_turn ?? true}
-          onChange={(checked) =>
+      </Section>) },
+      ]} />
+      {liveConsentOpen ? (
+        <LiveMicConsentDialog
+          onCancel={() => setLiveConsentOpen(false)}
+          onConfirm={() => {
             void apply({
-              endpointing: { hesitation_extend_to_turn: checked },
-            })
-          }
-        >
-          Extend capture on hesitation words ("um", "and", "you know"…)
-        </Toggle>
-      </Section>
+              companion: {
+                behavior_posture: "live_presence",
+                live_mic_consented: true,
+              },
+            });
+            setLiveConsentOpen(false);
+          }}
+          onVisualOnly={() => {
+            void apply({
+              companion: {
+                behavior_posture: "live_presence",
+                live_unprompted_speech: false,
+              },
+            });
+            setLiveConsentOpen(false);
+          }}
+        />
+      ) : null}
     </>
   );
 }
