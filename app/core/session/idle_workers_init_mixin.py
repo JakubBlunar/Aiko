@@ -51,6 +51,12 @@ class IdleWorkersInitMixin:
         return self._pursuit_notes
 
     def _init_idle_workers(self, settings: AppSettings) -> None:
+        if self._idle_scheduler is not None and getattr(self, "_world_store", None) is not None:
+            from app.core.world.home_maintenance_worker import HomeMaintenanceWorker
+
+            self._idle_scheduler.register(
+                HomeMaintenanceWorker(self._world_store, self._notify_world),
+            )
         if self._idle_scheduler is not None and getattr(self, "_chat_db", None) is not None:
             from app.core.proactive.archive_summary_worker import register_archive_workers
 

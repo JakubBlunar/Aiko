@@ -47,6 +47,9 @@ class PerformHomeActionTool:
                 "drinking a drink, reheating it, washing a vessel, or caring for supplies. "
                 "Also executes supported bathroom routines. Starting a bath records the start; "
                 "finish_bath is eligible after its soak window, or drain_bath ends it early. "
+                "Use the same action tokens to order/wishlist things at the computer, unpack "
+                "deliveries, store/retrieve possessions, mark favorites, or discard/restore "
+                "ordinary things. Virtual shopping spends no real money. Gifts are protected. "
                 "Move to its required spot first. Effects and receipt are saved together. "
                 "Stale actions fail: inspect available actions again. already_applied means "
                 "the original action was recovered, not another completed experience. "
@@ -67,3 +70,28 @@ class PerformHomeActionTool:
             raise ToolError(str(exc)) from exc
         self._session._notify_world({"snapshot": store.snapshot()})
         return json.dumps(receipt, ensure_ascii=False)
+
+
+class BrowseHomeCatalogueTool:
+    def __init__(self, session: Any) -> None:
+        self._session = session
+
+    def schema(self) -> ToolSchema:
+        return ToolSchema(
+            name="browse_home_catalogue",
+            description=(
+                "Read the computer's virtual household shop, wishlist, order/delivery status, "
+                "storage and recoverable bin. Synchronous and read-only; no real purchases or "
+                "external browsing. Use when choosing belongings or checking a delivery. "
+                "Ordering is not possession: unpack a delivered parcel before using its contents. "
+                "Get live execution tokens with available_home_actions. Disposed items are past "
+                "possessions, not things you still own."
+            ),
+            parameters={"type": "object", "properties": {}, "required": []},
+        )
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        store = getattr(self._session, "_world_store", None)
+        if store is None:
+            raise ToolError("The home is unavailable")
+        return json.dumps(store.home_household_snapshot(), ensure_ascii=False)

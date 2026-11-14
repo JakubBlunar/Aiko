@@ -935,7 +935,9 @@ def build_world_tools(session: "SessionController") -> list[Any]:
     consistently in :func:`ToolRegistry.names`.
     """
     from app.llm.tools.world_carry import carry_tools
-    from app.llm.tools.home_actions import AvailableHomeActionsTool, PerformHomeActionTool
+    from app.llm.tools.home_actions import (
+        AvailableHomeActionsTool, BrowseHomeCatalogueTool, PerformHomeActionTool,
+    )
 
     return [
         LookAroundTool(session),
@@ -950,4 +952,5 @@ def build_world_tools(session: "SessionController") -> list[Any]:
         *carry_tools(session),
         AvailableHomeActionsTool(session),
         PerformHomeActionTool(session),
+        BrowseHomeCatalogueTool(session),
     ]

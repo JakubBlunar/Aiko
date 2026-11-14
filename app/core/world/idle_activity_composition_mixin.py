@@ -123,7 +123,13 @@ class ActivityCompositionMixin:
         period = self._read_period() or "unspecified"
         available = getattr(self._world_store, "available_home_actions", None)
         home = available(now=_utcnow()) if callable(available) else {"actions": []}
-        home_actions = {action["token"]: action for action in home["actions"]}
+        families: dict[str, list[dict[str, Any]]] = {}
+        for action in home["actions"]:
+            families.setdefault(action["action"], []).append(action)
+        choices = [self._rng.choice(rows) for rows in families.values()]
+        choices.extend(action for action in home["actions"]
+                       if action["action"] == "prepare_drink" and action not in choices)
+        home_actions = {action["token"]: action for action in choices[:24]}
         home_context = (
             "\nSupported household capabilities: " + home.get("capabilities", "")
             + "\nAvailable household actions (data): "

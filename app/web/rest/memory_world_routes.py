@@ -1034,6 +1034,37 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     def get_world() -> JSONResponse:
         return JSONResponse(session.world_snapshot())
 
+    @app.get("/api/world/home")
+    def get_home_household() -> JSONResponse:
+        store = session.world_store
+        if store is None:
+            raise HTTPException(503, "world unavailable")
+        return JSONResponse({**store.home_household_snapshot(),
+                             "actions": store.available_home_actions()["actions"]})
+
+    @app.post("/api/world/home/action")
+    def perform_home_household_action(payload: dict[str, Any]) -> JSONResponse:
+        store = session.world_store
+        if store is None:
+            raise HTTPException(503, "world unavailable")
+        token = payload.get("token")
+        # UI undo is an explicit user world edit, with intentional-action ownership.
+        offered = next((row for row in store.available_home_actions()["actions"]
+                        if row["token"] == token and row["action"] in {
+                            "restore_item", "retrieve_item",
+                        }), None)
+        prior = store.home_action_receipt(token) if isinstance(token, str) else None
+        if offered is None and (prior is None or prior["action"] not in {
+            "restore_item", "retrieve_item",
+        }):
+            raise HTTPException(409, "restore action is stale or unavailable")
+        try:
+            receipt = store.perform_home_action(token, relocate=True)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        session._notify_world({"snapshot": store.snapshot()})
+        return JSONResponse(receipt)
+
     @app.patch("/api/world/state")
     async def patch_world_state(payload: dict[str, Any]) -> JSONResponse:
         if not isinstance(payload, dict):

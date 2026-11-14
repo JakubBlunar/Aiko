@@ -117,9 +117,55 @@ pot-only tea beat. Legacy pots remain separate items maintained by the existing
 room-evolution worker; they are not silently converted into mugs or treated as
 proof of drink temperature or consumption.
 
-These home-life slices do not yet add sketchbook drawing, virtual computer
-shopping, or storage/bin lifecycle. Those must extend the
-shared validated capability path rather than introduce narration-only actions.
+Sketchbook drawing is not yet available; it must extend the shared validated
+capability path before a drawing can be claimed as a completed experience.
+
+## Virtual shopping, storage and the bin
+
+The next-start migration adds a household organizer at the existing desk. Its
+SQLite item state owns a small virtual shop, wishlist, bounded orders, storage
+and bin. `browse_home_catalogue` inspects these; the shared home-action catalogue
+provides execution tokens. Ordering requires the computer in the home scene.
+It is entirely simulated and makes no external purchases or payment requests.
+
+The catalogue offers lidded/insulated vessels, sketchbook/materials, and a few
+modest decorations. There is no forced acquisition quota: she may wish for
+something, order it, or use what she owns. One order is admitted per 24 elapsed
+hours, with at most two outstanding. An order can be cancelled before its
+five-minute dispatch point. It is delivered thirty minutes after ordering;
+delivery stages derive from persisted timestamps. Only explicit unpacking
+creates the actual item. Retries recover the same execution receipt and never
+duplicate the parcel contents. Ordered drawing materials are just materials;
+they are not evidence that a drawing exists.
+
+Space is bounded by active belongings and per-surface capacities. Existing
+possessions are grandfathered intact at migration, with a little spare space;
+fixtures and food stacks do not each count like a displayed possession. Pending
+orders reserve capacity. Unpacking, retrieval and restoration recheck capacity
+against the current room, so gifts arriving during transit cannot bypass it.
+An explicit user gift is retained even when it exceeds an acquisition budget.
+
+Storage holds eight possessions, without disposing of them. A recoverable bin
+holds at most sixteen. Both remove items from ordinary room listings, prompts,
+item matching, drink/reading candidates and active-space counts. Their actual
+rows retain state and the original home, allowing the same object to return.
+Gifts, keepsakes, favorites, saved creative work and managed fixtures are
+protected from autonomous disposal. Objects whose home belongs to another
+scene are not managed as her possessions.
+
+Discarding sets an absolute 48-hour deadline. A compute-only `home_maintenance`
+worker clears expired, unprotected rows owned by this bin during an eligible
+quiet window, including while Aiko sleeps. It neither journals a new activity
+nor writes a memory. The last 32 small disposal records remain inspectable as
+past ownership; chat history and unrelated files are untouched. Recovery remains
+possible while a row awaits actual clearance. Marking it protected prevents
+automatic clearance. No background sweep chooses things to throw away.
+
+The World tab's Home shop and belongings panel shows orders, wishlist, space,
+storage and bin deadlines. Bring back performs an explicit user world edit
+through the validated restore action. `GET /api/world/home` supplies that view;
+`POST /api/world/home/action` accepts only restore/retrieve tokens, including
+safe retries. It is not a generic endpoint for arbitrary model actions.
 
 ## Bathroom routines
 

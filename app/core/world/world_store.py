@@ -48,6 +48,8 @@ from app.core.world.world_carry_mixin import WorldCarryMixin
 from app.core.world.world_scenes_mixin import WorldScenesMixin
 from app.core.world.home_actions_mixin import HomeActionsMixin
 from app.core.world.home_bathroom_mixin import HomeBathroomMixin
+from app.core.world.home_lifecycle_mixin import HomeLifecycleMixin
+from app.core.world.home_belongings import active_item
 
 
 log = logging.getLogger("app.world_store")
@@ -888,7 +890,9 @@ _DEFAULT_INITIAL_STATE = {
 # ── Store ───────────────────────────────────────────────────────────────
 
 
-class WorldStore(HomeActionsMixin, HomeBathroomMixin, WorldCarryMixin, WorldScenesMixin):
+class WorldStore(
+    HomeActionsMixin, HomeBathroomMixin, HomeLifecycleMixin, WorldCarryMixin, WorldScenesMixin,
+):
     """Thread-safe room model backed by ``world_*`` SQLite tables."""
 
     def __init__(self, db_path: Path) -> None:
@@ -1188,9 +1192,12 @@ class WorldStore(HomeActionsMixin, HomeBathroomMixin, WorldCarryMixin, WorldScen
         *,
         location_id: int | None = None,
         kind: str | None = None,
+        include_inactive: bool = False,
     ) -> list[Item]:
         with self._lock:
             items = list(self._items.values())
+        if not include_inactive:
+            items = [item for item in items if active_item(item)]
         if location_id is not None:
             items = [i for i in items if i.location_id == int(location_id)]
         if kind:
@@ -1207,7 +1214,7 @@ class WorldStore(HomeActionsMixin, HomeBathroomMixin, WorldCarryMixin, WorldScen
         """Items in the current scene, plus anything Aiko is carrying."""
         sid = self.current_scene_id()
         with self._lock:
-            items = list(self._items.values())
+            items = [item for item in self._items.values() if active_item(item)]
             locations = dict(self._locations)
         if sid is None:
             return items
@@ -1402,6 +1409,8 @@ class WorldStore(HomeActionsMixin, HomeBathroomMixin, WorldCarryMixin, WorldScen
             existing: Item | None = None
             for item in self._items.values():
                 if item.slug != clean_slug:
+                    continue
+                if not active_item(item):
                     continue
                 if item.location_id != location_id:
                     continue
@@ -1777,7 +1786,7 @@ class WorldStore(HomeActionsMixin, HomeBathroomMixin, WorldCarryMixin, WorldScen
         try:
             state = self.get_state()
             with self._lock:
-                items = list(self._items.values())
+                items = [item for item in self._items.values() if active_item(item)]
                 locations = dict(self._locations)
         except Exception:
             log.debug("world render failed", exc_info=True)

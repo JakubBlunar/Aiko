@@ -6,7 +6,7 @@ objects; prose cannot grant ingredients, equipment, or a completed experience.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -127,19 +127,25 @@ class HomeAction:
     targets: tuple[dict[str, Any], ...]
     recipe: str = ""
     station_id: int | None = None
+    parameters: dict[str, Any] = field(default_factory=dict)
 
     @property
     def token(self) -> str:
-        raw = json.dumps({
+        payload = {
             "action": self.action, "recipe": self.recipe, "item_id": self.item_id,
             "location_id": self.location_id, "targets": self.targets,
-        }, sort_keys=True, ensure_ascii=True)
+        }
+        if self.parameters:
+            payload["parameters"] = self.parameters
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=True)
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def to_dict(self, *, now: datetime | None = None) -> dict[str, Any]:
         payload = {"token": self.token, "action": self.action, "recipe": self.recipe,
                    "item_id": self.item_id, "location_id": self.location_id,
                    "summary": self.summary, "item": self.targets[0]["name"]}
+        if self.parameters:
+            payload["parameters"] = self.parameters
         view = drink_view(self.targets[0], now=now)
         if view is not None:
             payload["home_drink"] = view

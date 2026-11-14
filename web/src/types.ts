@@ -2272,6 +2272,18 @@ export interface WorldSnapshot {
   enabled: boolean;
 }
 
+export interface HomeHouseholdSnapshot {
+  enabled: boolean;
+  catalogue: { id: string; name: string; kind: string }[];
+  orders: { id: string; product: string; status: string; arrives_at: string }[];
+  wishlist?: string[];
+  stored: { id: number; name: string; lifecycle: { expires_at?: string } }[];
+  bin: { id: number; name: string; lifecycle: { expires_at?: string } }[];
+  capacity?: number;
+  active_space_used?: number;
+  actions: { token: string; action: string; item_id: number; summary: string }[];
+}
+
 /** Surgical patch broadcast over WS after every world write. The reducer
  * applies whichever discriminator field is present. */
 export type WorldPatch =

@@ -20,9 +20,16 @@ are not left open merely to simulate a longer activity window.
 The legacy pot-only tea candidate is suppressed when a drink station is present
 in the current scene. Existing reading, writing, garden visits, quiet rest,
 conversation-owned room leases, and sleep admission retain their own contracts.
-The current household catalogue is a capability boundary; future drawing,
-or shopping activities need implemented executors and worker context
+The current household catalogue is a capability boundary; future drawing
+activities need implemented executors and worker context
 before they can be described as completed experiences.
+
+Virtual computer shopping, unpacking, storage, favorite protection and recoverable
+disposal share that same catalogue. Model planning receives a bounded sample
+across action families so a shelf of belongings cannot crowd all bathroom/drink
+capabilities out of its context. The deterministic fallback also selects across
+families. `home_maintenance` owns passive bin expiry, continues during sleep, and
+never turns housekeeping into a fabricated personal activity or memory.
 
 ## Research grounding
 

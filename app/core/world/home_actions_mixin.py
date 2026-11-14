@@ -9,10 +9,16 @@ from typing import Any
 from app.core.infra import timephrase
 from app.core.world.home_drinks import RECIPES, apply_drink_action, drink_actions
 from app.core.world.home_routines import ROUTINE_ACTIONS, apply_routine_action, routine_actions
+from app.core.world.home_belongings import (
+    LIFECYCLE_ACTIONS, PRODUCTS, active_item, apply_lifecycle_action, lifecycle_actions,
+)
 
 
 def _actions(items, locations, room, at):
-    return drink_actions(items, locations, room, at) + routine_actions(items, locations, room, at)
+    active = [item for item in items if active_item(item)]
+    return (drink_actions(active, locations, room, at)
+            + routine_actions(active, locations, room, at)
+            + lifecycle_actions(items, locations, room, at))
 
 RECEIPTS_KEY = "home_actions.receipts.v1"
 SEED_KEY = "home_actions.drinks_seed.v1"
@@ -20,6 +26,13 @@ RECEIPT_LIMIT = 64
 
 
 class HomeActionsMixin:
+    def home_action_receipt(self, token):
+        row = self._get_conn().execute("SELECT value FROM kv_meta WHERE key=?",
+                                      (RECEIPTS_KEY,)).fetchone()
+        if row is None:
+            return None
+        return next((entry for entry in json.loads(row[0]) if entry["token"] == token), None)
+
     def _home_rows(self, conn):
         cursor = conn.execute("SELECT * FROM world_items ORDER BY id")
         names = [column[0] for column in cursor.description]
@@ -61,6 +74,11 @@ class HomeActionsMixin:
                 "finish after its 20-minute soak window, or end early and drain. "
                 "Baths persist stages; starting is not finishing. Supplies and fixtures "
                 "must exist in this scene. Routines are voluntary; omissions have no penalty."
+                " Belongings: use the computer's virtual shop to wish/order; delivered parcels "
+                "must be unpacked before use. Store/retrieve possessions, keep favorites, "
+                "or discard ordinary possessions into a bin recoverable for 48 hours. "
+                "Gifts and keepsakes are protected. Space, supplies and acquisition pacing "
+                "are bounded."
             ),
             "actions": [action.to_dict(now=at) for action in actions],
             "here": room.get("location_id"),
@@ -76,6 +94,7 @@ class HomeActionsMixin:
     def perform_home_action(
         self, token: str, *, now: datetime | None = None,
         autonomous: bool = False, admit: Callable[[], bool] | None = None,
+        relocate: bool = False,
     ) -> dict[str, Any]:
         if not isinstance(token, str) or len(token) != 64:
             raise ValueError("Choose an exact token from available_home_actions")
@@ -100,23 +119,32 @@ class HomeActionsMixin:
                     raise ValueError("Home action is stale or unavailable; inspect actions again")
                 if admit is not None and not admit():
                     raise ValueError("Autonomous home action is blocked by the current situation")
-                if not autonomous and room.get("location_id") != action.location_id:
+                if not (autonomous or relocate) and room.get("location_id") != action.location_id:
                     raise ValueError("Move to the action's location first")
                 target = next(item for item in items if item["id"] == action.item_id)
                 if target["location_id"] not in (None, action.location_id):
                     raise ValueError("Bring the target item to the action's location first")
-                apply_action = (apply_routine_action if action.action in ROUTINE_ACTIONS
-                                else apply_drink_action)
-                changes = apply_action(action, {item["id"]: item for item in items}, at)
-                if autonomous:
+                additions = []
+                if action.action in LIFECYCLE_ACTIONS:
+                    changes, additions = apply_lifecycle_action(
+                        action, {item["id"]: item for item in items}, at,
+                    )
+                else:
+                    apply_action = (apply_routine_action if action.action in ROUTINE_ACTIONS
+                                    else apply_drink_action)
+                    changes = apply_action(action, {item["id"]: item for item in items}, at)
+                end_location = action.location_id
+                if action.action in {"store_item", "discard_item", "retrieve_item", "restore_item"}:
+                    end_location = changes[0]["location_id"]
+                if autonomous or relocate or end_location != action.location_id:
                     conn.execute(
                         "UPDATE world_state SET location_id=?,posture=?,activity=?,"
                         "updated_at=? WHERE id=1",
-                        (action.location_id,
+                        (end_location,
                          "lying" if action.action == "start_bath" else "standing",
                          action.action, at.isoformat()),
                     )
-                else:
+                if not autonomous:
                     posture = room.get("posture", "standing")
                     if action.action in ROUTINE_ACTIONS:
                         posture = "lying" if action.action == "start_bath" else "standing"
@@ -135,14 +163,31 @@ class HomeActionsMixin:
                         int(item["state"].get("home_action_revision", 0)) + 1
                     )
                     conn.execute(
-                        "UPDATE world_items SET state_json=?, updated_at=? WHERE id=?",
-                        (json.dumps(item["state"], ensure_ascii=False), at.isoformat(), item["id"]),
+                        "UPDATE world_items SET state_json=?,location_id=?,updated_at=? WHERE id=?",
+                        (json.dumps(item["state"], ensure_ascii=False), item["location_id"],
+                         at.isoformat(), item["id"]),
                     )
+                created_ids = []
+                for item in additions:
+                    product = item["state"]["home_origin"]["product"]
+                    home_slug = PRODUCTS[product][2]
+                    home = next((loc["id"] for loc in locations if loc["slug"] == home_slug
+                                 and loc["scene_id"] == room["scene_id"]), item["location_id"])
+                    cursor = conn.execute(
+                        "INSERT INTO world_items (slug,name,description,kind,consumable,quantity,"
+                        "location_id,home_location_id,state_json,given_by,created_at,updated_at) "
+                        "VALUES (?,?,?,?,0,1,?,?,?,?,?,?)",
+                        (item["slug"], item["name"], item["description"], item["kind"],
+                         item["location_id"], home, json.dumps(item["state"]), item["given_by"],
+                         at.isoformat(), at.isoformat()),
+                    )
+                    created_ids.append(cursor.lastrowid)
                 receipt = {
                     "token": token, "action": action.action, "summary": action.summary,
                     "item_id": action.item_id, "location_id": action.location_id,
                     "at": at.isoformat(), "mode": "simulated_home_action",
                     "changed_item_ids": [item["id"] for item in changes],
+                    "created_item_ids": created_ids,
                 }
                 conn.execute(
                     "INSERT INTO kv_meta (key,value,updated_at) VALUES (?,?,?) "
@@ -213,9 +258,11 @@ class HomeActionsMixin:
         """Only the explicit whole-room reset may recreate discarded provisions."""
         conn = self._get_conn()
         from app.core.world.home_bathroom_mixin import BATHROOM_SEED_KEY
+        from app.core.world.home_lifecycle_mixin import LIFECYCLE_SEED_KEY
 
-        conn.execute("DELETE FROM kv_meta WHERE key IN (?,?,?)",
-                     (SEED_KEY, RECEIPTS_KEY, BATHROOM_SEED_KEY))
+        conn.execute("DELETE FROM kv_meta WHERE key IN (?,?,?,?)",
+                     (SEED_KEY, RECEIPTS_KEY, BATHROOM_SEED_KEY, LIFECYCLE_SEED_KEY))
         conn.commit()
         self.ensure_home_drinks()
         self.ensure_home_bathroom()
+        self.ensure_home_lifecycle()

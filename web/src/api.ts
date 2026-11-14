@@ -62,6 +62,7 @@ import type {
   ConceptTimeline,
   UploadDocumentResponse,
   WorldItem,
+  HomeHouseholdSnapshot,
   WorldItemPayload,
   WorldLocation,
   WorldLocationPayload,
@@ -954,6 +955,13 @@ export const api = {
       state: WorldSnapshot["state"];
       location: WorldLocation | null;
     }>(`/api/world/scenes/${id}/travel`, { method: "POST" }),
+  homeHousehold: () => jsonFetch<HomeHouseholdSnapshot>("/api/world/home"),
+  restoreHomePossession: (token: string) => jsonFetch<{ already_applied: boolean }>(
+    "/api/world/home/action", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    },
+  ),
   createWorldItem: (payload: WorldItemPayload) =>
     jsonFetch<{ item: WorldItem }>("/api/world/items", {
       method: "POST",

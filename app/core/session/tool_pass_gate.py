@@ -144,6 +144,7 @@ _TOOL_FAMILY: dict[str, str] = {
     "put_item": "world",
     "available_home_actions": "world",
     "perform_home_action": "world",
+    "browse_home_catalogue": "world",
     # goals
     "add_goal": "goals",
     "update_goal_progress": "goals",

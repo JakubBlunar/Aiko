@@ -861,6 +861,7 @@ class SessionController(
             try:
                 self._world_store.ensure_home_drinks()
                 self._world_store.ensure_home_bathroom()
+                self._world_store.ensure_home_lifecycle()
             except Exception:
                 log.warning("world ensure_home_drinks failed", exc_info=True)
         except Exception:

@@ -25,6 +25,7 @@ import { WorldSceneBar } from "./WorldSceneBar";
 import { WorldCreation } from "./WorldCreation";
 import { WorldDrink } from "./WorldDrink";
 import { WorldBathroom } from "./WorldBathroom";
+import { WorldHousehold } from "./WorldHousehold";
 
 export interface GiveDraft {
   name: string;
@@ -269,6 +270,7 @@ export function WorldTab({
 
   return (
     <div className="space-y-4">
+      <WorldHousehold world={world} />
       <Section title="Scenes">
         <p className="text-[11px] text-ink-100/50">
           Her apartment and garden stay as they are. Create another scene
@@ -1230,6 +1232,8 @@ function ItemRow({
             <button
               type="button"
               onClick={onDelete}
+              disabled={Boolean(item.state.home_essential)}
+              title={item.state.home_essential ? "Managed household fixture" : undefined}
               className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-ink-100/60 hover:border-rose-400/60 hover:text-rose-200"
             >
               remove
