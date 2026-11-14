@@ -69,6 +69,11 @@ def _format_item(item: "Item") -> dict[str, Any]:
         payload["consumable"] = True
     if item.state:
         payload["state"] = dict(item.state)
+        from app.core.world.home_drinks import drink_view
+
+        drink = drink_view(item)
+        if drink is not None:
+            payload["home_drink"] = drink
         from app.core.world.idle_creations import revisions
 
         saved = revisions(item)
@@ -925,6 +930,7 @@ def build_world_tools(session: "SessionController") -> list[Any]:
     consistently in :func:`ToolRegistry.names`.
     """
     from app.llm.tools.world_carry import carry_tools
+    from app.llm.tools.home_actions import AvailableHomeActionsTool, PerformHomeActionTool
 
     return [
         LookAroundTool(session),
@@ -937,4 +943,6 @@ def build_world_tools(session: "SessionController") -> list[Any]:
         PlantSeedTool(session),
         HarvestPlantTool(session),
         *carry_tools(session),
+        AvailableHomeActionsTool(session),
+        PerformHomeActionTool(session),
     ]

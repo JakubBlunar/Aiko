@@ -36,6 +36,91 @@ LLM activity proposals cannot grant themselves unsupported actions or items.
 Personal projects use real research results and the existing diary, as described
 in [Idle workers](idle-workers.md#research-grounding).
 
+## Household drinks and shared actions
+
+Chat and idle life share `available_home_actions` and `perform_home_action`.
+Availability comes from current world objects, supplies, equipment, and scene.
+The read tool returns exact action tokens, target items, required locations,
+and deterministic descriptions. Execution is synchronous: each action is one
+small simulated step, rather than a real-time brewing process. A posture change
+alone does not make or consume anything.
+
+On the next application start, an additive migration supplies a household drink
+station, ceramic mug, and drinking glass in the apartment's kitchenette. These
+are household provisions, not gifts attributed to the user. Existing belongings
+are retained. The migration runs once; deleting a provision does not cause it
+to respawn on every restart. An explicit World reset restores the kit too.
+
+The station has a kettle, coffee press, tap, small fridge, and eight portions
+each of tea, coffee, hot chocolate, and juice. Water uses the tap. Recipes share
+the same vessel/content model; hot recipes require a heat-safe vessel. Preparing
+a drink consumes one available portion. An explicit household restock action is
+available when supplies are low, at most once per 24 elapsed hours; it restores
+stocks to eight. It is simulated provisioning, not a real purchase.
+
+Supported actions:
+
+- Prepare tea, coffee, hot chocolate, water, or juice in a clean, empty vessel.
+- Sip 75 ml, leaving the reusable vessel when the drink is finished.
+- Pour away the remainder at the station, or wash an empty used vessel there.
+- Warm remaining tea, coffee, or hot chocolate when it has cooled sufficiently;
+  reheating preserves the remaining amount.
+- Open or close an existing lid. Open it before sipping.
+- Replenish low household drink supplies under the provisioning rule above.
+
+`vessel` is a portable item kind, subject to the existing two-item carry limit.
+Use `take_item`/`put_item` to bring a mug to the window or return it to the
+kitchenette. Preparation, washing, emptying, and reheating require both the
+vessel and Aiko at the station. Sipping uses the vessel's current spot, or her
+current spot when carried. Other scenes cannot supply missing equipment.
+
+New items explicitly given kind `vessel` receive a default `state.home_vessel`.
+A name declaring a lid, thermos, or travel mug enables a lid; a thermos or
+explicitly insulated vessel also slows heat transfer. Glasses default to cold
+drinks. Advanced configuration can use the existing item-state PATCH endpoint:
+
+```json
+{"home_vessel": {"schema": 1, "capacity_ml": 250, "heat_safe": true,
+                 "has_lid": true, "insulated": false, "lid_closed": false,
+                 "clean": true, "drink": null}}
+```
+
+Temperature is calculated from a saved reference temperature and timestamp,
+toward a simulated indoor ambient temperature of 22 C. Hot drinks cool; chilled
+drinks warm. Lids and insulation slow either direction. This is a coarse virtual
+model, independent of real outdoor weather, with no claim of physical sensation.
+Changing the lid preserves the temperature reached so far. Inspection and time
+passing do not consume a drink or create an experience. Restart-time elapsed
+time affects temperature, not the amount drunk.
+
+World snapshots and `inspect_item` include a derived `home_drink` view with
+contents, amount, temperature band, cleanliness, and lid state. The World tab
+updates its temperature display every 30 seconds using the server's narrative
+clock anchor. It does not require a background LLM call or minute-by-minute
+database writes. Existing gift and item controls also support the vessel kind.
+
+Actions revalidate current state inside a SQLite transaction. Changed items,
+activity, optional autonomous movement, and an execution receipt commit together.
+Chat actions refresh the existing deliberate-action hold. Stale
+tokens fail without moving Aiko or spending supplies. The latest 64 receipts
+survive restart and make exact retries return `already_applied=true`; these are
+recoveries of the original action, not new experiences. Tokens incorporate item
+versions, including an action revision that advances even under a fixed debug
+clock. Very old tokens outside that bounded retry window must be refreshed.
+
+The idle planner receives the same capabilities and live tokens as chat. Its
+fallback candidates use that catalogue too, and shared-conversation/sleep
+admission is checked again before autonomous execution. Small household steps
+are completed actions, not artificially extended open activity windows. In a
+station-equipped scene the worker uses these actions instead of the legacy
+pot-only tea beat. Legacy pots remain separate items maintained by the existing
+room-evolution worker; they are not silently converted into mugs or treated as
+proof of drink temperature or consumption.
+
+This first home-life slice does not yet add sketchbook drawing, virtual computer
+shopping, storage/bin lifecycle, or bathroom routines. Those must extend the
+shared validated capability path rather than introduce narration-only actions.
+
 A small, persistent "virtual apartment" that gives Aiko a sense of
 place. The room is a *background* feature — she knows where she is and
 what's nearby, but the prompt explicitly tells her not to force-mention

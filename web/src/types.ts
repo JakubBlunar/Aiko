@@ -2129,6 +2129,7 @@ export type WorldKind =
   | "decor"
   | "plant"
   | "seed"
+  | "vessel"
   | "other";
 
 export const WORLD_KINDS: readonly WorldKind[] = [
@@ -2141,6 +2142,7 @@ export const WORLD_KINDS: readonly WorldKind[] = [
   "furniture",
   "plant",
   "seed",
+  "vessel",
   "other",
 ];
 
@@ -2150,6 +2152,7 @@ export const WORLD_PORTABLE_KINDS: readonly WorldKind[] = [
   "toy",
   "keepsake",
   "seed",
+  "vessel",
 ];
 
 export function isWorldPortableKind(kind: string): boolean {
@@ -2231,6 +2234,16 @@ export interface WorldItem {
   given_by: string | null;
   created_at: string;
   updated_at: string;
+  home_drink?: {
+    recipe: string | null;
+    name: string | null;
+    remaining_ml: number;
+    temperature_band: string;
+    clean: boolean;
+    has_lid: boolean;
+    lid_closed: boolean;
+    as_of: string;
+  };
 }
 
 export interface WorldState {

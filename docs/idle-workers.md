@@ -1,5 +1,28 @@
 # Idle workers
 
+## Shared household capabilities
+
+The away-activity worker uses the same live home-action catalogue and executor
+as conversation tools. The first supported household loop covers reusable
+drink vessels, tea/coffee/other recipes, temperature, sipping, washing, lids,
+and bounded supply replenishment. See [Household drinks](aiko-room.md#household-drinks-and-shared-actions)
+for the object state and provisioning contract.
+
+Both model-planned activities and deterministic fallback selection receive
+eligible action tokens. The model cannot invent an action ID, recipe, target,
+or missing equipment. The executor revalidates inside its write transaction,
+checks autonomous admission again, and saves mutations and a receipt together.
+Only successful effects reach the away journal. Exact retries recover an
+existing receipt; they do not repeat effects. These synchronous small steps
+are not left open merely to simulate a longer activity window.
+
+The legacy pot-only tea candidate is suppressed when a drink station is present
+in the current scene. Existing reading, writing, garden visits, quiet rest,
+conversation-owned room leases, and sleep admission retain their own contracts.
+The current household catalogue is a capability boundary; future drawing,
+shopping, or bathroom activities need implemented executors and worker context
+before they can be described as completed experiences.
+
 ## Research grounding
 
 Conversational `open_question` notes retain a `curiosity_purpose`: `ask_user`

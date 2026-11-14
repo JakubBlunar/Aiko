@@ -79,6 +79,22 @@ class ActivityCandidatesMixin:
 
         self._add_snack(candidates, items, loc_kitchen, self._read_period())
         self._add_tea(candidates, items, loc_kitchen)
+        available = getattr(self._world_store, "available_home_actions", None)
+        if callable(available):
+            offered = available(now=now)
+            if any("home_drink_station" in item.state for item in items):
+                candidates.pop("tea", None)
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            for action in offered["actions"]:
+                grouped.setdefault(action["action"], []).append(action)
+            for name, choices in grouped.items():
+                action = self._rng.choice(choices)
+                key = "home_" + name
+                candidates[key] = ActivityPlan(
+                    key=key, posture="standing", activity=name,
+                    summary=action["summary"], aiko_location_id=action["location_id"],
+                    home_action_token=action["token"],
+                )
         self._add_book(candidates, items, loc_beanbag, loc_bookshelf)
         self._add_pet(candidates, items, locations)
 

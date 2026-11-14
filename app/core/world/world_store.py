@@ -46,6 +46,7 @@ from app.core.world.scene import BUILTIN_LOCATION_SLUGS, ORIGIN_BUILTIN
 from app.core.world.carry import CARRY_CAP
 from app.core.world.world_carry_mixin import WorldCarryMixin
 from app.core.world.world_scenes_mixin import WorldScenesMixin
+from app.core.world.home_actions_mixin import HomeActionsMixin
 
 
 log = logging.getLogger("app.world_store")
@@ -67,6 +68,7 @@ VALID_KINDS = (
     "decor",     # lamp, fairy lights, blanket
     "plant",     # living plants in the garden (stage in state)
     "seed",      # seed packets in inventory waiting to be planted
+    "vessel",    # reusable mugs and glasses; contents live in state
     "other",
 )
 
@@ -341,7 +343,7 @@ class Item:
     home_location_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": int(self.id),
             "slug": self.slug,
             "name": self.name,
@@ -360,6 +362,12 @@ class Item:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+        from app.core.world.home_drinks import drink_view
+
+        view = drink_view(self)
+        if view is not None:
+            payload["home_drink"] = view
+        return payload
 
 
 @dataclass(slots=True)
@@ -874,13 +882,14 @@ _DEFAULT_INITIAL_STATE = {
 # ── Store ───────────────────────────────────────────────────────────────
 
 
-class WorldStore(WorldCarryMixin, WorldScenesMixin):
+class WorldStore(HomeActionsMixin, WorldCarryMixin, WorldScenesMixin):
     """Thread-safe room model backed by ``world_*`` SQLite tables."""
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = Path(db_path)
         self._local = threading.local()
         self._lock = threading.Lock()
+        self._home_action_lock = threading.RLock()
         self._locations: dict[int, Location] = {}
         self._items: dict[int, Item] = {}
         self._scenes: dict[int, Any] = {}
@@ -1378,6 +1387,10 @@ class WorldStore(WorldCarryMixin, WorldScenesMixin):
         clean_slug = (slug or _slugify(clean_name)).strip().lower()
         clean_qty = max(1, int(quantity))
         clean_state = dict(state or {})
+        if clean_kind == "vessel":
+            from app.core.world.home_drinks import new_vessel
+
+            clean_state.setdefault("home_vessel", new_vessel(clean_name))
 
         with self._lock:
             existing: Item | None = None
@@ -1509,6 +1522,10 @@ class WorldStore(WorldCarryMixin, WorldScenesMixin):
         )
         new_qty = item.quantity if quantity is None else max(0, int(quantity))
         new_state = dict(item.state or {}) if state is None else dict(state or {})
+        if new_kind == "vessel":
+            from app.core.world.home_drinks import new_vessel
+
+            new_state.setdefault("home_vessel", new_vessel(new_name))
         now = _now_iso()
         conn = self._get_conn()
         cursor = conn.execute(
@@ -1856,6 +1873,23 @@ class WorldStore(WorldCarryMixin, WorldScenesMixin):
         # Mood note (optional, last).
         if state.mood_note.strip():
             lines.append(state.mood_note.strip())
+        from app.core.world.home_drinks import drink_view
+
+        drinks = [(item, drink_view(item)) for item in items if item.id in visible_ids]
+        for item, view in [(item, view) for item, view in drinks if view is not None][:3]:
+            contents = (
+                f"{view['remaining_ml']} ml of {view['temperature_band']} {view['name']}"
+                if view["remaining_ml"] else (
+                    "empty and clean" if view["clean"] else "empty; needs washing"
+                )
+            )
+            lines.append(f"{item.name}: {contents}.")
+        if any("home_drink_station" in item.state for item in items if item.id in visible_ids):
+            lines.append(
+                "Household actions: available_home_actions lists supported drink recipes and "
+                "vessel care with exact tokens; perform_home_action executes one. "
+                "Use these when actually making or drinking something."
+            )
         # Tonal nudge — keep Aiko from force-mentioning the room every turn,
         # unless something just arrived: then a single genuine reaction is
         # exactly right.

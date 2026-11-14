@@ -858,6 +858,10 @@ class SessionController(
                 self._world_store.ensure_garden_seed()
             except Exception:
                 log.warning("world ensure_garden_seed failed", exc_info=True)
+            try:
+                self._world_store.ensure_home_drinks()
+            except Exception:
+                log.warning("world ensure_home_drinks failed", exc_info=True)
         except Exception:
             log.warning("WorldStore failed to initialise", exc_info=True)
             self._world_store = None

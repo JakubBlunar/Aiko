@@ -142,6 +142,8 @@ _TOOL_FAMILY: dict[str, str] = {
     "harvest_plant": "world",
     "take_item": "world",
     "put_item": "world",
+    "available_home_actions": "world",
+    "perform_home_action": "world",
     # goals
     "add_goal": "goals",
     "update_goal_progress": "goals",

@@ -82,10 +82,10 @@ class _Harness:
 
 
 class BuildToolsTests(unittest.TestCase):
-    def test_build_returns_eleven_tools(self) -> None:
+    def test_build_returns_thirteen_tools(self) -> None:
         h = _Harness()
         tools = build_world_tools(h)
-        self.assertEqual(len(tools), 11)
+        self.assertEqual(len(tools), 13)
         names = {t.schema().name for t in tools}
         self.assertEqual(
             names,
@@ -101,6 +101,8 @@ class BuildToolsTests(unittest.TestCase):
                 "harvest_plant",
                 "take_item",
                 "put_item",
+                "available_home_actions",
+                "perform_home_action",
             },
         )
         h.cleanup()

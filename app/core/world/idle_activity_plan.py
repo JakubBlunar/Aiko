@@ -77,6 +77,7 @@ class ActivityPlan:
     # what her room shows stop drifting apart.
     item_effect: ItemEffect | None = None
     creation: CreationDraft | None = None
+    home_action_token: str = ""
 
 
 @dataclass(frozen=True, slots=True)

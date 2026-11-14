@@ -121,6 +121,17 @@ class ActivityCompositionMixin:
         ]
         recent_line = ", ".join(recent) or "(none yet)"
         period = self._read_period() or "unspecified"
+        available = getattr(self._world_store, "available_home_actions", None)
+        home = available(now=_utcnow()) if callable(available) else {"actions": []}
+        home_actions = {action["token"]: action for action in home["actions"]}
+        home_context = (
+            "\nSupported household capabilities: " + home.get("capabilities", "")
+            + "\nAvailable household actions (data): "
+            + json.dumps(list(home_actions.values())[:24], ensure_ascii=True)
+            + "\nTo choose one, return its exact home_action_token with creation=null "
+            "and changed_item empty. Its stored summary defines what actually happens. "
+            "Otherwise home_action_token must be empty. "
+        ) if home_actions else ""
         intent_line = ""
         if intention:
             intent_line = (
@@ -131,7 +142,7 @@ class ActivityCompositionMixin:
             timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE + "\n"
             f"You are Aiko, alone in your cozy room while {user_name} is away. "
             f"It's currently {period}. Your room's spots: {loc_lines}. "
-            f"Things around: {item_names}. "
+            f"Things around: {item_names}. {home_context}"
             f"{intent_line}"
             f"Recently you did: {recent_line} — pick something different. "
             "You may also write an original short poem, fictional scene, character sketch "
@@ -150,7 +161,7 @@ class ActivityCompositionMixin:
             '"posture": "<sitting|lying|standing|curled_up|leaning>", '
             '"activity": "<thinking|idle|stretching|reading|making_tea|watering_plants|writing>", '
             '"changed_item": "<exact supported item name; empty string for none>", '
-            '"creation": null}. For writing, replace creation=null with '
+            '"home_action_token": "", "creation": null}. For writing, replace creation=null with '
             '{"title": "<2-100 chars>", '
             '"form": "<poem|short_scene|character_sketch|wordplay>", '
             '"text": "<actual original text, 40-1400 chars>", '
@@ -183,6 +194,17 @@ class ActivityCompositionMixin:
         if not isinstance(blob, dict):
             return None
 
+        if blob.get("home_action_token"):
+            action = home_actions.get(str(blob["home_action_token"]))
+            if (action is None or blob.get("creation") is not None
+                    or str(blob.get("changed_item") or "").strip()):
+                return None
+            return ActivityPlan(
+                key="home_" + action["action"], posture="standing", activity=action["action"],
+                summary=action["summary"], aiko_location_id=action["location_id"],
+                home_action_token=action["token"], precomposed=True,
+            )
+
         activity = normalize_activity(blob.get("activity"))
         if not activity:
             return None
@@ -205,6 +227,9 @@ class ActivityCompositionMixin:
                 aiko_location_id=loc.id, precomposed=True, creation=draft,
             )
         effect = self._resolve_named_effect(blob.get("changed_item"), items)
+        if (effect is not None and effect.action == EFFECT_POUR_TEA
+                and any("home_drink_station" in row.state for row in items)):
+            return None
         if str(blob.get("changed_item") or "").strip() and effect is None:
             log.info("away activity rejected: unsupported item action")
             return None

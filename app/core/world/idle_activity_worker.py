@@ -413,7 +413,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
                 self._mark_outing_fired(now)
             try:
                 beat_effect = self._apply_world_mutation(beat)
-                if (beat.item_effect is not None or beat.creation is not None) and not beat_effect:
+                if (beat.item_effect is not None or beat.creation is not None
+                        or beat.home_action_token) and not beat_effect:
                     raise RuntimeError("the planned item action did not complete")
             except Exception:
                 self._restore_moved_items(chain, keep_id=None)
@@ -549,7 +550,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         """
         if len(chain) > 1:
             return False
-        if chain[-1].key == "outing":
+        if chain[-1].key == "outing" or chain[-1].home_action_token:
             return False
         if self._forced_in_progress:
             self._forced_in_progress = False
@@ -1130,6 +1131,18 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         return True
 
     def _apply_world_mutation(self, plan: ActivityPlan) -> dict[str, Any] | None:
+        if plan.home_action_token:
+            reason = self._mutation_block_reason(_utcnow())
+            if reason:
+                raise ValueError(f"Autonomous home action blocked: {reason}")
+            # Home actions own their effects and receipt atomically. Do not narrate
+            # a posture/activity change before discovering a stale action failed.
+            receipt = self._world_store.perform_home_action(
+                plan.home_action_token, autonomous=True,
+                admit=lambda: not self._mutation_block_reason(_utcnow()),
+            )
+            self._broadcast({"snapshot": self._world_store.snapshot()})
+            return receipt
         try:
             # H13 — relocate Aiko herself when the beat has a target spot,
             # otherwise leave her where she is (omit location_id entirely).

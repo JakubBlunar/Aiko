@@ -1453,6 +1453,10 @@ class WorldMixin:
             force=force,
             user_display_name=self.user_display_name,
         )
+        if force:
+            store.reset_home_drinks()
+        else:
+            store.ensure_home_drinks()
         snap = store.snapshot()
         self._notify_world({"snapshot": snap})
         return snap
