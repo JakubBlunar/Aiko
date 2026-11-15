@@ -35,4 +35,19 @@ export interface IdleLifeSummary {
   telemetry: IdleLifeTelemetry;
   interpretation: string;
   flags?: { kind: string; event_ids: number[]; detail: string }[];
+  autonomous_steps?: number;
+  maintenance_steps?: number;
+  context_offer_events?: number;
+  model_attribution_events?: number;
+  canonical_home_resource_deltas?: { item_id: string; field: string; net_change: number }[];
+  observed_worker_resource_deltas?: { item_id: string; field: string; net_change: number }[];
+  resource_note?: string;
+  threshold_note?: string;
+  coverage?: {
+    observed_scheduler_seconds: number;
+    unknown_span_count: number;
+    unknown_spans: { from: string; to: string; seconds: number; status: string }[];
+    omitted_spans: number;
+    note: string;
+  };
 }

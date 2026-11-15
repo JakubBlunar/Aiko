@@ -321,6 +321,14 @@ class HobbyWorker:
             proposal, now_iso=now.isoformat(timespec="seconds"),
         )
         self._write(new_state)
+        emit("project_closed", {
+            "project_id": old_key + ":" + str(state.get("started_at")),
+            "key": old_key, "status": "put_aside" if hobby_mod.is_stalled(state, now=now)
+            else "rotated", "closed_at": now.isoformat(),
+            "research_result_ids": state.get("research_result_ids", []),
+            "progress": state.get("progress"), "progress_source": state.get("progress_source"),
+            "authority": "rotation is not proof of completed creative work",
+        })
 
         seed = self._compose_rotation_seed(state, proposal)
         if seed:
@@ -831,6 +839,15 @@ class HobbyWorker:
 
     def _write(self, state: dict[str, Any]) -> None:
         self._chat_db.kv_set(KV_CURRENT_HOBBY, json.dumps(state))
+        emit("project_state", {
+            "status": "active",
+            "project_id": str(state.get("key")) + ":" + str(state.get("started_at")),
+            "key": state.get("key"), "started_at": state.get("started_at"),
+            "last_advanced_at": state.get("last_advanced_at"),
+            "research_result_ids": state.get("research_result_ids", []),
+            "progress": state.get("progress"), "progress_source": state.get("progress_source"),
+            "authority": "research counters are not saved sketch/writing revisions",
+        })
 
     def _write_history(self, ring: list[dict[str, Any]]) -> None:
         try:

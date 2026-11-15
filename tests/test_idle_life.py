@@ -179,6 +179,8 @@ def test_read_only_api_and_mcp_use_same_bounded_store(life):
         response = client.get("/api/world/idle-life?hours=999&kind=choice")
         assert response.json()["requested_hours"] == 336
         assert response.json()["events"][0]["id"] == eid
+        assert client.get(f"/api/world/idle-life/events/{eid}").json()["id"] == eid
+        assert client.get("/api/world/idle-life/events/999999").status_code == 404
         assert client.get("/api/world/idle-life/decisions/r").json()["events"][0]["id"] == eid
         assert client.get("/api/world/idle-life/summary").json()["counts"]
     from app.mcp.server_tools.idle_life_tools import register as register_tools
@@ -191,3 +193,32 @@ def test_read_only_api_and_mcp_use_same_bounded_store(life):
             return add
     register_tools(FakeMCP(), SimpleNamespace(_idle_life_store=store))
     assert json.loads(tools["get_idle_life_decision"]("r"))["events"][0]["id"] == eid
+    assert json.loads(tools["get_idle_life_decision"](event_id=eid))["events"][0]["id"] == eid
+
+
+def test_projection_failure_cannot_fail_an_activity_or_leak_trace_scope(life):
+    store, _ = life
+    with patch("app.core.world.idle_life_trace.item_changes", side_effect=ValueError("projection")):
+        assert execute_traced(store, "away_activity", lambda: {"fired": 1}) == {"fired": 1}
+    assert current_run() is None
+    assert store.history(kind="capture_failed")["events"]
+    assert store.history(kind="run_finished")["events"][0]["payload"]["snapshot_unavailable"]
+
+
+def test_trace_connection_failure_is_visible_and_nonfatal(life):
+    store, _ = life
+    with patch.object(store._db, "_get_conn", side_effect=RuntimeError("closed")):
+        assert store.record("choice", "hobby", {}) is None
+    assert store.health()["failed_writes_since_boot"] == 1
+
+
+def test_lifecycle_outcomes_are_preserved_without_copying_generated_body(life):
+    store, _ = life
+    result = {"fired": 1, "completed_in_progress": True, "resumed": False,
+              "interrupted": True, "status": "awake", "promoted": 2,
+              "research_question_id": 7, "generated_body": "private output"}
+    execute_traced(store, "away_activity", lambda: result)
+    payload = store.history(kind="run_result")["events"][0]["payload"]
+    assert payload["completed_in_progress"] and payload["interrupted"]
+    assert payload["resumed"] is False and payload["status"] == "awake"
+    assert payload["research_question_id"] == 7 and "generated_body" not in payload

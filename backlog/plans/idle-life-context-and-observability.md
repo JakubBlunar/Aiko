@@ -1,6 +1,7 @@
 # Idle life: concepts, conversation continuity and behavioral observability
 
-Status: approved 15 November 2026; implementation in progress.
+Status: core implementation complete, 15 November 2026. Runtime restart and
+ordinary-use evaluation remain pending.
 
 Phase 1 implements the 14-day store, scheduler/admission and action tracing,
 read-only REST/MCP queries and a World timeline. Validation: 117 focused backend
@@ -17,6 +18,31 @@ final context regressions through the affected selector, related World tests and
 project lint. Sets overlap. Context reads are bounded per decision rather than
 cached, so source deletion/editing is visible on the next choice. No ordinary-use
 model naturalness is claimed from fixture tests.
+
+Phase 3 adds provisional review flags, resource/coverage reports, lifecycle and
+project closure metadata, linked event/decision inspection, precise provider-offer
+links, and isolated snapshot simulation/executor replay. Default simulation is
+offline; opt-in local-model experiments use a hard call cap and estimated/reported
+token allowances. Compatible replay validates exact saved writing/drawing payloads,
+original executor policy, source/world fingerprints and recorded RNG state. It
+rejects missing/tampered work and incompatible snapshots. Tests also cover partial
+episodes, parent-clock/original-database isolation and scratch cleanup.
+
+Validation includes a 388-test representative backend integration set plus six
+subtests, final affected regressions, 118 related frontend tests, project lint and
+a production web build. These overlap earlier sets. The model experiment used a
+local fixture HTTP server; no actual model generation or ordinary-use naturalness
+is claimed. Current contracts and CLI examples live in `docs/idle-workers.md`.
+
+Implementation boundaries: simulation covers the named world workers and optional
+model/context choices, rather than all personality/research workers or live
+conversation-situation/topic-graph reconstruction. Replay establishes executor
+behavior, not fresh model quality. Existing prompt/cue accounting owns final
+admission and utterance evidence; the idle trace only adds provider-offer links.
+Context and capture ship together, so no controlled production before/after
+baseline has been collected. Provisional review thresholds need normal-day
+calibration and do not enforce behavior changes. More elaborate daily charts and
+full-brain model scenarios should be guided by the newly retained evidence.
 
 User clarification: context must remain optional inspiration. Preserve independent
 choices and the ability to ignore recent dialogue; do not tie all activity to chat.

@@ -108,14 +108,14 @@ class IdleLifeContextProvider:
         ratio = max(0.0, min(1.0, float(getattr(settings, "idle_life_context_ratio", .5))))
         if not enabled or self._rng.random() >= ratio:
             result = IdleLifeContext(reason="disabled" if not enabled else "free_choice")
-            emit("context", result.trace())
+            emit("context", {**result.trace(), "sampling_ratio": ratio, "consumer": consumer})
             return result
         try:
             result = self._build(consumer, items, set(available_keys), project, settings)
         except Exception as exc:
             result = IdleLifeContext(sampled=True, reason="context_unavailable")
             emit("context_unavailable", {"error_type": type(exc).__name__})
-        emit("context", result.trace())
+        emit("context", {**result.trace(), "sampling_ratio": ratio, "consumer": consumer})
         return result
 
     def _build(self, consumer, items, available_keys, project, settings):
@@ -124,8 +124,10 @@ class IdleLifeContextProvider:
         if self._window is not None:
             window = int(self._window() or 0)
             if window > 0:
-                cap = min(cap, max(200, int(window * .06)))
+                cap = min(cap, max(0, int(window * .06)))
         header = "\n\n" + _RULE + "\n"
+        if estimate_tokens(header) >= cap:
+            return IdleLifeContext(sampled=True, reason="worker_context_budget")
         lines, sources, omitted = [], [], 0
         relevant_words = words(project)
         if consumer == "idle_hobby":

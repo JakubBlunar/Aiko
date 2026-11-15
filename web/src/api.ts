@@ -913,6 +913,9 @@ export const api = {
   },
   getIdleLifeSummary: (hours = 72) =>
     jsonFetch<IdleLifeSummary>(`/api/world/idle-life/summary?hours=${hours}`),
+  getIdleLifeEvent: (eventId: number) =>
+    jsonFetch<import("./features/settings/world/idleLifeTypes").IdleLifeEvent>(
+      `/api/world/idle-life/events/${eventId}`),
   getIdleLifeDecision: (runId: string) =>
     jsonFetch<{ events: import("./features/settings/world/idleLifeTypes").IdleLifeEvent[] }>(
       `/api/world/idle-life/decisions/${encodeURIComponent(runId)}`),

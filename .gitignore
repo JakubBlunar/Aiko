@@ -99,3 +99,6 @@ web/src-tauri/gen/
 tmp
 .tmp-tests
 .tmp-avatar-playground/
+
+# Owned disposable idle-life simulations
+.tmp-idle-life/

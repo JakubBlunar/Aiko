@@ -82,6 +82,7 @@ from app.core.world.idle_activity_plan import (
 from app.core.infra import timephrase
 from app.core.world.idle_life_trace import traced_worker, emit
 from app.core.world.idle_life_context import IdleLifeContext, context_from
+from app.core.world.idle_life_replay import trace_plan
 
 if TYPE_CHECKING:
     from app.core.memory.pursuit_notes import PursuitNoteWriter
@@ -167,6 +168,11 @@ def append_journal(
     max_entries: int,
 ) -> bool:
     """Append ``entry`` to the journal ring, trimming to ``max_entries``."""
+    from app.core.world.idle_life_trace import current_run
+
+    run = current_run()
+    if run is not None:
+        entry = {**entry, "trace_run_id": run.run_id}
     journal = load_journal(kv_get)
     journal.append(entry)
     if max_entries > 0 and len(journal) > max_entries:
@@ -414,6 +420,9 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             return {"fired": 0, f"skipped_{mutation_block}": True}
         if not self._snapshot_is_current(snapshot, chain):
             return {"fired": 0, "reason": "world_changed"}
+        trace_plan(self._world_store, chain, self._rng, getattr(
+            self._mutation_guard, "_intentional_hold_seconds", self._intentional_hold_seconds,
+        ))
         effects: list[dict[str, Any]] = []
         for beat in chain:
             # H22 — stamp the outing's own cooldown when chosen.
@@ -909,32 +918,18 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         # plus K91's intention for the day.
         from app.core.world.activity_selection import compute_weights
 
-        weights = compute_weights(
-            list(candidates), recent_keys=self._recent_keys(), period=self._read_period(),
+        weight_args = dict(
+            recent_keys=self._recent_keys(), period=self._read_period(),
             valence=self._read_valence(), day_color=self._read_day_color(),
             intent_key=intention.beat_key if intention and not intention.satisfied else "",
-            intent_boost=day_intention.INTENT_BOOST,
-            context_weights=dict(context.biases),
+            intent_boost=day_intention.INTENT_BOOST, context_weights=dict(context.biases),
         )
-        chosen = weighted_pick(
-            list(candidates.keys()),
-            rng=self._rng,
-            recent_keys=self._recent_keys(),
-            period=self._read_period(),
-            valence=self._read_valence(),
-            day_color=self._read_day_color(),
-            intent_key=(
-                intention.beat_key
-                if intention is not None and not intention.satisfied
-                else ""
-            ),
-            intent_boost=day_intention.INTENT_BOOST,
-            context_weights=dict(context.biases),
-        )
+        chosen = weighted_pick(list(candidates), rng=self._rng, **weight_args)
         if chosen is None or chosen not in candidates:
             return self._rng.choice(list(candidates.values()))
-        emit("choice", {"route": "weighted", "key": chosen, "weights": weights,
-                        "recent_keys": self._recent_keys()})
+        emit("choice", {"route": "weighted", "key": chosen,
+                        "weights": compute_weights(list(candidates), **weight_args),
+                        "recent_keys": weight_args["recent_keys"]})
         return candidates[chosen]
 
     def _recent_keys(self) -> list[str]:

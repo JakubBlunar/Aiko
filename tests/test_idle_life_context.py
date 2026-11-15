@@ -237,3 +237,11 @@ def test_added_context_respects_small_worker_window(provider):
     value._window = lambda: 4096
     context = value.build(available_keys={"doodle"})
     assert estimate_tokens(context.text) <= 245
+
+
+def test_tiny_context_window_skips_retrieval_instead_of_exceeding_budget(provider):
+    value, db, _, _, _ = provider
+    value._window = lambda: 1024
+    db.get_messages = Mock(side_effect=AssertionError("No room for the context block"))
+    assert value.build().reason == "worker_context_budget"
+    db.get_messages.assert_not_called()

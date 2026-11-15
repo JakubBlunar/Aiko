@@ -61,6 +61,86 @@ Neither offering nor attribution proves causal influence. Actual drawing/writing
 still needs a validated payload and saved revision. Context capture adds no LLM
 summarization call; research continues through its existing privacy/budget gates.
 
+## Reviewing behavior and running isolated experiments
+
+Window summaries stream the retained events to report autonomous steps, project
+states/rotations, context offers versus model attribution reports, and resource
+changes. Canonical household deltas and observational worker deltas overlap and
+must not be added together. Scheduler heartbeat spans expose unconfirmed gaps;
+missing or offline periods are never classified as successful inactivity.
+
+Provisional review flags identify three reheats of the same drink without an
+intervening sip, six lid changes without drink progress, an observed shared hold
+of six hours, and upkeep dominating at least 12 recorded steps. Later progress
+can resolve a sequence without erasing its history. These are review candidates,
+not diagnoses, and do not change Aiko's choices. Revisions and quiet rest do not
+fail a productivity test. World settings can open a flag's event and its linked
+decision; MCP `get_idle_life_decision` also accepts an `event_id`.
+
+Lifecycle outcomes preserve open/completed/interrupted beats and sleep stages.
+Project IDs include their start timestamp, so returning to the same subject is
+not silently treated as the same incarnation. Research counters remain distinct
+from saved creative revisions. A journal entry carries its originating trace run;
+`surfacing_offer` records the provider offer, not final prompt admission or proof
+that Aiko actually mentioned it. Existing final prompt/cue accounting remains the
+owner of those later stages.
+
+The standalone module runs against a **read-only SQLite backup**, in a disposable
+child process under `.tmp-idle-life/run-*`, and removes its own scratch afterward:
+
+```powershell
+python -m app.core.world.idle_life_simulation --snapshot before.db --days 3 --seed 17
+python -m app.core.world.idle_life_simulation --snapshot before.db --days 1 --shared-hold --no-sleep
+```
+
+Default simulation makes no model calls. It runs the normal away-activity,
+garden, passive growth, home-maintenance and sleep workers with a virtual clock,
+minute scheduler cadence and shorter open-beat/bath/parcel deadlines where needed.
+It uses worker defaults and copied ongoing-interest/day-color state. It does not
+reconstruct the full live conversation situation, topic graph, hobby/research
+pipeline or all personality workers; its report states these limits.
+
+Optional fresh model choices require an explicit local Ollama model and bounded
+allowances. The model receives the normal optional-context provider against copied
+SQL memories/concepts, without a writable memory store, embedding service or
+external connectors:
+
+```powershell
+python -m app.core.world.idle_life_simulation --snapshot before.db --days 3 --model "your-worker-model" --max-model-calls 12 --max-model-tokens 24000
+```
+
+Only loopback Ollama endpoints are accepted. Calls are capped; token preflight
+uses estimates and stopping also uses reported usage. Inference takes real time.
+A stopped budget is reported as `model_budget`, not a completed simulated day.
+`--context-ratio` and `--llm-ratio` support explicit experiments; both default to
+0.5. No real model was called by the implementation checks: a local fixture HTTP
+server validated the transport, copied context, saved work and budget stop.
+
+For executor replay, first obtain a compatible database snapshot from **before**
+the action. Explicitly export `get_idle_life_replay(run_id)` (or the REST decision
+`/replay` endpoint), save that JSON, and run:
+
+```powershell
+python -m app.core.world.idle_life_simulation --snapshot before.db --replay decision.json
+```
+
+Replay requires matching world/source fingerprints and validates normal action
+execution against the recorded RNG state/policy. It resolves and hashes the exact
+saved writing/drawing revision on export, rather than copying private prompts or
+reasoning into the trace. A partial episode exports only its completed steps.
+Changed snapshots/code, missing work, tampered revisions and mismatching receipts
+are rejected or reported as divergence. Replay establishes executor behavior for
+those steps, not fresh model choice quality or full scheduler equivalence.
+
+The parent process never advances its clock or constructs action workers against
+the original database. Child entry also refuses paths outside its owned scratch.
+Production memory, cues, tasks, artifacts, settings and notifications are untouched
+by the experiment. Context and history ship together; disable
+`memory.idle_life_context_enabled` temporarily only if a deliberate comparison is
+wanted. Sampling/attribution counts alone are not evidence that context caused a
+behavioral improvement. Evaluate at least several normal away periods after
+restart, using the last 72 hours as the first review window.
+
 ## Shared household capabilities
 
 The away-activity worker uses the same live home-action catalogue and executor

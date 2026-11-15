@@ -1532,6 +1532,13 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             block,
             payload={"at": at, "key": str(newest.get("key") or "")},
         )
+        trace = getattr(self, "_idle_life_store", None)
+        if trace is not None:
+            trace.record("surfacing_offer", "away_activity", {
+                "journal_at": at, "key": str(newest.get("key") or ""),
+                "session_id": getattr(self, "session_key", ""),
+                "stage": "provider_offer; final prompt admission and actual mention are separate",
+            }, run_id=str(newest.get("trace_run_id") or ""), actor="conversation")
         log.info("away-activities fire: at=%s key=%s", at, newest.get("key"))
         return block
 

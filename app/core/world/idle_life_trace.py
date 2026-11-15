@@ -38,8 +38,11 @@ def current_run() -> TraceRun | None:
 def emit(kind: str, payload: dict[str, Any], *, event_key: str | None = None) -> None:
     run = current_run()
     if run is not None:
-        run.store.record(kind, run.worker, payload, run_id=run.run_id,
-                         actor=run.actor, event_key=event_key)
+        try:
+            run.store.record(kind, run.worker, payload, run_id=run.run_id,
+                             actor=run.actor, event_key=event_key)
+        except Exception:
+            log.warning("idle life diagnostic capture failed", exc_info=True)
 
 
 def bounded(value: Any, depth: int = 0) -> Any:
@@ -65,7 +68,9 @@ def bounded(value: Any, depth: int = 0) -> Any:
 
 def item_facts(item: Any) -> dict[str, Any]:
     """Numeric resource/state facts, never full writings, drawings or private labels."""
-    row = item if isinstance(item, dict) else vars(item)
+    row = item if isinstance(item, dict) else {
+        key: getattr(item, key, None) for key in ("quantity", "location_id", "state")
+    }
     facts = {"quantity": row.get("quantity"), "location_id": row.get("location_id")}
 
     def visit(value, prefix="state", depth=0):
@@ -133,16 +138,26 @@ def trace_run(store, worker: str, *, actor="autonomous", world=None):
         emit("run_failed", {"error_type": type(exc).__name__})
         raise
     finally:
-        after = world_snapshot(world)
-        emit("run_finished", {
-            "duration_ms": round((time.monotonic() - started) * 1000, 2),
-            "resource_changes": item_changes(before.get("items", []), after.get("items", [])),
-            "state_before": before.get("state"), "state_after": after.get("state"),
-            "snapshot_unavailable": bool(before.get("snapshot_unavailable") or
-                                         after.get("snapshot_unavailable")),
-            "effect_evidence": "observed_before_after; concurrent world edits may contribute",
-        })
-        _current.reset(token)
+        try:
+            after = world_snapshot(world)
+            try:
+                changes = item_changes(before.get("items", []), after.get("items", []))
+            except Exception as exc:
+                changes = []
+                after["snapshot_unavailable"] = True
+                emit("capture_failed", {
+                    "stage": "resource_delta", "error_type": type(exc).__name__,
+                })
+            emit("run_finished", {
+                "duration_ms": round((time.monotonic() - started) * 1000, 2),
+                "resource_changes": changes,
+                "state_before": before.get("state"), "state_after": after.get("state"),
+                "snapshot_unavailable": bool(before.get("snapshot_unavailable") or
+                                             after.get("snapshot_unavailable")),
+                "effect_evidence": "observed_before_after; concurrent world edits may contribute",
+            })
+        finally:
+            _current.reset(token)
 
 
 def execute_traced(store, worker, call, *, actor="autonomous", world=None):
@@ -155,7 +170,11 @@ def execute_traced(store, worker, call, *, actor="autonomous", world=None):
             keys = {"fired", "key", "activity", "summary", "reason", "errored", "disabled",
                     "in_progress", "expected_end_at", "episode", "closed_intention",
                     "pursuit_note_id", "item_effect", "move", "progress", "advanced",
-                    "started", "rotated", "research_memory_id", "research_result_ids"}
+                    "started", "rotated", "research_memory_id", "research_result_ids",
+                    "completed_in_progress", "resumed", "interrupted", "minutes_left",
+                    "status", "episode_id", "phase", "returned_to_slug", "watered", "harvested",
+                    "promoted", "scanned", "discarded", "waiting", "from", "to",
+                    "research_question_id", "research_result_id"}
             emit("run_result", {key: value for key, value in result.items()
                                 if key in keys or key.startswith("skipped_")})
         return result

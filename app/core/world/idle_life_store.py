@@ -24,17 +24,22 @@ def real_stamp():
 def runtime_fingerprint():
     root = Path(__file__).parents[3]
     digest = hashlib.sha256()
-    for name in ("idle_life_store.py", "idle_life_context.py", "idle_activity_worker.py",
-                 "idle_activity_composition_mixin.py", "home_actions_mixin.py"):
-        path = root / "app/core/world" / name
+    paths = list((root / "app/core/world").glob("*.py"))
+    paths.extend(root / name for name in (
+        "app/core/proactive/idle_worker_scheduler.py", "app/core/proactive/hobby_worker.py",
+        "app/core/infra/timephrase.py", "app/core/concepts/concept_diets.py",
+    ))
+    for path in sorted(paths):
         if path.exists():
+            digest.update(str(path.relative_to(root)).replace("\\", "/").encode())
             digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
 
 
 class IdleLifeStore:
-    def __init__(self, db):
+    def __init__(self, db, *, observation_seconds=None):
         self._db = db
+        self._observation_seconds = observation_seconds
         self._lock = threading.RLock()
         self._observations = {}
         self._last_prune = 0.0
@@ -51,8 +56,8 @@ class IdleLifeStore:
                event_key=None, conn=None):
         """A supplied transaction owns commit/rollback, including its effect event."""
         own = conn is None
-        conn = conn or self._db._get_conn()
         try:
+            conn = conn or self._db._get_conn()
             stamp = real_stamp()
             body = json.dumps(bounded(payload), ensure_ascii=True, allow_nan=False)
             if len(body) > 60000:
@@ -74,14 +79,19 @@ class IdleLifeStore:
             # Atomic effect capture must not silently lose its event.
             if not own:
                 raise
-            conn.rollback()
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             return None
 
     def observe(self, worker, reason, payload):
         """Transition immediately; persist unchanged observations at most once/minute."""
         import time
 
-        stamp, now = real_stamp(), time.monotonic()
+        stamp = real_stamp()
+        now = self._observation_seconds() if self._observation_seconds else time.monotonic()
         signature = json.dumps(bounded(payload), sort_keys=True)
         with self._lock:
             previous = self._observations.get(worker)
@@ -93,16 +103,24 @@ class IdleLifeStore:
                     return
                 try:
                     conn = self._db._get_conn()
-                    conn.execute("UPDATE idle_life_events SET last_seen_at=?,observations=? "
-                                 "WHERE id=?", (stamp, previous[4], previous[2]))
+                    conn.execute("UPDATE idle_life_events SET last_seen_at=?,observations=?, "
+                                 "payload=json_set(payload,'$.last_narrative_at',?) WHERE id=?",
+                                 (stamp, previous[4], timephrase.utcnow().isoformat(), previous[2]))
                     conn.commit()
                     previous[3] = now
                 except Exception as exc:
                     self.failed_writes += 1
                     self.last_error = type(exc).__name__
+                    try:
+                        self._db._get_conn().rollback()
+                    except Exception:
+                        pass
                     log.warning("idle life interval update failed: %s", type(exc).__name__)
                 return
-            event_id = self.record("admission", worker, {"reason": reason, **payload})
+            event_id = self.record("admission", worker, {
+                "reason": reason, **payload, "boot_id": self.boot_id,
+                "last_narrative_at": timephrase.utcnow().isoformat(),
+            })
             if event_id:
                 self._observations[worker] = [reason, signature, event_id, now, 1, now, now]
             if now - self._last_prune >= 3600:
@@ -113,8 +131,12 @@ class IdleLifeStore:
         cutoff = (timephrase.real_now().astimezone(timezone.utc)
                   - timedelta(days=RETENTION_DAYS)).isoformat()
         conn = self._db._get_conn()
-        conn.execute("DELETE FROM idle_life_events WHERE last_seen_at < ?", (cutoff,))
-        conn.commit()
+        try:
+            conn.execute("DELETE FROM idle_life_events WHERE last_seen_at < ?", (cutoff,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     @staticmethod
     def _row(row):
@@ -147,6 +169,12 @@ class IdleLifeStore:
                 "next_before_id": rows[count - 1][0] if len(rows) > count else None,
                 "retention_days": RETENTION_DAYS, "requested_hours": hours,
                 "telemetry": self.health()}
+
+    def event(self, event_id):
+        row = self._db._get_conn().execute(
+            "SELECT * FROM idle_life_events WHERE id=?", (int(event_id),),
+        ).fetchone()
+        return self._row(row) if row is not None else None
 
     def decision(self, run_id):
         rows = self._db._get_conn().execute(
@@ -186,7 +214,14 @@ class IdleLifeStore:
             (cutoff,),
         ):
             actions[json.loads(raw).get("action", "unknown")] += 1
-        return {"hours": hours, "counts": [dict(worker=w, kind=k, count=n)
+        from app.core.world.idle_life_review import review_events
+
+        evidence = (self._row(row) for row in conn.execute(
+            "SELECT * FROM idle_life_events WHERE last_seen_at>=? ORDER BY id", (cutoff,),
+        ))
+        review = review_events(evidence, cutoff=timephrase.parse_iso(cutoff),
+                               window_end=timephrase.real_now())
+        return {**review, "hours": hours, "counts": [dict(worker=w, kind=k, count=n)
                                             for w, k, n in counts],
                 "admission": [dict(reason=json.loads(p).get("reason"), intervals=n,
                                    observations=o) for p, n, o in holds],

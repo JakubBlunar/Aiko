@@ -8,10 +8,14 @@ const localTime = (value: string | null) => value ? new Date(value).toLocaleStri
 
 function eventLabel(event: IdleLifeEvent) {
   const p = event.payload;
-  return String(p.summary ?? p.reason ?? p.key ?? p.action ?? event.kind.replaceAll("_", " "));
+  const skipped = Object.keys(p).find(key => key.startsWith("skipped_") && p[key]);
+  return String(p.summary ?? p.reason ?? p.mode ?? p.key ?? p.action ?? skipped
+    ?? event.kind.replaceAll("_", " "));
 }
 
-export function IdleLifeTimeline({ events }: { events: IdleLifeEvent[] }) {
+export function IdleLifeTimeline({ events, onInspect }: {
+  events: IdleLifeEvent[]; onInspect?: (runId: string) => void;
+}) {
   return <ol className="space-y-2" aria-label="Idle-life events">
     {events.map(event => <li key={event.id} className="rounded border border-white/10 p-2 text-xs">
       <details>
@@ -24,6 +28,8 @@ export function IdleLifeTimeline({ events }: { events: IdleLifeEvent[] }) {
         {event.occurred_at !== event.recorded_at && <p className="mt-2 text-ink-100/50">
           Narrative time: {localTime(event.occurred_at)}. Recording time is shown above.</p>}
         <p className="mt-2 text-ink-100/50">Event #{event.id}{event.run_id ? ` · Run ${event.run_id}` : ""}</p>
+        {event.run_id && onInspect && <button className={control}
+          onClick={() => onInspect(event.run_id)}>Inspect linked decision</button>}
         <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-[10px] text-ink-100/70">
           {JSON.stringify(event.payload, null, 2)}
         </pre>
@@ -41,10 +47,13 @@ export function WorldIdleLife() {
   const [summary, setSummary] = useState<IdleLifeSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [decisionEvents, setDecisionEvents] = useState<IdleLifeEvent[] | null>(null);
+  const inspection = useRef(0);
   const request = useRef(0);
   const refresh = useCallback(async () => {
     const epoch = ++request.current;
     setBusy(true); setError("");
+    ++inspection.current; setDecisionEvents(null);
     try {
       const [page, totals] = await Promise.all([
         api.getIdleLifeHistory(hours, undefined, worker, kind, actor), api.getIdleLifeSummary(hours),
@@ -65,6 +74,16 @@ export function WorldIdleLife() {
         ? { ...page, events: [...previous.events, ...page.events] } : page);
     } catch (err) { if (epoch === request.current) setError(String(err)); }
     finally { if (epoch === request.current) setBusy(false); }
+  }
+
+  async function inspect(runId?: string, eventId?: number) {
+    const epoch = ++inspection.current;
+    try {
+      const event = eventId != null ? await api.getIdleLifeEvent(eventId) : null;
+      const run = runId || event?.run_id;
+      const rows = run ? (await api.getIdleLifeDecision(run)).events : event ? [event] : [];
+      if (epoch === inspection.current) setDecisionEvents(rows);
+    } catch (err) { if (epoch === inspection.current) setError(String(err)); }
   }
 
   function exportPage() {
@@ -112,15 +131,46 @@ export function WorldIdleLife() {
     </div>}
     {summary && <details className="text-xs text-ink-100/70"><summary className="cursor-pointer">Window totals and holds</summary>
       <p className="my-2">{summary.interpretation}</p>
+      {summary.coverage && <details className="my-2"><summary>
+        Coverage: {summary.coverage.unknown_span_count} unconfirmed gaps</summary>
+        <p>{summary.coverage.note}</p>
+        <ul>{summary.coverage.unknown_spans.map((span, i) => <li key={i}>
+          {localTime(span.from)} to {localTime(span.to)}: {span.status}</li>)}</ul>
+        {summary.coverage.omitted_spans > 0 && <p>
+          {summary.coverage.omitted_spans} additional gaps are counted.</p>}
+      </details>}
       <ul>{summary.counts.map(row => <li key={`${row.worker}:${row.kind}`}>
         {row.worker}: {row.kind.replaceAll("_", " ")} {row.count}</li>)}</ul>
       <ul className="mt-2">{summary.admission.map(row => <li key={row.reason}>
         {row.reason}: {row.intervals} intervals, {row.observations} observations</li>)}</ul>
-      {summary.flags?.map((flag, i) => <p key={i} className="mt-2 text-amber-200">Review: {flag.detail}</p>)}
+      <p className="mt-2">{summary.autonomous_steps ?? 0} recorded autonomous steps;
+        {" "}{summary.context_offer_events ?? 0} context offers;
+        {" "}{summary.model_attribution_events ?? 0} model attribution reports.</p>
+      <p className="mt-2">{summary.threshold_note}</p>
+      {summary.flags?.map((flag, i) => <div key={i} className="mt-2 text-amber-200">
+        <p>Review: {flag.detail}</p>
+        {flag.event_ids.map(id => <button key={id} className={control}
+          onClick={() => void inspect(undefined, id)}>Inspect event #{id}</button>)}
+      </div>)}
+      <details className="mt-2"><summary>Resource changes</summary>
+        <p className="my-2">{summary.resource_note}</p>
+        <p>Canonical household effects:</p>
+        <ul>{summary.canonical_home_resource_deltas?.map(row => <li key={`${row.item_id}:${row.field}`}>
+          Item #{row.item_id}, {row.field}: {row.net_change > 0 ? "+" : ""}{row.net_change}</li>)}</ul>
+        <p className="mt-2">Observed worker changes (may include concurrent edits):</p>
+        <ul>{summary.observed_worker_resource_deltas?.map(row => <li key={`${row.item_id}:${row.field}`}>
+          Item #{row.item_id}, {row.field}: {row.net_change > 0 ? "+" : ""}{row.net_change}</li>)}</ul>
+      </details>
     </details>}
     {!history && busy && <p className="text-xs">Loading history...</p>}
     {history?.events.length === 0 && <p className="text-xs text-ink-100/60">No recorded events in this window.</p>}
-    <IdleLifeTimeline events={history?.events ?? []} />
+    {decisionEvents && <div className="space-y-2 rounded border border-white/10 p-2">
+      <div className="flex items-center justify-between text-xs"><span>Linked decision evidence</span>
+        <button className={control} onClick={() => { ++inspection.current; setDecisionEvents(null); }}>
+          Close inspection</button></div>
+      <IdleLifeTimeline events={decisionEvents} />
+    </div>}
+    <IdleLifeTimeline events={history?.events ?? []} onInspect={runId => void inspect(runId)} />
     {history?.next_before_id && <button className={control} disabled={busy} onClick={() => void older()}>
       {busy ? "Loading..." : "Load older events"}</button>}
   </Section>;

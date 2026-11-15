@@ -199,6 +199,18 @@ class IdleWorkerScheduler:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._trace_configuration()
+
+    def _trace_configuration(self) -> None:
+        if self._trace_store is not None:
+            self._trace_store.record("configuration", "scheduler", {
+                "wake_seconds": self._wake_seconds, "tick_budget_ms": self._tick_budget_ms,
+                "compute_budget_ms": self._compute_budget_ms, "max_per_tick": self._max_per_tick,
+                "pressure_enabled": self._pressure_enabled,
+                "urgency_threshold": self._urgency_threshold,
+                "min_interval_ratio": self._min_interval_ratio,
+                "depth_max_multiplier": self._depth_max_multiplier,
+            })
 
     # ── registration ─────────────────────────────────────────────────
 
@@ -215,6 +227,14 @@ class IdleWorkerScheduler:
                     last_run_at=self._restore_last_run_at(name),
                 )
         log.info("idle_worker registered: %s (interval=%ss)", name, worker.interval_seconds)
+        if self._trace_store is not None and name in LIFE_WORKERS:
+            self._trace_store.record("worker_registered", name, {
+                "interval_seconds": worker.interval_seconds,
+                "sleep_policy": self._sleep_policy(worker),
+                "activity_configuration": {key: getattr(worker, "_" + key, None) for key in (
+                    "cooldown_seconds", "llm_activity_ratio", "episode_ratio", "in_progress_ratio",
+                )},
+            })
 
     def unregister(self, name: str) -> None:
         with self._lock:
@@ -222,6 +242,7 @@ class IdleWorkerScheduler:
 
     def update_wake_seconds(self, seconds: float) -> None:
         self._wake_seconds = max(0.5, float(seconds))
+        self._trace_configuration()
 
     def update_tick_budget(self, *, tick_budget_ms: int | None = None,
                            max_per_tick: int | None = None) -> None:
@@ -230,6 +251,7 @@ class IdleWorkerScheduler:
             self._tick_budget_ms = max(0, int(tick_budget_ms))
         if max_per_tick is not None:
             self._max_per_tick = max(0, int(max_per_tick))
+        self._trace_configuration()
 
     def update_demand_settings(
         self,
@@ -251,6 +273,7 @@ class IdleWorkerScheduler:
             self._min_interval_ratio = max(0.0, float(min_interval_ratio))
         if depth_max_multiplier is not None:
             self._depth_max_multiplier = max(1.0, float(depth_max_multiplier))
+        self._trace_configuration()
 
     def update_quiet_callback(
         self, is_quiet_callback: Callable[[], bool] | None
@@ -534,6 +557,10 @@ class IdleWorkerScheduler:
                     reason = "user_active"
                 guard = getattr(self._workers.get(name), "_mutation_guard", None)
                 owner = guard.last_decision() if guard is not None else {}
+                if reason not in {"active_shared_conversation_situation", "intentional_hold"}:
+                    owner = {}
+                elif owner.get("reason") != reason:
+                    owner = {"unknown": "guard_changed_since_probe"}
                 self._trace_store.observe(name, reason, {
                     "admission": admission if quiet else "user_active",
                     "lane": record.get("last_lane"), "sleep_status": self._sleep_status(),
