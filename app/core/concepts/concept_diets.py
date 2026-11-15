@@ -583,3 +583,13 @@ __all__ = [
     "tuning_from_host",
     "tuning_from_route",
 ]
+
+
+for _idle_consumer in ("idle_activity", "idle_hobby"):
+    register_diet(ConceptDiet(
+        consumer=_idle_consumer,
+        kinds=("taste", "pursuit", "aspiration", "value"),
+        subject="aiko", min_confidence=0.6, weight=0.5, max_concepts=4,
+        rationale="Optional inspiration for supported idle activities and personal projects; "
+                  "Aiko may choose unrelated activities and rest.",
+    ))

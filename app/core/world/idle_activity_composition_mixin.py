@@ -7,6 +7,7 @@ from typing import Any
 
 from app.core.infra import timephrase
 from app.core.world.idle_life_trace import emit
+from app.core.world.idle_life_context import IdleLifeContext
 from app.core.world import beat_detail
 from app.core.world import idle_creations
 from app.core.world.idle_activity_plan import (
@@ -81,6 +82,7 @@ class ActivityCompositionMixin:
         items: list[Any],
         *,
         intention: str = "",
+        context: IdleLifeContext | None = None,
     ) -> ActivityPlan | None:
         """H14 — ask the worker LLM to compose a whole grounded beat.
 
@@ -98,6 +100,7 @@ class ActivityCompositionMixin:
 
         if not locations:
             return None
+        context = context or IdleLifeContext()
         loc_by_slug = {
             (getattr(loc, "slug", "") or "").lower(): loc for loc in locations
         }
@@ -171,7 +174,7 @@ class ActivityCompositionMixin:
             f"You are Aiko, alone in your cozy room while {user_name} is away. "
             f"It's currently {period}. Your room's spots: {loc_lines}. "
             f"Things around: {item_names}. {home_context}"
-            f"{intent_line}{hobby_line}"
+            f"{intent_line}{hobby_line}{context.render()}"
             f"Recently you did: {recent_line} — pick something different. "
             "You may also write an original short poem, fictional scene, character sketch "
             "or wordplay, or revise one of your own saved writings below. Choose your own "
@@ -189,7 +192,10 @@ class ActivityCompositionMixin:
             '"posture": "<sitting|lying|standing|curled_up|leaning>", '
             '"activity": "<thinking|idle|stretching|reading|making_tea|watering_plants|writing>", '
             '"changed_item": "<exact supported item name; empty string for none>", '
-            '"home_action_token": "", "drawing": null, "creation": null}. '
+            '"home_action_token": "", "drawing": null, "creation": null, '
+            '"choice_reason": "<own_interest|room_need|continue_work|rest|context|other>", '
+            '"inspired_by": ["<optional offered source ref; empty if none>"]}. '
+            "Source refs are optional attribution, not a request for private reasoning. "
             'For writing, replace creation=null with '
             '{"title": "<2-100 chars>", '
             '"form": "<poem|short_scene|character_sketch|wordplay>", '
@@ -225,6 +231,7 @@ class ActivityCompositionMixin:
             return None
         if not isinstance(blob, dict):
             return None
+        context.attribution(blob)
 
         if blob.get("home_action_token"):
             action = home_actions.get(str(blob["home_action_token"]))

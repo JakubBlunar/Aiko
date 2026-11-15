@@ -490,6 +490,9 @@ class IdleWorkersInitMixin:
                         )
                     ),
                     hobby_provider=self._current_hobby_label,
+                    context_provider=getattr(
+                        getattr(self, "_idle_life_context", None), "build", None,
+                    ),
                     # K85b — keep the beats that left a trace in the room.
                     pursuit_notes=self._pursuit_note_writer(),
                     # H17 — fraction of beats that also spawn a conversational
@@ -573,6 +576,9 @@ class IdleWorkersInitMixin:
                     pursuit_notes=self._pursuit_note_writer(),
                     world_store=getattr(self, "_world_store", None),
                     research=research,
+                    context_provider=getattr(
+                        getattr(self, "_idle_life_context", None), "build", None,
+                    ),
                     cue_store_provider=lambda: getattr(self, "_cue_store", None),
                 )
                 self._idle_scheduler.register(self._hobby_worker)

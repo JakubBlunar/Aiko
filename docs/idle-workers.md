@@ -29,6 +29,38 @@ Restart is required to load the capture hooks. Fourteen days of history become
 available as they are collected; a newly installed recorder has no evidence for
 earlier days. Ordinary-use behavior still needs observation.
 
+## Optional inspiration from concepts and conversations
+
+Activity and hobby planners can receive a small context bundle from Aiko's own
+active concepts, relevant recent chat/memories, current project research and
+actual saved writings/sketches. The consumer diets are `idle_activity` and
+`idle_hobby`, scoped to Aiko. Concept evidence packets reject unavailable or
+invalid support; interpretations remain explicitly tentative.
+
+`memory.idle_life_context_enabled` defaults to true;
+`idle_life_context_ratio` defaults to 0.5. Context is sampled independently of the
+existing model-choice ratio. On the other half of choices, there is no added
+context retrieval or prompt block. Even when offered, the model is explicitly
+free to ignore every suggestion, do something unrelated or rest. Deterministic
+selection receives at most a 1.25x preference multiplier and never loses unrelated
+eligible choices. Optional daily intentions use occasional generic, executable
+hints after real room needs; no conversation sentence automatically becomes a task.
+
+The added bundle has a default 900-token ceiling (`idle_life_context_max_tokens`,
+200-1400), further limited to 6% of a known worker context window. Transcript and
+memory inputs are age-tagged; recent chat prefers 72 hours with a bounded seven-day
+fallback. Candidate reads are capped at 160 messages and 64 memories per actual
+decision, never per scheduler probe. Current reads avoid stale private excerpt
+caches. Current project research can be older, but is labeled as search-excerpt
+findings, not verified knowledge or completed creative practice.
+
+The trace stores source IDs/versions, role, sampling mode and token estimates;
+it does not copy the private passages. Model-reported `inspired_by` refs are
+validated against offered IDs and recorded separately from context availability.
+Neither offering nor attribution proves causal influence. Actual drawing/writing
+still needs a validated payload and saved revision. Context capture adds no LLM
+summarization call; research continues through its existing privacy/budget gates.
+
 ## Shared household capabilities
 
 The away-activity worker uses the same live home-action catalogue and executor

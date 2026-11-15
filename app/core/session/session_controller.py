@@ -880,6 +880,17 @@ class SessionController(
         except Exception:
             log.warning("IdleLifeStore failed to initialise", exc_info=True)
 
+        from app.core.world.idle_life_context import IdleLifeContextProvider
+        from app.core.concepts.concept_view import concept_view_from
+
+        self._idle_life_context = IdleLifeContextProvider(
+            chat_db=self._chat_db, session_provider=lambda: self.session_key,
+            view_provider=lambda: concept_view_from(self),
+            memory_provider=lambda: self._memory_store,
+            settings_provider=lambda: self._memory_settings,
+            context_window_provider=lambda: self._worker_route_model_ctx()[1],
+        )
+
         # Schema v43 — persisted identity-wide sleep lifecycle. It is not
         # session-scoped: every chat window, worker, and web client sees the
         # same generation-checked state.

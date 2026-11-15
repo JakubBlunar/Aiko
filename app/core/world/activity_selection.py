@@ -135,6 +135,7 @@ def compute_weights(
     recency_window: int = _DEFAULT_RECENCY_WINDOW,
     intent_key: str = "",
     intent_boost: float = 1.0,
+    context_weights: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Return a positive weight per candidate key (pure, deterministic).
 
@@ -153,6 +154,8 @@ def compute_weights(
         w *= circ.get(key, 1.0)
         w *= color.get(key, 1.0)
         w *= _affect_multiplier(key, valence)
+        # Inspiration stays gentle; every eligible unrelated activity survives.
+        w *= max(1.0, min(1.25, (context_weights or {}).get(key, 1.0)))
         if intent and key == intent:
             w *= max(1.0, float(intent_boost))
         weights[key] = max(_WEIGHT_FLOOR, w)
@@ -170,6 +173,7 @@ def weighted_pick(
     recency_window: int = _DEFAULT_RECENCY_WINDOW,
     intent_key: str = "",
     intent_boost: float = 1.0,
+    context_weights: dict[str, float] | None = None,
 ) -> str | None:
     """Draw one key proportional to its computed weight."""
     if not keys:
@@ -183,6 +187,7 @@ def weighted_pick(
         recency_window=recency_window,
         intent_key=intent_key,
         intent_boost=intent_boost,
+        context_weights=context_weights,
     )
     ordered = list(keys)
     population = [weights[k] for k in ordered]

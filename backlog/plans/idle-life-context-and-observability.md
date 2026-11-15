@@ -9,6 +9,15 @@ related frontend tests, and project lint. Sets overlap. Shared database/session
 imports expanded the affected selector widely, so focused representative coverage
 was used. Runtime restart and ordinary-use observation remain outstanding.
 
+Phase 2 implements optional source-linked context for activity, hobby and daily
+intention selection, a 50% default sampling rate, bounded fallback weights and
+actual saved-work references. Validation: 240 targeted tests plus 101 subtests,
+400 representative settings/concept/bootstrap/API tests plus 102 subtests, 15
+final context regressions through the affected selector, related World tests and
+project lint. Sets overlap. Context reads are bounded per decision rather than
+cached, so source deletion/editing is visible on the next choice. No ordinary-use
+model naturalness is claimed from fixture tests.
+
 User clarification: context must remain optional inspiration. Preserve independent
 choices and the ability to ignore recent dialogue; do not tie all activity to chat.
 

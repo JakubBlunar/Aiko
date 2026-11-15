@@ -394,6 +394,9 @@
     "port": 6275
   },
   "memory": {
+    "idle_life_context_enabled": true,
+    "idle_life_context_ratio": 0.5,
+    "idle_life_context_max_tokens": 900,
     "enabled": true,
     "top_k": 6,
     "score_threshold": 0.4,

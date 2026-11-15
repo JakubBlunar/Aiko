@@ -186,7 +186,6 @@ export function WorldTab({
     <div className="space-y-4">
       {error ? <p role="alert" className="text-xs text-rose-200">{error}</p> : null}
       <SettingsSections area="World" sections={[
-        { id: "idle-life", label: "Idle life", content: <WorldIdleLife /> },
         { id: "overview", label: "Overview", content: (<><Section title="Right now">
         <p className="text-xs text-ink-100/70">
           Aiko is{" "}
@@ -313,6 +312,7 @@ export function WorldTab({
           onRename={onSaveSceneEdit}
         />
       </Section></>) },
+        { id: "idle-life", label: "Idle life", content: <WorldIdleLife /> },
         { id: "items", label: "Belongings", content: (<><Section title="Give Aiko something">
         <p className="text-[11px] text-ink-100/50">
           Drops an item into the scene you're viewing, attributed to you.

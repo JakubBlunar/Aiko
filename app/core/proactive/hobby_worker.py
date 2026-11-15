@@ -41,7 +41,8 @@ from app.core.world.room_evolution import (
     stamp_book_title,
 )
 from app.core.infra import timephrase
-from app.core.world.idle_life_trace import traced_worker
+from app.core.world.idle_life_trace import traced_worker, emit
+from app.core.world.idle_life_context import context_from, words
 from app.core.proactive.cue_producer import CueProducer, StoreProvider
 
 if TYPE_CHECKING:
@@ -138,6 +139,7 @@ class HobbyWorker:
         rng: random.Random | None = None,
         research: "PursuitResearch | None" = None,
         cue_store_provider: StoreProvider | None = None,
+        context_provider: Callable[..., Any] | None = None,
     ) -> None:
         self._chat_db = chat_db
         self._agent = agent_settings
@@ -150,6 +152,7 @@ class HobbyWorker:
         self._world = world_store
         self._rng = rng or random.Random()
         self._research = research
+        self._context_provider = context_provider
         self._research_cues = CueProducer("research_result", cue_store_provider)
         # MCP debug one-shots.
         self._force_advance = False
@@ -423,6 +426,15 @@ class HobbyWorker:
         tpl = hobby_mod.pick_hobby(
             self._rng, exclude=exclude_keys, exclude_kinds=exclude_kinds,
         )
+        context = self._hobby_context()
+        if context.text:
+            pool = [tpl] + [hobby_mod.pick_hobby(
+                self._rng, exclude=exclude_keys, exclude_kinds=exclude_kinds,
+            ) for _ in range(2)]
+            matches = words(context.text)
+            weights = [1.0 + min(.5, .1 * len(words(row.label) & matches)) for row in pool]
+            tpl = self._rng.choices(pool, weights=weights, k=1)[0]
+        emit("hobby_choice", {"route": "catalogue", "key": tpl.key})
         return hobby_mod.proposal_from_template(
             tpl,
             self._rng,
@@ -444,6 +456,12 @@ class HobbyWorker:
             recent_artifacts=recent_artifacts,
         )
 
+    def _hobby_context(self):
+        state = load_hobby(self._chat_db.kv_get) or {}
+        items = self._world.list_items() if self._world is not None else []
+        return context_from(self._context_provider, "idle_hobby", items=items,
+                            project=str(state.get("artifact") or state.get("label") or ""))
+
     def _compose_next_llm(
         self,
         leaving: dict[str, Any],
@@ -451,6 +469,7 @@ class HobbyWorker:
     ) -> dict[str, Any] | None:
         if self._ollama is None or not self._model:
             return None
+        context = self._hobby_context()
         leaving_kind = str(leaving.get("kind") or "reading")
         other_kinds = [k for k in hobby_mod.HOBBY_KINDS if k != leaving_kind]
         kinds_line = ", ".join(other_kinds) or ", ".join(hobby_mod.HOBBY_KINDS)
@@ -476,7 +495,8 @@ class HobbyWorker:
             f"Things actually in her room: {items_line}. Ground the "
             "project in those, her own head, or the garden — no new "
             "furniture.\n"
-            f"She has already started: {recent_line}. Do not repeat those "
+            + context.render()
+            + f"She has already started: {recent_line}. Do not repeat those "
             "artifacts. A rare return to an old one is allowed only if "
             "the kind still drifts.\n"
             "Reply with JSON only:\n"
@@ -485,7 +505,8 @@ class HobbyWorker:
             '"artifact": "<the specific named thing, a title or subject, '
             'never a genre like a sci-fi book or just sketching>", '
             '"artifact_detail": "<one-line blurb>", '
-            '"takeaway_hint": "<what a later thought might riff on>"}'
+            '"takeaway_hint": "<what a later thought might riff on>", '
+            '"inspired_by": [], "choice_reason": "own_interest"}'
         )
         try:
             content, _usage = self._ollama.chat_json(
@@ -497,14 +518,17 @@ class HobbyWorker:
                     {"role": "user", "content": prompt},
                 ],
                 model=self._model,
-                options={"temperature": 0.9, "num_predict": 180},
+                options={"temperature": 0.9, "num_predict": 256},
                 format_json=True,
                 surface="hobby_next",
             )
         except Exception:
             log.debug("hobby next compose failed", exc_info=True)
             return None
-        return _parse_json_object(content)
+        blob = _parse_json_object(content)
+        if blob is not None:
+            context.attribution(blob)
+        return blob
 
     # ── room book ────────────────────────────────────────────────────
 

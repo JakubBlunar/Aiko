@@ -118,6 +118,7 @@ def propose(
     hobby: str | None = None,
     rng: random.Random,
     available_keys: set[str] | None = None,
+    inspirations: tuple[tuple[str, str], ...] = (),
 ) -> DayIntention:
     """Pick today's intention from what her world is actually asking for.
 
@@ -127,6 +128,11 @@ def propose(
     an intention even in a becalmed room.
     """
     for text, key in _needs(items, now=now):
+        return DayIntention(day=local_day(now), text=text, beat_key=key)
+    # Only an occasional, executable personal intention; room needs remain first.
+    offered = [pair for pair in inspirations if available_keys is None or pair[1] in available_keys]
+    if offered and rng.random() < 0.35:
+        text, key = rng.choice(offered)
         return DayIntention(day=local_day(now), text=text, beat_key=key)
     if hobby:
         return DayIntention(

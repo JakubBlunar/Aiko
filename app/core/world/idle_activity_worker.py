@@ -81,6 +81,7 @@ from app.core.world.idle_activity_plan import (
 )
 from app.core.infra import timephrase
 from app.core.world.idle_life_trace import traced_worker, emit
+from app.core.world.idle_life_context import IdleLifeContext, context_from
 
 if TYPE_CHECKING:
     from app.core.memory.pursuit_notes import PursuitNoteWriter
@@ -253,6 +254,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         in_progress_ratio: float = 0.0,
         day_intention_enabled: bool = False,
         hobby_provider: Callable[[], str | None] | None = None,
+        context_provider: Callable[..., IdleLifeContext] | None = None,
         pursuit_notes: "PursuitNoteWriter | None" = None,
         circadian_period_provider: Callable[[], str] | None = None,
         valence_provider: Callable[[], float | None] | None = None,
@@ -283,6 +285,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         self._in_progress_ratio = min(1.0, max(0.0, float(in_progress_ratio)))
         self._day_intention_enabled = bool(day_intention_enabled)
         self._hobby_provider = hobby_provider
+        self._context_provider = context_provider
         self._pursuit_notes = pursuit_notes
         self._circadian_period_provider = circadian_period_provider
         self._valence_provider = valence_provider
@@ -393,8 +396,11 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         snapshot = self._build_candidates(user_name, now)
         # K91 — establish today's intention before anything is chosen, so a
         # forced or LLM-composed beat is measured against it too.
-        intention = self._today_intention(snapshot.items, now, set(snapshot.candidates))
-        plan = self._choose_plan(user_name, now, snapshot, intention)
+        context = self._activity_context(snapshot)
+        intention = self._today_intention(
+            snapshot.items, now, set(snapshot.candidates), context=context,
+        )
+        plan = self._choose_plan(user_name, now, snapshot, intention, context)
         if plan is None:
             return {"fired": 0, "no_plan": True}
 
@@ -820,11 +826,17 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         """The single beat she'd plausibly be having right now."""
         now = now or _utcnow()
         snapshot = self._build_candidates(user_name, now)
+        context = self._activity_context(snapshot)
         return self._choose_plan(
-            user_name,
-            now,
-            snapshot,
-            self._today_intention(snapshot.items, now, set(snapshot.candidates)),
+            user_name, now, snapshot,
+            self._today_intention(snapshot.items, now, set(snapshot.candidates), context=context),
+            context,
+        )
+
+    def _activity_context(self, snapshot: RoomSnapshot) -> IdleLifeContext:
+        return context_from(
+            self._context_provider, "idle_activity", items=snapshot.items,
+            available_keys=set(snapshot.candidates), project=self._read_hobby() or "",
         )
 
     def _choose_plan(
@@ -833,7 +845,9 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         now: datetime,
         snapshot: RoomSnapshot,
         intention: "day_intention.DayIntention | None" = None,
+        context: IdleLifeContext | None = None,
     ) -> ActivityPlan | None:
+        context = context or IdleLifeContext()
         candidates = snapshot.candidates
         emit("candidates", {"scene_id": snapshot.scene_id, "eligible": [
             {"key": plan.key, "activity": plan.activity, "location_id": plan.aiko_location_id,
@@ -883,6 +897,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
                 snapshot.locations,
                 snapshot.items,
                 intention=open_intent,
+                context=context,
             )
             if llm_plan is not None:
                 emit("choice", {"route": "model", "key": llm_plan.key})
@@ -899,6 +914,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             valence=self._read_valence(), day_color=self._read_day_color(),
             intent_key=intention.beat_key if intention and not intention.satisfied else "",
             intent_boost=day_intention.INTENT_BOOST,
+            context_weights=dict(context.biases),
         )
         chosen = weighted_pick(
             list(candidates.keys()),
@@ -913,6 +929,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
                 else ""
             ),
             intent_boost=day_intention.INTENT_BOOST,
+            context_weights=dict(context.biases),
         )
         if chosen is None or chosen not in candidates:
             return self._rng.choice(list(candidates.values()))
@@ -990,6 +1007,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
     def _today_intention(
         self, items: list[Any], now: datetime,
         available_keys: set[str] | None = None,
+        *, context: IdleLifeContext | None = None,
     ) -> day_intention.DayIntention | None:
         """Today's intention, proposing one on the day's first beat.
 
@@ -1009,6 +1027,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             fresh = day_intention.propose(
                 items, now=now, hobby=self._read_hobby(), rng=self._rng,
                 available_keys=available_keys,
+                inspirations=context.intentions if context else (),
             )
         except Exception:
             log.debug("day_intention propose failed", exc_info=True)

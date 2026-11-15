@@ -1853,6 +1853,9 @@ class MemorySettings:
     away_activities_cooldown_seconds: int = 5400
     away_activities_min_gap_hours: float = 4.0
     away_activities_journal_max: int = 8
+    idle_life_context_enabled: bool = True
+    idle_life_context_ratio: float = 0.5
+    idle_life_context_max_tokens: int = 900
     # H21 — sleep & overnight rhythm. ``min_gap_hours`` is the shortest
     # absence that can read as a sleep when she returns in the morning band;
     # ``overnight_hours`` is the gap that reads as a sleep at any hour;
@@ -4947,6 +4950,13 @@ def parse_memory_settings(memory_raw: dict[str, Any]) -> "MemorySettings":
             away_activities_journal_max=max(
                 1,
                 int(memory_raw.get("away_activities_journal_max", 8)),
+            ),
+            idle_life_context_enabled=bool(memory_raw.get("idle_life_context_enabled", True)),
+            idle_life_context_ratio=min(
+                1.0, max(0.0, float(memory_raw.get("idle_life_context_ratio", 0.5))),
+            ),
+            idle_life_context_max_tokens=max(
+                200, min(1400, int(memory_raw.get("idle_life_context_max_tokens", 900))),
             ),
             away_activities_llm_ratio=min(
                 1.0,
