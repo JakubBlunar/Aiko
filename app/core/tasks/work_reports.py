@@ -12,6 +12,8 @@ from app.core.persona.speech_guide import digest
 from app.core.services.response_text_service import strip_all_meta_tags, parse_reaction_at_start
 from app.core.tasks.workflow.context_budget import TaskBudget, pack_review
 from app.core.tasks.work_report_grounding import owned_evidence, fallback, review_report
+from app.core.tasks.work_report_grounding import certified_sources, speech_facts
+from app.core.tasks.work_outcome import task_outcome
 from app.llm.call_scope import (
     CallScope,
     call_scope,
@@ -111,13 +113,15 @@ class WorkReports:
         )
         return digest(
             [
-                "grounded-report-v1",
+                "source-certified-report-v2",
                 row.status,
                 row.result,
                 row.input_request,
                 latest,
                 row.state.get("epoch"),
                 self.context()["revision"],
+                [(source["task_id"], source["revision"])
+                 for source in owned_evidence(row, self.orchestrator, {})],
             ]
         )
 
@@ -127,6 +131,7 @@ class WorkReports:
                 "kind": "final",
                 "result": row.result,
                 "error": row.error,
+                "objective_outcome": task_outcome(row),
             }
         if row.status == "awaiting_input":
             return "question:" + digest(row.input_request), {
@@ -152,8 +157,10 @@ class WorkReports:
             child = self.orchestrator.get(cid)
             if child and child.parent_task_id == row.id and child.status == "done":
                 evidence.append(
-                    {"task_id": cid, "recorded_at": child.completed_at, "result": child.result}
+                    {"task_id": cid, "recorded_at": child.completed_at}
                 )
+        if not evidence:
+            return None  # Conversational planning notes are not earned progress findings.
         return "progress:" + digest(event.data["content"]), {
             "kind": "progress",
             "finding": event.data["content"],
@@ -231,13 +238,17 @@ class WorkReports:
     def _draft(self, row, rid, basis, facts):
         sources = owned_evidence(row, self.orchestrator, facts)
         result = row.result or {}
-        if facts["kind"] == "final" and not sources and not (
-            result.get("outcome") == "success"
-            and result.get("verification", {}).get("status") == "supported"
+        if facts["kind"] == "question" or (
+            facts["kind"] == "final" and result.get("outcome") == "partial"
         ):
+            # The pending question and qualified partial facts already have
+            # their wording. Another generation cannot improve their authority.
+            self._save_draft(row, rid, basis, fallback(row, sources), "neutral")
+            return
+        if facts["kind"] == "final" and not certified_sources(row, sources):
             # A job with no successful evidence cannot suddenly acquire an answer
             # in the narration model. No generative call is needed for this case.
-            self._save_draft(row, rid, basis, fallback(row), "neutral")
+            self._save_draft(row, rid, basis, fallback(row, sources), "neutral")
             return
         system = (
             "You are the companion in speaking_context reporting your own background work. "
@@ -254,7 +265,7 @@ class WorkReports:
             "serious, gentle or confused as fits the finding.\n" + timephrase.STORED_TEXT_TIME_RULE
         )
         route = bind_route(self.client, self.model, self.window)
-        budget = TaskBudget.resolve(route.window, answer=768, routine=False)
+        budget = TaskBudget.resolve(route.window, answer=768, reasoning=True)
         frame = {
             "contract": row.state.get("contract", {"objective": row.title}),
             "current_time": timephrase.today_anchor(),
@@ -263,14 +274,15 @@ class WorkReports:
             "speaking_context": self.context(),
         }
         evidence = [
-            {"task_id": row.id, "content": json.dumps(facts, ensure_ascii=False)},
+            {"task_id": row.id, "content": json.dumps(speech_facts(facts), ensure_ascii=False)},
             *sources,
         ]
         messages, _ = pack_review(system, frame, evidence, budget)
         conn = self.db._get_conn()
         with conn:
             attempt = conn.execute(
-                "INSERT INTO work_report_attempts(report_id,basis) VALUES (?,?)", (rid, basis)
+                "INSERT INTO work_report_attempts(report_id,basis,active_seconds) VALUES (?,?,?)",
+                (rid, basis, 180),
             ).lastrowid
         scope = CallScope(
             cancelled=lambda: (
@@ -279,7 +291,8 @@ class WorkReports:
                 or self.session() != (row.metadata or {}).get("source_session")
             ),
             queue_timeout=2,
-            reasoning_tokens=0,
+            reasoning_tokens=budget.reasoning,
+            reasoning_required=True,
             on_acquired=route.acquired,
         )
         deferred = False
@@ -290,8 +303,8 @@ class WorkReports:
                     model=route.model,
                     options={"num_predict": budget.answer},
                     format_json=True,
-                    think=False,
-                    timeout_seconds=30,
+                    think=True,
+                    timeout_seconds=120,
                     surface="work_report",
                 )
                 record_call_usage(usage)
@@ -300,10 +313,10 @@ class WorkReports:
                 if not isinstance(text, str) or not 5 <= len(text) <= 6000:
                     raise ValueError("Invalid local work report")
                 if not review_report(
-                    route, text, facts, sources, timeout=max(1, 30 - scope.active_seconds)
+                    route, text, facts, sources, timeout=max(1, 180 - scope.active_seconds)
                 ):
                     log.warning("Ungrounded work report rejected: task=%s report=%s", row.id, rid)
-                    raw = json.dumps({"text": fallback(row), "reaction": "neutral"})
+                    raw = json.dumps({"text": fallback(row, sources), "reaction": "neutral"})
         except (LlmCallDeferred, LlmCallCancelled):
             deferred = True
             raise

@@ -39,6 +39,9 @@ def test_handler_preserves_raw_tail_and_review_can_use_owned_excerpt(tmp_path, m
         {"server_id": "files", "tool_name": "read", "tool_args": {}}, events.append
     )
     payload = events[-1].result
+    # This minimal manager has no discovery/approval layer; declare the read
+    # receipt that the production operation gate supplies for this test source.
+    payload["receipt"]["effect"] = "read"
     assert payload["truncated"] and "TAIL_FACT" not in payload["content"]
     assert payload["source_artifact"]["available"]
     store.mark_done(child, result=payload)
@@ -49,7 +52,10 @@ def test_handler_preserves_raw_tail_and_review_can_use_owned_excerpt(tmp_path, m
 
     def review(messages, **kwargs):
         assert "TAIL_FACT: blue orchard" in messages[1]["content"]
-        return json.dumps({"supported": True}), None
+        return json.dumps({"supported": True, "missing": [],
+                           "criteria": [{"index": 0, "supported": True}],
+                           "claims": [{"part": 0, "task_id": child,
+                                       "quote": "TAIL_FACT: blue orchard"}]}), None
 
     verdict, _ = verify_completion(
         SimpleNamespace(chat_json=review),

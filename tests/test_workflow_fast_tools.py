@@ -170,7 +170,8 @@ def test_hidden_search_recovers_to_owned_evidence_and_supported_finish(work):
         def chat_json(self, messages, **kwargs):
             if kwargs.get("surface") != "workflow_planner":
                 assert "ten episodes" in messages[1]["content"]
-                return '{"supported":true,"reason":"Matches the returned source"}', None
+                from work_review_helpers import supported_review
+                return supported_review(messages), None
             self.planning += 1
             if self.planning <= 2:
                 answer = {"action": "web_search", "args": {"query": "Episode titles"}}

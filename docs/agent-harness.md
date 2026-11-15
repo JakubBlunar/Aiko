@@ -125,20 +125,51 @@ result, with its task id, source timestamp and content revision. MCP text retain
 up to 100,000 characters; omitted text and unsupported non-text blocks are marked
 partial. This does not implement image or binary-artifact inspection.
 
-Claimed success requires successful owned evidence ids and a separate model
-review against the original criteria. The review receives evidence, not just the
-planner's verdict, and distinguishes tool acknowledgement from read-back proof.
-Unsupported claims get bounded repair opportunities, then become partial.
-This is a model's evidence review, not a guarantee that arbitrary claims or
-external effects have been independently proven correct.
+Execution status and objective outcome are separate. The shared
+[`work_outcome.py`](../app/core/tasks/work_outcome.py) supplies `objective_outcome`
+to REST/WS, work checks,
+the drawer, task chips, history, result events, promise resolution and procedural
+learning. Only a source-bound completion certificate can mark an objective
+verified. Partial, blocked, submitted, uncertain and unavailable capabilities
+retain their own labels even when execution status is `done`. Historical bare
+`verification.status=supported` booleans remain unverified; old jobs are not rerun.
 
-The spoken reporter cannot supply missing evidence. An unverified terminal run
-with no successful owned results gets a deterministic incomplete-check message.
+Completion preserves structured receipts, source revisions, resource identity,
+partiality and operation timing in a shared evidence envelope. A host-selected
+index includes uncited failures and later results. Declared mutations must have
+a typed postcondition and a matching later owned read of the same resource and
+configuration generation. The read must start after the mutation completed;
+an old read finishing later is insufficient. Unknown effects cannot become
+successful reads by omission. Unsupported mutation adapters can report
+acknowledged submission, without claiming a verified final effect.
+Declared requested/observed resource mismatches are rejected. Empty native and
+fast web searches establish missing search hits, never a global absence of facts;
+they receive a specific incomplete-check report instead of a factual certificate.
+
+The filesystem bundle implements this generic SDK contract for exact text-note
+write/read-back and offers `save_text_and_check`. Other capabilities can provide
+their own typed adapters through `OperationPostcondition`; no coding or shell
+execution capability is added. This is incremental adapter coverage, not a
+universal external-effect verifier.
+
+The separate reasoning review must cover every completion criterion and every
+clause of the proposed answer with owned verbatim source quotations. The host
+checks coverage, quote presence, truncation and contradictory verdicts. Accepted
+answers receive a certificate binding the answer, contract and all source
+revisions. Sources and guidance are checked again before finishing. Source
+quotation establishes provenance; semantic entailment still depends on model
+judgment where there is no typed postcondition. Unsupported claims receive
+bounded repair opportunities, then become partial.
+
+The spoken reporter cannot supply missing evidence. Uncertified terminal runs
+get a deterministic incomplete-check or acknowledged-submission message.
 Other generated reports receive a separate bounded grounding review on the
 workflow route, using saved task facts and owned source results. The objective,
 conversation and speaking examples do not establish factual claims. Rejected
-wording falls back to the verified saved answer, or an incomplete-check message;
-model review is an additional check, not a factual guarantee.
+wording falls back to the source-bound certified answer, or an incomplete-check
+message. A partial answer can preserve certified facts while remaining partial
+overall. A saved summary and prior model approval are never independent sources.
+Changing or removing a source invalidates pending report drafts.
 
 Generic external MCP operations now pass through the host's existing approval
 policy per concrete operation. Filesystem reads and server read-only annotations
@@ -206,13 +237,17 @@ changes and model waits remain drawer status. Identical progress is deduplicated
 newer pending progress supersedes older updates, and completion supersedes
 pending progress.
 
-Reporting hardening (2026-11-09): the narrator receives saved task facts and
-successful owned sources, not recent conversation as evidence. Unverified runs
-without successful source results use a deterministic failure report, with no
-narration call. Generated drafts receive a separate local grounding review;
-rejected drafts fall back to the saved verified finding or an honest incomplete
-result. The review's tokens/time count in the same attempt record. Old pending
-drafts require a fresh source basis; already committed reports are not replayed.
+The narrator receives saved task facts and owned evidence envelopes, not recent
+conversation as evidence. A source-current certificate is required before
+narrating a final answer. Generated drafts receive a separate reasoning grounding
+review with full clause/quotation coverage; rejected drafts fall back to the
+certified finding or an honest incomplete result. The review's tokens/time count
+in the same attempt record. Pending drafts bind current source revisions;
+already committed reports are not replayed. Planning, review, reporting and work
+discussion enable bounded reasoning without increasing the configured context.
+Pending input questions and certified partial finals use their saved wording
+directly; progress notes without owned successful results are not announced.
+These paths avoid narration/review calls that would add no new authority.
 
 The original session/user owns each report. The durable outbox stores its
 milestone identity, source basis, draft and committed assistant-message ID.

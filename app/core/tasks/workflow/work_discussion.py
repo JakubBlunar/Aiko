@@ -9,6 +9,8 @@ import threading
 from app.core.infra import timephrase
 from app.core.services.response_text_service import strip_all_meta_tags
 from app.core.tasks.workflow.harness_results import result_text
+from app.core.tasks.work_evidence import evidence_record
+from app.core.tasks.work_outcome import task_outcome
 
 
 class WorkDiscussion:
@@ -65,6 +67,7 @@ class WorkDiscussion:
         children = orchestrator.list_children(task_id)
         frame = {
             "status": row.status,
+            "objective_outcome": task_outcome(row),
             "phase": row.phase,
             "goal": row.args.get("goal", row.title),
             "requested_at": row.created_at,
@@ -74,7 +77,7 @@ class WorkDiscussion:
             "result": result_text(row)[:4000] if row.result else None,
             "error": row.error,
             "recent_operations": [
-                {"task_id": child.id, "status": child.status, "output": result_text(child)[:1500]}
+                evidence_record(child, limit=1500)
                 for child in children[-8:]
             ],
         }
@@ -107,7 +110,7 @@ class WorkDiscussion:
             self.handler._model,
             self.handler._context_window_provider,
         )
-        budget = TaskBudget.resolve(route.window, answer=600, routine=True)
+        budget = TaskBudget.resolve(route.window, answer=600, routine=True, reasoning=True)
         try:
             messages, _ = pack_review(
                 system,
@@ -130,7 +133,8 @@ class WorkDiscussion:
                 CallScope(
                     cancelled=self.closed.is_set,
                     queue_timeout=None,
-                    reasoning_tokens=0,
+                    reasoning_tokens=budget.reasoning,
+                    reasoning_required=True,
                     on_acquired=route.acquired,
                 )
             ):
@@ -139,9 +143,9 @@ class WorkDiscussion:
                     model=route.model,
                     options={"num_predict": budget.answer},
                     format_json=True,
-                    think=False,
+                    think=True,
                     surface="work_discussion",
-                    timeout_seconds=30,
+                    timeout_seconds=120,
                 )
             reply = json.loads(raw).get("reply")
             if not isinstance(reply, str) or not reply.strip():

@@ -17,6 +17,7 @@ import { useEffect, useState } from "react";
 
 import { api } from "../../api";
 import type { TaskEvent, TaskSnapshot, TaskStatus } from "../../types";
+import { taskOutcomeLabel } from "../tasks/taskOutcome";
 import {
   ACTIVE_TASK_STATUSES,
   TERMINAL_TASK_STATUSES,
@@ -61,11 +62,6 @@ const STATUS_BADGE_CLASS: Record<TaskStatus, string> = {
   cancelled: "bg-zinc-500/15 text-zinc-200",
   interrupted: "bg-yellow-700/15 text-yellow-200",
 };
-
-function statusLabel(status: TaskStatus): string {
-  if (status === "awaiting_input") return "awaiting input";
-  return status;
-}
 
 function isActive(status: TaskStatus): boolean {
   return ACTIVE_TASK_STATUSES.has(status);
@@ -281,10 +277,11 @@ function ChildTaskRow({
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
-                STATUS_BADGE_CLASS[child.status] ?? "bg-white/5 text-ink-100/70"
+                STATUS_BADGE_CLASS[child.status === "done" && !child.objective_outcome?.verified
+                  ? "paused" : child.status] ?? "bg-white/5 text-ink-100/70"
               }`}
             >
-              {statusLabel(child.status)}
+              {taskOutcomeLabel(child)}
             </span>
             <span className="break-words text-xs font-medium text-ink-100/90">
               {child.title || child.handler_name}
@@ -425,10 +422,11 @@ function TaskRow({
           <div className="flex items-center gap-2">
             <span
               className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
-                STATUS_BADGE_CLASS[task.status] ?? "bg-white/5 text-ink-100/70"
+                STATUS_BADGE_CLASS[task.status === "done" && !task.objective_outcome?.verified
+                  ? "paused" : task.status] ?? "bg-white/5 text-ink-100/70"
               }`}
             >
-              {statusLabel(task.status)}
+              {taskOutcomeLabel(task)}
             </span>
             <span className="truncate text-sm font-medium text-ink-100">
               {task.title || task.handler_name}

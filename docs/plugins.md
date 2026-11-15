@@ -142,6 +142,28 @@ This is exactly how the bundled **browser** plugin registers `BrowserPerception`
 to reshape `browser_snapshot` output — the parity piece a declarative manifest
 could not express.
 
+The optional `MiddlewareResult.postcondition` accepts an SDK
+`OperationPostcondition(resource, expected=..., observed=..., requested_resource=...)`. A mutation
+adapter derives exact expected fields from the admitted operation arguments;
+a read adapter supplies observed fields for the same namespaced resource. These
+are trusted plugin data, never fields copied from model instructions or parsed
+from arbitrary tool prose. The host checks ownership, configuration generation,
+dispatch ordering, source partiality and exact JSON values. A later contradictory
+read cannot be hidden by leaving its result ID uncited. Proof payloads are
+bounded to 8 KB and add no permission to dispatch extra operations.
+Adapters that receive an explicit provider object ID should preserve it as
+`resource` and the admitted request's ID as `requested_resource`; a mismatch is
+rejected even for read-only claims. The host cannot reconstruct that identity
+from arbitrary prose when the adapter supplies no structured target.
+
+For example, a notes adapter could declare `expected={"checked": True}` on a
+check-item operation and `observed={"checked": True}` on the subsequent list
+read. The bundled filesystem adapter uses content hashes for full text writes
+and reads, preserving whitespace. Partial head/tail reads cannot verify a whole
+note. Mutations without a suitable adapter can establish acknowledged submission
+only, rather than a verified persisted/delivered effect. Read-only research still
+uses the source-bound semantic review. No code execution facility is involved.
+
 ## Fast tools (brain lane)
 
 Where MCP servers + skills + middleware live on the **background/worker** lane

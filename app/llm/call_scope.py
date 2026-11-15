@@ -58,6 +58,7 @@ class CallScope:
     elapsed_seconds: float = 0.0
     reported_tokens: int = 0
     request_deadline: float | None = None
+    reasoning_required: bool = False
 
     def remaining_timeout(self, requested: float) -> float:
         if self.request_deadline is None:

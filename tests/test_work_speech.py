@@ -243,12 +243,20 @@ def make_reports(env, *, fail=False):
             "contract": {"objective": "Find the orchard colour"},
         },
     )
+    from app.core.tasks.work_evidence import evidence_record
+    from work_review_helpers import certificate, supported_review
+
+    child = store.create(user_id="u", handler_name="test_reader", title="Read orchard",
+                         parent_task_id=tid)
+    store.mark_done(child, result={"content": "The orchard is blue. Found it."})
+    sources = [evidence_record(store.get(child))]
     store.mark_done(
         tid,
         result={
             "outcome": "success",
             "content": "The orchard is blue.",
-            "verification": {"status": "supported"},
+            "steps": [{"child_id": child, "status": "done"}],
+            "verification": certificate("The orchard is blue.", sources),
         },
     )
     calls, queued, shown, session = [], [], [], ["u:s"]
@@ -256,7 +264,7 @@ def make_reports(env, *, fail=False):
     def local(messages, **kwargs):
         calls.append(kwargs)
         if kwargs.get("surface") == "work_report_review":
-            return json.dumps({"supported": True}), None
+            return supported_review(messages), None
         assert "orchard" in messages[1]["content"]
         if fail:
             raise RuntimeError("local model unavailable")

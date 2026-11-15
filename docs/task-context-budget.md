@@ -47,6 +47,9 @@ omitted records remain explicit. Cited IDs must belong to successful child
 results, and a review missing a cited record does not run or approve completion.
 Acknowledgement is still not read-back proof. Work discussion uses the same
 accounting and preserves the latest user question; it cannot dispatch tools.
+Review also retains a compact host-selected outcome index, including uncited
+failures and subsequent observations. Whole-answer claim coverage and exact
+source quotations are validated before a completion certificate is issued.
 
 ## Plugin-owned current observations
 
@@ -84,14 +87,25 @@ remain in the plugin; the host hook is generic.
 The existing priority order remains conversation workers, maintenance workers,
 then task inference. Gate admission is FIFO within each tier. Running inference
 is non-preemptive; shorter task calls create more frequent scheduling points.
-Routine browser decisions disable thinking and reserve up to 384 answer tokens.
-Planning/recovery reserve up to 768 answer tokens and 512 thinking tokens, scaled
-down for small windows. Per-call Ollama headroom is capped through a context-local
-scope, leaving the provider's normal cognition settings unchanged.
+Workflow planning, inference-only repair, completion review, report generation,
+report review and work discussion enable reasoning, including routine browser
+decisions. Each reserves up to 8,192 reasoning tokens, scaled down to at most an
+eighth of the configured window. Routine browser decisions retain a 384-token
+answer cap; other planning answers retain their existing cap up to 768. Structured
+completion/report reviews scale their answer allowance with the proposed answer,
+up to 3,072 tokens, to leave room for claim/criterion records. All output reserves
+are included before packing input; the normal input target remains up to 12,288.
+This changes generation allowance, not the configured model context. There is
+no automatic context increase to 90k. Per-call headroom remains context-local;
+cognition and speech-guide distillation keep their own policies.
 
-Inference calls have a 30-second request allowance bounded further by remaining
-work time. The provider's automatic no-thinking fallback shares the task call's
-remaining deadline and skips retries after cancellation. These are cooperative
+Planning and completion calls have a 120-second request allowance bounded further
+by remaining work time. Report composition and review share a 180-second active
+attempt allowance; the initial composition call is capped at 120 seconds. Work
+discussion calls are capped at 120 seconds. A reasoning-required workflow scope
+does not silently retry with thinking disabled when reasoning exhausts its output
+allowance. Empty/truncated responses follow the ordinary bounded failure/repair
+path. These are cooperative
 client limits, not a guarantee of immediate GPU preemption or cancellation of an
 already-dispatched external operation.
 
@@ -106,7 +120,9 @@ Time reservations are zero while queued. Once admitted, a bounded reservation
 protects crash/restart accounting; returned calls replace it with measured active
 time. Completed inference-only repair attempts retain their reported token cost
 even if a later attempt defers. Invalid planner JSON gets at most one bounded
-correction; repeated invalid operation arguments stop with saved progress. No
+correction. Missing successful-finish evidence IDs receive a targeted correction
+with the available owned IDs before consuming a semantic-review attempt;
+repeated invalid operation arguments stop with saved progress. No
 repair automatically repeats a dispatched browser/file operation.
 
 `GatedChatClient` captures an immutable client/gate target for each call, so a

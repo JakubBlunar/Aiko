@@ -1,0 +1,82 @@
+"""One objective-outcome contract for API, speech, promises and learned methods.
+
+Task status describes execution. Only a source-bound completion certificate
+establishes success; old model booleans are retained as unverified history.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+
+
+def digest(value) -> str:
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+    ).encode()).hexdigest()
+
+
+def certified_answer(result) -> bool:
+    if not isinstance(result, dict):
+        return False
+    check = result.get("verification") or {}
+    if not isinstance(check, dict):
+        return False
+    certificate = check.get("certificate") or {}
+    if not isinstance(certificate, dict):
+        return False
+    sources, criteria = certificate.get("sources"), certificate.get("criteria")
+    if (not isinstance(sources, dict) or not sources or not isinstance(criteria, list)
+            or not criteria or any(not isinstance(item, dict)
+                                  or type(item.get("index")) is not int
+                                  or type(item.get("supported")) is not bool for item in criteria)):
+        return False
+    return bool(
+        check.get("status") == "supported"
+        and check.get("missing") == []
+        and type(certificate.get("version")) is int and certificate["version"] == 1
+        and certificate.get("answer_digest") == digest(result.get("content", ""))
+        and certificate.get("sources")
+        and certificate.get("criteria")
+    )
+
+
+def certified_result(result) -> bool:
+    if not certified_answer(result):
+        return False
+    return all(item["supported"] for item in result["verification"]["certificate"]["criteria"])
+
+
+def outcome_for(status, result=None, *, workflow=False) -> dict:
+    result = result if isinstance(result, dict) else {}
+    state = status
+    verified = False
+    if status == "done":
+        value = result.get("outcome")
+        value = value if isinstance(value, str) else None
+        if value in {"partial", "blocked", "uncertain", "missing_capability", "submitted"}:
+            state = value
+        elif value in {"success", "nothing_found"}:
+            verified = certified_result(result)
+            state = ("succeeded" if value == "success" else "nothing_found") if verified else (
+                "unverified"
+            )
+        else:
+            state = "unverified" if workflow else "finished"
+    labels = {
+        "succeeded": "Completed", "nothing_found": "No matching result",
+        "submitted": "Submitted; outcome unverified", "partial": "Partial result",
+        "blocked": "Blocked", "uncertain": "Needs review",
+        "missing_capability": "Capability unavailable", "unverified": "Result unverified",
+        "finished": "Execution finished", "running": "Working", "paused": "Waiting",
+        "awaiting_input": "Needs your answer", "failed": "Failed",
+        "cancelled": "Cancelled", "interrupted": "Interrupted",
+    }
+    return {"version": 1, "state": state, "verified": verified,
+            "label": labels.get(state, "Outcome unknown")}
+
+
+def task_outcome(row) -> dict:
+    return outcome_for(row.status, getattr(row, "result", None), workflow=(
+        getattr(row, "handler_name", "") == "goal_workflow"
+        or (getattr(row, "state", None) or {}).get("harness_version") == 1
+    ))

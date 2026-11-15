@@ -211,6 +211,8 @@ def _format_success_bullet(cue: TaskCue) -> str:
     """``- file_search "Q4 report" — found 3 documents (angle: …)``"""
     title = cue.title.strip() or "the task"
     summary = cue.summary.strip()
+    if cue.objective_state and not cue.objective_verified:
+        return f"- {title} — {cue.objective_label}. See saved work; do not claim verified success."
     if not summary:
         status_word = cue.status.strip() or "done"
         summary = status_word

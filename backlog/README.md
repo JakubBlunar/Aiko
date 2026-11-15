@@ -4,19 +4,19 @@ This folder owns unfinished work, future plans, reviews and historical rollout
 records. Current behavior belongs in [`docs/`](../docs/README.md). An old review
 describes its dated baseline; it is not a specification of the latest code.
 
-| Area | Start here |
-| --- | --- |
-| Workflow follow-ups and validation | [Current workflow backlog](plans/agent-workflows.md) |
-| Idle life, context and behavioral history | [Concept and observability proposal](plans/idle-life-context-and-observability.md) |
-| Personality and subsystem work | [Open index](personality/index.md) |
-| Completed personality work | [Shipped index](personality/shipped.md) |
-| Broader plugin/job platform design | [Platform roadmap](personality/plugin-system.md) |
-| Ordinary-use quality findings | [15 November worker review](reviews/ordinary-use-review-2026-11-15.md), [12 November review](reviews/ordinary-use-review-2026-11-12.md), [earlier follow-up](reviews/ordinary-use-follow-up.md) |
+| Area                                      | Start here                                                                                                                                                                                      |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow follow-ups and validation        | [Current workflow backlog](plans/agent-workflows.md)                                                                                                                                            |
+| Idle life, context and behavioral history | [Concept and observability proposal](plans/idle-life-context-and-observability.md)                                                                                                              |
+| Personality and subsystem work            | [Open index](personality/index.md)                                                                                                                                                              |
+| Completed personality work                | [Shipped index](personality/shipped.md)                                                                                                                                                         |
+| Broader plugin/job platform design        | [Platform roadmap](personality/plugin-system.md)                                                                                                                                                |
+| Ordinary-use quality findings             | [15 November worker review](reviews/ordinary-use-review-2026-11-15.md), [12 November review](reviews/ordinary-use-review-2026-11-12.md), [earlier follow-up](reviews/ordinary-use-follow-up.md) |
 
 ## Reviews
 
 - Workflows: [6 November harness audit](reviews/agent-harness-audit-2026-11-06.md),
-  [8 November Hermes comparison](reviews/hermes-harness-review-2026-11-08.md).
+  [8 November Hermes comparison](reviews/hermes-harness-review-2026-11-08.md)
 - Memory and workers: [producer audit](reviews/memory-producer-audit-2026-11-05.md),
   [boundary audit](reviews/memory-boundary-audit-2026-11-06.md),
   [worker audit](reviews/worker-quality-audit-2026-11-06.md),

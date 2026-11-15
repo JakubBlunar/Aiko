@@ -84,3 +84,21 @@ def test_partial_evidence_does_not_turn_into_confirmed_success(env):
     assert reports.deliver(*queued[0])
     assert "don't have a verified answer" in shown[0][1]
     assert "confirmed" not in shown[0][1]
+
+
+def test_certified_partial_facts_are_delivered_with_outcome_without_extra_model_calls(env):
+    from app.core.tasks.work_evidence import owned_records
+    from work_review_helpers import certificate
+
+    reports, tid, calls, queued, shown, _ = make_reports(env)
+    steps = env[1].get(tid).result["steps"]
+    sources = owned_records(env[2], tid, steps)
+    check = certificate("The orchard is blue.", sources)
+    check["certificate"]["criteria"][0]["supported"] = False
+    set_result(env, tid, {"outcome": "partial", "content": "The orchard is blue.",
+                          "steps": steps, "verification": check})
+    reports.tick()
+    assert not calls
+    assert reports.deliver(*queued[0])
+    assert "The orchard is blue." in shown[0][1]
+    assert "haven't completed the whole request" in shown[0][1]

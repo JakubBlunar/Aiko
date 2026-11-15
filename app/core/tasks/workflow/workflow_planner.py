@@ -53,7 +53,7 @@ ACTION_MISSING_CAPABILITY = "missing_capability"
 OUTCOME_SUCCESS = "success"
 OUTCOME_PARTIAL = "partial"
 OUTCOME_NOTHING_FOUND = "nothing_found"
-_VALID_OUTCOMES = frozenset((OUTCOME_SUCCESS, OUTCOME_PARTIAL, OUTCOME_NOTHING_FOUND))
+_VALID_OUTCOMES = frozenset((OUTCOME_SUCCESS, OUTCOME_PARTIAL, OUTCOME_NOTHING_FOUND, "submitted"))
 
 # Per-observation char cap applied BEFORE the global history budget.
 _OBSERVATION_CAP = 600
@@ -78,6 +78,7 @@ class PlannerStep:
     observation: str = ""
     child_id: int | None = None
     profile: str = "general"
+    effect: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,8 +212,12 @@ _SYSTEM_PROMPT = (
     '  "args": { ... },            // arguments for the chosen skill\n'
     '  "reason": "<one short sentence on why>",\n'
     '  "findings": "<summary, only when action=finish>",\n'
-    '  "outcome": "success | partial | nothing_found (only when finish)",\n'
-    '  "missing_capability": "<what you need, only when action=missing_capability>"\n'
+    '  "outcome": "success | partial | nothing_found | submitted (only when finish)",\n'
+    '  "missing_capability": "<what you need, only when action=missing_capability>",\n'
+    '  "evidence_ids": [2], // example only; use actual owned result IDs\n'
+    '  "profile": "<current work profile>",\n'
+    '  "plan": ["<short next steps>"],\n'
+    '  "notes": "<established facts and open questions>"\n'
     "}\n\n"
     "Rules:\n"
     "- Pick a skill from the catalogue by its exact name to make progress.\n"
@@ -223,6 +228,9 @@ _SYSTEM_PROMPT = (
     'plainly (e.g. "open and interact with a web page"). Do NOT use it '
     "just because a step failed.\n"
     "- Do NOT repeat an action that already ran with the same args.\n"
+    "- Success requires nonempty evidence_ids from successful owned results, never invented IDs.\n"
+    "- Use submitted when a mutation was acknowledged but its final effect is unverified; "
+    "include the acknowledged result IDs. This does not mean the goal was completed.\n"
     "- Do NOT invent skills or args that aren't in the catalogue.\n"
     "- Be HONEST about failure. If steps failed and you could not actually "
     'complete the goal, finish with outcome "partial" or "nothing_found" '
@@ -484,13 +492,14 @@ def decide_next_action(
         ctx.work and ctx.work.get("profile") == "browser" and not ctx.work.get("failures")
     )
     budget = TaskBudget.resolve(
-        context_window, answer=max_tokens, routine=routine, scale=estimate_scale
+        context_window, answer=max_tokens, routine=routine, scale=estimate_scale, reasoning=True
     )
     messages, selected, report = pack_planner(ctx, budget)
     valid = valid_skill_names & {row["name"] for row in selected}
     options: dict[str, object] = {"num_predict": budget.answer}
     scope = current_call_scope() or CallScope()
     scope.reasoning_tokens = budget.reasoning
+    scope.reasoning_required = True
     total_tokens, decision, repair = 0, None, False
     started, queued_at_start = time.monotonic(), scope.queue_seconds
     # The repair is an inference-only retry. No child operation has been admitted.
@@ -507,7 +516,7 @@ def decide_next_action(
                     options=options,
                     timeout_seconds=remaining,
                     format_json=True,
-                    think=bool(budget.reasoning and not attempt),
+                    think=True,
                     surface="workflow_planner",
                 )
             except (LlmCallCancelled, LlmCallDeferred):
@@ -563,23 +572,45 @@ def decide_next_action(
                 log.info("planner: undisclosed action=%s -> discovering contract", requested)
                 decision = PlannerDecision(action="discover", args={"names": [requested]})
                 break
+            available_ids = [step.child_id for step in ctx.steps
+                             if step.child_id and step.status == "done"]
+            missing_ids = bool(ctx.work is not None and decision.is_finish
+                               and decision.outcome in {"success", "nothing_found"}
+                               and (not decision.evidence_ids
+                                    or not set(decision.evidence_ids).issubset(available_ids)))
+            if missing_ids:
+                malformed = True
             if not malformed or attempt:
+                if malformed:
+                    decision = replace(decision, action=ACTION_FINISH, outcome=OUTCOME_PARTIAL,
+                                       findings="The planner could not provide a valid decision "
+                                       "with the required evidence references.")
                 break
+            instruction = (
+                "No operation was executed. Your successful finish omitted evidence_ids "
+                "or cited IDs outside the owned successful results. "
+                "Return the same answer only if supported, with evidence_ids selected from "
+                f"these owned successful results: {available_ids}. Do not rerun operations. "
+                "If these sources do not prove completion, finish partial and explain "
+                "what is missing."
+                if missing_ids else
+                "No operation was executed. Correct the response to "
+                "one JSON object using an exact exposed action name and valid args. "
+                "Keep the original goal and constraints. If the desired tool is absent "
+                "from SKILLS, use discover {names:[exact_tool_name]} to expose it first. "
+                "Use missing_capability or finish partial if discovery cannot help."
+            )
             correction = [
                 {"role": "assistant", "content": (raw or "")[:2000]},
                 {
                     "role": "user",
-                    "content": "No operation was executed. Correct the response to "
-                    "one JSON object using an exact exposed action name and valid args. "
-                    "Keep the original goal and constraints. If the desired tool is absent "
-                    "from SKILLS, use discover {names:[exact_tool_name]} to expose it first. "
-                    "Use finish with partial only if discovery cannot help.",
+                    "content": instruction,
                 },
             ]
             if message_tokens(messages + correction, budget.scale) > budget.input_limit:
                 break
             messages += correction
-            scope.reasoning_tokens = 0
+            scope.reasoning_tokens = budget.reasoning
             repair = True
     decision = decision or PlannerDecision(
         action=ACTION_FINISH, outcome=OUTCOME_PARTIAL, reason="planner inference budget exhausted"

@@ -709,6 +709,9 @@ export interface TaskInputRequest {
 }
 
 export interface TaskSnapshot {
+  objective_outcome?: {
+    version: 1; state: string; verified: boolean; label: string;
+  };
   work?: WorkState | null;
   id: number;
   user_id: string;

@@ -1,0 +1,1 @@
+"""Filesystem capability adapters."""

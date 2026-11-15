@@ -6,6 +6,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from work_review_helpers import supported_review
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.tasks.task_events import TaskEventStore
@@ -83,9 +84,7 @@ def test_profile_evidence_inspection_and_independent_review(work):
         def chat_json(self, messages, **kwargs):
             if kwargs["surface"] == "workflow_verify":
                 assert "TAIL_FACT: blue orchard" in messages[1]["content"]
-                return json.dumps(
-                    {"supported": True, "reason": "The inspected source supports it."}
-                ), None
+                return supported_review(messages), None
             self.calls += 1
             child = next((r for r in store.list_for_user("u") if r.parent_task_id), None)
             if self.calls == 1:
@@ -162,7 +161,8 @@ class ScriptedClient:
 
     def chat_json(self, messages, **kwargs):
         if kwargs["surface"] == "workflow_verify":
-            return json.dumps({"supported": self.supported, "reason": "Evidence checked."}), None
+            return (supported_review(messages) if self.supported else
+                    json.dumps({"supported": False, "reason": "Evidence not supported."})), None
         self.calls += 1
         decision = next(self.decisions)
         if callable(decision):
@@ -289,7 +289,7 @@ def test_claimed_success_without_owned_evidence_becomes_partial(work):
     row = wait_status(work[0], task_id, {"done", "failed"})
     assert row.status == "done", row.error
     assert row.result["outcome"] == "partial"
-    assert row.result["verification"]["status"] == "unsupported"
+    assert row.result["verification"]["status"] == "unverified"
 
 
 def test_terminal_transitions_cannot_overwrite_cancellation_or_success(work):
@@ -682,7 +682,7 @@ def test_deferred_review_resumes_without_repeating_planner(work, monkeypatch):
         def chat_json(self, messages, **kwargs):
             if kwargs["surface"] == "workflow_verify":
                 calls["review"] += 1
-                return '{"supported":true,"reason":"Saved evidence supports the answer."}', None
+                return supported_review(messages), None
             calls["planner"] += 1
             if calls["planner"] == 1:
                 return json.dumps(READ), None
@@ -801,7 +801,7 @@ def test_guidance_arriving_during_review_discards_old_completion(work):
             if kwargs["surface"] == "workflow_verify":
                 entered.set()
                 assert release.wait(5)
-                return '{"supported":true,"reason":"The original answer is supported."}', None
+                return supported_review(messages), None
             self.calls += 1
             if self.calls == 1:
                 return json.dumps(READ), None

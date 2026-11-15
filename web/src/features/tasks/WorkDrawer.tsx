@@ -5,17 +5,17 @@ import { TERMINAL_TASK_STATUSES } from "@/types";
 import { useWorkStore } from "./useWorkStore";
 import { useWorkController } from "./useWorkController";
 import { WorkResultView } from "./WorkResultView";
+import { taskOutcomeLabel } from "./taskOutcome";
 
 function stateLabel(task: TaskSnapshot) {
+  if (TERMINAL_TASK_STATUSES.has(task.status)) return taskOutcomeLabel(task);
   if (task.phase === "budget_exhausted") return "Allowance reached";
   if (task.phase === "user_pause") return "Paused by you";
   if (task.phase === "waiting_child") return "Operation in progress";
   if (task.phase === "waiting_model") return "Waiting for the shared model";
   if (task.phase === "scheduled") return "Waiting to continue";
   if (task.status === "awaiting_input") return "Needs your answer";
-  if (task.result?.outcome === "partial") return "Partial result";
-  if (task.result?.outcome === "uncertain") return "Needs review";
-  return task.status === "done" ? "Completed" : task.status;
+  return taskOutcomeLabel(task);
 }
 
 

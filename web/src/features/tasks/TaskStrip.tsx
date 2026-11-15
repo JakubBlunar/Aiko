@@ -29,6 +29,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/api";
 import { useTasksStore } from "@/stores/useTasksStore";
 import type { TaskSnapshot, TaskStatus } from "@/types";
+import { taskOutcomeLabel } from "./taskOutcome";
 
 /** How long a terminal chip stays visible after its ``completed_at``
  * before the sweep fades it. The grace window is generous enough
@@ -58,16 +59,6 @@ const STATUS_ICON: Record<TaskStatus, string> = {
   interrupted: "🔌",
 };
 
-const STATUS_LABEL: Record<TaskStatus, string> = {
-  running: "running",
-  awaiting_input: "waiting on you",
-  paused: "paused",
-  done: "done",
-  failed: "failed",
-  cancelled: "cancelled",
-  interrupted: "interrupted",
-};
-
 function isTerminal(status: TaskStatus): boolean {
   return (
     status === "done" ||
@@ -91,8 +82,9 @@ export function TaskChip({
 }: TaskChipProps) {
   const [freeText, setFreeText] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const icon = STATUS_ICON[task.status] ?? "•";
-  const statusLabel = STATUS_LABEL[task.status] ?? task.status;
+  const icon = STATUS_ICON[task.status === "done" && !task.objective_outcome?.verified
+    ? "paused" : task.status] ?? "•";
+  const statusLabel = taskOutcomeLabel(task);
   const terminal = isTerminal(task.status);
   const options = task.input_request?.options || [];
   const hasOptions = task.status === "awaiting_input" && options.length > 0;

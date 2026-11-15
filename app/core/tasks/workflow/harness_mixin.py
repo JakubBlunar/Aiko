@@ -261,7 +261,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 self._save(task_id, state)
                 raise LlmCallDeferred()
             state["active_reserved"] = min(
-                30, max(0, state["limits"]["active_seconds"] - state["active_seconds"])
+                120, max(0, state["limits"]["active_seconds"] - state["active_seconds"])
             )
             if not self._save(task_id, state):
                 raise LlmCallCancelled()
@@ -310,9 +310,15 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 task_id,
                 request["findings"],
                 request["evidence_ids"],
-                min(30, remaining),
+                min(120, remaining),
+                partial=request["outcome"] == "partial",
                 **self._context_options(state),
             )
+        if check["status"] == "supported":
+            from app.core.tasks.work_evidence import owned_records, certificate_current
+            records = owned_records(self._orchestrator, task_id, state["steps"])
+            if not certificate_current(check.get("certificate"), records):
+                check = {"status": "outdated", "reason": "Source evidence changed during review."}
         state["verification"] = check
         if check.get("budget"):
             self._record_context_budget(state, emit, "review", check["budget"])
@@ -398,7 +404,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                             steps=[
                                 PlannerStep(
                                     **{
-                                        key: step[key]
+                                        key: step.get(key, "")
                                         for key in (
                                             "skill",
                                             "args",
@@ -406,6 +412,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                                             "observation",
                                             "child_id",
                                             "profile",
+                                            "effect",
                                         )
                                     }
                                 )
@@ -440,7 +447,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                         max_tokens=self._planner_max_tokens,
                         **self._context_options(state),
                         timeout_seconds=min(
-                            30, max(1, state["limits"]["active_seconds"] - state["active_seconds"])
+                            120, max(1, state["limits"]["active_seconds"] - state["active_seconds"])
                         ),
                     )
                 self._record_context_budget(state, emit, "planner", decision.budget)
@@ -470,9 +477,31 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 if decision.profile in PROFILES:
                     state["profile"] = decision.profile
                 if decision.is_finish:
-                    if decision.outcome in {"success", "nothing_found"}:
+                    from app.core.services.response_text_service import strip_all_meta_tags
+
+                    if decision.outcome == "submitted":
+                        rows = [self._orchestrator.get(cid) for cid in decision.evidence_ids]
+                        accepted = bool(rows) and all(
+                            row and row.parent_task_id == task_id and row.status == "done"
+                            and (row.result or {}).get("receipt", {}).get("status")
+                            == "acknowledged"
+                            for row in rows
+                        )
+                        state["verification"] = {"status": "unverified", "reason": (
+                            "Submission acknowledged; the final effect is unverified."
+                            if accepted else "No owned acknowledgement establishes submission."
+                        )}
+                        self._finish_work(task_id, state, emit,
+                                          "submitted" if accepted else "partial",
+                                          "The operation was accepted, but its final outcome "
+                                          "has not been verified." if accepted else
+                                          "I could not verify that the operation was submitted.")
+                        return
+                    if decision.outcome in {"success", "nothing_found"} or (
+                        decision.outcome == "partial" and decision.evidence_ids
+                    ):
                         state["review_request"] = {
-                            "findings": decision.findings,
+                            "findings": strip_all_meta_tags(decision.findings),
                             "evidence_ids": decision.evidence_ids,
                             "outcome": decision.outcome,
                         }
@@ -662,6 +691,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 child_id=pending["child_id"],
                 args=_short_args(pending["args"]),
                 profile=pending["profile"],
+                effect=pending["effect"],
             )
             live_skill = self._skills.get(pending["skill"])
             if live_skill is None or _signature(live_skill) != pending["schema_revision"]:
@@ -777,7 +807,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
         return self._save(task_id, state)
 
     def _record_observation(
-        self, state, skill, status, text, *, child_id=None, args=None, profile=None
+        self, state, skill, status, text, *, child_id=None, args=None, profile=None, effect=""
     ):
         state["steps"].append(
             asdict(
@@ -788,9 +818,12 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                     observation=text[:5000],
                     child_id=child_id,
                     profile=profile or state["profile"],
+                    effect=effect,
                 )
             )
         )
+        if effect:
+            state["steps"][-1]["effect"] = effect
 
     def _native_action(self, task_id, state, decision, emit) -> bool:
         args = decision.args

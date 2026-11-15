@@ -324,6 +324,8 @@ class OllamaClient:
         from app.llm.call_scope import current_call_scope
 
         scope = current_call_scope()
+        if scope is not None and scope.reasoning_required:
+            return None
         if scope is not None:
             if scope.cancelled():
                 return None

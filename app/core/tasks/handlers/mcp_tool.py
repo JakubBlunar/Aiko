@@ -61,7 +61,7 @@ def _flatten_content(result: Any) -> tuple[str, int]:
             text_parts.append(text)
         else:
             non_text += 1
-    return "\n".join(p for p in text_parts if p).strip(), non_text
+    return "\n".join(p for p in text_parts if p), non_text
 
 
 class McpToolHandler:
@@ -142,6 +142,8 @@ class McpToolHandler:
                    "args_sha256": hashlib.sha256(
                        json.dumps(tool_args, sort_keys=True).encode()).hexdigest(),
                    "status": "acknowledged"}
+        from app.core.infra import timephrase
+        receipt["dispatched_at"] = timephrase.utcnow().isoformat()
         middleware_snapshot = tuple(self._middlewares_provider() if self._middlewares_provider
                                     else self._middlewares)
         try:
@@ -193,6 +195,11 @@ class McpToolHandler:
                 "source_artifact": artifact,
                 "truncated": len(perceived.content) > _CONTENT_CAP,
             }
+            from app.core.tasks.work_evidence import postcondition_payload
+
+            proof = postcondition_payload(getattr(perceived, "postcondition", None))
+            if proof is not None:
+                payload["postcondition"] = proof
             projection = getattr(perceived, "planner_context", None)
             if isinstance(projection, dict):
                 # Optional SDK result projection. Meaning/formatting belong to

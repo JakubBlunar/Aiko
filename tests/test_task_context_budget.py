@@ -248,7 +248,7 @@ def test_reported_token_counts_adjust_the_next_task_estimate_without_changing_nu
         context_window=65536,
     )
     assert decision.budget["next_estimate_scale"] >= 2
-    assert calls[0]["think"] is False
+    assert calls[0]["think"] is True
     assert calls[0]["options"]["num_predict"] <= 384
     assert "num_ctx" not in calls[0]["options"]
 

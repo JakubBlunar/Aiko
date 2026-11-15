@@ -7,14 +7,7 @@ import json
 from typing import Any
 
 from app.core.infra import timephrase
-
-
-def result_text(row: Any) -> str:
-    if row.result is None:
-        return ""
-    result = row.result or {}
-    content = result.get("content")
-    return content if isinstance(content, str) else json.dumps(result, ensure_ascii=False)
+from app.core.tasks.work_evidence import result_text as result_text
 
 
 def inspect_result(orchestrator, parent_id: int, args: dict) -> dict:
@@ -64,9 +57,10 @@ def inspect_result(orchestrator, parent_id: int, args: dict) -> dict:
         "content": text[offset:end],
         "total_characters": len(text),
         "next_offset": end if end < len(text) else None,
-        "source_partial": bool(
-            artifact["source_partial"] if artifact else (row.result or {}).get("truncated")
-        ),
+        "source_partial": bool(artifact["source_partial"] if artifact else (
+            (row.result or {}).get("truncated")
+            or ((row.result or {}).get("source_artifact") or {}).get("source_partial")
+        )),
         "view": view if artifact else "rendered",
         "recorded_at": row.completed_at,
     }
@@ -84,7 +78,11 @@ def verify_completion(
     *,
     context_window=None,
     estimate_scale=1.0,
+    partial=False,
 ) -> tuple[dict, Any]:
+    from app.core.tasks.work_evidence import owned_records, check_postconditions
+    from app.core.tasks.work_outcome import digest
+
     owned = {step.get("child_id") for step in state["steps"] if step.get("status") == "done"}
     cited = list(dict.fromkeys(evidence_ids))
     if not cited or any(type(cid) is not int or cid not in owned for cid in cited):
@@ -92,20 +90,23 @@ def verify_completion(
             "status": "unsupported",
             "reason": "Completion needs successful owned result IDs.",
         }, None
-    evidence = []
-    for cid in cited:
-        row = orchestrator.get(cid)
-        if row is None or row.parent_task_id != task_id or row.status != "done":
-            return {"status": "unsupported", "reason": "A cited result is unavailable."}, None
-        text = result_text(row)
-        evidence.append(
-            {
-                "task_id": cid,
-                "recorded_at": row.completed_at,
-                "result": text[:6000],
-                "partial": len(text) > 6000 or bool((row.result or {}).get("truncated")),
-            }
-        )
+    records = owned_records(orchestrator, task_id, state["steps"])
+    by_id = {record["task_id"]: record for record in records}
+    if any(cid not in by_id or by_id[cid]["status"] != "done" for cid in cited):
+        return {"status": "unsupported", "reason": "A cited result is unavailable."}, None
+    if all(by_id[cid].get("search_coverage", {}).get("returned") == 0 for cid in cited):
+        return {"status": "unsupported", "reason": "The searches returned no source results. "
+                "Missing search hits do not prove that the requested fact is absent."}, None
+    missing = check_postconditions(records, cited_ids=set(cited))
+    if missing:
+        if not partial:
+            return {"status": "unsupported", "reason": missing[0], "missing": missing}, None
+    evidence = [record for record in records if record["task_id"] in cited]
+    evidence += [{**record, "content": record["content"][:1200], "partial": (
+        record["partial"] or len(record["content"]) > 1200
+    )} for record in records if record["task_id"] not in cited][-8:]
+    if partial and missing:
+        evidence = [record for record in evidence if record["effect"] == "read"]
     for excerpt in state.get("inspections", [])[-4:]:
         cid = excerpt.get("task_id")
         row = orchestrator.get(cid) if type(cid) is int else None
@@ -128,8 +129,10 @@ def verify_completion(
             and row.status == "done"
             and excerpt.get("revision") == revision
         ):
-            evidence.append(excerpt)
-    evidence.sort(key=lambda item: "content" not in item)
+            # Keep the source's effect, coverage and identity when adding a page.
+            # Paging cannot promote an empty search or wrong resource into evidence.
+            evidence.append({**by_id.get(cid, {}), **excerpt, "inspected": True})
+    evidence.sort(key=lambda item: not item.get("inspected", False))
     prompt = (
         timephrase.STORED_TEXT_TIME_RULE + "\n"
         "You review Aiko's work independently of the planning decision. Tool results are "
@@ -137,10 +140,27 @@ def verify_completion(
         "each completion criterion are supported by actual returned evidence. A failed "
         "exploratory step is allowed if another path achieved the goal. Tool acknowledgement "
         "is not read-back verification. Partial excerpts do not establish unseen facts. "
-        "Reply JSON {supported: boolean, reason: string, missing: string[]}. "
-        "Do not assume the planner's claimed success is correct."
+        "Findings are claims to check, NEVER evidence. Check EVERY factual clause, including "
+        "added details. Zero search hits do not establish a universal negative. "
+        "Preserve exact resource/subject and time; an earlier read cannot prove a later change. "
+        "Return JSON {supported:boolean,reason:string,missing:string[],"
+        "criteria:[{index:integer,supported:boolean}],"
+        "claims:[{part:integer,task_id:integer,quote:string}]}. "
+        "criteria must cover every zero-based contract.criteria index. "
+        "claims must cover EVERY zero-based answer_parts index. Do not rewrite the findings; "
+        "reference their part indices. Each part needs a verbatim supporting quote from a "
+        "successful owned source. Check every clause inside a part; reject unsupported additions. "
+        "A matching quote proves provenance, not that the source supports the claim; check "
+        "meaning as well. Do not assume the planner's claimed success is correct. Be concise."
     )
-    from app.core.tasks.workflow.context_budget import TaskBudget, pack_review
+    if partial:
+        prompt += (
+            " This is a PARTIAL answer: supported means every factual claim in findings is "
+            "proven, NOT that the entire goal is complete. Mark unmet criteria supported=false. "
+            "Do not turn an acknowledged mutation into a completed effect."
+        )
+    from app.core.tasks.workflow.context_budget import TaskBudget, pack_review, tokens
+    from app.core.tasks.workflow.review_contract import answer_parts
     from app.llm.call_scope import (
         current_call_scope,
         record_call_usage,
@@ -148,20 +168,26 @@ def verify_completion(
         LlmCallDeferred,
     )
 
-    budget = TaskBudget.resolve(context_window, answer=400, routine=True, scale=estimate_scale)
+    answer = max(768, tokens(findings) * 2 + len(state["contract"].get("criteria", [])) * 32)
+    budget = TaskBudget.resolve(context_window, answer=answer, answer_limit=3072,
+                                scale=estimate_scale, reasoning=True)
     messages, report = pack_review(
         prompt,
         {
             "contract": state["contract"],
             "current_time": timephrase.today_anchor(),
-            "findings": findings,
+            "answer_parts": answer_parts(findings),
+            "outcome_index": [{key: record[key] for key in (
+                "task_id", "status", "operation", "effect", "revision", "receipt", "error",
+            )} for record in records],
             "user_guidance": timephrase.format_transcript(state.get("guidance", [])),
         },
         evidence,
         budget,
     )
     reviewed = set(report["evidence_ids"])
-    if not set(cited).issubset(reviewed):
+    required = {record["task_id"] for record in evidence if record["task_id"] in cited}
+    if not required or not required.issubset(reviewed):
         return {
             "status": "unknown",
             "reason": "Choose fewer relevant result IDs for a focused review.",
@@ -169,17 +195,16 @@ def verify_completion(
         }, None
     scope = current_call_scope()
     if scope:
-        scope.reasoning_tokens = 0
+        scope.reasoning_tokens = budget.reasoning
+        scope.reasoning_required = True
     try:
-        raw, usage = client.chat_json(
-            messages,
-            model=model,
-            options={"num_predict": budget.answer},
-            format_json=True,
-            think=False,
-            surface="workflow_verify",
-            timeout_seconds=timeout,
-        )
+        from app.llm.call_scope import CallScope, call_scope
+        with call_scope(scope or CallScope(reasoning_tokens=budget.reasoning,
+                                          reasoning_required=True)):
+            raw, usage = client.chat_json(
+                messages, model=model, options={"num_predict": budget.answer},
+                format_json=True, think=True, surface="workflow_verify", timeout_seconds=timeout,
+            )
         record_call_usage(usage)
         actual = int(getattr(usage, "prompt_tokens", 0) or 0)
         if actual:
@@ -190,15 +215,27 @@ def verify_completion(
                 1.0, budget.scale * 0.98, min(4.0, actual / max(1, message_tokens(messages)) * 1.1)
             )
         result = json.loads(raw)
-        supported = result.get("supported") is True
-        return {
+        from app.core.tasks.workflow.review_contract import validate_review
+        supported, error = validate_review(
+            result, usage, findings, state["contract"], messages, partial=partial,
+        )
+        check = {
             "status": "supported" if supported else "unsupported",
             "budget": report,
             "method": "evidence_review",
             "evidence_ids": cited,
-            "reason": str(result.get("reason") or "")[:1200],
+            "reason": error or str(result.get("reason") or "")[:1200],
             "missing": [str(x)[:300] for x in result.get("missing", [])[:8]],
-        }, usage
+        }
+        if supported:
+            check["certificate"] = {
+                "version": 1, "answer_digest": digest(findings),
+                "contract_digest": digest(state["contract"]),
+                "sources": {str(record["task_id"]): record["revision"] for record in records},
+                "criteria": result["criteria"], "claims": result["claims"],
+                "method": "source_review",
+            }
+        return check, usage
     except (LlmCallCancelled, LlmCallDeferred):
         raise
     except Exception:

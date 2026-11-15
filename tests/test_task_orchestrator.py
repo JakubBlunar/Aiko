@@ -886,7 +886,7 @@ class SnapshotHelperTests(unittest.TestCase):
             metadata={"source": "tool"},
         )
         snap = task_snapshot(row)
-        # Pinned field set — change is a wire break.
+        # Pinned public contract; additive fields must be deliberate.
         self.assertEqual(
             set(snap.keys()),
             {
@@ -897,12 +897,16 @@ class SnapshotHelperTests(unittest.TestCase):
                 "completed_at", "metadata",
                 # v17 — Brain Orchestration Phase 2
                 "phase", "parent_task_id", "heartbeat_at", "work",
+                "objective_outcome",
             },
         )
         self.assertEqual(snap["id"], 42)
         self.assertEqual(snap["user_id"], "alice")
         self.assertEqual(snap["handler_name"], "file_search")
         self.assertEqual(snap["status"], "running")
+        self.assertEqual(snap["objective_outcome"], {
+            "version": 1, "state": "running", "verified": False, "label": "Working",
+        })
         self.assertEqual(snap["progress"], 0.5)
         self.assertEqual(snap["last_message"], "halfway")
         self.assertEqual(snap["args"], {"query": "memory"})

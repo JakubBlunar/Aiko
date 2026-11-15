@@ -6,6 +6,8 @@ from app.core.infra.chat_database import ChatDatabase
 from app.core.tasks.task_store import TaskStore
 from app.core.tasks.workflow.procedural_learning import ProceduralLearning
 from app.core.tasks.workflow.skill_registry import WorkflowSkillRegistry, WorkflowSkill
+from app.core.tasks.work_evidence import evidence_record
+from work_review_helpers import certificate
 
 
 def test_methods_need_two_independent_requests_and_never_store_old_arguments(tmp_path):
@@ -48,7 +50,9 @@ def test_methods_need_two_independent_requests_and_never_store_old_arguments(tmp
             tid,
             result={
                 "outcome": "success" if success else "partial",
-                "verification": {"status": "supported" if success else "unsupported"},
+                "verification": certificate("", [evidence_record(store.get(step["child_id"]))
+                                                  for step in steps]) if success else
+                {"status": "unsupported"},
             },
         )
         mid = learner.record(store.get(tid))

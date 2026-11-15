@@ -250,7 +250,9 @@ class CheckMyWorkTool:
                 "recent IDs, or task_id to inspect saved results/errors, including completed, "
                 "failed or cancelled tasks. This is read-only and starts nothing. Follow "
                 "next_offset with content_offset and revision for long JSON result fragments. "
-                "Unavailable/partial reads do not establish absence."
+                "Unavailable/partial reads do not establish absence. objective_outcome is "
+                "the authority for completion: status=done means execution finished, and "
+                "a legacy result.outcome=success alone is not verified success."
             ),
             parameters={
                 "type": "object",

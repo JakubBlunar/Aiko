@@ -48,6 +48,7 @@ shape is pinned by :mod:`tests.test_brain_log_fields`.
 from __future__ import annotations
 
 from app.core.tasks.task_runtime_mixin import TaskRuntimeMixin
+from app.core.tasks.work_outcome import outcome_for
 
 from app.core.tasks.task_execution_mixin import (
     TaskExecutionMixin,
@@ -970,6 +971,9 @@ class TaskOrchestrator(TaskExecutionMixin, TaskRuntimeMixin):
             status=STATUS_DONE,  # type: ignore[arg-type]
             title=row.title,
             result_summary=_summary_text(result),
+            objective_outcome=outcome_for(
+                STATUS_DONE, result, workflow=row.handler_name == "goal_workflow"
+            ),
             notify_aiko=notify_flag,
             visible_to_user=row.visible_to_user,
         )
@@ -1084,6 +1088,15 @@ class TaskOrchestrator(TaskExecutionMixin, TaskRuntimeMixin):
         ``last_emitted_event`` is always updated so tests that don't
         provide a queue can still verify what would have shipped.
         """
+        if isinstance(event, TaskResultEvent) and event.objective_outcome is None:
+            from dataclasses import replace
+            from app.core.tasks.work_outcome import task_outcome
+            try:
+                row = self._store.get(int(event.task_id, 16))
+            except (TypeError, ValueError):
+                row = None
+            if row is not None:
+                event = replace(event, objective_outcome=task_outcome(row))
         self.last_emitted_event = event
         if self._queue is None:
             return

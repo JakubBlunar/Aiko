@@ -42,12 +42,19 @@ class TaskBudget:
     scale: float = 1.0
 
     @classmethod
-    def resolve(cls, window=None, *, answer=768, routine=False, scale=1.0):
+    def resolve(cls, window=None, *, answer=768, routine=False, scale=1.0, reasoning=None,
+                answer_limit=768):
         window = int(window or 4096)
         window = max(256, window)
         margin = max(128, min(8192, math.ceil(window * 0.15)))
-        output = min(answer, 384 if routine else 768, max(64, window // 12))
-        reasoning = 0 if routine else min(512, window // 24)
+        output = min(answer, 384 if routine else answer_limit, max(64, window // 12))
+        # Workflow decisions and verification reason even on routine steps.
+        # Reserve a bounded allowance instead of expanding the context window.
+        enabled = reasoning if reasoning is not None else not routine
+        requested = 8192 if reasoning is True else (
+            reasoning if type(reasoning) is int else 512
+        )
+        reasoning = min(requested, window // 8) if enabled else 0
         hard = max(0, window - margin - output - reasoning)
         target = min(hard, max(2048, min(12288, window // 4)))
         return cls(window, hard, target, output, reasoning, margin, max(1, float(scale)))

@@ -1,6 +1,6 @@
 # Agentic workflow follow-ups
 
-Source status checked 12 November 2026. The current behavior is documented in
+Source status checked 15 November 2026. The current behavior is documented in
 [the agent harness](../../docs/agent-harness.md); the older
 [7 November plan](agent-harness-next-steps-2026-11-07.md) and
 [Hermes comparison](../reviews/hermes-harness-review-2026-11-08.md) retain their
@@ -20,10 +20,35 @@ historical findings, not a second open implementation checklist.
 | Procedural reuse | Compute-only learning from independent supported requests, with correction/source checks |
 | Scoped source pilot | Disabled-by-default `self_code` plugin with named host workspaces and read-only inspection |
 | Plugin settings lifecycle | Runtime enable/disable/apply, selective ownership, desired/applied state and generation revocation |
+| Objective outcomes | Shared versioned outcome reader across API, UI, work checks, reporting, promise resolution and learning; execution completion alone does not certify the objective |
+| Completion proof contracts | Owned source envelopes, host-selected outcome index, indexed answer-part/criterion review, exact source quotes and revision-bound certificates |
+| Typed effect verification | Generic SDK postcondition data and exact text-note write/read-back adapter; acknowledged submission remains distinct from final effect |
+| Workflow reasoning | Bounded reasoning in planning, repair, verification, speech and discussion; existing configured context retained |
 
 These are implementation facts. They do not close the ordinary-use checks below.
 
 ## Remaining product and platform work
+
+The [15 November correctness review](../reviews/agentic-correctness-review-2026-11-15.md)
+reproduced unsupported approvals through the production review functions with
+the configured local 9B model. Three isolated full-harness trials did not falsely
+succeed, but exposed missing-evidence-ID retries and missing verification tools.
+The resulting contracts above are now implemented in source. Planner finish
+examples include evidence IDs, missing/foreign IDs receive a targeted repair,
+and malformed/truncated/contradictory reviews cannot issue certificates. Pending
+reports bind source revisions and use certified facts; partial results and input
+questions avoid unnecessary narration calls. Empty native/fast search results
+cannot certify a factual absence. See the current guides for the exact behavior.
+
+Still open: typed adapters for additional noncoding capabilities, semantic
+calibration when sources lack structured target identity, and ordinary-use
+acceptance. The local reasoning probe still misjudged target identity and empty
+search scope before their structured host guards were applied. Matching source
+quotations alone do not establish semantic entailment. The final bounded
+acceptance probe passed three positive controls and stopped both structured
+negative cases, which is diagnostic evidence rather than a broad reliability
+measurement. Backend restart and frontend refresh are required to activate the
+source changes in an existing app process.
 
 1. **Evidence-aware work discussion.** Discussion is read-only and sees bounded
    saved excerpts (root result prefix and recent children); it cannot retrieve

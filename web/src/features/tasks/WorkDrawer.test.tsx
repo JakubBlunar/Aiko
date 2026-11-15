@@ -33,6 +33,16 @@ beforeEach(() => {
 });
 
 describe("work drawer", () => {
+  it("uses the shared objective outcome even when a terminal row retains an old phase", () => {
+    data.detail!.task = task({ status: "done", phase: "waiting_model",
+      result: { outcome: "blocked" },
+      objective_outcome: { version: 1, state: "blocked", verified: false, label: "Blocked" },
+    });
+    const html = renderToStaticMarkup(<WorkDrawer open mobile={false} docked width={420} />);
+    expect(html).toContain("Blocked");
+    expect(html).not.toContain("Completed");
+    expect(html).not.toContain("Waiting for the shared model");
+  });
   it("docks only with room for the unchanged avatar and usable chat", () => {
     expect(workCanDock(1920, false, false, 420, 420)).toBe(true);
     expect(workCanDock(1366, false, false, 420, 420)).toBe(false);

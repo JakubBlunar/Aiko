@@ -1034,6 +1034,11 @@ class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
         result = getattr(row, "result", None)
         if not isinstance(result, dict):
             return None
+        if getattr(row, "handler_name", "") == "goal_workflow":
+            from app.core.tasks.work_report_grounding import fallback, owned_evidence
+            return {"title": cue.title or "",
+                    "origin_prompt": str(meta.get("origin_prompt", "") or ""),
+                    "content": fallback(row, owned_evidence(row, orch, {}))}
         content = result.get("content")
         if not isinstance(content, str) or not content.strip():
             content = result.get("summary")
@@ -1534,10 +1539,10 @@ class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
         # by a finished background task about X closes the loop without
         # waiting for the next reply to mention it. Best-effort; lexical
         # match runs in promise_lifecycle.find_fulfilled.
-        if str(getattr(event, "status", "") or "") == "done":
+        if (getattr(event, "objective_outcome", None) or {}).get("verified") is True:
             try:
                 self._maybe_resolve_promises(
-                    f"{event.title or ''} {event.result_summary or ''}",
+                    event.result_summary or "",
                     source="task",
                 )
             except Exception:
@@ -1622,6 +1627,7 @@ class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
                 title=event.title,
                 status=event.status,
                 summary=event.result_summary,
+                objective_outcome=event.objective_outcome,
                 error=event.error,
             )
             # Floor (user-requested) tasks always report: arm so the cue
@@ -1723,6 +1729,7 @@ class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
                         title=event.title,
                         status=event.status,
                         summary=event.result_summary,
+                        objective_outcome=event.objective_outcome,
                         error=event.error,
                     )
                 except Exception:
@@ -1783,6 +1790,7 @@ class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
             title=event.title,
             status=event.status,
             summary=event.result_summary,
+            objective_outcome=event.objective_outcome,
             error=event.error,
             angle=verdict.angle if angle_enabled else "",
         )

@@ -122,6 +122,9 @@ class TaskCue:
     options: tuple[str, ...] | None = None
     error: str | None = None
     angle: str = ""
+    objective_state: str = ""
+    objective_verified: bool = False
+    objective_label: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +199,7 @@ class TaskCueStore:
         options: tuple[str, ...] | None = None,
         error: str | None = None,
         angle: str = "",
+        objective_outcome: dict | None = None,
     ) -> TaskCue:
         """Park a cue.
 
@@ -229,6 +233,9 @@ class TaskCueStore:
             options=tuple(options) if options else None,
             error=str(error) if error is not None else None,
             angle=str(angle or ""),
+            objective_state=str((objective_outcome or {}).get("state", "")),
+            objective_verified=(objective_outcome or {}).get("verified") is True,
+            objective_label=str((objective_outcome or {}).get("label", "")),
         )
         with self._lock:
             # Drop any prior cue for the same task id; the latest

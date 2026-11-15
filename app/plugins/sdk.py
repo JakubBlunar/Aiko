@@ -40,6 +40,21 @@ from app.plugins.settings_contract import PluginSettings
 
 
 @dataclass(frozen=True, slots=True)
+class OperationPostcondition:
+    """Plugin-owned proof data, never model/tool-text instructions.
+
+    A mutation declares expected fields for a namespaced resource. A later
+    read declares observed fields. The host matches ownership, generation,
+    ordering and exact values. This does not authorize any additional call.
+    """
+
+    resource: str
+    expected: dict[str, Any] | None = None
+    observed: dict[str, Any] | None = None
+    requested_resource: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MiddlewareResult:
     """What a tool-result middleware returns to reshape a tool result.
 
@@ -53,6 +68,7 @@ class MiddlewareResult:
     summary: str
     element_count: int = 0
     planner_context: dict[str, Any] | None = None
+    postcondition: OperationPostcondition | None = None
 
 
 @runtime_checkable
@@ -464,6 +480,7 @@ class PluginApi:
 
 
 __all__ = [
+    "OperationPostcondition",
     "MiddlewareResult",
     "ToolResultMiddleware",
     "PluginApi",

@@ -21,6 +21,7 @@ from app.core.tasks.task_handler import (
     TaskState,
 )
 from app.core.tasks.task_store import TaskRow
+from app.core.tasks.work_outcome import task_outcome
 
 log = logging.getLogger("app.task_orchestrator")
 
@@ -60,6 +61,7 @@ def task_snapshot(row: TaskRow) -> dict[str, Any]:
     """
     return {
         "id": int(row.id),
+        "objective_outcome": task_outcome(row),
         "work": (
             {
                 key: row.state.get(key)

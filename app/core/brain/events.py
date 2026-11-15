@@ -225,6 +225,7 @@ class TaskResultEvent:
     status: Literal["done", "failed", "cancelled"] = "done"
     title: str = ""
     result_summary: str = ""
+    objective_outcome: dict | None = None
     error: str | None = None
     notify_aiko: bool = True
     visible_to_user: bool = True

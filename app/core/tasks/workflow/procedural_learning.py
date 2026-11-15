@@ -10,6 +10,7 @@ from app.core.proactive.idle_worker import WorkSignal
 from app.core.tasks.workflow.operation_contract import input_schema
 from app.core.tasks.workflow.profiles import supports
 from app.core.tasks.workflow.discovery import terms
+from app.core.tasks.work_outcome import task_outcome
 
 METHOD_SCHEMA = """
 CREATE TABLE IF NOT EXISTS work_methods (
@@ -65,11 +66,7 @@ class ProceduralLearning:
 
     def record(self, row):
         conn = self.db._get_conn()
-        supported = (
-            row.status == "done"
-            and (row.result or {}).get("outcome") == "success"
-            and (row.result or {}).get("verification", {}).get("status") == "supported"
-        )
+        supported = task_outcome(row)["verified"]
         evidence = self._evidence(row, allow_failures=not supported)
         method_id, revision = None, ""
         if supported and evidence:
@@ -168,8 +165,7 @@ class ProceduralLearning:
                 if (
                     not evidence
                     or evidence[1] != revision
-                    or row.status != "done"
-                    or (row.result or {}).get("verification", {}).get("status") != "supported"
+                    or not task_outcome(row)["verified"]
                 ):
                     continue
                 requests.add(request_id)
