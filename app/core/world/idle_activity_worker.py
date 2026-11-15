@@ -80,6 +80,7 @@ from app.core.world.idle_activity_plan import (
     RoomSnapshot,
 )
 from app.core.infra import timephrase
+from app.core.world.idle_life_trace import traced_worker, emit
 
 if TYPE_CHECKING:
     from app.core.memory.pursuit_notes import PursuitNoteWriter
@@ -361,6 +362,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             needs_llm=bool(self._ollama is not None and self._model),
         )
 
+    @traced_worker
     def run(self) -> dict[str, Any]:
         if self._enabled_provider is not None:
             try:
@@ -420,6 +422,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
                 self._restore_moved_items(chain, keep_id=None)
                 log.warning("away activity failed: key=%s", beat.key, exc_info=True)
                 return {"fired": 0, "errored": True, "reason": "world_action_failed"}
+            emit("step_completed", {"key": beat.key, "activity": beat.activity,
+                                    "receipt": beat_effect, "summary": beat.summary})
             if beat_effect:
                 effects.append(beat_effect)
 
@@ -831,6 +835,12 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         intention: "day_intention.DayIntention | None" = None,
     ) -> ActivityPlan | None:
         candidates = snapshot.candidates
+        emit("candidates", {"scene_id": snapshot.scene_id, "eligible": [
+            {"key": plan.key, "activity": plan.activity, "location_id": plan.aiko_location_id,
+             "item_id": plan.item_effect.item_id if plan.item_effect else plan.move_item_id,
+             "home_action_token": plan.home_action_token}
+            for plan in candidates.values()
+        ], "availability": "Candidates are supported live actions, not model vetoes."})
         if not candidates:
             return None
 
@@ -838,12 +848,14 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         forced = self._forced_activity_key
         self._forced_activity_key = None
         if forced and forced in candidates:
+            emit("choice", {"route": "debug_forced", "key": forced})
             return candidates[forced]
 
         followup = getattr(self._world_store, "home_activity_followup", None)
         pending = followup(now=now) if callable(followup) else None
         if pending and pending.get("action"):
             action = pending["action"]
+            emit("choice", {"route": "household_followup", "key": action["action"]})
             return ActivityPlan(
                 key="home_" + action["action"], posture="standing", activity=action["action"],
                 summary=action["summary"], aiko_location_id=action["location_id"],
@@ -873,11 +885,21 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
                 intention=open_intent,
             )
             if llm_plan is not None:
+                emit("choice", {"route": "model", "key": llm_plan.key})
                 return llm_plan
+            emit("planning_fallback", {"reason": "model_failed_or_invalid_plan"})
 
         # H18 — weighted, anti-repetition draw over the available keys,
         # tilted by recency (journal), circadian period, mood + day-color,
         # plus K91's intention for the day.
+        from app.core.world.activity_selection import compute_weights
+
+        weights = compute_weights(
+            list(candidates), recent_keys=self._recent_keys(), period=self._read_period(),
+            valence=self._read_valence(), day_color=self._read_day_color(),
+            intent_key=intention.beat_key if intention and not intention.satisfied else "",
+            intent_boost=day_intention.INTENT_BOOST,
+        )
         chosen = weighted_pick(
             list(candidates.keys()),
             rng=self._rng,
@@ -894,6 +916,8 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         )
         if chosen is None or chosen not in candidates:
             return self._rng.choice(list(candidates.values()))
+        emit("choice", {"route": "weighted", "key": chosen, "weights": weights,
+                        "recent_keys": self._recent_keys()})
         return candidates[chosen]
 
     def _recent_keys(self) -> list[str]:

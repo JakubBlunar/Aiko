@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
 from app.core.infra.archive_schema import ARCHIVE_SCHEMA
+from app.core.world.idle_life_schema import IDLE_LIFE_SCHEMA
 from app.core.infra.message_outcomes import MessageOutcomesMixin, OUTCOME_SCHEMA
 from app.core.tasks.result_artifacts import RESULT_SCHEMA
 from app.core.persona.speech_guide import SPEECH_GUIDE_SCHEMA
@@ -20,7 +21,7 @@ from app.core.tasks.workflow.procedural_learning import METHOD_SCHEMA
 
 log = logging.getLogger("app.chat_database")
 
-_SCHEMA_VERSION = 51
+_SCHEMA_VERSION = 52
 
 # The single-user id every store defaults to. Only the v29 seed migration
 # needs it at this level: it writes ``cue_pool`` rows directly, before any
@@ -1519,6 +1520,7 @@ class ChatDatabase(MessageOutcomesMixin):
         conn.executescript(SPEECH_GUIDE_SCHEMA)
         conn.executescript(WORK_REPORT_SCHEMA)
         conn.executescript(METHOD_SCHEMA)
+        conn.executescript(IDLE_LIFE_SCHEMA)
         row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
         if row is None:
             # Fresh database: CREATE TABLE memories above already

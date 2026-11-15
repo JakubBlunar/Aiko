@@ -905,6 +905,7 @@ class WorldStore(
         self._local = threading.local()
         self._lock = threading.Lock()
         self._home_action_lock = threading.RLock()
+        self.idle_life_store = None
         self._locations: dict[int, Location] = {}
         self._items: dict[int, Item] = {}
         self._scenes: dict[int, Any] = {}

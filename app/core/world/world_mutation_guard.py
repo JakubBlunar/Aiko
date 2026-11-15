@@ -32,6 +32,8 @@ class WorldMutationDecision:
     mutation_classes: tuple[str, ...]
     situation_generation: int = 0
     checked_at: str = ""
+    situation_source_message_id: int = 0
+    situation_updated_at: str = ""
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -119,6 +121,10 @@ class WorldMutationGuard:
                     situation_generation=int(
                         getattr(snapshot, "generation", 0) or 0
                     ),
+                    situation_source_message_id=int(getattr(
+                        getattr(snapshot, "inferred", None), "source_message_id", 0) or 0),
+                    situation_updated_at=str(getattr(
+                        getattr(snapshot, "inferred", None), "updated_at", "") or ""),
                     checked_at=checked_at,
                 )
             )

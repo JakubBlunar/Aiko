@@ -1,5 +1,6 @@
 // Thin REST wrapper over the FastAPI endpoints.
 
+import type { IdleLifeHistory, IdleLifeSummary } from "./features/settings/world/idleLifeTypes";
 import { addBreadcrumb } from "./crashBreadcrumbs";
 import type { PluginRow, PluginsSnapshot, PluginUpdate } from "./features/settings/plugins/types";
 import { backendBase } from "./desktop/runtime";
@@ -905,6 +906,16 @@ export const api = {
   },
   // ── World (Aiko's room) ──────────────────────────────────────────
   getWorld: () => jsonFetch<WorldSnapshot>("/api/world"),
+  getIdleLifeHistory: (hours = 72, beforeId?: number, worker = "", kind = "", actor = "") => {
+    const query = new URLSearchParams({ hours: String(hours), worker, kind, actor });
+    if (beforeId != null) query.set("before_id", String(beforeId));
+    return jsonFetch<IdleLifeHistory>(`/api/world/idle-life?${query}`);
+  },
+  getIdleLifeSummary: (hours = 72) =>
+    jsonFetch<IdleLifeSummary>(`/api/world/idle-life/summary?hours=${hours}`),
+  getIdleLifeDecision: (runId: string) =>
+    jsonFetch<{ events: import("./features/settings/world/idleLifeTypes").IdleLifeEvent[] }>(
+      `/api/world/idle-life/decisions/${encodeURIComponent(runId)}`),
   patchWorldState: (patch: WorldStatePatch) =>
     jsonFetch<{ state: WorldSnapshot["state"] }>("/api/world/state", {
       method: "PATCH",

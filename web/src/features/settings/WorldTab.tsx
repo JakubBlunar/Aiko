@@ -16,6 +16,7 @@ import { CheckboxField } from "@/components/CheckboxField";
 import { Toggle } from "@/components/Toggle";
 import { Section } from "./SettingsSection";
 import { WorldSceneBar } from "./WorldSceneBar";
+import { WorldIdleLife } from "./WorldIdleLife";
 import { WorldHousehold } from "./WorldHousehold";
 import { SettingsSections } from "./SettingsSections";
 import { WorldItemRow as ItemRow } from "./world/WorldItemRow";
@@ -185,6 +186,7 @@ export function WorldTab({
     <div className="space-y-4">
       {error ? <p role="alert" className="text-xs text-rose-200">{error}</p> : null}
       <SettingsSections area="World" sections={[
+        { id: "idle-life", label: "Idle life", content: <WorldIdleLife /> },
         { id: "overview", label: "Overview", content: (<><Section title="Right now">
         <p className="text-xs text-ink-100/70">
           Aiko is{" "}

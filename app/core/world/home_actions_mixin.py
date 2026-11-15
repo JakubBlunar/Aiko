@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from app.core.infra import timephrase
+from app.core.world.idle_life_trace import current_run, item_changes
 from app.core.world.home_drinks import RECIPES, apply_drink_action, drink_actions
 from app.core.world.home_routines import ROUTINE_ACTIONS, apply_routine_action, routine_actions
 from app.core.world.home_belongings import (
@@ -218,6 +219,27 @@ class HomeActionsMixin:
                     (RECEIPTS_KEY, json.dumps((receipts + [receipt])[-RECEIPT_LIMIT:]),
                      at.isoformat()),
                 )
+                trace_store = getattr(self, "idle_life_store", None)
+                if trace_store is not None:
+                    run = current_run()
+                    old_drink = target.get("state", {}).get("home_vessel", {}).get("drink") or {}
+                    changed_target = next(
+                        (item for item in changes if item["id"] == target["id"]), target,
+                    )
+                    new_drink = (changed_target.get("state", {}).get("home_vessel", {})
+                                 .get("drink") or {})
+                    trace_store.record("action_effect", "home_actions", {
+                        **receipt, "resource_changes": item_changes(items, [
+                            next((row for row in changes if row["id"] == item["id"]), item)
+                            for item in items
+                        ] + [{**item, "id": iid}
+                             for item, iid in zip(additions, created_ids, strict=True)]),
+                        "drink_instance": str(action.item_id) + ":" + str(
+                            new_drink.get("prepared_at") or old_drink.get("prepared_at")
+                            or "unknown"),
+                    }, conn=conn, event_key="home:" + token,
+                        run_id=run.run_id if run else "",
+                        actor=run.actor if run else "autonomous" if autonomous else "conversation")
                 conn.commit()
             except BaseException:
                 conn.rollback()

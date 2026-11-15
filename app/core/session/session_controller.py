@@ -869,6 +869,17 @@ class SessionController(
             log.warning("WorldStore failed to initialise", exc_info=True)
             self._world_store = None
 
+        # Durable behavioral evidence is separate from the conversational journal.
+        self._idle_life_store = None
+        try:
+            from app.core.world.idle_life_store import IdleLifeStore
+
+            self._idle_life_store = IdleLifeStore(self._chat_db)
+            if self._world_store is not None:
+                self._world_store.idle_life_store = self._idle_life_store
+        except Exception:
+            log.warning("IdleLifeStore failed to initialise", exc_info=True)
+
         # Schema v43 — persisted identity-wide sleep lifecycle. It is not
         # session-scoped: every chat window, worker, and web client sees the
         # same generation-checked state.

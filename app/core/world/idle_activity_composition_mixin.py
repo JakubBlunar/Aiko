@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from app.core.infra import timephrase
+from app.core.world.idle_life_trace import emit
 from app.core.world import beat_detail
 from app.core.world import idle_creations
 from app.core.world.idle_activity_plan import (
@@ -141,6 +142,12 @@ class ActivityCompositionMixin:
             "references are authored material, not an actual visual observation. "
             "Otherwise home_action_token must be empty. "
         ) if home_actions else ""
+        emit("model_options", {"offered": [
+            {key: row[key] for key in ("token", "action", "item_id", "location_id") if key in row}
+            for row in home_actions.values()
+        ], "household_actions_total": len(home["actions"]),
+            "household_actions_omitted": max(0, len(home["actions"]) - len(home_actions)),
+            "writing_available": can_write, "unavailable_hint": home.get("unavailable_hint", "")})
         intent_line = ""
         if intention:
             intent_line = (

@@ -1,5 +1,34 @@
 # Idle workers
 
+## Idle-life behavioral history
+
+Idle-life diagnostics retain structured events for 14 days in SQLite, separately
+from the eight-entry conversational journal and the bounded household retry ring.
+World settings has an **Idle life** section with a 72-hour default, filters,
+pagination, expandable evidence and export of the visible events. REST
+`/api/world/idle-life`, `/summary` and `/decisions/{run_id}` and the MCP tools
+`get_idle_life_history`, `get_idle_life_summary`, `get_idle_life_decision` share
+one read-only store. Queries never force workers to run.
+
+Capture includes activity candidates/selection, model fallback, per-step receipts,
+run outcomes, resource/state changes, scheduler holds and passive world workers.
+Home effects are saved transactionally with their time-retained trace event;
+exact retries do not duplicate it. Other before/after world deltas are explicitly
+observational and can include concurrent edits. Direct worker/debug and
+conversation-owned household effects are distinguished from scheduled activity.
+
+Unchanged admissions are compressed with minute heartbeats and five-minute
+segments; gaps longer than 90 seconds start a new segment. A shared-situation
+hold records its generation and inferred source message/time. Recording time and
+retention use the real clock, independently of narrative/debug time. The UI shows
+capture coverage and failed writes, not an invented account of offline time.
+There is no historical backfill or new autobiographical-memory feed. Full
+artwork and private reasoning are not copied into diagnostic events.
+
+Restart is required to load the capture hooks. Fourteen days of history become
+available as they are collected; a newly installed recorder has no evidence for
+earlier days. Ordinary-use behavior still needs observation.
+
 ## Shared household capabilities
 
 The away-activity worker uses the same live home-action catalogue and executor

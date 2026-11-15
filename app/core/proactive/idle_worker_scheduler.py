@@ -61,6 +61,7 @@ from app.core.proactive.llm_contention import (
     llm_lane_multiplier,
 )
 from app.core.infra import timephrase
+from app.core.world.idle_life_trace import LIFE_WORKERS, execute_traced
 
 
 log = logging.getLogger("app.idle_worker_scheduler")
@@ -119,6 +120,8 @@ class IdleWorkerScheduler:
         idle_depth_provider: Callable[[], float] | None = None,
         contention_provider: Callable[[], str] | None = None,
         sleep_state_provider: Callable[[], Any] | None = None,
+        trace_store: Any = None,
+        trace_world_provider: Callable[[], Any] | None = None,
     ) -> None:
         """
         Parameters
@@ -188,6 +191,8 @@ class IdleWorkerScheduler:
         self._idle_depth_provider = idle_depth_provider
         self._contention_provider = contention_provider
         self._sleep_state_provider = sleep_state_provider
+        self._trace_store = trace_store
+        self._trace_world_provider = trace_world_provider
         self._last_depth_name: str | None = None
         self._workers: dict[str, IdleWorker] = {}
         self._records: dict[str, IdleWorkerRecord] = {}
@@ -288,7 +293,7 @@ class IdleWorkerScheduler:
             record = self._records.get(name)
         if worker is None or record is None:
             raise KeyError(f"unknown idle worker: {name!r}")
-        return self._run_one(worker, record)
+        return self._run_one(worker, record, actor="direct_worker")
 
     def get_records(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -498,12 +503,45 @@ class IdleWorkerScheduler:
         return policy != SLEEP_ONLY
 
     def _tick(self) -> None:
-        if not self._quiet():
+        quiet = self._quiet()
+        try:
+            if not quiet:
+                return
+            if self._pressure_enabled:
+                self._tick_demand()
+            else:
+                self._tick_legacy()
+        finally:
+            self._trace_tick(quiet)
+
+    def _trace_tick(self, quiet: bool) -> None:
+        if self._trace_store is None:
             return
-        if self._pressure_enabled:
-            self._tick_demand()
-        else:
-            self._tick_legacy()
+        try:
+            self._trace_store.observe("scheduler", "quiet" if quiet else "user_active", {
+                "sleep_status": self._sleep_status(), "contention": self._contention(),
+                "pressure_enabled": self._pressure_enabled,
+            })
+            with self._lock:
+                records = [(name, record.to_dict()) for name, record in self._records.items()
+                           if name in LIFE_WORKERS]
+            for name, record in records:
+                admission = record.get("last_admit_reason")
+                reason = (admission if admission in {"lane_full", "sleep_suppressed", "not_ready",
+                          "not_due_or_not_ready", "max_per_tick"} else
+                          record.get("last_probe_reason") or admission or "not_probed")
+                if not quiet:
+                    reason = "user_active"
+                guard = getattr(self._workers.get(name), "_mutation_guard", None)
+                owner = guard.last_decision() if guard is not None else {}
+                self._trace_store.observe(name, reason, {
+                    "admission": admission if quiet else "user_active",
+                    "lane": record.get("last_lane"), "sleep_status": self._sleep_status(),
+                    "hold_owner": {key: value for key, value in owner.items()
+                                   if key != "checked_at"},
+                })
+        except Exception:
+            log.warning("idle life admission capture failed", exc_info=True)
 
     def _is_ready(
         self, worker: IdleWorker, record: IdleWorkerRecord, now: datetime,
@@ -581,7 +619,9 @@ class IdleWorkerScheduler:
             if not self._sleep_allows(worker):
                 record.last_admit_reason = "sleep_suppressed"
                 continue
+            record.last_probe_reason = None
             if not self._is_ready_legacy(worker, record, now):
+                record.last_admit_reason = "not_due_or_not_ready"
                 continue
             due_total += 1
 
@@ -768,7 +808,9 @@ class IdleWorkerScheduler:
             if not self._sleep_allows(worker):
                 record.last_admit_reason = "sleep_suppressed"
                 continue
+            record.last_probe_reason = None
             if not self._is_ready(worker, record, now):
+                record.last_admit_reason = "not_ready"
                 continue
             due_total += 1
 
@@ -897,6 +939,15 @@ class IdleWorkerScheduler:
             )
 
     def _run_one(
+        self, worker: IdleWorker, record: IdleWorkerRecord, *, actor="autonomous",
+    ) -> dict[str, Any] | None:
+        world = self._trace_world_provider() if self._trace_world_provider else None
+        return execute_traced(
+            self._trace_store if worker.name in LIFE_WORKERS else None, worker.name,
+            lambda: self._run_one_untraced(worker, record), actor=actor, world=world,
+        )
+
+    def _run_one_untraced(
         self,
         worker: IdleWorker,
         record: IdleWorkerRecord,

@@ -41,6 +41,7 @@ from app.core.world.room_evolution import (
     stamp_book_title,
 )
 from app.core.infra import timephrase
+from app.core.world.idle_life_trace import traced_worker
 from app.core.proactive.cue_producer import CueProducer, StoreProvider
 
 if TYPE_CHECKING:
@@ -236,6 +237,7 @@ class HobbyWorker:
         )
         return "advance", milestone
 
+    @traced_worker
     def run(self) -> dict[str, Any]:
         if not bool(getattr(self._agent, "hobby_worker_enabled", True)):
             return {"skipped": True, "reason": "disabled"}

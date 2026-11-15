@@ -1186,6 +1186,8 @@ class SpeakingWorkersInitMixin:
 
                 mem = self._memory_settings
                 self._idle_scheduler = IdleWorkerScheduler(
+                    trace_store=getattr(self, "_idle_life_store", None),
+                    trace_world_provider=lambda: self._world_store,
                     wake_seconds=mem.idle_worker_wake_seconds,
                     is_quiet_callback=self._is_user_idle,
                     kv_get=self._chat_db.kv_get,
@@ -3316,6 +3318,8 @@ class SpeakingWorkersInitMixin:
 
                 mem = self._memory_settings
                 self._idle_scheduler = IdleWorkerScheduler(
+                    trace_store=getattr(self, "_idle_life_store", None),
+                    trace_world_provider=lambda: self._world_store,
                     wake_seconds=mem.idle_worker_wake_seconds,
                     is_quiet_callback=self._is_user_idle,
                     kv_get=self._chat_db.kv_get,

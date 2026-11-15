@@ -13,6 +13,9 @@ log = logging.getLogger("app.web.server")
 
 def register(app, session, hub, _broadcast_context_window, live_session) -> None:
     """REST routes: memory world routes."""
+    from app.web.rest import idle_life_routes
+
+    idle_life_routes.register(app, session)
     def _on_memory_updated(snapshot: dict[str, Any]) -> None:
         hub.broadcast({"type": "memory_updated", "memory": snapshot})
 

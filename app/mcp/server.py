@@ -57,6 +57,7 @@ def create_mcp_server(
         conversation_situation_tools,
         live_mode_tools,
         sleep_tools,
+        idle_life_tools,
     )
 
     core_tools.register(mcp, session)
@@ -75,5 +76,6 @@ def create_mcp_server(
     conversation_situation_tools.register(mcp, session)
     live_mode_tools.register(mcp, session)
     sleep_tools.register(mcp, session)
+    idle_life_tools.register(mcp, session)
     return mcp
 

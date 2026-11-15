@@ -7,6 +7,7 @@ describes its dated baseline; it is not a specification of the latest code.
 | Area | Start here |
 | --- | --- |
 | Workflow follow-ups and validation | [Current workflow backlog](plans/agent-workflows.md) |
+| Idle life, context and behavioral history | [Concept and observability proposal](plans/idle-life-context-and-observability.md) |
 | Personality and subsystem work | [Open index](personality/index.md) |
 | Completed personality work | [Shipped index](personality/shipped.md) |
 | Broader plugin/job platform design | [Platform roadmap](personality/plugin-system.md) |
