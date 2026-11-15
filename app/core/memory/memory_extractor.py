@@ -140,7 +140,14 @@ def _build_system_prompt(
         "write an Aiko self note in first person ('I offered ... if asked'), never "
         "a user event. No request yet means no request, not refusal of a promise.\n"
         "Each candidate needs content, kind, salience (0..1), temporal_type, provenance, "
-        "event_time (ISO or null), destination and evidence:[{message_id,quote}] (max 4). "
+        "event_time (ISO or null), destination and nonempty evidence:[{message_id,quote}] "
+        "(1-4 citations). Evidence is mandatory for paraphrases and tentative inferences "
+        "too; omitting it does not make an unsupported claim safe. Skip a candidate "
+        "when no NEW owner turn supports it. "
+        "evidence is ALWAYS the source-support array. event_time_evidence is a "
+        "separate optional timing object, never an array and never a replacement "
+        "for evidence. Without a stated time use event_time:null and omit "
+        "event_time_evidence.\n"
         "kind: fact|preference|event|relationship|self. self is Aiko only. "
         f"temporal_type: {valid_types}. durable is timeless; preference is enduring taste; "
         "ongoing is a current state/project with soft expiry; past_event actually happened; "
@@ -155,7 +162,12 @@ def _build_system_prompt(
         f"Return AT MOST {max(1, int(max_memories))} memories, each one short sentence "
         "around 120 characters; retain qualifiers even if that needs more space. "
         "This is an answer budget, not a requirement to produce entries. "
-        'Reply with JSON only: {"memories": [...]} or {"memories": []}.'
+        'JSON shape (replace the placeholder content, quote and ID with actual NEW '
+        'source material): {"memories":[{"content":"supported claim",'
+        '"kind":"fact","salience":0.5,"temporal_type":"durable",'
+        '"provenance":"inferred","basis":"reported","event_time":null,'
+        '"destination":"memory","evidence":[{"message_id":0,"quote":"exact owner words"}]}]}. '
+        'Reply with JSON only, or {"memories": []} when nothing useful qualifies.'
     )
 
 

@@ -18,6 +18,12 @@ Reported steps cannot cite plans or earlier generated reflections as execution;
 outcomes require a recorded outcome/completion receipt. Reflection and intention
 can still stand as Aiko's own thoughts. These structural checks do not prove that
 the wording follows semantically from the cited source.
+Reflection-labelled notes also pass the shared claim-wording checks against the
+actual content of their cited memories. They cannot acquire an unstated numeric
+event clock from recording timestamps or freshness metadata, or turn a plan into
+a completed action merely by labelling the note a reflection. New self-directed
+intentions can still propose an action and its schedule. These lexical checks do
+not verify arbitrary motives, causation, actor relations or all temporal wording.
 
 The worker records an assessment of the goal and offered source revisions.
 Unchanged context does not produce another model call or progress memory. The

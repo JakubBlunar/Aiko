@@ -145,6 +145,8 @@ _SYSTEM_PROMPT = (
     "vague ('soon', 'sometime') -- do not invent one.\n"
     "  - deadline_quote: exact timing phrase from the SAME commitment message, or null. "
     "The message timestamp is never a deadline. Keep unstated times unknown.\n"
+    "Timing must belong to the quoted commitment, not another event elsewhere "
+    "in that message (a launch countdown does not date a later promised reply).\n"
     "  - commitment_type: follow_up or immediate. Keep only meaningful follow_up "
     "commitments worth remembering beyond the current exchange. Immediate enactment, "
     "affectionate invitations, reassurance and ordinary bedtime actions are not lasting "
@@ -164,6 +166,8 @@ _SYSTEM_PROMPT = (
     "episode'), and looking forward to someone else's cookies are NOT the "
     "speaker's promises. Quote enough to retain I/we and the actual intention. "
     "Do not convert reassurance, a wish or an invitation into an obligation.\n"
+    "- A hope about one's present behavior is not a future commitment to change it. "
+    "A question being asked is not a promise to ask it later.\n"
     "- An offer ('If you want, I can remind you') is not an accepted promise. "
     "Only extract definite, unconditional follow-up commitments. Preserve "
     "conditional arrangements in ordinary memories instead; this promise ledger "
@@ -891,9 +895,15 @@ class PromiseExtractionWorker:
             )
             deadline_quote, precision, revision = "", "", ""
             if source is not None:
-                from app.core.memory.promise_evidence import supported_deadline, source_revision
+                from app.core.memory.promise_evidence import (
+                    supported_deadline, source_revision, deadline_in_commitment,
+                )
 
                 deadline_quote = item.get("deadline_quote")
+                # Timing elsewhere in the same message can date another event.
+                # A literal quote alone does not connect it to this commitment.
+                if not deadline_in_commitment(deadline_quote, quote, source["content"]):
+                    deadline_quote = ""
                 when, precision = supported_deadline(deadline_quote, source["content"], item_anchor)
                 when_text = _format_deadline(when) if when else ""
                 revision = source.get("revision") or source_revision(source)

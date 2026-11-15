@@ -67,6 +67,14 @@ def admissible(draft, offered):
     ids = draft["evidence_memory_ids"]
     if any(mid not in offered for mid in ids):
         return False
+    # 'Reflection' licenses feelings, not invented facts about its sources.
+    # Keep new self-directed intentions free to propose an action and its time.
+    if draft["note_kind"] != "intention":
+        from app.core.memory.claim_fidelity import refusal
+
+        quotes = [offered[mid].content for mid in ids]
+        if refusal(draft["note"], quotes, "reported"):
+            return False
     if draft["note_kind"] in {"reported_step", "reported_outcome"}:
         if not ids:
             return False

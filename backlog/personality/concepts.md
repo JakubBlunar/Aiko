@@ -56,7 +56,11 @@ is the next foundation; evidence-count or lifecycle tuning cannot establish it.
 
 ### L22 follow-up: post-restart memory quality cohort (6 Nov 2026)
 
-**Status: Fresh cohort reviewed 12 Nov; semantic follow-ups remain.**
+**Status: Fresh cohorts reviewed through 15 Nov; semantic follow-ups remain.**
+The [15 November follow-up](../reviews/ordinary-use-review-2026-11-15.md) closes an
+uncited-admission bypass and adds bounded meaning checks. Its 18-concept sample
+still exposes unsupported relations; missing history and unjudged axes remain
+explicit. No promotion-policy or historical-data changes were made.
 The [ordinary-use review](../reviews/ordinary-use-review-2026-11-12.md) records fresh
 source/actor/modality/time failures and bounded corrections. Correct citations
 do not establish justified interpretations. Review a separate post-fix cohort;

@@ -10,6 +10,8 @@ Source fidelity:
   reported. An inferred conclusion must be visibly tentative in content.
 - A stated plan followed by 'I am back' reports returning, not proof that every
   planned step was completed. Store only the supported part; do not fill gaps.
+  A return-only citation cannot supply routine details or establish a new plan.
+  Cite the actual plan/report; keep a question about what to do as a question.
 - Do not add often/always/usually/repeatedly to a single episode or turn a
   situational request into an enduring preference. Preserve conditions and negation.
 - A real citation does not prove its interpretation. Preserve the actor and
@@ -27,11 +29,39 @@ _RECUR = re.compile(r"\b(?:always|usually|often|repeatedly|routinely|regularly|e
 _CONDITION = re.compile(r"\b(?:when|while|during|unless|except|if|provided)\b", re.I)
 _NONACTUAL = re.compile(r"\b(?:not|never|didn't|haven't|would|could|might|will|if|plan|need to)\b",
                         re.I)
+_BARE_RETURN = re.compile(
+    r"^\s*(?:i(?: am|['\u2019]m) back|i(?: have|['\u2019]ve)? returned)"
+    r"\s*(?:[.!,:;]|$)", re.I,
+)
+_CLOCK = re.compile(r"\b(\d{1,2}):([0-5]\d)\s*(am|pm)?\b|\b(\d{1,2})\s*(am|pm)\b", re.I)
+
+
+def unsupported_clock(content, quotes):
+    """Check stated clocks, never timestamps or derived freshness deadlines.
+
+    This deliberately does not infer event timing from when a record was saved.
+    It covers numeric clocks, not general temporal entailment.
+    """
+    def clocks(text):
+        result = set()
+        for match in _CLOCK.finditer(text):
+            hour, minute, suffix, whole_hour, whole_suffix = match.groups()
+            h, m, period = int(hour or whole_hour), int(minute or 0), suffix or whole_suffix
+            if period and 1 <= h <= 12:
+                h = h % 12 + (12 if period.casefold() == "pm" else 0)
+            elif period or h > 23:
+                continue
+            result.add((h, m))
+        return result
+
+    return bool(clocks(content) - clocks(" ".join(quotes)))
 
 
 def refusal(content, quotes, basis):
     if not isinstance(basis, str) or basis not in {"reported", "inferred"}:
         return "invalid_claim_basis"
+    if unsupported_clock(content, quotes):
+        return "unsupported_clock"
     if re.search(r"\b(?:promis\w*|committ\w*|vowed|pledged)\b", content, re.I):
         from app.core.memory.promise_evidence import ownership_refusal
 
@@ -52,6 +82,17 @@ def refusal(content, quotes, basis):
     if (_CONDITION.search(" ".join(quotes)) and not _CONDITION.search(content)
             and basis == "reported"):
         return "lost_condition"
+    def bare_return(quote):
+        match = _BARE_RETURN.search(quote)
+        if not match:
+            return False
+        remaining = quote[match.end():].strip(" .!,:;0123456789")
+        return not remaining or remaining.endswith("?")
+
+    if (basis == "reported" and re.search(
+            r"\b(?:returned|back)\s+(?:from|after)\b|\b(?:plans?|intends?)\b", content, re.I)
+            and quotes and all(bare_return(q) for q in quotes)):
+        return "unreported_return_detail"
     if _COMPLETE.search(content):
         actual = [q for q in quotes if not _NONACTUAL.search(q)]
         stated = any(_COMPLETE.search(q) or re.search(r"\b(?:done|all set)\b", q, re.I)

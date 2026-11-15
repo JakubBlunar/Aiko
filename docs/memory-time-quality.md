@@ -25,6 +25,10 @@ server against that message's timestamp. Unstated, vague and unparseable times
 stay unknown; date-only wording cannot acquire an exact clock. The quoted
 timing and its precision remain in metadata. Immediate enactment and casual
 reassurance are excluded by the extraction contract.
+First-person wording alone is insufficient: a hope about present behavior or a
+wish to pay attention does not establish an owned follow-up commitment. Timing
+must be in the commitment's sentence or an adjacent stand-alone timing fragment;
+a countdown for another event elsewhere in the message cannot date the promise.
 
 A persisted source receipt and action comparison prevent an unchanged message
 from becoming another commitment through paraphrasing, deadline changes or
@@ -33,13 +37,27 @@ before model generation. Failed writes/calls retain retry opportunity. New
 messages and edited source windows are reconsidered, and explicit different
 commitments or genuinely stated new deadlines remain possible. This changes
 future writes, without deleting historical duplicates.
+For a single uncoordinated action, the literal commitment quote also participates
+in replay detection. Different generated action wording cannot mint another
+obligation from the same quote. Quotes containing coordinated actions still need
+the action comparison so distinct commitments remain possible.
 
 ## Claim wording and event-time precision
 
 The ordinary extractor now distinguishes a reported paraphrase from a tentative
 inference. Lexical backstops reject invented completion, unsupported frequency
-and dropped situational conditions. A plan plus a return report does not certify
-every planned action. These conservative checks are not a semantic verifier;
+and dropped situational conditions. Every batch candidate, including an inferred
+one, requires a nonempty literal citation to an offered new turn from its owner.
+Missing evidence produces a content-free `missing_evidence` refusal in the log;
+it cannot bypass fidelity checks or retain a model-authored `event_time`. Such a
+refusal is a lost candidate, not evidence of successful semantic abstention.
+Inline provisional self notes retain their separate admission contract.
+
+A plan plus a return report does not certify every planned action. A bare return
+does not supply routine details or a new intention; the actual plan/report must
+be cited, and a question remains a question. Numeric event clocks require stated
+source timing, with equivalent 12/24-hour representations allowed. Recording
+timestamps do not supply missing clocks. These conservative checks are not a semantic verifier;
 source-faithful wording and abstention are part of the model contract.
 
 `event_time_evidence` names a newly offered owner's message and its literal time

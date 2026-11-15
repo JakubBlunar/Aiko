@@ -77,6 +77,12 @@ def admit_memory(
     )
     accepted = not rejected and destination == "memory"
     fidelity = None
+    # Batch output must carry its own testimony, including tentative inferences.
+    # Otherwise omitting evidence bypasses fidelity AND event-time resolution.
+    # Inline self notes have a separate, deliberately provisional contract.
+    if writer == "extractor" and accepted and not validated:
+        return MemoryAdmission(False, "inferred", "scratchpad", None,
+                               {"claim_fidelity_refusal": "missing_evidence"})
     if validated and accepted:
         from app.core.memory.claim_fidelity import refusal, event_support
         from app.core.memory.promise_evidence import source_clause

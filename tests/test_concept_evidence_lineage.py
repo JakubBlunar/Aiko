@@ -187,7 +187,11 @@ def test_empty_citations_do_not_turn_an_input_window_into_support():
         [SimpleNamespace(id=1, session_id="synthetic", role="user", content="Hello.")],
         session_key="synthetic", writer="extractor",
     )
-    view, _ = _view({1: _memory(1, metadata=admission.metadata)}, [_edge(1)])
+    assert not admission.accepted
+    # Historical rows can still carry the old source-free admission receipt.
+    metadata = {"admission": {"source_message_ids": [], "evidence": [],
+                              "input_message_ids": [1]}}
+    view, _ = _view({1: _memory(1, metadata=metadata)}, [_edge(1)])
     report = view.evidence_independence(1)
     assert report["known_support_groups"] == 0
     assert report["unknown_sources"] == 1

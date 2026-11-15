@@ -102,6 +102,16 @@ class _FakeStore:
         self.added.append(kwargs)
         return object()
 
+    def _get_conn(self):
+        # Evidence-backed batches recheck their message receipts before writing.
+        # The real SQLite/edit path is covered in test_observation_receipts.
+        def execute(_sql, params):
+            row = next((r for r in self.source_db.rows if r.id == params[0]), None)
+            value = (row.role, row.content, row.session_id, row.created_at) if row else None
+            return SimpleNamespace(fetchone=lambda: value)
+
+        return SimpleNamespace(execute=execute)
+
 
 class _FakeEmbedder:
     def embed(self, _text):
@@ -112,15 +122,19 @@ def _memories(*contents: str) -> str:
     return json.dumps({
         "memories": [
             {"content": c, "kind": "fact", "salience": 0.5,
-             "temporal_type": "durable", "provenance": "stated"}
-            for c in contents
+             "temporal_type": "durable", "provenance": "stated",
+             "basis": "reported",
+             "evidence": [{"message_id": 1 + 2 * i, "quote": c}]}
+            for i, c in enumerate(contents)
         ]
     })
 
 
 def _build(db, ollama, store=None, **kwargs) -> MemoryExtractor:
+    store = store or _FakeStore()
+    store.source_db = db
     return MemoryExtractor(
-        db, store or _FakeStore(), _FakeEmbedder(), ollama,
+        db, store, _FakeEmbedder(), ollama,
         model="m",
         **kwargs,
     )
@@ -130,6 +144,19 @@ _KEY = "memory.extractor.watermark:s"
 
 
 class FirstRunTests(unittest.TestCase):
+    def test_uncited_output_is_a_recorded_refusal_not_a_saved_inference(self) -> None:
+        db = _FakeDb(count=6)
+        store = _FakeStore()
+        payload = json.dumps({"memories": [{
+            "content": "Jacob intends to bring a covered cup", "kind": "fact",
+            "temporal_type": "future_plan", "event_time": "2026-11-01T20:34:00Z",
+        }]})
+        with self.assertLogs("app.memory_extractor", level="INFO") as captured:
+            count = _build(db, _FakeOllama([payload]), store=store).extract_for_session("s")
+        self.assertEqual(count, 0)
+        self.assertFalse(store.added)
+        self.assertTrue(any("reason=missing_evidence" in line for line in captured.output))
+
     def test_bootstrap_uses_live_worker_context_with_reasoning_budget(self) -> None:
         from app.core.session.speaking_workers_init_mixin import SpeakingWorkersInitMixin
 
@@ -256,7 +283,10 @@ class WatermarkTests(unittest.TestCase):
         self.assertIn(f"unique {first}:", ollama.prompts[1])
 
     def test_partial_apply_retries_saved_candidates_without_rerunning_model(self) -> None:
-        db = _FakeDb(count=6)
+        db = _FakeDb()
+        for content in ("First useful fact", "Second useful fact", "Other context"):
+            db.append("user", content)
+            db.append("assistant", "Thanks for telling me.")
         store = _FakeStore()
         ollama = _FakeOllama([_memories("First useful fact", "Second useful fact")])
         extractor = _build(db, ollama, store=store)
@@ -392,11 +422,12 @@ class AdvanceRuleTests(unittest.TestCase):
     def test_d_a_salvaged_answer_advances(self) -> None:
         db = _FakeDb(count=10)
         db.kv[_KEY] = "10"
-        for _ in range(6):
-            db.append()
+        for i in range(6):
+            db.append(content="I live in Prague." if i == 0 else None)
         truncated = (
             '{"memories": [{"content": "Jacob lives in Prague", '
-            '"kind": "fact", "salience": 0.6}, {"content": "cut off'
+            '"kind": "fact", "salience": 0.6, "basis": "reported", "evidence": '
+            '[{"message_id": 11, "quote": "I live in Prague."}]}, {"content": "cut off'
         )
         ollama = _FakeOllama([truncated])
         store = _FakeStore()

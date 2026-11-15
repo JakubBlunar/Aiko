@@ -111,6 +111,10 @@ _REFLECTION_SYSTEM_PROMPT = (
     "It does not undo Aiko's definite commitment. A conditional offer stays open "
     "until accepted; a definite commitment stays distinct from that offer. "
     "Do not decide a person's needs, wishes or reactions from missing evidence."
+    " Recording timestamps and freshness deadlines do not date an action. Only "
+    "repeat an event clock stated in a cited source's actual content. Reflection "
+    "is not an exemption from preserving factual meaning; use intention for a "
+    "new action or schedule of your own."
 )
 
 _REFLECTION_USER_TEMPLATE = (

@@ -4,6 +4,14 @@ import re
 from app.core.infra import timephrase
 
 
+_OWNED_INTENT = re.compile(
+    r"\b(?:i|we)(?:['\u2019]ll\b|\s+(?:will\b|won['\u2019]t\b|(?:am|are) going to\b|"
+    r"(?:keep )?meaning to\b|(?:plan|intend|promise|commit|pledge|vow|need|have) "
+    r"(?:not )?to\b|go over\b))"
+    r"|\b(?:i['\u2019]m|we['\u2019]re) going to\b", re.I,
+)
+
+
 def source_clause(quote, source):
     """Expand a literal citation to its surrounding sentence, including conditions."""
     source = " ".join(source.split())
@@ -13,6 +21,10 @@ def source_clause(quote, source):
         return ""
     before = max(source.rfind(mark, 0, start) for mark in ".!?") + 1
     end = start + len(quote)
+    # A quote may already include its sentence terminator. Expanding past that
+    # point pulls the next sentence's condition or unrelated clock into scope.
+    if quote and quote[-1] in ".!?":
+        return source[before:end].strip()
     after = [pos + 1 for mark in ".!?" if (pos := source.find(mark, end)) >= 0]
     return source[before:min(after) if after else len(source)].strip()
 
@@ -55,6 +67,12 @@ def ownership_refusal(quote, source, *, allow_conditional=False):
                      r"\b(?:i|we)(?:['\u2019]ll|\s+(?:will|promise|intend|plan|commit))\b",
                      context, re.I):
         return "wish_not_commitment"
+    wish = re.search(r"\b(?:i|we)\s+(?:hope|wish)\b.*?\b(?:i|we)['\u2019]ll\b", context, re.I)
+    if wish and not re.search(r"\bbut\s+(?:i|we)(?:['\u2019]ll|\s+will)\b",
+                              context[wish.end():], re.I):
+        return "wish_not_commitment"
+    if not _OWNED_INTENT.search(owning_clause):
+        return "no_owned_commitment"
     return ""
 
 
@@ -62,6 +80,31 @@ def source_revision(source):
     from app.core.concepts.concept_support import revision_hash
 
     return revision_hash([source["role"], source["content"], str(source["created_at"])])
+
+
+def deadline_in_commitment(timing, quote, source):
+    """Keep local timing, including an adjacent stand-alone timing fragment.
+
+    A separate event's sentence is not timing evidence for this action. This is
+    a bounded scope check, not verification of arbitrary temporal relationships.
+    """
+    if not isinstance(timing, str) or not timing:
+        return False
+    source = " ".join(source.split())
+    owner = source_clause(quote, source)
+    if not owner:
+        return False
+    if timing in owner:
+        return True
+    fragment = source_clause(timing, source)
+    if not fragment or not re.fullmatch(
+        r"(?:by\s+)?" + re.escape(timing) + r"(?:\s+at (?:the )?latest)?",
+        fragment.strip(" .!?"), re.I,
+    ):
+        return False
+    first, second = sorted((source.find(owner), source.find(fragment)))
+    earlier = owner if first == source.find(owner) else fragment
+    return not source[first + len(earlier):second].strip()
 
 
 def supported_deadline(quote, source, anchor):
@@ -91,9 +134,32 @@ def same_source_actions(promise, memories, duplicate):
         meta = memory.metadata or {}
         receipt = meta.get("commitment_source") or {}
         mid = getattr(memory, "source_message_id", None) or receipt.get("message_id")
-        if (mid == promise.source_turn_id and mid is not None
-                and is_assistant_promise(memory) == (promise.who == "assistant")
-                and duplicate(words, [_content_words(_tokenize(promise_what(memory)))],
-                              min_overlap=2)):
+        if (mid != promise.source_turn_id or mid is None
+                or is_assistant_promise(memory) != (promise.who == "assistant")):
+            continue
+        if (same_commitment_quote(promise.raw_match, meta.get("source_quote", ""))
+                or duplicate(words, [_content_words(_tokenize(promise_what(memory)))],
+                             min_overlap=2)):
             return True
     return False
+
+
+def same_commitment_quote(left, right):
+    """Replay identity can survive a completely different generated paraphrase.
+
+    Only use a single uncoordinated action span. A broad quote containing several
+    actions cannot collapse those actions into one obligation.
+    """
+    def action(text):
+        text = " ".join(str(text).casefold().split()).replace("\u2019", "'")
+        intents = list(_OWNED_INTENT.finditer(text))
+        if len(intents) > 1:
+            return ""
+        if intents:
+            text = text[intents[0].start():]
+        if re.search(r"\band\b|[;.!?]\s+\S", text.rstrip(".!?")):
+            return ""
+        return text.strip(" .!?,;:")
+
+    a, b = action(left), action(right)
+    return bool(min(len(a), len(b)) >= 8 and (a in b or b in a))

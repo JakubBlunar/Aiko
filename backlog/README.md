@@ -10,7 +10,7 @@ describes its dated baseline; it is not a specification of the latest code.
 | Personality and subsystem work | [Open index](personality/index.md) |
 | Completed personality work | [Shipped index](personality/shipped.md) |
 | Broader plugin/job platform design | [Platform roadmap](personality/plugin-system.md) |
-| Ordinary-use quality findings | [12 November review](reviews/ordinary-use-review-2026-11-12.md), [earlier follow-up](reviews/ordinary-use-follow-up.md) |
+| Ordinary-use quality findings | [15 November worker review](reviews/ordinary-use-review-2026-11-15.md), [12 November review](reviews/ordinary-use-review-2026-11-12.md), [earlier follow-up](reviews/ordinary-use-follow-up.md) |
 
 ## Reviews
 

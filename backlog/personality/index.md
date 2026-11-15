@@ -25,6 +25,12 @@ exposed source-valid but semantically wrong interpretations across workers.
 Admission/time/research/accounting fixes are implemented; model meaning fidelity,
 positive structured-learning/arc cases and post-fix activation remain open.
 
+15 Nov follow-up: [worker meaning review](../reviews/ordinary-use-review-2026-11-15.md)
+uses a separate fresh cohort, closes an uncited-extraction bypass and adds bounded
+promise, timing and reflection checks. Diary/research quality, missed useful
+information and downstream semantic support remain open; no historical rows or
+promotion thresholds were changed.
+
 Implementation/test sources were inspected. No model calls, app startup, runtime settings changes or
 test runs were made in this documentation-only audit. SQLite observations are read-only dated
 aggregates, not a quality score. Earlier synthetic runs do not establish general naturalness or

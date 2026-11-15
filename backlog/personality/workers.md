@@ -55,7 +55,12 @@ worker-owned reduction rules. The helper and summary cursor repair are already i
 
 ## Memory/time quality: ordinary-use follow-up
 
-**Status: Fresh cohort reviewed; meaning fidelity still open (12 Nov 2026).**
+**Status: Fresh cohorts reviewed; meaning fidelity still open (15 Nov 2026).**
+The [15 November follow-up](../reviews/ordinary-use-review-2026-11-15.md) found
+an uncited-admission bypass, fresh promise/clock/return interpretation failures,
+and downstream concept overreach. Bounded fixes preserve positive cases;
+diary novelty, research relevance, omissions and broader semantic fidelity remain
+open. Historical rows were not repaired; the new code needs a backend restart.
 The [ordinary-use review](../reviews/ordinary-use-review-2026-11-12.md) covers promises,
 extraction, summaries, reflective output, research and downstream concepts.
 Advice/offer/commitment, actor, condition and outcome interpretation are separate
