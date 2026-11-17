@@ -55,6 +55,14 @@ worker-owned reduction rules. The helper and summary cursor repair are already i
 
 ## Memory/time quality: ordinary-use follow-up
 
+The [17 November memory-capture follow-up](../reviews/memory-capture-review-2026-11-17.md)
+finds partial retention of a teasing signal but a missing user-side communication
+need. Brain writing now has stable capability guidance and optional owner-quoted
+notes. Both writers can retain qualified literal testimony when a paraphrase loses
+a condition, and rejected extraction proposals no longer spend the write cap.
+Fresh ordinary-use recall/omission checks remain open; source presence is not
+semantic correctness and capture does not force concept promotion.
+
 **Status: Fresh cohorts reviewed; meaning fidelity still open (17 Nov 2026).**
 The [17 November continuity review](../reviews/companion-continuity-review-2026-11-17.md)
 traces repeated diary prose and inherited unsupported claims into active concepts,

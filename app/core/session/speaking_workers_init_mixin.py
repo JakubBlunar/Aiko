@@ -709,6 +709,15 @@ class SpeakingWorkersInitMixin:
         self._prompt_assembler.set_diary_awareness_provider(
             lambda: diary_awareness(self.available_tool_names()),
         )
+        from app.core.memory.inline_memory import memory_awareness
+
+        self._prompt_assembler.set_memory_awareness_provider(
+            lambda: memory_awareness(
+                getattr(self, "_memory_store", None) is not None
+                and getattr(self, "_embedder", None) is not None,
+                self.user_display_name,
+            ),
+        )
         self._prompt_assembler.set_inner_life_providers(
             affect=self._render_affect_block,
             vitality=self._render_vitality_block,

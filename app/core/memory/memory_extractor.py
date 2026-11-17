@@ -5,9 +5,8 @@ Triggered by :class:`SummaryWorker` right after a successful
 and there's a fresh batch of unsummarized turns whose long-term-relevant
 content we want to capture.
 
-The extractor runs ONE ``chat_json`` call against the same chat model the
-user is talking to (no separate judge model -- avoids extra model swaps and
-GPU thrashing). The model is asked for a JSON list of memories:
+The extractor runs ONE ``chat_json`` call on the configured worker route.
+The model is asked for a JSON list of memories:
 
     {"memories": [
         {"content": "...", "kind": "preference", "salience": 0.7,
@@ -61,7 +60,7 @@ from app.core.infra import timephrase
 from app.core.proactive.worker_prompt_budget import (
     pack_worker_prompt, report_worker_prompt,
 )
-from app.core.memory.memory_admission import admit_memory
+from app.core.memory.memory_admission import admit_source_note
 
 
 log = logging.getLogger("app.memory_extractor")
@@ -125,6 +124,19 @@ def _build_system_prompt(
         "specific unresolved intentions; skip throwaway chatter, single-turn moods, "
         "nonrecurring jokes, and duplicates of existing memories. Abstain when nothing "
         "new matters. Do not invent motives, outcomes, frequency or missing details.\n"
+        "Prioritize explicit remember requests, corrections, communication needs, boundaries "
+        "and recurring interaction agreements over incidental activity. They matter even "
+        "without the phrase 'remember this'. Capture the user's need separately from "
+        "Aiko's chosen response: a playful signal before joking helps the user recognize "
+        "teasing; Aiko may choose a gesture as her own practice. Preserve the cue, purpose, "
+        "trigger and exceptions, not just a decorative detail of Aiko's reply. One-off "
+        "banter or a role-play gesture is not a standing preference. "
+        "Routine stage directions and a laugh alone are not significant events; keep "
+        "explicitly meaningful changes or milestones, not a catalog of each touch. An unaccepted "
+        "suggestion stays a suggestion; choosing to try is not proof of repeated success. "
+        "These can be ordinary preference/self memories without a learned-strategy outcome "
+        "or formal shared-term adoption. Do not drop a useful ordinary memory merely "
+        "because it does not qualify for an optional pattern schema.\n"
         f"Today is {today_human} ({today_iso}). Resolve relative timing against THAT LINE's "
         "timestamp, never the sweep time. Provide event_time_evidence:{message_id,quote} "
         "for a literal temporal phrase. The server resolves it and preserves precision. "
@@ -648,12 +660,12 @@ class MemoryExtractor:
             )
             return 0
 
-        # Cap per run so a chatty model can't flood the store.
-        if len(candidates) > self._max_new_per_run:
-            candidates = candidates[: self._max_new_per_run]
-
         admitted = []
         for cand in candidates:
+            # Rejected proposals do not spend the write allowance and hide a
+            # later valid memory. The prompt/output budget still bounds reading.
+            if len(admitted) >= self._max_new_per_run:
+                break
             rejection_reasons = []
             if cand.get("strategy") is not None or cand["kind"] == "strategy":
                 from app.core.memory.learned_strategies import admit_strategy
@@ -689,7 +701,7 @@ class MemoryExtractor:
                 if pattern is not None:
                     admitted.append(pattern)
                 continue
-            admission = admit_memory(
+            cand, admission = admit_source_note(
                 cand, rows, session_key=session_key, writer="extractor",
                 proposal_message_id=rows[-1].id,
             )

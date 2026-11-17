@@ -5,6 +5,10 @@ import re
 from typing import NamedTuple
 
 from app.core.services.history_metadata import strip_history_age_prefix
+from app.core.services.memory_tags import (
+    REMEMBER_TAG_RE as _REMEMBER_TAG_PATTERN,
+    REMEMBER_OPEN_TAIL_RE as _REMEMBER_OPEN_TAIL_PATTERN,
+)
 
 
 # Reaction grammar: ``[[reaction:NAME]]`` for a single reaction, or
@@ -210,15 +214,6 @@ def _strip_two_tier_tags(text: str) -> str:
 
 _DETAIL_BLOCK_PATTERN = re.compile(
     r"\[\[detail\]\][\s\S]*?(?:\[\[/detail\]\]|\Z)",
-    flags=re.IGNORECASE,
-)
-_REMEMBER_TAG_PATTERN = re.compile(
-    r"\[\[remember:[^\]]*?\]\]",
-    flags=re.IGNORECASE,
-)
-# Matches an unclosed [[remember:... at end of string (the closing ]] never arrived).
-_REMEMBER_OPEN_TAIL_PATTERN = re.compile(
-    r"\[\[remember:[^\]]*\Z",
     flags=re.IGNORECASE,
 )
 

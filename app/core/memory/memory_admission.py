@@ -19,6 +19,56 @@ class MemoryAdmission:
     metadata: dict
 
 
+def admit_source_note(candidate: dict, rows, *, session_key: str, writer: str,
+                      proposal_message_id: int | None = None) -> tuple[dict, MemoryAdmission]:
+    """Retain qualified testimony when a proposed paraphrase lost its condition.
+
+    The rejected interpretation is discarded. This fallback is a bounded,
+    attributed literal source, with the same owner and ordinary admission checks.
+    """
+    rows = list(rows)
+    admission = admit_memory(candidate, rows, session_key=session_key, writer=writer,
+                             proposal_message_id=proposal_message_id)
+    if admission.metadata.get("claim_fidelity_refusal") != "lost_condition":
+        return candidate, admission
+    from app.core.infra import timephrase
+    from app.core.memory.promise_evidence import source_clause
+
+    offered = {row.id: row for row in rows if row.session_id == session_key}
+    citations, clauses = [], []
+    for item in candidate.get("evidence") or []:
+        row = offered[item["message_id"]]
+        clause = source_clause(item["quote"], row.content)
+        # Restore original whitespace so the durable receipt remains literal.
+        pattern = r"\s+".join(re.escape(word) for word in clause.split())
+        match = re.search(pattern, row.content) if pattern else None
+        if match is None or len(match[0]) > 1000:
+            return candidate, admission
+        if (row.id, match[0]) not in {(citation["message_id"], citation["quote"])
+                                    for citation in citations}:
+            clauses.append(match[0])
+            citations.append({"message_id": row.id, "quote": match[0]})
+    if not clauses:
+        return candidate, admission
+    prefix = "I said: " if candidate.get("kind") == "self" else "The user said: "
+    text = prefix + " ".join(clauses)
+    if len(text) > 2000 or timephrase.has_relative_deictic(text):
+        return candidate, admission
+    fallback = {
+        "content": text, "kind": candidate.get("kind"),
+        "salience": candidate.get("salience", .5),
+        "temporal_type": candidate.get("temporal_type", "durable"),
+        "provenance": "inferred", "event_time": None,
+        "destination": "memory", "evidence": citations, "basis": "reported",
+    }
+    supported = admit_memory(fallback, rows, session_key=session_key, writer=writer,
+                             proposal_message_id=proposal_message_id)
+    if supported.accepted:
+        supported.metadata["source_note_fallback"] = "lost_condition"
+        return fallback, supported
+    return candidate, admission
+
+
 def admit_memory(
     candidate: dict, rows, *, session_key: str, writer: str, proposal_message_id: int | None = None,
 ) -> MemoryAdmission:

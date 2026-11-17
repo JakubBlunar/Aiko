@@ -57,6 +57,9 @@ class PromptAssemblerHelpersMixin:
     def set_diary_awareness_provider(self, provider: Callable[[], str]) -> None:
         self._diary_awareness_provider = provider
 
+    def set_memory_awareness_provider(self, provider: Callable[[], str]) -> None:
+        self._memory_awareness_provider = provider
+
     def set_memory_retriever(self, retriever: "MemoryRetriever | None") -> None:
         self._memory_retriever = retriever
 

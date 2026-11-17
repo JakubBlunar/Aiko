@@ -14,7 +14,8 @@ def test_diary_awareness_tracks_available_tools_outside_the_fixed_persona(tmp_pa
                                                response_budget=256)
     assert "Your saved diary exists across conversations" in messages[0]["content"]
     assert "Keeping a diary is optional" in messages[0]["content"]
-    assert _PROMPT_BLOCK_TIERS["T0_stable"][-1] == "diary_awareness_block"
+    assert _PROMPT_BLOCK_TIERS["T0_stable"][-2:] == (
+        "diary_awareness_block", "memory_awareness_block")
     names.clear()
     messages, _ = assembler.assemble_with_budget("s1", "Hello", context_window=8192,
                                                response_budget=256)

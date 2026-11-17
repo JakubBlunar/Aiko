@@ -1,5 +1,53 @@
 # Memory data quality and time
 
+## Brain-chosen notes and important conversation details
+
+The brain can write an invisible `[[remember:...]]` note during an ordinary reply,
+without a tool pass or an extra inference call. Configuration-stable
+`memory_awareness_block` instructions at the end of T0 explain what is worth
+keeping: explicit requests, corrections, personal facts/projects, communication
+needs, boundaries, agreed signals and Aiko's chosen recurring approaches. This
+capability grammar supplies no conversational topic or stance offer and remains
+available with a custom persona whenever the store and embedder are present.
+
+The preferred source-backed form is:
+
+```text
+[[remember:{"content":"The user finds numbered steps helpful when setting things up.","quote":"Numbered steps help me when we set things up."}]]
+[[remember:self:{"content":"I intend to use numbered setup steps.","quote":"I will use numbered setup steps.","temporal_type":"future_plan"}]]
+```
+
+User notes quote the user; self notes quote Aiko. The source window is the four
+messages before the completed reply plus that reply itself, in the same session.
+The host selects the source ID from a literal quotation rather than trusting a
+model-supplied ID. The self example therefore requires those words in Aiko's saved
+reply or an offered earlier reply. Unsupported/malformed structured notes are
+refused; their JSON is never saved as a plain memory. Optional `temporal_type`
+uses the existing catalogue; default is `durable`. Relative stored wording and
+nested control tags are rejected in structured content. Source quotes retain the
+original wording. Two distinct admitted notes may be attempted per reply.
+
+Plain legacy user notes remain provisional; plain self tags still allow a new
+personal declaration. A sourced paraphrase retains the conservative inferred,
+scratchpad user-memory contract. A quotation proves its source identity, not
+semantic entailment or a successful outcome. New receipts retain owner, message
+revision and original time, and are rechecked after embedding. Existing memory
+and concept consumers own recall, source validation and promotion; capture does
+not force a concept or certify that a new practice has been carried out.
+
+Memory tags, including JSON with brackets or newlines, share one grammar across
+capture, transcript/stream cleanup and vulnerability accounting. Self-disclosure
+accounting sees the note's content rather than its supporting quote or JSON keys.
+Incomplete, cancelled or blocked replies remain ineligible for memory learning.
+Content-free `app.inline_memory` logs distinguish saved notes and refusal causes.
+
+The ordinary extractor prioritizes useful interaction agreements alongside other
+durable information. A user's communication need and Aiko's chosen response are
+separate memories with separate owner citations. A preference need not qualify as
+a formally adopted shared term or an outcome-backed learned strategy. Suggestions
+and trials retain their qualifications. Rejected proposals do not consume the
+per-run write allowance and hide later admitted memories.
+
 ## Planning windows
 
 Elapsed plans keep `future_plan`: this denotes the source's intention, not a
@@ -52,6 +100,16 @@ Missing evidence produces a content-free `missing_evidence` refusal in the log;
 it cannot bypass fidelity checks or retain a model-authored `event_time`. Such a
 refusal is a lost candidate, not evidence of successful semantic abstention.
 Inline provisional self notes retain their separate admission contract.
+
+For both deliberate quoted notes and ordinary extraction, a paraphrase rejected
+solely for dropping a condition can be replaced by an explicitly attributed,
+literal source sentence. The rejected interpretation is discarded. The fallback
+keeps the original whitespace, qualifications and owner and passes ordinary
+admission again. It is bounded to four quotations of at most 1000 characters and
+2000 characters of stored content. Relative wording cannot be copied into the
+stored fallback. Proposed supersession, outcomes, relations and event times do
+not carry over. Metadata marks `source_note_fallback=lost_condition`. Invalid
+ownership, missing citations and other refusal reasons cannot use this fallback.
 
 A plan plus a return report does not certify every planned action. A bare return
 does not supply routine details or a new intention; the actual plan/report must

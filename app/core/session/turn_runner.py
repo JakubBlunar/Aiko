@@ -23,7 +23,6 @@ from app.llm.turn_outcome import TurnOutcome
 
 import json
 import logging
-import re
 import secrets
 import threading
 import time
@@ -78,10 +77,9 @@ if TYPE_CHECKING:
     from app.llm.embedder import Embedder
 
 
-_REMEMBER_TAG_RE = re.compile(
-    r"\[\[remember(?::(?P<kind>self))?:(?P<body>[^\]]+?)\]\]",
-    flags=re.IGNORECASE,
-)
+from app.core.services.memory_tags import REMEMBER_TAG_RE
+
+_REMEMBER_TAG_RE = REMEMBER_TAG_RE
 
 # ── forced-choice escape tool ─────────────────────────────────────────
 # Chatty models (gpt-5-mini at any reasoning_effort) lose the implicit
@@ -1814,92 +1812,15 @@ class TurnRunner:
                 log.debug("summary notify failed: %s", exc)
 
     def _extract_self_tagged_memories(
-        self,
-        raw_text: str,
-        *,
-        session_key: str,
-        assistant_message_id: int | None,
+        self, raw_text: str, *, session_key: str, assistant_message_id: int | None,
     ) -> None:
-        """Harvest ``[[remember:...]]`` tags from the assistant's raw output.
+        from app.core.memory.inline_memory import capture_inline_memories
 
-        Only runs when both a memory store and embedder are configured. Each
-        unique tag becomes one ``self_tagged`` memory. Failures are logged
-        but never raised back into the turn -- a broken extractor must not
-        kill the chat.
-        """
-        if (
-            self._memory_store is None
-            or self._embedder is None
-            or not raw_text
-        ):
-            return
-        seen: set[tuple[str, str]] = set()
-        from app.core.memory.memory_admission import admit_memory
-
-        try:
-            evidence_rows = self._db.get_messages_before(
-                session_key, before_id=assistant_message_id, limit=4,
-            ) if assistant_message_id else []
-        except Exception:
-            evidence_rows = []
-        for match in _REMEMBER_TAG_RE.finditer(raw_text):
-            content = (match.group("body") or "").strip()
-            if not content or len(content) < 4:
-                continue
-            kind_marker = (match.group("kind") or "").strip().lower()
-            # ``[[remember:self:...]]`` -> Aiko's own notes about herself,
-            # surfaced separately in the prompt block. Plain ``[[remember:...]]``
-            # remains a "self_tagged" user fact (Aiko's explicit annotation).
-            kind = "self" if kind_marker == "self" else "self_tagged"
-            admission = admit_memory(
-                {"content": content, "kind": kind}, evidence_rows,
-                session_key=session_key, writer="inline",
-                proposal_message_id=assistant_message_id,
-            )
-            if not admission.accepted:
-                continue
-            key = (kind, content.lower())
-            if key in seen:
-                continue
-            seen.add(key)
-            try:
-                embedding = self._embedder.embed(content)
-            except Exception as exc:
-                log.debug("self-tagged memory embed failed: %s", exc)
-                continue
-            try:
-                memory = self._memory_store.add(
-                    content=content,
-                    kind=kind,
-                    embedding=embedding,
-                    salience=self._self_tagged_salience,
-                    source_session=session_key,
-                    source_message_id=admission.source_message_id,
-                    metadata=admission.metadata,
-                    tier=admission.tier,
-                    confidence=0.85 if admission.provenance == "stated" or kind == "self" else 0.5,
-                    # Schema v10: persona instructs Aiko to use these
-                    # tags for *durable* facts and self-notes (one
-                    # short sentence in third / first person). The
-                    # batch :class:`MemoryExtractor` is the path that
-                    # parses temporal language out of the transcript;
-                    # inline tags get the safe default so ``yesterday``
-                    # in a tag content stays as content (it's already
-                    # rare, and the LLM extractor catches the same
-                    # turn anyway).
-                    temporal_type="durable",
-                    provenance=admission.provenance,
-                )
-            except Exception as exc:
-                log.debug("self-tagged memory insert failed: %s", exc)
-                continue
-            if memory is not None:
-                log.info("%s memory: %s", kind, content)
-                if self._on_memory_added is not None:
-                    try:
-                        self._on_memory_added(memory)
-                    except Exception:
-                        log.debug("on_memory_added listener raised", exc_info=True)
+        capture_inline_memories(
+            raw_text, db=self._db, store=self._memory_store, embedder=self._embedder,
+            session_key=session_key, assistant_message_id=assistant_message_id,
+            salience=self._self_tagged_salience, notify=self._on_memory_added,
+        )
 
     def _extract_diary_memories(
         self,

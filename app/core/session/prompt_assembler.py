@@ -116,6 +116,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # them talk" cluster) and moves on a scale of weeks.
         "voice_adoption_block",
         "diary_awareness_block",
+        "memory_awareness_block",
     ),
     # T1 — per-arc / per-day. Changes a few times a day at most.
     # Order matches the append cascade exactly: anniversary + milestone
@@ -748,6 +749,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         self._day_color_provider: Callable[[], str] | None = None
         self._profile_provider: Callable[[], str] | None = None
         self._diary_awareness_provider: Callable[[], str] | None = None
+        self._memory_awareness_provider: Callable[[], str] | None = None
         self._user_state_provider: Callable[[], str] | None = None
         self._relationship_provider: Callable[[], str] | None = None
         self._arc_provider: Callable[[], str] | None = None
@@ -3196,6 +3198,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         diary_awareness_block = _safe_provider(self._diary_awareness_provider)
         if diary_awareness_block:
             system_parts.append(diary_awareness_block)
+        # Capability grammar only: this supplies no topic or stance offer.
+        memory_awareness_block = _safe_provider(self._memory_awareness_provider)
+        if memory_awareness_block:
+            system_parts.append(memory_awareness_block)
         # Second cache breakpoint. Measured: T0's tail (profile / petname /
         # catchphrase / voice-adoption) holds still on 72% of turns, so
         # marking here catches ~3.2k chars the head mark cannot -- and on
