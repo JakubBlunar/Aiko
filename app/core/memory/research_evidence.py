@@ -73,6 +73,7 @@ def question_revision(question):
         key: (question.metadata or {}).get(key) for key in (
             "curiosity_purpose", "curiosity_resolved_at", "research_origin",
             "hobby_key", "hobby_started_at",
+            "research_project",
         )}])
 
 

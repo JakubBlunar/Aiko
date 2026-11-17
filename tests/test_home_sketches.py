@@ -138,7 +138,8 @@ def test_idle_model_saves_drawing_data_and_fallback_never_invents_it(home):
     class Model:
         def chat_json(self, messages, **kwargs):
             if kwargs.get("surface") == "away_activity_plan":
-                assert "actual bounded drawing data" in messages[-1]["content"]
+                assert "Coordinates stay within x=0-512 and y=0-320" in messages[-1]["content"]
+                assert "points=[[x,y],...]" in messages[-1]["content"]
                 return json.dumps({"home_action_token": draft["token"], "drawing": DRAWING,
                                    "creation": None}), {}
             return "{}", {}

@@ -639,14 +639,13 @@ class IdleWorkersInitMixin:
                     DiaryWorker,
                     build_recent_context,
                     context_key,
+                    source_snapshot,
                 )
 
                 mem = self._memory_settings
-                from app.core.memory.worker_sources import transcript_packet
-
                 def diary_snapshot():
                     session_key = self.session_key
-                    return transcript_packet(
+                    return source_snapshot(
                         self._chat_db.get_messages(session_key, limit=14),
                         user_name=self.user_display_name, session_key=session_key,
                     )

@@ -19,7 +19,7 @@ def test_input_budget_keeps_a_contiguous_whole_suffix_and_its_qualifications():
     assert transcript_packet([older, row], max_chars=80)["text"] == ""
 
 
-@pytest.mark.parametrize("action", ["switch", "edit", "edit_during_embed"])
+@pytest.mark.parametrize("action", ["switch", "edit", "edit_during_embed", "edit_during_review"])
 def test_diary_uses_original_session_and_rejects_source_edits(tmp_path, action):
     path = tmp_path / "diary.db"
     db = ChatDatabase(path)
@@ -32,6 +32,10 @@ def test_diary_uses_original_session_and_rejects_source_edits(tmp_path, action):
         return transcript_packet(db.get_messages(session), session_key=session,
                                  user_name=state["name"])
     def generate(messages, **kwargs):
+        if kwargs.get("surface") == "diary_grounding":
+            if action == "edit_during_review":
+                db.execute_commit("UPDATE messages SET content=? WHERE id=?", ("A correction", mid))
+            return json.dumps({"supported": True, "reason": "supported"}), None
         if action == "switch":
             state.update(session="new", name="Another person")
         if action == "edit":

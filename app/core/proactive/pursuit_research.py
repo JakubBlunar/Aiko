@@ -68,6 +68,8 @@ class PursuitResearch:
             )
             if self.matches(memory, state) and memory.id not in applied
             and (memory.metadata or {}).get("research_evidence")
+            and (not isinstance((memory.metadata or {}).get("research_project"), dict)
+                 or (memory.metadata or {}).get("project_relevant") is True)
             and not any(_near_repeat(memory.content, row.content) for row in previous)
         ), None)
 
@@ -78,6 +80,10 @@ class PursuitResearch:
             if self.matches(question, state) and not (
                 question.metadata or {}
             ).get("curiosity_resolved_at"):
+                if "research_project" not in (question.metadata or {}):
+                    self._store.update(question.id, metadata={
+                        "research_project": self._project_scope(state),
+                    }, metadata_merge=True)
                 return int(question.id)
         questions = [row for row in self._store.iter_by_kind("open_question")
                      if self.matches(row, state)]
@@ -139,12 +145,21 @@ class PursuitResearch:
                 "curiosity_purpose": "research", "already_neutral": True,
                 "research_origin": "pursuit", "hobby_key": state.get("key"),
                 "hobby_started_at": state.get("started_at"),
+                "research_project": self._project_scope(state),
                 "requested_at": now.isoformat(),
             },
         )
         if memory is None:
             raise RuntimeError("pursuit research question was not persisted")
         return int(memory.id)
+
+    @staticmethod
+    def _project_scope(state: dict[str, Any]) -> dict[str, str]:
+        return {
+            "artifact": str(state.get("artifact") or state.get("label") or "")[:200],
+            "description": str(state.get("artifact_detail") or "")[:200],
+            "kind": str(state.get("kind") or "")[:40],
+        }
 
     def write_diary(self, state: dict[str, Any], now: datetime) -> int | None:
         ids = state.get("research_result_ids") or []

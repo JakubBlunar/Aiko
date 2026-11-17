@@ -44,6 +44,8 @@ class _FakeLLM:
         self.calls.append(
             {"messages": messages, "model": model, "surface": surface}
         )
+        if surface == "diary_grounding":
+            return json.dumps({"supported": True, "reason": "supported"}), None
         return json.dumps({"entry": self.entry}), None
 
 

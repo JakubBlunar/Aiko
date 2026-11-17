@@ -15,6 +15,7 @@ describes its dated baseline; it is not a specification of the latest code.
 
 ## Reviews
 
+- Companion quality: [17 November continuity, diary, research and idle-life review](reviews/companion-continuity-review-2026-11-17.md).
 - Workflows: [6 November harness audit](reviews/agent-harness-audit-2026-11-06.md),
   [8 November Hermes comparison](reviews/hermes-harness-review-2026-11-08.md)
 - Memory and workers: [producer audit](reviews/memory-producer-audit-2026-11-05.md),

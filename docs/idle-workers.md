@@ -16,6 +16,10 @@ Home effects are saved transactionally with their time-retained trace event;
 exact retries do not duplicate it. Other before/after world deltas are explicitly
 observational and can include concurrent edits. Direct worker/debug and
 conversation-owned household effects are distinguished from scheduled activity.
+New model-plan failures also record a content-free `plan_rejected` reason, such as
+an unknown location, unsupported effect, invalid drawing or failed model call.
+Older generic fallback events cannot establish which of those failures occurred.
+Drawing choices receive the executor's stroke, coordinate and size constraints.
 
 Unchanged admissions are compressed with minute heartbeats and five-minute
 segments; gaps longer than 90 seconds start a new segment. A shared-situation
@@ -197,6 +201,17 @@ advances only when a matching, evidence-bearing finding has been saved, and each
 result ID is applied once. Unavailable research, failed calls and inconclusive
 searches leave progress unchanged. Research progress uses "findings", not invented
 chapters or measurements; simulated room activity remains a separate channel.
+
+Project questions retain a bounded local `research_project` purpose (artifact,
+description and kind). When the hobby worker next reuses a pending legacy question,
+it adds missing purpose metadata without rewriting the question. This context is
+supplied to distillation, never appended to the public search query. Project-scoped
+distillation first decides usefulness for the original activity, then extracts a
+supported answer. A literal `project_relevant=true` is required before saving or
+resolving that question; missing, false or malformed verdicts remain inconclusive.
+The purpose participates in source-revision checks and follows accepted findings.
+Unscoped historical findings retain their earlier contract. Relevance is still a
+model judgment: shared topic words and valid excerpt citations do not prove utility.
 
 Successful project research stocks at most two optional `research_result` cues,
 using the existing idle-thought prompt block and cue consumption accounting.

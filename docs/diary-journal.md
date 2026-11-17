@@ -79,7 +79,10 @@ recorded". Follow-up entries show the earlier diary ID they revisit.
 
 The away worker now fingerprints source message IDs, session, roles, content and
 timestamps. Rendered age labels are deliberately excluded: time passing alone
-must not make an old conversation new material. Readiness and demand are
+must not make an old conversation new material, even when shorter age labels let
+more older messages fit inside the rendered suffix. The fingerprint covers the
+bounded raw input rows; provenance still names only messages actually offered.
+Readiness and demand are
 read-only. A completed composition or intentional abstention consumes its
 source revision; failed generation/storage does not certify that revision as
 processed. Every composition attempt spends the cooldown. Debug forcing can
@@ -89,6 +92,17 @@ The prompt includes the last three dated diary entries as subjective context,
 asks for a specific new detail, change or uncertainty, and can abstain instead
 of paraphrasing earlier affection. Imagined scenes retain that framing. This
 improves admission and context; it does not prove the quality of model prose.
+
+Before a background entry is stored, exact repeats of the three latest diary
+entries are refused, as are numeric event clocks found only in message timestamps.
+An additional short worker-model review checks concrete claims against the frozen
+conversation alone. Earlier diary entries cannot support a new action, promise or
+user motive. Personal feelings, qualified interpretations and new intentions remain
+allowed. A strict, consistent positive verdict is required; rejected claims spend
+the source revision, while unavailable or malformed reviews spend the cooldown and
+can retry later. Sources are rechecked before storage, including after the review.
+This adds one bounded off-turn call to an otherwise eligible entry, with no new
+main-chat call. It remains model judgment, not a general proof of entailment.
 
 ## Validation and activation
 

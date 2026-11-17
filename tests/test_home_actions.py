@@ -267,10 +267,13 @@ def test_chat_and_idle_use_same_actions_and_save_only_success(home):
         PerformHomeActionTool(session).run({"token": "made up"})
 
 
-def test_worker_model_is_taught_live_tokens_and_rejects_invented_capabilities(home):
+def test_worker_model_is_taught_live_tokens_and_rejects_invented_capabilities(home, monkeypatch):
     store, db, _ = home
     action = find_action(store, "prepare_drink", recipe="coffee")
     prompts = []
+    events = []
+    monkeypatch.setattr("app.core.world.idle_activity_composition_mixin.emit",
+                        lambda kind, payload: events.append((kind, payload)))
 
     class Model:
         def chat_json(self, messages, **kwargs):
@@ -288,6 +291,7 @@ def test_worker_model_is_taught_live_tokens_and_rejects_invented_capabilities(ho
     assert worker._compose_plan_llm(
         "Test user", store.list_locations(), store.list_items(),
     ) is None
+    assert ("plan_rejected", {"reason": "invalid_household_selection"}) in events
 
 
 def test_malformed_user_vessel_does_not_break_world_inspection(home):

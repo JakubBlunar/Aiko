@@ -55,7 +55,13 @@ worker-owned reduction rules. The helper and summary cursor repair are already i
 
 ## Memory/time quality: ordinary-use follow-up
 
-**Status: Fresh cohorts reviewed; meaning fidelity still open (15 Nov 2026).**
+**Status: Fresh cohorts reviewed; meaning fidelity still open (17 Nov 2026).**
+The [17 November continuity review](../reviews/companion-continuity-review-2026-11-17.md)
+traces repeated diary prose and inherited unsupported claims into active concepts,
+fixes age-dependent source identity, and adds bounded diary grounding and
+project-purpose research checks. It also reviews 72 hours of independent activity
+and makes new plan rejections diagnosable. Ordinary-use validation of these fixes,
+historical repair, omissions and broader semantic calibration remain open.
 The [15 November follow-up](../reviews/ordinary-use-review-2026-11-15.md) found
 an uncited-admission bypass, fresh promise/clock/return interpretation failures,
 and downstream concept overreach. Bounded fixes preserve positive cases;

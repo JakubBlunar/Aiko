@@ -24,6 +24,13 @@ def _utcnow():
 class ActivityCompositionMixin:
     """Plans and prose share the same supported world actions."""
 
+    @staticmethod
+    def _reject_plan(reason: str) -> None:
+        # Keep private model output out of retained diagnostics.
+        emit("plan_rejected", {"reason": reason})
+        log.info("away activity plan rejected: reason=%s", reason)
+        return None
+
     def _compose_summary(
         self, user_name: str, plan: ActivityPlan, *, sequence: bool = False,
     ) -> str:
@@ -140,8 +147,12 @@ class ActivityCompositionMixin:
             + json.dumps(list(home_actions.values())[:24], ensure_ascii=True)
             + "\nTo choose one, return its exact home_action_token with creation=null "
             "and changed_item empty. Its stored summary defines what actually happens. "
-            "For a drawing action, include drawing={title,strokes,note} with actual bounded "
-            "drawing data as described above. Other actions use drawing=null. Fictional "
+            "For a drawing action, include drawing={title,strokes,note}. The title is "
+            "2-80 characters and the optional note at most 240. Supply 1-24 strokes, each "
+            "with points=[[x,y],...] (2-32 points), width=0.5-8, shade=0-3, filled=true "
+            "or false. Coordinates stay within x=0-512 and y=0-320, at most 256 points "
+            "total. Supply the actual strokes, not a description or markup. "
+            "Other actions use drawing=null. Fictional "
             "references are authored material, not an actual visual observation. "
             "Otherwise home_action_token must be empty. "
         ) if home_actions else ""
@@ -224,20 +235,20 @@ class ActivityCompositionMixin:
             )
         except Exception:
             log.debug("away_activity plan compose failed", exc_info=True)
-            return None
+            return self._reject_plan("model_call_failed")
         try:
             blob = json.loads(content or "{}")
         except Exception:
-            return None
+            return self._reject_plan("invalid_json")
         if not isinstance(blob, dict):
-            return None
+            return self._reject_plan("invalid_object")
         context.attribution(blob)
 
         if blob.get("home_action_token"):
             action = home_actions.get(str(blob["home_action_token"]))
             if (action is None or blob.get("creation") is not None
                     or str(blob.get("changed_item") or "").strip()):
-                return None
+                return self._reject_plan("invalid_household_selection")
             drawing = blob.get("drawing")
             if action.get("parameters", {}).get("drawing_required"):
                 from app.core.world.home_sketches import validate_drawing
@@ -245,9 +256,9 @@ class ActivityCompositionMixin:
                 try:
                     drawing = validate_drawing(drawing)
                 except ValueError:
-                    return None
+                    return self._reject_plan("invalid_drawing")
             elif drawing is not None:
-                return None
+                return self._reject_plan("unexpected_drawing")
             return ActivityPlan(
                 key="home_" + action["action"], posture="standing", activity=action["action"],
                 summary=action["summary"], aiko_location_id=action["location_id"],
@@ -257,7 +268,7 @@ class ActivityCompositionMixin:
 
         activity = normalize_activity(blob.get("activity"))
         if not activity:
-            return None
+            return self._reject_plan("unknown_activity")
         posture = str(blob.get("posture") or "").strip().lower()
         if posture not in VALID_POSTURES:
             posture = "sitting"
@@ -265,11 +276,11 @@ class ActivityCompositionMixin:
         loc = loc_by_slug.get(slug)
         if blob.get("creation") is not None:
             if not can_write:
-                return None
+                return self._reject_plan("writing_unavailable")
             draft = idle_creations.parse_draft(blob["creation"], items)
             if (draft is None or loc is None or activity != "writing"
                     or str(blob.get("changed_item") or "").strip()):
-                return None
+                return self._reject_plan("invalid_writing")
             return ActivityPlan(
                 key="writing", posture="sitting", activity="writing",
                 summary=f'saved revision {draft.base_revision + 1} of my '
@@ -279,29 +290,26 @@ class ActivityCompositionMixin:
         effect = self._resolve_named_effect(blob.get("changed_item"), items)
         if (effect is not None and effect.action == EFFECT_POUR_TEA
                 and any("home_drink_station" in row.state for row in items)):
-            return None
+            return self._reject_plan("household_drink_requires_token")
         if str(blob.get("changed_item") or "").strip() and effect is None:
-            log.info("away activity rejected: unsupported item action")
-            return None
+            return self._reject_plan("unsupported_item_action")
         if loc is None:
-            log.info("away activity rejected: unknown location")
-            return None
+            return self._reject_plan("unknown_location")
         # Free-text plans can otherwise invent arbitrary unsupported experiences.
         if activity not in {"thinking", "idle", "napping", "stretching"} and effect is None:
-            log.info("away activity rejected: no supported action for %s", activity)
-            return None
+            return self._reject_plan("missing_supported_action")
         if effect is not None:
             item = next(row for row in items if row.id == effect.item_id)
             if effect.action == EFFECT_ADVANCE_BOOK:
                 from app.core.world.room_evolution import available_book_step
 
                 if available_book_step(item.state) is None:
-                    return None
+                    return self._reject_plan("book_step_unavailable")
                 activity, summary = "reading", beat_detail.read_book_summary(item)
             elif effect.action == EFFECT_POUR_TEA:
                 tea_line = beat_detail.tea_summary(item)
                 if not tea_line:
-                    return None
+                    return self._reject_plan("tea_unavailable")
                 activity, summary = "making_tea", tea_line
             else:
                 activity, summary = "watering_plants", "watered " + item.name
