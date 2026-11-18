@@ -329,9 +329,14 @@ record is not automatically admitted to either store. Citation and ordering
 checks are structural, not semantic entailment. Pausing/resuming, attribution and
 disconfirmation still depend on model extraction. The latest user turn overrides
 earlier notes; there is no model-level guarantee of obeying that instruction.
-Source deletion after a completed extraction does not retract cached prompts;
-general dependency/deletion propagation remains L52 work. No historical state,
-model route, source ceiling, promotion threshold or surfacing cap was changed.
+The next assembly rechecks persisted working-set evidence before using it. A
+server-generated fingerprint binds a saved working set to the messages cited in
+its extraction. If a cited row changes or disappears, the situation is withheld
+from the prompt, recall demand and the next observer's previous-state context.
+Edits to uncited messages leave the working set usable. A fresh extraction can
+rebuild the situation from current evidence. Older rows without a fingerprint
+remain unverified until rebuilt. General dependency and deletion propagation
+remains L52 work.
 
 ### Persisted feature audit (15 Oct 2026)
 

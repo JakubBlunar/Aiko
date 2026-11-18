@@ -146,6 +146,13 @@ def working_set_message_ids(notes: ConversationWorkingSet | None) -> set[int]:
     return {message_id for item in items if item for message_id in item.evidence_message_ids}
 
 
+def working_source_revision(rows: Iterable[tuple[int, str, str, str]]) -> str:
+    """Fingerprint the cited message rows without retaining transcript text."""
+    from app.core.concepts.concept_support import revision_hash
+
+    return revision_hash(sorted(rows))
+
+
 @dataclass(frozen=True, slots=True)
 class InterestSuccessor:
     subject: str
@@ -327,9 +334,12 @@ class ConversationSituationState:
     working_set: ConversationWorkingSet | None = None
     pragmatic_frame: PragmaticFrame | None = None
     repair_target: RepairTarget | None = None
+    working_source_revision: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload.pop("working_source_revision")
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -378,6 +388,8 @@ class ConversationSituationSnapshot:
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
+        if payload["inferred"] is not None:
+            payload["inferred"].pop("working_source_revision")
         return payload
 
 
@@ -524,6 +536,7 @@ def reduce_situation(
             working_set=extraction.working_set,
             pragmatic_frame=extraction.pragmatic_frame,
             repair_target=extraction.repair_target,
+            working_source_revision=None,
         )
 
     if extraction.operation == REPLACE:
@@ -558,8 +571,11 @@ def reduce_situation(
             working_set=None,
             pragmatic_frame=None,
             repair_target=None,
+            working_source_revision=None,
         )
     misses = int(previous.miss_count) + 1
+    suspended = (extraction.working_set if extraction.working_set is not None
+                 and extraction.working_set.suspended else None)
     return replace(
         previous,
         generation=generation + (1 if misses >= IMPLICIT_CLEAR_MISSES else 0),
@@ -567,13 +583,12 @@ def reduce_situation(
         source_message_id=max(previous.source_message_id, int(source_message_id)),
         miss_count=misses,
         updated_at=timestamp,
-        working_set=(
-            extraction.working_set
-            if extraction.working_set is not None and extraction.working_set.suspended
-            else None
-        ),
+        working_set=suspended,
+        evidence_message_ids=(extraction.evidence_message_ids if suspended is not None
+                              else previous.evidence_message_ids),
         pragmatic_frame=None,
         repair_target=None,
+        working_source_revision=None,
     )
 
 
@@ -583,7 +598,10 @@ class ConversationSituationStore:
     def __init__(self, db: "ChatDatabase") -> None:
         self._db = db
 
-    def get(self, session_id: str) -> ConversationSituationState | None:
+    def get(
+        self, session_id: str, *, check_sources: bool = True,
+    ) -> ConversationSituationState | None:
+        """Read current state. The worker can read the raw row for its write guard."""
         row = self._db.execute_fetchone(
             "SELECT generation, status, state_json, evidence_message_ids, "
             "source_message_id, miss_count, updated_at "
@@ -601,7 +619,7 @@ class ConversationSituationStore:
             status = str(row[1] or ENDED)
             if status not in VALID_STATUSES:
                 status = ENDED
-            return ConversationSituationState(
+            result = ConversationSituationState(
                 session_id=str(session_id),
                 generation=max(0, int(row[0] or 0)),
                 status=status,
@@ -623,9 +641,26 @@ class ConversationSituationStore:
                 working_set=_parse_working_set(state.get("working_set"), set(evidence)),
                 pragmatic_frame=frame,
                 repair_target=repair,
+                working_source_revision=state.get("working_source_revision"),
             )
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
+        return result if not check_sources or self.working_sources_current(result) else None
+
+    def working_sources_current(self, state: ConversationSituationState | None) -> bool:
+        if state is None or state.working_source_revision is None:
+            return True
+        ids = state.evidence_message_ids
+        if state.working_set is None or not 1 <= len(ids) <= MAX_EVIDENCE_IDS:
+            return False
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._db.execute_fetchall(
+            f"SELECT id, role, content, created_at FROM messages "
+            f"WHERE session_id = ? AND id IN ({placeholders})",
+            (state.session_id, *ids),
+        )
+        return (len(rows) == len(ids)
+                and working_source_revision(rows) == state.working_source_revision)
 
     def upsert(self, state: ConversationSituationState) -> None:
         state_json = json.dumps(
@@ -636,6 +671,7 @@ class ConversationSituationStore:
                 "place_ref": state.place_ref,
                 "aiko_activity": state.aiko_activity,
                 "working_set": asdict(state.working_set) if state.working_set else None,
+                "working_source_revision": state.working_source_revision,
                 "pragmatic_frame": asdict(state.pragmatic_frame) if state.pragmatic_frame else None,
                 "repair_target": asdict(state.repair_target) if state.repair_target else None,
             },

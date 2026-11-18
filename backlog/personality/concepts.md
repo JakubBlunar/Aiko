@@ -476,6 +476,11 @@ hypothetical and role-play statements do not become personal traits.
 **Implemented / available:** Troubleshooting working-model fields and evidence freshness persist
 through the existing situation worker/store/renderer.
 
+18 Nov slice: saved working sets now bind to their cited message revisions.
+An isolated regression edits or deletes a cited constraint after storage,
+checks that the next prompt and recall decision withhold the stale working
+set, and verifies recovery when the ordinary observer sees fresh evidence.
+
 **Remaining:** Measure extraction-to-reply entailment, disconfirmation and resumption through
 corrections/topic changes before expansion beyond the pilot.
 

@@ -6,6 +6,7 @@ import hashlib
 import logging
 import time
 from collections import Counter, defaultdict
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.conversation.conversation_situation import (
@@ -15,6 +16,7 @@ from app.core.conversation.conversation_situation import (
     reduce_situation,
     substantive_interest_answer,
     social_message_ids,
+    working_source_revision,
     working_set_message_ids,
 )
 from app.core.conversation import judgment_shadow
@@ -306,7 +308,8 @@ class ConversationSituationWorker:
             if not rows:
                 return self._store.get(key)
             recent_rows = rows
-            previous = self._store.get(key)
+            saved = self._store.get(key, check_sources=False)
+            previous = saved if self._store.working_sources_current(saved) else None
             known_ids = {int(row.id) for row in rows}
             retained_ids = working_set_message_ids(
                 previous.working_set if previous is not None else None,
@@ -382,7 +385,8 @@ class ConversationSituationWorker:
             if (
                 current_token != token
                 or any(int(row.id) > max(valid_ids) for row in latest_rows)
-                or self._store.get(key) != previous
+                or self._store.get(key, check_sources=False) != saved
+                or not self._store.working_sources_current(previous)
                 or any(self._chat_db.get_message_row(row.id) != row for row in rows)
             ):
                 self._stats["stale"] += 1
@@ -431,6 +435,14 @@ class ConversationSituationWorker:
                 source_message_id=source_message_id,
             )
             if state is not None:
+                if previous is None and saved is not None:
+                    state = replace(state, generation=saved.generation + 1)
+                if state.working_set is not None:
+                    cited_ids = set(state.evidence_message_ids)
+                    state = replace(state, working_source_revision=working_source_revision(
+                        (row.id, row.role, row.content, row.created_at)
+                        for row in rows if row.id in cited_ids
+                    ))
                 self._store.upsert(state)
             self._sync_interest_successor(key, previous, extraction, rows)
             self._stats["completed"] += 1

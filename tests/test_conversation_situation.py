@@ -541,7 +541,10 @@ class _FakeSituationClient:
         return self.responses.pop(0), ChatUsage()
 
 
-def test_troubleshooting_worker_pause_restart_resume_and_disconfirmation(tmp_path) -> None:
+@pytest.mark.parametrize("pause_operation", ["keep", "clear"])
+def test_troubleshooting_worker_pause_restart_resume_and_disconfirmation(
+    tmp_path, pause_operation,
+) -> None:
     db = ChatDatabase(tmp_path / "troubleshooting.db")
     store = ConversationSituationStore(db)
     goal = db.add_message("main", "user", "Diagnose the server timeout. Do not change config.")
@@ -571,7 +574,7 @@ def test_troubleshooting_worker_pause_restart_resume_and_disconfirmation(tmp_pat
     assert "User constraint" in host._render_conversation_situation_block("Server timeout?")
     assert "Hypothesis, not established" in host._render_conversation_situation_block("Timeout?")
     pause = db.add_message("main", "user", "Pause the timeout issue. Let's talk about books.")
-    payload["operation"] = "keep"
+    payload["operation"] = pause_operation
     payload["evidence_message_ids"].append(pause)
     payload["working_set"]["suspended"] = True
     client.responses.append(json.dumps(payload))
@@ -610,6 +613,66 @@ def test_troubleshooting_worker_pause_restart_resume_and_disconfirmation(tmp_pat
         session_id="main", source_message_id=result,
     )
     assert end.working_set is None
+
+
+@pytest.mark.parametrize("mutation", ["edit", "delete"])
+def test_changed_working_source_withdraws_saved_context_before_the_next_worker(tmp_path, mutation):
+    db = ChatDatabase(tmp_path / "working-revision.db")
+    store = ConversationSituationStore(db)
+    goal = db.add_message("main", "user", "Diagnose the server timeout. Leave the config alone.")
+    unused = db.add_message("main", "assistant", "I can help investigate.")
+
+    def extraction(source, constraint):
+        def note(text):
+            return {"text": text, "evidence_message_ids": [source]}
+
+        return json.dumps({
+            "operation": "replace", "summary": f"Investigating server timeouts. {constraint}",
+            "evidence_message_ids": [source],
+            "working_set": {
+                "question": note("Why does the server time out?"),
+                "constraints": [note(constraint)],
+                "unresolved": note("The cause of the server timeout is unknown."),
+                "recall_needed": True,
+            },
+        })
+
+    client = _FakeSituationClient([extraction(goal, "Leave the config alone.")])
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=store, model="worker",
+        world_snapshot_provider=dict, judgment_shadow_enabled=False,
+    )
+    first = worker.run("main")
+    assert first is not None
+    host = _SnapshotHost(None)
+    host._conversation_situation_store = ConversationSituationStore(db)
+    question = "Why does the server time out?"
+    assert "Leave the config alone" in host._render_prior_conversation_situation_block(question)
+    assert host.recall_information_need(question)
+
+    assert db.update_message_content(unused, "An unrelated line was revised.")
+    assert store.get("main") == first
+    if mutation == "edit":
+        assert db.update_message_content(goal, "Diagnose the server timeout.")
+    else:
+        assert db.delete_message_rows("main", [goal]) == [goal]
+
+    host._prompt_assembler._assembly_seq += 1
+    assert host._render_prior_conversation_situation_block(question) == ""
+    assert host.recall_information_need(question) == {}
+    assert len(client.calls) == 1
+
+    fresh = db.add_message("main", "user", "Diagnose the server timeout. Use only the logs.")
+    client.responses.append(extraction(fresh, "Use only the logs."))
+    replacement = worker.run("main")
+    assert replacement is not None and replacement.generation > first.generation
+    assert store.get("main") == replacement
+    assert "PREVIOUS SITUATION:\nnull\n" in client.messages[-1][1]["content"]
+
+    host._prompt_assembler._assembly_seq += 1
+    block = host._render_prior_conversation_situation_block(question)
+    assert "Use only the logs" in block
+    assert "Leave the config alone" not in block
 
 
 @pytest.mark.parametrize("history_limit", [4, 14])
