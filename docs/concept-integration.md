@@ -74,8 +74,11 @@ inference, model reflection and externally cited observations. The latter uses
 knowledge rows' HTTP(S) source URLs (fragments removed): it describes their
 external origin, not a guarantee that the model's summary follows from the page.
 Self notes, reflections, diaries, pre-thoughts and goal-progress notes add no
-independent corroboration. Unknown lineage adds no vote, but is not discarded
-from the completeness diagnostic.
+independent corroboration. A versioned reflective transcript receipt contributes
+its recorded message IDs to `root_count` as generation context. Those roots are
+excluded from `known_support_groups`. This applies to current resolution and new
+frozen captures. Older frozen captures retain their recorded coverage. Unknown
+lineage adds no vote, but is not discarded from the completeness diagnostic.
 
 **Limits.** Disjoint messages can still describe one episode; distinct URLs can
 copy one source. Conversely, overlapping input windows can conservatively merge
@@ -645,6 +648,10 @@ dependency edges, changed claim/memory wording, superseded memories, L15's expli
 inaccurate/superseded revision stamps, memory
 confidence below 0.4, missing recorded source messages, inactive concepts and
 unresolved recorded disproof all prevent a support set from certifying a claim.
+When a premise has a versioned reflective transcript receipt, changed or deleted
+messages in that receipt invalidate its support on the next lookup, even when
+the materialized memory is unchanged. The receipt checks input integrity.
+The conclusion's semantic support requires a separate judgment.
 Confidence, reinforcement timestamps and salience alone are not semantic revision
 fingerprints. Changed content requires a fresh admission before it can support
 the old conclusion again. Unknown historical lineage stays unknown.

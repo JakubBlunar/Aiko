@@ -412,6 +412,12 @@ retained for links, not as a verified mechanism; do not raise the evidence cap o
 observations lost by dedupe and distinguish independent episodes/upstream sources. Unknown history
 stays unknown; shadow is not enforcement.
 
+18 Nov read-only snapshot: recorded overlap collapsed multiple sources in three
+of 47 recent concepts, including repeated message lineage and a repeated external
+citation. All but one concept had incomplete lineage. Reflective transcript
+receipts now contribute traceable context to new captures without adding evidence
+votes. Existing frozen receipts and promotion policy retain their behavior.
+
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l49).
 
 **Source check:**
@@ -494,6 +500,14 @@ viability.
 **Remaining:** Extract semantically sufficient supports, cover other writers and decide historical
 backfill. Structural conjunctions/alternatives do not establish semantic sufficiency/independence;
 legacy claims remain untracked.
+
+18 Nov read-only snapshot: seven of 47 recent concepts had an expired planning
+support set. Six retained another valid set. The 25 recorded diary transcript
+packets were current at inspection. An isolated reproduction showed that editing
+or removing a message could leave a diary-derived concept eligible for recall.
+Lookup now verifies those receipts. A valid alternative keeps the concept viable,
+and the diary remains in history. The earlier unsupported agreement still needs
+semantic review because its transcript receipt is current.
 
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l52).
 

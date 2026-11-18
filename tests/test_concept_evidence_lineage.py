@@ -131,6 +131,26 @@ def test_consolidated_reflections_cannot_become_user_testimony():
     assert report["excluded_reflections"] == 2
 
 
+def test_diary_transcript_is_traceable_without_an_independent_vote():
+    memories = {
+        1: _memory(10),
+        2: _memory(kind="diary", metadata={"reflective_derivation": {
+            "version": 1, "scope": "generation_context",
+            "message_sources": [{"message_id": 10}, {"message_id": 11}],
+        }}),
+    }
+    view, _ = _view(memories, [_edge(1), _edge(2)])
+
+    report = view.evidence_independence(1)
+    assert report["root_count"] == 2
+    assert report["unknown_sources"] == 0
+    assert report["excluded_reflections"] == 1
+    assert report["known_support_groups"] == 1
+    manifest = capture_source_manifest(None, SimpleNamespace(get=memories.get), None, ("memory", 2))
+    assert manifest["sources"] == [{"roots": ["message:10", "message:11"],
+                                    "category": "model_reflection", "complete": True}]
+
+
 def test_historical_lineage_is_bounded_and_truncation_remains_visible():
     history = consolidation_lineage([_memory(mid) for mid in range(1, 100)])
     assert len(history["sources"]) <= 64 and history["truncated"]

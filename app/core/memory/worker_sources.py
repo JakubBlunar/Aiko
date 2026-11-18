@@ -4,6 +4,17 @@ import json
 
 from app.core.infra import timephrase
 
+MAX_TRANSCRIPT_SOURCES = 64
+
+
+def derivation_message_receipt(metadata):
+    """Expose a worker's recorded transcript in the standard receipt shape."""
+    packet = metadata.get("reflective_derivation")
+    if (isinstance(packet, dict) and packet.get("version") == 1
+            and packet.get("scope") == "generation_context" and packet.get("message_sources")):
+        return {"version": 1, "sources": packet["message_sources"]}
+    return None
+
 
 def transcript_packet(rows, *, user_name="User", assistant_name="Aiko", session_key=None,
                       max_chars=2400):

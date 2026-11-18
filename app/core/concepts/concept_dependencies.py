@@ -283,7 +283,10 @@ class DependencyLedger:
                                 SqlMemoryReader, review_state,
                             )
                             from app.core.memory.observation_receipts import (
-                                longitudinal_sources_current,
+                                longitudinal_sources_current, receipt_sources_current,
+                            )
+                            from app.core.memory.worker_sources import (
+                                MAX_TRANSCRIPT_SOURCES, derivation_message_receipt,
                             )
                             memory = SimpleNamespace(
                                 id=int(ident), content=row[0], kind=row[1], event_time=row[2],
@@ -292,7 +295,14 @@ class DependencyLedger:
                                 relevance_until=row[10],
                             )
                             reader = SqlMemoryReader(self.db._get_conn(), {int(ident): memory})
-                            if not longitudinal_sources_current(memory, reader):
+                            transcript = derivation_message_receipt(metadata)
+                            if not longitudinal_sources_current(memory, reader) or (
+                                transcript is not None and (
+                                    not isinstance(transcript["sources"], list)
+                                    or len(transcript["sources"]) > MAX_TRANSCRIPT_SOURCES
+                                    or not receipt_sources_current(transcript, reader)
+                                )
+                            ):
                                 reason = "source_receipt_changed"
                             elif review_state(memory, reader)["review_required"]:
                                 reason = "source_context_review"

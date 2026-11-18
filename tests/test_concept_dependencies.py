@@ -162,6 +162,38 @@ def test_distinct_notes_from_one_message_count_as_one_support_group(model):
     assert report["valid_source_count"] == 1
 
 
+@pytest.mark.parametrize("mutation", ["edit", "delete"])
+def test_diary_transcript_revision_retracts_dependent_guidance(model, mutation):
+    from app.core.memory.worker_sources import receipt, transcript_packet
+
+    diary, alternative = model.memory(1), model.memory(2)
+    mid = model.db.add_message("u:session", "user", "Let's use the shorter greeting.")
+    packet = transcript_packet([model.db.get_message_row(mid)], session_key="u:session")
+    model.db.execute_commit(
+        "UPDATE memories SET kind='diary', metadata=? WHERE id=1",
+        (json.dumps({"reflective_derivation": receipt(packet)}),),
+    )
+    single = model.concept("Use the shorter greeting", kind="communication_style")
+    supported = model.concept("A short greeting also works here", kind="communication_style")
+    model.store.dependencies.add(single.concept_id, [[diary]])
+    model.store.dependencies.add(supported.concept_id, [[diary], [alternative]])
+    query = np.ones(3, dtype=np.float32)
+    assert len(model.store.nearest(query, k=2)) == 2
+
+    if mutation == "edit":
+        assert model.db.update_message_content(mid, "Let's use the full greeting.")
+    else:
+        assert model.db.delete_message_rows("u:session", [mid]) == [mid]
+
+    assert [row.concept_id for row, _ in model.store.nearest(query, k=2)] == [supported.concept_id]
+    assert model.store.dependencies.assess(single.concept_id)["invalid_sets"] == [
+        {"set": 0, "failures": [{"node": ["memory", "1"], "reason": "source_receipt_changed"}]},
+    ]
+    model.worker.run()
+    assert single.status == "candidate"
+    assert supported.status == "active"
+
+
 def test_later_plan_outcome_invalidates_current_guidance_support(model, monkeypatch):
     from app.core.infra import timephrase
     from app.core.memory.memory_store import MemoryStore

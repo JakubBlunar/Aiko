@@ -8,6 +8,7 @@ from typing import Iterable
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 from app.core.memory.memory_origin import memory_origin
+from app.core.memory.worker_sources import MAX_TRANSCRIPT_SOURCES, derivation_message_receipt
 
 
 @dataclass(frozen=True)
@@ -88,6 +89,18 @@ def _memory_lineage(memory) -> SourceLineage:
         source_ids += _ids([getattr(memory, "source_message_id", None)])
         window_ids = []
     roots = frozenset(f"message:{source_id}" for source_id in source_ids + window_ids)
+    receipt = derivation_message_receipt(metadata) if category == "model_reflection" else None
+    if receipt is not None:
+        sources = receipt["sources"]
+        if not isinstance(sources, list):
+            return SourceLineage(roots, category, complete=False)
+        context_ids = _ids([
+            source.get("message_id") for source in sources[:MAX_TRANSCRIPT_SOURCES]
+            if isinstance(source, dict)
+        ])
+        roots = roots.union(f"message:{message_id}" for message_id in context_ids)
+        # Context traces a reflection's inputs without giving it a vote.
+        return SourceLineage(roots, category, complete=len(context_ids) == len(sources))
     return SourceLineage(roots, category, complete=bool(source_ids))
 
 
