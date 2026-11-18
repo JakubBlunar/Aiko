@@ -675,6 +675,104 @@ def test_changed_working_source_withdraws_saved_context_before_the_next_worker(t
     assert "Leave the config alone" not in block
 
 
+@pytest.mark.parametrize("case", ["fact", "result", "newer_result", "same_step", "recall", "ask"])
+def test_saved_troubleshooting_check_is_rendered_by_decision_value(tmp_path, case):
+    db = ChatDatabase(tmp_path / "decision.db")
+    store = ConversationSituationStore(db)
+    goal = db.add_message("main", "user", "Figure out why the server is timing out.")
+    earlier = (db.add_message("main", "user", "I can see the request in the server logs.")
+               if case in {"fact", "newer_result"} else None)
+    proposed = db.add_message("main", "assistant", "The request path is worth checking.")
+    later = (db.add_message("main", "user", "The failing request never reached the server.")
+             if case in {"result", "newer_result"} else None)
+
+    def note(text, source):
+        return {"text": text, "evidence_message_ids": [source]}
+
+    check_text = "Did the request reach the server?"
+    yes = "Compare the request ID in the server logs."
+    no = "Check the client connection."
+    decision = {"if_yes": yes, "if_no": no}
+    working = {
+        "question": note("What explains the server timing out?", goal),
+        "next_check": note(check_text, proposed),
+        "decision_check": decision,
+    }
+    if case in {"fact", "newer_result"}:
+        working["facts"] = [note("The request appears in the server logs.", earlier)]
+        decision.update(answer="yes", fact_index=0)
+    if case in {"result", "newer_result"}:
+        working["check_result"] = note("The failing request never reached the server.", later)
+        if case == "result":
+            decision["answer"] = "no"
+    if case != "ask":
+        working.update(unresolved=note("Whether the request reached the server is open.", goal),
+                       recall_needed=True)
+    if case == "same_step":
+        decision["if_no"] = yes.upper().rstrip(".")
+    payload = {"operation": "replace", "summary": "Investigating a server timeout.",
+               "evidence_message_ids": [mid for mid in (goal, earlier, proposed, later) if mid],
+               "working_set": working}
+    client = _FakeSituationClient([json.dumps(payload)])
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=store, model="worker",
+        world_snapshot_provider=dict, judgment_shadow_enabled=False,
+    )
+    state = worker.run("main")
+    assert state is not None and state.working_set.decision_check is not None
+    host = _SnapshotHost(None)
+    host._conversation_situation_store = ConversationSituationStore(db)
+    host._chat_db = db
+    assert host._conversation_situation_store.get("main") == state
+
+    def render(text="What next?"):
+        host._prompt_assembler._assembly_seq += 1
+        return host._render_prior_conversation_situation_block(text)
+
+    block = render()
+    expected = {
+        "fact": f"use the recorded answer [messages {earlier}]. Next step: {yes}",
+        "result": f"use the recorded answer [messages {later}]. Next step: {no}",
+        "newer_result": "use the recorded check result and keep this check closed",
+        "same_step": f"both answers lead to the same step. Proceed with: {yes}",
+        "recall": f"look it up once. Check: {check_text}",
+        "ask": f"ask only this question, once: {check_text}",
+    }
+    assert expected[case] in block
+    assert ("ask only this question" in block) == (case == "ask")
+    assert bool(host.recall_information_need("What next?")) == (case == "recall")
+    assert "Decision:" not in render("Tell me about the film.")
+    assert "Decision:" not in render("New task: explain how a media server works.")
+    if case == "ask":
+        host._question_balance_suppressed = lambda: True
+        assert "ask only this question" not in render()
+        host._question_balance_suppressed = lambda: False
+        db.add_message("main", "assistant", check_text)
+        assert "keep both paths open" in render()
+        assert check_text not in render()
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("invalid", ["assistant_fact", "out_of_range", "second_question"])
+def test_invalid_decision_check_preserves_the_working_set(invalid):
+    payload = _working_extraction()
+    working = payload["working_set"]
+    working["next_check"] = {"text": "Is it a full-frame sensor?", "evidence_message_ids": [12]}
+    working["decision_check"] = {"if_yes": "Compare the wider lens.",
+                                 "if_no": "Compare the shorter lens.",
+                                 "answer": "yes", "fact_index": 0}
+    if invalid == "assistant_fact":
+        working["facts"][0]["evidence_message_ids"] = [12]
+    elif invalid == "out_of_range":
+        working["decision_check"]["fact_index"] = 1
+    else:
+        working["next_check"]["text"] += " Is the room narrow?"
+    parsed = parse_extraction(json.dumps(payload), valid_message_ids={11, 12},
+                              valid_user_message_ids={11})
+    assert parsed is not None and parsed.working_set is not None
+    assert parsed.working_set.decision_check is None
+
+
 @pytest.mark.parametrize("history_limit", [4, 14])
 def test_retained_working_sources_never_expand_the_transcript_cap(tmp_path, history_limit):
     db = ChatDatabase(tmp_path / "bounded.db")

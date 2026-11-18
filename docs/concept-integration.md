@@ -338,6 +338,23 @@ rebuild the situation from current evidence. Older rows without a fingerprint
 remain unverified until rebuilt. General dependency and deletion propagation
 remains L52 work.
 
+### Troubleshooting decision checks (L54)
+
+The existing observer can attach two proposed next steps to one yes/no
+troubleshooting question. An answer can point to a cited user fact or a later
+user-reported check result. A newer result takes precedence over a binding to
+an earlier fact. The read path uses available results first. Equal proposed
+steps let the reply proceed directly. A material missing answer can use the
+existing recall gate or one focused question. Recall uses its existing tool
+budget. Question guidance honors the question-balance gate and checks for the
+same wording in the eight most recent messages.
+
+These choices guide replies inside the existing situation block. The observer
+still interprets the evidence and proposes the steps within its existing call
+and output budget. Steps are compared by their normalized wording. Tests cover
+the selection and persistence contracts. Ordinary replies and semantic quality
+of the proposed checks remain to be measured.
+
 ### Persisted feature audit (15 Oct 2026)
 
 The live MCP endpoint was unavailable. The audit used SQLite URI `mode=ro` plus

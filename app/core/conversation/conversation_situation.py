@@ -125,6 +125,14 @@ def social_message_ids(frame: PragmaticFrame | None, repair: RepairTarget | None
 
 
 @dataclass(frozen=True, slots=True)
+class DecisionCheck:
+    if_yes: str
+    if_no: str
+    answer: str | None = None
+    fact_index: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationWorkingSet:
     question: EvidenceNote
     facts: tuple[EvidenceNote, ...] = ()
@@ -136,6 +144,26 @@ class ConversationWorkingSet:
     next_check: EvidenceNote | None = None
     check_result: EvidenceNote | None = None
     suspended: bool = False
+    decision_check: DecisionCheck | None = None
+
+
+def decision_answer_source(notes: ConversationWorkingSet) -> EvidenceNote | None:
+    check = notes.decision_check
+    if check is None or check.answer is None:
+        return None
+    return notes.check_result if check.fact_index is None else notes.facts[check.fact_index]
+
+
+def decision_action(notes: ConversationWorkingSet) -> str | None:
+    """Choose the cheapest useful response to a bounded troubleshooting check."""
+    check = notes.decision_check
+    if check is None:
+        return None
+    if decision_answer_source(notes) is not None or notes.check_result is not None:
+        return "use_result"
+    if check.if_yes.casefold().rstrip(".! ") == check.if_no.casefold().rstrip(".! "):
+        return "proceed"
+    return "recall" if notes.recall_needed else "ask"
 
 
 def working_set_message_ids(notes: ConversationWorkingSet | None) -> set[int]:
@@ -231,6 +259,32 @@ def _parse_social_context(
     return parse_field("pragmatic_frame")[0], parse_field("repair_target")[1]
 
 
+def _parse_decision_check(
+    value: Any, next_check: EvidenceNote | None, facts: tuple[EvidenceNote, ...],
+    check_result: EvidenceNote | None,
+) -> DecisionCheck | None:
+    if (not isinstance(value, dict) or next_check is None or not next_check.text.endswith("?")
+            or next_check.text.count("?") != 1):
+        return None
+    steps = [value.get(name) for name in ("if_yes", "if_no")]
+    if any(not isinstance(step, str) or not 3 <= len(step.strip()) <= 120 or "?" in step
+           or timephrase.has_relative_deictic(step) for step in steps):
+        return None
+    answer, fact_index = value.get("answer"), value.get("fact_index")
+    if answer not in (None, "yes", "no") or (answer is None and fact_index is not None):
+        return None
+    if fact_index is not None and (type(fact_index) is not int or not 0 <= fact_index < len(facts)):
+        return None
+    if answer is not None and fact_index is None and check_result is None:
+        return None
+    if fact_index is not None and check_result is not None and (
+        max(check_result.evidence_message_ids) > max(facts[fact_index].evidence_message_ids)
+    ):
+        answer, fact_index = None, None
+    if_yes, if_no = (" ".join(step.split()) for step in steps)
+    return DecisionCheck(if_yes, if_no, answer, fact_index)
+
+
 def _parse_working_set(
     payload: Any, valid_ids: set[int], *, rejection_reasons: list[str] | None = None,
 ) -> ConversationWorkingSet | None:
@@ -276,9 +330,11 @@ def _parse_working_set(
             if rejection_reasons is not None:
                 rejection_reasons.append("working_set.check_result.not_later_than_check")
             return None
+        question = note(payload.get("question"), "question")
+        fact_notes = tuple(note(value, "fact") for value in facts)
         return ConversationWorkingSet(
-            question=note(payload.get("question"), "question"),
-            facts=tuple(note(value, "fact") for value in facts),
+            question=question,
+            facts=fact_notes,
             interpretation=(
                 note(payload["interpretation"], "interpretation")
                 if payload.get("interpretation") else None
@@ -292,6 +348,9 @@ def _parse_working_set(
             next_check=next_check,
             check_result=check_result,
             suspended=payload.get("suspended") is True,
+            decision_check=_parse_decision_check(
+                payload.get("decision_check"), next_check, fact_notes, check_result,
+            ),
         )
     except (TypeError, ValueError):
         return None
@@ -463,6 +522,9 @@ def parse_extraction(
             working_set.check_result.evidence_message_ids
         ).intersection(valid_user_message_ids):
             return reject("working_set.check_result.user_evidence_missing")
+        answer = decision_answer_source(working_set)
+        if answer is not None and not set(answer.evidence_message_ids) <= valid_user_message_ids:
+            working_set = replace(working_set, decision_check=None)
 
     successor = None
     proposed = payload.get("successor")

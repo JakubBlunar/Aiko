@@ -566,12 +566,15 @@ action, personal experiment or intervention occurs without normal permissions.
 
 ## L54. Choose evidence by how much it can change a decision
 
-**Status: Open implementation.**
+**Status: Partial.**
 
-**Implemented / available:** Uncertainty/importance ranking and bounded premise recall exist.
+**Implemented / available:** The troubleshooting working set can compare two next steps
+for one yes/no check. It uses a cited result first, proceeds when the next steps agree,
+and uses the existing recall or question gates when the answer could change the next
+step. Isolated tests cover each branch, repeated questions and stale answer bindings.
 
-**Remaining:** Rank checks by discrimination and decision value, including retrieval/wait/silence;
-compare equal latency/conversation budgets rather than generating more questions.
+**Remaining:** Evaluate extraction and ordinary replies, then compare candidate checks at
+equal latency and conversation budgets. Broader question selection and causal evaluation remain open.
 
 **Source check:** [hypothesis_lane.py](../../app/core/concepts/hypothesis_lane.py),
 [conversation_situation.py](../../app/core/conversation/conversation_situation.py).

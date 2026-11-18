@@ -10,7 +10,11 @@ from app.core.conversation.conversation_situation import (
     ACTIVE,
     ConversationSituationSnapshot,
     ConversationSituationState,
+    ConversationWorkingSet,
     WorldSituation,
+    decision_action,
+    decision_answer_source,
+    declines_interest,
     state_age_seconds,
 )
 from app.core.infra import timephrase
@@ -22,6 +26,9 @@ _PLACE_NOISE = frozenset(
 )
 _ACTIVITY_NOISE = frozenset(
     {"a", "an", "and", "are", "is", "the", "to", "together", "user", "with"}
+)
+_GOAL_NOISE = frozenset(
+    {"which", "what", "that", "this", "with", "have", "does", "would", "should"}
 )
 
 
@@ -38,6 +45,11 @@ def _text_matches(reference: str, candidates: tuple[str, ...], *, activity: bool
     for candidate in candidates:
         candidate_tokens.update(_tokens(candidate, noise))
     return bool(reference_tokens & candidate_tokens)
+
+
+def _working_goal_matches(user_text: str, question: str) -> bool:
+    terms = set(re.findall(r"[a-z]{4,}", question.casefold())) - _GOAL_NOISE
+    return bool(terms.intersection(re.findall(r"[a-z]{4,}", user_text.casefold())))
 
 
 class ConversationSituationMixin:
@@ -281,9 +293,6 @@ class ConversationSituationMixin:
         return True, ""
 
     def recall_information_need(self, user_text: str) -> dict:
-        import re
-        from app.core.conversation.conversation_situation import declines_interest
-
         snapshot = self.conversation_situation_snapshot(user_text=user_text)
         state = snapshot.inferred
         if state is None or snapshot.inferred_stale or state.status != ACTIVE:
@@ -295,15 +304,14 @@ class ConversationSituationMixin:
         notes = state.working_set
         if notes is None or notes.suspended or not notes.recall_needed or notes.unresolved is None:
             return {}
+        action = decision_action(notes)
+        if action not in (None, "recall"):
+            return {}
         if declines_interest(user_text):
             return {}
         if "?" not in user_text and len(user_text.split()) > 6:
             return {}
-        terms = set(re.findall(r"[a-z]{4,}", notes.question.text.casefold())) - {
-            "which", "what", "that", "this", "with", "have", "does", "would", "should",
-        }
-        current_terms = set(re.findall(r"[a-z]{4,}", user_text.casefold()))
-        if not terms.intersection(current_terms):
+        if not self._working_goal_relevant(notes, user_text, allow_follow_up=action == "recall"):
             return {}
         if any(note.text.casefold() == notes.unresolved.text.casefold() for note in notes.facts):
             return {}
@@ -313,6 +321,65 @@ class ConversationSituationMixin:
             "goal_message_ids": list(notes.question.evidence_message_ids),
             "family": "recall",
         }
+
+    def _working_goal_relevant(
+        self, notes: ConversationWorkingSet, user_text: str, *, allow_follow_up: bool,
+    ) -> bool:
+        from app.core.memory.learned_strategies import fresh_goal_context
+
+        if allow_follow_up and re.search(
+            r"\b(?:new task|different (?:task|issue|topic))\b", user_text, re.I,
+        ):
+            return False
+        return (_working_goal_matches(user_text, notes.question.text)
+                or (allow_follow_up and bool(fresh_goal_context(self, user_text))))
+
+    def _render_working_decision(self, notes: ConversationWorkingSet, user_text: str) -> str:
+        check = notes.decision_check
+        if (check is None or notes.next_check is None or declines_interest(user_text)
+                or not self._working_goal_relevant(notes, user_text, allow_follow_up=True)):
+            return ""
+        action = decision_action(notes)
+        if action == "use_result":
+            source = decision_answer_source(notes)
+            if source is None:
+                return "Decision: use the recorded check result and keep this check closed."
+            ids = ",".join(str(mid) for mid in source.evidence_message_ids)
+            step = check.if_yes if check.answer == "yes" else check.if_no
+            return f"Decision: use the recorded answer [messages {ids}]. Next step: {step}"
+        if action == "proceed":
+            return f"Decision: both answers lead to the same step. Proceed with: {check.if_yes}"
+
+        paths = f"If yes: {check.if_yes} If no: {check.if_no}"
+        if action == "recall":
+            if self.recall_information_need(user_text):
+                return (
+                    "Decision: use a supplied answer when present. Otherwise, look it up once. "
+                    f"Check: {notes.next_check.text} "
+                    f"If recall leaves it open, give conditional guidance. {paths}"
+                )
+            return f"Decision: use available evidence or keep both paths open. {paths}"
+        balance = getattr(self, "_question_balance_suppressed", None)
+        if not (callable(balance) and balance()) and not self._working_check_already_asked(
+            notes.next_check.text,
+        ):
+            return (
+                "Decision: use any answer in the latest message or supplied evidence. If still "
+                "needed, ask only "
+                f"this question, once: {notes.next_check.text} {paths}"
+            )
+        return f"Decision: use any answer in the latest message or keep both paths open. {paths}"
+
+    def _working_check_already_asked(self, question: str) -> bool:
+        db = getattr(self, "_chat_db", None)
+        if db is None:
+            return False
+        asked = " ".join(question.casefold().split())
+        try:
+            return any(row.role == "assistant" and asked in " ".join(row.content.casefold().split())
+                       for row in db.get_messages(self.session_key, limit=8))
+        except Exception:
+            return True
 
     def _render_conversation_situation_block(self, user_text: str) -> str:
         from app.core.conversation.social_understanding import current_repair_block
@@ -379,7 +446,11 @@ class ConversationSituationMixin:
                 lines.append(render_note("Tentative, not established", notes.interpretation))
             if notes.unresolved is not None:
                 lines.append(render_note("Unresolved", notes.unresolved))
-            if notes.next_check is not None:
+            if notes.decision_check is not None:
+                decision = self._render_working_decision(notes, user_text)
+                if decision:
+                    lines.append(decision)
+            elif notes.next_check is not None:
                 lines.append(render_note(
                     "Check proposed earlier" if notes.check_result else "Next proposed check",
                     notes.next_check,
