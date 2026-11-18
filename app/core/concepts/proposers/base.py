@@ -809,12 +809,14 @@ def propose_communication_style(
     count at 1. ``subject`` shapes the prompt voice only.
     """
     from app.core.concepts.concept_applicability import (
-        asserted_style_source, context_names, parse_applicability,
+        asserted_style_source, context_names, parse_applicability, reported_preference_receipt,
+        style_quote_supported,
     )
 
     valid_reps = {int(rep) for rep, _label, _size in cluster_index}
     valid_mem_ids: set[int] = set()
     offered_memories = {}
+    reported_preference_ids: set[int] = set()
     mem_lines: list[str] = []
     for mem in memories:
         if not asserted_style_source(mem):
@@ -825,6 +827,8 @@ def propose_communication_style(
             continue
         valid_mem_ids.add(mid)
         offered_memories[mid] = mem
+        if reported_preference_receipt(mem) is not None:
+            reported_preference_ids.add(mid)
         mem_lines.append(mem_line(mem))
 
     if not valid_reps and not valid_mem_ids:
@@ -858,8 +862,8 @@ def propose_communication_style(
         sections.append("FOCUS CLUSTERS (detail):\n" + "\n\n".join(focus_lines))
     if mem_lines:
         sections.append(
-            "NOTABLE REMEMBERED NOTES (deliberate anchors -- a single one can "
-            "ground a style line):\n" + "\n".join(mem_lines)
+            "NOTABLE REMEMBERED NOTES (deliberate anchors and source-checked user "
+            "preferences):\n" + "\n".join(mem_lines)
         )
     sections.append(
         "ALREADY-KNOWN COMMUNICATION-STYLE LINES:\n" + format_existing(existing)
@@ -877,6 +881,8 @@ def propose_communication_style(
         "{'from': 'YYYY-MM-DD', 'until': 'YYYY-MM-DD', 'memory_id': int, 'quote': str}}. "
         "Each quote must be an EXACT span of a cited remembered note, naming when/while/"
         "during/for/unless/except the context applies; never invent a qualifier or date. "
+        "A user preference note can ground only a scoped line. Cite it directly and copy "
+        "its condition and exceptions using the user's own phrasing. "
         "Omit validity when no explicit absolute dates were stated (until is exclusive). "
         "Use learning/troubleshooting/casual when those words describe the source. Otherwise "
         "use a short lowercase activity phrase appearing literally in the qualifier, such as "
@@ -919,6 +925,11 @@ def propose_communication_style(
         )
         if item.get("applicability") is not None and scope is None:
             continue
+        direct_preferences = reported_preference_ids.intersection(mids)
+        if direct_preferences and (scope is None or direct_preferences - {
+            context["memory_id"] for context in scope["contexts"]
+        }):
+            continue
         supersedes = item.get("supersedes_id")
         if supersedes is not None:
             correction = item.get("correction")
@@ -930,6 +941,9 @@ def propose_communication_style(
                 or not isinstance(correction.get("quote"), str)
                 or not 8 <= len(correction["quote"]) <= 160
                 or correction["quote"] not in offered_memories[correction["memory_id"]].content
+                or not style_quote_supported(
+                    offered_memories[correction["memory_id"]], correction["quote"],
+                )
                 or not any(word in correction["quote"].lower()
                            for word in ("instead", "no longer", "changed preference"))
                 or context_names(correction["quote"], names=[i["name"] for i in scope["contexts"]])

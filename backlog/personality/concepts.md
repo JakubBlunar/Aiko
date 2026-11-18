@@ -444,6 +444,13 @@ correction/consolidation/lifecycle guards and synthetic contrasts.
 The 28 Oct extension accepts literal, source-cited activity names, checks qualifier source
 revisions and preserves the existing exception/correction paths.
 
+18 Nov slice: the read-only snapshot had four stored scopes, all for Aiko's own
+style. The user-style pass now offers source-checked `preference` rows from normal
+capture as direct anchors. An isolated memory-to-prompt test covers different
+learning and troubleshooting preferences, casual conversation, a troubleshooting
+correction, and a later source edit. Scoped user candidates stay out of the
+hypothesis and confirmation-question paths while awaiting promotion.
+
 **Remaining:** Evaluate model behavior, broader factual claim scoping, erased quotation framing, scoped
 revival, historical coverage and temporal queries. Lexical support is not general entailment.
 

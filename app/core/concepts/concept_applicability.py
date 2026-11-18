@@ -53,6 +53,54 @@ def asserted_style_source(memory: Any) -> bool:
     return not bool(_NONASSERTION.search(str(getattr(memory, "content", "") or "")))
 
 
+def reported_preference_receipt(memory: Any) -> dict[str, Any] | None:
+    """Find an owned, reported preference receipt from ordinary memory capture."""
+    if getattr(memory, "kind", "") != "preference":
+        return None
+    metadata = getattr(memory, "metadata", None) or {}
+    admission = metadata.get("admission")
+    fidelity = metadata.get("claim_fidelity")
+    if (not isinstance(admission, dict) or admission.get("subject") != "user"
+            or not isinstance(fidelity, dict) or fidelity.get("version") != 1
+            or fidelity.get("basis") != "reported"):
+        return None
+    sources = fidelity.get("sources")
+    if not isinstance(sources, list) or not 1 <= len(sources) <= 5:
+        return None
+    if any(not isinstance(source, dict) or source.get("role") != "user"
+           or type(source.get("message_id")) is not int or source["message_id"] <= 0
+           or not isinstance(source.get("quote"), str) or not source["quote"].strip()
+           for source in sources):
+        return None
+    return fidelity
+
+
+def reported_preference_current(memory: Any, memories: Any, db: Any, user_id: str) -> bool:
+    from app.core.memory.observation_receipts import receipt_sources_current
+    from app.core.memory.recall_records import owned
+    from app.core.memory.reflective_evidence import eligible
+
+    fidelity = reported_preference_receipt(memory)
+    if (fidelity is None or not eligible(memory) or not asserted_style_source(memory)
+            or not any(_CONDITION.search(source["quote"]) for source in fidelity["sources"])
+            or not receipt_sources_current(fidelity, memories)):
+        return False
+    session_id = getattr(memory, "source_session", None)
+    return all((row := db.get_message_row(source["message_id"])) is not None
+               and row.role == "user" and row.session_id == session_id
+               and owned(row.session_id, user_id) and asserted_style_source(row)
+               for source in fidelity["sources"])
+
+
+def style_quote_supported(memory: Any, quote: str) -> bool:
+    fidelity = reported_preference_receipt(memory)
+    if fidelity is None:
+        return True
+    span = r"(?<!\w)" + re.escape(" ".join(quote.casefold().split())) + r"(?!\w)"
+    return any(re.search(span, " ".join(source["quote"].casefold().split()))
+               for source in fidelity["sources"])
+
+
 def parse_applicability(value: Any, memories: dict[int, Any]) -> dict[str, Any] | None:
     """Accept exact qualifier spans in offered memories, never invented dates/IDs."""
     if not isinstance(value, dict):
@@ -69,6 +117,7 @@ def parse_applicability(value: Any, memories: dict[int, Any]) -> dict[str, Any] 
             or not isinstance(quote, str)
             or not 4 <= len(quote) <= 160
             or quote not in content
+            or not style_quote_supported(memory, quote)
             or _NONASSERTION.search(content)
         ):
             raise ValueError("unsupported qualifier")
@@ -241,6 +290,7 @@ def scope_sources_valid(scope: Any, memories: Any) -> bool:
         row = memories.get(citation.get("memory_id"))
         if (row is None or not asserted_style_source(row)
                 or citation.get("quote", "") not in row.content
+                or not style_quote_supported(row, citation.get("quote", ""))
                 or (citation.get("source_revision")
                     and citation["source_revision"] != memory_revision(row))):
             return False

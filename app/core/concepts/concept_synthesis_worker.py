@@ -2530,11 +2530,11 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         force: bool = False,
     ) -> list[CandidateProposal]:
         """L23 communication-style pass: mine self-authored delivery-style lines
-        for ``spec.subject`` from a *hybrid* of topic clusters AND the remembered
-        anchors (``self_tagged`` about the user / ``self`` / ``reflection`` /
-        ``diary`` about herself), additionally *guided* by a persisted
+        for ``spec.subject`` from topic clusters and remembered anchors.
+        User anchors include ``self_tagged`` and source-checked preferences.
+        Aiko anchors include ``self``, ``reflection`` and ``diary``. A persisted
         style-signal digest (K13 labels + the profile ``communication_style``
-        field). The digest steers labeling only -- it is never evidence -- so a
+        field) steers labeling only -- it is never evidence -- so a
         concept still needs real cluster/memory grounding (the proposer's
         composition rule lets a single anchor seed a line). Combined cluster +
         memory dirty-tracking, with a digest hash folded in so a material shift
@@ -2549,10 +2549,22 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         ):
             return []
         subject = spec.subject
-        anchor_kinds = (
-            AIKO_SELF_KINDS if subject == "aiko" else ("self_tagged",)
-        )
-        pop = self._memory_store.iter_by_kinds(anchor_kinds)
+        explicit_ids: set[int] = set()
+        if subject == "aiko":
+            pop = self._memory_store.iter_by_kinds(AIKO_SELF_KINDS)
+        else:
+            from app.core.concepts.concept_applicability import reported_preference_current
+
+            user_id = (self._user_id_provider() if self._user_id_provider else "") or ""
+            pop = []
+            for row in self._memory_store.iter_by_kinds(("self_tagged", "preference")):
+                if row.kind == "preference":
+                    if not reported_preference_current(
+                        row, self._memory_store, self._concept_store._db, user_id,
+                    ):
+                        continue
+                    explicit_ids.add(int(row.id))
+                pop.append(row)
         mem_count = len(pop)
         clusters = self._dominant_clusters(subject)
         if mem_count == 0 and not clusters:
@@ -2572,7 +2584,7 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
 
         cluster_reps = {int(rep) for rep, _l, _s, _k in clusters}
         memory_batch = select_memory_batch(
-            pop, prev, excluded_ids=cluster_reps,
+            pop, prev, excluded_ids=cluster_reps - explicit_ids,
             limit=self._max_comm_style_memories, force=force,
         )
         stats["memory_dirty_remaining"] = (

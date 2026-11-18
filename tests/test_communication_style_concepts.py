@@ -148,6 +148,130 @@ def _aiko_style_responder(system, user):
 
 
 class CommStylePassTests(unittest.TestCase):
+    def test_reported_preferences_reach_context_and_same_scope_correction(self) -> None:
+        from datetime import timedelta
+        from unittest.mock import patch
+
+        import numpy as np
+
+        from app.core.concepts.concept_lifecycle_worker import ConceptLifecycleWorker
+        from app.core.concepts.concept_view import ConceptView
+        from app.core.concepts.proposers.communication_style_user import SPEC
+        from app.core.infra import timephrase
+        from app.core.memory.memory_admission import admit_memory
+        from app.core.memory.memory_store import MemoryStore
+        from tests.test_context_budget import RegionBuilderTests
+
+        replies = []
+        h = WorkerHarness(lambda system, user: {"concepts": replies}, clusters=[],
+                          self_memories=[], user_id_provider=lambda: "u")
+        vectors = {"One short step": [1, 1, 0, 0], "A worked example": [1, 0, 1, 0],
+                   "Compact checklist": [1, 0, 0, 1]}
+        h.worker._embedder = types.SimpleNamespace(
+            embed=lambda text: np.array(vectors.get(text, [1, 0, 0, 0]), dtype=np.float32),
+        )
+        memories = MemoryStore(h.path)
+        h.worker._memory_store = memories
+        now = timephrase.utcnow()
+        h.worker._clock = lambda: now
+        h.worker._memory_settings.concept_promote_min_age_days = 0.0
+        lifecycle = ConceptLifecycleWorker(
+            concept_store=h.store, memory_settings=h.worker._memory_settings,
+            agent_settings=h.worker._agent_settings, concept_event_store=h.events,
+            clock=lambda: now,
+        )
+
+        def remember(content, *, session="u:chat", source=None, quote=None, basis="reported"):
+            original = source or content
+            mid = h.db.add_message(session, "user", original)
+            admission = admit_memory({
+                "content": content, "kind": "preference", "basis": basis,
+                "evidence": [{"message_id": mid, "quote": quote or content}],
+            }, [h.db.get_message_row(mid)], session_key=session, writer="extractor")
+            self.assertTrue(admission.accepted)
+            return memories.add(
+                content, "preference", h.worker._embedder.embed(content),
+                source_session=session, source_message_id=admission.source_message_id,
+                metadata=admission.metadata, provenance=admission.provenance, skip_dedupe=True,
+            )
+
+        def proposal(memory, context, qualifier, label):
+            return {"label": label, "confidence": 0.94, "evidence_memory_ids": [memory.id],
+                    "applicability": {"contexts": [
+                        {"name": context, "memory_id": memory.id, "quote": qualifier},
+                    ]}}
+
+        troubleshoot = remember("When troubleshooting, give me one short step at a time.")
+        learning = remember("While learning, give me a worked example.")
+        quoted = remember("While learning, talk like a pirate.",
+                          source='Someone wrote "While learning, talk like a pirate."')
+        outsider = remember("While learning, write in rhyme.", session="other:chat")
+        inferred = remember("While learning, I might prefer one sentence.", basis="inferred")
+        broadened = remember("While learning, write in rhyme.",
+                             source="When painting, write in rhyme.",
+                             quote="When painting, write in rhyme.")
+        replies[:] = [
+            proposal(troubleshoot, "troubleshooting", "When troubleshooting", "One short step"),
+            proposal(learning, "learning", "While learning", "A worked example"),
+            proposal(quoted, "learning", "While learning", "Talk like a pirate"),
+            proposal(outsider, "learning", "While learning", "Write in rhyme"),
+            proposal(inferred, "learning", "While learning", "Use one sentence"),
+            proposal(broadened, "learning", "While learning", "Rhyme while learning"),
+            {"label": "Always use a worked example", "evidence_memory_ids": [learning.id]},
+        ]
+
+        host, _ = RegionBuilderTests()._host()
+        host._rag_retriever.candidates = lambda *args, **kwargs: []
+        host._embedder = h.worker._embedder
+        host._concept_store = h.store
+        host._memory_store = memories
+        host._settings = types.SimpleNamespace(
+            agent=types.SimpleNamespace(question_balance_enabled=False),
+        )
+
+        def surfaced(text):
+            region = host.build_relevant_context(
+                user_text=text, recent_turns=[], session_key="u:chat", budget_tokens=2000,
+            )
+            self.assertFalse(region.concept_trace.get("hypotheses", {}).get("surfaced"))
+            return {item["concept_id"] for item in region.concept_trace["surfaced"]}
+
+        with patch("app.core.concepts.concept_synthesis_worker.CONCEPT_PROPOSERS", (SPEC,)):
+            h.worker.run()
+            rows = {row.label: row for row in h.store.list_by(kind="communication_style")}
+            self.assertEqual(set(rows), {"One short step", "A worked example"})
+            old = rows["One short step"].concept_id
+            example = rows["A worked example"].concept_id
+            now += timedelta(days=1)
+            lifecycle.run()
+            self.assertEqual(surfaced("Let's debug"), {old})
+            self.assertEqual(surfaced("I'm learning"), {example})
+            self.assertEqual(surfaced("Just chatting"), set())
+
+            changed = remember("When troubleshooting, give me a compact checklist instead.")
+            item = proposal(changed, "troubleshooting", "When troubleshooting", "Compact checklist")
+            item.update(supersedes_id=old,
+                        correction={"memory_id": changed.id, "quote": changed.content})
+            replies[:] = [item]
+            h.worker.run()
+            new = h.store.applicability.get(old)["superseded_by"]
+            self.assertEqual(surfaced("Let's debug"), set())
+            self.assertEqual(surfaced("I'm learning"), {example})
+            self.assertEqual(surfaced("Just chatting"), set())
+            self.assertEqual(ConceptView(h.store).testable(
+                min_unsettled=0.0, promote_min_confidence=1.0,
+            ), [])
+
+            now += timedelta(days=1)
+            lifecycle.run()
+            self.assertEqual(surfaced("Let's debug"), {new})
+            self.assertEqual(surfaced("I'm learning"), {example})
+            self.assertEqual(surfaced("Just chatting"), set())
+
+            self.assertTrue(h.db.update_message_content(changed.source_message_id, "Never mind."))
+            self.assertEqual(surfaced("Let's debug"), set())
+            self.assertEqual(surfaced("I'm learning"), {example})
+
     def test_user_pass_creates_single_anchor_line(self) -> None:
         anchor = MemStub(
             500, "He asked me to explain code in depth with examples.",

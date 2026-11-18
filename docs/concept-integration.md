@@ -223,6 +223,14 @@ light-hearted chat/conversation. The same vocabulary validates cited scope spans
 and reads the fresh situation frame. Bare "chat", greetings and a generic topic
 discussion do not establish casual context by themselves; mixed learning/casual
 signals remain ambiguous. Ended/negated casual turns cannot inherit the frame.
+
+The user-style worker can use ordinary `preference` memories as direct anchors.
+The memory must carry a current reported receipt from the user, and the original
+exchange must be an assertion in that user's conversation. A proposal using
+these anchors needs a positive context from each cited preference. The cited
+scope, exceptions and correction wording must appear in the original receipt
+as well as the note. A preference can serve as a direct anchor even when it also
+represents a topic cluster. The ordinary synthesis and lifecycle schedules apply.
 Each context/exception cites an offered, also-cited memory ID and an exact span
 of at most 160 characters. At most three contexts and three exceptions are
 accepted. Recognizable quotation, hypothetical and role-play framing is rejected;
@@ -265,6 +273,9 @@ reasoning-failure event. A future `validity.from` keeps the earlier style usable
 until that start date. Ordinary contradiction probes for scoped styles consider
 only uniquely matching source contexts; unknown/cross-context/nonassertion
 memories cannot trigger that penalty.
+Scoped user style candidates stay out of conversational hypotheses and
+background confirmation questions. They enter the delivery guidance when the
+lifecycle promotes them and the context qualifies.
 
 Tests cover admission, actual budget selection/rendering, consolidation refusal,
 drift preservation, lifecycle detector wiring, explicit correction, future start

@@ -550,6 +550,12 @@ class ConceptView:
             (c, float(sim)) for (c, sim) in pairs if float(sim) >= floor
         ]
 
+    def _scoped_user_style(self, concept: Concept) -> bool:
+        ledger = getattr(self._store, "applicability", None)
+        return (getattr(concept, "kind", "") == "communication_style"
+                and getattr(concept, "subject", "") == "user"
+                and ledger is not None and bool(ledger.get(concept.concept_id)))
+
     def hypotheses(
         self,
         embedding: "np.ndarray | None",
@@ -601,7 +607,7 @@ class ConceptView:
         floor = float(min_sim)
         out: list[tuple["Concept", float]] = []
         for concept, sim in pairs:
-            if float(sim) < floor:
+            if float(sim) < floor or self._scoped_user_style(concept):
                 continue
             sources = int(getattr(concept, "distinct_source_count", 0) or 0)
             if sources < int(min_sources):
@@ -664,6 +670,8 @@ class ConceptView:
 
         scored: list[tuple["Concept", float]] = []
         for concept in rows:
+            if self._scoped_user_style(concept):
+                continue
             sources = int(getattr(concept, "distinct_source_count", 0) or 0)
             if sources < int(min_sources):
                 continue
