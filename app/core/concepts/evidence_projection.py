@@ -33,10 +33,13 @@ def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
     ledger = getattr(store, "applicability", None)
     packet["applicability"] = ledger.get(cid) if ledger is not None else None
     if packet["applicability"]:
-        from app.core.concepts.concept_applicability import scope_sources_valid
+        from app.core.concepts.concept_applicability import applicability_state, scope_sources_valid
 
         packet["applicability_sources_valid"] = scope_sources_valid(
             packet["applicability"], memories,
+        )
+        packet["applicability_state"] = applicability_state(
+            packet["applicability"], set(), sources_valid=packet["applicability_sources_valid"],
         )
     clusters = {}
     if graph is not None:
@@ -122,6 +125,13 @@ def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
 def uncertainty_reason(concept: Any, packet: dict) -> str:
     validity = packet.get("validity", {})
     support = packet.get("support", {})
+    scope_issue = {
+        "superseded": "A later recorded claim supersedes this scope.",
+        "outside_validity": "The recorded scope is outside its validity window.",
+        "source_changed": "The source of the recorded scope changed or is unavailable.",
+    }.get(packet.get("applicability_state"))
+    if scope_issue:
+        return scope_issue
     if packet.get("source_issues"):
         return "A cited observation changed or was removed; the old interpretation needs review."
     if validity.get("tracked") and not validity.get("viable"):

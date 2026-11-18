@@ -277,6 +277,12 @@ Scoped user style candidates stay out of conversational hypotheses and
 background confirmation questions. They enter the delivery guidance when the
 lifecycle promotes them and the context qualifies.
 
+Concept recall by query checks scope dates, supersession and qualifier sources
+before ranking is clipped to a result. Related links use the same scope check.
+Exact-ID inspection still returns historical records with `applicability_state`
+and `applicability_sources_valid`. A live scope is `unknown_context` on recall
+because a lookup does not establish which context is active in the conversation.
+
 Tests cover admission, actual budget selection/rendering, consolidation refusal,
 drift preservation, lifecycle detector wiring, explicit correction, future start
 and expiry, and eight deterministic corpus contrasts. They are not model-level

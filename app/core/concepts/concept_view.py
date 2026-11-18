@@ -521,6 +521,7 @@ class ConceptView:
         k: int = 8,
         min_sim: float = 0.0,
         strict: bool = False,
+        eligible: Callable[[Concept], bool] | None = None,
     ) -> list[tuple["Concept", float]]:
         """Up to ``k`` active concepts nearest ``embedding`` by label
         cosine, each paired with its similarity (>= ``min_sim``).
@@ -538,6 +539,9 @@ class ConceptView:
             kwargs["subject"] = subject
         if kind is not None:
             kwargs["kind"] = kind
+        floor = float(min_sim)
+        if eligible is not None:
+            kwargs["eligible"] = lambda concept, sim: sim >= floor and eligible(concept)
         try:
             pairs = self._store.nearest(embedding, **kwargs)  # type: ignore[arg-type]
         except Exception:
@@ -545,10 +549,20 @@ class ConceptView:
                 raise
             log.debug("ConceptView.relevant: nearest failed", exc_info=True)
             return []
-        floor = float(min_sim)
         return [
             (c, float(sim)) for (c, sim) in pairs if float(sim) >= floor
         ]
+
+    def scope_is_current(self, concept_id: int) -> bool:
+        """Check temporal and source validity without assuming a turn context."""
+        from app.core.concepts.concept_applicability import (
+            NONCURRENT_SCOPE_STATES, applicability_state, scope_sources_valid,
+        )
+
+        ledger = getattr(self._store, "applicability", None)
+        scope = ledger.get(concept_id) if ledger is not None else None
+        return not scope or (applicability_state(scope, set()) not in NONCURRENT_SCOPE_STATES
+                             and scope_sources_valid(scope, self._memory_store))
 
     def _scoped_user_style(self, concept: Concept) -> bool:
         ledger = getattr(self._store, "applicability", None)

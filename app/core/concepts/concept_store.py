@@ -506,6 +506,7 @@ class ConceptStore:
         status: str | None = "active",
         user_id: object = _UNSET,
         k: int = 8,
+        eligible: Callable[[Concept, float], bool] | None = None,
     ) -> list[tuple[Concept, float]]:
         """Return up to ``k`` ``(concept, cosine)`` pairs nearest to
         ``query_vec``, filtered by the given axes.
@@ -518,6 +519,7 @@ class ConceptStore:
 
         Active/candidate queries check current dependency support before top-k
         clipping; a warm embedding matrix cannot preserve a withdrawn premise.
+        A caller may also check eligibility in ranked order before clipping.
         """
         q = _unit(query_vec)
         if q.size == 0 or k <= 0:
@@ -548,13 +550,18 @@ class ConceptStore:
             return []
         sims = mat @ q
         order = np.argsort(-sims)
-        if status in {"active", "candidate"}:
+        check_support = status in {"active", "candidate"}
+        if check_support or eligible is not None:
             viable = []
             for index in order:
-                if self.dependencies.is_viable(ids[index]):
-                    viable.append(index)
-                    if len(viable) >= k:
-                        break
+                cid = ids[index]
+                if eligible is not None and not eligible(self._concepts[cid], float(sims[index])):
+                    continue
+                if check_support and not self.dependencies.is_viable(cid):
+                    continue
+                viable.append(index)
+                if len(viable) >= k:
+                    break
             order = viable
         order = order[: min(k, len(ids))]
         return [(self._concepts[ids[i]], float(sims[i])) for i in order]

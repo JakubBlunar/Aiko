@@ -268,7 +268,9 @@ class RecallConceptTool:
                 "'all_evidence' true for a wider bounded sample (at most 16 sources), "
                 "not unlimited coverage. Use subject to disambiguate whose understanding, "
                 "or concept_id returned by a read for exact inspection (including historical "
-                "status). Open omitted evidence with inspect_memory; uncertainty still applies."
+                "status). Applicability states superseded, outside_validity, and source_changed "
+                "identify historical or unavailable guidance. An unknown_context scope remains "
+                "conditional. Open omitted evidence with inspect_memory; uncertainty still applies."
             ),
             parameters={
                 "type": "object",

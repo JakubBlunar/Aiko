@@ -204,6 +204,12 @@ basis and unresolved point. The excerpt/full-depth caps are 1 and 16 respectivel
 contracts have deterministic regression coverage; semantic sufficiency, historical coverage
 and real-model quality remain unvalidated. The broader proposal below is retained.
 
+**18 Nov:** Concept recall checks current applicability before selecting a query
+result and omits related claims with obsolete or unavailable scope. Exact-ID
+inspection retains the evidence and reports supersession, date validity or a
+changed qualifier source. The regression advances an isolated clock and edits a
+scratch source to exercise the same selection on a warm concept matrix.
+
 **Priority: first. Effort: medium. Owners: L24/L49/L50/L52 and existing recall.**
 
 Introduce a bounded, read-only evidence projection, starting with

@@ -1696,6 +1696,7 @@ class RagRetriever(RecallReadsMixin):
         # L24: nearest-concept lookup goes through the one ConceptView read
         # path; the specialised evidence hydration below (cluster -> member
         # expansion) stays recall's own concern.
+        from app.core.concepts.concept_applicability import NONCURRENT_SCOPE_STATES
         from app.core.concepts.concept_view import concept_view_from
 
         view = concept_view_from(self)
@@ -1718,7 +1719,8 @@ class RagRetriever(RecallReadsMixin):
                     raise RecallUnavailable("Concept query failed; absence is unknown.") from exc
                 log.debug("recall_concept: embed failed", exc_info=True)
                 return None
-            kwargs = {"k": 1, "min_sim": float(min_concept_sim)}
+            kwargs = {"k": 1, "min_sim": float(min_concept_sim),
+                      "eligible": lambda row: view.scope_is_current(row.concept_id)}
             if strict:
                 kwargs["strict"] = True
             if subject is not None:
@@ -1768,13 +1770,17 @@ class RagRetriever(RecallReadsMixin):
         # that reference it (a tension it sits in, an L20 generalization that
         # abstracts it), and its own base concepts when it is itself a meta.
         # Bounded so the bundle stays compact.
-        related = self._concept_related_links(concept, edges, limit=6)
         from app.core.concepts.evidence_projection import project_evidence
 
         packet = project_evidence(
             self._concept_store, self._memory_store, self._topic_graph, concept,
             limit=16 if all_evidence else cap,
             db=getattr(self, "_chat_db", None),
+        )
+        if concept_id is None and packet.get("applicability_state") in NONCURRENT_SCOPE_STATES:
+            return None
+        related = self._concept_related_links(
+            concept, edges, scope_is_current=view.scope_is_current,
         )
         history = {"status": "unavailable", "steps": []}
         history_provider = getattr(self, "_concept_history_provider", None)
@@ -1800,6 +1806,8 @@ class RagRetriever(RecallReadsMixin):
             "support": packet["support"],
             "support_validity": packet["validity"],
             "applicability": packet.get("applicability"),
+            "applicability_state": packet.get("applicability_state"),
+            "applicability_sources_valid": packet.get("applicability_sources_valid"),
             "uncertainty": packet.get("uncertainty", "Support unknown."),
             "evidence_truncated": packet["truncated"],
             "understanding_arc": history,
@@ -1808,7 +1816,8 @@ class RagRetriever(RecallReadsMixin):
         }
 
     def _concept_related_links(
-        self, concept: Any, evidence_edges: list[Any], *, limit: int = 6
+        self, concept: Any, evidence_edges: list[Any], *,
+        scope_is_current: Callable[[int], bool], limit: int = 6,
     ) -> list[dict[str, Any]]:
         """Resolve the concept-to-concept neighbours of ``concept`` for the
         ``recall_concept`` "why" bundle: the metas that reference it as a base
@@ -1832,7 +1841,7 @@ class RagRetriever(RecallReadsMixin):
             if len(out) >= limit or cid in seen or cid == self_id:
                 return
             rc = store.get(cid)
-            if rc is None or rc.status != "active":
+            if rc is None or rc.status != "active" or not scope_is_current(cid):
                 return
             seen.add(cid)
             out.append({

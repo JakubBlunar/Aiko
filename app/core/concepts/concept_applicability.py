@@ -12,6 +12,7 @@ from app.core.concepts.concept_support import memory_revision
 
 
 SCOPE_PREFIX = "concept.applicability:"
+NONCURRENT_SCOPE_STATES = frozenset({"superseded", "outside_validity", "source_changed"})
 _CONTEXTS = {
     "learning": re.compile(r"\b(learning|learn|studying|study|tutorial)\b", re.I),
     "troubleshooting": re.compile(
@@ -297,7 +298,7 @@ def scope_sources_valid(scope: Any, memories: Any) -> bool:
     return True
 
 
-def applicability_state(scope: Any, contexts: set[str]) -> str:
+def applicability_state(scope: Any, contexts: set[str], *, sources_valid: bool = True) -> str:
     if not scope_key(scope):
         return "unknown"
     today = timephrase.now().date().isoformat()
@@ -306,6 +307,8 @@ def applicability_state(scope: Any, contexts: set[str]) -> str:
     validity = scope.get("validity", {})
     if validity.get("from", "") > today or validity.get("until", "9999-12-31") <= today:
         return "outside_validity"
+    if not sources_valid:
+        return "source_changed"
     if len(contexts) != 1:
         return "unknown_context"
     applies = {item["name"] for item in scope.get("contexts", [])}

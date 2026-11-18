@@ -176,6 +176,64 @@ def test_concept_subject_and_exact_id_with_no_embedding_call(env):
     assert payload["concept"]["subject"] == "aiko" and payload["score"] is None
 
 
+def test_concept_recall_filters_inactive_scopes_before_ranking(env, monkeypatch):
+    from app.core.concepts.concept_applicability import parse_applicability
+    from app.core.concepts.concept_store import ConceptEdge
+    from app.core.infra import timephrase
+
+    db, store, _, _ = env
+    concepts = ConceptStore(db)
+
+    def scoped(label, vector, *, time_phrase=None, validity=None):
+        content = f"When troubleshooting, {label}."
+        row = save(store, f"{content} {time_phrase}" if validity else content)
+        payload = {"contexts": [{"name": "troubleshooting", "memory_id": row.id,
+                                 "quote": "When troubleshooting"}]}
+        if validity:
+            payload["validity"] = {**validity, "memory_id": row.id, "quote": time_phrase}
+        scope = parse_applicability(payload, {row.id: row})
+        assert scope is not None
+        cid = concepts.add(Concept(label, kind="communication_style", subject="user",
+                                   status="active", embedding=np.array(vector)))
+        concepts.applicability.record(cid, scope)
+        return cid, row
+
+    old, _ = scoped("give one step at a time", [1., 0.])
+    expired, _ = scoped("use only bullet points", [.96, .28], time_phrase="Until 2026-10-06",
+                        validity={"until": "2026-10-06"})
+    new, new_source = scoped("give me a checklist instead", [.8, .6],
+                             time_phrase="From 2026-10-06", validity={"from": "2026-10-06"})
+    concepts.applicability.supersede(old, new, {"memory_id": new_source.id,
+                                                "quote": new_source.content})
+    concepts.add_edge(ConceptEdge("concept", str(old), "concept", str(new), "evidence"))
+    rag = retriever(store, db, [])
+    rag.set_concept_store(concepts)
+    tool = RecallConceptTool(rag, "u")
+
+    def recall(**args):
+        return json.loads(tool.run(args))
+
+    monkeypatch.setattr(timephrase, "now", lambda: timephrase.parse_iso("2026-10-05"))
+    assert recall(query="how much detail when debugging")["concept"]["concept_id"] == old
+    assert recall(concept_id=new)["applicability_state"] == "outside_validity"
+
+    monkeypatch.setattr(timephrase, "now", lambda: timephrase.parse_iso("2026-10-06"))
+    selected = recall(query="how much detail when debugging")
+    assert selected["concept"]["concept_id"] == new
+    assert selected["applicability_state"] == "unknown_context"
+    assert selected["applicability_sources_valid"] is True
+    assert not selected["related"]
+    assert recall(concept_id=old)["applicability_state"] == "superseded"
+    assert recall(concept_id=expired)["applicability_state"] == "outside_validity"
+
+    store.update(new_source.id,
+                 content="When troubleshooting, do something else instead. From 2026-10-06")
+    assert recall(query="how much detail when debugging")["status"] == "no_match"
+    changed = recall(concept_id=new)
+    assert changed["applicability_state"] == "source_changed"
+    assert changed["applicability_sources_valid"] is False
+
+
 def test_failed_memory_hydration_preserves_available_message_results(env):
     from app.core.rag.rag_store import MessageRecord, RagHit
 
