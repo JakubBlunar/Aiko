@@ -439,10 +439,32 @@ class ConversationSituationMixin:
             lines = [render_note("Open question", notes.question)]
             lines.extend(render_note("User constraint", note) for note in notes.constraints)
             lines.extend(render_note("Reported fact", note) for note in notes.facts)
-            lines.extend(
-                render_note("Hypothesis, not established", note) for note in notes.hypotheses
-            )
-            if notes.interpretation is not None:
+            assessed = False
+            comparison = notes.causal_check
+            if (comparison is not None and notes.decision_check is not None
+                    and notes.next_check is not None
+                    and not declines_interest(user_text)
+                    and self._working_goal_relevant(notes, user_text, allow_follow_up=True)):
+                answer = notes.decision_check.answer if comparison.result_applies else None
+                assessed = answer is not None
+                lines.append(render_note("Check being compared", notes.next_check))
+                for index, hypothesis in enumerate(notes.hypotheses):
+                    prediction = "yes" if index == comparison.expects_yes else "no"
+                    label = "Tentative hypothesis"
+                    if assessed:
+                        label = ("Consistent with the reported result, still tentative"
+                                 if answer == prediction else "Weakened by the reported result")
+                    lines.append(
+                        f"{render_note(label, hypothesis)} "
+                        f"Predicts {prediction} if {comparison.assumptions[index]}."
+                    )
+                if notes.check_result is not None and not assessed:
+                    lines.append("The reported result leaves this comparison inconclusive.")
+            else:
+                lines.extend(
+                    render_note("Hypothesis, not established", note) for note in notes.hypotheses
+                )
+            if notes.interpretation is not None and not assessed:
                 lines.append(render_note("Tentative, not established", notes.interpretation))
             if notes.unresolved is not None:
                 lines.append(render_note("Unresolved", notes.unresolved))

@@ -82,6 +82,11 @@ Return ONE compact JSON object without indentation or commentary:
             "if_yes": "next step", "if_no": "next step", "answer": null,
             "fact_index": null
         },
+        "causal_check": null or {
+            "expects_yes": 0, "assumptions": ["condition for hypothesis 0",
+                                               "condition for hypothesis 1"],
+            "result_applies": false
+        },
         "suspended": false
     }
 }
@@ -133,6 +138,17 @@ user's constraints. If an existing USER report answers the question, set answer
 to "yes" or "no" and point fact_index to its zero-based position in facts. Use
 null fact_index for the cited check_result instead. Keep answer null when the
 result remains unknown. Treat a check result as what the user reported.
+
+Use causal_check only for two plausible hypotheses that predict opposite answers
+to the same allowed decision_check. Set expects_yes to the zero-based index that
+predicts yes. Give one short assumption per hypothesis, in order. Omit the
+comparison if the result is already known when first proposing the check. On the
+same problem, copy the question, hypotheses, next_check, assumptions and
+expects_yes from the previous comparison. Keep that mapping after the result.
+Set result_applies true only when a later USER report clearly answers the same
+check under those conditions. Keep it false for an ambiguous, hypothetical,
+unrelated or out-of-scope result. A matching prediction leaves its explanation
+plausible. Keep the situation summary factual and the cause tentative.
 
 Use pragmatic_frame only when context-supported indirect meaning, attributed
 speech, a local pretend span or a corrected referent matters to continuity.

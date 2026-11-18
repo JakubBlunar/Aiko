@@ -338,6 +338,26 @@ rebuild the situation from current evidence. Older rows without a fingerprint
 remain unverified until rebuilt. General dependency and deletion propagation
 remains L52 work.
 
+### Comparing troubleshooting explanations (L53)
+
+An optional causal comparison reuses the working set's two tentative
+hypotheses and one yes/no decision check. The observer records which
+hypothesis predicts yes and one condition for each prediction. The comparison
+must be recorded before the answer is known. The next observation can assess
+it only for the same goal, hypotheses and check, with the original predictions
+and conditions intact.
+
+An unambiguous later check result must cite only user messages and apply
+under both recorded conditions. The renderer marks the mismatched explanation
+as weakened and keeps the matching one tentative. An inconclusive result
+leaves both open. A newer applicable correction can reverse the assessment.
+Edited or deleted sources withhold the working set through the existing
+revision check. The existing decision policy still controls recall and
+question guidance. The comparison adds no observer call, persistent memory
+or concept write. Result interpretation and condition applicability still
+depend on the observer. Synthetic cases verify how the stored comparison
+changes the prompt.
+
 ### Troubleshooting decision checks (L54)
 
 The existing observer can attach two proposed next steps to one yes/no

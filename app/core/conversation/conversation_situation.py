@@ -133,6 +133,13 @@ class DecisionCheck:
 
 
 @dataclass(frozen=True, slots=True)
+class CausalCheck:
+    expects_yes: int
+    assumptions: tuple[str, str]
+    result_applies: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationWorkingSet:
     question: EvidenceNote
     facts: tuple[EvidenceNote, ...] = ()
@@ -145,6 +152,7 @@ class ConversationWorkingSet:
     check_result: EvidenceNote | None = None
     suspended: bool = False
     decision_check: DecisionCheck | None = None
+    causal_check: CausalCheck | None = None
 
 
 def decision_answer_source(notes: ConversationWorkingSet) -> EvidenceNote | None:
@@ -285,6 +293,28 @@ def _parse_decision_check(
     return DecisionCheck(if_yes, if_no, answer, fact_index)
 
 
+def _parse_causal_check(
+    value: Any, decision: DecisionCheck | None, hypotheses: tuple[EvidenceNote, ...],
+) -> CausalCheck | None:
+    if (not isinstance(value, dict) or decision is None or len(hypotheses) != 2
+            or hypotheses[0].text.casefold() == hypotheses[1].text.casefold()):
+        return None
+    expects_yes, assumptions = value.get("expects_yes"), value.get("assumptions")
+    if type(expects_yes) is not int or expects_yes not in (0, 1):
+        return None
+    if not isinstance(assumptions, list) or len(assumptions) != 2 or any(
+        not isinstance(item, str) or not 3 <= len(item.strip()) <= 120
+        or timephrase.has_relative_deictic(item) for item in assumptions
+    ):
+        return None
+    first, second = (" ".join(item.split()) for item in assumptions)
+    return CausalCheck(
+        expects_yes, (first, second),
+        result_applies=(value.get("result_applies") is True
+                        and decision.answer is not None and decision.fact_index is None),
+    )
+
+
 def _parse_working_set(
     payload: Any, valid_ids: set[int], *, rejection_reasons: list[str] | None = None,
 ) -> ConversationWorkingSet | None:
@@ -332,6 +362,10 @@ def _parse_working_set(
             return None
         question = note(payload.get("question"), "question")
         fact_notes = tuple(note(value, "fact") for value in facts)
+        hypothesis_notes = tuple(note(value, "hypothesis") for value in hypotheses)
+        decision = _parse_decision_check(
+            payload.get("decision_check"), next_check, fact_notes, check_result,
+        )
         return ConversationWorkingSet(
             question=question,
             facts=fact_notes,
@@ -344,12 +378,13 @@ def _parse_working_set(
             ),
             recall_needed=payload.get("recall_needed") is True and bool(payload.get("unresolved")),
             constraints=tuple(note(value, "constraint") for value in constraints),
-            hypotheses=tuple(note(value, "hypothesis") for value in hypotheses),
+            hypotheses=hypothesis_notes,
             next_check=next_check,
             check_result=check_result,
             suspended=payload.get("suspended") is True,
-            decision_check=_parse_decision_check(
-                payload.get("decision_check"), next_check, fact_notes, check_result,
+            decision_check=decision,
+            causal_check=_parse_causal_check(
+                payload.get("causal_check"), decision, hypothesis_notes,
             ),
         )
     except (TypeError, ValueError):
@@ -524,7 +559,7 @@ def parse_extraction(
             return reject("working_set.check_result.user_evidence_missing")
         answer = decision_answer_source(working_set)
         if answer is not None and not set(answer.evidence_message_ids) <= valid_user_message_ids:
-            working_set = replace(working_set, decision_check=None)
+            working_set = replace(working_set, decision_check=None, causal_check=None)
 
     successor = None
     proposed = payload.get("successor")
@@ -565,6 +600,35 @@ def parse_extraction(
     )
 
 
+def _bind_causal_check(
+    previous: ConversationSituationState | None, notes: ConversationWorkingSet | None,
+) -> ConversationWorkingSet | None:
+    if notes is None or notes.causal_check is None or notes.decision_check is None:
+        return notes
+    prior = previous.working_set if previous is not None else None
+    if (prior is None or prior.causal_check is None or prior.decision_check is None
+            or (prior.question, prior.next_check, prior.hypotheses)
+            != (notes.question, notes.next_check, notes.hypotheses)):
+        if notes.check_result is None and notes.decision_check.answer is None:
+            return notes
+        return replace(notes, causal_check=None)
+
+    # Compare a reported result against the predictions recorded before it arrived.
+    proposed = notes.causal_check
+    original = prior.causal_check
+    same_predictions = (proposed.expects_yes, proposed.assumptions) == (
+        original.expects_yes, original.assumptions,
+    )
+    later_report = (notes.check_result is not None and previous is not None
+                    and min(notes.check_result.evidence_message_ids) > previous.source_message_id)
+    same_assessment = (original.result_applies and notes.check_result == prior.check_result
+                       and notes.decision_check.answer == prior.decision_check.answer)
+    return replace(notes, causal_check=replace(
+        original, result_applies=(proposed.result_applies and same_predictions
+                                  and (later_report or same_assessment)),
+    ))
+
+
 def reduce_situation(
     previous: ConversationSituationState | None,
     extraction: SituationExtraction,
@@ -581,6 +645,7 @@ def reduce_situation(
         or int(source_message_id) < previous.source_message_id
     ):
         return previous if previous.session_id == str(session_id) else None
+    working_set = _bind_causal_check(previous, extraction.working_set)
 
     if extraction.operation == KEEP:
         if previous is None:
@@ -588,14 +653,13 @@ def reduce_situation(
         return replace(
             previous,
             status=(
-                UNCERTAIN if extraction.working_set is not None
-                and extraction.working_set.suspended else ACTIVE
+                UNCERTAIN if working_set is not None and working_set.suspended else ACTIVE
             ),
             evidence_message_ids=extraction.evidence_message_ids or previous.evidence_message_ids,
             source_message_id=max(previous.source_message_id, int(source_message_id)),
             miss_count=0,
             updated_at=timestamp,
-            working_set=extraction.working_set,
+            working_set=working_set,
             pragmatic_frame=extraction.pragmatic_frame,
             repair_target=extraction.repair_target,
             working_source_revision=None,
@@ -615,7 +679,7 @@ def reduce_situation(
             source_message_id=int(source_message_id),
             miss_count=0,
             updated_at=timestamp,
-            working_set=extraction.working_set,
+            working_set=working_set,
             pragmatic_frame=extraction.pragmatic_frame,
             repair_target=extraction.repair_target,
         )
@@ -636,8 +700,7 @@ def reduce_situation(
             working_source_revision=None,
         )
     misses = int(previous.miss_count) + 1
-    suspended = (extraction.working_set if extraction.working_set is not None
-                 and extraction.working_set.suspended else None)
+    suspended = working_set if working_set is not None and working_set.suspended else None
     return replace(
         previous,
         generation=generation + (1 if misses >= IMPLICIT_CLEAR_MISSES else 0),

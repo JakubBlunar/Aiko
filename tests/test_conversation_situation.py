@@ -753,6 +753,110 @@ def test_saved_troubleshooting_check_is_rendered_by_decision_value(tmp_path, cas
     assert len(client.calls) == 1
 
 
+@pytest.mark.parametrize("case", ["yes", "no", "inconclusive", "rewritten", "posthoc", "mixed"])
+def test_causal_comparison_uses_predictions_recorded_before_the_user_result(tmp_path, case):
+    db = ChatDatabase(tmp_path / "causal.db")
+    store = ConversationSituationStore(db)
+    goal = db.add_message("main", "user", "Why does the app fail when reopening a saved item?")
+    question = "Does a fresh item open in the same app version?"
+    check = db.add_message("main", "assistant", question)
+    item_cause = "A saved-item-specific fault"
+    shared_cause = "A fault in the shared opening path"
+
+    def note(text, *ids):
+        return {"text": text, "evidence_message_ids": list(ids)}
+
+    working = {
+        "question": note("Why does the app fail when reopening a saved item?", goal),
+        "hypotheses": [note(item_cause, goal), note(shared_cause, goal)],
+        "interpretation": note("The saved item is the leading suspect.", goal),
+        "next_check": note(question, check),
+        "decision_check": {"if_yes": "Inspect the saved item.", "if_no": "Check the shared path."},
+        "causal_check": {
+            "expects_yes": 0,
+            "assumptions": ["the fresh item uses the same app version",
+                            "the fresh item uses the same opening path"],
+            "result_applies": False,
+        },
+    }
+    payload = {"operation": "replace", "summary": "Investigating an app opening failure.",
+               "evidence_message_ids": [goal, check], "working_set": working}
+    client = _FakeSituationClient([])
+    worker = ConversationSituationWorker(
+        client=client, chat_db=db, store=store, model="worker", world_snapshot_provider=dict,
+        judgment_shadow_enabled=False,
+    )
+    host = _SnapshotHost(None)
+    host._chat_db = db
+    host._conversation_situation_store = ConversationSituationStore(db)
+
+    def observe():
+        client.responses.append(json.dumps(payload))
+        state = worker.run("main")
+        assert state is not None and host._conversation_situation_store.get("main") == state
+        return state.working_set
+
+    def render(text="Why does the app fail to open the item?"):
+        host._prompt_assembler._assembly_seq += 1
+        return host._render_prior_conversation_situation_block(text)
+
+    if case != "posthoc":
+        assert observe().causal_check.expects_yes == 0
+        block = render()
+        assert f"{item_cause} Predicts yes" in block
+        assert f"{shared_cause} Predicts no" in block
+        assert "Check being compared" not in render("New task: explain another app failure.")
+    answer = "yes" if case == "yes" else "no"
+    report = ("A fresh item opens in the same version." if answer == "yes"
+              else "Fresh items also fail in the same version.")
+    if case == "inconclusive":
+        report = "Fresh items fail in the same version but use a different opening path."
+    result = db.add_message("main", "user", report)
+    result_ids = [result]
+    if case == "mixed":
+        result_ids.append(db.add_message("main", "assistant", "It also failed for me."))
+    payload["evidence_message_ids"] = [goal, check, *result_ids]
+    working["check_result"] = note(report, *result_ids)
+    working["decision_check"]["answer"] = answer
+    working["causal_check"]["result_applies"] = case != "inconclusive"
+    if case == "rewritten":
+        working["causal_check"]["expects_yes"] = 1
+    notes = observe()
+    block = render()
+    if case in {"yes", "no"}:
+        weakened = shared_cause if answer == "yes" else item_cause
+        plausible = item_cause if answer == "yes" else shared_cause
+        assert notes.causal_check.result_applies
+        assert f"Weakened by the reported result [messages {goal}]: {weakened}" in block
+        assert f"still tentative [messages {goal}]: {plausible}" in block
+        assert f"User-reported check result [messages {result}]" in block
+        assert "The saved item is the leading suspect." not in block
+        assert "ask only this question" not in block
+
+        db.add_message("main", "assistant", "That narrows it down.")
+        payload["operation"] = "keep"
+        assert observe().causal_check.result_applies
+        if case == "yes":
+            revised = "Correction: fresh items fail in the same version too."
+            corrected = db.add_message("main", "user", revised)
+            payload["evidence_message_ids"] = [goal, check, corrected]
+            working["check_result"] = note(revised, corrected)
+            working["decision_check"]["answer"] = "no"
+            assert observe().causal_check.result_applies
+            assert f"Weakened by the reported result [messages {goal}]: {item_cause}" in render()
+            result = corrected
+        assert db.update_message_content(result, "I haven't tested fresh items.")
+        assert render() == ""
+    else:
+        assert "Weakened by the reported result" not in block
+        if case in {"posthoc", "mixed"}:
+            assert notes.causal_check is None
+        else:
+            assert notes.causal_check.expects_yes == 0
+            assert not notes.causal_check.result_applies
+            assert "leaves this comparison inconclusive" in block
+
+
 @pytest.mark.parametrize("invalid", ["assistant_fact", "out_of_range", "second_question"])
 def test_invalid_decision_check_preserves_the_working_set(invalid):
     payload = _working_extraction()

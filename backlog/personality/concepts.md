@@ -544,12 +544,16 @@ the new L47 cascade alone does not solve downstream deletion.
 
 ## L53. Causal explanations and counterfactual checks
 
-**Status: Open implementation.**
+**Status: Partial.**
 
 **Implemented / available:** L33 alternatives, L51 working state and L52 support viability exist.
+The troubleshooting pilot records two opposing predictions and their assumptions before one
+yes/no check. A later cited user result can weaken the mismatched explanation, while ambiguous
+results leave both tentative. Isolated contrasts cover both outcomes, corrections and edits to
+cited evidence.
 
-**Remaining:** Trial competing mechanisms with assumptions, differing predictions and a permitted
-disconfirming check; revise failed explanations and evaluate matched contrasts.
+**Remaining:** Evaluate extraction and ordinary replies on matched problems. Broader causal
+comparisons and counterfactual checks remain open.
 
 **Source check:** [introspection_worker.py](../../app/core/proactive/introspection_worker.py),
 [conversation_situation.py](../../app/core/conversation/conversation_situation.py).
