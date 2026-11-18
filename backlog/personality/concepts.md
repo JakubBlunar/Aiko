@@ -372,14 +372,37 @@ validation remains; these status decisions do not certify semantic truth.
 **Implemented / available:** Same-subject depth-2 generalization, cycle/depth/restatement guards and
 retrieval/ancestor handling are implemented.
 
-**Remaining:** Verify grounded depth-2 concepts actually reach T3 and inspect representative label
-quality. Structural depth tests do not establish useful abstraction.
+**18 Nov read-only review:** The current graph has 219 generalizations at structural depth 2.
+Two are active and 17 are candidates. Sixteen of the candidates have no viable recorded support
+set. The two active rows and the one viable candidate each have a single viable set containing
+only depth-0 premises. Their stored edges give them depth 2, while their current support reaches
+only one layer. The sampled labels make broad claims about motives or systems from premises
+that support narrower patterns. Some premises also repeat the same preference.
+
+From 12 Nov UTC through the snapshot, T3 recorded zero selections of IDs now at depth 2. One
+older row now at depth 4 appeared 37 times in the core or flex lanes. Depth is computed from
+current edges, and the surfacing records do not capture depth at the time of selection. Recent
+logs show five of 85 completed synthesis runs marked the depth-2 input pool dirty. The completion
+logs do not identify depth-2 proposal or rejection counts.
+
+**Follow-up:** Synthesis keeps base and stacked evidence separate during creation and
+reinforcement. Recall and lifecycle require a live depth-1 support set for structural depth 2 and
+exclude deeper rows from ordinary selection. The openness report now exposes stored and eligible
+depth-2 counts, deeper legacy rows and recent T3 use. Synthesis logs count parsed depth-2 proposals,
+additions and reinforcements.
+
+**Remaining:** Review generation, live support, lifecycle and T3 together. Report structural
+depth alongside current support. Review both levels against the original sources
+for distinct evidence, a useful common principle, preserved scope and concise labels. Track
+proposal, admission, promotion or withdrawal, and surfacing for a fresh cohort. Review legacy
+over-cap rows separately before expanding the supported depth.
 
 [Implemented slice](shipped/audit-2026-10-24.md#concepts-l46).
 
 **Source check:**
 [concept_synthesis_worker.py](../../app/core/concepts/concept_synthesis_worker.py),
 [concept_meta_depth.py](../../app/core/concepts/concept_meta_depth.py),
+[concept_openness_report.py](../../scripts/concept_openness_report.py),
 [base.py](../../app/core/concepts/proposers/base.py),
 [generalization_user.py](../../app/core/concepts/proposers/generalization_user.py),
 [generalization_aiko.py](../../app/core/concepts/proposers/generalization_aiko.py),

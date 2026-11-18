@@ -570,7 +570,7 @@ class ConceptLifecycleWorker(RevivalMixin):
         new_status, event_type = self._transition(
             concept, now, new_conf, contradicted=verdict is not None
         )
-        if dependency_review["tracked"] and not dependency_review["viable"]:
+        if not dependency_review["viable"]:
             if old_status == "active" and new_status != "contradicted":
                 new_status, event_type = "candidate", "demoted"
             elif new_status == "active":
@@ -657,8 +657,7 @@ class ConceptLifecycleWorker(RevivalMixin):
             self._emit(
                 concept, event_type, new_conf, now,
                 reason_override=("Dependency support withdrawn; reconsider this conclusion."
-                                 if dependency_review["tracked"]
-                                 and not dependency_review["viable"] else None),
+                                 if not dependency_review["viable"] else None),
             )
             stats["events"] += 1
             self._mark_dependents_stale(concept)
@@ -1139,7 +1138,10 @@ class ConceptLifecycleWorker(RevivalMixin):
         """
         if concept.concept_id in self._store.dependencies.records:
             return self._store.dependencies.is_viable(concept.concept_id)
-        return int(concept.distinct_source_count) > 0
+        return int(concept.distinct_source_count) > 0 and (
+            concept.kind != "generalization"
+            or self._store.dependencies.is_viable(concept.concept_id)
+        )
 
     def _graph_mature(self) -> bool:
         """Whether the topic graph has cleared the L21 maturity floor.

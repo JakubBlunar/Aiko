@@ -30,14 +30,13 @@ Seven sections:
   versus active user-affective concepts whose evidence sits in each band.
   The headline is *neg-annotated clusters vs neg-evidence affective
   concepts*, so "0-of-N negative user affective" cannot go stale.
-- **Abstraction stack (L46)** -- concept->concept chain length, nodes
-  that are both source and target, counts by meta depth, and a sample of
-  the newest depth-2 generalization labels. The honest test of stacking
-  is reading those, not a confidence number.
+- **Abstraction stack (L46)** -- structural depth, live support, over-cap
+  generalizations, recent T3 selections, and a sample of depth-2 labels.
+  Label quality and semantic support still require review.
 
 Nothing here writes. The database is opened read-only via a URI, so it is
-safe to run while Aiko is up, and the concept rows are loaded into a
-throwaway in-memory mirror rather than a real ``ConceptStore``.
+safe to run while Aiko is up. The concept mirror used for L46 is backed by
+that read-only connection.
 
     python scripts/concept_openness_report.py
     python scripts/concept_openness_report.py --json
@@ -52,7 +51,7 @@ import json
 import sqlite3
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -75,8 +74,8 @@ from app.core.concepts.concept_kinds import (  # noqa: E402
     core_lane_kinds,
     kinds_by_role,
 )
-from app.core.concepts.concept_meta_depth import meta_depth  # noqa: E402
-from app.core.concepts.concept_store import Concept  # noqa: E402
+from app.core.concepts.concept_meta_depth import MAX_GENERALIZATION_DEPTH, meta_depth  # noqa: E402
+from app.core.concepts.concept_store import Concept, ConceptStore  # noqa: E402
 from app.core.concepts.concept_surfacing import (  # noqa: E402
     engagement_baseline,
 )
@@ -91,8 +90,10 @@ _LABEL_WIDTH = 58
 def _connect(path: Path) -> sqlite3.Connection:
     if not path.exists():
         sys.exit(f"no database at {path}")
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    conn.execute("BEGIN")
     return conn
 
 
@@ -640,104 +641,100 @@ def _affect_polarity_section(
     return cov
 
 
-def _abstraction_stack_section(conn: sqlite3.Connection) -> dict[str, Any]:
-    """L46 watch-line: does the meta graph actually stack?"""
-    models: dict[int, str] = {}
-    labels: dict[int, str] = {}
-    kinds: dict[int, str] = {}
-    statuses: dict[int, str] = {}
-    created: dict[int, str] = {}
-    try:
-        rows = conn.execute(
-            "SELECT id, label, kind, evidence_model, status, created_at "
-            "FROM concepts"
-        )
-    except sqlite3.Error:
-        return {
-            "concept_to_concept_edges": 0,
-            "distinct_sources": 0,
-            "distinct_targets": 0,
-            "both_source_and_target": 0,
-            "max_depth": 0,
-            "by_depth": {},
-            "l2_count": 0,
-            "l2_sample": [],
-        }
-    for r in rows:
-        cid = int(r["id"])
-        models[cid] = str(r["evidence_model"] or "set")
-        labels[cid] = str(r["label"] or "")
-        kinds[cid] = str(r["kind"] or "")
-        statuses[cid] = str(r["status"] or "")
-        created[cid] = str(r["created_at"] or "")
+def _abstraction_stack_section(conn: sqlite3.Connection, *, now: datetime) -> dict[str, Any]:
+    """Compare stored depth with current eligibility and recent recorded use."""
+    def kv_get(key: str) -> str | None:
+        row = conn.execute("SELECT value FROM kv_meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
 
-    children: dict[int, list[int]] = {}
     sources: set[int] = set()
     targets: set[int] = set()
     edge_count = 0
     try:
+        store = ConceptStore(SimpleNamespace(_get_conn=lambda: conn, kv_get=kv_get))
+        rows = store.load_all()
         edge_rows = conn.execute(
             "SELECT src_id, dst_id FROM concept_edges "
             "WHERE relation = 'evidence' AND src_type = 'concept' "
-            "AND dst_type = 'concept'"
+            "AND dst_type = 'concept' AND polarity > 0"
         )
-    except sqlite3.Error:
-        edge_rows = []
-    for r in edge_rows:
+    except (sqlite3.Error, ValueError):
+        return {"unavailable": True}
+    for source, target in edge_rows:
         try:
-            src = int(r["src_id"])
-            dst = int(r["dst_id"])
+            sources.add(int(source))
+            targets.add(int(target))
         except (TypeError, ValueError):
             continue
-        children.setdefault(dst, []).append(src)
-        sources.add(src)
-        targets.add(dst)
         edge_count += 1
 
-    class _Mini:
-        def get(self, cid: int) -> SimpleNamespace | None:
-            model = models.get(int(cid))
-            if model is None:
-                return None
-            return SimpleNamespace(evidence_model=model)
-
-        def evidence_of(self, cid: int) -> list[SimpleNamespace]:
-            return [
-                SimpleNamespace(src_type="concept", src_id=str(i))
-                for i in children.get(int(cid), [])
-            ]
-
-    store = _Mini()
     memo: dict[int, int] = {}
     by_depth: Counter[int] = Counter()
-    l2_rows: list[tuple[str, int, str, str]] = []
-    for cid, model in models.items():
-        if model != "meta":
+    by_id = {}
+    l2_rows = []
+    over_cap: Counter[str] = Counter()
+    viable_l2: Counter[str] = Counter()
+    assessments = {}
+    for concept in rows:
+        if concept.evidence_model != "meta":
             continue
+        cid = concept.concept_id
         depth = meta_depth(store, cid, memo=memo)
         by_depth[depth] += 1
-        if depth >= 2 and kinds.get(cid) == "generalization":
-            l2_rows.append(
-                (created.get(cid, ""), cid, labels[cid], statuses.get(cid, ""))
-            )
-    l2_rows.sort(reverse=True)
+        if concept.kind != "generalization":
+            continue
+        by_id[cid] = depth
+        if depth > MAX_GENERALIZATION_DEPTH:
+            over_cap[concept.status] += 1
+        if depth == 2:
+            l2_rows.append(concept)
+            if concept.status in {"active", "candidate"}:
+                report = store.dependencies.assess(cid)
+                assessments[cid] = report
+                if report["viable"]:
+                    viable_l2[concept.status] += 1
+
+    l2_rows.sort(key=lambda row: (
+        row.status in {"active", "candidate"}, row.created_at, row.concept_id,
+    ), reverse=True)
     sample = [
         {
-            "id": cid,
-            "status": status,
-            "label": " ".join(label.split())[:_LABEL_WIDTH],
+            "id": row.concept_id,
+            "status": row.status,
+            "live_support": assessments.get(row.concept_id, {}).get("reason"),
+            "label": " ".join(row.label.split())[:_LABEL_WIDTH],
         }
-        for _created, cid, label, status in l2_rows[:20]
+        for row in l2_rows[:20]
     ]
-    max_depth = max(by_depth) if by_depth else 0
+    since = (now - timedelta(days=7)).isoformat()
+    t3_by_current_depth = None
+    try:
+        t3 = Counter()
+        for cid, count in conn.execute(
+            "SELECT item_id, COUNT(*) FROM surfacing_outcomes WHERE item_kind = 'concept' "
+            "AND lane IN ('core', 'flex', 'activation') AND created_at BETWEEN ? AND ? "
+            "GROUP BY item_id",
+            (since, now.isoformat()),
+        ):
+            depth = by_id.get(cid, 0)
+            if depth >= 2:
+                t3[depth] += count
+        t3_by_current_depth = dict(sorted(t3.items()))
+    except sqlite3.Error:
+        pass
     return {
         "concept_to_concept_edges": edge_count,
         "distinct_sources": len(sources),
         "distinct_targets": len(targets),
         "both_source_and_target": len(sources & targets),
-        "max_depth": max_depth,
+        "max_depth": max(by_depth, default=0),
         "by_depth": {str(k): int(v) for k, v in sorted(by_depth.items())},
         "l2_count": len(l2_rows),
+        "l2_by_status": dict(Counter(row.status for row in l2_rows)),
+        "l2_viable_by_status": dict(viable_l2),
+        "over_cap_by_status": dict(over_cap),
+        "t3_since": since,
+        "t3_by_current_depth": t3_by_current_depth,
         "l2_sample": sample,
     }
 
@@ -776,7 +773,7 @@ def collect(
         "intake": _intake_section(conn, ms=ms, concepts=concepts),
         "prompt_load": _prompt_load_section(view, ms=ms, core=core),
         "affect_polarity": _affect_polarity_section(conn, ms=ms),
-        "abstraction_stack": _abstraction_stack_section(conn),
+        "abstraction_stack": _abstraction_stack_section(conn, now=now),
     }
 
 
@@ -963,6 +960,9 @@ def _render(data: dict[str, Any]) -> str:
     ) or "none"
     out.append("")
     out.append("Abstraction stack (L46)")
+    if stack.get("unavailable"):
+        out.append("  unavailable for this database schema")
+        return "\n".join(out)
     out.append(
         f"  concept->concept edges  {stack.get('concept_to_concept_edges', 0)}"
         f"  sources {stack.get('distinct_sources', 0)}"
@@ -974,9 +974,16 @@ def _render(data: dict[str, Any]) -> str:
         f"meta by depth  {depth_bits}  "
         f"l2 generalizations  {stack.get('l2_count', 0)}"
     )
+    out.append(f"  depth-2 stored statuses  {stack.get('l2_by_status', {})}")
+    out.append(f"  depth-2 with live support  {stack.get('l2_viable_by_status', {})}")
+    out.append(f"  over-cap stored statuses  {stack.get('over_cap_by_status', {})}")
+    out.append(
+        f"  last 7 days of T3 selections by current depth  {stack.get('t3_by_current_depth')}"
+    )
     for row in stack.get("l2_sample") or []:
+        support = f" / {row['live_support']}" if row.get("live_support") else ""
         out.append(
-            f"    #{row.get('id')} [{row.get('status')}] {row.get('label')}"
+            f"    #{row.get('id')} [{row.get('status')}{support}] {row.get('label')}"
         )
     return "\n".join(out)
 

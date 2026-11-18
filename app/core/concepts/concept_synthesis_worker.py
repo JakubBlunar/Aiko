@@ -64,7 +64,9 @@ from app.core.concepts.concept_event_store import ConceptEvent
 from app.core.concepts.concept_source_policy import ConceptSourcePolicyMixin
 from app.core.concepts.concept_kinds import core_lane_kinds
 from app.core.concepts.concept_meta_depth import (
+    MAX_GENERALIZATION_DEPTH,
     descendant_ids,
+    generalization_support_depth,
     meta_depth,
     would_cycle,
 )
@@ -930,16 +932,10 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
 
     def _generalization_max_depth(self) -> int:
         """L46: hard cap on meta-graph depth (default 2)."""
-        return max(
-            1,
-            int(
-                getattr(
-                    self._memory_settings,
-                    "concept_generalization_max_depth",
-                    2,
-                )
-            ),
-        )
+        configured = int(getattr(
+            self._memory_settings, "concept_generalization_max_depth", MAX_GENERALIZATION_DEPTH,
+        ))
+        return max(1, min(configured, MAX_GENERALIZATION_DEPTH))
 
     @property
     def _dirty_size_delta(self) -> int:
@@ -2807,6 +2803,8 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         wiggle does not re-spend this LLM call. Gated by both the L20
         synthesis switch and ``agent.generalization_stacking_enabled``.
         """
+        if self._generalization_max_depth() < 2:
+            return []
         if not bool(
             getattr(
                 self._agent_settings, "generalization_synthesis_enabled", True
@@ -2840,6 +2838,9 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             concepts=pool,
             existing=self._existing_generalizations(spec, depth=2, concepts=pool),
             stacking=True,
+        )
+        stats["generalization_l2_proposed"] = stats.get("generalization_l2_proposed", 0) + len(
+            proposals
         )
         self._save_sigs(
             sig_key, {"fingerprint": fingerprint, "count": len(pool)}
@@ -3133,7 +3134,7 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             if meta_depth(self._concept_store, int(c.concept_id), memo=memo) == 1
         ]
         depth_one.sort(key=lambda c: float(c.confidence), reverse=True)
-        depth_one = depth_one[:cap]
+        depth_one = self._pick_diverse_concepts(depth_one, cap)
         now = _parse_iso(_now_iso())
         return [self._as_tension_base(c, now) for c in depth_one]
 
@@ -3510,19 +3511,20 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             ):
                 return
 
-        # Meta depth cap + cycle guard (L12 / L46), enforced at persist time.
-        # Tension (and other non-generalization metas) may reference only
-        # EXISTING, non-meta concepts. A generalization may cite a live
-        # concept whose computed depth is strictly below the cap, and a
-        # reinforce must not close a cycle. Drops any ``("concept", id)``
-        # edge whose target vanished or fails those rules; fewer than two
-        # surviving concept edges means the proposal is not a meta.
-        if proposal.evidence_model == "meta":
-            proposal.evidence = self._filter_meta_evidence(
-                proposal.evidence,
-                kind=proposal.kind,
-                parent_id=proposal.reinforces_id,
-            )
+        # A generalization needs its whole premise bundle at one level.
+        # Other meta kinds retain the original non-meta evidence filter.
+        generalization_depth = None
+        if proposal.kind == "generalization":
+            generalization_depth = self._generalization_proposal_depth(proposal)
+            if generalization_depth is None:
+                refusal = (
+                    "generalization_reinforcement_refused" if proposal.reinforces_id is not None
+                    else "generalization_premise_refused"
+                )
+                stats[refusal] = stats.get(refusal, 0) + 1
+                return
+        elif proposal.evidence_model == "meta":
+            proposal.evidence = self._filter_meta_evidence(proposal.evidence)
             if len({(t, i) for t, i in proposal.evidence}) < 2:
                 return
 
@@ -3589,6 +3591,11 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             self._defer_proposal(proposal, "missing_distinction")
             return
 
+        if generalization_depth is not None and (
+            self._generalization_proposal_depth(proposal) != generalization_depth
+        ):
+            return
+
         now = _now_iso()
         distinct = len({(t, i) for t, i in proposal.evidence})
         concept = Concept(
@@ -3618,6 +3625,8 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
                     proposal.supersedes_id, cid, proposal.applicability["correction"],
                 )
         stats["added"] += 1
+        if generalization_depth == 2:
+            stats["generalization_l2_added"] = stats.get("generalization_l2_added", 0) + 1
         self._bump_subject(stats, proposal.subject, "added")
         self._record_discovery(concept, proposal, top_sim, now)
         if self._notify_concept_added is not None:
@@ -3632,6 +3641,27 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
                 )
             except Exception:
                 log.debug("notify_concept_added failed", exc_info=True)
+
+    def _generalization_proposal_depth(self, proposal: CandidateProposal) -> int | None:
+        if proposal.evidence_model != "meta":
+            return None
+        depth = generalization_support_depth(
+            self._concept_store, proposal.subject, proposal.evidence,
+        )
+        if depth is None or depth > self._generalization_max_depth() or not all(
+            self._concept_store.is_assertable(int(ident)) for _, ident in proposal.evidence
+        ):
+            return None
+        if proposal.reinforces_id is not None:
+            target = self._concept_store.get(proposal.reinforces_id)
+            if (target is None or target.kind != "generalization"
+                    or target.subject != proposal.subject
+                    or meta_depth(self._concept_store, target.concept_id) != depth):
+                return None
+            if any(would_cycle(self._concept_store, target.concept_id, int(ident))
+                   for _, ident in proposal.evidence):
+                return None
+        return depth
 
     def _find_duplicate(
         self, proposal: CandidateProposal, vec: Any
@@ -3808,6 +3838,17 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         """
         if not hasattr(self, "_routing_stats"):
             self._routing_begin(stats)
+        if proposal.kind == "generalization":
+            depth = self._generalization_proposal_depth(proposal)
+            if (depth is None or concept.subject != proposal.subject
+                    or concept.kind != "generalization"
+                    or meta_depth(self._concept_store, concept.concept_id) != depth
+                    or any(would_cycle(self._concept_store, concept.concept_id, int(ident))
+                           for _, ident in proposal.evidence)):
+                stats["generalization_reinforcement_refused"] = (
+                    stats.get("generalization_reinforcement_refused", 0) + 1
+                )
+                return
         if (concept.kind == "communication_style" or proposal.applicability
                 or self._concept_store.applicability.get(concept.concept_id)):
             from app.core.concepts.concept_applicability import scope_key
@@ -3882,6 +3923,8 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             # say in how it is worded either.
             return
         stats["reinforced"] += 1
+        if proposal.kind == "generalization" and depth == 2:
+            stats["generalization_l2_reinforced"] = stats.get("generalization_l2_reinforced", 0) + 1
         self._bump_subject(stats, proposal.subject, "reinforced")
         if proposal.kind == "communication_style" and proposal.supersedes_id is not None:
             self._concept_store.applicability.supersede(
@@ -4101,21 +4144,8 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
     def _filter_meta_evidence(
         self,
         evidence: list[tuple[str, str]],
-        *,
-        kind: str = "",
-        parent_id: int | None = None,
     ) -> list[tuple[str, str]]:
-        """Keep ``("concept", id)`` edges that satisfy the kind's depth rule.
-
-        Tension (and any other non-generalization meta) may only cite a
-        live non-meta concept -- the original L12 cap. A generalization
-        may cite a live concept whose computed depth is strictly below
-        ``concept_generalization_max_depth``, and a reinforce must not
-        close a cycle. Non-concept edges pass through untouched.
-        """
-        stacking = str(kind or "") == "generalization"
-        cap = self._generalization_max_depth() if stacking else 1
-        memo: dict[int, int] = {}
+        """Apply the original L12 premise filter for non-generalization meta kinds."""
         kept: list[tuple[str, str]] = []
         for node_type, node_id in evidence:
             if node_type != "concept":
@@ -4129,19 +4159,8 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
                 target = self._concept_store.get(cid)
             except Exception:
                 target = None
-            if target is None:
-                continue
-            if not stacking:
-                if target.evidence_model == "meta":
-                    continue
-            else:
-                if meta_depth(
-                    self._concept_store, cid, memo=memo
-                ) >= cap:
-                    continue
-                if would_cycle(self._concept_store, parent_id, cid):
-                    continue
-            kept.append((node_type, node_id))
+            if target is not None and target.evidence_model != "meta":
+                kept.append((node_type, node_id))
         return kept
 
     def _add_evidence_edges(

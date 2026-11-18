@@ -13,6 +13,11 @@ from types import SimpleNamespace
 
 from app.core.concepts.concept_applicability import applicability_state
 from app.core.concepts.concept_evidence_lineage import SourceLineage, support_summary
+from app.core.concepts.concept_meta_depth import (
+    MAX_GENERALIZATION_DEPTH,
+    generalization_support_depth,
+    meta_depth,
+)
 from app.core.concepts.concept_support import revision_hash
 from app.core.infra import timephrase
 
@@ -218,6 +223,7 @@ class DependencyLedger:
     def _assess(self, concept_id, *, max_nodes, first_valid):
         remaining = max(1, min(MAX_NODES, int(max_nodes)))
         visited = 0
+        depth_memo = {}
 
         def claim(cid, path):
             nonlocal visited
@@ -226,13 +232,28 @@ class DependencyLedger:
             if len(path) >= MAX_DEPTH or visited >= remaining:
                 return {"tracked": True, "viable": False, "reason": "traversal_limit"}
             visited += 1
-            if cid not in self.records:
+            conclusion = self.store.get(cid)
+            depth = (meta_depth(self.store, cid, memo=depth_memo)
+                     if conclusion is not None and conclusion.kind == "generalization" else 0)
+            tracked = cid in self.records
+            if depth > MAX_GENERALIZATION_DEPTH:
+                return {"tracked": tracked, "viable": False, "reason": "generalization_depth_limit"}
+            if depth == 2 and not tracked:
+                return {"tracked": False, "viable": False, "reason": "untracked_abstraction"}
+            if not tracked:
                 return {"tracked": False, "viable": True, "reason": "legacy_untracked"}
             valid = []
             invalid = []
             source_roots = {}
-            conclusion = self.store.get(cid)
             for index, group in enumerate(self.records[cid]):
+                if depth == 2 and generalization_support_depth(
+                    self.store, conclusion.subject, ((kind, ident) for kind, ident, _ in group),
+                    memo=depth_memo,
+                ) != depth:
+                    invalid.append({"set": index, "failures": [{
+                        "node": ["concept", str(cid)], "reason": "abstraction_premises_required",
+                    }]})
+                    continue
                 failures = []
                 bounds = []
                 for kind, ident, fingerprint in group:

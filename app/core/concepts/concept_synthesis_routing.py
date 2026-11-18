@@ -628,7 +628,7 @@ class SynthesisRoutingMixin:
             )[0]
         enabled = bool(getattr(self._agent_settings, flag, True))
         if kwargs.get("stacking"):
-            enabled = enabled and bool(
+            enabled = enabled and self._generalization_max_depth() >= 2 and bool(
                 getattr(
                     self._agent_settings,
                     "generalization_stacking_enabled",

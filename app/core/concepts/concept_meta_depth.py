@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+MAX_GENERALIZATION_DEPTH = 2
+
 # Walks deeper than this are treated as already over the v1 cap. A real
 # graph at L46 is height 2; this is just a cycle/runaway brake.
 _MAX_WALK = 8
@@ -29,7 +31,8 @@ def _concept_child_ids(store: _DepthStore, concept_id: int) -> list[int]:
         return []
     out: list[int] = []
     for edge in edges:
-        if str(getattr(edge, "src_type", "") or "") != "concept":
+        if (str(getattr(edge, "src_type", "") or "") != "concept"
+                or getattr(edge, "polarity", 1) <= 0):
             continue
         try:
             out.append(int(edge.src_id))
@@ -86,6 +89,27 @@ def meta_depth(
     visiting.discard(cid)
     memo[cid] = depth
     return depth
+
+
+def generalization_support_depth(store, subject, nodes, *, memo=None) -> int | None:
+    """A base-only bundle makes depth 1. A depth-1 abstraction bundle makes depth 2."""
+    memo = {} if memo is None else memo
+    members = set()
+    depths = set()
+    for kind, ident in nodes:
+        try:
+            cid = int(ident)
+        except (TypeError, ValueError):
+            return None
+        premise = store.get(cid) if kind == "concept" else None
+        if premise is None or premise.subject != subject:
+            return None
+        depth = meta_depth(store, cid, memo=memo)
+        if depth > 1 or (depth == 1 and premise.kind != "generalization"):
+            return None
+        members.add(cid)
+        depths.add(depth)
+    return depths.pop() + 1 if len(members) >= 2 and len(depths) == 1 else None
 
 
 def descendant_ids(

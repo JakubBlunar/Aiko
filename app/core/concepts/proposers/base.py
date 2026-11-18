@@ -1163,6 +1163,12 @@ def propose_generalization(
             "NOT a restatement of one child, NOT a friction, and NOT a mix of "
             "abstractions with the original details beneath them -- return "
             "nothing rather than forcing a view that isn't really there.",
+            "Give one short, plain-language sentence. Preserve the settings and "
+            "exceptions that limit the cited patterns. Favor a principle that "
+            "helps in another comparable situation. Skip children that repeat the "
+            "same observation or differ mainly in wording. Explain what each "
+            "cited abstraction contributes. Avoid attributing a hidden motive, "
+            "necessity, or causal mechanism without direct evidence.",
         ]
     else:
         sections = [

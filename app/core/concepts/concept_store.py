@@ -399,8 +399,7 @@ class ConceptStore:
         """Live support gate, including the interval before L3 revisits a row."""
         concept = self.get(concept_id)
         return bool(concept and concept.status == "active"
-                    and (concept_id not in self.dependencies.records
-                         or self.dependencies.is_viable(concept_id)))
+                    and self.dependencies.is_viable(concept_id))
 
     def count(self) -> int:
         return len(self._concepts)

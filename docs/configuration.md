@@ -827,12 +827,14 @@ The `generalization` concept kind (`subject=user` **and** `aiko`) is the abstrac
 - `agent.generalization_synthesis_enabled` *(bool, `true`)* — master switch for L1 generalization synthesis. Off → no abstractions are mined (stacking is also skipped).
 - `agent.generalization_stacking_enabled` *(bool, `true`)* — master switch for the L46 stacking pass only. Off → L1 still mints; no depth-2 views.
 - `memory.concept_synthesis_max_generalization_concepts` *(int, `24`, min `2`)* — cap on active non-meta bases offered to the L1 generalization proposer per run, per subject. The L1 pool is diversified by label cosine (0.86) so near-twin rituals cannot fill it; the tension pool is not.
-- `memory.concept_synthesis_max_l2_concepts` *(int, `24`, min `2`)* — cap on active depth-1 generalizations offered to the stacking pass per subject.
-- `memory.concept_generalization_max_depth` *(int, `2`, min `1`)* — hard cap on meta-graph depth. A generalization may cite a concept whose computed depth is strictly below this.
+- `memory.concept_synthesis_max_l2_concepts` *(int, `24`, min `2`)* — cap on active depth-1 generalizations offered to the stacking pass per subject. Near-duplicate labels share one slot.
+- `memory.concept_generalization_max_depth` *(int, `2`, effective range `1–2`)* — cap on new generalizations. A value of `1` skips stacking. The current lifecycle and recall policy supports depths up to `2`.
 - `memory.concept_generalization_l2_min_confidence` *(float, `0.80`)* — extra promotion confidence floor for depth-2 generalizations (on top of the L1 0.72 bar).
 - `memory.concept_generalization_l2_min_age_days` *(float, `7.0`)* — extra engaged-age floor for depth-2 generalizations (on top of the L1 3.0d bar).
 
-Watch `python scripts/concept_openness_report.py` → Abstraction stack (max depth, both-source-and-target count, sample of L2 labels).
+The Abstraction stack section of `python scripts/concept_openness_report.py`
+shows stored depth, current depth-2 eligibility, over-cap rows, recent T3 selections,
+and a sample of labels.
 
 Tension cue — `TensionCueWorker` occasionally drafts a private "a friction worth sitting with" cue over an active tension, and `_render_tension_block` surfaces it as a watermark-gated T6 hint the chat model phrases in-context (cue producer, never verbatim, never a confrontation):
 

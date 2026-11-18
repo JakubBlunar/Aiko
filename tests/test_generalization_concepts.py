@@ -673,12 +673,40 @@ class StackingPassTests(unittest.TestCase):
         self.assertEqual(meta_depth(h.store, g1), 1)
         stats = h.worker.run()
         self.assertTrue(stats["generalization_l2_dirty"])
+        self.assertEqual(stats["generalization_l2_proposed"], 1)
+        self.assertEqual(stats["generalization_l2_added"], 1)
         gens = h.store.list_by(subject="user", kind="generalization")
         l2s = [g for g in gens if meta_depth(h.store, g.concept_id) == 2]
         self.assertEqual(len(l2s), 1)
         self.assertEqual(l2s[0].status, "candidate")
         ev = {e.src_id for e in h.store.evidence_of(l2s[0].concept_id)}
         self.assertEqual(ev, {str(g1), str(g2)})
+
+    def test_depth_one_proposal_cannot_reinforce_a_depth_two_view(self) -> None:
+        from app.core.concepts.proposers.base import CandidateProposal
+
+        h = self._harness(lambda s, u: {"concepts": []})
+        a = _add_active(h.store, subject="user", kind="identity", label="a")
+        b = _add_active(h.store, subject="user", kind="identity", label="b")
+        label = "A shared principle"
+        g1 = _add_l1_gen(h.store, subject="user", label="pattern one", child_ids=[a])
+        g2 = _add_l1_gen(h.store, subject="user", label="pattern two", child_ids=[b])
+        view = _add_l1_gen(h.store, subject="user", label=label, child_ids=[g1, g2],
+                           embedding=h.worker._embedder.embed(label))
+        count = h.store.count()
+        for target in (view, None):
+            with self.subTest(path="explicit" if target is not None else "cosine"):
+                proposal = CandidateProposal(
+                    label=label, confidence=0.85, rationale="", kind="generalization",
+                    subject="user", evidence_model="meta", reinforces_id=target,
+                    evidence=[("concept", str(a)), ("concept", str(b))],
+                )
+                stats = {"added": 0, "reinforced": 0, "by_subject": {}}
+                h.worker._persist(proposal, stats)
+                self.assertEqual(stats["generalization_reinforcement_refused"], 1)
+                self.assertEqual(h.store.count(), count)
+                self.assertEqual({e.src_id for e in h.store.evidence_of(view)}, {str(g1), str(g2)})
+                self.assertNotIn(view, h.store.dependencies.records)
 
     def test_stacking_disabled_skips_l2_keeps_l1(self) -> None:
         ids: list[int] = []
@@ -744,27 +772,9 @@ class StackingPassTests(unittest.TestCase):
         self.assertNotIn("TENSION-SENTINEL", pool)
         self.assertNotIn("VIEW-SENTINEL", pool)
 
-    def test_filter_allows_depth1_for_generalization_not_tension(self) -> None:
-        h = self._harness(lambda s, u: {"concepts": []})
-        a = _add_active(h.store, subject="user", kind="identity", label="a")
-        g1 = _add_l1_gen(
-            h.store, subject="user", label="theme", child_ids=[a],
-        )
-        kept_gen = h.worker._filter_meta_evidence(
-            [("concept", str(g1)), ("concept", str(a))],
-            kind="generalization",
-        )
-        self.assertEqual(
-            set(kept_gen),
-            {("concept", str(g1)), ("concept", str(a))},
-        )
-        kept_ten = h.worker._filter_meta_evidence(
-            [("concept", str(g1)), ("concept", str(a))],
-            kind="tension",
-        )
-        self.assertEqual(kept_ten, [("concept", str(a))])
+    def test_generalization_rejects_mixed_levels_and_depth_two_premises(self) -> None:
+        from app.core.concepts.proposers.base import CandidateProposal
 
-    def test_filter_drops_depth2_as_child(self) -> None:
         h = self._harness(lambda s, u: {"concepts": []})
         a = _add_active(h.store, subject="user", kind="identity", label="a")
         b = _add_active(h.store, subject="user", kind="identity", label="b")
@@ -778,32 +788,18 @@ class StackingPassTests(unittest.TestCase):
             h.store, subject="user", label="view", child_ids=[g1, g2],
         )
         self.assertEqual(meta_depth(h.store, view), 2)
-        kept = h.worker._filter_meta_evidence(
-            [("concept", str(view)), ("concept", str(g1))],
-            kind="generalization",
-        )
-        self.assertEqual(kept, [("concept", str(g1))])
-
-    def test_cycle_on_reinforce_dropped(self) -> None:
-        h = self._harness(lambda s, u: {"concepts": []})
-        a = _add_active(h.store, subject="user", kind="identity", label="a")
-        b = _add_active(h.store, subject="user", kind="identity", label="b")
-        g1 = _add_l1_gen(
-            h.store, subject="user", label="t1", child_ids=[a],
-        )
-        g2 = _add_l1_gen(
-            h.store, subject="user", label="t2", child_ids=[b],
-        )
-        view = _add_l1_gen(
-            h.store, subject="user", label="view", child_ids=[g1, g2],
-        )
-        # Citing the view as a child of one of its own L1s would cycle.
-        kept = h.worker._filter_meta_evidence(
-            [("concept", str(view)), ("concept", str(g2))],
-            kind="generalization",
-            parent_id=g1,
-        )
-        self.assertEqual(kept, [("concept", str(g2))])
+        count = h.store.count()
+        for pair in ((a, g1), (view, g1)):
+            with self.subTest(premises=pair):
+                proposal = CandidateProposal(
+                    label="A different generalization", confidence=0.85, rationale="",
+                    kind="generalization", subject="user", evidence_model="meta",
+                    evidence=[("concept", str(cid)) for cid in pair],
+                )
+                stats = {"added": 0, "reinforced": 0, "by_subject": {}}
+                h.worker._persist(proposal, stats)
+                self.assertEqual(stats["generalization_premise_refused"], 1)
+                self.assertEqual(h.store.count(), count)
 
     def test_child_rename_drops_proposal(self) -> None:
         h = self._harness(lambda s, u: {"concepts": []})
@@ -893,6 +889,7 @@ class StackingPassTests(unittest.TestCase):
             ))
         view = h.store.get(view_id)
         self.assertEqual(meta_depth(h.store, view_id), 2)
+        h.store.dependencies.add(view_id, [[("concept", str(g1)), ("concept", str(g2))]])
         _seed_engaged_days(h, 4.0)
         self.assertFalse(h.worker._gate(view, now, 0.85))
         _seed_engaged_days(h, 8.0)

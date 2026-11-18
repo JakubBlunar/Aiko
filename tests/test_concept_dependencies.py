@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -71,6 +74,59 @@ def test_alternative_support_survives_failed_conjunction_and_l3(model):
     model.worker.run()
     assert child.status == "active"
     assert model.store.is_assertable(child.concept_id)
+
+
+def test_stacked_generalization_needs_live_depth_one_support(model):
+    from scripts.concept_openness_report import _abstraction_stack_section
+
+    bases = [model.concept(label) for label in ("a", "b", "c", "d")]
+
+    def generalization(label, premises):
+        result = model.concept(label, kind="generalization", evidence_model="meta")
+        for premise in premises:
+            model.store.add_edge(ConceptEdge(*node(premise), *node(result), "evidence"))
+        return result
+
+    first = generalization("first pattern", bases[:2])
+    second = generalization("second pattern", bases[2:])
+    view = generalization("shared principle", [first, second, *bases])
+    too_deep = generalization("legacy extra layer", [view, first])
+    model.store.dependencies.add(view.concept_id, [
+        [node(base) for base in bases[:2]], [node(first), node(second)],
+    ])
+    query = np.ones(3, dtype=np.float32)
+    active_ids = {row.concept_id for row, _ in model.store.nearest(query, k=20)}
+    assert view.concept_id in active_ids
+    assert too_deep.concept_id not in active_ids
+    core = ConceptView(model.store)
+    assert view in core.core_lane(limit=20)
+    assert too_deep not in core.core_lane(limit=20)
+    assert model.store.dependencies.assess(too_deep.concept_id)["reason"] == (
+        "generalization_depth_limit"
+    )
+    assert model.store.get(too_deep.concept_id) is too_deep
+    model.db.execute_commit(
+        "INSERT INTO surfacing_outcomes "
+        "(assistant_message_id, item_kind, item_id, lane, created_at) "
+        "VALUES (1, 'concept', ?, 'flex', ?)",
+        (too_deep.concept_id, NOW.isoformat()),
+    )
+    db_path = model.db._get_conn().execute("PRAGMA database_list").fetchone()[2]
+    with closing(sqlite3.connect(Path(db_path).as_uri() + "?mode=ro", uri=True)) as conn:
+        report = _abstraction_stack_section(conn, now=NOW)
+    assert report["l2_by_status"] == {"active": 1}
+    assert report["l2_viable_by_status"] == {"active": 1}
+    assert report["over_cap_by_status"] == {"active": 1}
+    assert report["t3_by_current_depth"] == {3: 1}
+
+    second.status = "dormant"
+    model.store.update(second)
+    assert view not in model.store.list_by(status="active")
+    assert view not in [row for row, _ in model.store.nearest(query, k=20)]
+    assert view not in core.core_lane(limit=20)
+    assert not model.store.is_assertable(view.concept_id)
+    model.worker.run()
+    assert view.status == too_deep.status == "candidate"
 
 
 def test_transitive_retraction_filters_warm_retrieval_before_lifecycle(model):

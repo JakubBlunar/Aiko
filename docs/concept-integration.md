@@ -651,7 +651,7 @@ isn't derived twice.
 | how to talk *now* (delivery style) | `communication_style` concepts (both subjects) | `build_relevant_context` -> T3 relevance only | **resolved (L28): stays on T3** — no legacy derivation worth flooring, style is inherently turn-dependent, and it is a `guide` kind, so pinning it would add a fourth standing guide surface |
 | aspirations / trajectory (where they're heading) | `aspiration` concepts (`user` + `aiko`) | `build_relevant_context` -> T3 relevance + `AspirationMomentumWorker` -> `aspiration_momentum_block` | **shipped (L14)** |
 | behaviour boundaries (soft guiding lines) | `boundary` concepts (`user` + `aiko`) | `build_relevant_context` -> core lane + T3 relevance (composite-scored) | **shipped (L18)** |
-| abstraction / through-lines (the bigger pattern over several concepts) | `generalization` concepts (`user` + `aiko`) | `build_relevant_context` -> core lane + T3 relevance; children suppressed beneath a present parent | **shipped (L20)** — rides the L12 meta `evidence` rails; single-level only |
+| abstraction / through-lines (the bigger pattern over several concepts) | `generalization` concepts (`user` + `aiko`) | `build_relevant_context` -> core lane + T3 relevance; children suppressed beneath a present parent | L20 depth-1 abstractions and the L46 depth-2 pilot |
 
 ## Thresholds are calibrated, not chosen (L45)
 
@@ -749,6 +749,23 @@ return through L30's ordinary open-question selection. Existing assembled or
 in-flight prompts and old chat transcripts are not rewritten; the next ordinary
 assembly reads current support. Provenance (`concept_provenance`, REST and the
 existing MCP drill-down) includes the live dependency assessment and support sets.
+
+### Live depth-2 generalizations (L46)
+
+New generalizations use premises at one level. A depth-1 proposal cites at
+least two active base concepts. A depth-2 proposal cites at least two active
+depth-1 generalizations about the same subject. Explicit and cosine-based
+reinforcement keep these levels separate. The stacking pass gives near-twin
+labels one slot and asks for a concise shared principle with its scope intact.
+
+For an existing structural depth-2 row, recall and the lifecycle worker require
+at least one viable recorded set of depth-1 generalizations. A surviving set of
+base concepts cannot keep a depth-2 claim eligible when its abstractions fade or
+change. The same guard excludes rows past depth two from ordinary selection.
+Raw rows and historical events remain inspectable. The Abstraction stack report
+shows current eligibility alongside stored depth and recent T3 records grouped
+by the row's current depth. Shared original observations and the usefulness of
+the inferred principle still need a semantic review.
 
 **Rollout limits.** New L2 admissions and reinforced legacy rows participate;
 untouched historical claims and other creation paths remain `legacy_untracked`
