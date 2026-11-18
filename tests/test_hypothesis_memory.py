@@ -50,7 +50,7 @@ def test_oversized_quote_is_refused_whole_instead_of_losing_qualifiers():
 
 
 def test_world_anchor_requires_target_linked_confirmation_receipts():
-    row = SimpleNamespace(answer_memory_ids=[1], hypothesis_id=7)
+    row = SimpleNamespace(answer_memory_ids=[1], hypothesis_id=7, subject="world")
     answer = SimpleNamespace(metadata={"hypothesis_answer": {"verdict": "deny"}})
     assert world_support(row, SimpleNamespace(get=lambda mid: answer)) is None
 
@@ -86,7 +86,7 @@ def test_real_answer_support_and_world_anchor_follow_source_edits(tmp_path):
             finally:
                 current_answer_event.reset(token)
         assert all(ids)
-        row = SimpleNamespace(answer_memory_ids=ids, hypothesis_id=7,
+        row = SimpleNamespace(answer_memory_ids=ids, hypothesis_id=7, subject="world",
                               statement="Coarse grinding causes channeling")
         anchor = HypothesisResolveMixin._anchor_world_hypothesis(host, row)
         assert anchor is not None
@@ -94,6 +94,10 @@ def test_real_answer_support_and_world_anchor_follow_source_edits(tmp_path):
         assert memory_origin(saved).subject == "world"
         assert memory_origin(saved).mode == "interpretation"
         assert longitudinal_sources_current(saved, store)
+        original_answer = store.get(ids[0]).content
+        store.update(ids[0], content="This memory no longer records my confirmation.")
+        assert world_support(row, store) is None
+        store.update(ids[0], content=original_answer)
         host._hypothesis_store = SimpleNamespace(get=lambda hid: row)
         def edit_target(text):
             row.statement = "A broader untested interpretation"

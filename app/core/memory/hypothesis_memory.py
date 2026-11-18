@@ -16,6 +16,13 @@ def answer_context(memory):
             + "; verdict=" + str(receipt.get("verdict", "unknown")))
 
 
+def _answer_content(question, quote, verdict, recorded_at):
+    at = timephrase.parse_iso(recorded_at)
+    stamp = at.isoformat() if at else "an unknown recording time"
+    context = f'Question context (not a claim): "{question}". ' if question else ""
+    return context + f'User reply recorded at {stamp} ({verdict}): "{quote}"'
+
+
 def answer_payload(belief, body, *, evidence, question, verdict, subject, target_id,
                    target_type, event, db=None):
     quote = body if evidence is None else evidence.strip()
@@ -33,8 +40,6 @@ def answer_payload(belief, body, *, evidence, question, verdict, subject, target
             return None
         source = {**source_receipt(row, quote), "source_at": row.created_at}
     recorded_at = (source or {}).get("source_at") or event.get("observed_at")
-    at = timephrase.parse_iso(recorded_at)
-    stamp = at.isoformat() if at else "an unknown recording time"
     subject = subject if subject in {"user", "aiko", "relationship", "world"} else "unknown"
     receipt = {
         "version": 1, "scope": "answer_receipt", "speaker": "user",
@@ -46,9 +51,8 @@ def answer_payload(belief, body, *, evidence, question, verdict, subject, target
     }
     # The quote remains literal and its relative language is explicitly scoped
     # to the recording date. The proposed belief never enters indexed content.
-    context = f'Question context (not a claim): "{question}". ' if question else ""
     return {
-        "content": context + f'User reply recorded at {stamp} ({verdict}): "{quote}"',
+        "content": _answer_content(question, quote, verdict, recorded_at),
         "temporal_type": "past_event", "event_time": None, "provenance": "stated",
         "metadata": {
             "answer_event": dict(event), "hypothesis_answer": receipt,
@@ -57,27 +61,55 @@ def answer_payload(belief, body, *, evidence, question, verdict, subject, target
     }
 
 
-def world_support(row, store):
-    from app.core.memory.reflective_evidence import eligible, revision, current
+def confirmation_inputs(row, store):
+    """Current confirmations of this exact claim, one per recorded user message."""
+    from app.core.memory.observation_receipts import longitudinal_sources_current
+    from app.core.memory.reflective_evidence import eligible, revision
 
+    if store is None:
+        return []
     inputs = []
+    seen_messages = set()
     for mid in dict.fromkeys(row.answer_memory_ids):
         answer = store.get(mid)
         if answer is None or not eligible(answer):
-            return None
-        receipt = (getattr(answer, "metadata", None) or {}).get("hypothesis_answer") or {}
-        if (receipt.get("verdict") != "confirm" or receipt.get("target_subject") != "world"
+            continue
+        receipt = (getattr(answer, "metadata", None) or {}).get("hypothesis_answer")
+        if (not isinstance(receipt, dict) or receipt.get("version") != 1
+                or receipt.get("verdict") != "confirm"
+                or receipt.get("target_subject") != row.subject
                 or receipt.get("target_id") != row.hypothesis_id
                 or receipt.get("target_type") != "hypothesis"
                 or receipt.get("proposed_statement") != row.statement):
-            return None
-        inputs.append({"memory_id": mid, "revision": revision(answer)})
-    if not inputs:
+            continue
+        sources = receipt.get("sources")
+        if not isinstance(sources, list) or len(sources) != 1 or not isinstance(sources[0], dict):
+            continue
+        source = sources[0]
+        message_id = source.get("message_id")
+        if (type(message_id) is not int or message_id in seen_messages
+                or source.get("role") != "user" or source.get("quote") != receipt.get("evidence")
+                or not longitudinal_sources_current(answer, store)
+                or answer.content != _answer_content(
+                    receipt.get("question"), receipt.get("evidence"), "confirm",
+                    receipt.get("recorded_at"),
+                )):
+            continue
+        seen_messages.add(message_id)
+        inputs.append({"memory_id": mid, "revision": revision(answer), "message_id": message_id})
+    return inputs
+
+
+def world_support(row, store, *, min_support=None):
+    if row.subject != "world":
         return None
-    packet = {"version": 1, "scope": "hypothesis_support",
-              "hypothesis_id": row.hypothesis_id, "target_revision": target_revision(row),
-              "memory_inputs": inputs}
-    return packet if current(packet, store) else None
+    inputs = confirmation_inputs(row, store)
+    if min_support is None:
+        min_support = len(set(row.answer_memory_ids))
+    if not inputs or len(inputs) < min_support:
+        return None
+    return {"version": 1, "scope": "hypothesis_support", "hypothesis_id": row.hypothesis_id,
+            "target_revision": target_revision(row), "memory_inputs": inputs}
 
 
 def target_revision(row):

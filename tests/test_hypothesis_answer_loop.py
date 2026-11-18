@@ -133,7 +133,8 @@ class _Fixture(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)
-        self.db = ChatDatabase(Path(tmp.name) / "chat.db")
+        self.db_path = Path(tmp.name) / "chat.db"
+        self.db = ChatDatabase(self.db_path)
         self.cues = CueStore(self.db)
         self.concepts = ConceptStore(self.db)
         self.events = ConceptEventStore(self.db)
@@ -614,35 +615,7 @@ class AmbientListenTests(_Fixture):
         store.add(row)
         return store, row
 
-    def test_an_asked_support_graduates_on_a_later_echo(self) -> None:
-        from app.core.concepts.hypothesis_store import (
-            STATUS_GRADUATED,
-            STATUS_MERGED,
-        )
-
-        store, row = self._invented(asked=1, support=1, credence=0.7)
-        host = self._host("CONFIRM")
-        host._hypothesis_store = store
-        host._listen_supported_hypotheses(user_text="Walking is when I do my thinking.")
-
-        after = store.get(row.hypothesis_id)
-        self.assertEqual(after.support_count, 2)
-        self.assertIn(after.status, (STATUS_GRADUATED, STATUS_MERGED))
-        self.assertFalse(after.is_live)
-
-    def test_a_never_asked_row_is_not_ambient_scored(self) -> None:
-        store, row = self._invented(asked=0, support=1, credence=0.7)
-        host = self._host("CONFIRM")
-        host._hypothesis_store = store
-        host._listen_supported_hypotheses(user_text="yeah, that's still true")
-
-        after = store.get(row.hypothesis_id)
-        self.assertEqual(after.support_count, 1)
-        self.assertEqual(host._maintenance_client.calls, 0)
-
-    def test_the_same_reply_is_not_counted_twice(self) -> None:
-        """The ask-resolver's CONFIRM must not also be the ambient one."""
-        store, row = self._invented(asked=1, support=0, credence=0.5)
+    def _awaiting_invented(self, row):
         cue_id = self.cues.add(
             "concept_hypothesis",
             self.STATEMENT,
@@ -658,6 +631,89 @@ class AmbientListenTests(_Fixture):
         )
         self.cues.mark_surfaced(cue_id)
         self.cues.mark_asked(cue_id)
+
+    def _answer_event(self, host, text):
+        mid = self.db.add_message(host.session_key, "user", text)
+        return {"user_message_id": mid, "session_id": host.session_key,
+                "observed_at": self.db.get_message_row(mid).created_at}
+
+    def _started_answer_loop(self):
+        from app.core.memory.memory_store import MemoryStore
+
+        store, row = self._invented(asked=1, support=0)
+        host = self._host("CONFIRM", "CONFIRM", "CONFIRM")
+        host._chat_db = self.db
+        host._memory_store = MemoryStore(self.db_path)
+        self.addCleanup(host._memory_store.close)
+        host._hypothesis_store = store
+        self._awaiting_invented(row)
+        reply = "Walking is when I do my thinking."
+        first = self._answer_event(host, reply)
+        host._resolve_concept_hypotheses(user_text=reply, answer_event=first)
+        self.assertEqual(store.get(row.hypothesis_id).support_count, 1)
+        host._hypothesis_scored_ids.clear()
+        return host, row, first
+
+    def test_an_asked_support_graduates_on_a_later_echo(self) -> None:
+        from app.core.concepts.hypothesis_store import (
+            STATUS_GRADUATED,
+            STATUS_MERGED,
+        )
+
+        host, row, _first = self._started_answer_loop()
+        reply = "Walking does help me think things through."
+        host._listen_supported_hypotheses(user_text=reply,
+                                          answer_event=self._answer_event(host, reply))
+
+        after = host._hypothesis_store.get(row.hypothesis_id)
+        self.assertEqual(after.support_count, 2)
+        self.assertIn(after.status, (STATUS_GRADUATED, STATUS_MERGED))
+        self.assertFalse(after.is_live)
+
+    def test_edited_first_answer_cannot_graduate_with_the_next_answer(self) -> None:
+        host, row, first = self._started_answer_loop()
+        chat = host._maintenance_client.chat_stream
+
+        def edit_first_reply(*args, **kwargs):
+            self.db.execute_commit("UPDATE messages SET content=? WHERE id=?",
+                                   ("Walking is just exercise for me.", first["user_message_id"]))
+            yield from chat(*args, **kwargs)
+
+        host._maintenance_client.chat_stream = edit_first_reply
+        reply = "Walking gives me space to think."
+        host._listen_supported_hypotheses(user_text=reply,
+                                          answer_event=self._answer_event(host, reply))
+        self.assertTrue(host._hypothesis_store.get(row.hypothesis_id).is_live)
+
+        host._maintenance_client.chat_stream = chat
+        host._hypothesis_scored_ids.clear()
+        reply = "I did my thinking while walking again."
+        host._listen_supported_hypotheses(user_text=reply,
+                                          answer_event=self._answer_event(host, reply))
+        self.assertFalse(host._hypothesis_store.get(row.hypothesis_id).is_live)
+
+    def test_replaying_the_first_answer_does_not_supply_new_support_for_graduation(self) -> None:
+        host, row, first = self._started_answer_loop()
+        reply = self.db.get_message_row(first["user_message_id"]).content
+        host._listen_supported_hypotheses(user_text=reply, answer_event=first)
+        self.assertTrue(host._hypothesis_store.get(row.hypothesis_id).is_live)
+        self.assertEqual(row.support_count, 1)
+        self.assertEqual(host._maintenance_client.calls, 1)
+
+    def test_a_never_asked_row_is_not_ambient_scored(self) -> None:
+        store, row = self._invented(asked=0, support=1, credence=0.7)
+        host = self._host("CONFIRM")
+        host._hypothesis_store = store
+        host._listen_supported_hypotheses(user_text="yeah, that's still true")
+
+        after = store.get(row.hypothesis_id)
+        self.assertEqual(after.support_count, 1)
+        self.assertEqual(host._maintenance_client.calls, 0)
+
+    def test_the_same_reply_is_not_counted_twice(self) -> None:
+        """The ask-resolver's CONFIRM must not also be the ambient one."""
+        store, row = self._invented(asked=1, support=0, credence=0.5)
+        self._awaiting_invented(row)
         host = self._host("CONFIRM")
         host._hypothesis_store = store
         host._hypothesis_scored_ids = set()

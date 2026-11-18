@@ -192,7 +192,7 @@ not come back.
 | `open/supported → refuted` | adjudicator returned `DENY` — closes immediately, one "no" is enough | `hypothesis_credence_step` |
 | stays `open` | adjudicator returned `CORRECT` — the statement is **rewritten** to the user's wording and re-embedded, at half the credence penalty | `hypothesis_credence_step` |
 | (no write) | adjudicator returned `UNCLEAR` | — |
-| `supported → graduated` | `is_ready()`: live, `refute_count == 0`, `support_count >= min_support`, `credence >= min_credence` — and no concept matched | `hypothesis_graduate_min_support`, `hypothesis_graduate_min_credence` |
+| `supported → graduated` | Live, no refutation, enough current confirmations of the exact claim, and sufficient credence. No concept matched. | `hypothesis_graduate_min_support`, `hypothesis_graduate_min_credence` |
 | `supported → merged` | same bar, but the duplicate lookup found a concept carrying the belief | `concept_dedupe.DEDUPE_COS` |
 | `supported → graduated` (anchored) | same bar, `subject == "world"` — exits as a durable `fact` memory instead, and skips the duplicate check | — |
 
@@ -314,11 +314,11 @@ does **not**: the cue stays `awaiting` (stage B skips this type) for up
 to three later user turns or 24 hours. Listening longer is not asking
 again.
 
-A guess that already has one *asked* confirmation can pick up a second
-from a later turn that echoes the statement, without a second question
-(`_listen_supported_hypotheses`). That is how `min_support = 2` is
-reachable under `max_asks = 1`. A row that was never asked is never
-scored this way.
+A guess that was asked and has a current confirmation can pick up further
+support from later turns that echo the statement, without a second question
+(`_listen_supported_hypotheses`). This keeps `min_support = 2` reachable
+under `max_asks = 1` and lets a new reply replace a confirmation that has
+since become stale. The original user message can count only once.
 
 ## Invariants
 
@@ -389,10 +389,12 @@ scored this way.
   `graduated_concept_id` on a *closed* row is deliberately left alone: it
   is the record of where a guess went, and losing the trail is worse than
   a dangling id nothing reads.
-- **Graduation attaches only answers that still exist.** The
-  `answer_memory_ids` were collected over earlier turns, so one can have
-  been deleted since; attaching it anyway would hand the new concept a
-  distinct source that is not there for L3 to promote on.
+- **Graduation requires current confirmation receipts.** The resolver checks
+  the answer memory and its source message, speaker, and exact proposed claim.
+  Edited, deleted, or superseded replies and receipts without a verifiable
+  source cannot meet the threshold. Only one receipt per user message counts.
+  The resolver passes the verified memories to the graduation path and keeps
+  historical support counts for inspection.
 - **The proposer never writes a concept, and the resolver never promotes
   one.** L3 remains the single writer of concept `status`; the two
   sanctioned `confidence` exceptions are documented in

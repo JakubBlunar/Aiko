@@ -135,6 +135,8 @@ affinity as weaker evidence. Correct judged/surfaced/settled denominators must s
 **Status: Validation remaining.**
 
 **Implemented / available:** Passive second-confirmation listen and graduation exits exist.
+Graduation requires current confirmations of the exact claim from distinct user messages.
+Isolated tests cover a replayed reply and a source edit followed by a fresh confirmation.
 Read-only 24 Oct snapshot: 107 hypotheses, 14 ever asked, 3 with a test stamp and 1 stored graduated
 row; the old zero-exit headline is stale.
 

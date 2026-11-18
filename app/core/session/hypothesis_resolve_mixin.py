@@ -292,7 +292,7 @@ class HypothesisResolveMixin:
 
     @capture_answer_event
     def _listen_supported_hypotheses(self, *, user_text: str) -> None:
-        """H44: a second confirmation that is not a second ask.
+        """H44: follow-up confirmations without another ask.
 
         After she has put a guess to him once and scored a support, later
         turns that echo the statement can CONFIRM or DENY it. Never
@@ -318,7 +318,7 @@ class HypothesisResolveMixin:
                 for row in store.list_by(live=True)
                 if int(row.asked_count or 0) >= 1
                 and int(row.refute_count or 0) == 0
-                and int(row.support_count or 0) == 1
+                and int(row.support_count or 0) >= 1
                 and int(row.hypothesis_id) not in scored
             ]
         except Exception:
@@ -331,6 +331,7 @@ class HypothesisResolveMixin:
             adjudicate,
             looks_like_an_answer,
         )
+        from app.core.memory.hypothesis_memory import confirmation_inputs
 
         reply_vec = _embed_or_none(getattr(self, "_embedder", None), body)
         min_cosine = float(
@@ -340,15 +341,24 @@ class HypothesisResolveMixin:
                 0.45,
             )
         )
+        memory_store = getattr(self, "_memory_store", None)
+        support_limit = max(
+            2, int(getattr(self._memory_settings, "hypothesis_graduate_min_support", 2)),
+        )
+        message_id = (current_answer_event.get() or {}).get("user_message_id")
         hit = None
         for row in candidates:
-            if looks_like_an_answer(
+            if not looks_like_an_answer(
                 str(row.statement or ""),
                 body,
                 belief_vec=getattr(row, "embedding", None),
                 reply_vec=reply_vec,
                 min_cosine=min_cosine,
             ):
+                continue
+            inputs = confirmation_inputs(row, memory_store)
+            if (0 < len(inputs) < support_limit
+                    and all(item["message_id"] != message_id for item in inputs)):
                 hit = row
                 break
         if hit is None:
@@ -467,6 +477,7 @@ class HypothesisResolveMixin:
         from app.core.concepts.hypothesis_resolution import (
             apply_hypothesis_verdict,
         )
+        from app.core.memory.hypothesis_memory import confirmation_inputs
 
         store = getattr(self, "_hypothesis_store", None)
         if store is None:
@@ -499,37 +510,32 @@ class HypothesisResolveMixin:
             return False
         if concept_store is None:
             return True
+        min_support = int(getattr(mem, "hypothesis_graduate_min_support", 2))
         if not is_ready(
             row,
-            min_support=int(
-                getattr(mem, "hypothesis_graduate_min_support", 2)
-            ),
+            min_support=min_support,
             min_credence=float(
                 getattr(mem, "hypothesis_graduate_min_credence", 0.7)
             ),
         ):
             return True
+        inputs = confirmation_inputs(row, getattr(self, "_memory_store", None))
+        if len(inputs) < min_support:
+            log.debug("hypothesis graduation deferred: hid=%s current_support=%d minimum=%d",
+                      row.hypothesis_id, len(inputs), min_support)
+            return True
+        answer_ids = {item["memory_id"] for item in inputs}
         graduate(
             hypothesis_store=store,
             concept_store=concept_store,
             row=row,
             event_store=getattr(self, "_concept_event_store", None),
-            memory_writer=self._anchor_world_hypothesis,
-            memory_exists=self._answer_memory_exists,
+            memory_writer=lambda row: self._anchor_world_hypothesis(row, min_support=min_support),
+            memory_exists=answer_ids.__contains__,
         )
         return True
 
-    def _answer_memory_exists(self, memory_id: int) -> bool:
-        """Is a remembered answer still there to be cited as evidence?"""
-        store = getattr(self, "_memory_store", None)
-        if store is None:
-            return True
-        try:
-            return store.get(int(memory_id)) is not None
-        except Exception:
-            return True
-
-    def _anchor_world_hypothesis(self, row: Any) -> int | None:
+    def _anchor_world_hypothesis(self, row: Any, *, min_support: int | None = None) -> int | None:
         """Anchor a world interpretation with its actual answer supports."""
         from dataclasses import asdict
         from app.core.memory.hypothesis_memory import world_support, target_revision
@@ -541,7 +547,7 @@ class HypothesisResolveMixin:
         body = str(row.statement or "").strip()
         if memory_store is None or embedder is None or not body or len(body) > 1000:
             return None
-        support = world_support(row, memory_store)
+        support = world_support(row, memory_store, min_support=min_support)
         if support is None:
             return None
         try:
