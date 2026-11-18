@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+import sqlite3
 from typing import Any
 
 from app.core.infra import timephrase
@@ -108,22 +109,31 @@ def motivation_lines(quality: dict[str, Any]) -> str:
     ) if isinstance(quality.get(key), str) and quality[key])
 
 
-def cue_target_valid(payload: dict, *, concepts: Any, hypotheses: Any, label: str = "") -> bool:
-    """All delivery routes must check the current owner, including Live claims."""
+def cue_target_valid(
+    payload: dict, *, concepts: Any, hypotheses: Any, label: str = "", answering: bool = False,
+) -> bool:
+    """Check the current owner before asking about or learning from a cue."""
     if "target_id" not in payload:
-        return True  # A curated move, not a worker-owned hypothesis reference.
+        return not answering  # A curated cue may surface without a learning target.
     try:
-        invented = payload.get("target_type") == "hypothesis"
+        target_type = payload.get("target_type") or "concept"
+        if target_type not in ("hypothesis", "concept"):
+            return False
+        invented = target_type == "hypothesis"
         store = hypotheses if invented else concepts
-        row = store.get(int(payload.get("target_id") or 0)) if store is not None else None
+        target_id = int(payload.get("target_id") or 0)
+        row = store.get(target_id) if store is not None and target_id > 0 else None
         if row is None:
             return False
         current = row.statement if invented else row.label
         if current != str(payload.get("label") or label):
             return False
         if invented:
-            return (row.is_live and row.linked_concept_id is None and row.asked_count <= 0
-                    and usable_hypothesis(row))
-        return row.status == "candidate"
-    except (AttributeError, TypeError, ValueError):
+            return (row.is_live and row.linked_concept_id is None
+                    and (answering or (row.asked_count <= 0 and usable_hypothesis(row))))
+        if row.status != "candidate" and not (answering and row.status == "active"):
+            return False
+        dependencies = getattr(store, "dependencies", None)
+        return dependencies is None or dependencies.is_viable(target_id)
+    except (AttributeError, TypeError, ValueError, sqlite3.Error):
         return False

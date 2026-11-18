@@ -534,10 +534,9 @@ def collect_hypotheses(conn: sqlite3.Connection) -> dict[str, Any]:
 def _collect_hypothesis_cues(conn: sqlite3.Connection) -> dict[str, Any]:
     """How the ask cues ended -- the H7 hold vs expire split.
 
-    ``used_evidence`` on expired ``concept_hypothesis`` rows is
-    ``max_asks/<reason>``. Older rows can hold a model's free-text
-    explanation instead of a stable reason code; keep them visibly
-    unclassified rather than treating each sentence as a category.
+    Expired rows can carry a stable reason in ``used_evidence`` directly
+    or under ``max_asks/<reason>``. Older rows with a model's free-text
+    explanation stay unclassified.
     """
     empty: dict[str, Any] = {
         "by_state": {},
@@ -570,7 +569,7 @@ def _collect_hypothesis_cues(conn: sqlite3.Connection) -> dict[str, Any]:
                     reason = "legacy_unclear"
             elif evidence.startswith("max_surfacings/"):
                 reason = "max_surfacings"
-            elif evidence in {"ttl", "off_subject"}:
+            elif evidence in {"ttl", "off_subject", "stale_target"}:
                 reason = evidence
             else:
                 reason = "legacy_unclassified"

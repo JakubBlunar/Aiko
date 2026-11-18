@@ -18,6 +18,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -439,6 +440,7 @@ class HypothesisReportTests(unittest.TestCase):
                 ("Reply does not address the guess",),
                 ("max_surfacings/none:0.42",),
                 ("ttl",),
+                ("stale_target",),
             ],
         )
 
@@ -450,6 +452,7 @@ class HypothesisReportTests(unittest.TestCase):
                 "legacy_unclear": 1,
                 "max_surfacings": 1,
                 "model_unclear": 1,
+                "stale_target": 1,
                 "ttl": 1,
             },
         )
@@ -492,8 +495,67 @@ class OwnershipTests(_Fixture):
         host = self._host("CONFIRM")
         host._resolve_concept_hypotheses(user_text="yes, definitely")
 
-        self.assertEqual(self._state(cue_id), STATE_USED)
+        self.assertEqual(self._state(cue_id), STATE_EXPIRED)
+        self.assertEqual(self.cues.get(cue_id).used_evidence, "stale_target")
+        self.assertEqual(host._maintenance_client.calls, 0)
         self.assertEqual(self.memories.added, [])
+
+    def test_relabel_during_adjudication_cannot_attach_the_answer(self) -> None:
+        cue_id = self._awaiting_cue()
+        host = self._host("CONFIRM")
+        chat = host._maintenance_client.chat_stream
+
+        def relabel(*args, **kwargs):
+            self.concept.label = "Jacob enjoys walking for exercise"
+            self.concepts.update(self.concept)
+            yield from chat(*args, **kwargs)
+
+        host._maintenance_client.chat_stream = relabel
+        host._resolve_concept_hypotheses(user_text="yes, definitely")
+
+        self.assertEqual(self.cues.get(cue_id).used_evidence, "stale_target")
+        self.assertEqual(self._reload().distinct_source_count, 1)
+        self.assertEqual(self.memories.added, [])
+
+    def test_revised_support_during_answer_embedding_cannot_attach_the_answer(self) -> None:
+        self.db.execute_commit(
+            "INSERT INTO memories (id, content, kind, embedding, created_at, confidence) "
+            "VALUES (11, 'Walking helps me think.', 'fact', ?, '2026-10-01', 0.9)",
+            (_BELIEF_VEC.tobytes(),),
+        )
+        self.concepts.dependencies.add(self.concept.concept_id, [[("memory", "11")]])
+        cue_id = self._awaiting_cue()
+        host = self._host("CONFIRM")
+        reply = "yes, definitely"
+
+        def embed(text):
+            if text != reply:
+                self.db.execute_commit("DELETE FROM memories WHERE id=11")
+            return _BELIEF_VEC
+
+        host._embedder.embed = embed
+        host._resolve_concept_hypotheses(user_text=reply)
+
+        self.assertEqual(self.cues.get(cue_id).used_evidence, "stale_target")
+        self.assertEqual(self._reload().distinct_source_count, 1)
+        self.assertEqual(self.memories.added, [])
+
+    def test_promotion_during_answer_embedding_preserves_the_active_status(self) -> None:
+        cue_id = self._awaiting_cue()
+        host = self._host("CONFIRM")
+        reply = "yes, definitely"
+
+        def embed(text):
+            if text != reply:
+                self.concepts.update(replace(self._reload(), status="active"))
+            return _BELIEF_VEC
+
+        host._embedder.embed = embed
+        host._resolve_concept_hypotheses(user_text=reply)
+
+        self.assertEqual(self._state(cue_id), STATE_USED)
+        self.assertEqual(self._reload().status, "active")
+        self.assertEqual(self._reload().distinct_source_count, 2)
 
     def test_a_missing_memory_store_downgrades_a_confirm(self) -> None:
         # A confirm with nothing to attach must not claim a source it

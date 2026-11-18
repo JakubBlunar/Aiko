@@ -35,6 +35,9 @@ eligible/shown/used denominators. Do not lower gates merely to turn genuine miss
 
 **Implemented / available:** Awaiting-answer handling, passive listen and 23 Oct grounded
 target-linked asks/exact reply evidence are implemented, with bounded persisted funnel diagnostics.
+Queued questions recheck the grounded target's evidence before delivery. Verified answers recheck
+the target before adjudication and before writing evidence.
+See [Hypotheses](../../docs/hypotheses.md#reading-the-reply).
 
 **Remaining:** Sample verified ask -> actual answer -> resolver reason -> applied update on a
 consistent deployment, including fictional/quoted/unclear negatives. An unscored ask does not prove

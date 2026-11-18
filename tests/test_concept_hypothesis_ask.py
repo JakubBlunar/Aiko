@@ -899,6 +899,28 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 class SourceEligibilityTests(_ProviderFixture):
+    def test_force_cannot_surface_a_candidate_after_support_is_edited(self):
+        from app.core.concepts.concept_store import Concept, ConceptStore
+
+        db = self.store._db
+        db.execute_commit(
+            "INSERT INTO memories (id, content, kind, embedding, created_at, confidence) "
+            "VALUES (11, 'A walk helped with decisions.', 'fact', ?, '2026-10-01', 0.9)",
+            (np.ones(2, dtype=np.float32).tobytes(),),
+        )
+        concepts = ConceptStore(db)
+        label = "A walk helps with deciding on a project"
+        target_id = concepts.add(Concept(label=label, status="candidate"))
+        concepts.dependencies.add(target_id, [[("memory", "11")]])
+        cue_id = self._queue(label, concept_id=target_id)
+        host = _Host(self.store)
+        host._concept_store = concepts
+        db.execute_commit("UPDATE memories SET content='Walking was unrelated.' WHERE id=11")
+
+        host._debug_overrides.arm("concept_hypothesis_force_next", True)
+        self.assertEqual(host._render_concept_hypothesis_block("walk project"), "")
+        self.assertEqual(self.store.available(cue_id).surfaced_count, 0)
+
     def test_force_cannot_resurrect_a_settled_source(self):
         cid = self._queue("A walk helps with deciding on a project")
         host = _Host(self.store)

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from app.core.infra import timephrase
 from app.core.session.answer_event import capture_answer_event, current_answer_event
@@ -138,6 +138,8 @@ class HypothesisResolveMixin:
                 store.record_feedback(row.id, "unverified_ask", **event)
                 store.expire(row.id, evidence="unverified_ask")
                 continue
+            if self._expire_stale_ask(store, row, event):
+                continue
             verdict = adjudicate(
                 belief=belief,
                 reply=body,
@@ -149,6 +151,8 @@ class HypothesisResolveMixin:
                 question=actual_question,
                 cancel_event=getattr(self, "_fact_check_cancel", None),
             )
+            if self._expire_stale_ask(store, row, event):
+                continue
             if verdict.verdict == UNCLEAR:
                 stage = (
                     "unrelated_answer" if verdict.reason == "off_subject"
@@ -163,10 +167,12 @@ class HypothesisResolveMixin:
                     store, row, verdict.reason,
                 )
                 continue
+            applied = self._write_hypothesis_answer(row, belief, verdict, body)
+            if not applied and self._expire_stale_ask(store, row, event):
+                continue
             store.record_feedback(
                 row.id, "accepted_answer", **event, verdict=verdict.verdict, delivery=delivery,
             )
-            applied = self._write_hypothesis_answer(row, belief, verdict, body)
             store.record_feedback(
                 row.id, "update_applied" if applied else "update_not_applied", **event,
                 target_id=row.payload.get("target_id"), target_type=row.payload.get("target_type"),
@@ -174,6 +180,22 @@ class HypothesisResolveMixin:
             self._mark_cue_used(
                 store, row, evidence=f"adjudicated/{verdict.verdict}",
             )
+
+    def _asked_target_current(self, row: Any) -> bool:
+        from app.core.concepts.hypothesis_quality import cue_target_valid
+
+        return cue_target_valid(
+            row.payload, label=row.subject, answering=True,
+            concepts=getattr(self, "_concept_store", None),
+            hypotheses=getattr(self, "_hypothesis_store", None),
+        )
+
+    def _expire_stale_ask(self, store: Any, row: Any, event: dict) -> bool:
+        if self._asked_target_current(row):
+            return False
+        store.record_feedback(row.id, "stale_target", **event)
+        store.expire(row.id, evidence="stale_target")
+        return True
 
     def _hypothesis_question_echo(self) -> tuple[str, Any]:
         """The question she actually asked last turn, for the echo gate.
@@ -373,6 +395,8 @@ class HypothesisResolveMixin:
         from app.core.concepts.answer_adjudicator import CONFIRM
         from app.core.concepts.hypothesis_resolution import apply_verdict
 
+        if not self._asked_target_current(row):
+            return False
         target_type = str(row.payload.get("target_type") or "concept")
         target_id = int(row.payload.get("target_id") or 0)
         target = self._hypothesis_target(target_type, target_id)
@@ -389,8 +413,12 @@ class HypothesisResolveMixin:
             evidence=verdict.evidence, question=str(row.payload.get("asked_text") or ""),
             verdict=verdict.verdict, subject=str(getattr(target, "subject", "unknown")),
             target_id=target_id, target_type=target_type,
+            target_current=lambda: self._asked_target_current(row),
         )
-        if memory_id is None:
+        if memory_id is None or not self._asked_target_current(row):
+            return False
+        target = self._hypothesis_target(target_type, target_id)
+        if target is None:
             return False
         if target_type == "hypothesis":
             return self._apply_invented_answer(target, verdict, memory_id, user_text)
@@ -548,6 +576,7 @@ class HypothesisResolveMixin:
         self, belief: str, user_text: str, *, confirming: bool,
         evidence: str | None = None, question: str = "", verdict: str | None = None,
         subject: str = "unknown", target_id: int | None = None, target_type: str = "hypothesis",
+        target_current: Callable[[], bool] | None = None,
     ) -> int | None:
         """Persist a bounded reply receipt; never index the proposed belief."""
         from app.core.memory.hypothesis_memory import answer_payload
@@ -574,7 +603,7 @@ class HypothesisResolveMixin:
                 target_id=target_id, target_type=target_type, event=event,
                 db=getattr(self, "_chat_db", None),
             )
-            if refreshed != payload:
+            if refreshed != payload or (target_current is not None and not target_current()):
                 return None
             memory = memory_store.add(
                 **payload, kind="fact", embedding=embedding,

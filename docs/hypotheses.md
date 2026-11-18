@@ -261,6 +261,9 @@ probing a belief about the user is the heaviest thing she can open a gap
 with. See [`cue-pool.md`](cue-pool.md) for the mechanics and why its
 `CueSpec` carries no `slot_attr`. The gap path also needs a current connection
 to the claim or its inspiration; elapsed silence alone does not make a guess useful.
+Every delivery route rechecks the target before it can claim the cue. A grounded
+candidate with recorded support needs at least one viable evidence group, and
+the target's wording must still match the queued cue.
 
 Both are gated by K47's question balance, and they guard against each
 other: the lane records the ids it surfaced
@@ -296,6 +299,12 @@ row the belief lives in — and runs in two stages:
 
 The asymmetry is intentional: a false `CONFIRM` writes a belief the user
 never endorsed, while a false `UNCLEAR` merely loses one answer.
+
+The resolver rechecks the original target before and after adjudication and
+again before saving reply evidence. An awaiting cue closes with `stale_target`
+if its target has disappeared, changed wording, or lost its supporting
+evidence. An unchanged grounded candidate can still receive its answer if it
+became active in the meantime.
 
 `max_asks = 1`. Every other question type may circle back after a day;
 this one may not, because re-asking whether a hunch about *them* is true
