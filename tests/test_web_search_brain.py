@@ -95,6 +95,43 @@ class OutboundPrivacyTests(unittest.TestCase):
             provider.last_query, "Dandadan season 2 episode count",
         )
 
+    def test_public_titles_with_possessives_pass_through_untouched(self) -> None:
+        tool, provider = _build([_hit()])
+        for query in (
+            "Magic Repo Man anime Dumped by My Party plot summary episodes",
+            'anime "Magic Repo Man" Dumped by My Party plot summary',
+            'anime "My Hero Academia" episode count',
+            "Your Name anime release date",
+        ):
+            with self.subTest(query=query):
+                tool.run({"query": query})
+                self.assertEqual(provider.last_query, query)
+
+    def test_public_release_dates_pass_through_untouched(self) -> None:
+        tool, provider = _build([_hit()])
+        for date in ("2026-11-17", "17.11.2026", "November 17, 2026"):
+            with self.subTest(date=date):
+                query = f"anime premieres on {date}"
+                tool.run({"query": query})
+                self.assertEqual(provider.last_query, query)
+
+    def test_title_and_public_work_cues_do_not_exempt_private_details(self) -> None:
+        tool, provider = _build([_hit()])
+        for query in (
+            'My Sister likes the anime "Your Name"',
+            '"My Favorite Anime" Dandadan release date',
+            'anime "My Hero Academia" Jacob,Aiko episode discussion',
+            'anime "My Hero Academia" Jacob-Smith episode discussion',
+            'anime "My Hero Academia" date of birth 1993-11-17',
+            'anime "My Hero Academia" appointment 17th of November',
+            'anime "My Hero Academia" call +1 415 555 0123',
+        ):
+            with self.subTest(query=query), self.assertRaisesRegex(
+                ToolError, "local privacy filter blocked",
+            ):
+                tool.run({"query": query})
+        self.assertEqual(provider.calls, 0)
+
     def test_personal_framing_requires_a_rewrite(self) -> None:
         tool, provider = _build([_hit()])
         with self.assertRaises(ToolError) as ctx:

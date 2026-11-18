@@ -95,13 +95,14 @@ it never enters the transcript or the persisted message.
 only on the turn that searched: the tool result lives in that turn's
 message list and is never persisted into history, so it doesn't compound.
 
-**Privacy.** The query is written by the chat model, which composes it
-with the persona, retrieved memories and the transcript in view — so it
-is not trusted. Every outbound query passes through the same scrubber the
-background fact-checker uses: names and first-person tokens are dropped,
-and a query carrying hard identifiers (a URL, an email, an address) is
-refused outright with a `ToolError` telling her to rephrase. A refusal
-never reaches the search engine.
+**Privacy.** The chat model writes each query with the persona, retrieved
+memories and transcript in view. Before sending the query, the shared
+privacy filter checks for conversation names, personal phrasing, dates in
+private contexts such as appointments, and identifiers such as phone
+numbers, email addresses and street addresses. It accepts public calendar
+dates and title-cased possessives in work lookups like `My Hero Academia anime
+episode count`. If the filter blocks a query, Aiko gets a `ToolError` with
+instructions to rephrase. The provider only receives queries that pass.
 
 **No fallback on this lane.** The brain lane builds its own provider with
 `search.brain_timeout_seconds` (6s) and *without* the DuckDuckGo

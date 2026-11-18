@@ -91,12 +91,12 @@ class BrainWebSearchTool:
                             "A standalone search query, written the way you "
                             "would type it into a search engine. It leaves "
                             "this machine and goes to a third-party search "
-                            "API, so it must contain no personal details: no "
-                            "names of anyone in this conversation, no 'my' / "
-                            "'we' / 'our', nothing about the user's life, "
-                            "job, health or location. Name the topic itself "
-                            "instead — 'Dandadan season 2 episode count', "
-                            "not 'the anime my girlfriend likes'."
+                            "API, so it must contain no personal details such "
+                            "as private names, dates, or information about "
+                            "the user's life, job, health or location. Keep "
+                            "public names, dates and work titles intact, "
+                            "including title words like 'My' in 'My Hero "
+                            "Academia anime episode count'."
                         ),
                     },
                     "max_results": {
@@ -148,12 +148,13 @@ class BrainWebSearchTool:
         )
         if not safe:
             raise ToolError(
-                "web_search: that query can't be sent to a search engine "
-                "because it carries personal details. Rewrite it as a "
-                "standalone public question preserving what you need to "
-                "learn; keep relevant public names, titles and dates, "
-                "but remove private identities and personal context — or answer "
-                "from what you already know."
+                "web_search: the local privacy filter blocked this query "
+                "before contacting the provider. Rewrite it as a standalone "
+                "public question preserving what you need to learn. Remove "
+                "private details. If a title triggered the filter, retry "
+                "with the distinctive title words and the type of work. "
+                "If the retry is blocked, say the privacy filter blocked the "
+                "lookup and leave unverified details open."
             )
         return safe
 

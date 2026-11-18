@@ -148,6 +148,51 @@ _PRIVATE_TIME_TOKENS: frozenset[str] = frozenset(
     {"yesterday", "today", "tonight", "tomorrow", "earlier", "later"}
 )
 
+# A search about a published work can contain a possessive in its title.
+# Require both title casing and a public-work cue. Quotes alone are not
+# evidence of a title, and private identifiers are checked independently.
+_PUBLIC_WORK_CUE = (
+    r"\b(?:anime|manga|film|movie|novel|book|song|album|video game|"
+    r"plot summary|episode count|release date|soundtrack|cast list)\b"
+)
+_PUBLIC_WORK_RE = re.compile(_PUBLIC_WORK_CUE, re.IGNORECASE)
+_TITLE_POSSESSIVE_RE = re.compile(
+    r"(?<!\S)[^\w\s]*(?:My|Our|Your)\b"
+    r"(?=(?:\s+[A-Z][^\W\d_][\w'’-]*)+[^\w\s]*(?:\s*$|\s+(?i:"
+    + _PUBLIC_WORK_CUE + r")))",
+)
+_PERSONAL_POSSESSIVE_RE = re.compile(
+    r"\b(?:my|our|your)\s+(?:favou?rite|girlfriend|boyfriend|partner|"
+    r"doctor|appointment|birthday|address|email|phone|account|password)\b",
+    re.IGNORECASE,
+)
+
+# The phone pattern also accepts common numeric dates. Recognise a
+# calendar-shaped match before classifying it as a phone number.
+_DAY = r"(?:0?[1-9]|[12][0-9]|3[01])"
+_MONTH = r"(?:0?[1-9]|1[0-2])"
+_YEAR = r"(?:19|20)[0-9]{2}"
+_NUMERIC_DATE_RE = re.compile(
+    rf"{_YEAR}(?P<year_sep>[-./]){_MONTH}(?P=year_sep){_DAY}"
+    rf"|(?:{_DAY}(?P<day_sep>[-./]){_MONTH}(?P=day_sep)"
+    rf"|{_MONTH}(?P<month_sep>[-./]){_DAY}(?P=month_sep)){_YEAR}"
+)
+_PRIVATE_DATE_CONTEXT_RE = re.compile(
+    r"\b(?:d\.?o\.?b|birth ?date|date of birth|birthday|born on|appointment|"
+    r"wedding anniversary|medical visit|therapy session)\b",
+    re.IGNORECASE,
+)
+_MONTH_NAME = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+)
+_ORDINAL_DAY = rf"{_DAY}(?:st|nd|rd|th)?"
+_DATE_VALUE_RE = re.compile(
+    rf"\b(?:{_YEAR}|{_DAY}[-./]{_DAY}[-./][0-9]{{2}}|"
+    rf"{_MONTH_NAME}\.?\s+{_ORDINAL_DAY}|{_ORDINAL_DAY}\s+(?:of\s+)?{_MONTH_NAME})\b",
+    re.IGNORECASE,
+)
+
 
 # Minimum length of a scrubbed claim. Anything shorter is treated as
 # semantically empty (e.g. only the user's name was in the original).
@@ -205,8 +250,8 @@ def _dropped_summary(dropped: list[str]) -> str:
 def _name_tokens(names: Iterable[str] | None) -> list[str]:
     """Lower-cased, length>=2 name tokens.
 
-    We split each provided name on whitespace so "Jacob Smith" yields
-    {"jacob", "smith"} and either alone trips the gate.
+    Split on punctuation too so hyphenated names and handles are checked
+    by their individual name parts.
     """
     out: list[str] = []
     if not names:
@@ -214,10 +259,7 @@ def _name_tokens(names: Iterable[str] | None) -> list[str]:
     for raw in names:
         if not raw:
             continue
-        for tok in str(raw).split():
-            cleaned = tok.strip().lower()
-            if len(cleaned) >= 2 and cleaned.isalpha():
-                out.append(cleaned)
+        out.extend(re.findall(r"[^\W\d_]{2,}", str(raw).lower()))
     return out
 
 
@@ -357,15 +399,17 @@ def scrub_claim_for_search(
       alphabetic word and be ``_MIN_SAFE_CLAIM_CHARS`` characters or
       more.
 
-    ``require_intact`` is for outbound queries: refuse when token deletion
-    would be needed. Only the author / reformulator can supply a complete
-    neutral question. Local transcript processing keeps the default.
+    ``require_intact`` validates outbound queries without removing words.
+    It distinguishes title possessives from personal framing and calendar
+    dates from telephone numbers. Local transcript processing keeps the
+    default token redaction rules.
     """
     outcome = _scrub(
         claim_text, user_names=user_names, assistant_name=assistant_name,
+        outbound=require_intact,
     )
-    if require_intact and outcome.dropped and not outcome.block_reason:
-        log.info("privacy scrub BLOCK reason=query_needs_rewrite")
+    if require_intact and (outcome.block_reason or outcome.dropped):
+        log.info("privacy scrub BLOCK reason=%s", outcome.block_reason or "query_needs_rewrite")
         return None
     if outcome.block_reason:
         # Logged at INFO so the privacy audit shows every refused claim
@@ -443,6 +487,7 @@ def _scrub(
     *,
     user_names: Iterable[str] | None,
     assistant_name: str | None,
+    outbound: bool = False,
 ) -> _ScrubOutcome:
     """Strip personal tokens from ``raw_text``; pure, no logging.
 
@@ -457,7 +502,6 @@ def _scrub(
     # Hard rejects — no safe redaction exists for these.
     for matcher, reason in (
         (_EMAIL_RE, "email"),
-        (_PHONE_RE, "phone"),
         (_URL_RE, "url"),
         (_IPV4_RE, "ipv4"),
         (_COORDS_RE, "coordinates"),
@@ -465,30 +509,41 @@ def _scrub(
     ):
         if matcher.search(text):
             return _ScrubOutcome("", [], reason)
+    if any(
+        not (outbound and _NUMERIC_DATE_RE.fullmatch(match[0]))
+        for match in _PHONE_RE.finditer(text)
+    ):
+        return _ScrubOutcome("", [], "phone")
+
+    names = _name_tokens(user_names) + _name_tokens([assistant_name] if assistant_name else None)
+    title_possessives: set[int] = set()
+    if outbound:
+        if _contains_word(text, names):
+            return _ScrubOutcome("", [], "private_name")
+        if _PRIVATE_DATE_CONTEXT_RE.search(text) and _DATE_VALUE_RE.search(text):
+            return _ScrubOutcome("", [], "private_date")
+        if _PUBLIC_WORK_RE.search(text) and not _PERSONAL_POSSESSIVE_RE.search(text):
+            title_possessives = {match.start() for match in _TITLE_POSSESSIVE_RE.finditer(text)}
 
     # Build the token list of words to strip out: names + private time
     # markers + first-person pronouns. We rebuild the string by
     # filtering tokens so the structure stays intact (search engines
     # do better with natural word order).
-    strip_tokens = set(_FIRST_PERSON_TOKENS) | set(_PRIVATE_TIME_TOKENS)
-    for tok in _name_tokens(user_names):
-        strip_tokens.add(tok)
-    if assistant_name:
-        for tok in _name_tokens([assistant_name]):
-            strip_tokens.add(tok)
+    strip_tokens = _FIRST_PERSON_TOKENS | _PRIVATE_TIME_TOKENS | set(names)
 
     # Split on whitespace while preserving punctuation-adjacent words.
     # ``re.findall`` of word-or-non-word chunks would over-fragment;
     # a simple split + per-token clean is good enough for short claims.
     dropped_tokens: list[str] = []
     out_tokens: list[str] = []
-    for raw_token in text.split():
+    for token in re.finditer(r"\S+", text):
+        raw_token = token[0]
         # Strip surrounding punctuation for the comparison only.
         bare = re.sub(r"^\W+|\W+$", "", raw_token).lower()
         # Possessives and contractions carry the same identity as the
         # bare word: Aiko's / Jacob's / I'm / we're must not bypass this.
         base = re.sub(r"['\u2019](?:s|m|re|ve|ll|d)$", "", bare)
-        if base in strip_tokens:
+        if base in strip_tokens and token.start() not in title_possessives:
             dropped_tokens.append(base)
             continue
         out_tokens.append(raw_token)
