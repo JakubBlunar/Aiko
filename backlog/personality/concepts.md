@@ -263,6 +263,11 @@ same user/goal/condition/source checks and no extra model call. Same-message
 approach/result reports require unambiguous literal order. Ordinary-use precision
 and helpful transfer remain to be measured.
 
+18 Nov slice: strategy recall evaluates each report's exceptions before choosing
+the latest matching outcome. Short follow-ups can reuse a fresh chat-only
+troubleshooting goal and its constraints through the existing context budget.
+Isolated tests cover a scoped failure and stale, suspended and conflicting work.
+
 **Source check:** [learned_strategies.py](../../app/core/memory/learned_strategies.py),
 [test_learned_strategies.py](../../tests/test_learned_strategies.py).
 

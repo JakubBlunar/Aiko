@@ -137,6 +137,8 @@ def admit_strategy(candidate, rows, context_rows=(), *, session_key, owner, memo
 def strategy_hits(memories, db, rag, *, user_text, owner, goal_context=""):
     if memories is None or db is None or rag is None:
         return []
+    if re.search(r"\b(?:not|no longer|stop)\b", user_text, re.I):
+        return []
     rows = memories.list_recent(limit=256, kind="strategy")
     rows.sort(key=lambda row: int(row.source_message_id or 0), reverse=True)
     context = words(user_text + " " + goal_context)
@@ -146,16 +148,15 @@ def strategy_hits(memories, db, rag, *, user_text, owner, goal_context=""):
         key = value.get("key")
         if value.get("owner") != owner or not key or key in seen:
             continue
-        seen.add(key)
-        if not value.get("success") or not sources_current(value, db):
-            continue
         if not words(value["goal"]) <= context:
             continue
         if any(not words(c) <= context for c in value["constraints"]):
             continue
         if any(words(e) & context for e in value["exceptions"]):
             continue
-        if re.search(r"\b(?:not|no longer|stop)\b", user_text, re.I):
+        # An outcome controls reuse of the approach only in its own scope.
+        seen.add(key)
+        if not value.get("success") or not sources_current(value, db):
             continue
         hit = rag._memory_to_hit(row, score=.85)
         text = (f"Prior approach [memory:{row.id}, {row.created_at}]: for {value['goal']!r}, "
@@ -189,7 +190,10 @@ def fresh_goal_context(host, user_text):
     state = getattr(snapshot, "inferred", None)
     working = getattr(state, "working_set", None)
     if (state is None or working is None or working.suspended
-            or state.status != "active" or getattr(snapshot, "inferred_stale", True)
-            or not getattr(snapshot, "world_compatible", False)):
+            or state.status != "active" or getattr(snapshot, "inferred_stale", True)):
+        return ""
+    if not getattr(snapshot, "world_compatible", False) and not (
+        not state.shared and getattr(snapshot, "conflict_reason", "") == "no_world_anchor"
+    ):
         return ""
     return " ".join([working.question.text, *(c.text for c in working.constraints)])

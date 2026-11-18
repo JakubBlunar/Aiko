@@ -105,6 +105,15 @@ reconsideration even when topic labels and sizes stay the same. Ordinary legacy
 support hashes remain stable; a new packet is not a new observation or confidence
 vote. These changes add no model call and do not rewrite historical live data.
 
+## Learned approaches in troubleshooting
+
+An outcome-backed strategy is eligible when its goal and all constraints match
+and its exceptions are absent. The newest matching report controls reuse of
+the approach. A failure or a changed source withholds the approach within that
+report's scope. A short follow-up can use the goal and constraints from a fresh,
+active troubleshooting working set, including a chat-only task with no world
+anchor. A suspended or conflicting working set supplies no inherited context.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

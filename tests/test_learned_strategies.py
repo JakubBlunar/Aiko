@@ -105,6 +105,85 @@ def test_a_revised_or_deleted_original_source_invalidates_transfer(tmp_path):
         db._get_conn().close()
 
 
+@pytest.fixture
+def saved_strategy(tmp_path):
+    path = tmp_path / "strategy.db"
+    db = ChatDatabase(path)
+    store = MemoryStore(path)
+    try:
+        rows, candidate = episode()
+        for row in rows:
+            assert db.add_message(row.session_id, row.role, row.content) == row.id
+        value = admit_strategy(candidate, rows, session_key="s", owner="u")
+        first = store.add(value["content"], kind="strategy", embedding=np.array([1., 0.]),
+                          metadata=value["metadata"], source_message_id=3, skip_dedupe=True)
+        yield db, store, first
+    finally:
+        store.close()
+        db._get_conn().close()
+
+
+def test_failure_outside_its_scope_leaves_the_matching_strategy_available(saved_strategy):
+    db, store, first = saved_strategy
+    rows, candidate = episode()
+    rows[0].content = rows[0].content.replace("production", "staging")
+    rows[2].content = "It failed and the connection is still broken."
+    for row in rows:
+        row.id = db.add_message(row.session_id, row.role, row.content)
+    payload = candidate["strategy"]
+    payload["goal"].update(message_id=rows[0].id, quote=rows[0].content)
+    payload["approach"].update(message_id=rows[1].id)
+    payload["constraints"][0].update(message_id=rows[0].id, quote=rows[0].content)
+    payload["exceptions"][0].update(message_id=rows[0].id, quote=rows[0].content, text="staging")
+    payload["outcome"].update(message_id=rows[2].id, quote=rows[2].content,
+                              text=rows[2].content, success=False)
+    failed = admit_strategy(candidate, rows, session_key="s", owner="u")
+    assert failed is not None
+    store.add(failed["content"], kind="strategy", embedding=np.array([1., 0.]),
+              metadata=failed["metadata"], source_message_id=rows[2].id, skip_dedupe=True)
+
+    def recall(query):
+        return strategy_hits(store, db, RagRetriever, user_text=query, owner="u")
+
+    query = "Diagnose connection failures in the local environment"
+    assert not recall(query)
+    hits = recall(query + " on staging")
+    assert len(hits) == 1 and f"[memory:{first.id}," in hits[0].record.content
+    assert not recall(query + " on staging and production")
+
+
+def test_strategy_context_follows_an_active_chat_only_troubleshooting_goal(saved_strategy):
+    from app.core.session.pattern_context import pattern_candidates
+    from app.llm.token_utils import estimate_tokens
+
+    db, store, first = saved_strategy
+    working = NS(question=NS(text="Diagnose connection failures"),
+                 constraints=[NS(text="local environment")], suspended=False)
+    state = NS(status="active", shared=False, working_set=working)
+    snapshot = NS(inferred=state, inferred_stale=False, world_compatible=False,
+                  conflict_reason="no_world_anchor")
+    host = NS(_memory_store=store, _chat_db=db, _user_id="u", user_display_name="User",
+              conversation_situation_snapshot=lambda **kwargs: snapshot)
+    rag = RagRetriever(NS(), NS())
+
+    def candidates(text="What next?"):
+        return pattern_candidates(host, rag, user_text=text, session_key="s",
+                                  estimate_tokens=estimate_tokens)
+
+    items = candidates()
+    assert len(items) == 1 and f"[memory:{first.id}," in items[0].payload.record.content
+    assert not candidates("Actually, new task")
+    for node, field, value in (
+        (working, "suspended", True), (state, "shared", True),
+        (snapshot, "inferred_stale", True),
+        (snapshot, "conflict_reason", "inferred_context_conflicts_with_world"),
+    ):
+        previous = getattr(node, field)
+        setattr(node, field, value)
+        assert not candidates()
+        setattr(node, field, previous)
+
+
 @pytest.mark.parametrize("result", ["That worked and fixed the connection.", "Now it is working."])
 def test_strategy_is_extracted_in_the_existing_single_model_call(tmp_path, result):
     db = ChatDatabase(tmp_path / "memory.db")
