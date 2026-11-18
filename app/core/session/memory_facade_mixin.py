@@ -393,6 +393,16 @@ class MemoryFacadeMixin(MemoryReadsMixin):
                 log.debug("belief deleted listener raised", exc_info=True)
 
     def _notify_memory_added(self, memory: Any) -> None:
+        concept_store = getattr(self, "_concept_store", None)
+        if concept_store is not None:
+            metadata = _memory_field(memory, "metadata", None) or {}
+            for name in ("follow_through", "contextual_relation"):
+                receipt = metadata.get(name)
+                if isinstance(receipt, dict) and type(receipt.get("prior_memory_id")) is int:
+                    try:
+                        concept_store.reconsider_memory_dependents(receipt["prior_memory_id"])
+                    except Exception:
+                        log.debug("concept review scheduling failed for new memory", exc_info=True)
         for listener in list(self._memory_listeners):
             try:
                 listener(memory)

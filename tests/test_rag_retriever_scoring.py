@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_admission import admit_memory
 from app.core.rag.rag_retriever import (
     RagRetriever,
     _MEMORY_PRIOR,
@@ -135,6 +138,38 @@ class _StubEmbedder:
 
     def embed(self, _text: str) -> np.ndarray:
         return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+
+def test_valid_user_report_outranks_a_more_similar_retelling(tmp_path):
+    db = ChatDatabase(tmp_path / "reports.db")
+    mid = db.add_message("owner:visit", "user", "I went to the dentist. It went well.")
+    source = db.get_message_row(mid)
+    entry = admit_memory({
+        "kind": "event", "content": "The dentist visit went well.", "temporal_type": "past_event",
+        "evidence": [{"message_id": mid, "quote": source.content}],
+    }, [source], session_key="owner:visit", writer="extractor")
+    assert entry.accepted
+    report = SimpleNamespace(
+        kind="event", temporal_type="past_event", provenance="inferred", metadata=entry.metadata,
+    )
+    mirror = SimpleNamespace(
+        get={1: report}.get,
+        _get_conn=db._get_conn,
+    )
+    vector_store = _StubStore(memories=[
+        _memory_hit(record_id="1", content="The dentist visit went well.",
+                    base_score=0.70, last_used_at=None),
+        _memory_hit(record_id="2", content="The dentist was still looming.",
+                    base_score=0.75, last_used_at=None),
+    ])
+    retriever = RagRetriever(vector_store, _StubEmbedder(), memory_store=mirror)
+
+    try:
+        assert retriever.retrieve("dentist", _mark_used=False)[0].record.id == "1"
+        db.execute_commit("UPDATE messages SET content=? WHERE id=?", ("Edited report.", mid))
+        assert retriever.retrieve("dentist", _mark_used=False)[0].record.id == "2"
+    finally:
+        retriever.close()
 
 
 class _RecordingMemoryStore:

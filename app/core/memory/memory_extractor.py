@@ -483,7 +483,9 @@ class MemoryExtractor:
             offer_intentions, render_intentions, RULE as PLAN_RULE,
         )
 
-        intentions = offer_intentions(self._store)
+        intentions = offer_intentions(
+            self._store, new_rows=rows, context_rows=context_rows, session_key=session_key,
+        )
         if intentions:
             existing += ("\n\nAVAILABLE INTENTIONS (context, not new evidence):\n"
                          + render_intentions(intentions))
@@ -729,6 +731,7 @@ class MemoryExtractor:
             if cand.get("follow_through") is not None:
                 from app.core.memory.plan_reports import admit_report
 
+                admission.metadata["admission"]["supersedes_memory_id"] = None
                 try:
                     admission.metadata["follow_through"] = admit_report(
                         cand["follow_through"], rows, intentions, self._store,
@@ -736,8 +739,8 @@ class MemoryExtractor:
                         subject="assistant" if cand["kind"] == "self" else "user",
                         temporal_type=cand["temporal_type"],
                     )
-                except ValueError:
-                    continue
+                except ValueError as exc:
+                    log.info("extractor omitted follow-through link: reason=%s", exc)
             admitted.append({
                 **cand, "provenance": admission.provenance,
                 "source_message_id": admission.source_message_id,
@@ -778,12 +781,6 @@ class MemoryExtractor:
                     cand["applied"] = True
                     continue
             report = (cand.get("metadata") or {}).get("follow_through")
-            if report is not None:
-                from app.core.memory.plan_reports import report_current
-
-                if not report_current(report, self._store):
-                    cand["applied"] = True
-                    continue
             if cand["kind"] in {"shared_term", "strategy"}:
                 from app.core.memory.shared_shorthand import sources_current
 
@@ -803,6 +800,16 @@ class MemoryExtractor:
             except Exception as exc:
                 log.debug("embed failed for memory candidate: %s", exc)
                 return inserted
+            if report is not None:
+                from app.core.memory.plan_reports import report_current
+
+                if not receipt_sources_current(cand["metadata"].get("claim_fidelity"), self._store):
+                    cand["applied"] = True
+                    continue
+                if not report_current(report, self._store):
+                    cand["metadata"].pop("follow_through")
+                    report = None
+                    log.info("extractor omitted follow-through link: reason=source_changed")
             # v10: derive ``relevance_until`` server-side from the
             # candidate's ``temporal_type``. The LLM only needs to
             # classify the memory; we own the freshness window so a

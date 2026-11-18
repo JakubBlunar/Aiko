@@ -3,6 +3,7 @@ from dataclasses import asdict
 import json
 from types import SimpleNamespace
 
+from app.core.infra import timephrase
 from app.core.memory.memory_origin import MemoryOrigin, memory_origin
 from app.core.memory.memory_relations import reference_revision
 from app.core.memory.reflective_evidence import eligible
@@ -30,8 +31,6 @@ def source_ids(row):
 def source_state(row, store=None, db=None, user_id=None):
     if not eligible(row):
         return "withdrawn"
-    from app.core.infra import timephrase
-
     until = timephrase.parse_iso(getattr(row, "relevance_until", None))
     if until is not None and timephrase.to_aware(until) < timephrase.utcnow():
         return "outside_validity"
@@ -63,6 +62,15 @@ def source_state(row, store=None, db=None, user_id=None):
     )) else "untracked"
 
 
+def _event_fields(stamp, precision):
+    parsed = timephrase.parse_iso(stamp)
+    return {
+        "event_time": stamp if parsed and precision not in {"day", "unknown"} else None,
+        "event_date": parsed.date().isoformat() if parsed and precision == "day" else None,
+        "event_time_precision": precision or ("unverified" if parsed else "unknown"),
+    }
+
+
 def memory_record(row, *, store=None, db=None, user_id=None):
     from app.core.memory.observation_receipts import facet_scope
 
@@ -73,7 +81,7 @@ def memory_record(row, *, store=None, db=None, user_id=None):
         "provenance": getattr(row, "provenance", "inferred"),
         "created_at": getattr(row, "created_at", None),
         "recorded_at": getattr(row, "created_at", None),
-        "event_time": getattr(row, "event_time", None),
+        **_event_fields(getattr(row, "event_time", None), timephrase.memory_event_precision(row)),
         "temporal_type": getattr(row, "temporal_type", "unknown"),
         "relevance_until": getattr(row, "relevance_until", None),
         "confidence": getattr(row, "confidence", None),
@@ -81,6 +89,12 @@ def memory_record(row, *, store=None, db=None, user_id=None):
         "source_message_ids": source_ids(row),
         "source_state": source_state(row, store, db, user_id),
     }
+    if db is not None and record["source_state"] == "receipts_present":
+        record["source_message_times"] = [
+            {"message_id": mid, "role": source.role, "message_sent_at": source.created_at}
+            for mid in record["source_message_ids"][:4]
+            if (source := db.get_message_row(mid)) is not None and owned(source.session_id, user_id)
+        ]
     facets = facet_scope(row)
     if len(json.dumps(facets, default=str)) <= 4000:
         record["source_facets"] = facets
@@ -119,7 +133,8 @@ def pack_hits(hits, *, store=None, db=None, user_id=None, max_chars=16000):
                     "unknown", "unknown", "unhydrated_recall")
                 item = {"source": "memory", "memory_id": row.id, "text": row.content,
                         **asdict(origin), "created_at": getattr(row, "created_at", None),
-                        "event_time": getattr(hit, "event_time", None),
+                        **_event_fields(getattr(hit, "event_time", None),
+                                        getattr(hit, "event_time_precision", None)),
                         "temporal_type": getattr(hit, "temporal_type", None),
                         "provenance": getattr(hit, "memory_provenance", None),
                         "source_state": "untracked"}
@@ -139,6 +154,8 @@ def pack_hits(hits, *, store=None, db=None, user_id=None, max_chars=16000):
                     continue
             item = {"source": hit.source, "source_id": str(getattr(row, "id", "")),
                     "text": row.content, "created_at": getattr(row, "created_at", None)}
+            if hit.source == "message":
+                item["message_sent_at"] = item["created_at"]
             for name in ("role", "session_id", "message_id", "document_id", "filename",
                          "chunk_index"):
                 if hasattr(row, name):
@@ -168,7 +185,9 @@ def pack_hits(hits, *, store=None, db=None, user_id=None, max_chars=16000):
     return {"hits": out, "coverage": "bounded_search_results", "omitted": omitted,
             "withheld": withheld, "omitted_sources": omitted_sources,
             "unavailable_sources": sorted(set(unavailable)),
-            "note": "Missing event time is unknown. Source receipts are not entailment proof "
+            "note": "A message time is when someone said it. A recording time is when the "
+                    "note was saved. A day-only event date gives no clock time. "
+                    "Source receipts are not entailment proof "
                     "or proof that all surrounding source text is unchanged. Withdrawn, changed "
                     "or outside-validity records are historical, not current supporting evidence. "
                     "Open omitted memory text with inspect_memory before relying on its meaning."}

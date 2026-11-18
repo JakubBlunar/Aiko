@@ -18,6 +18,13 @@ packets in concept synthesis, including reconsideration. They are context, not
 additional citeable evidence, and do not change promotion gates or confidence.
 No model call or live-data rewrite is needed to compute them.
 
+The dated synthesis packet gives each offered focus topic space for an example.
+It favors current source-backed user reports, postpones repeated notes from the
+same message, and includes valid linked intentions and outcomes together where
+they fit. Topic recall and personal-topic expansion favor those reports among
+nearby semantic matches. External research remains searchable on its own merits.
+This evidence selection works within the existing topic assignments.
+
 ## Source-backed situations and outcomes
 
 The ordinary extractor can attach optional `observation` receipts for a context,
@@ -38,6 +45,10 @@ formula, model call, or compulsory extra memory.
 ## Reported follow-through
 
 The extractor can link a new report to one of eight explicitly offered intentions.
+It ranks intentions by overlap with new messages and nearby context from the
+same actor, with recency as a tie-breaker. An independently supported memory
+survives a refused or stale optional link. Optional follow-through preserves
+the earlier intention.
 The target is snapshotted before generation, removed from admission if its context
 did not fit the prompt, and rechecked before persistence. The report must come
 from the same actor, name the specific action and preserve its literal clause.
@@ -65,6 +76,14 @@ preferences, different contexts and counterexamples. Only a newly offered
 message from the same actor can qualify a specific, snapshotted existing claim.
 Both records are retained. A different situation or single contrasting episode
 cannot supersede the original or turn into a universal opposite trait.
+
+Current guidance loses support from resolved or elapsed intentions and from
+expired, uncited legacy episodes. Historical narratives can still cite those
+episodes. The live support check keeps independently supported alternatives
+usable, and the existing lifecycle owns any status change. New linked reports
+and corrections schedule a review of dependent concepts. Multiple valid
+memory notes citing the same message count as one recorded support group in
+the lifecycle assessment.
 
 An explicit correction or reported preference change asks for review of the
 linked basis. Existing dependent concepts stop being assertable on that basis;

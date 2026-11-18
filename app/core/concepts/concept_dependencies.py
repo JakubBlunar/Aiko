@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 from itertools import combinations
+from types import SimpleNamespace
 
 from app.core.concepts.concept_applicability import applicability_state
+from app.core.concepts.concept_evidence_lineage import SourceLineage, support_summary
 from app.core.concepts.concept_support import revision_hash
 from app.core.infra import timephrase
 
@@ -20,6 +22,37 @@ MAX_SETS = 32
 MAX_MEMBERS = 24
 MAX_NODES = 256
 MAX_DEPTH = 8
+_CURRENT_GUIDANCE = {"affective", "boundary", "communication_style", "identity",
+                     "ritual", "taste", "value"}
+
+
+def _guidance_source_issue(concept, memory, reader):
+    """A settled episode may support history while losing current applicability."""
+    if concept.kind not in _CURRENT_GUIDANCE:
+        return ""
+    from app.core.memory.memory_origin import memory_origin
+    from app.core.memory.plan_reports import CLOSED, plan_progress
+
+    now = timephrase.utcnow()
+    until = timephrase.parse_iso(memory.relevance_until)
+    if memory.temporal_type == "future_plan" or memory_origin(memory).mode == "intention":
+        if plan_progress(memory, reader)["status"] in CLOSED:
+            return "source_plan_resolved"
+        event = timephrase.parse_iso(memory.event_time)
+        if event is not None:
+            if timephrase.memory_event_precision(memory) == "day":
+                elapsed = event.date() < now.astimezone(event.tzinfo).date()
+            else:
+                elapsed = event < now
+        else:
+            elapsed = until is not None and until < now
+        if elapsed:
+            return "source_planning_window_elapsed"
+    if (memory.temporal_type == "past_event" and until and until < now
+            and memory.kind == "self_tagged" and memory.source_message_id is None
+            and not (memory.metadata.get("admission") or {}).get("source_message_ids")):
+        return "source_undated_legacy_episode"
+    return ""
 
 
 class DependencyLedger:
@@ -39,7 +72,7 @@ class DependencyLedger:
     def _memory(self, node):
         return self.db._get_conn().execute(
             "SELECT content, kind, event_time, metadata, confidence, source_message_id, "
-            "temporal_type, provenance, source_session, created_at "
+            "temporal_type, provenance, source_session, created_at, relevance_until "
             "FROM memories WHERE id = ?", (int(node[1]),),
         ).fetchone()
 
@@ -197,6 +230,8 @@ class DependencyLedger:
                 return {"tracked": False, "viable": True, "reason": "legacy_untracked"}
             valid = []
             invalid = []
+            source_roots = {}
+            conclusion = self.store.get(cid)
             for index, group in enumerate(self.records[cid]):
                 failures = []
                 bounds = []
@@ -250,24 +285,29 @@ class DependencyLedger:
                             from app.core.memory.observation_receipts import (
                                 longitudinal_sources_current,
                             )
-                            from types import SimpleNamespace
-
                             memory = SimpleNamespace(
                                 id=int(ident), content=row[0], kind=row[1], event_time=row[2],
                                 metadata=metadata, source_message_id=row[5], temporal_type=row[6],
                                 provenance=row[7], source_session=row[8], created_at=row[9],
+                                relevance_until=row[10],
                             )
                             reader = SqlMemoryReader(self.db._get_conn(), {int(ident): memory})
                             if not longitudinal_sources_current(memory, reader):
                                 reason = "source_receipt_changed"
                             elif review_state(memory, reader)["review_required"]:
                                 reason = "source_context_review"
+                            elif conclusion is not None:
+                                reason = _guidance_source_issue(conclusion, memory, reader)
                             message_ids = set(metadata.get("source_message_ids") or [])
+                            cited_ids = (metadata.get("admission") or {}).get(
+                                "source_message_ids", [],
+                            )
+                            message_ids.update(mid for mid in cited_ids if type(mid) is int)
                             if row[5] is not None:
                                 message_ids.add(row[5])
-                            if len(message_ids) > MAX_NODES:
+                            if not reason and len(message_ids) > MAX_NODES:
                                 reason = "source_message_limit"
-                            elif message_ids:
+                            elif not reason and message_ids:
                                 marks = ",".join("?" for _ in message_ids)
                                 found = self.db._get_conn().execute(
                                     f"SELECT COUNT(*) FROM messages WHERE id IN ({marks})",
@@ -275,6 +315,10 @@ class DependencyLedger:
                                 ).fetchone()[0]
                                 if found != len(message_ids):
                                     reason = "source_message_deleted"
+                            if not first_valid and kind == "memory" and message_ids:
+                                source_roots[kind, ident] = frozenset(
+                                    f"message:{mid}" for mid in message_ids
+                                )
                     if reason:
                         failures.append({"node": [kind, ident], "reason": reason})
                         # One failed conjunct is enough. Preserve the remaining
@@ -286,11 +330,16 @@ class DependencyLedger:
                     valid.append({"set": index, "confidence_bound": min(bounds, default=1.0)})
                     if first_valid:
                         break
+            valid_nodes = {(member[0], member[1]) for item in valid
+                           for member in self.records[cid][item["set"]]}
+            group_count = len(valid_nodes) if first_valid else support_summary(
+                SourceLineage(source_roots.get(node, frozenset({f"{node[0]}:{node[1]}"})),
+                              "testimony") for node in valid_nodes
+            )["known_support_groups"]
             return {"tracked": True, "viable": bool(valid),
                     "reason": "remaining_support" if valid else "no_valid_support_set",
                     "valid_sets": [item["set"] for item in valid], "invalid_sets": invalid,
-                    "valid_source_count": len({(member[0], member[1])
-                        for item in valid for member in self.records[cid][item["set"]]}),
+                    "valid_source_count": group_count,
                     "confidence_bound": max((item["confidence_bound"] for item in valid),
                                             default=0.0)}
 

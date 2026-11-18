@@ -2627,6 +2627,7 @@ class ChatDatabase(MessageOutcomesMixin):
         *,
         limit: int = 8,
         exclude_session_id: str | None = None,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return messages whose ``created_at`` falls in ``[start_iso, end_iso]``.
 
@@ -2639,6 +2640,7 @@ class ChatDatabase(MessageOutcomesMixin):
         so this used to full-scan) returning the most recent ``limit``
         rows in the window, newest first. ``exclude_session_id`` drops the
         live session (already in the recent-window context).
+        ``user_id`` limits the scan to that user's original dialogue.
 
         Bounds are inclusive ISO-8601 strings; comparison is lexicographic,
         which is monotonic for the ``+00:00``-suffixed UTC timestamps
@@ -2656,6 +2658,10 @@ class ChatDatabase(MessageOutcomesMixin):
             "FROM messages WHERE created_at >= ? AND created_at <= ?"
         )
         params: list[Any] = [start_iso, end_iso]
+        if user_id is not None:
+            sql += " AND substr(session_id, 1, instr(session_id, ':') - 1) = ?"
+            sql += " AND role IN ('user', 'assistant')"
+            params.append(user_id)
         if exclude_session_id:
             sql += " AND session_id != ?"
             params.append(exclude_session_id)

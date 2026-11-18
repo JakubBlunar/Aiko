@@ -1079,6 +1079,13 @@ class ConceptStore:
 
     # ── cascade hooks ─────────────────────────────────────────────────
 
+    def reconsider_memory_dependents(self, memory_id: int) -> None:
+        """Schedule a review of conclusions whose source received a later report."""
+        for kind in ("memory", "cluster", "moment"):
+            for edge in self.edges_from(kind, memory_id):
+                if edge.dst_type == "concept" and edge.relation in {"evidence", "depends_on"}:
+                    self.mark_lifecycle_due(int(edge.dst_id))
+
     def delete_edge(self, edge_id: int) -> None:
         for edge in self._edge_rows("id = ?", (int(edge_id),)):
             if edge.dst_type == "concept" and edge.relation in {"evidence", "depends_on"}:

@@ -169,6 +169,23 @@ def _ids(hits: list[RagHit]) -> list[int]:
 
 
 class TopicExpansionTests(unittest.TestCase):
+    def test_personal_topic_expansion_prefers_the_users_report(self) -> None:
+        reported = _Mem(3, "The appointment went well", _e(0), kind="event", source_message_id=9)
+        reported.provenance = "stated"
+        graph = _StubGraph(cluster_of={1: 10}, members={10: [1, 2, 3]})
+        retriever, _ = _build(
+            hits=[_mem_hit(1, 0.9)], graph=graph, expand_max=1,
+            store_mems={
+                1: _Mem(1, "Upcoming appointment", _e(0)),
+                2: _Mem(2, "General appointment tips", _e(0), kind="knowledge"),
+                3: reported,
+            },
+        )
+        try:
+            self.assertEqual(_ids(retriever.retrieve("appointment")), [1, 3])
+        finally:
+            retriever.close()
+
     def test_appends_close_siblings_beyond_topk(self) -> None:
         hits = [_mem_hit(1, 0.9)]
         store = {

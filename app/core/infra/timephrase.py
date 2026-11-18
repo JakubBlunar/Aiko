@@ -232,6 +232,21 @@ def humanize_future(when_iso: str | None, now: datetime) -> str:
     return f"in {years} year{'s' if years != 1 else ''}"
 
 
+def memory_event_precision(memory) -> str | None:
+    metadata = getattr(memory, "metadata", None) or {}
+    for name in ("claim_fidelity", "moment_evidence"):
+        receipt = metadata.get(name)
+        if isinstance(receipt, dict) and receipt.get("precision"):
+            return receipt["precision"]
+    stamp = getattr(memory, "event_time", None)
+    if isinstance(stamp, str) and len(stamp) == 10 and parse_iso(stamp):
+        return "day"
+    parsed = parse_iso(stamp)
+    if parsed and not (parsed.hour or parsed.minute or parsed.second or parsed.microsecond):
+        return "unknown"
+    return None
+
+
 def temporal_suffix(
     *,
     temporal_type: str | None,
@@ -253,9 +268,13 @@ def temporal_suffix(
     t = temporal_type.lower()
     dated = parse_iso(event_time)
     if precision == "day" and dated is not None and t in {"past_event", "future_plan"}:
-        day = dated.astimezone().date().isoformat()
-        return (f" (planned date {day}; outcome unknown)" if t == "future_plan"
-                else f" (event date {day}; day precision)")
+        day = dated.date()
+        if t == "future_plan":
+            return f" (planned date {day}; outcome unknown)"
+        if day <= to_aware(now).astimezone(dated.tzinfo).date():
+            return f" (event date {day}; day precision)"
+    if precision in {"day", "unknown"}:
+        event_time = None
     if t in ("durable", "preference"):
         return ""
     if t == "ongoing":
@@ -548,6 +567,7 @@ def parse_loose_datetime(
     *,
     anchor: datetime | None = None,
     day_end: bool = False,
+    past_weekday: bool = False,
 ) -> datetime | None:
     """Best-effort parse of a human/LLM-written day or time.
 
@@ -569,8 +589,9 @@ def parse_loose_datetime(
     callers want ``True``: "by August 19" is not breached at 00:01 on the
     19th, so the moment to compare against is that evening.
 
-    Ambiguity is resolved toward the anchor: a date with no year takes
-    the anchor's year, and a bare weekday means its next occurrence.
+    A date with no year takes the anchor's year. An explicit "last" weekday
+    resolves backward. Otherwise a weekday resolves forward by default, or on
+    or before the anchor day with ``past_weekday``.
     """
     if not text:
         return None
@@ -623,7 +644,7 @@ def parse_loose_datetime(
         day = _match_relative_day(lowered, ref)
 
     if day is None:
-        day = _match_weekday(lowered, ref)
+        day = _match_weekday(lowered, ref, past=past_weekday)
 
     if day is None:
         return None
@@ -675,19 +696,22 @@ def _match_relative_day(lowered: str, ref: datetime) -> datetime | None:
     return None
 
 
-def _match_weekday(lowered: str, ref: datetime) -> datetime | None:
-    """A bare weekday name, read as its next occurrence after ``ref``.
-
-    "Monday" said on a Monday means the Monday coming, not the one
-    passing -- a deadline naming the current day would have been written
-    as "today".
-    """
+def _match_weekday(lowered: str, ref: datetime, *, past: bool = False) -> datetime | None:
+    """Resolve a weekday against the source day in the requested direction."""
     match = _WEEKDAY_RE.search(lowered)
     if match is None:
         return None
     target = _WEEKDAY_NUMBERS.get(match.group("weekday")[:3].lower())
     if target is None:
         return None
+    qualifier = lowered[:match.start()].split()
+    if qualifier[-1:] == ["last"] or past:
+        back = (ref.weekday() - target) % 7
+        if qualifier[-1:] == ["last"] and not back:
+            back = 7
+        if qualifier[-1:] == ["next"]:
+            return None
+        return ref - timedelta(days=back)
     ahead = (target - ref.weekday()) % 7 or 7
     return ref + timedelta(days=ahead)
 
@@ -880,9 +904,7 @@ def format_memory_line(mem: Any, now_dt: datetime | None = None) -> str:
         event_time=getattr(mem, "event_time", None),
         created_at=created_at,
         now=when,
-        precision=((getattr(mem, "metadata", None) or {}).get("claim_fidelity")
-                   or (getattr(mem, "metadata", None) or {}).get("moment_evidence") or {})
-        .get("precision"),
+        precision=memory_event_precision(mem),
     )
     until = parse_iso(getattr(mem, "relevance_until", None))
     if getattr(mem, "temporal_type", None) == "ongoing" and until and until < when:

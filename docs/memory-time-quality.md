@@ -128,6 +128,34 @@ downstream use. New semantic receipts participate in revisions without changing
 ordinary historical hashes. The extractor's base prompt is compacted so the
 new checks fit small contexts without displacing every new turn.
 
+Past-event weekday phrases resolve backward from their source. A bare weekday
+can refer to the source day. Explicit “last Thursday” always refers to a
+previous Thursday. Recall packets expose a day-only value as `event_date`
+with day precision, give original messages their own sent times, and keep
+`recorded_at` for the memory write. An unqualified legacy midnight does not
+supply a clock time. An explicitly supported midnight retains minute precision.
+
+## Original exchanges and reported outcomes
+
+On recognizable questions or corrections about a past conversation, the
+relevant-context builder first checks retained messages in SQLite. It reads at
+most 400 rows from the user's own sessions, within the referenced date window
+or the recent 14 days. Overlapping words in user messages and nearby dialogue
+identify up to two likely exchanges, which are presented with actual local
+message times in the existing prompt budget. The lookup uses no model call.
+The trace records the original message IDs that fit. A bounded lookup can miss
+paraphrases and older exchanges, which are still searchable through
+`conversation_history` and semantic recall.
+
+Routine retrieval gives a small ranking advantage to original user messages
+and to past-event reports with current user-source receipts. A validated
+conclusion linked to a prior plan weakens that plan's rank when both are
+candidates, and the prompt labels the old entry as an intention with a later
+report. This preserves distinct plans and their history. Second-thought cues
+decline obvious unsupported clocks or parts of the day copied from the
+assistant's reply, and the surfacing instruction asks for original evidence
+before repeating factual details.
+
 ## Summary clauses and state freshness
 
 Topic summaries consist of up to four short, source-cited clauses, each scoped

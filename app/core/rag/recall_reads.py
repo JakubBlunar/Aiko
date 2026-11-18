@@ -4,6 +4,7 @@ import json
 
 import numpy as np
 
+from app.core.conversation.topic_evidence import topic_evidence_priority
 from app.core.memory.recall_records import memory_record, owned, pack_hits
 
 
@@ -80,16 +81,18 @@ class RecallReadsMixin:
                     unsearchable += 1
                     continue
                 score = float(np.dot(q, vec) / norm)
-                scored.append((score, int(row.id), row))
-            scored.sort(key=lambda item: (-item[0], item[1]))
+                priority = (topic_evidence_priority(row) if record["source_state"]
+                            in {"receipts_present", "untracked"} else 0)
+                scored.append((score, int(row.id), row, priority))
+            scored.sort(key=lambda item: (-(item[0] + 0.03 * item[3]), item[1]))
             key = hashlib.sha256(json.dumps([
                 query, cid, label, include_historical, user_id, members, state,
-                [(score, mid) for score, mid, row in scored],
+                [(score, mid, priority) for score, mid, _, priority in scored],
             ], default=str).encode()).hexdigest()
             if offset and (not revision or revision != key):
                 raise ValueError("Topic changed or revision missing; restart at offset 0.")
             selected = scored[offset:offset + limit]
-            hits = [self._memory_to_hit(row, score=score) for score, mid, row in selected]
+            hits = [self._memory_to_hit(row, score=score) for score, _, row, _ in selected]
             payload = pack_hits(hits, store=self._memory_store, db=self._chat_db, user_id=user_id)
             if payload["unavailable_sources"] and not payload["hits"]:
                 raise RecallUnavailable("Selected topic sources became unavailable; retry.")

@@ -73,6 +73,10 @@ _DECLINE = "NONE"
 
 _SUBJECT_RE = re.compile(r"^\s*SUBJECT\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 _THOUGHT_RE = re.compile(r"^\s*THOUGHT\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+_DAYPART = re.compile(
+    r"\b(?:at |during |in the |middle of the )(night|morning|afternoon|evening|midnight|noon)\b",
+    re.I,
+)
 
 # Bounds on what may reach the pool. The subject is a matching key, so a
 # sentence there would poison consumption (one shared word between a
@@ -114,6 +118,9 @@ _INSTRUCTION = "\n".join((
     "THOUGHT: <one or two sentences, first person, saying what you want to "
     "pick up and why it matters. If you missed something you already had, "
     "say plainly what it was.>",
+    "Use the user's actual report or correction for facts about an old exchange. "
+    "Your reply above is evidence of what you said. Leave unverified dates, times, "
+    "quotes, and outcomes out of the thought.",
     "",
     "{time_rule}",
 ))
@@ -448,6 +455,20 @@ class SecondThoughtWorker:
             else:
                 self._stats["unparsed"] += 1
                 self._last_error_category = "unparsed"
+            return None
+
+        from app.core.memory.claim_fidelity import unsupported_clock
+
+        def dayparts(text):
+            return set(_DAYPART.findall(text.casefold()))
+
+        if (
+            dayparts(thought.thought) & dayparts(assistant_text) - dayparts(user_text)
+            or (unsupported_clock(thought.thought, [user_text])
+                and not unsupported_clock(thought.thought, [assistant_text]))
+        ):
+            self._stats["declined"] += 1
+            self._last_error_category = "unsupported_retelling_time"
             return None
 
         self._last_thought = thought

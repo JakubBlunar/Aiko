@@ -24,8 +24,9 @@ class GetTimeTool:
             name="get_time",
             description=(
                 "Return the current local date and time. Call this whenever "
-                "the user asks about the current time, today's date, the "
-                "day of the week, or anything similarly time-sensitive."
+                "the user asks about the current time, today's date, or the current "
+                "day of the week. For the date, "
+                "time, or words of a past conversation, use conversation_history."
             ),
             parameters={
                 "type": "object",

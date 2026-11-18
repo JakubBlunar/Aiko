@@ -54,3 +54,29 @@ def test_topic_dirtiness_tracks_semantic_changes_without_salience_churn():
     assert topic_source_fingerprint(cluster, store) == before
     row.content = "A correction with a different context"
     assert topic_source_fingerprint(cluster, store) != before
+
+
+def test_synthesis_prefers_reported_outcome_and_covers_two_focus_topics():
+    from app.core.concepts.longitudinal_context import capture_context
+
+    report = memory(1, 10)
+    report.provenance = "stated"
+    report.content = "The user said the appointment went well."
+    other = memory(2, 20)
+    other.provenance = "stated"
+    other.content = "The user prefers concise meeting notes."
+    research = {mid: memory(mid, None, kind="knowledge") for mid in range(3, 23)}
+    rows = {1: report, 2: other, **research}
+    clusters = [
+        SimpleNamespace(representative_id=3, member_ids=[1, *research]),
+        SimpleNamespace(representative_id=2, member_ids=[2]),
+    ]
+    graph = SimpleNamespace(topic_clusters=lambda: clusters)
+    store = SimpleNamespace(get=rows.get)
+    text, snapshots, _ = capture_context(
+        {"focus_clusters": [SimpleNamespace(rep=3), SimpleNamespace(rep=2)]}, graph, store,
+        max_chars=650,
+    )
+    assert list(snapshots)[:2] == [1, 2]
+    assert "appointment went well" in text
+    assert "concise meeting notes" in text

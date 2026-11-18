@@ -131,6 +131,76 @@ def test_memory_invalidation_and_alternative_observation(model, mutation):
     assert unsupported.status == "candidate"
 
 
+def test_expired_unsourced_episode_loses_live_guidance_but_remains_history(model, monkeypatch):
+    from app.core.infra import timephrase
+
+    monkeypatch.setattr(timephrase, "utcnow", lambda: NOW)
+    source = model.memory(1)
+    model.db.execute_commit(
+        "UPDATE memories SET kind='self_tagged', temporal_type='past_event', "
+        "relevance_until=? WHERE id=1", ((NOW - timedelta(days=1)).isoformat(),),
+    )
+    guidance = model.concept("Use the early alarm framing", kind="communication_style")
+    history = model.concept("We discussed the early alarm", kind="narrative")
+    for concept in (guidance, history):
+        model.store.dependencies.add(concept.concept_id, [[source]])
+    assert not model.store.is_assertable(guidance.concept_id)
+    assert model.store.is_assertable(history.concept_id)
+    model.worker.run()
+    assert guidance.status == "candidate"
+    assert history.status == "active"
+
+
+def test_distinct_notes_from_one_message_count_as_one_support_group(model):
+    a, b = model.memory(1), model.memory(2)
+    mid = model.db.add_message("u:session", "user", "I prefer a playful cue when we are nearby.")
+    model.db.execute_commit("UPDATE memories SET source_message_id=?", (mid,))
+    concept = model.concept("Use a playful cue when nearby", kind="communication_style")
+    model.store.dependencies.add(concept.concept_id, [[a], [b]])
+    report = model.store.dependencies.assess(concept.concept_id)
+    assert report["viable"] and len(report["valid_sets"]) == 2
+    assert report["valid_source_count"] == 1
+
+
+def test_later_plan_outcome_invalidates_current_guidance_support(model, monkeypatch):
+    from app.core.infra import timephrase
+    from app.core.memory.memory_store import MemoryStore
+    from app.core.memory.plan_reports import admit_report, offer_intentions
+
+    monkeypatch.setattr(timephrase, "utcnow", lambda: NOW)
+    memories = MemoryStore(model.db._db_path)
+    try:
+        session = "u:visit"
+        prior_id = model.db.add_message(session, "user", "I plan to go to the dentist appointment.")
+        prior = memories.add(
+            "Noah plans to attend the dentist appointment", "event", np.ones(3),
+            source_session=session, source_message_id=prior_id, temporal_type="future_plan",
+            event_time=(NOW + timedelta(days=1)).isoformat(), confidence=0.85,
+        )
+        concept = model.concept("Use the appointment prep framing", kind="communication_style")
+        model.store.dependencies.add(concept.concept_id, [[("memory", str(prior.id))]])
+        assert model.store.is_assertable(concept.concept_id)
+        text = "I got out of the dentist appointment."
+        mid = model.db.add_message(session, "user", text)
+        source = model.db.get_message_row(mid)
+        receipt = admit_report(
+            {"prior_memory_id": prior.id, "status": "reported_completed",
+             "report": {"message_id": mid, "quote": text}},
+            [source], offer_intentions(memories), memories,
+            session_key=session, subject="user", temporal_type="past_event",
+        )
+        memories.add("Noah left the appointment", "event", np.ones(3), skip_dedupe=True,
+                     temporal_type="past_event", metadata={"follow_through": receipt})
+        model.store.reconsider_memory_dependents(prior.id)
+        review = model.store.dependencies.assess(concept.concept_id)
+        assert not review["viable"]
+        assert review["invalid_sets"][0]["failures"][0]["reason"] == "source_plan_resolved"
+        model.worker.run()
+        assert concept.status == "candidate"
+    finally:
+        memories.close()
+
+
 def test_readmission_reconsiders_revised_evidence_without_reversing_belief(model):
     source = model.memory(1)
     child = model.concept("child", kind="boundary")

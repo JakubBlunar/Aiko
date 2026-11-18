@@ -348,7 +348,7 @@ class SynthesisRoutingMixin:
             from app.core.concepts.longitudinal_context import capture_context, RULE
 
             source_context, offered_rows, source_revisions = capture_context(
-                kwargs, self._topic_graph, self._memory_store,
+                kwargs, self._topic_graph, self._memory_store, subject=spec.subject,
             )
 
             def call(system: str, user: str) -> list[dict[str, Any]]:

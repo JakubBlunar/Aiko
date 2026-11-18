@@ -1560,6 +1560,19 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         rag = getattr(self, "_rag_retriever", None)
         embedder = getattr(self, "_embedder", None)
         name = self.user_display_name
+        from app.core.conversation.exchange_recall import exchange_evidence
+
+        settings = getattr(self, "_settings", None)
+        archive_text, archive_ids = "", []
+        if getattr(getattr(settings, "agent", None), "rag_direct_recall_enabled", True):
+            try:
+                archive_text, archive_ids = exchange_evidence(
+                    getattr(self, "_chat_db", None), user_text, session_key, name,
+                    budget=min(450, budget_tokens // 2), estimate_tokens=estimate_tokens,
+                    tz_name=getattr(getattr(settings, "tools", None), "archive_timezone", "system"),
+                )
+            except Exception:
+                log.debug("relevant_context: original exchange lookup failed", exc_info=True)
 
         # Speculative pre-fetch reuse (Phase 1b): while the user was still
         # talking the RagPrefetcher may have already embedded this turn and
@@ -2384,7 +2397,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 "concept": concept_cands,
                 "hypothesis": hyp_cands,
             },
-            budget_tokens=budget_tokens,
+            budget_tokens=max(0, budget_tokens - estimate_tokens(archive_text)),
             degrade_level=degrade_level,
         )
         floor_swap = self._apply_generative_floor(
@@ -2399,7 +2412,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         )
 
         # ── rendering ────────────────────────────────────────────────────
-        sections: list[str] = []
+        sections: list[str] = [archive_text] if archive_text else []
 
         chosen_mem = sorted(
             selection.source("memory").chosen, key=lambda c: c.order,
@@ -2507,6 +2520,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             original_length = len(text)
             text = clip_text_to_tokens(text, budget_tokens)
             concept_trace["rendering_clipped"] = len(text) < original_length
+        if archive_ids:
+            concept_trace["original_exchange_message_ids"] = archive_ids
         concept_trace["patterns"] = [
             {"memory_id": hit.record.id, "kind": hit.record.kind, "included": hit.text in text}
             for hit in chosen_hits

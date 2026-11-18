@@ -708,23 +708,37 @@ class TestMemoryExtractorTemporal(unittest.TestCase):
         """
         _, store = _store_factory()
         embedder = _FakeEmbedder()
+        source_now = datetime(2026, 5, 28, 12, tzinfo=timezone.utc)
+        timephrase.set_now_provider(lambda: source_now)
+        self.addCleanup(timephrase.set_now_provider, None)
+        db = ChatDatabase(Path(store._db_path))
+        past_time = "2026-05-27T18:00+00:00"
+        future_time = "2026-05-28T20:00+00:00"
+        past_report = f"I worked on the dashboard at {past_time}."
+        future_report = f"I plan to go to the gym at {future_time}."
+        past_id = db.add_message("session-1", "user", past_report)
+        future_id = db.add_message("session-1", "user", future_report)
+        for i in range(4):
+            db.add_message("session-1", "user", f"hello {i}")
         # Stub Ollama: chat_json returns the canned envelope.
         canned = json.dumps(
             {
                 "memories": [
                     {
-                        "content": "Jacob worked on the dashboard yesterday",
+                        "content": "Jacob worked on the dashboard on May 27, 2026.",
                         "kind": "event",
                         "salience": 0.6,
                         "temporal_type": "past_event",
-                        "event_time": "2026-05-27T18:00:00+00:00",
+                        "evidence": [{"message_id": past_id, "quote": past_report}],
+                        "event_time_evidence": {"message_id": past_id, "quote": past_time},
                     },
                     {
-                        "content": "Jacob is going to the gym tonight at 20:00",
+                        "content": "Jacob plans to go to the gym on May 28, 2026.",
                         "kind": "event",
                         "salience": 0.7,
                         "temporal_type": "future_plan",
-                        "event_time": "2026-05-28T20:00:00+00:00",
+                        "evidence": [{"message_id": future_id, "quote": future_report}],
+                        "event_time_evidence": {"message_id": future_id, "quote": future_time},
                     },
                 ]
             }
@@ -747,12 +761,6 @@ class TestMemoryExtractorTemporal(unittest.TestCase):
             ):
                 return canned, _Usage()
 
-        # Feed an actual chat row so the worker isn't skipped due to
-        # min_window_messages.
-        path = Path(store._db_path)  # type: ignore[attr-defined]
-        db = ChatDatabase(path)
-        for i in range(6):
-            db.add_message("session-1", "user", f"hello {i}")
         extractor = MemoryExtractor(
             db=db,
             store=store,

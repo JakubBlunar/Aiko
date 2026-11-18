@@ -7,6 +7,31 @@ from app.core.infra import timephrase
 from app.core.memory.memory_origin import memory_origin
 
 
+def topic_evidence_priority(memory):
+    """Prefer the user's own account when two memories cover the same topic."""
+    origin = memory_origin(memory)
+    metadata = getattr(memory, "metadata", None) or {}
+    if origin.subject != "user":
+        return 0
+    report = metadata.get("follow_through")
+    relation = metadata.get("contextual_relation")
+    if (isinstance(report, dict) and report.get("status")
+            in ("reported_action", "reported_completed", "cancelled", "changed_plan")
+            or isinstance(relation, dict) and relation.get("relation")
+            in ("correction", "changed_preference")):
+        return 3
+    receipt = metadata.get("claim_fidelity")
+    sources = receipt.get("sources") if isinstance(receipt, dict) else None
+    reported = (isinstance(sources, list) and receipt.get("basis") == "reported"
+                and any(isinstance(source, dict) and source.get("role") == "user"
+                        for source in sources))
+    stated = (getattr(memory, "provenance", None) == "stated"
+              and isinstance(getattr(memory, "source_message_id", None), int))
+    if origin.mode in {"observation", "declaration"} and (reported or stated):
+        return 3 if getattr(memory, "temporal_type", None) == "past_event" else 2
+    return 0
+
+
 def _span(values):
     dates = [stamp for value in values if (stamp := timephrase.parse_iso(value)) is not None]
     return {"from": min(dates).isoformat() if dates else None,

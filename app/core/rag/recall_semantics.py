@@ -18,9 +18,32 @@ def recall_cost(rag, hit, user_display_name, estimate_tokens):
 
 def recall_context(memory):
     from app.core.memory.hypothesis_memory import answer_context
+    from app.core.memory.plan_reports import report_annotation
     from app.core.memory.pursuit_evidence import context
 
-    return " ".join(part for part in (answer_context(memory), context(memory)) if part)
+    return " ".join(part for part in (
+        answer_context(memory), context(memory), report_annotation(memory),
+    ) if part)
+
+
+def user_outcome(memory, store):
+    """Give weight to a user report whose original wording is still available."""
+    from app.core.memory.observation_receipts import longitudinal_sources_current
+    from app.core.memory.reflective_evidence import eligible
+
+    metadata = getattr(memory, "metadata", None) or {}
+    receipt = metadata.get("claim_fidelity") or {}
+    report = metadata.get("follow_through") or {}
+    if (getattr(memory, "temporal_type", None) != "past_event"
+            or memory_origin(memory).subject != "user"
+            or not eligible(memory)):
+        return False
+    sources = receipt.get("sources", [])
+    reported = receipt.get("basis") == "reported" and any(
+        source.get("role") == "user" and source.get("quote") for source in sources
+    )
+    linked = report.get("status") in {"reported_action", "reported_completed", "cancelled"}
+    return bool((reported or linked) and longitudinal_sources_current(memory, store))
 
 
 def recall_origin(hit) -> MemoryOrigin:

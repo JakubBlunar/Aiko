@@ -102,6 +102,22 @@ def test_topic_paging_withdrawal_and_source_revision(env):
         tool.run({"topic": "scene", "offset": 1, "revision": first["revision"]})
 
 
+def test_topic_recall_prefers_a_user_report_over_equally_close_research(env):
+    db, store, _, _ = env
+    research = store.add("How people prepare for appointments", "knowledge", np.array([1., 0.]))
+    mid = db.add_message("u:s", "user", "The appointment went well.")
+    report = save(store, "The appointment went well.", source_message_id=mid,
+                  provenance="stated", temporal_type="past_event")
+    rag = retriever(store, db, [research, report])
+    try:
+        payload = rag.recall_topic_page("appointment", user_id="u", limit=1)
+        assert payload["hits"][0]["memory_id"] == report.id
+        assert payload["hits"][0]["score"] == 1.0
+        assert payload["total"] == 2 and payload["has_more"]
+    finally:
+        rag.close()
+
+
 def test_inspection_returns_originals_and_rechecks_edited_sources(env):
     db, store, _, registry = env
     mid = db.add_message("u:s", "user", "I imagined it, but did not do it.")

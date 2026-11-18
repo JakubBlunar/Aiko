@@ -2,10 +2,13 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
+from app.core.conversation.topic_evidence import topic_evidence_priority
+from app.core.conversation.topic_memory_policy import topic_member_eligible
 from app.core.infra import timephrase
-from app.core.memory.memory_origin import origin_annotation
+from app.core.memory.memory_origin import memory_origin, origin_annotation
 from app.core.memory.memory_relations import incoming_relations, reference_revision
 from app.core.memory.observation_receipts import longitudinal_sources_current
+from app.core.memory.plan_reports import plan_progress
 
 
 RULE = """
@@ -21,45 +24,96 @@ Longitudinal evidence:
   Name the narrow context in the label too. Do not invent missing qualifiers
   or dates. If a qualification cannot be retained, abstain from the broad claim.
 - These packets are existing evidence and recorded reports, never new votes.
+- Use the user's account for personal events and outcomes. A topic can also
+  contain plans, assistant reflections and external research. A completed or
+  elapsed plan belongs to history and cannot establish standing guidance.
 """
 
 
-def capture_context(kwargs, graph, store, *, max_chars=8000):
+def capture_context(kwargs, graph, store, *, max_chars=8000, subject="user"):
     candidates = {int(row.id): row for row in kwargs.get("memories", []) if hasattr(row, "id")}
     for candidate in kwargs.get("candidates", []):
         for row in getattr(candidate, "memories", []):
             candidates[int(row.id)] = row
+    direct_ids = set(candidates)
     reps = {int(row.rep) for row in kwargs.get("focus_clusters", []) if hasattr(row, "rep")}
+    topic_sources = []
     if reps and graph is not None:
         for cluster in graph.topic_clusters():
             if int(cluster.representative_id) in reps:
-                for mid in sorted(set(cluster.member_ids))[:256]:
+                members = set()
+                for mid in sorted(set(cluster.member_ids), reverse=True)[:256]:
                     row = store.get(int(mid))
-                    if row is not None:
+                    if topic_member_eligible(row):
+                        members.add(int(mid))
                         candidates[int(mid)] = row
-    ordered = sorted(candidates.values(), key=lambda row: (
-        not any(key in (getattr(row, "metadata", None) or {})
-                for key in ("observation", "follow_through", "contextual_relation")),
-        -(timephrase.parse_iso(getattr(row, "created_at", "")).timestamp()
-          if timephrase.parse_iso(getattr(row, "created_at", "")) else 0), int(row.id),
-    ))[:16]
+                topic_sources.append(members)
+
+    def priority(row):
+        stamp = timephrase.parse_iso(getattr(row, "created_at", ""))
+        metadata = getattr(row, "metadata", None) or {}
+        enriched = any(key in metadata for key in (
+            "observation", "follow_through", "contextual_relation",
+        ))
+        if subject == "aiko":
+            firsthand = int(memory_origin(row).subject == "aiko")
+        else:
+            firsthand = topic_evidence_priority(row)
+        return (-firsthand, not enriched, row.id not in direct_ids,
+                -stamp.timestamp() if stamp else 0, int(row.id))
+
+    ranked = sorted(candidates.values(), key=priority)
+    # Keep a useful example of each focus topic in the shared packet, even
+    # when another topic has many more records or came up more recently.
+    representatives = [next((row for row in ranked if row.id in members
+                             and longitudinal_sources_current(row, store)), None)
+                       for members in topic_sources[:6]]
+    representatives = [row for row in representatives if row is not None]
+    selected, deferred, seen_ids, seen_sources = [], [], set(), set()
+    for row in [*representatives, *ranked]:
+        if row.id in seen_ids or not longitudinal_sources_current(row, store):
+            continue
+        seen_ids.add(row.id)
+        metadata = getattr(row, "metadata", None) or {}
+        source_ids = set((metadata.get("admission") or {}).get("source_message_ids", []))
+        if (source_id := getattr(row, "source_message_id", None)) is not None:
+            source_ids.add(source_id)
+        if source_ids & seen_sources:
+            deferred.append(row)
+        else:
+            selected.append(row)
+            seen_sources.update(source_ids)
+        if len(selected) >= 16:
+            break
+    ordered = [*selected, *deferred][:16]
     # Bring an explicit contrast alongside its original, rather than selecting
     # only whichever side happens to be more salient or recent.
-    extra = []
+    ordered_ids = {row.id for row in ordered}
+    evidence = [row for row in representatives if row.id in ordered_ids]
     for row in ordered:
+        evidence.append(row)
         relations, _ = incoming_relations(row, store, limit=2)
         for relation in relations:
             linked = store.get(relation["memory_id"]) if relation["current"] else None
             if linked is not None:
-                extra.append(linked)
-        value = (getattr(row, "metadata", None) or {}).get("contextual_relation") or {}
-        if isinstance(value, dict) and value.get("prior_memory_id"):
-            prior = store.get(value["prior_memory_id"])
-            if prior is not None:
-                extra.append(prior)
+                evidence.append(linked)
+        metadata = getattr(row, "metadata", None) or {}
+        for key in ("contextual_relation", "follow_through"):
+            value = metadata.get(key) or {}
+            if isinstance(value, dict) and value.get("prior_memory_id"):
+                prior = store.get(value["prior_memory_id"])
+                if prior is not None:
+                    evidence.append(prior)
+        if (getattr(row, "temporal_type", None) == "future_plan"
+                or memory_origin(row).mode == "intention"):
+            progress = plan_progress(row, store)
+            if progress.get("report_memory_id") is not None:
+                report = store.get(progress["report_memory_id"])
+                if report is not None:
+                    evidence.append(report)
     lines, snapshots, revisions = [], {}, {}
     remaining = max_chars
-    for row in [*extra, *ordered]:
+    for row in evidence:
         mid = int(row.id)
         if mid in snapshots or len(snapshots) >= 20 or not longitudinal_sources_current(row, store):
             continue

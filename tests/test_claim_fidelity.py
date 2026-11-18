@@ -7,6 +7,7 @@ from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.memory_admission import admit_memory
 from app.core.memory.memory_store import MemoryStore
 from app.core.memory.observation_receipts import longitudinal_sources_current
+from app.core.memory.recall_records import memory_record
 
 
 def admit(text, content, **extra):
@@ -95,3 +96,29 @@ def test_edited_testimony_invalidates_the_new_source_receipt(tmp_path):
         assert longitudinal_sources_current(memory, store)
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("phrase,day", [
+    ("last Thursday", "2026-09-24"),
+    ("Thursday", "2026-10-01"),
+    ("on September 30 at 00:00", None),
+])
+def test_past_weekday_and_day_only_recall(phrase, day):
+    quote = f"I returned {phrase}."
+    receipt = admit(
+        quote, "Noah returned", event_time_evidence={"message_id": 1, "quote": phrase},
+    ).metadata["claim_fidelity"]
+    row = SimpleNamespace(
+        id=1, content="Noah returned", kind="event", temporal_type="past_event",
+        created_at="2026-10-01T12:01:00Z", event_time=receipt["event_time"],
+        metadata={"claim_fidelity": receipt},
+    )
+    packet = memory_record(row)
+    if day:
+        assert packet["event_time_precision"] == "day"
+        assert packet["event_date"] == day
+        assert packet["event_time"] is None
+    else:
+        assert packet["event_date"] is None
+        assert packet["event_time_precision"] == "minute"
+        assert "T00:00:00" in packet["event_time"]

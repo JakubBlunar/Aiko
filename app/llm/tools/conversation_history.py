@@ -25,7 +25,9 @@ class ConversationHistoryTool:
             description=(
                 "Read retained conversations synchronously from the local archive, without "
                 "an LLM or embedding call. Use for 'what did we talk about last week/month?', "
-                "date recaps, and finding exact older exchanges absent from memory. Start "
+                "date recaps, and checking the time or wording of a past exchange, even when "
+                "a memory retells it. For a correction, search the relevant date and the user's "
+                "reported action, then read the neighboring turns. Start "
                 "with overviews for broad ranges: outlines contain selected quotes and may "
                 "include a generated source-cited discussion summary. Summaries are navigation "
                 "interpretations, not verified facts or proof that plans happened. Open cited "

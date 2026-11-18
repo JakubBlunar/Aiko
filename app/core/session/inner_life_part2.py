@@ -2468,7 +2468,10 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             "second-thought fire: cue=%d subject=%r",
             row.id, row.payload.get("subject", ""),
         )
-        return row.text
+        return (
+            row.text + "\nIf this thought describes a past exchange, verify its facts against "
+            "the user's report or the original messages before repeating them."
+        )
 
     def _render_wellbeing_concern_block(self) -> str:
         """K72: surface one rare, gentle "you doing okay?" concern cue.

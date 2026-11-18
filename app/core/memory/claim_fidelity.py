@@ -118,11 +118,15 @@ def event_support(candidate, sources):
     if row is None:
         return result
     quote = value.get("quote")
-    when, precision = supported_deadline(quote, row.content, timephrase.parse_iso(row.created_at))
+    anchor = timephrase.parse_iso(row.created_at)
+    past = candidate.get("temporal_type") == "past_event"
+    when, precision = supported_deadline(quote, row.content, anchor, past_weekday=past)
     if when is None:
         return result
     if precision == "day" and candidate.get("temporal_type") != "future_plan":
         when = when.replace(hour=0, minute=0)
+    if past and when > anchor:
+        return result
     result.update(event_time=when.isoformat(), precision=precision,
                   message_id=row.id, quote=quote, source_recorded_at=str(row.created_at))
     return result

@@ -42,8 +42,9 @@ from app.core.memory import promise_lifecycle
 from app.core.rag.rag_store import MessageRecord, RagHit
 from app.core.infra import timephrase
 from app.core.memory.memory_origin import memory_origin
+from app.core.memory.plan_reports import CLOSED
 from app.core.rag.recall_semantics import (
-    recall_origin, recall_scope, recall_sections, recall_context,
+    recall_origin, recall_scope, recall_sections, recall_context, user_outcome,
 )
 
 if TYPE_CHECKING:
@@ -63,6 +64,8 @@ log = logging.getLogger("app.rag_retriever")
 # Tuning knobs. Kept small so we can iterate without breaking callers.
 _MEMORY_PRIOR = 0.05
 _MESSAGE_PRIOR = -0.04
+_USER_MESSAGE_BONUS = 0.04
+_REPORTED_OUTCOME_BONUS = 0.12
 _DOCUMENT_PRIOR = 0.0
 # H4 — document-recall recency boost. A document chunk whose ``created_at``
 # is within the last ``_DOCUMENT_RECENCY_DAYS`` days gets a flat additive
@@ -1068,6 +1071,7 @@ class RagRetriever(RecallReadsMixin):
         time_window_hits = 0
 
         merged: list[RagHit] = []
+        closed_plans: set[str] = set()
         try:
             # P4: batch the SQLite-mirror join once instead of a locked
             # ``get`` per hit. Falls back to the per-hit path for stores
@@ -1265,9 +1269,7 @@ class RagRetriever(RecallReadsMixin):
                                     mem, "temporal_type", None
                                 )
                                 h.event_time = getattr(mem, "event_time", None)
-                                metadata = getattr(mem, "metadata", None) or {}
-                                h.event_time_precision = (metadata.get("claim_fidelity")
-                                    or metadata.get("moment_evidence") or {}).get("precision")
+                                h.event_time_precision = _tp.memory_event_precision(mem)
                                 h.relevance_until = getattr(
                                     mem, "relevance_until", None
                                 )
@@ -1297,6 +1299,15 @@ class RagRetriever(RecallReadsMixin):
                                     h.score = -1.0
                                 else:
                                     h.score += _temporal_boost(mem)
+                                    if user_outcome(mem, self._memory_store):
+                                        h.score += _REPORTED_OUTCOME_BONUS
+                                        h.memory_context = " ".join(filter(None, (
+                                            "source-backed user report of what happened",
+                                            h.memory_context,
+                                        )))
+                                        report = (mem.metadata or {}).get("follow_through") or {}
+                                        if report.get("status") in CLOSED:
+                                            closed_plans.add(str(report["prior_memory_id"]))
                     except Exception:
                         log.debug("pinned-bonus lookup failed", exc_info=True)
                         if _diagnostics is not None:
@@ -1318,6 +1329,8 @@ class RagRetriever(RecallReadsMixin):
                     h.score = h.score + _MESSAGE_PRIOR + _recency_bonus(
                         getattr(h.record, "created_at", "")
                     )
+                    if getattr(h.record, "role", None) == "user":
+                        h.score += _USER_MESSAGE_BONUS
                     # K-time2 — same date-window nudge for chat snippets
                     # said inside the named window.
                     if time_window is not None and time_window.contains(
@@ -1370,6 +1383,10 @@ class RagRetriever(RecallReadsMixin):
             except Exception:
                 log.debug("document search failed", exc_info=True)
 
+        for hit in merged:
+            if hit.source == "memory" and str(hit.record.id) in closed_plans and hit.score >= 0:
+                hit.score = max(0.0, hit.score - _REPORTED_OUTCOME_BONUS)
+                hit.memory_context = "Earlier intention with a later source-backed outcome."
         self._drop_deleted_message_hits(merged)
         # Structured meanings have their own source/scope validation in T3.
         # A vector match alone must never expose an expired or different meaning.
@@ -1990,15 +2007,16 @@ class RagRetriever(RecallReadsMixin):
         The "dominant cluster" is the topic of the strongest memory hit in
         ``selected`` whose score clears ``expand_trigger_score``. Its member
         ids (minus the memories already surfaced this turn) are scored by
-        cosine to the live query embedding; the closest few above
-        ``expand_min_sim`` are returned as ``expansion``-flagged hits. Reads
-        the memory mirror only -- no extra DB hit, no embed. Returns ``[]``
+        cosine to the live query embedding. Personal topics give nearby
+        testimony a ranking preference, with source checks for selected rows.
+        No extra embedding call. Returns ``[]``
         when nothing clears the gates (no strong hit, no cluster, no
         sibling close enough), leaving the direct top-k unchanged.
         """
         # Find the strongest memory hit and its cluster.
         anchor_cid: int | None = None
         anchor_score: float = self._expand_trigger_score
+        anchor = None
         for hit in selected:
             if hit.source != "memory":
                 continue
@@ -2008,6 +2026,7 @@ class RagRetriever(RecallReadsMixin):
             if cid is not None:
                 anchor_cid = cid
                 anchor_score = float(hit.score)
+                anchor = hit
                 break
         if anchor_cid is None:
             return []
@@ -2037,7 +2056,12 @@ class RagRetriever(RecallReadsMixin):
             self._digest_sibling_cap if digest_mem is not None else self._expand_max
         )
 
-        scored: list[tuple[float, "Any"]] = []
+        from app.core.conversation.topic_evidence import topic_evidence_priority
+        from app.core.conversation.topic_memory_policy import topic_member_eligible
+        from app.core.memory.observation_receipts import longitudinal_sources_current
+
+        personal = recall_origin(anchor).subject in {"user", "relationship"}
+        scored: list[tuple[float, "Any", int]] = []
         if member_ids and sibling_limit > 0:
             q = np.asarray(query_embedding, dtype=np.float32).ravel()
             q_norm = float(np.linalg.norm(q))
@@ -2050,7 +2074,7 @@ class RagRetriever(RecallReadsMixin):
                         mem = self._memory_store.get(mid)
                     except Exception:
                         continue
-                    if mem is None:
+                    if not topic_member_eligible(mem):
                         continue
                     vec = getattr(mem, "embedding", None)
                     if vec is None:
@@ -2062,18 +2086,23 @@ class RagRetriever(RecallReadsMixin):
                     sim = float(np.dot(q, v)) / v_norm
                     if sim < self._expand_min_sim:
                         continue
-                    scored.append((sim, mem))
-        scored.sort(key=lambda t: t[0], reverse=True)
+                    priority = topic_evidence_priority(mem) if personal else 0
+                    scored.append((sim, mem, priority))
+        scored.sort(key=lambda item: item[0] + 0.03 * item[2], reverse=True)
 
         out: list[RagHit] = []
         if digest_mem is not None:
             out.append(
                 self._memory_to_hit(digest_mem, score=anchor_score, expansion=True)
             )
-        out.extend(
-            self._memory_to_hit(mem, score=sim, expansion=True)
-            for sim, mem in scored[:sibling_limit]
-        )
+        added = 0
+        for sim, mem, _ in scored:
+            if not longitudinal_sources_current(mem, self._memory_store):
+                continue
+            out.append(self._memory_to_hit(mem, score=sim, expansion=True))
+            added += 1
+            if added >= sibling_limit:
+                break
         return out
 
     def _lookup_cluster_digest(
@@ -2151,9 +2180,7 @@ class RagRetriever(RecallReadsMixin):
             confidence=getattr(mem, "confidence", None),
             temporal_type=getattr(mem, "temporal_type", None),
             event_time=getattr(mem, "event_time", None),
-            event_time_precision=((getattr(mem, "metadata", None) or {}).get("claim_fidelity")
-                                  or (getattr(mem, "metadata", None) or {}).get("moment_evidence")
-                                  or {}).get("precision"),
+            event_time_precision=_tp.memory_event_precision(mem),
         )
 
     # ── alignment boost (H1 + K4) ───────────────────────────────────────

@@ -385,6 +385,7 @@ def test_registry_exposes_archive_without_embeddings_and_honors_switch(db):
     )
     host._chat_db = db
     host._user_id = "alice"
+    host.session_key = "alice:session"
     host._turn_runner = Mock()
     host.rebuild_tool_registry()
     assert "conversation_history" in host.available_tool_names()

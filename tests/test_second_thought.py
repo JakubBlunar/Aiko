@@ -147,6 +147,22 @@ _LONG_REPLY = (
 )
 
 
+def test_followup_does_not_copy_an_unsupported_time_from_the_reply():
+    queued = []
+    client = _FakeClient(
+        "SUBJECT: the dentist debrief\n"
+        "THOUGHT: He woke me up at night to tell me how the dentist went."
+    )
+    worker = _worker(client, queued=queued)
+    assert worker.maybe_run(
+        system_prompt="P",
+        user_text="I woke you up to tell you how the dentist went.",
+        assistant_text="You told me in the middle of the night.",
+    ) is None
+    assert not queued
+    assert worker.stats()["last_error_category"] == "unsupported_retelling_time"
+
+
 @pytest.mark.parametrize("adapter", ["ollama", "openai"])
 @pytest.mark.parametrize("response", ["NONE", _GOOD])
 def test_concrete_chat_wrapper_contract(adapter, response):

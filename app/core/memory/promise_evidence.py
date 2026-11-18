@@ -107,7 +107,7 @@ def deadline_in_commitment(timing, quote, source):
     return not source[first + len(earlier):second].strip()
 
 
-def supported_deadline(quote, source, anchor):
+def supported_deadline(quote, source, anchor, *, past_weekday=False):
     """Resolve the quoted timing, never the model's independently invented clock."""
     if (not isinstance(quote, str) or not 3 <= len(quote) <= 100 or anchor is None
             or quote not in source or "?" in quote):
@@ -115,10 +115,14 @@ def supported_deadline(quote, source, anchor):
     # A vague interval does not name a due day. Retain its quote without a clock.
     if re.search(r"\b(?:soon|sometime|eventually|weekend|next week|this week)\b", quote, re.I):
         return None, ""
-    when = timephrase.parse_loose_datetime(quote, anchor=anchor, day_end=True)
+    when = timephrase.parse_loose_datetime(
+        quote, anchor=anchor, day_end=True, past_weekday=past_weekday,
+    )
     if when is None:
         return None, ""
-    clock = bool(re.search(r"\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm)\b", quote, re.I))
+    clock = bool(re.search(
+        r"(?:\b|(?<=T))\d{1,2}:\d{2}\b|\b\d{1,2}\s*(?:am|pm)\b", quote, re.I,
+    ))
     if not clock:
         when = when.replace(hour=23, minute=59, second=0, microsecond=0)
     return when, "minute" if clock else "day"

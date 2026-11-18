@@ -73,6 +73,7 @@ def test_distinct_report_states_are_preserved(setup, text, status, temporal):
     {"text": "I would have completed the mountain walk."},
     {"text": "I did not complete the mountain walk."},
     {"text": "I completed it."}, {"text": "I completed the river drawing."},
+    {"text": "I completed the river drawing before the mountain walk."},
     {"text": "I started the mountain walk."}, {"role": "assistant"},
     {"offered": False}, {"temporal": "future_plan"},
 ])
@@ -115,6 +116,50 @@ def test_actual_extraction_offers_plan_ids_and_persists_the_report(setup):
     assert worker.extract_for_session("s") == 1
     assert f"[intention:{plan.id}]" in model.prompts[0]
     assert plan_progress(plan, store)["status"] == "reported_completed"
+
+
+@pytest.mark.parametrize("link", ["valid", "unrelated", "changed_while_embedding"])
+def test_extractor_keeps_appointment_outcome_ahead_of_newer_unrelated_plans(setup, link):
+    from app.core.memory.memory_extractor import MemoryExtractor
+    from tests.test_memory_extractor_watermark import _FakeOllama, _FakeEmbedder
+
+    db, store, unrelated = setup
+    first = db.add_message("u:older", "user", "I have a dentist appointment.")
+    appointment = store.add(
+        "Noah plans to attend the dentist appointment", "event", np.ones(4),
+        source_message_id=first, source_session="u:older", temporal_type="future_plan",
+        skip_dedupe=True,
+    )
+    for index in range(10):
+        store.add(f"Noah plans a park drawing for lesson {index}", "event", np.ones(4),
+                  source_session="u:current", temporal_type="future_plan", skip_dedupe=True)
+    text = "I got out of the dentist appointment."
+    mid = db.add_message("u:current", "user", text + " I will catch the bus.")
+    db.add_message("u:current", "assistant", "Glad it went well.")
+    target = unrelated if link == "unrelated" else appointment
+    candidate = {"content": "Noah got out of the dentist appointment", "kind": "event",
+                 "temporal_type": "past_event", "evidence": [{"message_id": mid, "quote": text}],
+                 "follow_through": {"prior_memory_id": target.id, "status": "reported_completed",
+                                    "report": {"message_id": mid, "quote": text}}}
+    model = _FakeOllama([json.dumps({"memories": [candidate]})])
+    class Embedder(_FakeEmbedder):
+        def embed(self, text):
+            if link == "changed_while_embedding":
+                store.update(appointment.id, content="The appointment details changed.")
+            return super().embed(text)
+
+    worker = MemoryExtractor(db, store, Embedder(), model, model="fake",
+                             min_window_messages=2, context_window=lambda: 16384)
+    assert worker.extract_for_session("u:current") == 1
+    assert f"[intention:{appointment.id}]" in model.prompts[0]
+    assert f"[intention:{unrelated.id}]" not in model.prompts[0]
+    saved = next(row for row in store.iter_by_kind("event") if row.content == candidate["content"])
+    assert saved.source_message_id == mid
+    assert ("follow_through" in saved.metadata) is (link == "valid")
+    assert plan_progress(unrelated, store)["status"] == "planned"
+    assert plan_progress(appointment, store)["status"] == (
+        "reported_completed" if link == "valid" else "planned"
+    )
 
 
 def test_closed_plan_cannot_surface_a_previously_queued_forward_question(setup):
