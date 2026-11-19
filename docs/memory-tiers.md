@@ -280,6 +280,15 @@ which preserves pre-v8 behavior (uniform decay rate on a single pool).
 (`dict[int, Memory]`), so the twenty-odd accessors that want a
 memory by id, kind or tier are dict lookups rather than queries.
 
+At startup, the LanceDB memory index is reconciled against the loaded SQLite
+mirror. A batched scan compares the fields and normalized vectors used by
+search. Startup writes only missing or changed rows and removes orphaned IDs.
+An unchanged index keeps its existing Lance version and files. An unreadable
+SQLite mirror skips reconciliation. Ordinary recall with a resolved mirror
+join withholds missing IDs and uses the canonical wording of rows still present.
+If a write stops between deleting and replacing an index row, the next startup
+sees a missing row and can insert it again.
+
 The same rows' embeddings are *also* held as one contiguous
 `(rows, dim)` float32 matrix in
 [`VectorIndex`](../app/core/memory/vector_index.py). That is not a

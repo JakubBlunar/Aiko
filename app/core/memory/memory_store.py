@@ -711,40 +711,34 @@ class MemoryStore:
         """
         self._rag = rag_store
 
-    def migrate_to_rag(self, rag_store: "RagStore") -> int:
-        """Copy every existing memory into the RagStore (idempotent).
-
-        Returns how many rows were written. Safe to call multiple times --
-        :meth:`RagStore.add_memories_bulk` upserts on ``id`` so re-runs
-        are no-ops content-wise but still pay the bulk delete+add cost.
-        Rows with no embedding or empty content are skipped silently
-        rather than aborting the whole migration.
-        """
+    def migrate_to_rag(self, rag_store: "RagStore | None") -> int:
+        """Reconcile the search index at startup. Return inserted or replaced rows."""
         if rag_store is None:
             return 0
         with self._lock:
-            mems = list(self._mirror.values())
-        records = [
-            {
-                "record_id": str(mem.id),
-                "content": mem.content,
-                "kind": mem.kind,
-                "embedding": mem.embedding,
-                "salience": mem.salience,
-                "source_session": mem.source_session,
-                "source_message_id": mem.source_message_id,
-                "created_at": mem.created_at,
-            }
-            for mem in mems
-            if mem.embedding is not None and (mem.content or "").strip()
-        ]
-        if not records:
-            return 0
-        try:
-            written = rag_store.add_memories_bulk(records)
-        except Exception:
-            log.debug("rag bulk mirror failed", exc_info=True)
-            return 0
+            if not self._mirror_loaded:
+                log.warning("RAG memory reconciliation skipped: SQLite memory mirror unavailable")
+                return 0
+            records = [
+                {
+                    "record_id": str(mem.id),
+                    "content": mem.content,
+                    "kind": mem.kind,
+                    "embedding": mem.embedding,
+                    "salience": mem.salience,
+                    "source_session": mem.source_session,
+                    "source_message_id": mem.source_message_id,
+                    "created_at": mem.created_at,
+                }
+                for mem in self._mirror.values()
+                if mem.embedding is not None and (mem.content or "").strip()
+            ]
+            try:
+                # An empty authoritative store must still remove old index rows.
+                written = rag_store.reconcile_memories(records)
+            except Exception:
+                log.warning("RAG memory reconciliation failed", exc_info=True)
+                return 0
         if written:
             log.info("RAG: mirrored %d existing memories into LanceDB", written)
         return written
@@ -777,6 +771,7 @@ class MemoryStore:
             rows = self._reload_mirror_pre_v30(conn)
             if rows is None:
                 with self._lock:
+                    self._mirror_loaded = False
                     self._mirror = {}
                     self._vectors.rebuild(())
                 return
@@ -808,6 +803,7 @@ class MemoryStore:
             self._vectors.rebuild(
                 (m.id, m.embedding) for m in self._mirror.values()
             )
+            self._mirror_loaded = True
         log.info("memory store loaded with %d memories", len(self._mirror))
 
     def _reload_mirror_pre_v30(

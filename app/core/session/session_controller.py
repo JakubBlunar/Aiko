@@ -621,8 +621,8 @@ class SessionController(
                         log.debug("embedding-swap notice capture failed", exc_info=True)
                 if self._rag_store is not None:
                     try:
-                        self._memory_store.attach_rag_store(self._rag_store)
                         self._memory_store.migrate_to_rag(self._rag_store)
+                        self._memory_store.attach_rag_store(self._rag_store)
                     except Exception:
                         log.warning("memory -> RAG migration failed", exc_info=True)
                 # Hook the chat-message indexer for live + backfill embedding.

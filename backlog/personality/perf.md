@@ -285,38 +285,17 @@ own follow-up experiments.
 
 ## P53. Reconcile the memory search index without rewriting it on every boot
 
-**Status: Open.** The controller runs `migrate_to_rag` at every startup.
-[P12](shipped/perf.md#p12-bulk-memory-mirror-on-startup) already batches the
-writes, but `migrate_to_rag` still serializes every eligible memory and upserts
-the whole batch. In a synthetic 1,001-row mirror, two consecutive calls each
-submitted all 1,001 rows. This measured work submitted, with a stub sink.
-The boot path is also a data integrity seam. SQLite commits memory mutations
-before mirroring them, and a failed Lance deletion is logged without undoing
-SQLite. The next bulk upsert enumerates extant SQLite rows, so it cannot
-identify a deleted row that is still in Lance. [Startup](../../app/core/session/session_controller.py), [memory writes and migration](../../app/core/memory/memory_store.py), [bulk upsert](../../app/core/rag/rag_store.py).
+**Status: Partial.** Startup compares the LanceDB memory projection against
+SQLite in batches and writes only missing or changed rows. An unchanged index
+keeps its version and files. An empty authoritative store clears orphaned
+index entries, while an unreadable mirror skips reconciliation. Ordinary
+recall withholds IDs missing from a successful canonical join and uses current
+SQLite wording for changed notes. Isolated Lance fixtures cover a reopened
+index with unchanged, edited, missing, and orphaned rows at the same row count.
+[Storage contract](../../docs/memory-tiers.md#in-memory-the-mirror-and-the-matrix-beside-it).
 
-A stub search with a vector hit whose canonical memory was absent returned
-that note in ordinary recall. The recall tool withheld it on its canonical
-lookup. The fixture ran the current retriever with the vector backend stubbed.
-[Recall join](../../app/core/rag/rag_retriever.py), [tool packing](../../app/core/memory/recall_records.py).
-
-**First slice.** Measure warm start and bytes/versions written with unchanged,
-partly changed, and empty indexes in isolated stores. Treat Lance as derived
-from SQLite. Compare bounded batches of identities and revisions for fields
-that actually affect the index. Then insert missing rows, repair changed rows
-and remove orphaned vector entries. Record completed work only after success
-and keep the existing full rebuild for incompatible model/dimension changes.
-Give ordinary recall an explicit canonical-missing result for stale vector
-hits while repair is pending. Distinguish this from an unavailable join.
-[Migration test](../../tests/test_memory_migrate_bulk.py).
-
-**Acceptance.** A second unchanged boot issues zero memory-index writes.
-An interrupted upsert and a failed delete converge on restart without
-reintroducing deleted text. The same ID with changed content or embedding is
-updated even when row counts match. Compare exact recall results and measure
-cold/warm startup time, index versions and write volume before choosing a
-reconciliation strategy. This is separate from P30's SQLite mirror reload
-and P34's retention policy.
+**Remaining:** Measure cold/warm startup time and bytes written on a larger
+representative corpus. P30 still owns the separate SQLite mirror reload cost.
 
 ## P54. Share an embedding request between simultaneous cache misses
 

@@ -153,7 +153,7 @@ def test_valid_user_report_outranks_a_more_similar_retelling(tmp_path):
         kind="event", temporal_type="past_event", provenance="inferred", metadata=entry.metadata,
     )
     mirror = SimpleNamespace(
-        get={1: report}.get,
+        get={1: report, 2: SimpleNamespace(kind="fact", metadata={})}.get,
         _get_conn=db._get_conn,
     )
     vector_store = _StubStore(memories=[

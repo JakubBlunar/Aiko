@@ -252,3 +252,18 @@ def test_failed_memory_hydration_preserves_available_message_results(env):
     assert payload["status"] == "partial"
     assert payload["hits"][0]["source"] == "message"
     assert payload["unavailable_sources"] == ["memory"]
+
+
+def test_vector_only_memory_is_withheld_after_canonical_deletion(env):
+    db, store, _, _ = env
+    old = save(store, "An obsolete draft note.")
+    rag = retriever(store, db, [old])
+    try:
+        assert rag.retrieve("draft", _mark_used=False)
+        store.delete(old.id)
+        assert rag.retrieve("draft", _mark_used=False) == []
+        packet = rag.recall_packet("draft", user_id="u")
+        assert packet["status"] == "no_match" and packet["withheld"] == 1
+        assert not packet["unavailable_sources"]
+    finally:
+        rag.close()

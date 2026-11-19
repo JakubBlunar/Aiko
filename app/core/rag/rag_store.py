@@ -3,10 +3,8 @@
 This is the single retrieval substrate for lean-v1 phase C onward. It owns
 three Lance tables in ``data/lancedb/``:
 
-    memories     -- durable cross-session facts (replaces app.core.memory.memory_store
-                    on the read path; legacy SQLite ``memories`` table is
-                    migrated once at startup, then kept in sync via
-                    :class:`MemoryStore.add_listener`).
+    memories     -- vector index of the canonical SQLite memories, reconciled
+                    at startup and mirrored on the memory write path.
     messages     -- per-message embeddings of chat history; populated lazily
                     by :class:`MessageIndexer` and on every new message.
     documents    -- chunks from user-uploaded files (md / txt / pdf).
@@ -29,6 +27,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
+from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
@@ -491,28 +490,43 @@ class RagStore:
         source_message_id: int | None = None,
         created_at: str | None = None,
     ) -> None:
-        cleaned = (content or "").strip()
-        if not cleaned:
+        row = self._memory_row({
+            "record_id": record_id, "content": content, "kind": kind, "embedding": embedding,
+            "salience": salience, "source_session": source_session,
+            "source_message_id": source_message_id, "created_at": created_at,
+        })
+        if row is None:
             return
+        with self._lock.write():
+            self._delete_memory_ids([row["id"]])
+            self._memories.add([row])
+
+    def _memory_row(self, record: Mapping[str, Any]) -> dict[str, Any] | None:
+        content = (str(record.get("content") or "")).strip()
+        embedding = record.get("embedding")
+        rid = str(record.get("record_id") or "").strip()
+        if not content or not rid or embedding is None:
+            return None
         self._check_dim(embedding)
-        row = {
-            "id": str(record_id),
-            "content": cleaned,
-            "kind": (kind or "fact").strip().lower() or "fact",
-            "salience": float(max(0.0, min(1.0, salience))),
-            "source_session": source_session,
-            "source_message_id": (
-                int(source_message_id) if source_message_id is not None else None
-            ),
-            "created_at": created_at or _now_iso(),
+        source_message_id = record.get("source_message_id")
+        salience = max(0.0, min(1.0, float(record.get("salience", 0.5))))
+        return {
+            "id": rid,
+            "content": content,
+            "kind": (str(record.get("kind") or "fact").strip().lower() or "fact"),
+            "salience": float(np.float32(salience)),
+            "source_session": record.get("source_session"),
+            "source_message_id": int(source_message_id) if source_message_id is not None else None,
+            "created_at": record.get("created_at") or _now_iso(),
             "last_used_at": None,
             "use_count": 0,
             "vector": self._norm(embedding),
         }
-        with self._lock.write():
-            # Upsert by deleting existing with same id then adding.
-            self._memories.delete(f"id = '{row['id']}'")
-            self._memories.add([row])
+
+    def _delete_memory_ids(self, ids: Iterable[str]) -> None:
+        ids_csv = ", ".join("'" + rid.replace("'", "''") + "'" for rid in ids)
+        if ids_csv:
+            self._memories.delete(f"id IN ({ids_csv})")
 
     def add_memories_bulk(
         self,
@@ -537,53 +551,65 @@ class RagStore:
         O(2*ceil(N/chunk_size)). ``chunk_size`` keeps the SQL
         predicate length bounded for very large memory stores.
         """
-        rows: list[dict[str, Any]] = []
-        for record in records:
-            content = (str(record.get("content") or "")).strip()
-            if not content:
-                continue
-            embedding = record.get("embedding")
-            if embedding is None:
-                continue
-            self._check_dim(embedding)
-            rid = str(record.get("record_id") or "").strip()
-            if not rid:
-                continue
-            source_message_id = record.get("source_message_id")
-            rows.append({
-                "id": rid,
-                "content": content,
-                "kind": (str(record.get("kind") or "fact").strip().lower() or "fact"),
-                "salience": float(max(0.0, min(1.0, float(record.get("salience", 0.5))))),
-                "source_session": record.get("source_session"),
-                "source_message_id": (
-                    int(source_message_id) if source_message_id is not None else None
-                ),
-                "created_at": record.get("created_at") or _now_iso(),
-                "last_used_at": None,
-                "use_count": 0,
-                "vector": self._norm(embedding),
-            })
+        rows = [row for record in records if (row := self._memory_row(record)) is not None]
         if not rows:
             return 0
         chunk = max(1, int(chunk_size))
         with self._lock.write():
             for start in range(0, len(rows), chunk):
                 batch = rows[start:start + chunk]
-                ids_csv = ", ".join(
-                    "'" + r["id"].replace("'", "''") + "'" for r in batch
-                )
                 # Delete any existing rows with these ids in one op,
                 # then bulk-insert the batch. LanceDB writes a single
                 # fragment per ``add`` call, so we land at most two
                 # write ops per chunk regardless of batch size.
-                self._memories.delete(f"id IN ({ids_csv})")
+                self._delete_memory_ids(r["id"] for r in batch)
                 self._memories.add(batch)
         return len(rows)
 
+    def reconcile_memories(self, records: Iterable[Mapping[str, Any]], *, chunk_size=500) -> int:
+        """Synchronize an authoritative startup snapshot, with no writes on a match."""
+        desired = {}
+        for record in records:
+            rid = str(record.get("record_id") or "").strip()
+            vector = record.get("embedding")
+            if rid and vector is not None and str(record.get("content") or "").strip():
+                self._check_dim(vector)
+                desired[rid] = record
+
+        # Compare the stored projection directly, including vector values. This
+        # also works on pre-existing indexes and detects interrupted writes.
+        columns = ["id", "content", "kind", "salience", "source_session", "source_message_id",
+                   "created_at", "vector"]
+        chunk = max(1, int(chunk_size))
+        seen, changed, orphaned = set(), set(), set()
+        with self._lock.write():
+            with self._memories.search().select(columns).to_batches(batch_size=chunk) as batches:
+                for batch in batches:
+                    for indexed in batch.to_pylist():
+                        rid = indexed["id"]
+                        if rid not in desired:
+                            orphaned.add(rid)
+                            continue
+                        canonical = self._memory_row(desired[rid])
+                        if rid in seen or any(indexed[key] != canonical[key] for key in columns):
+                            changed.add(rid)
+                        seen.add(rid)
+            orphans = iter(sorted(orphaned))
+            while batch_ids := list(islice(orphans, chunk)):
+                self._delete_memory_ids(batch_ids)
+            dirty = (rid for rid in desired if rid not in seen or rid in changed)
+            written = 0
+            while batch_ids := list(islice(dirty, chunk)):
+                self._delete_memory_ids(rid for rid in batch_ids if rid in changed)
+                self._memories.add([self._memory_row(desired[rid]) for rid in batch_ids])
+                written += len(batch_ids)
+        if orphaned:
+            log.info("RAG: removed %d orphaned memory ids", len(orphaned))
+        return written
+
     def delete_memory(self, record_id: str) -> None:
         with self._lock.write():
-            self._memories.delete(f"id = '{record_id}'")
+            self._delete_memory_ids([record_id])
 
     def search_memories(
         self,

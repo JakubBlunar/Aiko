@@ -1076,7 +1076,7 @@ class RagRetriever(RecallReadsMixin):
             # P4: batch the SQLite-mirror join once instead of a locked
             # ``get`` per hit. Falls back to the per-hit path for stores
             # that don't expose ``get_many`` (e.g. duck-typed test doubles).
-            mem_by_id: dict[int, Any] = {}
+            mem_by_id: dict[int, Any] | None = None
             if self._memory_store is not None and hasattr(
                 self._memory_store, "get_many"
             ):
@@ -1097,7 +1097,6 @@ class RagRetriever(RecallReadsMixin):
                             "rag retriever: get_many batch join raised",
                             exc_info=True,
                         )
-                        mem_by_id = {}
             recall_now = timephrase.utcnow()
             for h in mem_hits:
                 is_digest = getattr(h.record, "kind", None) == "topic_digest"
@@ -1117,11 +1116,11 @@ class RagRetriever(RecallReadsMixin):
                     try:
                         raw_id = getattr(h.record, "id", None)
                         if raw_id is not None and (
-                            mem_by_id or hasattr(self._memory_store, "get")
+                            mem_by_id is not None or hasattr(self._memory_store, "get")
                         ):
                             mem = (
                                 mem_by_id.get(int(raw_id))
-                                if mem_by_id
+                                if mem_by_id is not None
                                 else self._memory_store.get(int(raw_id))
                             )
                             if mem is not None:
@@ -1132,6 +1131,10 @@ class RagRetriever(RecallReadsMixin):
                                     )
                                     if digest_text is None:
                                         continue
+                                elif isinstance(getattr(mem, "content", None), str) and (
+                                    mem.content != h.record.content or mem.kind != h.record.kind
+                                ):
+                                    h.record = replace(h.record, content=mem.content, kind=mem.kind)
                                 if not earlier_observation_current(mem, self._memory_store):
                                     h.score = -1.0
                                     continue
@@ -1321,6 +1324,12 @@ class RagRetriever(RecallReadsMixin):
                                         report = (mem.metadata or {}).get("follow_through") or {}
                                         if report.get("status") in CLOSED:
                                             closed_plans.add(str(report["prior_memory_id"]))
+                            else:
+                                if _diagnostics is not None:
+                                    _diagnostics["withheld_memories"] = (
+                                        _diagnostics.get("withheld_memories", 0) + 1
+                                    )
+                                continue
                     except Exception:
                         log.debug("pinned-bonus lookup failed", exc_info=True)
                         if _diagnostics is not None:

@@ -1,13 +1,4 @@
-"""``MemoryStore.migrate_to_rag`` end-to-end smoke test.
-
-The interesting behaviour to pin is that the migration calls the new
-``add_memories_bulk`` path on the RagStore exactly once with all the
-records (rather than the per-row ``add_memory`` loop that used to hang
-startup for ~71 s on 135 memories). We stub the RagStore with a
-``MagicMock`` so we can introspect the call shape without spinning up
-LanceDB; the real bulk method is exercised in
-``tests/test_rag_store.py::BulkAddMemoriesTests``.
-"""
+"""Startup reconciliation handoff from the authoritative SQLite memory mirror."""
 from __future__ import annotations
 
 import tempfile
@@ -40,6 +31,7 @@ class _TempStore:
         return self.store
 
     def __exit__(self, *exc):
+        self.store.close()
         try:
             self._dir.cleanup()
         except PermissionError:
@@ -47,29 +39,25 @@ class _TempStore:
 
 
 class MigrateToRagBulkTests(unittest.TestCase):
-    def test_migrate_calls_bulk_method_once_with_all_records(self) -> None:
-        # Seed three memories. The migration must collect them into a
-        # single ``add_memories_bulk`` call -- not the per-row
-        # ``add_memory`` loop. Anything else means we'd regress the
-        # startup hang.
+    def test_migrate_passes_one_authoritative_snapshot(self) -> None:
         with _TempStore() as store:
             emb = _FakeEmbedder()
             for content in ("alpha", "beta", "gamma"):
                 store.add(content, "fact", emb.embed(content))
 
             rag = MagicMock()
-            rag.add_memories_bulk = MagicMock(return_value=3)
+            rag.reconcile_memories = MagicMock(return_value=3)
 
             written = store.migrate_to_rag(rag)
 
             self.assertEqual(written, 3)
-            rag.add_memories_bulk.assert_called_once()
+            rag.reconcile_memories.assert_called_once()
             # Old per-row path must not be touched.
             rag.add_memory.assert_not_called()
 
             # The single bulk call should carry exactly one record per
             # seeded memory, with the right shape.
-            (records,), _kwargs = rag.add_memories_bulk.call_args
+            (records,), _kwargs = rag.reconcile_memories.call_args
             records = list(records)
             self.assertEqual(len(records), 3)
             self.assertEqual(
@@ -106,17 +94,31 @@ class MigrateToRagBulkTests(unittest.TestCase):
                 store._mirror[999] = ghost
 
             rag = MagicMock()
-            rag.add_memories_bulk = MagicMock(return_value=1)
+            rag.reconcile_memories = MagicMock(return_value=1)
 
             store.migrate_to_rag(rag)
-            (records,), _kwargs = rag.add_memories_bulk.call_args
+            (records,), _kwargs = rag.reconcile_memories.call_args
             self.assertEqual(len(list(records)), 1)
 
     def test_migrate_returns_zero_when_rag_store_is_none(self) -> None:
         with _TempStore() as store:
             self.assertEqual(store.migrate_to_rag(None), 0)
 
-    def test_migrate_swallows_bulk_exception(self) -> None:
+    def test_empty_authoritative_store_still_reconciles(self) -> None:
+        with _TempStore() as store:
+            rag = MagicMock()
+            rag.reconcile_memories.return_value = 0
+            self.assertEqual(store.migrate_to_rag(rag), 0)
+            rag.reconcile_memories.assert_called_once_with([])
+
+    def test_unreadable_mirror_does_not_prune_the_index(self) -> None:
+        with _TempStore() as store:
+            store._mirror_loaded = False
+            rag = MagicMock()
+            self.assertEqual(store.migrate_to_rag(rag), 0)
+            rag.reconcile_memories.assert_not_called()
+
+    def test_migrate_handles_reconciliation_failure(self) -> None:
         # If the bulk write blows up, ``migrate_to_rag`` should log
         # and return 0 rather than abort startup. Same observable
         # behaviour as the old per-row path that swallowed each
@@ -126,7 +128,7 @@ class MigrateToRagBulkTests(unittest.TestCase):
             store.add("alpha", "fact", emb.embed("alpha"))
 
             rag = MagicMock()
-            rag.add_memories_bulk = MagicMock(side_effect=RuntimeError("boom"))
+            rag.reconcile_memories = MagicMock(side_effect=RuntimeError("boom"))
 
             written = store.migrate_to_rag(rag)
             self.assertEqual(written, 0)

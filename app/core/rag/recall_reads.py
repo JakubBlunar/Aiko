@@ -34,6 +34,7 @@ class RecallReadsMixin:
         diagnostics = {}
         hits = self.retrieve(query, _limit=limit, _mark_used=False, _diagnostics=diagnostics)
         payload = pack_hits(hits, store=self._memory_store, db=self._chat_db, user_id=user_id)
+        payload["withheld"] += diagnostics.get("withheld_memories", 0)
         errors = sorted(set(diagnostics.get("errors", []) + payload["unavailable_sources"]))
         payload["status"] = ("partial" if errors and payload["hits"] else "unavailable" if errors
                              else "ok" if payload["hits"] else "no_match")

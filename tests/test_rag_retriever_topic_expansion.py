@@ -150,6 +150,10 @@ def _build(
     digest_surface: bool = True,
     digest_cap: int = 1,
 ) -> tuple[RagRetriever, _MemoryStore]:
+    for hit in hits:
+        if hit.record.kind != "topic_digest":
+            mid = int(hit.record.id)
+            store_mems.setdefault(mid, _Mem(mid, hit.text, _e(0), kind=hit.record.kind))
     ms = _MemoryStore(store_mems)
     retriever = RagRetriever(
         _StubStore(hits),  # type: ignore[arg-type]

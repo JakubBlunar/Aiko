@@ -471,15 +471,7 @@ class RagStoreCRUDTests(_TmpRagBase):
 
 
 class BulkAddMemoriesTests(_TmpRagBase):
-    """``RagStore.add_memories_bulk`` is the workhorse behind
-    :meth:`MemoryStore.migrate_to_rag` — startup mirror of every
-    SQLite memory into LanceDB. The per-row path was 270 LanceDB
-    write ops for 135 memories (~71s on Windows); the bulk path
-    collapses each chunk into a single delete + add. These tests
-    pin the contract: rows land, ids upsert, chunking matches the
-    no-chunk result, and bad rows are skipped silently like the
-    per-row path.
-    """
+    """Bulk upserts and differential reconciliation on isolated Lance tables."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -522,6 +514,29 @@ class BulkAddMemoriesTests(_TmpRagBase):
         target = self._vec(hash("m7") & 0x7FFFFFFF)
         hits = self.store.search_memories(target, top_k=3, min_score=0.0)
         self.assertTrue(any(h.record.id == "m7" for h in hits))
+
+    def test_reopen_repairs_same_count_drift_and_skips_unchanged_writes(self) -> None:
+        stamp = "2026-11-20T10:00:00+00:00"
+        kept = dict(self._record("same", salience=.73), created_at=stamp)
+        edited = dict(self._record("edited"), created_at=stamp)
+        vector_only = dict(self._record("vector"), created_at=stamp)
+        orphan = dict(self._record("orphan"), created_at=stamp)
+        self.store.add_memories_bulk([kept, edited, vector_only, orphan])
+        current = [kept, dict(edited, content="The revised note."),
+                   dict(vector_only, embedding=self._vec(77)),
+                   dict(self._record("missing"), created_at=stamp)]
+
+        reopened = RagStore(self.tmp, embedding_model="x", vector_dim=4)
+        self.assertEqual(reopened.reconcile_memories(current, chunk_size=2), 3)
+        versions = reopened.fragmentation()["memories"]
+        self.assertEqual(reopened.reconcile_memories(current, chunk_size=2), 0)
+        self.assertEqual(reopened.fragmentation()["memories"], versions)
+        hits = reopened.search_memories(self._vec(77), top_k=10, min_score=-1.)
+        self.assertEqual(hits[0].record.id, "vector")
+        self.assertEqual({hit.record.id for hit in hits}, {"same", "edited", "vector", "missing"})
+        self.assertIn("The revised note.", [hit.record.content for hit in hits])
+        self.assertEqual(reopened.reconcile_memories([]), 0)
+        self.assertEqual(reopened.counts()["memories"], 0)
 
     def test_bulk_upserts_existing_rows(self) -> None:
         v = self._vec(1)
