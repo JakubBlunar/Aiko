@@ -70,6 +70,30 @@ token cost before choosing page sizes or an overview-generation cadence.
 
 </details>
 
+## D9. Bookmark a past exchange
+
+**Status: Open.** Give the user a way to save a specific exchange and find it
+again by its original date. Aiko's life and relationship with the user follow
+one timeline. Returning to something they said about piano last week is a
+conversation happening now, with the intervening days and later decisions
+still part of her context.
+
+**First slice.** Save one user-owned message anchor with an optional short
+label. Open a dated preview through existing history while staying in the
+current chat. Bookmark creation and viewing are UI actions. A future “bring
+this up with Aiko” action would need a separate paired test and would use the
+existing source-backed history path to cite the exchange as past dialogue
+in a new turn. Where a choice or plan has since changed, the later evidence
+still determines what is current. [Session continuity](../../app/core/session/session_continuity.py), [history contract](../../docs/conversation-archive.md).
+
+**Acceptance.** Bookmark a discussion about a plan, change the plan in a
+later chat, then open the bookmark after restart. The preview shows the
+original exchange and its original date. Check that opening it leaves the
+active chat, current time, world state and return cues untouched. An altered
+or deleted source shows its status when opened. Before considering a chat
+action, test that Aiko can discuss the earlier plan while honoring the later
+change and remembering the conversation in between.
+
 ## D10. Show what changed since a particular conversation
 
 **Status: Partial.** Aiko's history tool can compare later reports on a
@@ -85,6 +109,32 @@ starting message from natural references, asks when several exchanges fit,
 and preserves the reported versus event dates in its answer. Literal matching
 can miss paraphrases and unmarked reports. Measure those misses before trying
 semantic retrieval or adding more categories of change.
+
+## D11. Rehearse a conversation in a disposable draft
+
+**Status: Open.** Let the user try different ways of saying something with
+Aiko before it becomes part of their conversation. For example, the user can
+give her an unsent message and ask how it might land, or ask her to play the
+other side for one exchange. The result is visibly a rehearsal and can be
+copied out or discarded.
+
+Ordinary reply retry removes newer transcript rows before regenerating. The
+global `remember_history` setting selects the history key for ordinary turns.
+A draft needs its own evidence boundary so fictional dialogue cannot influence
+what Aiko learns about the user. [Retry path](../../app/core/session/message_history.py), [ordinary turn](../../app/core/session/chat_turn_mixin.py), [history setting](../../docs/configuration.md).
+
+**First slice.** Use a text-only preview action with user-supplied draft and
+optional selected context. Run a single response on the normal chat provider
+through a path that returns draft text without committing a chat turn. The
+preview has no turn tags, tool calls, memory indexing, cue consumption or
+post-turn producers. If the user later sends edited text as an ordinary
+message, only that explicit message becomes part of the conversation. Keep
+simulated roles and responses identifiable in the preview.
+
+**Acceptance.** Rehearse a fictional disagreement and generate two variants.
+Neither creates a transcript row, a shared event, a belief update, a reminder,
+or an outstanding repair. Closing, cancelling or retrying a draft preserves
+the original chat. The user can copy a variant without the app sending it.
 
 ## D-approval. Spoken / Aiko-voiced task approvals
 

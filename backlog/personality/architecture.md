@@ -122,3 +122,26 @@ not reopen the six resolved wiring bugs.
 [agent_settings_parse.py](../../app/core/infra/agent_settings_parse.py),
 [engagement_tracker.py](../../app/core/affect/engagement_tracker.py),
 [cue_render.py](../../app/core/tasks/cue_render.py).
+
+## A8. Scope the conversation bridge to the current owner
+
+**Status: Open.** The ordinary prompt's continuity provider requests the
+latest other session, then reads that session's thread note. The SQL query
+excludes the current session and orders the rest by activity. It accepts no
+owner filter, even though the controller supports `user_id:session_id` keys.
+A synthetic in-memory SQLite test calling the existing lookup with two
+owners selected the other owner's newer row. The fixture establishes the
+lookup behavior when a database contains multiple owners. [Continuity provider](../../app/core/session/prompt_assembler_helpers_mixin.py), [session keys](../../app/core/session/lifecycle_mixin.py), [storage lookup](../../app/core/infra/chat_database.py).
+
+**First slice.** Pass the active owner explicitly to the previous-session
+read and scope the selection before ordering, following the conversation
+archive's existing ownership rules. Document the eligibility of legacy and
+transient keys in the contract. Keep the existing opening-turn gate. A
+missing eligible prior conversation yields no bridge. Cover this before
+building any cross-session bookmark or since-conversation read.
+[Archive read](../../app/core/conversation/archive.py), [continuity tests](../../tests/test_session_continuity.py).
+
+**Acceptance.** The newest foreign session and thread note cannot populate
+the prompt. The same owner's previous chat still bridges an opening turn.
+Test legacy keys, disabled history, a deleted source and a single owned
+conversation. Exercise the assembled prompt as well as the database lookup.

@@ -283,6 +283,88 @@ own follow-up experiments.
 [concept_surfacing.py](../../app/core/concepts/concept_surfacing.py),
 [context_budget_selector.py](../../app/core/session/context_budget_selector.py).
 
+## P53. Reconcile the memory search index without rewriting it on every boot
+
+**Status: Open.** The controller runs `migrate_to_rag` at every startup.
+[P12](shipped/perf.md#p12-bulk-memory-mirror-on-startup) already batches the
+writes, but `migrate_to_rag` still serializes every eligible memory and upserts
+the whole batch. In a synthetic 1,001-row mirror, two consecutive calls each
+submitted all 1,001 rows. This measured work submitted, with a stub sink.
+The boot path is also a data integrity seam. SQLite commits memory mutations
+before mirroring them, and a failed Lance deletion is logged without undoing
+SQLite. The next bulk upsert enumerates extant SQLite rows, so it cannot
+identify a deleted row that is still in Lance. [Startup](../../app/core/session/session_controller.py), [memory writes and migration](../../app/core/memory/memory_store.py), [bulk upsert](../../app/core/rag/rag_store.py).
+
+A stub search with a vector hit whose canonical memory was absent returned
+that note in ordinary recall. The recall tool withheld it on its canonical
+lookup. The fixture ran the current retriever with the vector backend stubbed.
+[Recall join](../../app/core/rag/rag_retriever.py), [tool packing](../../app/core/memory/recall_records.py).
+
+**First slice.** Measure warm start and bytes/versions written with unchanged,
+partly changed, and empty indexes in isolated stores. Treat Lance as derived
+from SQLite. Compare bounded batches of identities and revisions for fields
+that actually affect the index. Then insert missing rows, repair changed rows
+and remove orphaned vector entries. Record completed work only after success
+and keep the existing full rebuild for incompatible model/dimension changes.
+Give ordinary recall an explicit canonical-missing result for stale vector
+hits while repair is pending. Distinguish this from an unavailable join.
+[Migration test](../../tests/test_memory_migrate_bulk.py).
+
+**Acceptance.** A second unchanged boot issues zero memory-index writes.
+An interrupted upsert and a failed delete converge on restart without
+reintroducing deleted text. The same ID with changed content or embedding is
+updated even when row counts match. Compare exact recall results and measure
+cold/warm startup time, index versions and write volume before choosing a
+reconciliation strategy. This is separate from P30's SQLite mirror reload
+and P34's retention policy.
+
+## P54. Share an embedding request between simultaneous cache misses
+
+**Status: Open.** The embedder checks its LRU under a lock, releases the lock
+for the provider call, then stores the result. The typed turn and the
+background message indexer use the same embedder. A two-thread fixture with
+a stub provider made both requests for the same normalized cold key enter
+the provider. Once either result landed, a subsequent request hit the LRU.
+That establishes duplicate work under overlap. Its ordinary-use frequency
+and latency cost still need measurement. [Embedder](../../app/llm/embedder.py), [message indexer](../../app/core/rag/message_indexer.py), [turn embed timing](shipped/perf.md#p1-per-turn-embed-budget--timing).
+
+**First slice.** Count identical in-flight keys without storing their text.
+If ordinary overlap warrants it, let simultaneous callers for one key share
+the same request result. Preserve parallel execution for distinct keys.
+Record time a foreground turn spends waiting on work started by another
+thread separately from HTTP calls it started. Define error, timeout, cache
+clear and provider-change behavior before enabling reuse.
+
+**Acceptance.** Identical concurrent requests make one provider call, distinct
+keys can proceed independently, and a failed request releases all waiters and
+allows the next attempt. Use the existing turn telemetry and typed-chat/
+message-indexer fixtures to check that sharing work improves the measured
+wait without compromising output or restart behavior.
+
+## P55. Delay full topic record formatting until the page is selected
+
+**Status: Open.** Each `recall_topic` page currently rebuilds the candidate
+set and calls `memory_record` before sorting and slicing. That constructor
+computes display state, source timestamps and facets. The pager uses only
+each candidate's revision and source state at that point. Selected rows
+then pass through `pack_hits`, which loads and formats them again. A stub
+2,000-member topic requesting eight rows built 2,000 candidate records on
+each of its first two pages, before final packing. [Topic pager](../../app/core/rag/recall_reads.py), [memory record packing](../../app/core/memory/recall_records.py), [current paging contracts](../../tests/test_fast_recall_contracts.py).
+
+**First slice.** Take candidate rows from the existing batch read where
+available. Compute only score, revision, visibility and evidence state before
+selection. Batch repeated source lookups within one request if the profile
+shows they dominate. Construct full records after the page cut. Keep
+revision-bound continuation and recheck selected evidence against edits,
+withdrawals and expiry. A new cache across requests needs evidence that it
+can safely detect those changes and that it would pay for itself.
+
+**Acceptance.** At 50, 500 and 2,000 members, count original-message reads,
+record builds and wall time for a first page and continuation. Full record
+construction scales with page size. Ranking, tie order, historical mode,
+owner filtering and changed-page detection match current behavior across
+source edits and deletions.
+
 ## P24a. Repair the STT partial-read and recorder-lifetime contracts
 
 **Status: partial.**
