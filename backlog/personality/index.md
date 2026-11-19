@@ -49,6 +49,18 @@ P.
 - Evaluate with T5/L55 alongside implementation. K97-K99/K102/K103 are shipped implementations with
   named checks under T5.
 
+### Grounded memory and cognition
+
+The [18 November review](../reviews/grounded-cognition-review-2026-11-18.md) traces
+original turns through stored memories, topic digests, live concept support and
+recorded selections. Pick up these slices in order of dependency. The digest fix
+can run alongside capture work using isolated data.
+
+1. [K100 — Preserve the meaning of important exchanges](patterns.md#k100-follow-up-preserve-the-meaning-of-important-exchanges).
+2. [F4 — Validate and select topic digest claims at recall](awareness.md#f4-follow-up-validate-and-select-topic-digest-claims-at-recall).
+3. [L22 — Review what surfaced concepts actually add](concepts.md#l22-follow-up-review-what-surfaced-concepts-actually-add).
+4. [RS3 — Recall the particular episode the turn needs](reasoning-surfacing.md#rs3-follow-up-recall-the-particular-episode-the-turn-needs).
+
 ## Open items at a glance
 
 ### Architecture and code quality

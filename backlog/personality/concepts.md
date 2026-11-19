@@ -115,6 +115,34 @@ References: [time/data-quality implementation](../../docs/memory-time-quality.md
 [concept_sweep_unreinforced.py](../../scripts/concept_sweep_unreinforced.py),
 [concept_intake_report.py](../../scripts/concept_intake_report.py).
 
+### L22 follow-up. Review what surfaced concepts actually add
+
+**Status: Open.** The
+[18 November review](../reviews/grounded-cognition-review-2026-11-18.md#3-check-what-the-concept-actually-adds)
+found active concepts with viable source IDs whose underlying text still added
+motives, agreement or reliability. It also found several concept kinds built
+around one partial communication note.
+
+- Start an exposure-weighted sample with a few high-use identity, style, value
+  and narrative claims. For each, compare the actual viable premise to its
+  original dialogue, then inspect one recorded use in a reply. Include dormant
+  and newly admitted contrasts and keep pre-fix rows separate from fresh ones.
+- Mark the claim, original observation groups, missing evidence and whether the
+  claim adds a useful, scoped abstraction. Distinguish parallel concepts with
+  different roles from restatements that add little. Compare a potential
+  through-line with its concrete premises at the same prompt budget.
+- Put reviewable legacy claims into a bounded source-aware repair queue. Reuse
+  L49 lineage and L52 eligibility. A current source can still be inadequate.
+  Preserve historical rows and unrelated valid alternatives when a reviewed
+  claim is narrowed or withdrawn. Leave uncertain history available for
+  inspection. Drive any repair from a reviewed case rather than a bulk backfill.
+
+**Acceptance.** A one-time choice does not imply effectiveness or a standing
+trait. Multiple paraphrases of one episode retain one evidence basis in the
+review. Withdrawing an unsupported premise changes recall eligibility while an
+independently supported alternative survives. Validate L46 on a fresh cohort
+using the same criteria while keeping depth capped at two.
+
 ## L29b. Meta-narrative -- an arc whose steps are concepts
 
 **Status: Partial; live validation remains (28 Oct 2026).**

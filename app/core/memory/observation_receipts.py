@@ -14,8 +14,13 @@ Optional observation receipts enrich an ordinary memory without adding entries:
 observation: {context: citation, action: citation, outcome: citation,
               exceptions: [citation]}. Omit unknown fields; never fill a quota.
 Each citation is {message_id: int, quote: exact literal source span <=240 chars}. Only NEW
-turns from the memory's actual owner can supply these facets. Keep the full
-qualifier in content too. Context says when/where the preference or action
+turns from the memory's actual owner can supply an action or outcome. An earlier
+offered turn from that same owner may supply context or an exception when a new
+action or outcome explicitly names the same subject and is cited in evidence.
+Bare assent cannot supply that link. Keep the full qualifier in content too.
+Keep the earlier need and the new report separate. Earlier context does not establish
+that the new action or outcome happened under those conditions.
+Context says when/where the preference or action
 applies; action preserves what was actually stated, including plan modality.
 Outcome requires an explicit reported result such as worked/helped/failed,
 not thanks, silence, enthusiasm, an assistant prediction or imagined scene.
@@ -29,27 +34,38 @@ _FICTION = re.compile(r"\b(?:pretend|role.?play|hypothetical|fictional|imagine)\
 _CONDITION = re.compile(r"\b(?:when|while|during|unless|except|if|for)\b", re.I)
 _EXCEPTION = re.compile(r"\b(?:unless|except|not when|not while|not during)\b", re.I)
 _PREDICTED = re.compile(r"\b(?:would|could|might|will|should|hope|maybe|if)\b", re.I)
+_LINK_STOP = frozenset(
+    "also always during exactly except helped helping only really sometimes that thanks when "
+    "while would worked absolutely agreed".split()
+)
 
 
-def admit_observation(value, rows, *, session_key, subject):
+def admit_observation(
+    value, rows, *, session_key, subject, context_rows=(), evidence=(), content="",
+):
     from app.core.memory.shared_shorthand import source_receipt
 
     if not isinstance(value, dict) or set(value) - {"context", "action", "outcome", "exceptions"}:
         raise ValueError("observation shape")
     owner = "assistant" if subject == "assistant" else "user"
     offered = {row.id: row for row in rows if row.session_id == session_key and row.role == owner}
+    earlier = {row.id: row for row in context_rows
+               if row.session_id == session_key and row.role == owner and row.id not in offered}
     sources = []
 
-    def citation(item):
+    def citation(item, *, qualifier=False):
         if not isinstance(item, dict) or type(item.get("message_id")) is not int:
             raise ValueError("observation citation")
-        row = offered.get(item["message_id"])
+        mid = item["message_id"]
+        row = offered.get(mid) or (earlier.get(mid) if qualifier else None)
         quote = item.get("quote")
         if (row is None or not isinstance(quote, str) or not 4 <= len(quote) <= 240
                 or quote not in row.content or _FICTION.search(row.content) or "?" in quote):
             raise ValueError("unsupported observation facet")
         receipt = {**source_receipt(row, quote),
                    "source_at": str(getattr(row, "created_at", "") or "")}
+        if mid in earlier:
+            receipt["context_only"] = True
         sources.append(receipt)
         return receipt
 
@@ -58,7 +74,7 @@ def admit_observation(value, rows, *, session_key, subject):
     for field in ("context", "action", "outcome"):
         if value.get(field) is None:
             continue
-        receipt = citation(value[field])
+        receipt = citation(value[field], qualifier=field == "context")
         quote = receipt["quote"]
         if field == "context" and not _CONDITION.search(quote):
             raise ValueError("context qualifier missing")
@@ -77,12 +93,31 @@ def admit_observation(value, rows, *, session_key, subject):
         raise ValueError("observation exceptions")
     result["exceptions"] = []
     for item in exceptions:
-        receipt = citation(item)
+        receipt = citation(item, qualifier=True)
         if not _EXCEPTION.search(receipt["quote"]):
             raise ValueError("exception qualifier missing")
         result["exceptions"].append(receipt)
     if not sources:
         return None
+    qualifiers = [receipt for receipt in sources if receipt["message_id"] in earlier]
+    if qualifiers:
+        from app.core.memory.learned_strategies import words
+
+        anchors = [anchor for field in ("action", "outcome") if (anchor := result.get(field))
+                   and any(item["message_id"] == anchor["message_id"]
+                           and anchor["quote"] in item["quote"] for item in evidence)]
+        for qualifier in qualifiers:
+            terms = {word for word in words(qualifier["quote"])
+                     if len(word) >= 4 and word not in _LINK_STOP}
+            if not any(anchor["message_id"] > qualifier["message_id"]
+                       and terms.intersection(words(anchor["quote"])) for anchor in anchors):
+                raise ValueError("earlier qualifier lacks a fresh matching report")
+        if not _CONDITION.search(content) or (
+            any(receipt["message_id"] in earlier for receipt in result["exceptions"])
+            and not _EXCEPTION.search(content)
+        ):
+            raise ValueError("earlier qualifier lost in content")
+        result["earlier_context"] = True
     result["sources"] = list({json.dumps(row, sort_keys=True): row for row in sources}.values())
     return result
 
@@ -92,13 +127,30 @@ def observation_context(memory):
     if not isinstance(value, dict) or value.get("version") != 1:
         return ""
     def quoted(receipt):
-        return {key: receipt.get(key) for key in ("message_id", "role", "source_at", "quote")}
+        result = {key: receipt.get(key) for key in ("message_id", "role", "source_at", "quote")}
+        if receipt.get("context_only") is True:
+            result["context_only"] = True
+        return result
 
     facets = {key: ([quoted(row) for row in value[key]] if key == "exceptions"
                     else quoted(value[key]))
               for key in ("context", "action", "outcome", "exceptions") if value.get(key)}
-    return "Recorded source facets (quoted, not causal proof): " + json.dumps(
+    header = "Recorded source facets (quoted, not causal proof): "
+    if value.get("earlier_context") is True:
+        header = "Recorded source facets (context_only means earlier; keep it separate): "
+    return header + json.dumps(
         facets, ensure_ascii=False, separators=(",", ":"),
+    )
+
+
+def earlier_observation_current(memory, store):
+    """Before recalling an earlier qualifier, recheck both ends of the receipt."""
+    meta = getattr(memory, "metadata", None) or {}
+    value = meta.get("observation")
+    if not isinstance(value, dict) or value.get("earlier_context") is not True:
+        return True
+    return receipt_sources_current(value, store) and receipt_sources_current(
+        meta.get("claim_fidelity"), store,
     )
 
 

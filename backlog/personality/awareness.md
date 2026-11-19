@@ -25,6 +25,32 @@ end-to-end citation coverage.
 [memory_store.py](../../app/core/memory/memory_store.py),
 [web_search.py](../../app/core/tasks/handlers/web_search.py).
 
+### F4 follow-up. Validate and select topic digest claims at recall
+
+**Status: Open. Priority: first bounded engineering fix.** The
+[18 November review](../reviews/grounded-cognition-review-2026-11-18.md#2-let-clusters-organize-recall-and-preserve-each-claims-authority)
+found a mixed digest stored with claim-level authorities and an expired digest
+accepted by cluster lookup despite the ordinary temporal gate. Another digest
+added precise time and event details beyond its cited memory.
+
+- Route ordinary and cluster digest reads through one eligibility check. Verify
+  the saved claim's source IDs and revisions, current eligibility and expiry.
+  A refused digest leaves the existing raw sibling budget available. Cover a
+  source edit, deletion, supersession, expiry and a valid unchanged summary.
+- Use the existing clause receipts to select the authority and time scope needed
+  by the query. Keep shared history, intentions, reflections and external
+  knowledge identifiable under the same token budget. Preserve stable IDs so
+  a digest, a source note and a derived concept remain traceable to the same basis.
+- Contrast a history question with a world-knowledge question using the same
+  mixed topic. Score unsupported dates, agency and details at digest construction
+  as a separate check from retrieval freshness. Preserve topic assignments while
+  assessing whether authority-aware selection fixes the observed problem.
+
+**Acceptance.** Both read paths reject stale clauses. A valid clause remains
+available after an unrelated member changes if its own support still applies.
+When the summary is unavailable, an eligible direct source can still reach the
+reply. An external generalization stays separate from a user's lived experience.
+
 ## F11. Relevance-driven memory resurrection (latent recall from the archive)
 
 **Status: Open implementation.**

@@ -545,8 +545,9 @@ class MemoryExtractor:
                     if old_context:
                         parts.append(
                             "Earlier turns, ALREADY mined on a previous pass. They are "
-                            "here only so references in the new turns resolve. Do NOT "
-                            "extract memories from these lines:\n"
+                            "here to resolve references and supply exact qualifiers for "
+                            "a newly sourced observation. Do NOT extract standalone "
+                            "memories from these lines:\n"
                             + self._format_transcript(old_context)
                         )
                     parts.append(
@@ -705,7 +706,7 @@ class MemoryExtractor:
                 continue
             cand, admission = admit_source_note(
                 cand, rows, session_key=session_key, writer="extractor",
-                proposal_message_id=rows[-1].id,
+                proposal_message_id=rows[-1].id, context_rows=context_rows,
             )
             if not admission.accepted:
                 reason = admission.metadata.get("claim_fidelity_refusal")
@@ -754,33 +755,29 @@ class MemoryExtractor:
         return self._apply_batch(session_key, batch)
 
     def _apply_batch(self, session_key: str, batch: dict) -> int:
+        from app.core.memory.observation_receipts import receipt_sources_current
+
         pending_key = f"memory.extractor.pending:{session_key}"
         now = _parse_iso(batch["created_at"]) or timephrase.utcnow()
         inserted = 0
         for cand in batch["candidates"]:
             if cand.get("applied"):
                 continue
-            from app.core.memory.observation_receipts import receipt_sources_current
-
-            if not receipt_sources_current((cand.get("metadata") or {}).get("claim_fidelity"),
-                                           self._store):
+            metadata = cand.get("metadata") or {}
+            fidelity = metadata.get("claim_fidelity")
+            observation = metadata.get("observation")
+            if (not receipt_sources_current(fidelity, self._store)
+                    or not receipt_sources_current(observation, self._store)):
                 cand["applied"] = True
                 continue
-            relation = (cand.get("metadata") or {}).get("contextual_relation")
+            relation = metadata.get("contextual_relation")
             if relation is not None:
                 from app.core.memory.memory_relations import relation_current
 
                 if not relation_current(relation, self._store):
                     cand["applied"] = True
                     continue
-            observation = (cand.get("metadata") or {}).get("observation")
-            if observation is not None:
-                from app.core.memory.shared_shorthand import sources_current
-
-                if not sources_current(observation, self._db):
-                    cand["applied"] = True
-                    continue
-            report = (cand.get("metadata") or {}).get("follow_through")
+            report = metadata.get("follow_through")
             if cand["kind"] in {"shared_term", "strategy"}:
                 from app.core.memory.shared_shorthand import sources_current
 
@@ -800,12 +797,13 @@ class MemoryExtractor:
             except Exception as exc:
                 log.debug("embed failed for memory candidate: %s", exc)
                 return inserted
+            if (not receipt_sources_current(fidelity, self._store)
+                    or not receipt_sources_current(observation, self._store)):
+                cand["applied"] = True
+                continue
             if report is not None:
                 from app.core.memory.plan_reports import report_current
 
-                if not receipt_sources_current(cand["metadata"].get("claim_fidelity"), self._store):
-                    cand["applied"] = True
-                    continue
                 if not report_current(report, self._store):
                     cand["metadata"].pop("follow_through")
                     report = None

@@ -20,15 +20,17 @@ class MemoryAdmission:
 
 
 def admit_source_note(candidate: dict, rows, *, session_key: str, writer: str,
-                      proposal_message_id: int | None = None) -> tuple[dict, MemoryAdmission]:
+                      proposal_message_id: int | None = None,
+                      context_rows=()) -> tuple[dict, MemoryAdmission]:
     """Retain qualified testimony when a proposed paraphrase lost its condition.
 
     The rejected interpretation is discarded. This fallback is a bounded,
     attributed literal source, with the same owner and ordinary admission checks.
     """
     rows = list(rows)
+    context_rows = tuple(context_rows)
     admission = admit_memory(candidate, rows, session_key=session_key, writer=writer,
-                             proposal_message_id=proposal_message_id)
+                             proposal_message_id=proposal_message_id, context_rows=context_rows)
     if admission.metadata.get("claim_fidelity_refusal") != "lost_condition":
         return candidate, admission
     from app.core.infra import timephrase
@@ -61,8 +63,10 @@ def admit_source_note(candidate: dict, rows, *, session_key: str, writer: str,
         "provenance": "inferred", "event_time": None,
         "destination": "memory", "evidence": citations, "basis": "reported",
     }
+    if candidate.get("observation") is not None:
+        fallback["observation"] = candidate["observation"]
     supported = admit_memory(fallback, rows, session_key=session_key, writer=writer,
-                             proposal_message_id=proposal_message_id)
+                             proposal_message_id=proposal_message_id, context_rows=context_rows)
     if supported.accepted:
         supported.metadata["source_note_fallback"] = "lost_condition"
         return fallback, supported
@@ -71,6 +75,7 @@ def admit_source_note(candidate: dict, rows, *, session_key: str, writer: str,
 
 def admit_memory(
     candidate: dict, rows, *, session_key: str, writer: str, proposal_message_id: int | None = None,
+    context_rows=(),
 ) -> MemoryAdmission:
     content = str(candidate.get("content") or "").strip()
     if writer == "extractor":
@@ -172,14 +177,17 @@ def admit_memory(
         },
         "admission_key": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
     }
-    if candidate.get("observation") is not None:
+    if accepted and candidate.get("observation") is not None:
         from app.core.memory.observation_receipts import admit_observation
 
         try:
-            observation = admit_observation(candidate["observation"], rows,
-                                            session_key=session_key, subject=subject)
+            observation = admit_observation(
+                candidate["observation"], rows, session_key=session_key, subject=subject,
+                context_rows=context_rows, evidence=validated, content=content,
+            )
         except ValueError:
-            return MemoryAdmission(False, "inferred", "scratchpad", None, {})
+            return MemoryAdmission(False, "inferred", "scratchpad", None,
+                                   {"claim_fidelity_refusal": "unsupported_observation"})
         if observation is not None:
             metadata["observation"] = observation
     if fidelity is not None:

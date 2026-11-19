@@ -288,6 +288,43 @@ expanding to other workers. No extra synchronous LLM call on every chat turn.
 
 </details>
 
+### K100 follow-up. Preserve the meaning of important exchanges
+
+**Status: Partial. Priority: first for memory quality.** The
+[18 November review](../reviews/grounded-cognition-review-2026-11-18.md#1-preserve-the-meaning-of-the-original-exchange)
+found a partial agreement, a cited event that gained an unsupported motive, and
+source-linked fragments whose referents were missing. The existing capture
+grammar and optional receipts give this work a path without another memory store.
+
+**Implemented slice:** A fresh cited action or result can carry an exact earlier
+condition or exception from the same speaker, within the extractor's offered
+context. Both source revisions gate storage and direct/topic recall. The new
+source remains the admission anchor. Isolated tests cover a scoped teasing signal,
+bare agreement, unrelated evidence and source edits. Multi-speaker agreements
+and ordinary-use capture coverage remain open.
+
+- Score a small transcript sample for opportunities before looking at what was
+  written. Prioritize explicit corrections, boundaries, communication needs,
+  agreements, personally meaningful events, and reported problem/outcome pairs.
+  Record omitted details separately from rejected or misleading writes.
+- Retain an interaction's concrete context, owner, referenced entity, relevant
+  condition and explicit result in the existing source-linked fields. Use notes
+  and links with separate speakers when a need and a response came from different
+  turns. Preserve the distinction between a suggestion, acceptance, and a useful
+  outcome. Keep the original quote available for verification and preserve an
+  unknown or inferred role when the dialogue does not establish a fact.
+- Preserve conversation, shared virtual action, and discussed fiction as distinct
+  domains. Keep a meaningful moment and the participant's reported feeling, while
+  allowing routine gestures to expire with the local scene. Use the current
+  media-thread identity for viewing progress; an ambiguous title stays unresolved.
+
+**Acceptance.** Paired isolated cases preserve a conditional user need, Aiko's
+chosen signal and a later correction without treating an unaccepted suggestion as
+an agreement. A scene action does not add a real-world event or inferred motive.
+An unnamed show or quote from a character cannot turn into a reusable personal
+fact. Review important omissions and false durable writes at the same capture
+budget, without adding a synchronous call to each turn.
+
 ## K101. Route an unresolved premise to a bounded next step
 
 **Status: Partial.**

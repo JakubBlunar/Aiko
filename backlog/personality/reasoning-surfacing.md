@@ -266,6 +266,33 @@ its referent without reopening an old task. An unanswerable query stays uncertai
 Improve RS1 grounding at equal or lower total context, with no additional LLM
 selector call. Existing P52 continuity remains the comparison baseline.
 
+#### RS3 follow-up. Recall the particular episode the turn needs
+
+**Status: Open.** The [18 November review](../reviews/grounded-cognition-review-2026-11-18.md#4-test-the-experience-in-a-conversation)
+found that a precise source can coexist with nearby interpretations, generic
+style claims and an undefined referent. The reply needs a detail from the actual
+episode, including what changed or remains open.
+
+- Compare existing selection with an offline episode-first selector at the same
+  budget. Match the referenced person, activity or object and its latest relevant
+  state before using similar themes. Bring one source-backed anchor plus its
+  material condition, outcome or correction. Reuse the existing media-thread,
+  working-set and source receipt paths. Let repeated representations of the same
+  evidence share one slot when they add no different information.
+- Keep recollection, inference and virtual experience in their own voice. Use
+  the detail quietly when it helps. If no reliable match resolves the reference,
+  ask one narrow question when it matters or leave the reference tentative.
+  Avoid cueing a callback just because topical material exists.
+- Run matched contrasts across corrections, similar episodes, user/Aiko roles
+  and real/virtual framing. Record whether the failure was capture, candidate
+  selection or reply use. T5/L55 own comparison and ordinary-use checks. Keep
+  outcome quality separate from lexical echo and conversation length.
+
+**Acceptance.** A later reply resumes the right show's progress, retains a
+partly successful repair's remaining problem, and adapts to a corrected signal.
+An unrelated turn stays on topic and an ambiguous referent receives proportionate
+uncertainty. No extra synchronous memory-selection call is required.
+
 ### RS4. Admit optional cues jointly with their handling
 
 **24 Oct source review: open proposal.** Existing implementations are foundations, not closure of this experiment. The source-linked first slice and acceptance checks below remain the missing work; no new implementation or model measurement was found for this proposal in the reviewed checkout.

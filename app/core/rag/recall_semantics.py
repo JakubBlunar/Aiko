@@ -18,11 +18,15 @@ def recall_cost(rag, hit, user_display_name, estimate_tokens):
 
 def recall_context(memory):
     from app.core.memory.hypothesis_memory import answer_context
+    from app.core.memory.observation_receipts import observation_context
     from app.core.memory.plan_reports import report_annotation
     from app.core.memory.pursuit_evidence import context
 
+    observation = (getattr(memory, "metadata", None) or {}).get("observation")
+    earlier = isinstance(observation, dict) and observation.get("earlier_context") is True
     return " ".join(part for part in (
         answer_context(memory), context(memory), report_annotation(memory),
+        observation_context(memory) if earlier else "",
     ) if part)
 
 

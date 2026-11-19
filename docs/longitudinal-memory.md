@@ -29,13 +29,22 @@ This evidence selection works within the existing topic assignments.
 
 The ordinary extractor can attach optional `observation` receipts for a context,
 action, explicit reported outcome and exceptions. Every field cites a literal
-span in a newly offered message from the memory's actual owner. Quotes retain
-their source timestamp and role. Unknown facets remain absent; an empty object
+span from the memory's actual owner. Actions and outcomes use newly offered
+turns. The packed earlier context can supply a qualification or exception when
+the fresh evidence quotes an action or outcome about the same subject. The
+extractor checks the link using shared topic words and requires the saved note
+to retain the condition. A bare assent or a topic match alone supplies no new
+action or outcome. Earlier facets carry `context_only` and stay separate from
+the new evidence IDs and any claim about when the reported outcome occurred.
+Quotes retain their source timestamp and role. Unknown facets remain absent; an empty object
 does not manufacture context. Outcome quotes preserve their full clause,
 including qualifications and negation; predicted benefits do not count.
 
-Receipts are checked again before queued writes and when new concept evidence
-or topic-summary inputs are admitted. Source edits/deletion invalidate them.
+Receipts are checked before and after embedding during queued writes and when
+new concept evidence or topic-summary inputs are admitted. Source edits/deletion
+invalidate them. Direct and topic recall recheck notes that carry earlier
+qualifiers and show their verbatim facets while the sources are current. Literal
+fallbacks keep any observation receipt that passes the same admission checks.
 The original qualifiers remain in content and are also rendered in memory source
 annotations. Differently scoped facets cannot collapse through cosine dedupe or
 consolidation. The semantic revision includes these fields only when present,

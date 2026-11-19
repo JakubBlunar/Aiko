@@ -42,6 +42,7 @@ from app.core.memory import promise_lifecycle
 from app.core.rag.rag_store import MessageRecord, RagHit
 from app.core.infra import timephrase
 from app.core.memory.memory_origin import memory_origin
+from app.core.memory.observation_receipts import earlier_observation_current
 from app.core.memory.plan_reports import CLOSED
 from app.core.rag.recall_semantics import (
     recall_origin, recall_scope, recall_sections, recall_context, user_outcome,
@@ -1122,6 +1123,9 @@ class RagRetriever(RecallReadsMixin):
                                 else self._memory_store.get(int(raw_id))
                             )
                             if mem is not None:
+                                if not earlier_observation_current(mem, self._memory_store):
+                                    h.score = -1.0
+                                    continue
                                 if getattr(mem, "pinned", False):
                                     h.score += _MEMORY_PINNED_BONUS
                                 # Schema v7: anniversary nudge for
@@ -1639,6 +1643,8 @@ class RagRetriever(RecallReadsMixin):
             except Exception:
                 continue
             if mem is None:
+                continue
+            if not earlier_observation_current(mem, self._memory_store):
                 continue
             vec = getattr(mem, "embedding", None)
             if vec is None:
