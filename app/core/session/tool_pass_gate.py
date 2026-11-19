@@ -261,6 +261,9 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"(?:daily|weekly|monthly) (?:overview|recap)",
         r"(?:recap|summari[sz]e) (?:our|the) (?:chat|conversation)s?",
         r"last (?:time|week|month) (?:i|we)\b",
+        r"\bwhat(?:'s| has)? changed\b[^.!?\n]{0,120}\bsince "
+        r"(?:we|i last|our|the last|that (?:chat|conversation|exchange|message))\b",
+        r"\b(?:any|what) updates?\b[^.!?\n]{0,120}\bsince (?:we|i|our|the last)\b",
         # L19: questions about change over time. Narrow phrases rather
         # than a bare "changed", which would fire on most turns.
         r"have you (?:ever )?changed", r"you'?ve changed",

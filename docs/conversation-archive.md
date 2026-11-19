@@ -16,7 +16,7 @@ D8 uses the retained `messages` rows across the current user's sessions instead.
 
 ## Read paths
 
-`conversation_history` has three modes:
+`conversation_history` has four modes:
 
 - `messages`: chronological transcript pages with optional full `session_id` and
   literal `topic` substring filters. Selected topic matches are labelled as such.
@@ -29,6 +29,8 @@ D8 uses the retained `messages` rows across the current user's sessions instead.
 - `message`: original message text in character pages. Start with `message_id`;
   follow `next_cursor` for long messages. `content_offset` also permits a direct
   current-source slice. Quote from these rows, not a future generated summary.
+- `changes`: later user reports on a literal topic, starting after an exact
+  retained message ID. See [Changes since an exchange](#changes-since-an-exchange).
 
 Examples:
 
@@ -36,6 +38,7 @@ Examples:
 {"mode":"overviews","when":"last week","timezone":"Europe/Bratislava"}
 {"mode":"messages","start":"2026-10-01","end":"2026-10-24","topic":"guitar"}
 {"mode":"message","message_id":123}
+{"mode":"changes","after_message_id":123,"topic":"balcony plants"}
 {"mode":"messages","cursor":"<next_cursor>"}
 ```
 
@@ -52,6 +55,39 @@ containing `:` are rejected because the existing composite key cannot establish
 their ownership unambiguously. SQL uses exact owner equality, never `LIKE` for
 scope, so `%` and `_` in IDs cannot broaden access. Only user/assistant rows are
 conversation sources.
+
+## Changes since an exchange
+
+D10 is an ordinary chat read through `conversation_history`. If Aiko needs the
+starting message ID, `messages` can find an earlier exchange by date and topic.
+`changes` requires that exact ID and a literal topic phrase. It reads the current
+owner's retained user turns across chats. An optional `through_message_id`
+includes that final exchange and excludes later ones. The normal transcript
+order (message timestamp, then ID) resolves ties and late imports. The read
+keeps the current conversation and world timeline in place.
+
+The result gives up to eight selected changes with original-message IDs and
+`reported_at`. Current follow-through receipts attach the earlier plan and
+distinguish reported completion, attempts, cancellations and rescheduling.
+Current contextual-relation receipts can attach the earlier wording to a
+correction or changed preference. A narrow literal fallback keeps clearly
+marked corrections and updates without requiring a worker to have run. It
+suppresses exact repeated wording from the comparison and a short baseline in
+the anchor chat. Linked claims use the original user wording, and an absent
+`before` means no validated link to an earlier statement was found.
+
+Report time is when the user said something. A verified event receipt can
+separately supply a calendar date or clock time. An outcome reported after the
+anchor can have happened before it. Plan dates and the time a memory was saved
+do not supply event dates. Unowned, deleted and transient source messages are
+unavailable to this read.
+
+Coverage describes the inspected window, which favors recent messages when
+it reaches the 500-user-message scan cap. Results are selective even with a
+complete scan. `partial_scan` indicates an incomplete scan with no selected
+result. `no_supported_changes` means the bounded matcher found no supported
+report. A different literal phrase or a narrower range can help when wording
+varies. The read has no extra model call, prompt block, or memory write.
 
 ## Budgets and coverage
 

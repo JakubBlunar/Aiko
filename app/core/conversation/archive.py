@@ -311,6 +311,14 @@ class ConversationArchive:
                 "authority": "source_messages; context may overlap adjacent pages",
             }
 
+    def changes(self, after_message_id: int, topic: str, *,
+                through_message_id: int | None = None, limit: int = 6) -> dict:
+        from app.core.conversation.archive_changes import read_changes
+
+        with self._snapshot() as conn:
+            return read_changes(self, conn, after_message_id, topic,
+                                through_message_id=through_message_id, limit=limit)
+
     def build_day(self, day: str, tz_name: str = "system") -> dict:
         """Persist one extractive outline. Never invent events or user facts.
 

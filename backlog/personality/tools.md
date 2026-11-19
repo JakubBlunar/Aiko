@@ -70,6 +70,22 @@ token cost before choosing page sizes or an overview-generation cadence.
 
 </details>
 
+## D10. Show what changed since a particular conversation
+
+**Status: Partial.** Aiko's history tool can compare later reports on a
+literal topic against an exact earlier exchange. It returns original-message
+IDs, separate report and event times, and bounded coverage. Current
+follow-through and correction receipts supply links to earlier statements.
+Fixtures cover an unrelated similar report, repeated wording, later memory
+extraction, edited or deleted sources, and a window ending before the latest
+chat. [Read contract](../../docs/conversation-archive.md#changes-since-an-exchange), [regressions](../../tests/test_conversation_archive.py).
+
+**Remaining:** Check whether the ordinary chat model chooses the right
+starting message from natural references, asks when several exchanges fit,
+and preserves the reported versus event dates in its answer. Literal matching
+can miss paraphrases and unmarked reports. Measure those misses before trying
+semantic retrieval or adding more categories of change.
+
 ## D-approval. Spoken / Aiko-voiced task approvals
 
 **Status: Open implementation.**

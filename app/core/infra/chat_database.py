@@ -1344,6 +1344,12 @@ _DEPENDENT_MEMORY_INDICES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_memories_contextual_relation "
     "ON memories(json_extract(metadata, '$.contextual_relation.prior_memory_id')) "
     "WHERE json_valid(metadata)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_plan_report_message "
+    "ON memories(json_extract(metadata, '$.follow_through.report.message_id')) "
+    "WHERE json_valid(metadata)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_relation_report_message "
+    "ON memories(json_extract(metadata, '$.contextual_relation.report.message_id')) "
+    "WHERE json_valid(metadata)",
 )
 
 # Same problem, different tables, and it needs its own list rather than a

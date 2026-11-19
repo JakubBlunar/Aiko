@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
 
 from app.core.conversation import archive as archive_module
 from app.core.conversation.archive import ConversationArchive, resolve_range
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_admission import admit_source_note
+from app.core.memory.memory_relations import admit_relation, reference_revision
+from app.core.memory.memory_store import MemoryStore
+from app.core.memory.plan_reports import admit_report
 from app.core.proactive.daily_overview_worker import DailyOverviewWorker
 from app.core.session.tool_pass_gate import (
     GateContext,
@@ -355,6 +361,8 @@ def test_idle_worker_fills_recent_days_one_at_a_time_and_retries(db):
         "Show our conversation archive",
         "Give me a daily overview",
         "Recap our conversations",
+        "What has changed with the plants since our conversation about lighting?",
+        "Any updates on the balcony plants since we last spoke?",
     ],
 )
 def test_tool_gate_and_skill_router_expose_archive(text):
@@ -405,6 +413,11 @@ def test_registry_exposes_archive_without_embeddings_and_honors_switch(db):
         {"mode": "messages", "extra": "bad"},
         {"mode": "overviews", "topic": "bad"},
         {"mode": "messages", "timezone": "Mars/Bad"},
+        {"mode": "changes", "topic": "plants"},
+        {"mode": "changes", "topic": "plants", "after_message_id": True},
+        {"mode": "changes", "topic": "  ", "after_message_id": 1},
+        {"mode": "changes", "topic": "plants", "after_message_id": 1, "limit": 9},
+        {"mode": "changes", "topic": "plants", "after_message_id": 1, "when": "today"},
         {"mode": ["messages"]},
     ],
 )
@@ -423,3 +436,123 @@ def test_read_only_review_adapter_never_writes_source_or_config(db):
             adapter._get_conn().execute("DELETE FROM messages")
     finally:
         adapter._get_conn().close()
+
+
+def change_lookup(db, anchor, **filters):
+    return json.loads(ConversationHistoryTool(db, "alice").run({
+        "mode": "changes", "after_message_id": anchor, "topic": "balcony plants", **filters,
+    }))
+
+
+def test_changes_read_original_corrections_and_linked_outcomes_across_sessions(db):
+    original_text = "The balcony plants get two hours of light."
+    prior_id = add(db, original_text, stamp="2026-10-18T12:00:00+00:00")
+    plan_id = add(db, "I plan to move the balcony plants under the grow lamp.",
+                  stamp="2026-10-18T14:00:00+00:00")
+    older = add(db, "I replaced the balcony plants' lamp.", stamp="2026-10-19T10:00:00+00:00")
+    anchor = add(db, "We were talking about light for the balcony plants.", role="assistant")
+    correction_text = "Correction: the balcony plants get four hours of light."
+    correction_id = add(db, correction_text, session="alice:follow", stamp="2026-10-21T12:00:00Z")
+    outcome_text = "I completed moving the balcony plants under the grow lamp on October 19."
+    outcome_id = add(db, outcome_text, session="alice:follow", stamp="2026-10-22T12:00:00Z")
+    add(db, "I completed the indoor succulent setup.", stamp="2026-10-22T13:00:00Z")
+    add(db, "We talked about the balcony plants. I completed my novel.",
+        stamp="2026-10-22T14:00:00Z")
+    add(db, "I replaced the balcony plants' lamp.", stamp="2026-10-22T15:00:00Z")
+    add(db, "Update: the balcony plants put out a new leaf.", stamp="2026-10-23T12:00:00Z")
+    end_id = add(db, "Good to know.", role="assistant", stamp="2026-10-22T16:00:00Z")
+
+    with closing(MemoryStore(db._db_path)) as store:
+        vector = np.ones(4)
+        prior = store.add(original_text, "fact", vector, source_message_id=prior_id,
+                          source_session="alice:main", skip_dedupe=True)
+        plan = store.add("Alice plans to move the balcony plants under the grow lamp.",
+                         "event", vector, source_message_id=plan_id, source_session="alice:main",
+                         temporal_type="future_plan", skip_dedupe=True)
+        correction_row = db.get_message_row(correction_id)
+        relation = admit_relation(
+            {"prior_memory_id": prior.id, "relation": "correction",
+             "report": {"message_id": correction_id, "quote": correction_text}},
+            [correction_row], {prior.id: {"revision": reference_revision(prior)}}, store,
+            session_key="alice:follow", subject="user",
+        )
+        store.add(correction_text, "fact", vector, metadata={"contextual_relation": relation},
+                  source_message_id=correction_id, source_session="alice:follow", skip_dedupe=True)
+
+        outcome_row = db.get_message_row(outcome_id)
+        report = admit_report(
+            {"prior_memory_id": plan.id, "status": "reported_completed",
+             "report": {"message_id": outcome_id, "quote": outcome_text}},
+            [outcome_row], {plan.id: {"revision": reference_revision(plan)}}, store,
+            session_key="alice:follow", subject="user", temporal_type="past_event",
+        )
+        candidate = {"content": "Alice completed moving the balcony plants under the grow lamp.",
+                     "kind": "event", "temporal_type": "past_event",
+                     "evidence": [{"message_id": outcome_id, "quote": outcome_text}],
+                     "event_time_evidence": {"message_id": outcome_id, "quote": "October 19"}}
+        _, admission = admit_source_note(candidate, [outcome_row], session_key="alice:follow",
+                                         writer="extractor", proposal_message_id=outcome_id)
+        assert admission.accepted
+        store.add(candidate["content"], "event", vector, skip_dedupe=True,
+                  source_message_id=outcome_id, source_session="alice:follow",
+                  metadata={**admission.metadata, "follow_through": report},
+                  temporal_type="past_event")
+        store.add("Alice changed the balcony plants' lamp yesterday.", "event", vector,
+                  source_message_id=older, source_session="alice:main", skip_dedupe=True)
+
+    result = change_lookup(db, anchor, through_message_id=end_id)
+    assert result["status"] == "ok" and result["coverage"]["scan_complete"]
+    assert result["through"]["message_id"] == end_id
+    correction, outcome = result["changes"]
+    assert (correction["kind"], correction["before"]["message_id"], correction["quote"]) == (
+        "correction", prior_id, correction_text,
+    )
+    assert correction["reported_at"] == "2026-10-21T12:00:00+00:00"
+    assert outcome["kind"] == "plan_report" and outcome["plan_status"] == "reported_completed"
+    assert outcome["before"]["message_id"] == plan_id
+    assert outcome["after"]["message_id"] == outcome_id
+    assert outcome["reported_at"] == "2026-10-22T12:00:00+00:00"
+    assert outcome["event_date"] == "2026-10-19" and "event_time" not in outcome
+
+    db.delete_message_rows("alice:main", [plan_id])
+    db.execute_commit("UPDATE messages SET content=? WHERE id=?",
+                      ("I am still thinking about the amount of light.", correction_id))
+    after_edit = change_lookup(db, anchor, through_message_id=end_id)["changes"]
+    assert [item["kind"] for item in after_edit] == ["reported_update"]
+    assert after_edit[0]["before"] is None and "event_date" not in after_edit[0]
+
+
+def test_changes_hide_foreign_and_transient_sources_and_bound_scan(db, monkeypatch):
+    from app.core.conversation import archive_changes
+
+    anchor = add(db, "We talked about the balcony plants.")
+    foreign = add(db, "Update: the balcony plants died.", session="bob:other")
+    transient = add(db, "Update: the balcony plants doubled.", session="alice:main:noremember")
+    add(db, "Correction: the balcony plants might bloom?", session="alice:another")
+    assert change_lookup(db, foreign)["status"] == "anchor_not_found"
+    assert change_lookup(db, transient)["status"] == "anchor_not_found"
+    assert change_lookup(db, anchor, through_message_id=foreign)["status"] == "end_not_found"
+    result = change_lookup(db, anchor)
+    assert result["status"] == "no_supported_changes"
+    assert result["coverage"]["inspected_user_messages"] == 1
+
+    monkeypatch.setattr(archive_changes, "SCAN_LIMIT", 1)
+    add(db, "Update: the balcony plants grew.")
+    last = add(db, "I started reading a new book.")
+    result = change_lookup(db, anchor)
+    assert result["status"] == "partial_scan"
+    assert result["coverage"]["oldest_inspected_message_id"] == last
+    assert not result["coverage"]["scan_complete"]
+    db.delete_message_rows("alice:main", [anchor])
+    assert change_lookup(db, anchor)["status"] == "anchor_not_found"
+
+
+def test_changes_keep_distinct_dated_reports_with_same_clock_tick(db):
+    anchor = add(db, "The balcony plants get two hours of light.")
+    add(db, "Correction: the balcony plants get three hours of light.")
+    update = add(db, "Update: the balcony plants have a new leaf.")
+    add(db, "Update: the balcony plants have a new leaf!")
+    result = change_lookup(db, anchor, limit=1)
+    assert [change["after"]["message_id"] for change in result["changes"]] == [update]
+    assert result["coverage"]["results_truncated"]
+    assert result["coverage"]["scan_complete"]

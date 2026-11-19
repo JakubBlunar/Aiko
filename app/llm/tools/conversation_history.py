@@ -34,7 +34,13 @@ class ConversationHistoryTool:
                 "message IDs before quoting or resolving a correction. Use messages to page "
                 "chronologically, optionally with "
                 "a literal topic filter; use message + message_id for exact quotes and full "
-                "long-message character pages. Check coverage/missing_days before making "
+                "long-message character pages. For 'what changed since we talked about X?', "
+                "use changes with after_message_id from the exact earlier exchange and a literal "
+                "topic phrase. Find that ID in messages if needed; ask if several exchanges fit. "
+                "Optional through_message_id ends the comparison there, inclusively. Changes "
+                "returns selective later user reports, their message times, and linked earlier "
+                "sources when available. Preserve later corrections and the difference between "
+                "when something was reported and when it happened. Check coverage before making "
                 "a period-wide claim. Follow next_cursor using only cursor and mode. "
                 "Missing overviews never prevent reading messages."
             ),
@@ -42,7 +48,9 @@ class ConversationHistoryTool:
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "mode": {"type": "string", "enum": ["messages", "overviews", "message"]},
+                    "mode": {
+                        "type": "string", "enum": ["messages", "overviews", "message", "changes"],
+                    },
                     "when": {
                         "type": "string",
                         "description": "E.g. last week, last month, yesterday.",
@@ -56,7 +64,7 @@ class ConversationHistoryTool:
                     },
                     "topic": {
                         "type": "string",
-                        "description": "Literal substring; selected matches only.",
+                        "description": "Literal topic filter; required for changes.",
                     },
                     "cursor": {
                         "type": "string",
@@ -64,6 +72,14 @@ class ConversationHistoryTool:
                     },
                     "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                     "message_id": {"type": "integer", "minimum": 1},
+                    "after_message_id": {
+                        "type": "integer", "minimum": 1,
+                        "description": "Required for changes; original exchange, exclusive.",
+                    },
+                    "through_message_id": {
+                        "type": "integer", "minimum": 1,
+                        "description": "Optional final exchange for changes, inclusive.",
+                    },
                     "content_offset": {"type": "integer", "minimum": 0},
                 },
                 "required": ["mode"],
@@ -86,10 +102,13 @@ class ConversationHistoryTool:
             },
             "overviews": {"mode", "when", "start", "end", "timezone", "cursor"},
             "message": {"mode", "message_id", "content_offset", "cursor"},
+            "changes": {"mode", "after_message_id", "through_message_id", "topic", "limit"},
         }
         if not isinstance(mode, str) or mode not in allowed or set(arguments) - allowed[mode]:
             raise ToolError("conversation_history: unsupported mode or arguments.")
-        for name in allowed[mode] - {"mode", "limit", "message_id", "content_offset"}:
+        integer_fields = {"limit", "message_id", "after_message_id", "through_message_id",
+                          "content_offset"}
+        for name in allowed[mode] - {"mode"} - integer_fields:
             if name in arguments and (
                 not isinstance(arguments[name], str)
                 or len(arguments[name]) > (5000 if name == "cursor" else 200)
@@ -98,6 +117,8 @@ class ConversationHistoryTool:
         for name, default, minimum, maximum in (
             ("limit", 20, 1, 20),
             ("message_id", 0, 1, 2**63 - 1),
+            ("after_message_id", 0, 1, 2**63 - 1),
+            ("through_message_id", 0, 1, 2**63 - 1),
             ("content_offset", 0, 0, 2**31 - 1),
         ):
             if name not in arguments:
@@ -121,6 +142,14 @@ class ConversationHistoryTool:
                     arguments.get("message_id", 0),
                     arguments.get("content_offset", 0),
                     cursor=cursor,
+                )
+            elif mode == "changes":
+                if "after_message_id" not in arguments:
+                    raise ValueError("after_message_id is required for changes.")
+                result = archive.changes(
+                    arguments["after_message_id"], arguments.get("topic", ""),
+                    through_message_id=arguments.get("through_message_id"),
+                    limit=arguments.get("limit", 6),
                 )
             else:
                 span = (
