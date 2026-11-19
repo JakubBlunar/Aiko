@@ -11,6 +11,8 @@ from __future__ import annotations
 import threading
 import time
 import unittest
+from concurrent.futures import Future, ThreadPoolExecutor
+from unittest.mock import patch
 
 import numpy as np
 
@@ -174,6 +176,130 @@ class CallTimingTests(unittest.TestCase):
         calls, ms = emb.end_turn()
         self.assertEqual(calls, 0)
         self.assertEqual(ms, 0.0)
+
+
+class SharedRequestTests(unittest.TestCase):
+    def test_same_key_waiters_share_success_or_failure_and_can_retry(self) -> None:
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                self._assert_shared_request(fail=fail)
+
+    def _assert_shared_request(self, *, fail: bool) -> None:
+        emb, seen = _build()
+        entered, release, waiting = threading.Event(), threading.Event(), threading.Event()
+        stub = emb._call_ollama
+
+        def provider(text):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            result = stub(text)
+            if fail and len(seen) == 1:
+                raise RuntimeError("provider failed")
+            return result
+
+        class ObservedRequest(Future):
+            def result(self, timeout=None):
+                waiting.set()
+                return super().result(timeout=timeout)
+
+        def follower():
+            emb.begin_turn()
+            try:
+                if fail:
+                    with self.assertRaisesRegex(RuntimeError, "provider failed"):
+                        emb.embed(" same key ")
+                else:
+                    emb.embed(" same key ")
+                return emb.peek_turn_wait_stats()
+            finally:
+                self.assertEqual(emb.end_turn(), (0, 0.0))
+
+        emb._call_ollama = provider
+        with (
+            patch("app.llm.embedder.Future", ObservedRequest),
+            ThreadPoolExecutor(2) as pool,
+        ):
+            leader = pool.submit(emb.embed, "same key")
+            self.assertTrue(entered.wait(5))
+            joined = pool.submit(follower)
+            try:
+                self.assertTrue(waiting.wait(5))
+            finally:
+                release.set()
+            if fail:
+                with self.assertRaisesRegex(RuntimeError, "provider failed"):
+                    leader.result(timeout=5)
+            else:
+                leader.result(timeout=5)
+            waits, wait_ms = joined.result(timeout=5)
+            self.assertEqual(waits, 1)
+            self.assertGreater(wait_ms, 0.)
+        self.assertEqual(seen, ["same key"])
+        emb.embed("same key")
+        self.assertEqual(len(seen), 2 if fail else 1)
+
+    def test_different_keys_can_reach_the_provider_together(self) -> None:
+        emb, seen = _build()
+        barrier = threading.Barrier(2, timeout=5)
+        stub = emb._call_ollama
+
+        def provider(text):
+            barrier.wait()
+            return stub(text)
+
+        emb._call_ollama = provider
+        with ThreadPoolExecutor(2) as pool:
+            list(pool.map(emb.embed, ("one", "two")))
+        self.assertCountEqual(seen, ["one", "two"])
+
+    def test_clear_cache_during_request_keeps_old_result_out_of_new_cache(self) -> None:
+        emb, seen = _build()
+        entered, release = threading.Event(), threading.Event()
+
+        def provider(text):
+            seen.append(text)
+            if len(seen) == 1:
+                entered.set()
+                self.assertTrue(release.wait(5))
+                return np.array([1.])
+            return np.array([2.])
+
+        emb._call_ollama = provider
+        with ThreadPoolExecutor(1) as pool:
+            old = pool.submit(emb.embed, "same key")
+            self.assertTrue(entered.wait(5))
+            try:
+                emb.clear_cache()
+                np.testing.assert_array_equal(emb.embed("same key"), [2.])
+            finally:
+                release.set()
+            np.testing.assert_array_equal(old.result(timeout=5), [1.])
+        np.testing.assert_array_equal(emb.embed("same key"), [2.])
+        self.assertEqual(len(seen), 2)
+
+    def test_wait_timeout_leaves_the_original_request_running(self) -> None:
+        emb, seen = _build()
+        emb._timeout = .02
+        entered, release = threading.Event(), threading.Event()
+        stub = emb._call_ollama
+
+        def provider(text):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return stub(text)
+
+        emb._call_ollama = provider
+        with ThreadPoolExecutor(1) as pool:
+            work = pool.submit(emb.embed, "same key")
+            self.assertTrue(entered.wait(5))
+            try:
+                with self.assertRaises(TimeoutError):
+                    emb.embed("same key")
+            finally:
+                release.set()
+            value = work.result(timeout=5)
+            np.testing.assert_array_equal(emb.embed("same key"), value)
+        self.assertEqual(seen, ["same key"])
 
 
 class _FakeResponse:

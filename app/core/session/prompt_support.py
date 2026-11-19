@@ -1006,6 +1006,8 @@ class PromptTelemetry:
     # these counters.
     embed_calls: int = 0
     embed_ms: float = 0.0
+    embed_waits: int = 0
+    embed_wait_ms: float = 0.0
     # P14: tool-pass gate observability. Both are stamped by
     # ``TurnRunner`` after assembly. ``tool_gate_event`` is the compact
     # ``run:<reason>`` / ``skip:<reason>`` decision string ("-" when no
@@ -1115,6 +1117,8 @@ class PromptTelemetry:
             # P1: per-turn embed budget.
             "embed_calls": int(self.embed_calls),
             "embed_ms": round(float(self.embed_ms), 2),
+            "embed_waits": int(self.embed_waits),
+            "embed_wait_ms": round(float(self.embed_wait_ms), 2),
             # P14: tool-pass gate decision + pass cost.
             "tool_gate_event": str(self.tool_gate_event),
             "tool_pass_ms": round(float(self.tool_pass_ms), 2),

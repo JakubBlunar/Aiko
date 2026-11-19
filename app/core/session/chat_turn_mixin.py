@@ -478,6 +478,8 @@ class ChatTurnMixin:
                 # P1: per-turn embed budget.
                 "embed_calls": tdict["embed_calls"],
                 "embed_ms": tdict["embed_ms"],
+                "embed_waits": tdict["embed_waits"],
+                "embed_wait_ms": tdict["embed_wait_ms"],
                 # P2: prompt-build phase telemetry.
                 "provider_ms": tdict["provider_ms"],
                 "rag_lookup_ms": tdict["rag_lookup_ms"],

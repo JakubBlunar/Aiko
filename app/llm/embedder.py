@@ -16,6 +16,8 @@ custom log dive. The counters are thread-local on purpose -- the
 ``Embedder`` instance, and we don't want its async embeds to pollute the
 turn-thread's accounting. Cache hits (LRU) don't count as calls; only real
 ``/api/embeddings`` round-trips do.
+Overlapping misses share one request per cache key, with follower wait time
+tracked separately from the thread that initiated the HTTP call.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import Future
 from typing import Iterable
 
 import numpy as np
@@ -65,6 +68,7 @@ class Embedder:
         self._num_ctx = config.num_ctx
         self._cache_size = max(0, int(cache_size))
         self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._inflight: dict[str, Future[np.ndarray]] = {}
         self._lock = threading.Lock()
         self._session = requests.Session()
         # P1: thread-local turn counters. ``begin_turn`` initialises
@@ -93,17 +97,41 @@ class Embedder:
                 # LRU touch.
                 self._cache.move_to_end(key)
                 return cached
-        # P1: time the actual HTTP call. Cache hits above don't count
-        # as calls (they're free); only round-trips go on the meter.
-        call_start = time.perf_counter()
-        vector = self._call_ollama(normalized)
-        call_ms = (time.perf_counter() - call_start) * 1000.0
-        self._record_turn_call(call_ms)
-        with self._lock:
-            self._cache[key] = vector
-            self._cache.move_to_end(key)
-            while len(self._cache) > self._cache_size:
-                self._cache.popitem(last=False)
+            request = self._inflight.get(key)
+            leader = request is None
+            if request is None:
+                request = self._inflight[key] = Future()
+
+        started = time.perf_counter()
+        if not leader:
+            try:
+                return request.result(timeout=self._timeout)
+            finally:
+                if getattr(self._turn_local, "active", False):
+                    self._turn_local.waits += 1
+                    self._turn_local.wait_ms += (time.perf_counter() - started) * 1000.0
+
+        try:
+            try:
+                vector = self._call_ollama(normalized)
+            finally:
+                self._record_turn_call((time.perf_counter() - started) * 1000.0)
+            with self._lock:
+                # A clear_cache call detaches work from the previous cache.
+                # Existing waiters still receive its result or error.
+                if self._inflight.get(key) is request:
+                    del self._inflight[key]
+                    self._cache[key] = vector
+                    self._cache.move_to_end(key)
+                    while len(self._cache) > self._cache_size:
+                        self._cache.popitem(last=False)
+        except BaseException as exc:
+            with self._lock:
+                if self._inflight.get(key) is request:
+                    del self._inflight[key]
+            request.set_exception(exc)
+            raise
+        request.set_result(vector)
         return vector
 
     # ── P1: per-turn budget hooks ───────────────────────────────────────────
@@ -121,6 +149,8 @@ class Embedder:
         self._turn_local.active = True
         self._turn_local.calls = 0
         self._turn_local.elapsed_ms = 0.0
+        self._turn_local.waits = 0
+        self._turn_local.wait_ms = 0.0
 
     def end_turn(self) -> tuple[int, float]:
         """Stop counting and return ``(calls, elapsed_ms)`` for this thread.
@@ -152,6 +182,12 @@ class Embedder:
             float(getattr(self._turn_local, "elapsed_ms", 0.0) or 0.0),
         )
 
+    def peek_turn_wait_stats(self) -> tuple[int, float]:
+        """Return shared-request count and wait time on the current turn thread."""
+        if not getattr(self._turn_local, "active", False):
+            return 0, 0.0
+        return self._turn_local.waits, self._turn_local.wait_ms
+
     def _record_turn_call(self, call_ms: float) -> None:
         """Add one HTTP call + its wall time to the current thread's budget.
 
@@ -176,6 +212,7 @@ class Embedder:
     def clear_cache(self) -> None:
         with self._lock:
             self._cache.clear()
+            self._inflight.clear()
 
     # ── internals ─────────────────────────────────────────────────────────
 

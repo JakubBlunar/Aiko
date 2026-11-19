@@ -89,6 +89,14 @@ and size. They are not a record of hidden model reasoning. A useful diagnostic
 must keep the stages separate rather than treating every empty block as a
 failure or every rendered block as success.
 
+`embed_calls` and `embed_ms` measure provider requests started on the turn
+thread. Overlapping misses for the same text and embedding route share one
+request. `embed_waits` and `embed_wait_ms` measure joins to a request already
+in progress, including waits that time out. Distinct keys can proceed in
+parallel. Clearing the cache starts a new set of requests while callers
+already waiting can still receive the original result. Ordinary completed
+cache hits increment neither counter.
+
 ## Sources and ownership
 
 | Material | Producer or refresh | Reader and lifetime | Meaning for the brain |

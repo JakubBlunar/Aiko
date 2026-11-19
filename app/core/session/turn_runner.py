@@ -1191,6 +1191,12 @@ class TurnRunner:
         # ``(0, 0.0)`` on a thread that doesn't currently have an
         # active turn, so a double-end never inflates the numbers.
         if self._embedder is not None:
+            peek_wait = getattr(self._embedder, "peek_turn_wait_stats", None)
+            if callable(peek_wait):
+                try:
+                    telemetry.embed_waits, telemetry.embed_wait_ms = peek_wait()
+                except Exception:
+                    log.debug("embedder wait metrics unavailable", exc_info=True)
             try:
                 embed_calls, embed_ms = self._embedder.end_turn()
             except Exception:
@@ -1211,7 +1217,8 @@ class TurnRunner:
             "first_token_ms=%s total_ms=%.0f eval_ms=%.0f tools=%d "
             "compactions=%d filler=%s aborted=%s mood_fallback=%s "
             "rag_prefetch=%s prebuild=%s listen_extensions=%d "
-            "embed_calls=%d embed_ms=%.0f assemble_ms=%.0f rag_lookup_ms=%.0f "
+            "embed_calls=%d embed_ms=%.0f embed_waits=%d embed_wait_ms=%.0f "
+            "assemble_ms=%.0f rag_lookup_ms=%.0f "
             "tool_gate=%s tool_pass_ms=%.0f",
             len(cleaned),
             mood or "neutral",
@@ -1233,6 +1240,8 @@ class TurnRunner:
             listen_extensions,
             telemetry.embed_calls,
             telemetry.embed_ms,
+            telemetry.embed_waits,
+            telemetry.embed_wait_ms,
             telemetry.assemble_ms,
             telemetry.rag_lookup_ms,
             telemetry.tool_gate_event,

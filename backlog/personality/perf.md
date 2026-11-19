@@ -299,26 +299,16 @@ representative corpus. P30 still owns the separate SQLite mirror reload cost.
 
 ## P54. Share an embedding request between simultaneous cache misses
 
-**Status: Open.** The embedder checks its LRU under a lock, releases the lock
-for the provider call, then stores the result. The typed turn and the
-background message indexer use the same embedder. A two-thread fixture with
-a stub provider made both requests for the same normalized cold key enter
-the provider. Once either result landed, a subsequent request hit the LRU.
-That establishes duplicate work under overlap. Its ordinary-use frequency
-and latency cost still need measurement. [Embedder](../../app/llm/embedder.py), [message indexer](../../app/core/rag/message_indexer.py), [turn embed timing](shipped/perf.md#p1-per-turn-embed-budget--timing).
+**Status: Partial.** Concurrent misses for one key share a provider request.
+Different keys still run independently. The provider sets the request timeout,
+and a waiting caller uses that same timeout for its join. A failure releases
+waiters and the next call can retry. Cache clearing detaches old work so it
+cannot replace a fresh result. Each provider route uses its own embedder.
+Ordinary-turn telemetry exposes join count and wait time separately from HTTP
+calls. [Telemetry contract](../../docs/prompt-surfacing.md#what-a-surfacing-measurement-means).
 
-**First slice.** Count identical in-flight keys without storing their text.
-If ordinary overlap warrants it, let simultaneous callers for one key share
-the same request result. Preserve parallel execution for distinct keys.
-Record time a foreground turn spends waiting on work started by another
-thread separately from HTTP calls it started. Define error, timeout, cache
-clear and provider-change behavior before enabling reuse.
-
-**Acceptance.** Identical concurrent requests make one provider call, distinct
-keys can proceed independently, and a failed request releases all waiters and
-allows the next attempt. Use the existing turn telemetry and typed-chat/
-message-indexer fixtures to check that sharing work improves the measured
-wait without compromising output or restart behavior.
+**Remaining:** Use ordinary-chat telemetry to measure how often requests
+overlap and how much turn time is spent waiting on shared work.
 
 ## P55. Delay full topic record formatting until the page is selected
 

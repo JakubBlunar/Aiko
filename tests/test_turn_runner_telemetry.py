@@ -109,12 +109,15 @@ class EmbedTurnBoundaryTests(unittest.TestCase):
 
     def test_telemetry_is_stamped_with_embed_counters(self) -> None:
         embedder = _StubEmbedder(end_turn_result=(7, 42.5))
+        embedder.peek_turn_wait_stats = lambda: (2, 5.25) if embedder._active else (0, 0.)
         runner, _, _ = _build_runner(embedder=embedder)
         result = runner.run(session_key="default:main", user_text="hi")
         self.assertIsNotNone(result.telemetry)
         assert result.telemetry is not None
         self.assertEqual(result.telemetry.embed_calls, 7)
         self.assertAlmostEqual(result.telemetry.embed_ms, 42.5, places=2)
+        self.assertEqual(result.telemetry.as_dict()["embed_waits"], 2)
+        self.assertEqual(result.telemetry.as_dict()["embed_wait_ms"], 5.25)
 
     def test_begin_and_end_called_exactly_once_per_turn(self) -> None:
         # ``run()`` calls ``end_turn`` defensively in its finally; the
