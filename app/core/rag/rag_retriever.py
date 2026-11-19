@@ -31,11 +31,13 @@ from app.core.rag.recall_reads import RecallReadsMixin
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
 import numpy as np
 
+from app.core.conversation.topic_digest_sources import current_digest_text, digest_expired
 from app.core.infra import timephrase as _tp
 from app.core.infra.time_expr import TimeWindow, parse_time_window
 from app.core.memory import promise_lifecycle
@@ -476,11 +478,8 @@ def _temporal_filter_drops(mem, now: datetime) -> bool:
         from app.core.memory.plan_timing import historical_plan
 
         return historical_plan(mem, now)
-    if getattr(mem, "kind", None) == "topic_digest":
-        receipt = (getattr(mem, "metadata", None) or {}).get("summary_claims") or {}
-        until = _parse_temporal_iso(receipt.get("valid_until"))
-        if until and until < _to_aware(now):
-            return True
+    if getattr(mem, "kind", None) == "topic_digest" and digest_expired(mem, _to_aware(now)):
+        return True
     if temporal_type not in {"past_event", "ongoing"}:
         return False
     relevance_until = getattr(mem, "relevance_until", None)
@@ -1099,7 +1098,10 @@ class RagRetriever(RecallReadsMixin):
                             exc_info=True,
                         )
                         mem_by_id = {}
+            recall_now = timephrase.utcnow()
             for h in mem_hits:
+                is_digest = getattr(h.record, "kind", None) == "topic_digest"
+                digest_text = None
                 h.score += _MEMORY_PRIOR + _memory_recency_adjust(
                     last_used_at=getattr(h.record, "last_used_at", None),
                     use_count=int(getattr(h.record, "use_count", 0) or 0),
@@ -1123,6 +1125,13 @@ class RagRetriever(RecallReadsMixin):
                                 else self._memory_store.get(int(raw_id))
                             )
                             if mem is not None:
+                                is_digest = is_digest or mem.kind == "topic_digest"
+                                if is_digest:
+                                    digest_text = current_digest_text(
+                                        mem, self._memory_store, recall_now,
+                                    )
+                                    if digest_text is None:
+                                        continue
                                 if not earlier_observation_current(mem, self._memory_store):
                                     h.score = -1.0
                                     continue
@@ -1299,7 +1308,7 @@ class RagRetriever(RecallReadsMixin):
                                 # the dedupe/top-k cut at the bottom
                                 # of ``retrieve`` discards it, instead
                                 # of scattering ``continue`` here.
-                                if _temporal_filter_drops(mem, timephrase.utcnow()):
+                                if _temporal_filter_drops(mem, recall_now):
                                     h.score = -1.0
                                 else:
                                     h.score += _temporal_boost(mem)
@@ -1316,6 +1325,10 @@ class RagRetriever(RecallReadsMixin):
                         log.debug("pinned-bonus lookup failed", exc_info=True)
                         if _diagnostics is not None:
                             _diagnostics.setdefault("errors", []).append("memory_hydration")
+                if is_digest:
+                    if digest_text is None:
+                        continue  # A vector-only digest cannot vouch for its clauses.
+                    h.record = replace(h.record, content=digest_text, kind="topic_digest")
                 merged.append(h)
         except Exception:
             log.debug("memory search failed", exc_info=True)
@@ -2063,12 +2076,10 @@ class RagRetriever(RecallReadsMixin):
             except (TypeError, ValueError):
                 continue
 
-        # F10g — surface the cluster's stored digest as the coarse "what I
-        # know about X" line. When present it replaces bulk sibling
-        # enumeration: only ``_digest_sibling_cap`` raw siblings follow.
-        digest_mem = self._lookup_cluster_digest(anchor_cid, already)
+        # Only a digest with usable claims reduces the raw sibling budget.
+        digest_hit = self._lookup_cluster_digest(anchor_cid, already, score=anchor_score)
         sibling_limit = (
-            self._digest_sibling_cap if digest_mem is not None else self._expand_max
+            self._digest_sibling_cap if digest_hit is not None else self._expand_max
         )
 
         from app.core.conversation.topic_evidence import topic_evidence_priority
@@ -2105,11 +2116,7 @@ class RagRetriever(RecallReadsMixin):
                     scored.append((sim, mem, priority))
         scored.sort(key=lambda item: item[0] + 0.03 * item[2], reverse=True)
 
-        out: list[RagHit] = []
-        if digest_mem is not None:
-            out.append(
-                self._memory_to_hit(digest_mem, score=anchor_score, expansion=True)
-            )
+        out = [digest_hit] if digest_hit is not None else []
         added = 0
         for sim, mem, _ in scored:
             if not longitudinal_sources_current(mem, self._memory_store):
@@ -2121,18 +2128,9 @@ class RagRetriever(RecallReadsMixin):
         return out
 
     def _lookup_cluster_digest(
-        self, cluster_id: int, already: set[int]
-    ) -> "Any | None":
-        """Resolve the F10g digest memory for ``cluster_id`` (or ``None``).
-
-        Reads the injected provider (the :class:`TopicDigestWorker`'s live
-        ``cluster_digest_map``), then verifies the row still exists, is a
-        ``topic_digest``, and isn't already surfaced this turn. Stale
-        provider entries (between a graph rebuild and the next worker tick)
-        degrade gracefully to ``None`` -- the digest still surfaces through
-        ordinary cosine RAG, it just doesn't get the special expansion
-        treatment that turn.
-        """
+        self, cluster_id: int, already: set[int], *, score: float,
+    ) -> RagHit | None:
+        """Resolve a provider entry and retain only its supported clauses."""
         if not self._topic_digest_surface_enabled:
             return None
         provider = self._topic_digest_provider
@@ -2153,11 +2151,15 @@ class RagRetriever(RecallReadsMixin):
             return None
         try:
             mem = self._memory_store.get(mid)
+            text = current_digest_text(mem, self._memory_store, timephrase.utcnow())
+            if text is None:
+                return None
+            hit = self._memory_to_hit(mem, score=score, expansion=True)
+            hit.record = replace(hit.record, content=text)
+            return hit
         except Exception:
+            log.debug("topic_digest lookup failed", exc_info=True)
             return None
-        if mem is None or str(getattr(mem, "kind", "")) != "topic_digest":
-            return None
-        return mem
 
     @staticmethod
     def _memory_to_hit(mem: "Any", *, score: float, expansion: bool = False) -> RagHit:
@@ -2365,6 +2367,10 @@ class RagRetriever(RecallReadsMixin):
                 continue
             if hit.source == "memory":
                 kind = (getattr(hit.record, "kind", "") or "").lower()
+                if kind == "topic_digest":
+                    stamp = _recorded_suffix(getattr(hit.record, "created_at", None), now)
+                    digest_lines.extend(f"- {clause}{stamp}" for clause in text.splitlines())
+                    continue
                 # Suffix tags. Order matters: "(uncertain)" first so
                 # confidence reads before provenance.
                 suffix_tags: list[str] = []
@@ -2480,10 +2486,7 @@ class RagRetriever(RecallReadsMixin):
                     if len(text) > 1200:
                         continue
                     line = f"- {scoped}{text}{suffix}{time_suffix}"
-                    if kind == "topic_digest":
-                        digest_lines.append(line)
-                    else:
-                        expansion_lines.append(line)
+                    expansion_lines.append(line)
                 else:
                     subject = recall_origin(hit).subject
                     memory_lines.setdefault(subject, []).append(
@@ -2519,8 +2522,7 @@ class RagRetriever(RecallReadsMixin):
             sections.append("From your notes:\n" + "\n".join(document_lines))
         if digest_lines:
             sections.append(
-                "What you know about this topic so far (your own running "
-                "sense of it — lean on it only if it fits naturally):\n"
+                "Topic summaries (check the cited memories for details):\n"
                 + "\n".join(digest_lines)
             )
         if expansion_lines:

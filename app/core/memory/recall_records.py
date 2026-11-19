@@ -3,6 +3,7 @@ from dataclasses import asdict
 import json
 from types import SimpleNamespace
 
+from app.core.conversation.topic_digest_sources import current_digest_text
 from app.core.infra import timephrase
 from app.core.memory.memory_origin import MemoryOrigin, memory_origin
 from app.core.memory.memory_relations import reference_revision
@@ -124,7 +125,19 @@ def pack_hits(hits, *, store=None, db=None, user_id=None, max_chars=16000):
                 continue
             if store is not None:
                 try:
+                    if row.kind == "topic_digest":
+                        digest_text = current_digest_text(
+                            row, store, timephrase.utcnow(),
+                            source_allowed=lambda source: owned(
+                                getattr(source, "source_session", None), user_id,
+                            ),
+                        )
+                        if digest_text is None:
+                            withheld += 1
+                            continue
                     item = memory_record(row, store=store, db=db, user_id=user_id)
+                    if row.kind == "topic_digest":
+                        item.update(text=digest_text, source_state="receipts_present")
                 except Exception:
                     unavailable.append("memory_sources")
                     continue

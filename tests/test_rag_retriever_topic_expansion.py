@@ -13,11 +13,16 @@ from __future__ import annotations
 
 import json
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 
+from app.core.conversation.digest_fidelity import parse_claims
+from app.core.conversation.topic_digest_sources import capture_sources
+from app.core.infra import timephrase
 from app.core.rag.rag_retriever import RagRetriever
 from app.core.rag.rag_store import MemoryRecord, RagHit
 from app.llm.tools.builtins import RecallTopicTool
@@ -56,6 +61,9 @@ class _Mem:
     last_used_at: str | None = None
     use_count: int = 0
     tier: str = "long_term"
+    metadata: dict = field(default_factory=dict)
+    temporal_type: str = "durable"
+    relevance_until: str | None = None
 
 
 class _MemoryStore:
@@ -110,14 +118,14 @@ class _StubGraph:
         return list(self._best[:top_n])
 
 
-def _mem_hit(mem_id: int, score: float) -> RagHit:
+def _mem_hit(mem_id: int, score: float, *, kind: str = "fact") -> RagHit:
     return RagHit(
         source="memory",
         score=score,
         record=MemoryRecord(
             id=str(mem_id),
             content=f"memory {mem_id}",
-            kind="fact",
+            kind=kind,
             salience=0.5,
             source_session=None,
             source_message_id=None,
@@ -265,13 +273,106 @@ class FormatBlockExpansionTests(unittest.TestCase):
 class DigestSurfacingTests(unittest.TestCase):
     """F10g — the cluster digest surfaces as the coarse line + caps siblings."""
 
-    def _store_with_digest(self) -> dict[int, _Mem]:
-        return {
-            2: _Mem(2, "sibling two", _e(0)),
-            3: _Mem(3, "sibling three", _e(0)),
+    def _store_with_digest(self, *, mixed=False) -> dict[int, _Mem]:
+        mems = {
+            2: _Mem(2, "Aiko and the user talked about keeping basil.", _e(0),
+                    kind="shared_moment"),
+            3: _Mem(3, "Basil needs strong light.", _e(0), kind="knowledge"),
             4: _Mem(4, "sibling four", _e(0)),
-            99: _Mem(99, "what I know about X", _e(0), kind="topic_digest"),
         }
+        cluster = SimpleNamespace(member_ids=[2, 3, 4], representative_id=2)
+        sources = capture_sources(cluster, _MemoryStore(mems))
+        claims = [{"text": "They talked about keeping basil.", "source_ids": [2],
+                   "scope": "history", "subject": "relationship"}]
+        if mixed:
+            claims.append({"text": "Basil needs strong light.", "source_ids": [3],
+                           "scope": "world_knowledge", "subject": "world"})
+        receipt = parse_claims(json.dumps({"claims": claims}), sources.rows, timephrase.utcnow())
+        self.assertIsNotNone(receipt)
+        mems[99] = _Mem(99, receipt["text"], _e(0), kind="topic_digest", metadata={
+            "source_ids": sources.ids,
+            "source_revisions": {str(mid): revision for mid, revision in sources.revisions},
+            "summary_claims": receipt,
+        })
+        return mems
+
+    def _digest_retriever(self, mems, *, direct):
+        hits = [_mem_hit(1, 0.9)]
+        if direct:
+            hits.append(_mem_hit(99, 0.85, kind="topic_digest"))
+        graph = _StubGraph(cluster_of={1: 10}, members={10: [1, 2, 3, 4]})
+        return _build(hits=hits, store_mems=mems, graph=graph, expand_max=3,
+                      digest_provider=None if direct else lambda _: 99)[0]
+
+    def test_both_routes_use_live_clauses_with_their_own_scope(self) -> None:
+        for direct in (True, False):
+            with self.subTest(direct=direct):
+                mems = self._store_with_digest(mixed=True)
+                mems[4].content = "An unrelated input edit within the same topic."
+                retriever = self._digest_retriever(mems, direct=direct)
+                results = retriever.retrieve("basil")
+                digest = next(hit for hit in results if hit.record.id == "99")
+                self.assertEqual(digest.expansion, not direct)
+                text = RagRetriever.format_block([digest], user_display_name="Jacob")
+                self.assertIn("subject=relationship; scope=history; domain=conversation; sources=2",
+                              text)
+                self.assertIn("subject=world; scope=world_knowledge; domain=external; sources=3",
+                              text)
+                self.assertNotIn("memory 99", text)
+
+                mems[2].content = "Aiko and the user talked about growing mint."
+                results = retriever.retrieve("basil")
+                digest = next(hit for hit in results if hit.record.id == "99")
+                self.assertIn("Basil needs strong light.", digest.text)
+                self.assertNotIn("They talked about keeping basil.", digest.text)
+
+                tool_hits = retriever.recall_packet("basil")["hits"]
+                item = next(hit for hit in tool_hits if hit.get("memory_id") == 99)
+                self.assertEqual(item["text"], digest.text)
+                self.assertIn("They talked about keeping basil.", mems[99].content)
+
+    def test_rejected_digest_leaves_the_raw_sibling_budget(self) -> None:
+        expired = (timephrase.utcnow() - timedelta(days=1)).isoformat()
+        for case in ("edited", "deleted", "superseded", "expired", "source_expired", "legacy",
+                     "missing_revision", "malformed", "missing_digest", "digest_edited"):
+            for direct in (True, False):
+                with self.subTest(case=case, direct=direct):
+                    mems = self._store_with_digest()
+                    meta = mems[99].metadata
+                    if case == "edited":
+                        mems[2].content = "Aiko and the user talked about mint."
+                    elif case == "deleted":
+                        del mems[2]
+                    elif case == "superseded":
+                        mems[2].metadata["superseded_by"] = 4
+                    elif case == "expired":
+                        meta["summary_claims"]["valid_until"] = expired
+                    elif case == "source_expired":
+                        mems[2].relevance_until = expired
+                    elif case == "legacy":
+                        meta.clear()
+                    elif case == "missing_revision":
+                        del meta["source_revisions"]["2"]
+                    elif case == "malformed":
+                        meta["summary_claims"] = "unstructured"
+                    elif case == "missing_digest":
+                        del mems[99]
+                    elif case == "digest_edited":
+                        mems[99].content = "The original wording was replaced."
+                    retriever = self._digest_retriever(mems, direct=direct)
+                    ids = _ids(retriever.retrieve("basil"))
+                    self.assertNotIn(99, ids)
+                    self.assertEqual(ids, [1, 3, 4] if case in {"deleted", "superseded"}
+                                     else [1, 2, 3, 4])
+
+    def test_recall_tool_checks_the_owner_of_each_clause_source(self) -> None:
+        mems = self._store_with_digest(mixed=True)
+        mems[3].source_session = "other:conversation"
+        retriever = self._digest_retriever(mems, direct=True)
+        tool_hits = retriever.recall_packet("basil", user_id="reader")["hits"]
+        item = next(hit for hit in tool_hits if hit.get("memory_id") == 99)
+        self.assertIn("They talked about keeping basil.", item["text"])
+        self.assertNotIn("Basil needs strong light.", item["text"])
 
     def test_digest_surfaces_and_caps_siblings(self) -> None:
         hits = [_mem_hit(1, 0.9)]
@@ -376,7 +477,7 @@ class DigestSurfacingTests(unittest.TestCase):
             expansion=True,
         )
         block = RagRetriever.format_block([direct, digest], user_display_name="Jacob")
-        self.assertIn("What you know about this topic so far", block)
+        self.assertIn("Topic summaries", block)
         self.assertIn("A running sense of the X topic.", block)
         # The digest text is NOT under the sibling "Related notes" header.
         _, _, after_related = block.partition("Related notes from the same topic")

@@ -10,7 +10,8 @@ from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.memory_store import MemoryStore
 from app.core.conversation.topic_cluster_store import TopicClusterStore
 from app.core.conversation.topic_graph import TopicGraph
-from app.core.conversation.topic_digest_sources import capture_sources
+from app.core.conversation.topic_digest_sources import capture_sources, current_digest_text
+from app.core.infra import timephrase
 from tests.test_topic_digest_worker import _worker, _FakeOllama, _agent_settings
 from app.core.conversation.topic_label_worker import ClusterLabelWorker
 from tests.test_topic_label_worker import _FakeOllama as LabelModel
@@ -79,6 +80,7 @@ def test_digest_refreshes_on_an_edit_even_when_cluster_size_is_unchanged(setup):
     row = store.get(old_id)
     assert row.metadata["source_revisions"]
     assert row.metadata["source_scope"] == "summary_inputs"
+    assert model.digest in current_digest_text(row, store, timephrase.utcnow())
     assert worker.run()["reused"] == 2
 
 

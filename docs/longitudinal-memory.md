@@ -25,6 +25,23 @@ they fit. Topic recall and personal-topic expansion favor those reports among
 nearby semantic matches. External research remains searchable on its own merits.
 This evidence selection works within the existing topic assignments.
 
+## Topic digest recall
+
+Ordinary recall, cluster expansion and the recall tool use the stored clause
+receipt from the canonical digest. Each displayed clause cites living memory
+IDs with the revisions recorded at generation. Eligibility and quote receipts
+are rechecked on those sources. An edit outside a clause's citations leaves its
+support intact. A stale citation removes its clause, and an expired digest
+validity window removes the whole digest from recall.
+
+The recall context labels each complete clause by subject, scope, source domain
+and cited memory IDs. These are derived summaries. Older digests without clause
+and revision receipts remain in storage and are withheld from recall. Edited
+digest wording also needs a matching receipt to be eligible. When a
+cluster digest has no usable clause, expansion can spend its usual sibling
+budget on source memories. Digest validation uses the memory mirror and existing
+receipts and requires no new model call or migration.
+
 ## Source-backed situations and outcomes
 
 The ordinary extractor can attach optional `observation` receipts for a context,

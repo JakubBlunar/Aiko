@@ -27,6 +27,21 @@ reported event, or a suggested benefit into an observed outcome.
 """
 
 
+def claim_fields_valid(claim):
+    if not isinstance(claim, dict):
+        return False
+    text, ids = claim.get("text"), claim.get("source_ids")
+    scope, subject = claim.get("scope"), claim.get("subject")
+    return (isinstance(text, str) and 8 <= len(text.strip()) <= 600
+            and not timephrase.has_relative_deictic(text)
+            and isinstance(ids, list) and 1 <= len(ids) <= 4
+            and all(type(mid) is int for mid in ids)
+            and isinstance(scope, str) and scope in {
+                "history", "current_state", "intention", "reported_pattern",
+                "interpretation", "world_knowledge"}
+            and isinstance(subject, str) and subject in {"user", "aiko", "relationship", "world"})
+
+
 def parse_claims(raw, rows, now):
     try:
         start, end = raw.index("{"), raw.rindex("}") + 1
@@ -37,19 +52,11 @@ def parse_claims(raw, rows, now):
         offered = {int(row.id): row for row in rows}
         result, validity = [], []
         for claim in claims:
-            if not isinstance(claim, dict):
+            if not claim_fields_valid(claim):
                 return None
-            text, ids = claim.get("text"), claim.get("source_ids")
-            scope, subject = claim.get("scope"), claim.get("subject")
-            if (not isinstance(text, str) or not 8 <= len(text) <= 600
-                    or timephrase.has_relative_deictic(text)
-                    or not isinstance(ids, list) or not 1 <= len(ids) <= 4
-                    or any(type(mid) is not int or mid not in offered for mid in ids)
-                    or not isinstance(scope, str) or scope not in {
-                        "history", "current_state", "intention", "reported_pattern",
-                        "interpretation", "world_knowledge"}
-                    or not isinstance(subject, str) or subject not in {
-                        "user", "aiko", "relationship", "world"}):
+            text, ids = claim["text"].strip(), claim["source_ids"]
+            scope, subject = claim["scope"], claim["subject"]
+            if any(mid not in offered for mid in ids):
                 return None
             sources = [offered[mid] for mid in ids]
             if refusal(text, [row.content for row in sources], "reported"):
@@ -89,14 +96,13 @@ def parse_claims(raw, rows, now):
             ) for row in sources):
                 return None
             if scope == "current_state":
-                if any(getattr(row, "temporal_type", None) != "ongoing" or not _fresh(row, now)
-                       for row in sources):
+                if not all(current_state_fresh(row, now) for row in sources):
                     return None
                 if _later_resolution(sources, rows):
                     return None
                 validity.extend((timephrase.parse_iso(row.created_at) + timedelta(hours=24))
                                 .isoformat() for row in sources)
-            result.append({"text": text.strip(), "source_ids": sorted(set(ids)),
+            result.append({"text": text, "source_ids": sorted(set(ids)),
                            "scope": scope, "subject": subject})
         return {"version": 1, "claims": result, "valid_until": min(validity) if validity else None,
                 "text": " ".join(item["text"] for item in result)}
@@ -104,11 +110,12 @@ def parse_claims(raw, rows, now):
         return None
 
 
-def _fresh(row, now):
+def current_state_fresh(row, now):
     # Source recording is only an upper freshness bound, never an invented event time.
     recorded = timephrase.parse_iso(row.created_at)
     until = timephrase.parse_iso(getattr(row, "relevance_until", None))
-    return bool(recorded and timedelta(0) <= now - recorded <= timedelta(hours=24)
+    return bool(getattr(row, "temporal_type", None) == "ongoing"
+                and recorded and timedelta(0) <= now - recorded <= timedelta(hours=24)
                 and (until is None or until >= now))
 
 
