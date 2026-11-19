@@ -1,7 +1,8 @@
 """Brain returns keep source meaning, uncertainty and inspectable identities."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from types import SimpleNamespace as NS
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -114,6 +115,60 @@ def test_topic_recall_prefers_a_user_report_over_equally_close_research(env):
         assert payload["hits"][0]["memory_id"] == report.id
         assert payload["hits"][0]["score"] == 1.0
         assert payload["total"] == 2 and payload["has_more"]
+    finally:
+        rag.close()
+
+
+@pytest.mark.parametrize("size", [50, 500, 2000])
+def test_topic_page_formats_only_selected_records_and_reuses_source_reads(env, monkeypatch, size):
+    from app.core.memory import recall_records
+
+    db, store, _, _ = env
+    text = "I found a better place for the plants."
+    mid = db.add_message("u:s", "user", text)
+    template = save(store, text, source_message_id=mid,
+                    metadata={"admission": {"evidence": [{"message_id": mid, "quote": text}]}})
+    rows = {i: replace(template, id=i) for i in range(1, size + 1)}
+    get = Mock(side_effect=rows.get)
+    batch = Mock(side_effect=lambda ids: {i: rows[i] for i in ids})
+    mirror = NS(get=get, get_many=batch)
+    formatted = Mock(wraps=recall_records.memory_record)
+    originals = Mock(wraps=db.get_message_row)
+    monkeypatch.setattr(recall_records, "memory_record", formatted)
+    monkeypatch.setattr(db, "get_message_row", originals)
+    shared_query_vector = np.array([2., 0.], dtype=np.float32)
+    rag = retriever(mirror, db, list(rows.values()), embed=lambda _: shared_query_vector)
+    try:
+        first = rag.recall_topic_page("plants", limit=8, user_id="u")
+        assert first["total"] == size and first["scanned"] == size
+        second = rag.recall_topic_page("plants", limit=8, user_id="u",
+                                       offset=first["next_offset"], revision=first["revision"])
+        assert [item["memory_id"] for item in first["hits"] + second["hits"]] == list(range(1, 17))
+        assert batch.call_count == 2
+        assert formatted.call_count == get.call_count == 16
+        # Per page, one shared source lookup to rank and two per selected record
+        # to recheck evidence and include the original message timestamp.
+        assert originals.call_count == 2 * (1 + 2 * 8)
+        np.testing.assert_array_equal(shared_query_vector, [2., 0.])
+    finally:
+        rag.close()
+
+
+def test_topic_page_rechecks_selected_source_after_the_ranking_read(env):
+    db, store, _, _ = env
+    text = "The lamp is working."
+    mid = db.add_message("u:s", "user", text)
+    row = save(store, text, source_message_id=mid,
+               metadata={"admission": {"evidence": [{"message_id": mid, "quote": text}]}})
+
+    def get(ident):
+        db.delete_message_rows("u:s", [mid])
+        return store.get(ident)
+
+    rag = retriever(NS(get=get, get_many=store.get_many), db, [row])
+    try:
+        with pytest.raises(ValueError, match="restart"):
+            rag.recall_topic_page("lamp", limit=1, user_id="u")
     finally:
         rag.close()
 

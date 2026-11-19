@@ -27,6 +27,15 @@ the wider evidence mode as capped rather than exhaustive.
 Focused first-slice checks: 176 tests passed; `npm run lint` passed. Ordinary model
 selection and wording still need post-restart use.
 
+### Topic page cost
+
+Topic recall ranks a bounded batch of members using their score, source state,
+and revision. Repeated message reads share a cache for that ranking pass.
+Full records and original-message timestamps are built for the selected page.
+That page uses fresh authoritative reads and asks the caller to restart if
+selected evidence changed during the request. Continuation still uses a
+revision over the ranked topic and its source states.
+
 ## Natural-request reachability
 
 The gate recognises explicit grounding questions, relationship-change questions,

@@ -1,11 +1,14 @@
 """Fast recall packets over the existing retriever and authoritative stores."""
 import hashlib
 import json
+from functools import lru_cache
+from types import SimpleNamespace
 
 import numpy as np
 
 from app.core.conversation.topic_evidence import topic_evidence_priority
-from app.core.memory.recall_records import memory_record, owned, pack_hits
+from app.core.memory.memory_relations import reference_revision
+from app.core.memory.recall_records import owned, pack_hits, source_state
 
 
 class RecallUnavailable(RuntimeError):
@@ -50,7 +53,7 @@ class RecallReadsMixin:
             norm = float(np.linalg.norm(q))
             if not norm or not np.isfinite(norm):
                 raise RecallUnavailable("Topic recall could not form a usable query vector.")
-            q /= norm
+            q = q / norm
             matches = self._topic_graph.best_clusters_for(q, top_n=3, min_sim=.30)
             if not matches:
                 return {"status": "no_match", "topic_label": "", "hits": [],
@@ -60,17 +63,30 @@ class RecallReadsMixin:
                 raise ValueError("Choose a cluster_id returned by this topic query.")
             cid, label, _ = chosen
             members = list(self._topic_graph.cluster_member_ids(cid))
-            scored, state, withheld, unsearchable = [], [], 0, 0
-            for mid in members[:2000]:
-                row = self._memory_store.get(mid)
+            scanned = members[:2000]
+            get_many = getattr(self._memory_store, "get_many", None)
+            rows = get_many(scanned) if callable(get_many) else {
+                mid: self._memory_store.get(mid) for mid in scanned
+            }
+
+            # Many memories can cite the same message. Reuse source reads
+            # during ranking, then use fresh reads for the selected page.
+            source_db = self._chat_db
+            if source_db is not None:
+                source_db = SimpleNamespace(
+                    get_message_row=lru_cache(maxsize=256)(source_db.get_message_row),
+                )
+            scored, states, withheld, unsearchable = [], {}, 0, 0
+            for mid in scanned:
+                row = rows.get(mid)
                 if row is None or not owned(getattr(row, "source_session", None), user_id):
                     withheld += 1
-                    state.append([mid, "missing_or_unavailable"])
+                    states[mid] = ("missing_or_unavailable",)
                     continue
-                record = memory_record(row, store=self._memory_store, db=self._chat_db,
-                                       user_id=user_id)
-                state.append([mid, record["revision"], record["source_state"]])
-                if not include_historical and record["source_state"] in {
+                evidence = source_state(row, store=self._memory_store, db=source_db,
+                                        user_id=user_id)
+                states[mid] = (reference_revision(row), evidence)
+                if not include_historical and evidence in {
                     "withdrawn", "changed", "changed_or_unavailable", "outside_validity",
                 }:
                     withheld += 1
@@ -82,12 +98,13 @@ class RecallReadsMixin:
                     unsearchable += 1
                     continue
                 score = float(np.dot(q, vec) / norm)
-                priority = (topic_evidence_priority(row) if record["source_state"]
+                priority = (topic_evidence_priority(row) if evidence
                             in {"receipts_present", "untracked"} else 0)
                 scored.append((score, int(row.id), row, priority))
             scored.sort(key=lambda item: (-(item[0] + 0.03 * item[3]), item[1]))
             key = hashlib.sha256(json.dumps([
-                query, cid, label, include_historical, user_id, members, state,
+                query, cid, label, include_historical, user_id, members,
+                [[mid, *states[mid]] for mid in scanned],
                 [(score, mid, priority) for score, mid, _, priority in scored],
             ], default=str).encode()).hexdigest()
             if offset and (not revision or revision != key):
@@ -97,6 +114,11 @@ class RecallReadsMixin:
             payload = pack_hits(hits, store=self._memory_store, db=self._chat_db, user_id=user_id)
             if payload["unavailable_sources"] and not payload["hits"]:
                 raise RecallUnavailable("Selected topic sources became unavailable; retry.")
+            if payload["withheld"] or any(
+                states.get(item["memory_id"]) != (item["revision"], item["source_state"])
+                for item in payload["hits"]
+            ):
+                raise ValueError("Topic changed during the lookup; restart at offset 0.")
             next_offset = offset + len(selected)
             payload.update(
                 status="partial" if (len(members) > 2000 or unsearchable

@@ -312,27 +312,26 @@ overlap and how much turn time is spent waiting on shared work.
 
 ## P55. Delay full topic record formatting until the page is selected
 
-**Status: Open.** Each `recall_topic` page currently rebuilds the candidate
-set and calls `memory_record` before sorting and slicing. That constructor
-computes display state, source timestamps and facets. The pager uses only
-each candidate's revision and source state at that point. Selected rows
-then pass through `pack_hits`, which loads and formats them again. A stub
-2,000-member topic requesting eight rows built 2,000 candidate records on
-each of its first two pages, before final packing. [Topic pager](../../app/core/rag/recall_reads.py), [memory record packing](../../app/core/memory/recall_records.py), [current paging contracts](../../tests/test_fast_recall_contracts.py).
+**Status: Partial.** Topic paging batch-fetches members when the store
+supports it, then ranks lightweight source state and revisions. Repeated
+message reads share a request-local cache. Only selected rows build full
+records, using fresh source reads. A selected source change prompts a
+restart. Tests cover ordering, historical reads and revision-bound pages,
+including 50-, 500-, and 2,000-member fixtures with eight records built per
+page. [Read contract](../../docs/fast-brain-tool-improvements.md#topic-page-cost).
 
-**First slice.** Take candidate rows from the existing batch read where
-available. Compute only score, revision, visibility and evidence state before
-selection. Batch repeated source lookups within one request if the profile
-shows they dominate. Construct full records after the page cut. Keep
-revision-bound continuation and recheck selected evidence against edits,
-withdrawals and expiry. A new cache across requests needs evidence that it
-can safely detect those changes and that it would pay for itself.
+An isolated comparison with a shared source message and stub stores measured
+these median times for the first and second eight-result pages (five runs
+per case). Source reads and full records are totals across both pages.
 
-**Acceptance.** At 50, 500 and 2,000 members, count original-message reads,
-record builds and wall time for a first page and continuation. Full record
-construction scales with page size. Ranking, tie order, historical mode,
-owner filtering and changed-page detection match current behavior across
-source edits and deletions.
+| Members | Source reads, before → after | Full records, before → after | First / next ms, before → after |
+| ---: | ---: | ---: | --- |
+| 50 | 232 → 34 | 116 → 16 | 1.5 / 1.5 → 1.2 / 1.2 |
+| 500 | 2,032 → 34 | 1,016 → 16 | 15.5 / 13.8 → 7.3 / 8.2 |
+| 2,000 | 8,032 → 34 | 4,016 → 16 | 52.6 / 53.4 → 32.3 / 31.4 |
+
+**Remaining:** Measure first-page and continuation latency on ordinary-use
+clusters with diverse source messages.
 
 ## P24a. Repair the STT partial-read and recorder-lifetime contracts
 
