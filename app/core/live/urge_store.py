@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
+from threading import RLock
 from typing import Iterable
 
 from app.core.infra import timephrase
@@ -59,6 +61,80 @@ class LiveUrgeStore:
         self._urges: dict[str, LiveUrge] = {}
         self._blocked: dict[str, str] = {}
         self._last_notices: tuple[LiveNotice, ...] = ()
+        self._report_lock = RLock()
+        self._report_reservation: tuple[str, LiveUrge] | None = None
+
+    def reserved_report(
+        self, now_mono_ms: float, *, token: str | None = None,
+    ) -> LiveUrge | None:
+        with self._report_lock:
+            if self._report_reservation is None:
+                return None
+            current, urge = self._report_reservation
+            if urge.is_expired(now_mono_ms) or (
+                0 < urge.source_deadline_ms <= now_mono_ms
+            ):
+                self._urges[urge.urge_id] = replace(
+                    urge, state="expired", resolution_reason="report_reservation_expired",
+                )
+                self._report_reservation = None
+                return None
+            return urge if token is None or current == token else None
+
+    def reserve_report(self, urge_id: str, *, now_mono_ms: float) -> str:
+        with self._report_lock:
+            urge = self._urges.get(urge_id)
+            if (
+                self.reserved_report(now_mono_ms) is not None
+                or urge is None or urge.state not in ACTIVE_STATES
+                or not urge.is_requested_report or urge.is_expired(now_mono_ms)
+                or 0 < urge.source_deadline_ms <= now_mono_ms
+            ):
+                return ""
+            token = uuid.uuid4().hex
+            self._report_reservation = (token, urge)
+            self._urges[urge_id] = self._with_state(urge, "reserved")
+            self._blocked[urge.repetition_key] = urge.evidence_key()
+            return token
+
+    def finish_report(
+        self, token: str, *, now_mono_ms: float, outcome: str,
+        charge: Callable[[], bool] | None = None,
+    ) -> str:
+        """Settle a queued report once, optionally restoring its original eligibility."""
+        with self._report_lock:
+            urge = self.reserved_report(now_mono_ms, token=token)
+            if urge is None:
+                return ""
+            if charge is not None and not charge():
+                outcome = "budget_exhausted"
+            self._report_reservation = None
+            retry = outcome == "preempted" and not urge.report_retry_used
+            if outcome == "enqueue_failed" or retry:
+                self._blocked.pop(urge.repetition_key, None)
+                if retry:
+                    urge = replace(
+                        urge, state="candidate", report_retry_used=True,
+                        resolution_reason="dispatch_preempted",
+                    )
+                    outcome = "retry"
+                self._urges[urge.urge_id] = urge
+                return outcome
+            self._urges[urge.urge_id] = replace(
+                urge, state="consumed" if outcome == "dispatched" else "withdrawn",
+                resolution_reason=outcome,
+            )
+            return outcome
+
+    def discard_report_wakes(self, now_mono_ms: float) -> None:
+        with self._report_lock:
+            if self._report_reservation is not None:
+                token, _ = self._report_reservation
+                self.finish_report(token, now_mono_ms=now_mono_ms, outcome="stale")
+            for urge in self.active():
+                if urge.report_retry_used:
+                    self._urges[urge.urge_id] = self._with_state(urge, "withdrawn")
+                    self._blocked[urge.repetition_key] = urge.evidence_key()
 
     def active(self) -> tuple[LiveUrge, ...]:
         return tuple(
@@ -72,6 +148,7 @@ class LiveUrgeStore:
         return self._last_notices
 
     def expire_due(self, now_mono_ms: float) -> int:
+        self.reserved_report(now_mono_ms)
         expired = 0
         for urge_id, urge in list(self._urges.items()):
             source_bounded = urge.source_deadline_ms > 0
@@ -95,6 +172,7 @@ class LiveUrgeStore:
             if urge.is_expired(now_mono_ms):
                 deferred = (
                     urge.source == "cue_pool" and urge.cue_id is not None
+                    and not urge.report_retry_used
                     and (
                         urge.evaluation_count < 2 if source_bounded
                         else not urge.opportunity_seen and not urge.reconsidered
@@ -121,8 +199,8 @@ class LiveUrgeStore:
             updated = replace(
                 urge, opportunity_seen=True, evaluation_count=urge.evaluation_count + 1,
             )
-            if defer and urge.source_deadline_ms > 0:
-                exhausted = updated.evaluation_count >= 2
+            if defer and (urge.source_deadline_ms > 0 or urge.report_retry_used):
+                exhausted = urge.report_retry_used or updated.evaluation_count >= 2
                 updated = replace(
                     updated, state="expired" if exhausted else "deferred",
                     next_reconsideration_ms=0.0 if exhausted else now_mono_ms + 60_000,

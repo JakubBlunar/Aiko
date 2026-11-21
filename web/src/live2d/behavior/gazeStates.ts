@@ -103,6 +103,7 @@ const STATES: readonly GazeState[] = [
     name: "held",
     matches: ({ gazeClass, snapshot }) =>
       gazeClass === "rest" || gazeClass === "window"
+      || (gazeClass === "user_eye_contact" && snapshot.liveEmbodiment?.hold_attention === true)
       || snapshot.liveAttentionTarget === "shared_activity",
     update(target, { gazeClass }) {
       const focus = gazeFocusForClass(gazeClass || "rest");

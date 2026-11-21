@@ -31,6 +31,8 @@ def read_scenario(name: str) -> dict:
     "listening-posture",
     "return-glance",
     "circadian-quieting",
+    "grounded-glances",
+    "requested-update-preempted",
 ])
 def test_fixture_runs_without_network(name, monkeypatch):
     def unexpected_request(*args, **kwargs):
@@ -97,6 +99,16 @@ def test_the_night_transition_keeps_affordances_for_a_requested_update():
     assert {
         step["frame"]["shared"]["world_activity"] for step in report["steps"]
     } == {"looking_outside"}
+
+
+def test_accepted_user_glance_is_brief_and_leaves_the_shared_hold_intact():
+    report = run_live_scenario(read_scenario("grounded-glances"))
+    assert report["expectation_failures"] == []
+    glance = report["steps"][1]["embodiment"]["behavior_plan"]
+    assert glance["attention_target"] == "user"
+    assert glance["gaze_class"] == "user_eye_contact"
+    assert glance["ttl_ms"] == 1200
+    assert report["spoken"] == []
 
 
 @pytest.mark.parametrize("reference", ["2", "9"])
@@ -277,6 +289,75 @@ def test_new_user_intent_preempts_a_queued_topic_before_the_fake_speaker():
     assert "talk_about" not in report["dispatches"][0]
     assert report["steps"][-1]["cues"]["balcony herbs"]["surfaced"] == 0
     assert [event["delivery"] for event in report["spoken"]] == ["Assistant (scripted reply)"]
+
+
+@pytest.mark.parametrize("interruption, reason", [
+    ({"impulse": "user.typing_started"}, "floor_busy"),
+    ({"impulse": "user.message_sent", "payload": {"text": "One thing first."}}, "new_user_intent"),
+])
+def test_preempted_report_reaches_the_next_safe_opening_once(interruption, reason):
+    scenario = read_scenario("requested-update-preempted")
+    if reason == "new_user_intent":
+        scenario["steps"][7] = interruption
+        scenario["steps"][9:11] = [
+            {"reply": "Go ahead."},
+            {},
+        ]
+        scenario["steps"][11]["advance_ms"] = 11000
+    report = run_live_scenario(scenario)
+    steps = report["steps"]
+    subject = "bread is cool enough to pack"
+    assert report["expectation_failures"] == []
+    assert [entry["reason"] for entry in report["dispatches"]] == [reason, "simulated_reply"]
+    assert [entry["subject"] for entry in report["dispatches"]] == [subject, subject]
+    assert steps[6]["queued_count"] == 1
+    assert steps[8]["cues"][subject]["surfaced"] == 0
+    assert steps[8]["budget"]["remaining"] == steps[6]["budget"]["remaining"]
+    assert steps[11]["queued_count"] == 1
+    assert steps[12]["cues"][subject]["surfaced"] == 1
+    assert (
+        steps[12]["budget"]["remaining"]["main_wake"]
+        == steps[8]["budget"]["remaining"]["main_wake"] - 1
+    )
+    assert steps[-1]["main_wakes"] == 2
+    updates = [entry for entry in report["spoken"] if entry["delivery"] == "Assistant (proactive)"]
+    assert len(updates) == 1
+
+
+@pytest.mark.parametrize("interrupt, reasons", [
+    (
+        {"impulse": "user.typing_started"},
+        ["floor_busy", "floor_busy"],
+    ),
+    (
+        {"impulse": "user.session_changed"},
+        ["floor_busy", "stale"],
+    ),
+])
+def test_second_interruption_or_generation_change_ends_report_retry(interrupt, reasons):
+    scenario = read_scenario("requested-update-preempted")
+    scenario["steps"].insert(12, interrupt)
+    scenario["steps"] += [{"impulse": "user.typing_stopped"}, {"advance_ms": 20000}]
+    report = run_live_scenario(scenario)
+    assert [entry["reason"] for entry in report["dispatches"]] == reasons
+    assert report["steps"][-1]["main_wakes"] == 2
+    assert report["steps"][-1]["queued_count"] == 0
+    assert report["steps"][-1]["cues"]["bread is cool enough to pack"]["surfaced"] == 0
+
+
+def test_preempted_report_cannot_retry_after_the_cue_expires():
+    scenario = read_scenario("requested-update-preempted")
+    scenario["steps"][4]["cue"]["ttl_hours"] = 0.001
+    scenario["steps"][9]["advance_ms"] = 4000
+    report = run_live_scenario(scenario)
+    assert report["expectation_failures"] == []
+    assert [entry["reason"] for entry in report["dispatches"]] == [
+        "floor_busy", "no_queued_wake",
+    ]
+    state = report["steps"][-1]
+    assert state["main_wakes"] == 1
+    assert not state["cues"]["bread is cool enough to pack"]["available"]
+    assert state["budget"]["remaining"] == report["steps"][6]["budget"]["remaining"]
 
 
 def test_interruption_trials_distinguish_admission_from_dispatch():

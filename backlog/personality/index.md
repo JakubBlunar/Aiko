@@ -566,9 +566,9 @@ message through the existing history interface. D9 starts as archive navigation.
   win.
 - [L11](live-mode.md#l11-circadian-quieting-from-a-period-token) — **open**: Add deterministic
   period-token policy quieting with timephrase; night cannot increase intensity or speech authority.
-- [L13](live-mode.md#l13-glance-targets-from-an-allowlisted-present-set) — **open**:
-  Construct/validate an allowlisted menu from present frame entities; absent/unknown targets drop
-  and private titles never enter policy context.
+- [L13](live-mode.md#l13-glance-targets-from-an-allowlisted-present-set) — **implemented**:
+  Ground the gaze target in the current scene and briefly look toward the present user.
+  Live-rig timing and spontaneous selection during shared moments still need evaluation.
 - [L14](live-mode.md#l14-return-and-reconnect-companion-beat) — **open**: Connect one bounded return
   beat with source/generation/dedupe checks and existing speech acts; no automatic greeting or
   second speech loop.

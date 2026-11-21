@@ -378,6 +378,37 @@ describe("GazeChannel — lifecycle", () => {
 });
 
 describe("GazeChannel — held Live gaze", () => {
+  it("honors a deliberate idle glance toward the user despite pointer movement", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const plan = {
+      intent: "remain_present",
+      attention_target: "user",
+      gaze_class: "user_eye_contact",
+      body_class: "settle",
+      breath_class: "normal",
+      expression_class: "content",
+      motion_class: "none",
+      hold_attention: true,
+      degrade_to_sleep: false,
+    };
+    const { deps, clock, setSnapshot } = makeDeps({
+      liveAttentionTarget: "user",
+      liveEmbodiment: plan,
+    });
+    channel.attach(adapter, deps);
+    const tick = () => channel.tickGaze(clock.now(), 0.016, mouseAt(1600, 100, clock.now()));
+    tick();
+    expect(channel.target).toEqual({ x: 0, y: 0.2 });
+
+    setSnapshot({
+      liveAttentionTarget: "shared_activity",
+      liveEmbodiment: { ...plan, attention_target: "shared_activity", gaze_class: "rest" },
+    });
+    tick();
+    expect(channel.target).toEqual({ x: 0, y: 0 });
+  });
+
   it("restores the underlying gaze as the floor and sleep ownership change", () => {
     const adapter = new FakeAdapter();
     const channel = new GazeChannel({ random: noopRandom });

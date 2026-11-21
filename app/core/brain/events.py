@@ -262,6 +262,7 @@ class ProactiveEvent:
     speech_act: str = ""
     cue_subject: str = ""
     cue_id: int | None = None
+    live_report_token: str = ""
 
 
 @dataclass(frozen=True, slots=True)

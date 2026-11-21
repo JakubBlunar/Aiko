@@ -117,7 +117,7 @@ class HoldTtlAndResolverTests(unittest.TestCase):
         frame = _frame()
         controller = _controller()
         controller._hold_nonverbal(
-            frame, "remain_present", "user", 999_000, 10_000.0, "",
+            frame, "remain_present", frame.attention.target, 999_000, 10_000.0, "",
             keep_attention=True,
         )
         held = controller.last_accepted_nonverbal

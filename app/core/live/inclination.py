@@ -30,6 +30,11 @@ class LiveInclinationRuntime:
         self._previous_frame: LiveSituationFrame | None = None
         self._monotonic = monotonic or (lambda: time.monotonic())
 
+    def main_wake_remaining(self, now_mono_ms: float) -> int:
+        if self.urges.reserved_report(now_mono_ms) is not None:
+            return 0
+        return self.budget.remaining("main_wake", now_mono_ms=now_mono_ms)
+
     def apply(
         self,
         frame: LiveSituationFrame,
@@ -65,10 +70,7 @@ class LiveInclinationRuntime:
             new_opening = not main_wake_floor_busy(frame) and (
                 trigger_kind in {"user.typing_stopped", "aiko.playback_drained"}
                 and previous is not None
-                and (
-                    main_wake_floor_busy(previous)
-                    or previous.interaction.playback_active
-                )
+                and main_wake_floor_busy(previous)
                 or any(notice.kind == "focus_boundary" for notice in notices)
             )
             self.cue_adapter.project(
@@ -122,7 +124,7 @@ class LiveInclinationRuntime:
         self, frame: LiveSituationFrame, *, menu_ids: set[str], now_mono_ms: float,
         unprompted_speech: bool, user_intent: bool,
     ) -> tuple[str, ...]:
-        remaining = self.budget.remaining("main_wake", now_mono_ms=now_mono_ms)
+        remaining = self.main_wake_remaining(now_mono_ms)
         return tuple(
             urge.urge_id for urge in self.urges.active()
             if urge.cue_id is not None and urge.urge_id in menu_ids

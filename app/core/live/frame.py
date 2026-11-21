@@ -61,6 +61,7 @@ class InteractionNow:
     silence_since_user_intent_ms: int = 0
     silence_since_aiko_speech_ms: int = 0
     silence_since_shared_activity_ms: int = 0
+    user_intent_sequence: int = 0
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -85,6 +86,7 @@ class SharedSituation:
     world_compatible: bool = False
     conflict_reason: str = ""
     shared_commitment_active: bool = False
+    user_present: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)

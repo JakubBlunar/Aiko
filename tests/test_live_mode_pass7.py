@@ -376,7 +376,7 @@ class OverlayTests(unittest.TestCase):
             frame, caps, policy_intent="acknowledge_user", ttl_ms=800,
         )
         self.assertEqual(overlay.intent, "acknowledge_user")
-        self.assertEqual(overlay.attention_target, frame.attention.target)
+        self.assertEqual(overlay.attention_target, "user")
         self.assertEqual(overlay.gaze_class, "user_eye_contact")
         self.assertEqual(overlay.body_class, "lean_in")
         self.assertEqual(overlay.ttl_ms, 800)

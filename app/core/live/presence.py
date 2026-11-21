@@ -34,6 +34,7 @@ ATTENTION_TARGET_SET = frozenset(ATTENTION_TARGETS)
 ATTENTION_INTENTS = frozenset({"attend", "remain_present"})
 SHARED_STYLES = frozenset({"share_delight", "playful"})
 QUIET_PRESENCE = "give_space"
+USER_GLANCE_MS = 1200
 ListenPosture = Literal["none", "lean_in", "give_space", "hold_still"]
 
 STYLE_SPEECH_CAP = {
@@ -124,9 +125,11 @@ def sharing_active(frame: LiveSituationFrame) -> bool:
 
 
 def allowed_attention_targets(frame: LiveSituationFrame) -> frozenset[str]:
-    if str(frame.constraints.sleep_status or "") in SLEEP_SPEECH_FORBID:
+    if _quiet_constraint(frame):
         return frozenset({"none"})
-    allowed = {"none", "user", "cursor"}
+    allowed = {"none"}
+    if frame.shared.user_present or user_interrupting(frame):
+        allowed.add("user")
     if sharing_active(frame):
         allowed.add("shared_activity")
     activity = str(frame.shared.world_activity or "").strip().lower()
@@ -190,12 +193,12 @@ def admit_attention_target(
     keep_attention: bool = False,
 ) -> str:
     """Keep assembler hysteresis. Policy cannot mint a shared target."""
-    current = str(frame.attention.target or "none")
+    allowed = allowed_attention_targets(frame)
+    current = frame.attention.target if frame.attention.target in allowed else "none"
+    if intent == "acknowledge_user" and "user" in allowed and not keep_attention:
+        return "user"
     if str(intent or "") not in ATTENTION_INTENTS:
         return current
-    allowed = allowed_attention_targets(frame)
-    if current not in allowed:
-        current = "none" if "none" in allowed else next(iter(allowed))
     token = str(proposed or "").strip()
     interrupting = user_interrupting(frame)
     if interrupting:
@@ -209,7 +212,8 @@ def admit_attention_target(
     if token == current:
         return current
     held = int(frame.temporal.min_hold_remaining_ms or 0) > 0
-    if held:
+    # A brief user glance can sit over the current activity's commitment.
+    if held and token != "user":
         return current
     return token
 
@@ -239,26 +243,23 @@ def presence_from_proposal(
     return style, target
 
 
-def style_visuals(
+def style_body_expression(
     style: str,
     *,
-    gaze: str,
     body: str,
     expression: str,
-) -> tuple[str, str, str]:
+) -> tuple[str, str]:
     """Pick among already-allowed semantic classes. No new palette."""
     token = str(style or "neutral")
     if token == "give_space":
-        return "rest", "settle", "content" if expression != "none" else "none"
-    if token == "cofocus":
-        return "user_eye_contact", "lean_in", "attentive"
+        return "settle", "content" if expression != "none" else "none"
+    if token in {"cofocus", "soft_support"}:
+        return "lean_in", "attentive"
     if token == "share_delight":
-        return "rest", "settle", "content"
-    if token == "soft_support":
-        return "user_eye_contact", "lean_in", "attentive"
+        return "settle", "content"
     if token == "playful":
-        return gaze if gaze != "none" else "cursor_follow", "perk", "content"
-    return gaze, body, expression
+        return "perk", "content"
+    return body, expression
 
 
 __all__ = [
@@ -271,6 +272,7 @@ __all__ = [
     "QUIET_PRESENCE",
     "STYLE_INTENSITY_CAP",
     "STYLE_SPEECH_CAP",
+    "USER_GLANCE_MS",
     "admit_attention_target",
     "allowed_attention_targets",
     "clamp_presence_style",
@@ -279,6 +281,6 @@ __all__ = [
     "listen_posture_for",
     "presence_from_proposal",
     "quieter_speech",
-    "style_visuals",
+    "style_body_expression",
     "user_interrupting",
 ]

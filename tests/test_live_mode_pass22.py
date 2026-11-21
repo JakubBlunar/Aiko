@@ -143,12 +143,12 @@ class AttentionAdmitTests(unittest.TestCase):
         )
         self.assertNotEqual(admitted, "shared_activity")
 
-    def test_hysteresis_keeps_shared_target(self) -> None:
+    def test_hysteresis_keeps_shared_target_when_model_proposes_to_drop_it(self) -> None:
         frame = _shared_frame()
         self.assertEqual(frame.attention.target, "shared_activity")
         self.assertGreater(frame.temporal.min_hold_remaining_ms, 0)
         admitted = admit_attention_target(
-            "user", intent="remain_present", frame=frame,
+            "none", intent="remain_present", frame=frame,
         )
         self.assertEqual(admitted, "shared_activity")
 

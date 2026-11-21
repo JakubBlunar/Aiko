@@ -12,7 +12,7 @@ from typing import Any
 from app.core.activity.envelope import ActivityEnvelope, ActivitySubject
 from app.core.activity.store import ActivityStore
 from app.core.conversation.conversation_situation import (
-    ConversationSituationSnapshot, WorldSituation,
+    ConversationSituationSnapshot, ConversationSituationState, WorldSituation,
 )
 from app.core.infra import timephrase
 from app.core.infra.agent_settings_parse import (
@@ -35,7 +35,7 @@ _STATE_FLAGS = {
     "connected", "present", "typing", "quiet", "playback", "shared", "unprompted_speech",
     "voice_session",
 }
-_STATE_TEXT = {"app", "floor", "sleep", "activity"}
+_STATE_TEXT = {"app", "floor", "sleep", "activity", "shared_activity"}
 _STEP_KEYS = {
     "label", "state", "impulse", "payload", "advance_ms", "cue", "concept", "dispatch",
     "reply", "proposal", "expect", "new_session", "activity_sample",
@@ -179,6 +179,15 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
 
     def conversation_situation_snapshot(self, *, fresh: bool) -> ConversationSituationSnapshot:
         state = self.state
+        shared_activity = state.get("shared_activity", "")
+        inferred = None
+        if state["shared"] and shared_activity:
+            inferred = ConversationSituationState(
+                session_id=self.session_key, generation=self._live_mode_generation,
+                status="active", summary="", shared=True, shared_activity=shared_activity,
+                place_ref="", aiko_activity="", evidence_message_ids=(),
+                source_message_id=0, miss_count=0, updated_at=self.clock.now().isoformat(),
+            )
         return ConversationSituationSnapshot(
             session_id=self.session_key, generation=self._live_mode_generation,
             observed_at=self.clock.now().isoformat(), input_mode="typed",
@@ -187,7 +196,9 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
             user_present=state["present"], user_active_app=state["app"],
             floor_owner=state["floor"], typing_active=state["typing"],
             world=WorldSituation(activity=state["activity"]),
-            inferred=None, inferred_stale=True, world_compatible=False, conflict_reason="",
+            inferred=inferred, inferred_stale=inferred is None,
+            world_compatible=inferred is not None,
+            conflict_reason="",
             shared_commitment_active=state["shared"], sleep={"status": state["sleep"]},
             since_user_activity_ms=self.clock.elapsed_ms - self._last_user_activity_ms,
         )

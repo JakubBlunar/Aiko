@@ -187,3 +187,22 @@ in all four night trials and all four matched afternoon controls. Both
 conditions had zero speech requests while the user was typing. The
 scenario provided the ready result and simulated the spoken handoff.
 The avatar check measured the semantic plan.
+
+## Grounded glance and interrupted requested update
+
+The scripted [grounded-glance replay](../../tests/scenarios/live/grounded-glances.json)
+drove a 1.2-second look toward the present user over an ongoing shared film.
+The semantic plan returned to the same activity when the hold expired. It also
+kept the shared gaze when the user was absent. In four `qwen3.5:4b` trials the
+model kept watching the film at the opening, with zero voluntary glances and
+zero speech requests. The scripted replay and channel tests exercised the
+glance itself. Live-rig timing is still pending.
+
+In the [interrupted-update replay](../../tests/scenarios/live/requested-update-preempted.json),
+the model queued the bread update at 12 seconds in all eight trials, four with
+the seeded timing preference and four without it. Typing won before dispatch.
+The cue stayed available and the budget was unspent. At 14 seconds, the first
+heartbeat after typing stopped, the model selected the same update in all
+eight trials. Each run reached one simulated delivery. Scripted controls also
+covered a newer user message, a second interruption and a generation change.
+The replay supplied the readiness cue and final line.

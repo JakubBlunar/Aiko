@@ -1,0 +1,52 @@
+{
+  "name": "Typing interrupts a requested update between admission and dispatch",
+  "steps": [
+    {
+      "impulse": "user.message_sent",
+      "payload": {"text": "Please tell me as soon as the bread is cool enough to pack."}
+    },
+    {"reply": "I’ll let you know as soon as it is ready."},
+    {"advance_ms": 11000},
+    {"impulse": "user.typing_started"},
+    {
+      "cue": {
+        "type": "away_activities",
+        "subject": "bread is cool enough to pack",
+        "text": "The bread has cooled and is ready to pack. The user requested this update.",
+        "payload": {"requested_update_ready": true}
+      }
+    },
+    {"impulse": "user.typing_stopped"},
+    {
+      "label": "Queue the ready report at the first opening",
+      "advance_ms": 1000,
+      "proposal": {
+        "intent": "request_main_speech",
+        "select_subject": "bread is cool enough to pack",
+        "arguments": {"speech_act": "share_observation"}
+      }
+    },
+    {"impulse": "user.typing_started"},
+    {
+      "label": "Typing wins before the queued report can speak",
+      "dispatch": {"if_queued": true, "text": "The bread is cool enough to pack."}
+    },
+    {
+      "label": "Do not start another wake while the user is typing",
+      "advance_ms": 1000,
+      "expect": {"new_policy_calls": 0, "queued_count": 0}
+    },
+    {"impulse": "user.typing_stopped"},
+    {
+      "label": "Offer the report once at the next safe opening",
+      "advance_ms": 1000,
+      "proposal": {
+        "intent": "request_main_speech",
+        "select_subject": "bread is cool enough to pack",
+        "arguments": {"speech_act": "share_observation"}
+      }
+    },
+    {"dispatch": {"if_queued": true, "text": "The bread is cool enough to pack."}},
+    {"advance_ms": 1000, "expect": {"queued_count": 0}}
+  ]
+}

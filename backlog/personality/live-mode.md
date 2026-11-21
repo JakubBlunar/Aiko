@@ -75,14 +75,17 @@ Requested updates still use the normal floor and speech checks.
 
 ## L13. Glance targets from an allowlisted present-set
 
-**Status: Open implementation.**
+**Status: Implemented in the policy and avatar.**
 
-**Implemented / available:** Attention-target vocabulary and hysteresis exist.
+**Implemented / available:** Live builds the target menu from the current frame using
+semantic labels. An accepted look toward the present user has a 1.2-second policy
+hold over the current shared or world activity. The policy, avatar target, and gaze
+agree on the selected target. Typing, speech and sleep retain their posture rules.
 
-**Remaining:** Construct/validate an allowlisted menu from present frame entities; absent/unknown
-targets drop and private titles never enter policy context.
+**Remaining:** Evaluate visual timing on the live rig and sample natural
+shared moments for when the local policy chooses to look over.
 
-**Source check:** [assembler.py](../../app/core/live/assembler.py).
+[Grounded-glance replay](../../tests/scenarios/live/grounded-glances.json)
 
 ## L14. Return and reconnect companion beat
 

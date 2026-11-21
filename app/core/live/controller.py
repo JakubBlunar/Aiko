@@ -43,7 +43,9 @@ from app.core.live.main_wake import (
 )
 from app.core.live.policy_context import situation_summary
 from app.core.live.presence import (
+    ATTENTION_INTENTS,
     STYLE_SPEECH_CAP,
+    USER_GLANCE_MS,
     clamp_presence_style,
     hold_flags_from_proposal,
     presence_from_proposal,
@@ -608,6 +610,11 @@ class LivePolicyController:
             )
             trace["evaluated_urge_ids"] = list(eligible_ids)
             for urge_id in eligible_ids:
+                if (
+                    executed and extra.get("main_wake_enqueued")
+                    and urge_id == proposal.selected_urge_id
+                ):
+                    continue
                 runtime.urges.note_opportunity(
                     urge_id, defer=True, now_mono_ms=self._monotonic() * 1000.0,
                 )
@@ -811,7 +818,7 @@ class LivePolicyController:
             return True, extra
         exempt = bool(user_intent) or trigger_kind in _BUDGET_EXEMPT_KINDS
         switched = False
-        if target != current and not exempt:
+        if intent in ATTENTION_INTENTS and target != current and not exempt:
             runtime = self._inclination()
             spent = True
             if runtime is not None:
@@ -903,7 +910,7 @@ class LivePolicyController:
                 urges = ()
             try:
                 remaining = int(
-                    runtime.budget.remaining("main_wake", now_mono_ms=now_ms)
+                    runtime.main_wake_remaining(now_ms)
                 )
             except Exception:
                 remaining = 0
@@ -923,8 +930,13 @@ class LivePolicyController:
             self.note_main_wake_reject(reason, int(frame.generation))
             extra["main_wake_rejected"] = reason
             return False, extra
+        urge = lookup_urge(urges, str(proposal.selected_urge_id or ""))
+        report_token = ""
         spent = True
-        if runtime is not None:
+        if runtime is not None and urge is not None and urge.is_requested_report:
+            report_token = runtime.urges.reserve_report(urge.urge_id, now_mono_ms=now_ms)
+            spent = bool(report_token)
+        elif runtime is not None:
             try:
                 spent = bool(
                     runtime.budget.consume("main_wake", now_mono_ms=now_ms)
@@ -937,7 +949,6 @@ class LivePolicyController:
             extra["main_wake_rejected"] = "budget_exhausted"
             self.note_main_wake_reject("budget_exhausted", int(frame.generation))
             return False, extra
-        urge = lookup_urge(urges, str(proposal.selected_urge_id or ""))
         concept_ids: list[int] = []
         if urge is not None:
             concept_ids.extend(int(cid) for cid in urge.concept_ids if cid)
@@ -966,6 +977,13 @@ class LivePolicyController:
         }
         extra["main_wake_payload"] = dict(payload)
         extra["main_wake_payload"]["concept_ids"] = list(unique_ids)
+        if report_token:
+            payload.update(
+                report_token=report_token,
+                live_generation=frame.mode_generation,
+                live_intent_sequence=frame.interaction.user_intent_sequence,
+                session_key=frame.session_id,
+            )
         enqueued = False
         callback = self._on_main_wake
         if callable(callback):
@@ -975,7 +993,11 @@ class LivePolicyController:
                 log.debug("live main-wake enqueue failed", exc_info=True)
                 enqueued = False
         if not enqueued:
-            if runtime is not None:
+            if report_token:
+                runtime.urges.finish_report(
+                    report_token, now_mono_ms=now_ms, outcome="enqueue_failed",
+                )
+            elif runtime is not None:
                 runtime.budget.refund("main_wake", now_mono_ms=now_ms)
             extra["main_wake_reason"] = "enqueue_failed"
             extra["main_wake_rejected"] = "enqueue_failed"
@@ -985,7 +1007,7 @@ class LivePolicyController:
         extra["main_wake_admitted"] = True
         extra["main_wake_enqueued"] = True
         self.proactive_enqueued += 1
-        if runtime is not None and urge is not None:
+        if runtime is not None and urge is not None and not report_token:
             runtime.urges.consume(urge.urge_id)
         live_log.info(
             "live main-wake admitted: reason_code=%s generation=%s "
@@ -996,12 +1018,14 @@ class LivePolicyController:
         )
         return True, extra
 
-    def note_main_wake_reject(self, reason: str, generation: int) -> None:
+    def note_main_wake_reject(
+        self, reason: str, generation: int, *, retry_scheduled: bool = False,
+    ) -> None:
         self._main_wake_rejected += 1
         self._main_wake_reject_reasons[str(reason or "")] += 1
         self._main_wake_last_reject_generation = int(generation)
         self._main_wake_decided_generation = int(generation)
-        if str(reason or "") in {"floor_busy", "turn_or_tts"}:
+        if not retry_scheduled and str(reason or "") in {"floor_busy", "turn_or_tts"}:
             record = self.last_action
             action_id = str(getattr(record, "action_id", "") or "")
             intent = str(getattr(record, "intent", "") or "request_main_speech")
@@ -1207,6 +1231,8 @@ class LivePolicyController:
         keep_style: bool = False,
     ) -> None:
         ttl = max(0, min(MAX_WAIT_MS, int(ttl_ms)))
+        if target == "user" and frame.attention.target != "user" and not user_interrupting(frame):
+            ttl = min(ttl, USER_GLANCE_MS)
         self.last_accepted_nonverbal = {
             "generation": int(frame.generation),
             "intent": intent,

@@ -1,0 +1,38 @@
+{
+  "name": "A brief user glance returns to a shared film",
+  "steps": [
+    {
+      "state": {"shared": true, "shared_activity": "watching a film", "activity": "watching_screens"},
+      "expect": {"embodiment": {"behavior_plan": {"attention_target": "shared_activity", "gaze_class": "rest"}}}
+    },
+    {
+      "label": "Look over without dropping the shared commitment",
+      "impulse": "silence.wake",
+      "proposal": {"intent": "remain_present", "arguments": {"attention_target": "user"}},
+      "expect": {"frame": {"attention": {"target": "shared_activity"}}, "speech_count": 0}
+    },
+    {
+      "label": "Resume watching after the brief glance",
+      "advance_ms": 1201,
+      "expect": {"embodiment": {"behavior_plan": {"attention_target": "shared_activity", "gaze_class": "rest"}}}
+    },
+    {
+      "label": "A missing user cannot be selected",
+      "state": {"present": false},
+      "impulse": "silence.wake",
+      "proposal": {"intent": "remain_present", "arguments": {"attention_target": "user"}},
+      "expect": {"embodiment": {"behavior_plan": {"attention_target": "shared_activity"}}}
+    },
+    {
+      "label": "The user starts composing",
+      "state": {"present": true},
+      "impulse": "user.typing_started",
+      "expect": {"embodiment": {"behavior_plan": {"listen_posture": "give_space", "gaze_class": "rest"}}}
+    },
+    {
+      "label": "Sleep still owns the gaze",
+      "state": {"sleep": "asleep"},
+      "expect": {"speech_count": 0, "embodiment": {"behavior_plan": {"degrade_to_sleep": true}}}
+    }
+  ]
+}

@@ -16,13 +16,14 @@ from app.core.live.fallback import render_fallback_prompt
 from app.core.live.frame import LiveSituationFrame
 from app.core.live.impulse import LiveImpulse
 from app.core.live.main_wake import TRANSCRIPT_FLOOR_TOKENS, TRANSCRIPT_MAX_ROWS
+from app.core.live.presence import allowed_attention_targets
 from app.core.live.proposal import LIVE_POLICY_INTENTS
 from app.core.live.urge import LiveUrge
 from app.core.live.urge_menu import UrgeMenuItem, build_urge_menu, render_urge_menu
 from app.core.session.prompt_support import clip_text_to_tokens
 from app.llm.token_utils import chars_per_token, estimate_tokens
 
-LIVE_POLICY_PROMPT_VERSION = 6
+LIVE_POLICY_PROMPT_VERSION = 7
 _SAFETY_TOKENS = 256
 _INSTRUCTIONS = """You are a Live behavior policy, not a companion.
 Choose exactly one intent for this moment. Output a complete JSON object.
@@ -66,10 +67,8 @@ arguments.presence_style is one of: neutral, cofocus, give_space,
 share_delight, soft_support, playful. It is stance, not a new scene.
 Do not pick share_delight unless SITUATION sharing=shared. Style may
 only quiet speech or reaction intensity; it cannot raise a budget.
-For attend or remain_present you may set arguments.attention_target
-to user, cursor, shared_activity, world_entity, or none.
-shared_activity is only valid when sharing=shared. The runtime may
-keep a held target.
+For attend or remain_present, arguments.attention_target may name one of
+the attention_targets in SITUATION. Omit it to follow the current scene.
 arguments.reaction_tone is one of: neutral, warm, curious, amused,
 proud, concerned, drowsy. arguments.reaction_intensity is low, mid,
 or high. The runtime clamps intensity down; it cannot raise it.
@@ -270,6 +269,7 @@ class LivePolicyPromptAssembler:
             f"lock_s={int(frame.shared.lock_span_s or 0)} "
             f"activity={activity}\n"
             f"attention={attention} commitment={commit}\n"
+            f"attention_targets={','.join(sorted(allowed_attention_targets(frame)))}\n"
             f"mood={mood} vitality={vitality} "
             f"circadian_period={frame.temporal.circadian_period or 'unknown'}\n"
             f"sleep={sleep} speech_budget={budget} "

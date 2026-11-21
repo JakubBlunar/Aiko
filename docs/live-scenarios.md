@@ -34,6 +34,13 @@ Use `requested-update-ready.json` with the same commands to test an explicit
 readiness signal. That fixture adds the cue while the user is typing and checks
 for the policy's decision at the first heartbeat after typing stops.
 
+In [the interrupted-update replay](../tests/scenarios/live/requested-update-preempted.json),
+typing resumes after the update is queued. A ready report with a still-available
+cue gets one more policy decision at a safe opening in the same Live session.
+The main-wake budget is charged when the report reaches dispatch. A second
+interruption ends the retry. The replay shows the selected subject, dispatch
+outcome, and whether the cue surfaced.
+
 This command replays an explicitly taught preference across two conversations.
 
 ```powershell
@@ -50,6 +57,12 @@ It checks the transition into night, the requested result's first safe
 opening, quiet mode, sleep, and the return to ordinary presence in the
 morning. Nighttime lowers the reaction ceiling, softens playful presence,
 and slows the idle breath. A clock transition alone adds no policy call.
+
+The [grounded-glance replay](../tests/scenarios/live/grounded-glances.json)
+checks that a look toward the present user can briefly overlay a shared
+activity. The policy chooses from the frame's present targets. The same
+effective target drives the avatar, and the shared activity resumes when the
+glance expires. Typing and sleep retain their own gaze rules.
 
 Scripted mode is the default. It uses each step's `proposal` to reproduce a
 decision without a model. Steps without one use `noop` if policy runs.

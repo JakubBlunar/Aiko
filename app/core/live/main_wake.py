@@ -63,6 +63,7 @@ def main_wake_floor_busy(frame: LiveSituationFrame) -> bool:
     return bool(
         getattr(interaction, "turn_active", False)
         or getattr(interaction, "tts_active", False)
+        or getattr(interaction, "playback_active", False)
         or getattr(interaction, "speech_active", False)
         or getattr(interaction, "typing_active", False)
     )

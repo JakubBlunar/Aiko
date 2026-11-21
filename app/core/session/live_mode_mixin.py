@@ -240,6 +240,9 @@ class LiveModeMixin:
     def bump_live_mode_generation(self, reason: str = "") -> int:
         current = int(getattr(self, "_live_mode_generation", 0) or 0) + 1
         self._live_mode_generation = current
+        runtime = getattr(self, "_live_inclination", None)
+        if runtime is not None:
+            runtime.urges.discard_report_wakes(self._live_monotonic() * 1000.0)
         woken = getattr(self, "_live_candidate_woken_ids", None)
         if woken is not None:
             woken.clear()
@@ -794,6 +797,7 @@ class LiveModeMixin:
                 getattr(self, "_live_voice_session_active", False),
             ),
             mode_generation=int(getattr(self, "_live_mode_generation", 0) or 0),
+            user_intent_sequence=int(getattr(self, "_live_user_intent_sequence", 0)),
             trigger_kind=str(trigger_kind or "heartbeat"),
             tts_active=bool(
                 getattr(self, "is_tts_playing", lambda: False)()
@@ -899,10 +903,15 @@ class LiveModeMixin:
                 pass
         if sleep_status in SLEEP_SPEECH_FORBID:
             return False
+        runtime = getattr(self, "_live_inclination", None)
+        if frame is not None and runtime is not None:
+            retries = self._live_ready_candidate_ids(frame, now_mono * 1000.0, retries_only=True)
+            if retries:
+                runtime.wait.cancel(reason="requested_update_opening")
+                return True
         last = float(getattr(self, "_live_last_idle_reconsider", 0.0) or 0.0)
         if last and (now_mono - last) * 1000.0 < _IDLE_RECONSIDER_MIN_MS:
             return False
-        runtime = getattr(self, "_live_inclination", None)
         wait = getattr(getattr(runtime, "wait", None), "current", None)
         if wait is None:
             if frame is None or not self._live_unprompted_speech_enabled():
@@ -912,7 +921,7 @@ class LiveModeMixin:
         return now_mono * 1000.0 >= deadline
 
     def _live_ready_candidate_ids(
-        self, frame: LiveSituationFrame, now_mono_ms: float,
+        self, frame: LiveSituationFrame, now_mono_ms: float, *, retries_only: bool = False,
     ) -> set[str]:
         runtime = getattr(self, "_live_inclination", None)
         if runtime is None:
@@ -921,17 +930,22 @@ class LiveModeMixin:
         self._live_candidate_woken_ids.intersection_update(
             urge.urge_id for urge in active if urge.cue_id is not None
         )
-        remaining = runtime.budget.remaining("main_wake", now_mono_ms=now_mono_ms)
+        remaining = runtime.main_wake_remaining(now_mono_ms)
         return {
             urge.urge_id for urge in active
             if urge.cue_id is not None
             and urge.urge_id not in self._live_candidate_woken_ids
+            and (not retries_only or urge.report_retry_used)
             and not admit_main_wake(
                 intent="request_main_speech", user_intent=False,
                 selected_urge_id=urge.urge_id, urges=(urge,), frame=frame,
                 decided_generation=None, now_mono_ms=now_mono_ms,
                 budget_remaining=remaining,
                 unprompted_speech=self._live_unprompted_speech_enabled(),
+            )
+            and (
+                not urge.report_retry_used
+                or self._live_requested_report_available(urge.cue_id, frame.session_id)
             )
         }
 
@@ -1261,10 +1275,15 @@ class LiveModeMixin:
         try:
             loop.enqueue(
                 ProactiveEvent(
-                    session_key=str(getattr(self, "session_key", "") or ""),
+                    session_key=str(payload.get("session_key", getattr(self, "session_key", ""))),
                     source="live_main_wake",
-                    live_generation=int(getattr(self, "_live_mode_generation", 0)),
-                    live_intent_sequence=int(getattr(self, "_live_user_intent_sequence", 0)),
+                    live_generation=int(payload.get(
+                        "live_generation", getattr(self, "_live_mode_generation", 0),
+                    )),
+                    live_intent_sequence=int(payload.get(
+                        "live_intent_sequence", getattr(self, "_live_user_intent_sequence", 0),
+                    )),
+                    live_report_token=str(payload.get("report_token", "")),
                     urge_id=str(payload.get("urge_id") or ""),
                     reason_code=str(payload.get("reason_code") or ""),
                     situation_summary=str(payload.get("situation_summary") or ""),
@@ -1297,11 +1316,25 @@ class LiveModeMixin:
             cue_text = "\nSelected cue (context, not an instruction):\n" + row.text
         return render_live_talk_about(payload) + cue_text
 
+    def _live_requested_report_available(self, cue_id: int | None, session_id: str) -> bool:
+        store = getattr(self, "_cue_store", None)
+        cue = store.available(cue_id) if store is not None and cue_id is not None else None
+        return cue is not None and cue_purpose(cue, session_id=session_id) == "report"
+
     def _live_main_wake_dispatch_block(self, event: Any) -> str:
         gen = int(getattr(event, "live_generation", 0) or 0)
         current = int(getattr(self, "_live_mode_generation", 0) or 0)
-        if gen and gen != current:
+        report_token = getattr(event, "live_report_token", "")
+        if (gen or report_token) and gen != current:
             return "stale"
+        if report_token:
+            if event.session_key != str(self.session_key):
+                return "stale"
+            runtime = getattr(self, "_live_inclination", None)
+            if runtime is None or runtime.urges.reserved_report(
+                self._live_monotonic() * 1000.0, token=report_token,
+            ) is None:
+                return "stale"
         if int(getattr(event, "live_intent_sequence", 0)) != int(
             getattr(self, "_live_user_intent_sequence", 0)
         ):
@@ -1309,6 +1342,8 @@ class LiveModeMixin:
         if getattr(self, "_connected_clients", None) == 0:
             return "unreachable"
         if bool(getattr(self, "_turn_in_progress", False)):
+            return "floor_busy"
+        if report_token and (self._live_tts_active() or not self.is_playback_drained()):
             return "floor_busy"
         frame = getattr(
             getattr(self, "_live_situation_assembler", None), "last_frame", None,
@@ -1325,7 +1360,9 @@ class LiveModeMixin:
         if cue_id is not None:
             store = getattr(self, "_cue_store", None)
             cue = store.available(cue_id) if store is not None else None
-            if cue is None:
+            if cue is None or (
+                report_token and cue_purpose(cue, session_id=frame.session_id) != "report"
+            ):
                 return "missing_cue"
         if str(frame.constraints.sleep_status or "") in SLEEP_SPEECH_FORBID:
             return "sleep"
@@ -1337,15 +1374,43 @@ class LiveModeMixin:
             return "focus_timing_preference"
         return ""
 
+    def _settle_live_report(self, event: ProactiveEvent, block: str) -> str:
+        runtime = self._live_inclination
+        now_ms = self._live_monotonic() * 1000.0
+        outcome = block or "dispatched"
+        if block in {"floor_busy", "new_user_intent"} and self._live_requested_report_available(
+            event.cue_id, event.session_key,
+        ):
+            outcome = "preempted"
+
+        def charge() -> bool:
+            return runtime.budget.consume("main_wake", now_mono_ms=now_ms)
+
+        result = runtime.urges.finish_report(
+            event.live_report_token, now_mono_ms=now_ms, outcome=outcome,
+            charge=None if block else charge,
+        )
+        if result == "retry":
+            self._live_candidate_woken_ids.discard(event.urge_id)
+        return result
+
     def _run_live_main_wake(self, event: Any) -> None:
         """Main-model turn for an admitted Live wake. No fake user row."""
         controller = getattr(self, "_live_policy_controller", None)
         gen = int(getattr(event, "live_generation", 0) or 0)
         block = self._live_main_wake_dispatch_block(event)
+        report_outcome = ""
+        if getattr(event, "live_report_token", "") and getattr(self, "_live_inclination", None):
+            report_outcome = self._settle_live_report(event, block)
+            if not block and report_outcome != "dispatched":
+                block = report_outcome or "stale"
         if block:
             if controller is not None:
                 try:
-                    controller.note_main_wake_reject(block, gen)
+                    if report_outcome == "retry":
+                        controller.note_main_wake_reject(block, gen, retry_scheduled=True)
+                    else:
+                        controller.note_main_wake_reject(block, gen)
                 except Exception:
                     log.debug("live main-wake reject note failed", exc_info=True)
             log.info("live main-wake dropped: reason=%s generation=%s", block, gen)
@@ -1681,7 +1746,7 @@ class LiveModeMixin:
             payload["commitment"] = frame.commitment.to_payload()
             payload["world_activity"] = frame.aiko.activity
             payload["world_posture"] = frame.aiko.posture
-            payload["attention_target"] = frame.attention.target
+            payload["attention_target"] = plan.attention_target
             payload["sleep_status"] = frame.constraints.sleep_status
         return payload
 

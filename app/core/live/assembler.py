@@ -84,6 +84,7 @@ class LiveAssembleInput:
     resource_contention: str = ""
     activity_evidence: ActivityEvidence | None = None
     circadian_period: str = ""
+    user_intent_sequence: int = 0
 
 
 def _elapsed_ms(now_ms: float, then_ms: float | None) -> int:
@@ -668,6 +669,7 @@ def assemble_live_situation(
             capture_available=bool(inp.capture_available),
             voice_session_active=inp.live_voice_session_active,
             connection_generation=int(inp.mode_generation),
+            user_intent_sequence=inp.user_intent_sequence,
             silence_since_user_intent_ms=since_intent,
             silence_since_aiko_speech_ms=_elapsed_ms(
                 now_ms, inp.last_aiko_spoke_ms,
@@ -692,6 +694,7 @@ def assemble_live_situation(
             world_compatible=snapshot.world_compatible,
             conflict_reason=snapshot.conflict_reason,
             shared_commitment_active=snapshot.shared_commitment_active,
+            user_present=snapshot.user_present,
         ),
         attention=attention,
         commitment=_commitment_from_attention(

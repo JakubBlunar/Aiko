@@ -18,9 +18,11 @@ from app.core.live.frame import SLEEP_SPEECH_FORBID, LiveSituationFrame
 from app.core.live.presence import (
     PRESENCE_STYLE_SET,
     ListenPosture,
+    admit_attention_target,
+    allowed_attention_targets,
     clamp_presence_style,
     listen_posture_for,
-    style_visuals,
+    style_body_expression,
 )
 from app.core.live.reaction import REACTION_TONE_SET, clamp_reaction_intensity, tone_visuals
 
@@ -186,16 +188,13 @@ def intent_from_frame(frame: LiveSituationFrame) -> str:
     return "wait"
 
 
-def _gaze_for(frame: LiveSituationFrame, intent: str) -> str:
-    if intent == "attend":
+def _gaze_for(frame: LiveSituationFrame, target: str) -> str:
+    if target == "user":
         return "user_eye_contact"
-    activity = _activity_key(frame)
-    if activity in _WORLD_GAZE:
-        return _WORLD_GAZE[activity]
-    if frame.attention.target == "shared_activity":
+    if target == "shared_activity" or frame.constraints.dnd or frame.shared.os_idle == "locked":
         return "rest"
-    if frame.attention.target == "world_entity":
-        return _WORLD_GAZE.get(activity, "rest")
+    if target == "world_entity":
+        return _WORLD_GAZE.get(_activity_key(frame), "rest")
     return "cursor_follow"
 
 
@@ -302,8 +301,12 @@ class LiveBehaviorResolver:
                 cancel_reason="sleep_channel",
             )
             return _degrade(plan, caps)
+        allowed = allowed_attention_targets(frame)
+        target = attention_target if attention_target in allowed else admit_attention_target(
+            None, intent=intent, frame=frame, keep_attention=keep_attention,
+        )
         visual = _visual_intent(intent)
-        gaze = _gaze_for(frame, visual)
+        gaze = _gaze_for(frame, target)
         body = _body_for(frame, visual)
         breath = _breath_for(frame)
         expression = _expression_for(visual, body)
@@ -311,9 +314,7 @@ class LiveBehaviorResolver:
         if style in PRESENCE_STYLE_SET:
             if frame.temporal.circadian_quiet:
                 style = clamp_presence_style(style, frame)
-            gaze, body, expression = style_visuals(
-                style, gaze=gaze, body=body, expression=expression,
-            )
+            body, expression = style_body_expression(style, body=body, expression=expression)
         tone = str(reaction_tone or "").strip()
         band = str(reaction_intensity or "").strip()
         if tone in REACTION_TONE_SET:
@@ -328,9 +329,6 @@ class LiveBehaviorResolver:
             )
         if expression not in EXPRESSION_CLASSES:
             expression = "none"
-        target = str(attention_target or "").strip()
-        if not target:
-            target = frame.attention.target
         listen_posture = listen_posture_for(frame, intent=intent, style=style)
         if listen_posture != "none":
             target = "user"

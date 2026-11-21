@@ -8,6 +8,7 @@ UrgeState = Literal[
     "candidate",
     "selected",
     "parked",
+    "reserved",
     "consumed",
     "expired",
     "withdrawn",
@@ -69,6 +70,11 @@ class LiveUrge:
     evaluation_count: int = 0
     next_reconsideration_ms: float = 0.0
     resolution_reason: str = ""
+    report_retry_used: bool = False
+
+    @property
+    def is_requested_report(self) -> bool:
+        return self.source == "cue_pool" and self.cue_id is not None and self.purpose == "report"
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
