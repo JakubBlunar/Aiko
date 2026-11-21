@@ -43,6 +43,7 @@ class CueUrgeAdapter:
         store: LiveUrgeStore,
         *,
         now_mono_ms: float,
+        session_id: str = "",
         suppress_expressive: bool = False,
         reconsider: bool = False,
     ) -> tuple[LiveUrge, ...]:
@@ -62,6 +63,15 @@ class CueUrgeAdapter:
                 _CUE_PURPOSES.get(cue_type, "ask")
                 if policy_for(cue_type) is not None else "unknown"
             )
+            # The producer has matched an explicit user request to a ready result.
+            payload = getattr(row, "payload", None) or {}
+            if (
+                purpose == "share"
+                and payload.get("requested_update_ready") is True
+                and session_id
+                and payload.get("session_id") == session_id
+            ):
+                purpose = "report"
             subject = (
                 cap_live_subject(getattr(row, "subject", "") or "")
                 or cap_live_subject(cue_type)

@@ -27,6 +27,10 @@ python scripts/live_scenarios.py tests/scenarios/live/requested-update.json --lo
 python scripts/live_scenarios.py tests/scenarios/live/requested-update.json --local --repeat 4 --json --concept-file tests/scenarios/live/preferences/requested-update.json
 ```
 
+Use `requested-update-ready.json` with the same commands to test an explicit
+readiness signal. That fixture adds the cue while the user is typing and checks
+for the policy's decision at the first heartbeat after typing stops.
+
 Scripted mode is the default. It uses each step's `proposal` to reproduce a
 decision without a model. Steps without one use `noop` if policy runs.
 `--local` ignores scripted proposals and uses the configured `live_policy`
@@ -65,7 +69,7 @@ and one command.
 | --- | --- |
 | `impulse` | A Live event such as `user.typing_started`, `activity.session_changed` or `silence.wake`. Add `payload.text` for `user.message_sent` or `user.speech_final`. |
 | `advance_ms` | Advance both clocks and run one heartbeat at the destination. Use repeated steps to sample intermediate behavior. A wait expiry can produce a real `idle.reconsider` impulse. |
-| `cue` | Add a pool cue with `type`, `subject` and `text`. Optional `ttl_hours` and `hold_hours` exercise timing. |
+| `cue` | Add a pool cue with `type`, `subject` and `text`. Optional `ttl_hours` and `hold_hours` exercise timing. Set `payload.requested_update_ready` to the boolean `true` on a share cue to model an explicitly requested result becoming ready. |
 | `concept` | Seed a learned policy concept with `id`, `kind` and `label`. Optional `subject` and `confidence` let the same activity run against different learned context. |
 | `dispatch` | Deliver the oldest queued main wake through the real dispatch checks. Supply `{"text": "a scripted reply"}` or omit the text to simulate silence. Use `"if_queued": true` when a model might choose to stay silent before this step. |
 | `reply` | Supply scripted assistant text after a submitted user message. It becomes part of the isolated transcript and updates the speech gap. |
@@ -81,6 +85,12 @@ For a scripted request to discuss a specific seeded topic, use
 The subject resolves to an urge only if it is in the real policy menu.
 The policy uses a reference such as `"2"` from that request's menu. The
 decision trace shows the reference and its resolved internal urge ID.
+Readiness is cue metadata supplied when a producer has matched a confirmed
+result to an explicit user request in the cue's `payload.session_id`.
+Live shows the marked cue from the current session as
+`purpose=report` and asks the policy to prioritize the update at an open
+floor. The normal speech and dispatch checks still apply. The replay
+supplies the readiness metadata itself.
 Scenarios can also include an `initial_concepts` list to seed concepts before
 the timeline starts.
 

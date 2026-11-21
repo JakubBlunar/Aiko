@@ -74,6 +74,7 @@ class LiveInclinationRuntime:
             self.cue_adapter.project(
                 self.urges,
                 now_mono_ms=now_mono_ms,
+                session_id=frame.session_id,
                 suppress_expressive=suppress,
                 reconsider=new_opening and not frame.constraints.dnd,
             )

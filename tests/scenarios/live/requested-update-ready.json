@@ -1,0 +1,54 @@
+{
+  "name": "A requested update becomes ready while the user is typing",
+  "steps": [
+    {
+      "impulse": "user.message_sent",
+      "payload": {
+        "text": "I need to pack the bread before I leave. When it is cool enough, please interrupt and tell me right away. The next chapter can wait."
+      }
+    },
+    {"reply": "I’ll let you know as soon as the bread is cool enough to pack."},
+    {"advance_ms": 11000, "expect": {"new_policy_calls": 0}},
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "next chapter",
+        "text": "Ask what the user thought of the next chapter."
+      }
+    },
+    {"impulse": "user.typing_started"},
+    {
+      "label": "The result arrives while the user has the floor",
+      "cue": {
+        "type": "away_activities",
+        "subject": "bread is cool enough to pack",
+        "text": "The bread has cooled and is ready to pack. The user asked for this update before leaving.",
+        "payload": {"requested_update_ready": true}
+      }
+    },
+    {
+      "label": "The user is still typing",
+      "advance_ms": 3000,
+      "expect": {
+        "new_policy_calls": 0,
+        "queued_count": 0,
+        "frame": {"interaction": {"typing_active": true}}
+      }
+    },
+    {"impulse": "user.typing_stopped", "expect": {"queued_count": 0}},
+    {
+      "label": "First safe opening after typing stops",
+      "advance_ms": 1000,
+      "proposal": {
+        "intent": "request_main_speech",
+        "select_subject": "bread is cool enough to pack",
+        "arguments": {"speech_act": "share_observation"}
+      }
+    },
+    {
+      "label": "Inspect the topic and simulate delivery if admitted",
+      "dispatch": {"if_queued": true, "text": "The bread is cool enough to pack."}
+    },
+    {"label": "Check the next heartbeat for an immediate repeat", "advance_ms": 1000}
+  ]
+}

@@ -22,7 +22,7 @@ from app.core.live.urge_menu import UrgeMenuItem, build_urge_menu, render_urge_m
 from app.core.session.prompt_support import clip_text_to_tokens
 from app.llm.token_utils import chars_per_token, estimate_tokens
 
-LIVE_POLICY_PROMPT_VERSION = 3
+LIVE_POLICY_PROMPT_VERSION = 4
 _SAFETY_TOKENS = 256
 _INSTRUCTIONS = """You are a Live behavior policy, not a companion.
 Choose exactly one intent for this moment. Output a complete JSON object.
@@ -151,6 +151,9 @@ class LivePolicyPromptAssembler:
             situation = situation + "\n" + fallback_text
         menu = build_urge_menu(urges)
         urge_menu = render_urge_menu(urges, now_mono_ms=frame.monotonic_ms, menu=menu)
+        report = next((item for item in menu if item.purpose == "report"), None)
+        if report is not None:
+            urge_menu += "\n" + _render_requested_update(frame, report.reference)
         instr_tokens = estimate_tokens(instructions)
         sit_tokens = estimate_tokens(situation)
         menu_tokens = estimate_tokens(urge_menu)
@@ -335,6 +338,21 @@ def _clip_tail(text: str, max_tokens: int) -> str:
     if len(text) <= budget_chars:
         return clip_text_to_tokens(text, max_tokens)
     return text[-budget_chars:]
+
+
+def _render_requested_update(frame: LiveSituationFrame, reference: str) -> str:
+    prefix = f'REQUESTED UPDATE READY (ref="{reference}"). The user asked for this result. '
+    if "request_main_speech" not in frame.constraints.allowed_actions:
+        return prefix + "Hold the update until speech is allowed."
+    return (
+        prefix + "Deliver it at this opening, ahead of optional topics. "
+        "Only request_main_speech hands the result to the speaking model. "
+        "Acknowledging the user leaves the result undelivered. "
+        "Use this action if there is no current reason to hold the update:\n"
+        f'{{"snapshot_generation":{frame.generation},"selected_urge_id":"{reference}",'
+        '"intent":"request_main_speech","arguments":{"speech_act":"share_observation"},'
+        '"reason_code":"requested_update_ready","context_refs":[]}'
+    )
 
 
 __all__ = ["LivePolicyPrompt", "LivePolicyPromptAssembler"]

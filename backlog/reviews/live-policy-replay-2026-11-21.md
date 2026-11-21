@@ -92,3 +92,30 @@ casual cue stays queued for later. This retest seeded an established
 preference. It did not exercise concept acquisition.
 
 [Commands and preference fixture](../../docs/live-scenarios.md#run-a-scenario)
+
+## First opening with an explicit readiness signal
+
+The [readiness scenario](../../tests/scenarios/live/requested-update-ready.json)
+publishes the bread cue at 11 seconds while the user is typing. The frame
+still reports active typing at 14 seconds, then the user stops. The first
+policy opportunity is the heartbeat at 15 seconds. Both topics are eligible
+then. Controls replay the same timeline with the `requested_update_ready`
+field removed from the bread cue.
+
+| Readiness | Seeded preference | Local policy at the first opening | Bread updates handed off |
+| --- | --- | --- | ---: |
+| Present | Absent | Requested speech about the bread in 4 of 4 trials | 4/4 |
+| Present | Present | Requested speech about the bread in 4 of 4 trials | 4/4 |
+| Absent | Absent | Acknowledged the user in 4 of 4 trials | 0/4 |
+| Absent | Present | Acknowledged the user in 4 of 4 trials | 0/4 |
+
+The loopback `qwen3.5:4b` model made 32 policy calls without a transport
+failure. All eight marked updates passed admission and reached simulated
+delivery at the first opening. Each delivered bread cue was marked used.
+No trial requested speech while the user was typing, surfaced the next
+chapter, or repeated the bread update on the next heartbeat.
+
+The cue marker and the prompt's explicit speech-action example were tested
+together. The preference was seeded before the first impulse. The scenario
+supplied readiness and substituted a scripted line for the main-model
+response. This measured first-opening decisions and handoff.

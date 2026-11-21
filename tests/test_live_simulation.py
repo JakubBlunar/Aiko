@@ -25,7 +25,7 @@ def read_scenario(name: str) -> dict:
 
 @pytest.mark.parametrize("name", [
     "cue-and-floor", "wait-and-focus", "local-observation",
-    "topic-choice", "quiet-cadence", "interruption", "requested-update",
+    "topic-choice", "quiet-cadence", "interruption", "requested-update", "requested-update-ready",
 ])
 def test_fixture_runs_without_network(name, monkeypatch):
     def unexpected_request(*args, **kwargs):
@@ -98,6 +98,60 @@ def test_initial_preference_is_visible_from_the_first_impulse():
     assert [(s["event"], s["at_ms"]) for s in seeded["steps"]] == [
         (s["event"], s["at_ms"]) for s in base["steps"]
     ]
+
+
+@pytest.mark.parametrize(("metadata", "purpose"), [
+    ({"requested_update_ready": True}, "report"),
+    ({"requested_update_ready": "true"}, "share"),
+    ({"requested_update_ready": True, "session_id": "another-session"}, "share"),
+])
+def test_ready_requested_update_reaches_the_policy_at_the_first_opening(metadata, purpose):
+    scenario = read_scenario("requested-update-ready")
+    subject = "bread is cool enough to pack"
+    cue = next(
+        step["cue"] for step in scenario["steps"]
+        if "cue" in step and step["cue"]["subject"] == subject
+    )
+    cue["payload"] = metadata
+
+    def policy_reply(messages, **kwargs):
+        prompt = messages[0]["content"]
+        cue_row = next(
+            (line for line in prompt.splitlines()
+             if line.startswith('ref="') and f"subject={subject}" in line),
+            "",
+        )
+        intent = "acknowledge_user"
+        reference = None
+        if cue_row:
+            assert f"purpose={purpose}" in cue_row
+            assert ("REQUESTED UPDATE READY" in prompt) is (purpose == "report")
+            intent = "request_main_speech"
+            reference = cue_row.split('"')[1]
+        return json.dumps({
+            "intent": intent,
+            "selected_urge_id": reference,
+            "arguments": {"speech_act": "share_observation"},
+            "reason_code": "test",
+            "context_refs": [],
+        }), ChatUsage()
+
+    report = run_live_scenario(scenario, policy_client=Mock(chat_json=policy_reply))
+    assert report["expectation_failures"] == []
+    opening = next(
+        step for step in report["steps"] if step["label"] == "First safe opening after typing stops"
+    )
+    decision, = opening["decisions"]
+    assert not opening["frame"]["interaction"]["typing_active"]
+    assert decision["selected_subject"] == subject
+    assert len(decision["eligible_urge_ids"]) == 2
+    dispatch, = report["dispatches"]
+    assert dispatch["reason"] == "simulated_reply"
+    assert dispatch["at_ms"] == opening["at_ms"]
+    assert f"Subject: {subject}" in dispatch["talk_about"]
+    assert report["steps"][-1]["cues"][subject]["state"] == "used"
+    assert report["steps"][-1]["cues"]["next chapter"]["surfaced"] == 0
+    assert report["steps"][-1]["main_wakes"] == 1
 
 
 def test_new_user_intent_preempts_a_queued_topic_before_the_fake_speaker():
