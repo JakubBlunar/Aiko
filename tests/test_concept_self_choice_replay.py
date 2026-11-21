@@ -27,11 +27,15 @@ def replay(tmp_path):
 def _episode(
     store, run_id, *, picked=_SKETCH, route="model", unprompted=True, episode_id=None,
     eligible=(_SKETCH, _READ, _REST), completed=True, fallback=False,
+    options=None, choice_reason="own_interest",
 ):
     def record(kind, payload):
         assert store.record(kind, "away_activity", payload, run_id=run_id)
 
     record("candidates", {"eligible": [{"key": key} for key in eligible]})
+    if options is not None:
+        record("model_options", options)
+        record("context_attribution", {"choice_reason": choice_reason})
     if fallback:
         record("planning_fallback", {"reason": "model_failed_or_invalid_plan"})
     record("choice", {"key": picked, "route": route})
@@ -94,3 +98,34 @@ def test_resume_and_cued_fallback_or_unfinished_actions_never_add_returns(replay
         compare_choices(store, _SKETCH, earlier=(), later=(reviews[0], reviews[0]))
     with pytest.raises(ValueError, match="chronological and disjoint"):
         compare_choices(store, _SKETCH, earlier=reviews[-1:], later=reviews[:1])
+
+
+def test_choice_reviews_use_actual_model_options_and_reject_cues(replay):
+    _, store = replay
+    inputs = {"version": 1, "optional_inspiration": False,
+              "daily_intention": False, "ongoing_interest": False}
+    options = {"choice_inputs": inputs, "offered": [{"action": "new_sketch"}]}
+
+    def run(name, **overrides):
+        return _episode(store, name, **{
+            "options": options, "unprompted": None, "eligible": (_READ, _REST), **overrides,
+        })
+
+    earlier = [run(f"read-{i}", picked=_READ) for i in range(2)]
+    later = [run(f"sketch-{i}") for i in range(2)]
+    for field in ("optional_inspiration", "daily_intention", "ongoing_interest"):
+        cued = {**options, "choice_inputs": {**inputs, field: True}}
+        later.append(run(field, options=cued, unprompted=True))
+    later.extend([
+        run("old", options=None),
+        run("continuing", choice_reason="continue_work"),
+        run("no-alternatives", eligible=()),
+        run("not-shown", options={**options, "offered": []}, eligible=(_SKETCH, _REST)),
+        run("reviewer-veto", unprompted=False),
+    ])
+
+    review = compare_choices(store, _SKETCH, earlier=earlier, later=later)
+    assert review["earlier"]["chose_alternative"] == ["read-0", "read-1"]
+    assert review["later"]["returns"] == ["sketch-0", "sketch-1"]
+    assert len(review["later"]["completed"]) == len(later)
+    assert review["changed_choice_pattern"]

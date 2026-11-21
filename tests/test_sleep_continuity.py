@@ -4,11 +4,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.infra.debug_clock import DebugClock
+from app.core.memory.memory_store import MemoryStore
 from app.core.proactive.idle_worker_scheduler import IdleWorkerScheduler
 from app.core.session.inner_life_part2 import InnerLifePart2Mixin
 from app.core.session.post_turn_mixin import PostTurnMixin
@@ -477,34 +479,35 @@ def test_post_turn_sleep_talk_decision_preserves_asleep_state(tmp_path: Path) ->
 def test_diary_tags_are_rejected_while_asleep_without_blocking_other_memory(
     tmp_path: Path,
 ) -> None:
-    del tmp_path
-
-    class _MemoryStore:
-        def __init__(self) -> None:
-            self.rows: list[dict[str, object]] = []
-
-        def add(self, **kwargs):
-            self.rows.append(kwargs)
-            return SimpleNamespace(id=len(self.rows))
-
-    runner = object.__new__(TurnRunner)
-    runner._memory_store = _MemoryStore()
-    runner._embedder = SimpleNamespace(embed=lambda _text: [0.1])
-    runner._diary_allowed_provider = lambda: False
-    runner._self_tagged_salience = 0.7
-    runner._on_memory_added = None
-    runner._extract_diary_memories(
-        "[[diary:I was interrupted during sleep.]]",
-        session_key="chat-a",
-        assistant_message_id=6,
-    )
-    assert runner._memory_store.rows == []
-    runner._extract_self_tagged_memories(
-        "[[remember:self:I prefer the quiet.]]",
-        session_key="chat-a",
-        assistant_message_id=6,
-    )
-    assert runner._memory_store.rows[0]["kind"] == "self"
+    path = tmp_path / "sleep-memory.db"
+    db = ChatDatabase(path)
+    memory = MemoryStore(path)
+    try:
+        reply = db.add_message("chat-a", "assistant", "I prefer the quiet.")
+        runner = object.__new__(TurnRunner)
+        runner._db = db
+        runner._memory_store = memory
+        runner._embedder = SimpleNamespace(embed=lambda _text: np.array([0.1, 0.2]))
+        runner._diary_allowed_provider = lambda: False
+        runner._self_tagged_salience = 0.7
+        runner._on_memory_added = None
+        runner._extract_diary_memories(
+            "[[diary:I was interrupted during sleep.]]",
+            session_key="chat-a",
+            assistant_message_id=reply,
+        )
+        assert memory.count() == 0
+        runner._extract_self_tagged_memories(
+            "[[remember:self:I prefer the quiet.]]",
+            session_key="chat-a",
+            assistant_message_id=reply,
+        )
+        note, = memory.list_recent()
+        assert note.kind == "self"
+        assert note.source_message_id == reply
+    finally:
+        memory.close()
+        db._get_conn().close()
 
 
 def _sleep_settings(*, enabled: bool = True) -> SimpleNamespace:

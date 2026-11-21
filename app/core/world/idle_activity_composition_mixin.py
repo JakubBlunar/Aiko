@@ -156,12 +156,6 @@ class ActivityCompositionMixin:
             "references are authored material, not an actual visual observation. "
             "Otherwise home_action_token must be empty. "
         ) if home_actions else ""
-        emit("model_options", {"offered": [
-            {key: row[key] for key in ("token", "action", "item_id", "location_id") if key in row}
-            for row in home_actions.values()
-        ], "household_actions_total": len(home["actions"]),
-            "household_actions_omitted": max(0, len(home["actions"]) - len(home_actions)),
-            "writing_available": can_write, "unavailable_hint": home.get("unavailable_hint", "")})
         intent_line = ""
         if intention:
             intent_line = (
@@ -180,12 +174,30 @@ class ActivityCompositionMixin:
                     )
             except Exception:
                 log.debug("away activity hobby context unavailable", exc_info=True)
+        inspiration = context.render()
+        emit("model_options", {
+            "offered": [
+                {key: row[key] for key in ("token", "action", "item_id", "location_id")
+                 if key in row}
+                for row in home_actions.values()
+            ],
+            "household_actions_total": len(home["actions"]),
+            "household_actions_omitted": max(0, len(home["actions"]) - len(home_actions)),
+            "writing_available": can_write,
+            "unavailable_hint": home.get("unavailable_hint", ""),
+            "choice_inputs": {
+                "version": 1,
+                "optional_inspiration": bool(inspiration),
+                "daily_intention": bool(intent_line),
+                "ongoing_interest": bool(hobby_line),
+            },
+        })
         prompt = (
             timephrase.today_anchor() + "\n" + timephrase.STORED_TEXT_TIME_RULE + "\n"
             f"You are Aiko, alone in your cozy room while {user_name} is away. "
             f"It's currently {period}. Your room's spots: {loc_lines}. "
             f"Things around: {item_names}. {home_context}"
-            f"{intent_line}{hobby_line}{context.render()}"
+            f"{intent_line}{hobby_line}{inspiration}"
             f"Recently you did: {recent_line} — pick something different. "
             "You may also write an original short poem, fictional scene, character sketch "
             "or wordplay, or revise one of your own saved writings below. Choose your own "

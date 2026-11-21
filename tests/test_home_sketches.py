@@ -132,6 +132,10 @@ def test_inspection_returns_one_actual_page_and_renderer_never_executes_markup(h
 
 
 def test_idle_model_saves_drawing_data_and_fallback_never_invents_it(home):
+    from app.core.world.idle_life_store import IdleLifeStore
+    from app.core.world.idle_life_trace import trace_run
+    from scripts.review_self_choices import EpisodeReview, compare_choices
+
     store, db, _ = home
     draft = option(store)
 
@@ -141,7 +145,7 @@ def test_idle_model_saves_drawing_data_and_fallback_never_invents_it(home):
                 assert "Coordinates stay within x=0-512 and y=0-320" in messages[-1]["content"]
                 assert "points=[[x,y],...]" in messages[-1]["content"]
                 return json.dumps({"home_action_token": draft["token"], "drawing": DRAWING,
-                                   "creation": None}), {}
+                                   "creation": None, "choice_reason": "own_interest"}), {}
             return "{}", {}
 
     worker = IdleAwayActivityWorker(
@@ -151,7 +155,13 @@ def test_idle_model_saves_drawing_data_and_fallback_never_invents_it(home):
     )
     snapshot = worker._build_candidates("Test user", NOW)
     assert "home_new_sketch" not in snapshot.candidates
-    result = worker.run()
+    life = IdleLifeStore(db)
+    with trace_run(life, "idle_activity", world=store):
+        result = worker.run()
     assert result["fired"] == 1 and result["key"] == "home_new_sketch"
     assert inspect_sketch(store.get_item(draft["item_id"]))["drawing"]["title"] == DRAWING["title"]
     assert load_journal(db.kv_get)[-1]["key"] == "home_new_sketch"
+    run_id = life.history(kind="choice")["events"][0]["run_id"]
+    review = EpisodeReview(run_id, run_id)
+    choices = compare_choices(life, "home_new_sketch", earlier=(), later=[review])
+    assert choices["later"]["returns"] == [run_id]

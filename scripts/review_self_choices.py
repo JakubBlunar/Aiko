@@ -2,19 +2,57 @@
 
 from dataclasses import dataclass
 
+from app.core.world.idle_life_context import family
+
+
+_FREEFORM_CHOICES = {"read_book", "tea", "wander", "nap", "stretching", "garden"}
+_CUE_FIELDS = ("optional_inspiration", "daily_intention", "ongoing_interest")
+
 
 @dataclass(frozen=True)
 class EpisodeReview:
     run_id: str
     episode_id: str
-    unprompted: bool = False
+    # None uses recorded planner inputs. A reviewer may confirm legacy data
+    # or veto an otherwise eligible choice, but known cues always take precedence.
+    unprompted: bool | None = None
+
+
+def _eligible_model_choices(options, candidates, attribution, reviewed):
+    if reviewed is False:
+        return set()
+    inputs = options.get("choice_inputs")
+    if isinstance(inputs, dict) and inputs.get("version") == 1:
+        if any(inputs.get(field) is not False for field in _CUE_FIELDS):
+            return set()
+    elif reviewed is not True:
+        return set()
+    if attribution is None and reviewed is not True:
+        return set()
+    if attribution is not None and (
+        attribution.get("model_selected_refs") or attribution.get("invalid_reference_count")
+        or attribution.get("choice_reason") in {"context", "room_need", "continue_work"}
+    ):
+        return set()
+    if not options:
+        return candidates  # A reviewer confirmed the selection from legacy evidence.
+    choices = candidates & _FREEFORM_CHOICES
+    offered = options.get("offered")
+    choices.update(
+        f"home_{row['action']}" for row in (offered if isinstance(offered, list) else ())
+        if isinstance(row, dict) and isinstance(row.get("action"), str)
+    )
+    if options.get("writing_available") is True:
+        choices.add("writing")
+    return choices
 
 
 def _window(store, target, reviews):
     completed, returns, alternatives = set(), set(), set()
     endpoints = []
     for review in reviews:
-        events = store.decision(review.run_id)["events"]
+        decision = store.decision(review.run_id)
+        events = decision["events"]
         if events:
             endpoints.extend((events[0]["id"], events[-1]["id"]))
         if any(
@@ -22,22 +60,34 @@ def _window(store, target, reviews):
             for row in events
         ):
             completed.add(review.episode_id)
-        if not review.unprompted or any(row["kind"] == "planning_fallback" for row in events):
+        if decision.get("truncated") or any(row["kind"] == "planning_fallback" for row in events):
             continue
-        eligibility = set()
+        candidates = set()
+        options, attribution = {}, None
         selected = None
         for row in events:
             if row["actor"] != "autonomous":
                 continue
             payload = row["payload"]
             if row["kind"] == "candidates":
-                eligibility = {item["key"] for item in payload.get("eligible", ())}
+                candidates = {item["key"] for item in payload.get("eligible", ())}
+                options, attribution = {}, None
                 selected = None
+            elif row["kind"] == "model_options":
+                options = payload
+                attribution = None
+            elif row["kind"] == "context_attribution":
+                attribution = payload
             elif row["kind"] == "choice":
                 key = payload.get("key")
+                eligibility = _eligible_model_choices(
+                    options, candidates, attribution, review.unprompted,
+                )
                 if (
                     payload.get("route") == "model" and key in eligibility
-                    and target in eligibility and len(eligibility) > 1
+                    and target in eligibility
+                    and any(family(option) != family(target) for option in eligibility)
+                    and (key == target or family(key) != family(target))
                 ):
                     selected = key
                 else:

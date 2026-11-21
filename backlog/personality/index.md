@@ -278,8 +278,8 @@ message through the existing history interface. D9 starts as archive navigation.
 - [L55](concepts.md#l55-evaluate-reasoning-independently-of-eloquence) — **partial**: Run repeated
   held-out extraction-to-reply, causal/counterfactual and post-guard fictional-testimony comparisons
   when inference is available. Count timeouts/failures; synthetic correctness is not naturalness.
-- [L56](concepts.md#l56-recall-an-analogy-across-different-topics) — **proposed**.
-  Use the relevant part of a past case to reason about an unfamiliar situation.
+- [L56](concepts.md#l56-recall-an-analogy-across-different-topics) — **replay**.
+  Test whether one earlier case helps with a new situation under its current constraints.
 - [L57](concepts.md#l57-ground-aikos-changing-interests-in-her-own-choices) — **pilot**.
   Review activity, voluntary returns and changes in choice patterns before surfacing them in
   Memory Story.

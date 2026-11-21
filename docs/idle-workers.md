@@ -89,6 +89,18 @@ from saved creative revisions. A journal entry carries its originating trace run
 that Aiko actually mentioned it. Existing final prompt/cue accounting remains the
 owner of those later stages.
 
+The away-activity model's `model_options` event records whether its prompt
+included optional inspiration, a daily intention or an ongoing interest.
+These flags contain no excerpt text. The [choice review](../scripts/review_self_choices.py)
+combines them with the actual household actions offered to the model, available
+activities, attribution and the completed step. Drawing can appear in the model's
+options even when it is absent from the weighted candidates. A return counts
+only when the recorded choice cleared those checks and an alternative activity
+was available. The review can use an explicit reviewer judgment for older
+records with missing fields. The existing room and journal context still shape
+the choice, and an observed selection gives no independent evidence of motive.
+This review uses the same 14-day trace and remains separate from Memory Story.
+
 The standalone module runs against a **read-only SQLite backup**, in a disposable
 child process under `.tmp-idle-life/run-*`, and removes its own scratch afterward:
 

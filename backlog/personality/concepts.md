@@ -755,7 +755,7 @@ small; do not claim human-level cognition from selected successful dialogues.
 
 ## L56. Recall an analogy across different topics
 
-**Status: Proposed.** A useful connection can be temporary. Suppose the user
+**Status: Isolated replay.** A useful connection can be temporary. Suppose the user
 once tested a wood finish on an offcut because it would look different when dry.
 Weeks later they are about to print wedding invitations and worry about the ink
 on textured paper. Aiko could suggest printing one proof on the actual stock.
@@ -778,6 +778,26 @@ where the underlying constraint disappears, and a case where trying a sample is
 itself costly. Score whether the suggestion fits the new situation, whether the
 answer imports an unsupported outcome, and whether the plain reply was already
 as good. Inspect source selection separately from the reply.
+
+The [analogy replay](../../scripts/concept_analogy_replay.py) uses fictional
+earlier cases admitted through the observation receipt checks. It supplies one
+topical report to the comparison arm and offers the other reports to the analogy
+selector. Both replies get the same character ceiling and output budget. A
+separate selection call adds model work to the analogy arm. Edited, incomplete
+or unsupported source receipts are excluded. Chat integration remains pending
+evidence that transfer improves replies without overriding current constraints.
+
+On the local `baytout3/qwen3.5-uncensored:9b` worker, seeds 56 and 57
+both matched the expected source in two of five cases. Both positive cases
+also got the core suggestion with topical recall alone. The selector
+supplied an example in all three cases that called for abstention. With
+`--require-fit`, the model picked the photo-edit example every time and
+matched one of five expected sources. Both versions of the analogy reply
+suggested testing on the only sheet even though the user required it to
+remain untouched. The topical comparison assumed a matching spare the user
+had ruled out. Reply prompts in each pair differed by two to four input
+tokens. These runs exercise fictional constraints and motivate keeping
+cross-topic transfer in replay until the negative controls pass.
 
 ## L57. Ground Aiko's changing interests in her own choices
 
@@ -816,10 +836,13 @@ Only the replay with two earlier free choices of reading supported a change in
 the observed choice pattern. Resumed episodes counted once. Weighted draws,
 concept-cued acts, fallbacks, a sole eligible activity and incomplete steps
 supplied no independent return. The existing Memory Story showed the same
-settled entry for all three histories. The separate
-[review helper](../../scripts/review_self_choices.py) needs a reviewer to
-confirm whether each choice was unprompted. A future rollout needs recoverable
-choice attribution and a way to surface it through Memory Story.
+settled entry for all three histories. The
+[review helper](../../scripts/review_self_choices.py) now reads the actual
+model options and recorded cue flags for new runs. An isolated sketch run
+confirmed that drawing can count when the model was offered it, even if drawing
+was absent from the weighted list. Legacy runs can still use an explicit
+reviewer judgment. Memory Story integration and ordinary-use validation remain
+open.
 
 ## Moved out of the active queue
 
