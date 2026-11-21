@@ -47,6 +47,7 @@ _CONSTRAINT_REASONS = frozenset({
     "questions_blocked",
     "speech_rare",
     "speech_gap",
+    "focus_timing_preference",
 })
 _FLOOR_REASONS = frozenset({
     "floor_busy",

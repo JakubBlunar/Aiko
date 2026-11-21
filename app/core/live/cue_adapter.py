@@ -26,6 +26,23 @@ _CUE_PURPOSES = {
 }
 
 
+def cue_purpose(row: Any, *, session_id: str) -> str:
+    cue_type = str(getattr(row, "cue_type", "") or "cue")
+    if policy_for(cue_type) is None:
+        return "unknown"
+    purpose = _CUE_PURPOSES.get(cue_type, "ask")
+    payload = getattr(row, "payload", None) or {}
+    # The producer has matched an explicit user request to a ready result.
+    if (
+        purpose == "share"
+        and payload.get("requested_update_ready") is True
+        and session_id
+        and payload.get("session_id") == session_id
+    ):
+        return "report"
+    return purpose
+
+
 class CueUrgeAdapter:
     """Live's only projection of the cue pool / prepared-nudge shelf."""
 
@@ -59,19 +76,7 @@ class CueUrgeAdapter:
                 continue
             store.reconsider(cue_id, now_mono_ms=now_mono_ms, opening=reconsider)
             cue_type = str(getattr(row, "cue_type", "") or "cue")
-            purpose = (
-                _CUE_PURPOSES.get(cue_type, "ask")
-                if policy_for(cue_type) is not None else "unknown"
-            )
-            # The producer has matched an explicit user request to a ready result.
-            payload = getattr(row, "payload", None) or {}
-            if (
-                purpose == "share"
-                and payload.get("requested_update_ready") is True
-                and session_id
-                and payload.get("session_id") == session_id
-            ):
-                purpose = "report"
+            purpose = cue_purpose(row, session_id=session_id)
             subject = (
                 cap_live_subject(getattr(row, "subject", "") or "")
                 or cap_live_subject(cue_type)

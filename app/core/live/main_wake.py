@@ -133,6 +133,10 @@ def admit_main_wake(
         return "floor_busy"
     if int(budget_remaining) <= 0:
         return "budget_exhausted"
+    if getattr(constraints, "defer_casual_speech", False) and (
+        urge.source != "cue_pool" or urge.purpose != "report"
+    ):
+        return "focus_timing_preference"
     return ""
 
 

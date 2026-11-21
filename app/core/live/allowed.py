@@ -54,6 +54,8 @@ def allowed_actions_for(frame: LiveSituationFrame) -> tuple[str, ...]:
         return SLEEP_MENU
     if speech_menu_open(frame):
         menu = NONVERBAL_MENU + SPEECH_MENU
+        if frame.constraints.defer_casual_speech:
+            menu = tuple(item for item in menu if item != "backchannel_user")
         if vitality_is_low(frame):
             menu = tuple(
                 item for item in menu if item != "request_main_speech"

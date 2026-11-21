@@ -9,6 +9,7 @@ import pytest
 import requests
 
 from app.core.infra import settings, timephrase
+from app.core.live import simulation
 from app.core.live.simulation import run_live_scenario
 from app.llm.chat_client import ChatUsage
 from scripts.live_scenarios import (
@@ -26,6 +27,7 @@ def read_scenario(name: str) -> dict:
 @pytest.mark.parametrize("name", [
     "cue-and-floor", "wait-and-focus", "local-observation",
     "topic-choice", "quiet-cadence", "interruption", "requested-update", "requested-update-ready",
+    "learn-coding-timing",
 ])
 def test_fixture_runs_without_network(name, monkeypatch):
     def unexpected_request(*args, **kwargs):
@@ -152,6 +154,65 @@ def test_ready_requested_update_reaches_the_policy_at_the_first_opening(metadata
     assert report["steps"][-1]["cues"][subject]["state"] == "used"
     assert report["steps"][-1]["cues"]["next chapter"]["surfaced"] == 0
     assert report["steps"][-1]["main_wakes"] == 1
+
+
+def test_learned_coding_timing_carries_over_and_keeps_both_kinds_of_cues(monkeypatch):
+    real_database = simulation.ChatDatabase
+    database_paths = []
+
+    def isolated_database(path):
+        assert path == Path(":memory:")
+        database_paths.append(path)
+        return real_database(path)
+
+    monkeypatch.setattr(simulation, "ChatDatabase", isolated_database)
+    report = run_live_scenario(read_scenario("learn-coding-timing"))
+    assert report["expectation_failures"] == []
+    steps = {step["label"]: step for step in report["steps"]}
+    coding_lull = steps["First coding lull with only a casual topic"]
+    assert coding_lull["new_policy_calls"] == 0
+    assert coding_lull["cues"]["sketchbook layout"]["available"]
+    opening = steps["First safe opening for the requested result"]
+    decision, = opening["decisions"]
+    assert opening["frame"]["session_id"] == "scenario:second-work-session"
+    assert opening["frame"]["constraints"]["defer_casual_speech"]
+    assert decision["selected_subject"] == "render is ready"
+    assert decision["eligible_urge_ids"] == [decision["selected_urge_id"]]
+    assert [(d["subject"], d["reason"]) for d in report["dispatches"]] == [
+        ("", "no_queued_wake"),
+        ("render is ready", "simulated_reply"),
+        ("sketchbook layout", "simulated_reply"),
+    ]
+    assert report["dispatches"][1]["at_ms"] == opening["at_ms"]
+    fresh = run_live_scenario({"steps": [{"activity_sample": "Code"}]})
+    assert not fresh["steps"][0]["frame"]["constraints"]["defer_casual_speech"]
+    assert database_paths == [Path(":memory:"), Path(":memory:")]
+
+
+def test_queued_casual_share_is_held_if_coding_starts_before_dispatch():
+    report = run_live_scenario({
+        "steps": [
+            {"impulse": "user.message_sent", "payload": {
+                "text": "Remember to save casual topics for breaks while I'm coding.",
+            }},
+            {"impulse": "user.typing_started"},
+            {"cue": {
+                "type": "away_activities", "subject": "sketchbook layout",
+                "text": "Aiko found a new layout for the shared sketchbook.",
+            }},
+            {"impulse": "user.typing_stopped"},
+            {"advance_ms": 10000, "proposal": {
+                "intent": "request_main_speech", "select_subject": "sketchbook layout",
+            }},
+            {"activity_sample": "Code"},
+            {"dispatch": {"if_queued": True, "text": "This should stay queued until a break."}},
+        ],
+    })
+    assert report["steps"][4]["queued_count"] == 1
+    dispatch, = report["dispatches"]
+    assert dispatch["reason"] == "focus_timing_preference"
+    assert report["spoken"] == []
+    assert report["steps"][-1]["cues"]["sketchbook layout"]["available"]
 
 
 def test_new_user_intent_preempts_a_queued_topic_before_the_fake_speaker():

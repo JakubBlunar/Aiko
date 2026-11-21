@@ -1159,6 +1159,8 @@ class LivePolicyController:
                 since = int(now_ms - self._last_micro_ms)
             if 0 < since < gap:
                 return "speech_gap"
+        if constraints.defer_casual_speech:
+            return "focus_timing_preference"
         return ""
 
     def _repeat_holding(

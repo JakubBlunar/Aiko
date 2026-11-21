@@ -256,9 +256,13 @@ execute an unregistered tool. Test crash between commit and wake publication.
 
 ## L28. Learn timing and interests without rewarding pestering
 
-**Status: Open implementation.**
+**Status: Partial.**
 
-**Implemented / available:** Outcome and cue accounting exist.
+**Implemented / available:** Outcome and cue accounting exist. The coding-time
+pilot carries an explicit user instruction into later Live sessions. It holds
+casual speech during observed coding and preserves eligibility for requested
+results through the usual speech checks. The two-session replay uses its own
+database and a source-backed instruction from the first transcript.
 
 **Remaining:** Learn only from attributable more/less/not-now/dismissal and source-linked use;
 separate unavailable/undelivered/unknown from disinterest and never optimize chat duration.

@@ -137,6 +137,7 @@ class LivePolicyContextRuntime:
         trigger_kind: str = "heartbeat",
         live_quiet: bool = False,
         min_gap_after_speech_ms: int = 0,
+        defer_casual_speech: bool = False,
     ) -> LiveSituationFrame:
         epoch = classify_epoch(trigger_kind)
         refresh = epoch != "data_only" or not self._last_picks
@@ -153,7 +154,7 @@ class LivePolicyContextRuntime:
         if urges is not None:
             apply_modifiers_to_urges(urges, modifiers)
         self._append_ledger(frame, picks, modifiers)
-        return self._stamp(frame, picks, modifiers)
+        return self._stamp(frame, picks, modifiers, defer_casual_speech=defer_casual_speech)
 
     def recent_completed_actions(self, *, limit: int = 4) -> tuple[str, ...]:
         """Most recent distinct executed intents. Newest last."""
@@ -292,6 +293,8 @@ class LivePolicyContextRuntime:
         frame: LiveSituationFrame,
         picks: tuple[PolicyConceptPick, ...],
         modifiers: LiveBehaviorModifiers,
+        *,
+        defer_casual_speech: bool,
     ) -> LiveSituationFrame:
         rails = render_behavior_rails(picks)
         situation = tuple(
@@ -313,6 +316,7 @@ class LivePolicyContextRuntime:
             min_gap_after_speech_ms=modifiers.min_gap_after_speech_ms,
             max_reaction_intensity=modifiers.max_reaction_intensity,
             speech_forbid_reasons=tuple(forbid),
+            defer_casual_speech=defer_casual_speech,
         )
         stamped = replace(frame, continuity=continuity, constraints=constraints)
         constraints = replace(

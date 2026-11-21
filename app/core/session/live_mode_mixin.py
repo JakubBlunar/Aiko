@@ -27,7 +27,7 @@ from app.core.live.bus import LiveImpulseBus
 from app.core.live.labels import cap_live_subject
 from app.core.live.capabilities import semantic_capabilities_from_profile
 from app.core.live.controller import LivePolicyController, USER_INTENT_KINDS
-from app.core.live.cue_adapter import CueUrgeAdapter
+from app.core.live.cue_adapter import CueUrgeAdapter, cue_purpose
 from app.core.live.diagnostics import sanitize_live_dump
 from app.core.live.epochs import classify_epoch
 from app.core.live.frame import SLEEP_SPEECH_FORBID, LiveSituationFrame, overlay_from_frame
@@ -43,6 +43,7 @@ from app.core.live.main_wake import (
 from app.core.live.micro_utterance import validate_micro_utterance
 from app.core.live.policy_context import LivePolicyContextRuntime
 from app.core.live.resolver import LiveBehaviorResolver, ResolvedBehaviorPlan
+from app.core.live.timing_preference import defer_casual_while_coding, observe_timing_instruction
 from app.core.live.urge_menu import menu_urge_ids
 from app.core.services.response_text_service import strip_all_meta_tags
 from app.core.session.session_text_utils import sanitize_assistant_text
@@ -114,6 +115,9 @@ class LiveModeMixin:
             except Exception:
                 log.debug("live journal init failed", exc_info=True)
                 self._live_journal = None
+            listen = getattr(chat_db, "add_message_listener", None)
+            if callable(listen):
+                listen(self._observe_live_timing_instruction)
         self._live_last_vitality_tick = 0.0
         self._live_last_mood_label = ""
         self._live_last_vitality_band = ""
@@ -540,6 +544,28 @@ class LiveModeMixin:
             payload={"text": cleaned, "mode": str(mode or "typed")},
         )
 
+    def _observe_live_timing_instruction(self, message: Any) -> None:
+        owner = getattr(self, "_user_id", "")
+        if (
+            message.role == "user"
+            and owner
+            and message.session_id == self.session_key
+            and self.is_live_presence()
+            and getattr(self, "_remember_history", True)
+        ):
+            observe_timing_instruction(self._chat_db, owner, message)
+
+    def _live_defers_casual_speech(self, frame: LiveSituationFrame) -> bool:
+        db = getattr(self, "_chat_db", None)
+        owner = getattr(self, "_user_id", "")
+        if db is None or not owner or not getattr(self, "_remember_history", True):
+            return False
+        try:
+            return defer_casual_while_coding(db, owner, frame)
+        except Exception:
+            log.debug("live timing preference read failed", exc_info=True)
+            return False
+
     def live_impulse_diagnostics(self) -> dict[str, Any]:
         bus = getattr(self, "_live_impulse_bus", None)
         snap = bus.snapshot() if bus is not None else {}
@@ -805,6 +831,7 @@ class LiveModeMixin:
                     trigger_kind=str(trigger_kind or "heartbeat"),
                     live_quiet=bool(getattr(agent, "live_quiet", False)),
                     min_gap_after_speech_ms=self._live_min_gap_after_speech_ms(),
+                    defer_casual_speech=self._live_defers_casual_speech(frame),
                 )
                 assembler.remember(frame)
             except Exception:
@@ -1287,14 +1314,20 @@ class LiveModeMixin:
         if bool(getattr(agent, "live_quiet", False)) or frame.constraints.dnd:
             return "dnd"
         cue_id = getattr(event, "cue_id", None)
+        cue = None
         if cue_id is not None:
             store = getattr(self, "_cue_store", None)
-            if store is None or store.available(cue_id) is None:
+            cue = store.available(cue_id) if store is not None else None
+            if cue is None:
                 return "missing_cue"
         if str(frame.constraints.sleep_status or "") in SLEEP_SPEECH_FORBID:
             return "sleep"
         if main_wake_floor_busy(frame):
             return "floor_busy"
+        if frame.constraints.defer_casual_speech and cue_purpose(
+            cue, session_id=frame.session_id,
+        ) != "report":
+            return "focus_timing_preference"
         return ""
 
     def _run_live_main_wake(self, event: Any) -> None:

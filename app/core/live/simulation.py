@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from app.core.activity.envelope import ActivityEnvelope, ActivitySubject
+from app.core.activity.store import ActivityStore
 from app.core.conversation.conversation_situation import (
     ConversationSituationSnapshot, WorldSituation,
 )
@@ -36,8 +38,12 @@ _STATE_FLAGS = {
 _STATE_TEXT = {"app", "floor", "sleep", "activity"}
 _STEP_KEYS = {
     "label", "state", "impulse", "payload", "advance_ms", "cue", "concept", "dispatch",
-    "reply", "proposal", "expect",
+    "reply", "proposal", "expect", "new_session", "activity_sample",
 }
+_COMMANDS = (
+    "impulse", "advance_ms", "cue", "concept", "dispatch", "reply",
+    "new_session", "activity_sample",
+)
 
 
 class _Clock:
@@ -94,15 +100,20 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
 
     def __init__(
         self, clock: _Clock, route: LlmRoute, client: Any, max_wakes: int, min_gap_ms: int,
+        *, learn_timing: bool,
     ) -> None:
         self.clock = clock
         self.route = route
         self.session_key = "scenario:live"
+        self._user_id = "scenario-user"
+        self._learn_timing = learn_timing
         self._chat_db = ChatDatabase(Path(":memory:"))
         self._cue_store = CueStore(self._chat_db)
+        self._activity_store = ActivityStore(self._chat_db)
         self._settings = SimpleNamespace(agent=SimpleNamespace(
             behavior_posture="live_presence",
             live_quiet=False, live_unprompted_speech=True,
+            activity_awareness_enabled=True,
             live_main_wake_max_per_hour=max_wakes, live_min_gap_after_speech_ms=min_gap_ms,
         ))
         self.state: dict[str, Any] = {
@@ -134,6 +145,27 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
 
     def _live_concept_view(self):
         return SimpleNamespace(for_consumer=lambda role: tuple(self._concepts.values()))
+
+    def _observe_live_timing_instruction(self, message: Any) -> None:
+        if self._learn_timing:
+            super()._observe_live_timing_instruction(message)
+
+    def new_session(self, name: str) -> None:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("new_session needs a nonempty synthetic session name")
+        self.session_key = f"scenario:{name}"
+        self._unanswered_text = ""
+        self.bump_live_mode_generation("scenario")
+
+    def sample_foreground(self, app: str) -> None:
+        if not isinstance(app, str) or not app.strip():
+            raise ValueError("activity_sample needs a nonempty synthetic app name")
+        self.state["app"] = app
+        self._activity_store.add_event(ActivityEnvelope(
+            v=1, at=self.clock.now().isoformat(), source="foreground", tier="cheap",
+            subject=ActivitySubject(app=app), signal_kind="focus",
+        ))
+        self.publish("activity.session_changed", {"app": app, "source": "foreground"})
 
     def conversation_situation_snapshot(self, *, fresh: bool) -> ConversationSituationSnapshot:
         state = self.state
@@ -362,7 +394,7 @@ def run_live_scenario(
     """Replay synthetic inputs with a fresh in-memory SQLite database."""
     if not isinstance(scenario, dict) or set(scenario) - {
         "name", "start_at", "max_wakes_per_hour", "min_gap_after_speech_ms",
-        "initial_concepts", "steps",
+        "initial_concepts", "learn_timing", "steps",
     }:
         raise ValueError("scenario contains unknown fields or is not an object")
     steps = scenario["steps"]
@@ -382,10 +414,15 @@ def run_live_scenario(
     min_gap_ms = scenario.get("min_gap_after_speech_ms", 8000)
     if type(min_gap_ms) is not int or min_gap_ms != clamp_live_min_gap_after_speech_ms(min_gap_ms):
         raise ValueError("min_gap_after_speech_ms must be an integer from 0 to 60000")
+    learn_timing = scenario.get("learn_timing", True)
+    if type(learn_timing) is not bool:
+        raise ValueError("scenario.learn_timing must be a boolean")
     clock = _Clock(start)
     route = route or LlmRoute(provider_id="scenario", model="scripted", max_tokens=384)
     with timephrase.scoped_now(clock.now):
-        host = _SimulationHost(clock, route, policy_client, max_wakes, min_gap_ms)
+        host = _SimulationHost(
+            clock, route, policy_client, max_wakes, min_gap_ms, learn_timing=learn_timing,
+        )
         try:
             for concept in initial_concepts:
                 host.add_concept(concept)
@@ -400,10 +437,7 @@ def _run_steps(host: _SimulationHost, steps: list, *, name: str) -> dict[str, An
     for step_index, step in enumerate(steps, 1):
         if not isinstance(step, dict) or set(step) - _STEP_KEYS:
             raise ValueError(f"step {step_index} contains unknown fields or is not an object")
-        commands = [
-            key for key in ("impulse", "advance_ms", "cue", "concept", "dispatch", "reply")
-            if key in step
-        ]
+        commands = [key for key in _COMMANDS if key in step]
         if len(commands) > 1:
             raise ValueError(f"step {step_index} must have at most one command")
         command = commands[0] if commands else "observe"
@@ -427,6 +461,10 @@ def _run_steps(host: _SimulationHost, steps: list, *, name: str) -> dict[str, An
             host.dispatch(step["dispatch"])
         elif command == "reply":
             host.reply(step["reply"])
+        elif command == "new_session":
+            host.new_session(step["new_session"])
+        elif command == "activity_sample":
+            host.sample_foreground(step["activity_sample"])
         else:
             if command == "cue":
                 host.add_cue(step["cue"])

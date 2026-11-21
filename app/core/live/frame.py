@@ -198,6 +198,7 @@ class ConstraintSection:
     questions_allowed: bool = True
     min_gap_after_speech_ms: int = 0
     max_reaction_intensity: float = 1.0
+    defer_casual_speech: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)

@@ -1,0 +1,98 @@
+{
+  "name": "An explicit coding-time preference carries over to another session",
+  "max_wakes_per_hour": 30,
+  "steps": [
+    {"activity_sample": "Code"},
+    {
+      "label": "Teach the preference in the first session",
+      "impulse": "user.message_sent",
+      "payload": {"text": "Remember to save casual topics for breaks while I'm coding."}
+    },
+    {"reply": "I’ll save the casual topics for a break when you’re coding."},
+    {"advance_ms": 86400000},
+    {
+      "label": "Open a fresh conversation the next day",
+      "new_session": "second-work-session",
+      "expect": {"frame": {"session_id": "scenario:second-work-session"}}
+    },
+    {
+      "label": "Observe a fresh coding session without a reminder",
+      "activity_sample": "Code",
+      "expect": {"frame": {"constraints": {"defer_casual_speech": true}}}
+    },
+    {"impulse": "user.typing_started"},
+    {
+      "cue": {
+        "type": "away_activities",
+        "subject": "sketchbook layout",
+        "text": "Aiko found a new layout for the shared sketchbook.",
+        "ttl_hours": 0.5
+      }
+    },
+    {"impulse": "user.typing_stopped"},
+    {
+      "label": "First coding lull with only a casual topic",
+      "advance_ms": 1000,
+      "proposal": {
+        "intent": "request_main_speech",
+        "select_subject": "sketchbook layout",
+        "arguments": {"speech_act": "share_observation"}
+      },
+      "expect": {"queued_count": 0, "cues": {"sketchbook layout": {"surfaced": 0}}}
+    },
+    {"dispatch": {"if_queued": true, "text": "I found a new layout for the sketchbook."}},
+    {
+      "label": "The user asks for a completed render update",
+      "impulse": "user.message_sent",
+      "payload": {"text": "When the render is finished, please tell me right away."}
+    },
+    {"reply": "I’ll let you know when the render is ready."},
+    {"advance_ms": 11000},
+    {"impulse": "user.typing_started"},
+    {
+      "label": "The requested result arrives while typing",
+      "cue": {
+        "type": "away_activities",
+        "subject": "render is ready",
+        "text": "The render finished successfully. The user asked to hear when it was ready.",
+        "payload": {"requested_update_ready": true}
+      }
+    },
+    {
+      "advance_ms": 3000,
+      "expect": {
+        "queued_count": 0,
+        "frame": {"interaction": {"typing_active": true}}
+      }
+    },
+    {"impulse": "user.typing_stopped"},
+    {
+      "label": "First safe opening for the requested result",
+      "advance_ms": 1000,
+      "proposal": {
+        "intent": "request_main_speech",
+        "select_subject": "render is ready",
+        "arguments": {"speech_act": "share_observation"}
+      }
+    },
+    {"dispatch": {"if_queued": true, "text": "The render is ready."}},
+    {
+      "label": "Fresh activity shows the user has moved away from coding",
+      "activity_sample": "Firefox",
+      "expect": {"frame": {"constraints": {"defer_casual_speech": false}}}
+    },
+    {"label": "Let the normal speech budget replenish", "advance_ms": 105000},
+    {"impulse": "user.typing_started"},
+    {"impulse": "user.typing_stopped"},
+    {
+      "label": "A later opening outside coding",
+      "advance_ms": 15000,
+      "proposal": {
+        "intent": "request_main_speech",
+        "select_subject": "sketchbook layout",
+        "arguments": {"speech_act": "share_observation"}
+      }
+    },
+    {"dispatch": {"if_queued": true, "text": "I found a new layout for the sketchbook."}}
+  ]
+}

@@ -1,6 +1,6 @@
 # Live mode scenarios
 
-The runner opens a fresh in-memory database for each scenario and drives the
+The runner opens a fresh in-memory database for each trial and drives the
 same Live impulse, situation, cue, wait, budget, policy and dispatch code used
 by the app. It advances a virtual clock and captures speech in the report.
 The running app, its database, cloud chat, microphone and speakers are outside
@@ -30,6 +30,17 @@ python scripts/live_scenarios.py tests/scenarios/live/requested-update.json --lo
 Use `requested-update-ready.json` with the same commands to test an explicit
 readiness signal. That fixture adds the cue while the user is typing and checks
 for the policy's decision at the first heartbeat after typing stops.
+
+This command replays an explicitly taught preference across two conversations.
+
+```powershell
+python scripts/live_scenarios.py tests/scenarios/live/learn-coding-timing.json --local --repeat 4 --json
+```
+
+Both conversations share the trial's in-memory database and have separate
+transcripts. The second begins a virtual day later, with no seeded concept.
+For a matched control, set `"learn_timing": false` on a copy and omit the
+expectations specific to learning.
 
 Scripted mode is the default. It uses each step's `proposal` to reproduce a
 decision without a model. Steps without one use `noop` if policy runs.
@@ -73,6 +84,8 @@ and one command.
 | `concept` | Seed a learned policy concept with `id`, `kind` and `label`. Optional `subject` and `confidence` let the same activity run against different learned context. |
 | `dispatch` | Deliver the oldest queued main wake through the real dispatch checks. Supply `{"text": "a scripted reply"}` or omit the text to simulate silence. Use `"if_queued": true` when a model might choose to stay silent before this step. |
 | `reply` | Supply scripted assistant text after a submitted user message. It becomes part of the isolated transcript and updates the speech gap. |
+| `new_session` | Switch to a named synthetic conversation for the same user. The trial database stays open, and the Live generation changes. |
+| `activity_sample` | Record a synthetic foreground app name in the trial's activity store and publish the Live activity transition. The virtual clock determines when the evidence becomes stale. |
 
 `state` can change `app`, `typing`, `floor`, `present`, `connected`,
 `playback`, `sleep`, `quiet`, `shared`, `activity`, `voice_session` or
@@ -104,3 +117,17 @@ Each scenario carries outcomes and cue feedback into its later steps. Concept
 fixtures let you test how established learning changes behavior. The harness
 does not run background learning workers, generate real main-chat prose or
 judge delivery through real audio.
+
+## Coding-time preference pilot
+
+In Live mode with chat history enabled, a standalone instruction like “Remember
+to save casual topics for breaks while I’m coding.” teaches one timing
+preference. “Forget my coding-time preference.” clears it. The original user
+message owns the instruction. If it is removed or changed to unrelated text,
+the preference stops applying.
+
+With fresh desktop evidence of coding, the preference holds casual speech
+and leaves confirmed requested results eligible for the normal speech checks.
+It is scoped to the current user's observed activity. The replay uses
+synthetic app transitions and ordinary Live speech budgets to exercise the
+same preference and dispatch checks.

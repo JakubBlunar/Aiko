@@ -119,3 +119,28 @@ The cue marker and the prompt's explicit speech-action example were tested
 together. The preference was seeded before the first impulse. The scenario
 supplied readiness and substituted a scripted line for the main-model
 response. This measured first-opening decisions and handoff.
+
+## Learning coding-time preferences across sessions
+
+The [two-session replay](../../tests/scenarios/live/learn-coding-timing.json)
+teaches the coding-time preference in the first transcript. The following
+virtual day starts a new transcript and observes a fresh coding session. Each
+trial has a fresh in-memory database. The control receives the same user
+message and activity timeline with preference recording disabled.
+
+| Outcome on local `qwen3.5:4b` | Learned timing | Control |
+| --- | ---: | ---: |
+| Policy evaluated the optional sketchbook cue during a coding lull | 0/4 | 4/4 |
+| Requested render update handed off at the first safe opening | 4/4 | 4/4 |
+| Sketchbook cue eligible at the later opening outside coding | 4/4 | 0/4 |
+| Model requested speech about the sketchbook outside coding | 0/4 | 0/4 |
+
+All 64 policy calls completed. The model stayed quiet during the later
+opening even with fresh activity evidence. In the control, the sketchbook
+urge had already used both evaluations during coding. With learning enabled,
+it reached the later opening with its evaluation budget intact. The scripted
+test selected it there and verified delivery.
+
+Both conditions used the existing readiness signal for the render. The
+harness supplied the activity samples and simulated the speech handoff. This
+pilot tests a narrow explicit instruction and its carryover.

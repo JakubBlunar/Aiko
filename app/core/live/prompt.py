@@ -22,7 +22,7 @@ from app.core.live.urge_menu import UrgeMenuItem, build_urge_menu, render_urge_m
 from app.core.session.prompt_support import clip_text_to_tokens
 from app.llm.token_utils import chars_per_token, estimate_tokens
 
-LIVE_POLICY_PROMPT_VERSION = 4
+LIVE_POLICY_PROMPT_VERSION = 5
 _SAFETY_TOKENS = 256
 _INSTRUCTIONS = """You are a Live behavior policy, not a companion.
 Choose exactly one intent for this moment. Output a complete JSON object.
@@ -146,6 +146,11 @@ class LivePolicyPromptAssembler:
         )
         instructions = _INSTRUCTIONS.strip()
         situation = self._render_situation(frame, trigger_kind=trigger_kind)
+        if frame.constraints.defer_casual_speech:
+            situation += (
+                "\nLearned timing preference: save casual topics for breaks while coding. "
+                "For autonomous speech, only an explicitly requested ready update fits now."
+            )
         fallback_text = render_fallback_prompt(fallback)
         if fallback_text:
             situation = situation + "\n" + fallback_text
