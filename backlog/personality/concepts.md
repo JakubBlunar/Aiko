@@ -447,7 +447,7 @@ over-cap rows separately before expanding the supported depth.
 
 ### L46 follow-up. Test competing abstractions on an unseen choice
 
-**Status: Proposed evaluation under L55.** Someone edits photos on copies and
+**Status: First fictional comparison under L55.** Someone edits photos on copies and
 tries game mods in a separate save. “Likes experimenting” and “wants to keep the
 original recoverable” both fit those episodes. They suggest different replies
 when a new tool offers an irreversible conversion. A depth-2 concept earns its
@@ -465,6 +465,25 @@ condition, leaves motive open when the evidence is ambiguous, and updates after
 a correction. One successful prediction supports further evaluation. Only
 observed choices or an explicit explanation can supply new evidence about the
 user. Keep the existing depth cap and record source overlap through L49.
+
+The [abstraction replay](../../scripts/concept_abstraction_replay.py) uses the
+configured `worker_default` model and context window through loopback Ollama.
+On `baytout3/qwen3.5-uncensored:9b`, each version used 207 input tokens before
+the reveal and matched the other versions for each ending at 226–250 tokens.
+Seeds 49 and 57 at temperature zero returned identical results. All three
+versions scored two of four under the structured rubric. They recommended
+duplicating after the backup correction and kept lasting motive uncertain.
+They also selected duplication when a verified backup was available and when
+the backup status was ambiguous. With the underlying concepts, the verified
+backup reply itself said to proceed, even though its action field said to
+duplicate.
+
+An earlier run used the 4B Live policy model and the generic Ollama transport
+settings. It scored four of four for the underlying concepts and three of four
+for each parent. Both parents missed the correction under the structured rubric.
+Both comparisons used supplied context in one fictional story. Replay mined
+parents across several held-out occasions and judge the response text alongside
+its action field before changing synthesis, ranking or the context budget.
 
 <a id="l48-refused-evidence-already-mints-a-new-concept-and-what-it-mints-is-a-twin"></a>
 
@@ -523,7 +542,7 @@ boundaries still work after one statement; independence must not weaken them.
 
 ### L49 follow-up. Recognize a retelling across topic clusters
 
-**Status: Proposed.** A conversation can revisit one event for several reasons.
+**Status: Reviewed-pair pilot.** A conversation can revisit one event for several reasons.
 A bike commute might first come up under repairs and later under getting to work.
 The second account can add what happened next. Counting it as a second breakdown
 would teach Aiko the wrong thing about how often the bike fails.
@@ -544,6 +563,16 @@ a second breakdown on Friday. In the third they only say “the chain slipped.�
 A later “how often?” reply should recall one confirmed incident, two, or uncertain
 frequency respectively. Check both direct recall and a concept citing both topics.
 Review false joins as well as missed retellings before using the signal in promotion.
+
+The [isolated replay](../../tests/test_concept_occasion_replay.py) found two
+recorded source groups in every variant. Its reviewed links gave one confirmed
+occasion for the explicit Tuesday callback, two for the explicit second
+breakdown and an unresolved count for the ambiguous report. Archive lookup
+retained both dated statements and concept recall retained both source notes.
+Editing the callback expired the relationship and left the edited statement
+available. The pilot takes a reviewer verdict and checks both sources. Automatic
+link discovery, topic-profile integration and model replies about frequency
+still need evaluation.
 
 ## L50. Context-scoped claims and temporal validity
 
@@ -752,7 +781,7 @@ as good. Inspect source selection separately from the reply.
 
 ## L57. Ground Aiko's changing interests in her own choices
 
-**Status: Proposed.** On 21 Nov 2026 a read-only check found active self-narrative
+**Status: Choice-receipt pilot.** On 21 Nov 2026 a read-only check found active self-narrative
 `13830` describing how Aiko learned to finish her tea. Its three viable support
 sets span 17 distinct notes about brewing, warming, sipping, clearing tea and
 washing a mug. These support a recurring activity. They supply no clear earlier
@@ -779,6 +808,18 @@ Only the second supports a preference inference, and its reason can remain open.
 Then cue sketching from that preference and check that the resulting action
 cannot independently confirm the belief that prompted it. Judge a later free
 choice as well as the wording of the self-description.
+
+The [choice replay](../../tests/test_concept_self_choice_replay.py) kept three
+completed sketches in each later window. Assigned sketches supported an
+activity report. Reviewed voluntary sketches also supported repeated returns.
+Only the replay with two earlier free choices of reading supported a change in
+the observed choice pattern. Resumed episodes counted once. Weighted draws,
+concept-cued acts, fallbacks, a sole eligible activity and incomplete steps
+supplied no independent return. The existing Memory Story showed the same
+settled entry for all three histories. The separate
+[review helper](../../scripts/review_self_choices.py) needs a reviewer to
+confirm whether each choice was unprompted. A future rollout needs recoverable
+choice attribution and a way to surface it through Memory Story.
 
 ## Moved out of the active queue
 

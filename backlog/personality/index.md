@@ -280,8 +280,9 @@ message through the existing history interface. D9 starts as archive navigation.
   when inference is available. Count timeouts/failures; synthetic correctness is not naturalness.
 - [L56](concepts.md#l56-recall-an-analogy-across-different-topics) — **proposed**.
   Use the relevant part of a past case to reason about an unfamiliar situation.
-- [L57](concepts.md#l57-ground-aikos-changing-interests-in-her-own-choices) — **proposed**.
-  Distinguish activity, voluntary preference and change in Aiko's self-model.
+- [L57](concepts.md#l57-ground-aikos-changing-interests-in-her-own-choices) — **pilot**.
+  Review activity, voluntary returns and changes in choice patterns before surfacing them in
+  Memory Story.
 
 ### Companion patterns
 
