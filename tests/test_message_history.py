@@ -422,8 +422,9 @@ def test_summary_generation_cannot_resurrect_deleted_text(db):
 def test_thread_note_generation_cannot_resurrect_deleted_text(db):
     _, reply = add_pair(db)
     notify = MagicMock()
+    client = MagicMock()
     worker = ThreadResummaryWorker(
-        chat_db=db, ollama=MagicMock(), chat_model="test", cancel_event=threading.Event(),
+        chat_db=db, ollama=client, chat_model="test", cancel_event=threading.Event(),
         agent_settings=SimpleNamespace(
             thread_resummary_enabled=True, thread_resummary_min_messages=1,
         ),
@@ -431,11 +432,11 @@ def test_thread_note_generation_cannot_resurrect_deleted_text(db):
         session_key_provider=lambda: "u:s", notify_thread_note=notify,
     )
 
-    def draft(**kwargs):
+    def draft(*args, **kwargs):
         db.delete_message_rows("u:s", [reply])
-        return "stale title", "stale quote"
+        return '{"title": "stale title", "note": "stale quote"}'
 
-    worker._draft = draft
+    client.chat.side_effect = draft
     assert worker.run() == {"wrote": False, "reason": "history_changed"}
     assert db.get_thread_note("u:s") is None
     notify.assert_not_called()

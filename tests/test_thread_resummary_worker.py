@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from unittest.mock import Mock
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -76,10 +77,11 @@ class _Summary:
 
 class _FakeDB:
     def __init__(self, *, count: int, note: _Note | None = None,
-                 messages: list[_Msg] | None = None) -> None:
+                 messages: list[_Msg] | None = None, summary: str = "") -> None:
         self._count = count
         self._note = note
         self._messages = messages or []
+        self._summary = _Summary(summary) if summary else None
         self.saved: list[tuple[str, str, str, int]] = []
 
     def get_message_count(self, session_id: str) -> int:
@@ -92,7 +94,7 @@ class _FakeDB:
         return self._messages
 
     def get_latest_summary(self, session_id: str):
-        return None
+        return self._summary
 
     def get_history_edit_revision(self, session_id: str) -> int:
         return 0
@@ -109,9 +111,11 @@ class _FakeClient:
     def __init__(self, reply: str) -> None:
         self._reply = reply
         self.surfaces: list[str] = []
+        self.requests: list[tuple] = []
 
     def chat(self, messages, options=None, model=None, surface="chat", **kwargs) -> str:
         self.surfaces.append(surface)
+        self.requests.append((messages, options, model))
         return self._reply
 
 
@@ -150,7 +154,7 @@ def _memory() -> SimpleNamespace:
 
 
 def _make_worker(db: _FakeDB, client: _FakeClient, *, agent=None,
-                 limiter=None, notify=None) -> ThreadResummaryWorker:
+                 limiter=None, notify=None, model_context=None) -> ThreadResummaryWorker:
     return ThreadResummaryWorker(
         chat_db=db,
         ollama=client,
@@ -164,6 +168,7 @@ def _make_worker(db: _FakeDB, client: _FakeClient, *, agent=None,
         assistant_display_name_provider=lambda: "Aiko",
         notify_thread_note=notify,
         clock=_now,
+        model_context=model_context,
     )
 
 
@@ -173,8 +178,9 @@ _GOOD_REPLY = '{"title": "Parser bug", "note": "Deep in a parser bug. Frustrated
 def test_thread_input_keeps_the_final_negation_of_a_long_message():
     text = "A proposed plan. " * 30 + "But this was imagined and I did not do it."
     db = _FakeDB(count=20, messages=[_Msg("user", text)])
-    worker = _make_worker(db, _FakeClient(_GOOD_REPLY))
-    assert text in worker._build_transcript("default:abc")
+    client = _FakeClient(_GOOD_REPLY)
+    assert _make_worker(db, client).run()["wrote"]
+    assert text in client.requests[0][0][-1]["content"]
 
 
 # ── trigger logic (_should_redraft / is_ready) ──────────────────────
@@ -295,6 +301,72 @@ class RunTests(unittest.TestCase):
         self.assertEqual(client.surfaces, ["thread_resummary_worker"])
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["title"], "Parser bug")
+
+    def test_packs_whole_latest_messages_against_the_worker_route(self) -> None:
+        from app.llm.token_utils import estimate_tokens
+
+        latest = "A longer account. " * 20 + "\nBut that was only a hypothetical."
+        db = _FakeDB(
+            count=40, summary="OLD SUMMARY " * 65,
+            note=_Note("older", "OLD NOTE " * 54, 20, "2026-01-01T00:00:00+00:00"),
+            messages=[
+                _Msg("assistant", "OMIT THIS OLD MESSAGE " * 80),
+                _Msg("assistant", "Second newest message."),
+                _Msg("user", latest),
+            ],
+        )
+        client = _FakeClient(_GOOD_REPLY)
+        window = 900
+        worker = _make_worker(db, client, model_context=lambda: ("active-worker", window))
+        self.assertTrue(worker.run()["wrote"])
+        messages, options, model = client.requests[0]
+        self.assertEqual(model, "active-worker")
+        prompt = messages[-1]["content"]
+        self.assertIn(latest, prompt)
+        self.assertLess(prompt.index("Second newest message."), prompt.index(latest))
+        self.assertNotIn("OMIT THIS OLD MESSAGE", prompt)
+        self.assertLessEqual(
+            sum(estimate_tokens(m["content"]) + 4 for m in messages) + options["num_predict"] + 64,
+            window,
+        )
+
+    def test_oversized_newest_message_does_not_charge_or_write(self) -> None:
+        db = _FakeDB(count=20, messages=[_Msg("user", "A long message. " * 300)])
+        client = _FakeClient(_GOOD_REPLY)
+        limiter = _FakeRateLimiter()
+        w = _make_worker(db, client, limiter=limiter, model_context=lambda: ("small", 768))
+        self.assertEqual(w.run()["reason"], "prompt_budget")
+        self.assertEqual(limiter.allow_calls, 0)
+        self.assertEqual(client.requests, [])
+        self.assertEqual(db.saved, [])
+
+    def test_route_change_defers_the_prepared_prompt(self) -> None:
+        db = _FakeDB(count=20, messages=self._msgs())
+        client = _FakeClient(_GOOD_REPLY)
+        routes = iter([("first", 4096), ("second", 2048)])
+        w = _make_worker(db, client, model_context=lambda: next(routes))
+        self.assertEqual(w.run()["reason"], "route_changed")
+        self.assertEqual(client.requests, [])
+        self.assertEqual(db.saved, [])
+
+    def test_worker_gate_checks_route_after_waiting(self) -> None:
+        from app.llm.llm_gate import GatedChatClient, MAINTENANCE_WORKER
+
+        db = _FakeDB(count=20, messages=self._msgs())
+        old_client = _FakeClient(_GOOD_REPLY)
+        new_client = _FakeClient(_GOOD_REPLY)
+        gate = Mock()
+        client = GatedChatClient(old_client, gate, MAINTENANCE_WORKER)
+
+        def retarget(*args, **kwargs):
+            client.retarget(new_client, gate)
+            return 0.0
+
+        gate.acquire.side_effect = retarget
+        worker = _make_worker(db, client, model_context=lambda: ("worker", 4096))
+        self.assertEqual(worker.run()["reason"], "route_changed")
+        self.assertEqual(old_client.requests + new_client.requests, [])
+        gate.release.assert_called_once_with(MAINTENANCE_WORKER)
 
     def test_skips_when_disabled(self) -> None:
         db = _FakeDB(count=20, note=None, messages=self._msgs())

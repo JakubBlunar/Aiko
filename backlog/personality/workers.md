@@ -36,12 +36,16 @@ selection.
 
 <a id="g7-worker-prompts-have-no-input-token-accounting"></a>
 
-## G7. Worker prompt-budget adoption beyond the first three writers
+## G7. Worker prompt-budget rollout
 
 **Status: Partial.**
 
-**Implemented / available:** Shared whole-request budgeting is adopted by summary, memory extraction
-and belief inference; cursors advance only through included messages and omissions are reported.
+**Implemented / available:** Summary, memory extraction, belief inference, hypothesis proposals
+and generated archive summaries use the shared whole-request packer. The thread-note worker
+also uses it against the configured maintenance route. It reserves its 320-token response,
+gives newest whole messages priority, and drops old notes or summaries if that allows more
+recent messages to fit. It skips a request whose newest message cannot fit and repacks on
+the next attempt if the route changes while queued.
 
 **Remaining:** Roll out to other worker builders with their actual route/output limits and
 worker-owned reduction rules. The helper and summary cursor repair are already implemented.
@@ -51,6 +55,7 @@ worker-owned reduction rules. The helper and summary cursor repair are already i
 **Source check:** [worker_prompt_budget.py](../../app/core/proactive/worker_prompt_budget.py),
 [summary_worker.py](../../app/core/proactive/summary_worker.py),
 [belief_worker.py](../../app/core/relationship/belief_worker.py),
+[thread_resummary_worker.py](../../app/core/proactive/thread_resummary_worker.py),
 [test_summary_worker.py](../../tests/test_summary_worker.py).
 
 ## Memory/time quality: ordinary-use follow-up
@@ -85,6 +90,17 @@ checklist lives under [L22's post-restart memory cohort](concepts.md#l22-follow-
 Check fresh worker output against its actual sources after normal use, including
 missed important memories, and keep historical issues separate. Do not count a
 healthy startup or a sparse worker cohort as semantic quality validation.
+
+**21 November diary review.** A read-only SQLite pass found 10 entries dated 17–21 November
+(UTC). Eight attached a background generation packet. Their stored primary session
+matched the packet, and all 90 message references still matched the saved revisions.
+Each packet had a distinct context key. Entries 11840 and 11861 still repeat the same
+reflection with close paraphrasing across different exchanges. The later entry brings
+back an earlier simile absent from its fresh transcript, while the earlier diary entry
+appears in its memory inputs. The current duplicate gate catches normalized exact matches.
+Review a source-aware novelty check that allows recurring themes when the new exchange
+adds a distinct event, feeling, qualification, or outcome. This review covers provenance
+and one repetition example. Omission and broader meaning checks remain open.
 
 <a id="next-producer-quality-candidates-source-review-6-nov-2026"></a>
 

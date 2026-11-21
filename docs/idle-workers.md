@@ -784,6 +784,15 @@ returned empty answers, and the two workers most affected wrote nothing at
 all for eight and ten weeks respectively (H27 in
 [`health.md`](../backlog/personality/health.md)).
 
+## Thread-note prompt budget
+
+The thread-note worker uses the maintenance route's configured context window and
+reserves 320 tokens for its response. It keeps the most recent whole messages in
+chronological order and includes older summaries or notes when they fit without
+displacing fresher messages. If the route changes while the request is queued,
+the worker defers so the next attempt can pack against the new route. When
+the route leaves its window unspecified, the shared packer uses 4,096 tokens.
+
 ## Observability
 
 Every tick that had due workers logs one line:

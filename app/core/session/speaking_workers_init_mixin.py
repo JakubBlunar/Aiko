@@ -3096,6 +3096,7 @@ class SpeakingWorkersInitMixin:
                                 _tr_assistant_name_provider
                             ),
                             notify_thread_note=self._notify_thread_note,
+                            model_context=self._worker_route_model_ctx,
                         )
                         self._idle_scheduler.register(
                             self._thread_resummary_worker,

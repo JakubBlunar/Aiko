@@ -33,11 +33,16 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from app.core.proactive.idle_worker import WorkSignal, pressure_from_count
+from app.core.proactive.worker_prompt_budget import (
+    PackedWorkerPrompt, pack_worker_prompt, report_worker_prompt,
+)
 from app.core.infra import timephrase
+from app.llm.call_scope import CallScope, LlmCallCancelled, LlmCallDeferred, call_scope
 
 if TYPE_CHECKING:
     from app.core.infra.chat_database import ChatDatabase
@@ -75,7 +80,7 @@ _MAX_TITLE_CHARS = 60
 _MAX_NOTE_CHARS = 500
 _MAX_SUMMARY_CHARS = 900
 _MAX_TRANSCRIPT_MSGS = 40
-_MAX_MSG_CHARS = 300
+_MAX_TRANSCRIPT_CHARS = 12_000
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 
@@ -137,10 +142,11 @@ class ThreadResummaryWorker:
         assistant_display_name_provider: Callable[[], str] | None = None,
         notify_thread_note: Callable[[dict[str, Any]], None] | None = None,
         clock: Callable[[], datetime] | None = None,
+        model_context: Callable[[], tuple[str, int | None]] | None = None,
     ) -> None:
         self._chat_db = chat_db
         self._ollama = ollama
-        self._chat_model = chat_model
+        self._model_context = model_context or (lambda: (chat_model, None))
         self._cancel_event = cancel_event
         self._agent_settings = agent_settings
         self._memory_settings = memory_settings
@@ -271,11 +277,8 @@ class ThreadResummaryWorker:
         if not self._should_redraft(session_key, msg_count, now):
             return {"skipped": True, "reason": "not_due", "messages": msg_count}
 
-        if not self._rate_limiter.allow(now):
-            return {"skipped": True, "reason": "rate_limited"}
-
         try:
-            transcript = self._build_transcript(session_key)
+            transcript = self._transcript_lines(session_key, now)
         except Exception:
             log.warning("thread_resummary transcript build failed", exc_info=True)
             return {"errored": True, "reason": "transcript"}
@@ -285,13 +288,46 @@ class ThreadResummaryWorker:
         summary_text = self._summary_block(session_key)
         prev_note = self._prev_note_block(session_key)
 
+        try:
+            route_revision = getattr(self._ollama, "routing_revision", None)
+            model, window = self._model_context()
+            packed = self._pack_prompt(
+                transcript, summary_text=summary_text, prev_note=prev_note,
+                window=window, now=now,
+            )
+        except Exception:
+            log.warning("thread_resummary prompt preparation failed", exc_info=True)
+            return {"errored": True, "reason": "prompt"}
+        if packed is None:
+            log.warning("thread_resummary: newest whole message does not fit the prompt budget")
+            return {"skipped": True, "reason": "prompt_budget"}
+        if not self._rate_limiter.allow(now):
+            return {"skipped": True, "reason": "rate_limited"}
+
+        def check_route() -> None:
+            if (
+                self._model_context() != (model, window)
+                or getattr(self._ollama, "routing_revision", None) != route_revision
+            ):
+                raise LlmCallDeferred("Thread note route changed after prompt packing")
+
         t0 = time.monotonic()
         try:
-            title, note = self._draft(
-                transcript=transcript,
-                summary_text=summary_text,
-                prev_note=prev_note,
-            )
+            with call_scope(CallScope(
+                cancelled=self._cancel_event.is_set, on_acquired=check_route, queue_timeout=None,
+            )):
+                check_route()
+                raw = self._ollama.chat(
+                    packed.messages,
+                    options={"num_predict": _MAX_TOKENS, "temperature": 0.5},
+                    model=model,
+                    surface="thread_resummary_worker",
+                )
+                title, note = parse_thread_note(raw or "")
+        except LlmCallCancelled:
+            return {"cancelled": True}
+        except LlmCallDeferred:
+            return {"skipped": True, "reason": "route_changed"}
         except Exception:
             log.warning("thread_resummary draft call raised", exc_info=True)
             return {"errored": True, "reason": "draft_call"}
@@ -393,17 +429,26 @@ class ThreadResummaryWorker:
     def _session_key(self) -> str:
         return (self._session_key_provider() or "").strip()
 
-    def _build_transcript(self, session_key: str) -> str:
+    def _transcript_lines(self, session_key: str, now: datetime) -> list[str]:
+        """Newest-first whole messages for the packer; preserve multiline content."""
         rows = self._chat_db.get_messages(
             session_key, limit=_MAX_TRANSCRIPT_MSGS,
         )
-        user_name = self._resolve_user_name()
-        assistant_name = self._resolve_assistant_name()
-        from app.core.memory.worker_sources import transcript_packet
-
-        return transcript_packet(rows, user_name=user_name, assistant_name=assistant_name,
-                                 session_key=session_key,
-                                 max_chars=_MAX_TRANSCRIPT_MSGS * _MAX_MSG_CHARS)["text"]
+        labels = {"user": self._resolve_user_name(), "assistant": self._resolve_assistant_name()}
+        lines = []
+        used = 0
+        for row in reversed(rows):
+            line = timephrase.format_transcript([row], now_dt=now, role_labels=labels)
+            if not line:
+                continue
+            message_id = getattr(row, "id", None)
+            if type(message_id) is int:
+                line = f"ID {message_id} {line}"
+            used += len(line) + bool(lines)
+            if used > _MAX_TRANSCRIPT_CHARS:
+                break
+            lines.append(line)
+        return lines
 
     def _summary_block(self, session_key: str) -> str:
         try:
@@ -425,15 +470,17 @@ class ThreadResummaryWorker:
 
     # ── LLM ───────────────────────────────────────────────────────────
 
-    def _draft(
+    def _pack_prompt(
         self,
+        transcript: Sequence[str],
         *,
-        transcript: str,
         summary_text: str,
         prev_note: str,
-    ) -> tuple[str, str]:
+        window: int | None,
+        now: datetime,
+    ) -> PackedWorkerPrompt | None:
         system = (
-            timephrase.today_anchor()
+            timephrase.today_anchor(now)
             + "\n\n"
             + _SYSTEM_PROMPT.format(
                 assistant_name=self._resolve_assistant_name(),
@@ -442,22 +489,32 @@ class ThreadResummaryWorker:
             + "\n\n"
             + timephrase.STORED_TEXT_TIME_RULE
         )
-        user_payload = _USER_TEMPLATE.format(
-            summary=summary_text or "(none yet)",
-            prev=prev_note or "(none yet)",
-            transcript=transcript,
-        )
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_payload},
-        ]
-        raw = self._ollama.chat(
-            messages,
-            options={"num_predict": _MAX_TOKENS, "temperature": 0.5},
-            model=self._chat_model,
-            surface="thread_resummary_worker",
-        )
-        return parse_thread_note(raw or "")
+        best = None
+        contexts = dict.fromkeys(((summary_text, prev_note), (summary_text, ""), ("", "")))
+        for summary, previous in contexts:
+            def render(
+                selected: Sequence[str], summary: str = summary, previous: str = previous,
+            ) -> list[dict[str, str]]:
+                return [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": _USER_TEMPLATE.format(
+                        summary=summary or ("(omitted to fit)" if summary_text else "(none yet)"),
+                        prev=previous or ("(omitted to fit)" if prev_note else "(none yet)"),
+                        transcript="\n".join(reversed(selected)),
+                    )},
+                ]
+
+            packed = pack_worker_prompt(
+                transcript, render, context_window=window, output_tokens=_MAX_TOKENS,
+                surface=self.name, log=log, report=False,
+            )
+            if packed is not None and (best is None or packed.item_count > best.item_count):
+                best = packed
+                if best.item_count == len(transcript):
+                    break
+        if best is not None:
+            report_worker_prompt(best, len(transcript), surface=self.name, log=log)
+        return best
 
     # ── name resolution ───────────────────────────────────────────────
 
