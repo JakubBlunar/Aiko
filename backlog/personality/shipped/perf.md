@@ -877,9 +877,7 @@ render's. Discoveries asked for 500 events in one page and now takes 150
 with a "load older" button, using the `before_id` cursor the endpoint
 already had and the UI had never used.
 
-Related: [P39](../perf.md#p39-concept-snapshot--quality-report-n1-the-evidence-edges)
-is the batch-lookup half of the same code and is still open; paging
-bounds N rather than removing the N+1.
+Related: [P39](#p39-batched-concept-evidence) batches evidence reads within each page.
 
 Tests: `tests/test_concept_snapshot.py` (`PagingTests` — bounded page,
 resolution cost, no gaps or repeats across pages, stable tie-break,
@@ -887,6 +885,24 @@ filters vs. counts, offset past the end, and that an unparameterised
 call still means the whole graph), `tests/test_web_server_concepts.py`
 (the route's default cap, clamping, and blank-filter handling),
 `ConceptsPanel.test.tsx`.
+
+## P39. Batched concept evidence
+
+The Concepts view resolves edges after selecting the page. The quality report
+uses the same chunked lookup for the full graph and reuses the resulting edges
+for topic span, source confidence, and importance. Edges keep their ordinal
+order and use edge ID as the tie-break.
+
+On a disposable graph of 900 concepts with four evidence edges each, a
+40-concept page dropped from 40 to 1 evidence queries and took 0.72 to 0.63 ms.
+The full report with importance enabled dropped from 903 to 3 evidence queries
+and from 17.2 to 13.2 ms. Both paths returned identical data across builds when
+excluding the report generation timestamp. The pairwise comparison stage took
+2.5 ms over six groups of 150 vectors at 1,024 dimensions. These are local
+medians and the cost of pairwise comparison still grows with each group's size.
+
+The [snapshot regression tests](../../../tests/test_concept_snapshot.py) check
+page-bounded reads, edge order, and chunking across 401 concept IDs.
 
 ---
 

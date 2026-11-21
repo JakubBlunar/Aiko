@@ -12,10 +12,13 @@ Covers the additions in E1/E2:
 """
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Barrier
 from types import SimpleNamespace
 
 import numpy as np
@@ -53,6 +56,32 @@ def _emb(text: str) -> np.ndarray:
 
 
 class TestTierRoundTrip(unittest.TestCase):
+    def test_legacy_mirror_loads_rows_and_indexes_their_stored_kind(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "old.db"
+        embedding = _emb("legacy")
+        conn = sqlite3.connect(path)
+        try:
+            with conn:
+                conn.execute(
+                    "CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT, kind TEXT, "
+                    "salience REAL, embedding BLOB, source_session TEXT, "
+                    "source_message_id INTEGER, created_at TEXT, last_used_at TEXT, "
+                    "use_count INTEGER, pinned INTEGER)"
+                )
+                conn.execute(
+                    "INSERT INTO memories VALUES (7, 'legacy joke', 'catchphrase', 0.5, ?, "
+                    "NULL, NULL, '2025-01-01T00:00:00+00:00', NULL, 0, 0)",
+                    (embedding.tobytes(),),
+                )
+        finally:
+            conn.close()
+        store = MemoryStore(path)
+        [memory] = store.iter_by_kind("catchphrase")
+        self.assertEqual((memory.id, memory.tier, memory.confidence), (7, "long_term", 0.7))
+        self.assertEqual(memory.metadata, {})
+        np.testing.assert_array_equal(memory.embedding, embedding)
+        store.close()
+
     def test_default_tier_is_long_term(self) -> None:
         _, store = _store_factory()
         mem = store.add("hello world", "fact", _emb("hello"))
@@ -226,6 +255,26 @@ class TestKindFilteredListing(unittest.TestCase):
         store = self._seed()
         self.assertEqual(len(store.list_top(limit=100)), 43)
 
+    def test_reclassification_prune_and_reload_preserve_kind_order(self) -> None:
+        _, store = _store_factory()
+        first = store.add("older fact", "fact", _emb("a"), salience=0.1, skip_dedupe=True)
+        second = store.add("newer joke", "catchphrase", _emb("b"), skip_dedupe=True)
+        third = store.add("newest fact", "fact", _emb("c"), skip_dedupe=True)
+        assert first and second and third
+        store.update(first.id, kind="catchphrase")
+        self.assertEqual([m.id for m in store.iter_by_kind("catchphrase")], [first.id, second.id])
+        self.assertEqual(
+            [m.id for m in store.iter_by_kinds([" CatchPhrase ", "fact", "fact"])],
+            [first.id, second.id, third.id],
+        )
+        store._tier_caps["long_term"] = 2
+        self.assertEqual(store.prune(), 1)
+        self.assertEqual(store.count_memories(kind="catchphrase"), 1)
+        self.assertTrue(store.delete(third.id))
+        self.assertEqual(store.iter_by_kind("fact"), [])
+        store._reload_mirror()
+        self.assertEqual([m.id for m in store.list_recent(kind="catchphrase")], [second.id])
+
 
 class TestTextSearchedListing(unittest.TestCase):
     """The Memory tab's "did she remember this?" box.
@@ -292,6 +341,46 @@ class TestTextSearchedListing(unittest.TestCase):
 
 
 class TestWallClockDecay(unittest.TestCase):
+    def test_decay_reuses_vectors_and_updates_the_anchor_atomically(self) -> None:
+        path, store = _store_factory()
+        memory = store.add("a durable memory", "fact", _emb("stable"), salience=0.6)
+        assert memory is not None
+        embedding = memory.embedding
+        now = datetime(2026, 11, 12, tzinfo=timezone.utc)
+        store.decay(now=now)
+        start = Barrier(2)
+
+        def decay_next_day() -> bool:
+            start.wait(timeout=5)
+            try:
+                return bool(store.decay(now=now + timedelta(days=1))["applied"])
+            finally:
+                store.close()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: decay_next_day(), range(2)))
+        self.assertEqual(results.count(True), 1)
+        self.assertIs(store.get(memory.id), memory)
+        self.assertIs(memory.embedding, embedding)
+        self.assertAlmostEqual(memory.salience, 0.58)
+        self.assertEqual(store.search(embedding)[0].memory.id, memory.id)
+
+        conn = store._get_conn()
+        conn.execute(
+            "CREATE TRIGGER reject_decay_anchor BEFORE UPDATE ON kv_meta "
+            "WHEN NEW.key = 'memory.last_decay_run_at' "
+            "BEGIN SELECT RAISE(ABORT, 'anchor write failed'); END"
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "anchor write failed"):
+            store.decay(now=now + timedelta(days=2))
+        self.assertAlmostEqual(memory.salience, 0.58)
+        reopened = MemoryStore(path)
+        self.assertAlmostEqual(reopened.get(memory.id).salience, 0.58)
+        self.assertEqual(
+            reopened._read_last_decay_run_at(reopened._get_conn()), now + timedelta(days=1),
+        )
+        reopened.close()
+
     def test_decay_scales_with_elapsed_days(self) -> None:
         _, store = _store_factory()
         sp = store.add("scratch row", "fact", _emb("sp"), tier="scratchpad", salience=1.0)

@@ -276,9 +276,13 @@ which preserves pre-v8 behavior (uniform decay rate on a single pool).
 
 ### In memory: the mirror, and the matrix beside it
 
-`MemoryStore` keeps every row resident in `_mirror`
-(`dict[int, Memory]`), so the twenty-odd accessors that want a
-memory by id, kind or tier are dict lookups rather than queries.
+`MemoryStore` streams SQLite rows into its in-memory mirror. Kind-filtered
+reads use a second map of references to the same memory objects and preserve
+memory ID order after an edit. Tier-only filtering still walks the mirror.
+
+Decay commits salience, revival scores, and the next decay anchor together.
+It refreshes those two scores in the existing rows after commit. Embeddings
+and the vector and kind indexes are reused across the sweep.
 
 At startup, the LanceDB memory index is reconciled against the loaded SQLite
 mirror. A batched scan compares the fields and normalized vectors used by
@@ -306,13 +310,10 @@ identical either way.
 
 Two consequences worth knowing when changing this code:
 
-- **The index is a second copy of the same facts, so it can
-  drift.** Every path that mutates `_mirror` must mutate it too,
-  under the same lock. There are exactly four: `_reload_mirror`,
-  `add`, `update`, and `delete`/`prune`. A missed one is silent —
-  a memory that cannot be found, or a deleted one that still
-  matches — which is why `tests/test_vector_index.py` drives the
-  public API and asserts the two agree afterwards.
+- **The mirror and its indexes share a lock.** Reload, add, update, delete,
+  and prune publish SQLite changes and matching index changes together.
+  `tests/test_vector_index.py` and `tests/test_memory_tiers.py` check the
+  results through the store's read APIs.
 - **Deletion is a tombstone.** Squeezing a row out of a contiguous
   matrix copies everything after it, which would make `prune()`
   quadratic. Dead rows are masked from results and reclaimed in one

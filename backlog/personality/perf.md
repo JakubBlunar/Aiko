@@ -107,11 +107,17 @@ and retune smoothing with measured lag.
 **Status: Partial.**
 
 **Implemented / available:** Tier caps default to zero/no eviction, VectorIndex speeds search/dedupe
-and ANN maintenance exists.
+and ANN maintenance exists. SQLite rows stream into the mirror. Decay commits its
+scores and time anchor together, then refreshes salience and revival scores in place
+without rebuilding embeddings, indexes, or memory objects.
 
-**Remaining:** Remove decay's full mirror reload if measured worthwhile; stream reload instead of
-fetchall and evaluate mirror memory/LRU architecture. SQLite query speed was not the original
-bottleneck.
+On a disposable corpus of 6,200 memories with 1,024-dimensional vectors, median
+warm mirror load fell from 242 to 96 ms and traced peak load allocation from
+130 to 104 MiB. Median decay time fell from 534 to 316 ms across nine timed
+sweeps per build. These timings cover the SQLite mirror and decay, separately
+from Lance reconciliation and application startup.
+
+**Remaining:** Evaluate the resident mirror and LRU tradeoff as the corpus grows.
 
 [Implemented slice](shipped/audit-2026-10-24.md#perf-p30).
 
@@ -159,11 +165,12 @@ decisions.
 
 **Status: Partial.**
 
-**Implemented / available:** Kind filtering precedes sorting in list_top/list_recent, with
-correctness regressions.
+**Implemented / available:** Kind-filtered iterators, lists, and counts read a
+kind index over the memory mirror. Add, reclassification, deletion, pruning,
+and reload keep it in sync. A snapshot of 155 reflections from 6,200 memories
+fell from about 91 to 0.7 microseconds in an isolated benchmark.
 
-**Remaining:** Index genuinely unbounded iter_by_kind walks and replace whole-knowledge
-concatenation with bounded retrieval; keep add/update/delete/reload coherence.
+**Remaining:** Bound the per-kind knowledge similarity scan as the learned corpus grows.
 
 [Implemented slice](shipped/audit-2026-10-24.md#perf-p33).
 
@@ -186,20 +193,6 @@ preservation/deletion semantics.
 [message_indexer.py](../../app/core/rag/message_indexer.py),
 [concept_event_store.py](../../app/core/concepts/concept_event_store.py),
 [task_cleanup_worker.py](../../app/core/tasks/task_cleanup_worker.py).
-
-## P39. Concept snapshot + quality report N+1 the evidence edges
-
-**Status: Open implementation.**
-
-**Implemented / available:** Snapshot pagination and on-demand quality loading bound N; evidence
-resolution remains N+1.
-
-**Remaining:** Add batched evidence lookup and measure the quality report's pairwise embedding cost
-before optimizing it.
-
-**Source check:** [concept_snapshot.py](../../app/core/concepts/concept_snapshot.py),
-[concept_quality.py](../../app/core/concepts/concept_quality.py),
-[concept_store.py](../../app/core/concepts/concept_store.py).
 
 ## P43. 105 blocks, no arbitration -- replace the aggressive denylist
 
@@ -502,6 +495,8 @@ claim.
 - **P36** — shipped: [record](shipped/audit-2026-10-24.md#perf-p36).
 - **P37** — shipped: [record](shipped/audit-2026-10-24.md#perf-p37).
 - **P38** — shipped: [record](shipped/audit-2026-10-24.md#perf-p38).
+- <a id="p39-concept-snapshot--quality-report-n1-the-evidence-edges"></a>**P39** — shipped:
+  [record](shipped/perf.md#p39-batched-concept-evidence).
 - **P42** — retired: [record](shipped/audit-2026-10-24.md#perf-p42).
 - **P45** — shipped: [record](shipped/audit-2026-10-24.md#perf-p45).
 - **P51** — retired: [record](shipped/audit-2026-10-24.md#perf-p51).

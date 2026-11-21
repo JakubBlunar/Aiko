@@ -407,6 +407,11 @@ be wrong against `concept_promote_*` for every kind at once:
 `ConceptView.testable` (L30b — is age the *only* thing blocking this
 belief?) and the `/api/concepts/quality` scoreboard.
 
+The paged Concepts view batches supporting edges for the visible page. The
+quality report batches evidence for the full graph and reuses those edges for
+its confidence, topic-span, and importance metrics. Evidence chains keep their
+ordinal order, with ties following edge ID order.
+
 **Age is engaged time, not wall-clock** (schema v24). Both the promotion
 floor and the `concept_candidate_ttl_days` cleanup are measured in *engaged*
 (active-conversation) days via a per-concept anchor

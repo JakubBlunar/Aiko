@@ -355,9 +355,8 @@ message through the existing history interface. D9 starts as archive navigation.
 - [P26](perf.md#p26-lip-sync-rides-the-server-clock-not-the-playback-clock) — **partial**: Extend
   the same path to desktop/Tauri audio owners, keep WS metering for non-owners and retune smoothing
   with measured lag.
-- [P30](perf.md#p30-memory-mirror-reload-and-growth-costs) — **partial**: Remove decay's full mirror
-  reload if measured worthwhile; stream reload instead of fetchall and evaluate mirror memory/LRU
-  architecture. SQLite query speed was not the original bottleneck.
+- [P30](perf.md#p30-memory-mirror-reload-and-growth-costs) — **partial**: Streaming load and
+  in-place decay shipped. Evaluate the resident mirror and LRU tradeoff as the corpus grows.
 - [P31](perf.md#p31-audit--trim-the-baseline-system-prompt-25-30k-resting-floor) — **partial**:
   Remeasure the actual route/cache, then trim duplicate grammar, gate empty blocks and audit tier
   hygiene where evidence warrants. P43/P52 own volatile-tail/context work.
@@ -365,13 +364,12 @@ message through the existing history interface. D9 starts as archive navigation.
   contention and graph growth; define snapshot/event thinning and any remaining dirty-work
   refinements without discarding durable history. P34/P49 own retention decisions.
 - [P33](perf.md#p33-inner-life-providers-walk-the-whole-memory-mirror-every-turn) — **partial**:
-  Index genuinely unbounded iter_by_kind walks and replace whole-knowledge concatenation with
-  bounded retrieval; keep add/update/delete/reload coherence.
+  Kind-filtered reads use a mirror index. Bound the knowledge similarity scan as its corpus grows.
 - [P34](perf.md#p34-unbounded-tables-messages-lance-mirror-concept_events) — **open**: Decide
   retention separately for authoritative messages, the Lance mirror and concept-event noise. Add
   reconciled index filtering/thinning only with explicit preservation/deletion semantics.
-- [P39](perf.md#p39-concept-snapshot--quality-report-n1-the-evidence-edges) — **open**: Add batched
-  evidence lookup and measure the quality report's pairwise embedding cost before optimizing it.
+- [P39](shipped/perf.md#p39-batched-concept-evidence) — **shipped**: Batched evidence for
+  the Concepts page and the quality report. Measured pairwise report cost.
 - [P43](perf.md#p43-105-blocks-no-arbitration----replace-the-aggressive-denylist) — **partial**:
   Cover eager providers, protect owed/authoritative blocks, allocate complete evidence/handling
   bundles and record actual final inclusion/omissions before learning weights. RS1/RS4/RS5 and G6

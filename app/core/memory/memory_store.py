@@ -22,8 +22,10 @@ import logging
 import sqlite3
 import struct
 import threading
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from operator import attrgetter
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterable
@@ -455,8 +457,7 @@ def _encode(vec: np.ndarray) -> bytes:
 
 
 def _decode(blob: bytes) -> np.ndarray:
-    count = len(blob) // 4
-    return np.array(struct.unpack(f"{count}f", blob), dtype=np.float32)
+    return np.frombuffer(blob, dtype=np.float32).copy()
 
 
 def _encode_metadata(metadata: dict[str, Any] | None) -> str | None:
@@ -571,12 +572,12 @@ class MemoryStore:
         self._lock = threading.Lock()
         # In-memory mirror so cosine search is a single NumPy pass.
         self._mirror: dict[int, Memory] = {}
+        self._by_kind: dict[str, dict[int, Memory]] = {}
         # The same rows' embeddings as one contiguous matrix. Kept beside
         # the mirror rather than derived from it on demand, because the
         # two callers that need it (``search`` and ``add``'s dedupe) run
         # often enough that rebuilding per call would cost more than the
-        # loop it replaces. Mutated at exactly the four places ``_mirror``
-        # is, always under ``_lock``.
+        # loop it replaces. Both indexes share the mirror lock.
         self._vectors = VectorIndex()
         self._rag: "RagStore | None" = None
         # Listeners notified after each successful ``delete``. Used by
@@ -754,154 +755,65 @@ class MemoryStore:
             self._local.conn = conn
         return conn
 
+    # The oldest readable layout ends at pinned. Incomplete schema groups
+    # fall back together, keeping defaults consistent with the old loader.
+    _MIRROR_COLUMNS = (
+        "id", "content", "kind", "salience", "embedding", "source_session",
+        "source_message_id", "created_at", "last_used_at", "use_count", "pinned",
+        "metadata", "tier", "revival_score", "confidence",
+        "event_time", "temporal_type", "relevance_until", "provenance",
+    )
+    _MIRROR_DEFAULTS = (
+        None, _DEFAULT_TIER, 0.0, 0.7, None, _DEFAULT_TEMPORAL_TYPE, None, _DEFAULT_PROVENANCE,
+    )
+
     def _reload_mirror(self) -> None:
         conn = self._get_conn()
-        # Try the v30 shape first (… + provenance). Fall back through v10
-        # (no provenance), v9 (no temporal), v8 (no confidence), v7 (no
-        # tier/revival), v6 (no metadata). Pre-v6 databases land in the
-        # bottom-most ``except`` and start with an empty mirror.
-        try:
-            rows = conn.execute(
-                "SELECT id, content, kind, salience, embedding, source_session, "
-                "source_message_id, created_at, last_used_at, use_count, pinned, "
-                "metadata, tier, revival_score, confidence, "
-                "event_time, temporal_type, relevance_until, provenance FROM memories"
-            ).fetchall()
-        except sqlite3.OperationalError:
-            rows = self._reload_mirror_pre_v30(conn)
-            if rows is None:
-                with self._lock:
-                    self._mirror_loaded = False
-                    self._mirror = {}
-                    self._vectors.rebuild(())
-                return
         with self._lock:
-            self._mirror = {
-                r[0]: Memory(
-                    id=r[0],
-                    content=r[1],
-                    kind=r[2],
-                    salience=float(r[3]),
-                    embedding=_decode(r[4]),
-                    source_session=r[5],
-                    source_message_id=r[6],
-                    created_at=r[7],
-                    last_used_at=r[8],
-                    use_count=int(r[9]),
-                    pinned=bool(r[10]),
-                    metadata=_decode_metadata(r[11]),
-                    tier=_normalize_tier(r[12], pinned=bool(r[10])),
-                    revival_score=max(0.0, min(1.0, float(r[13] or 0.0))),
-                    confidence=max(0.0, min(1.0, float(r[14] if r[14] is not None else 0.7))),
-                    event_time=r[15] if r[15] else None,
-                    temporal_type=_coerce_temporal_type(r[16]),
-                    relevance_until=r[17] if r[17] else None,
-                    provenance=_coerce_provenance(r[18]),
-                )
-                for r in rows
-            }
-            self._vectors.rebuild(
-                (m.id, m.embedding) for m in self._mirror.values()
-            )
-            self._mirror_loaded = True
-        log.info("memory store loaded with %d memories", len(self._mirror))
-
-    def _reload_mirror_pre_v30(
-        self, conn: sqlite3.Connection,
-    ) -> list[tuple] | None:
-        """Read a pre-v30 ``memories`` table and pad every row to the v30
-        column shape (19 tuple slots, provenance last).
-
-        Walks the same descending fallback ladder ``_reload_mirror`` used
-        before F16: v10 (no provenance), v9 (no temporal), v8 (no
-        confidence), v7 (no tier/revival), v6 (no metadata). Each older
-        shape appends the columns added since, ending with the v30
-        ``provenance`` default so the caller's ``Memory(...)`` construction
-        is shape-agnostic. Returns ``None`` for a pre-v6 database that has
-        no readable memory columns at all (the caller empties the mirror).
-        """
-        try:
-            rows = conn.execute(
-                "SELECT id, content, kind, salience, embedding, source_session, "
-                "source_message_id, created_at, last_used_at, use_count, pinned, "
-                "metadata, tier, revival_score, confidence, "
-                "event_time, temporal_type, relevance_until FROM memories"
-            ).fetchall()
-            # Append default provenance for pre-v30 rows.
-            return [(*r, _DEFAULT_PROVENANCE) for r in rows]
-        except sqlite3.OperationalError:
-            pass
-        try:
-            rows = conn.execute(
-                "SELECT id, content, kind, salience, embedding, source_session, "
-                "source_message_id, created_at, last_used_at, use_count, pinned, "
-                "metadata, tier, revival_score, confidence FROM memories"
-            ).fetchall()
-            # Append default temporal + provenance fields for pre-v10 rows.
-            return [
-                (*r, None, _DEFAULT_TEMPORAL_TYPE, None, _DEFAULT_PROVENANCE)
-                for r in rows
-            ]
-        except sqlite3.OperationalError:
-            pass
-        try:
-            rows = conn.execute(
-                "SELECT id, content, kind, salience, embedding, source_session, "
-                "source_message_id, created_at, last_used_at, use_count, pinned, "
-                "metadata, tier, revival_score FROM memories"
-            ).fetchall()
-            # Append default confidence + temporal + provenance for pre-v9 rows.
-            return [
-                (*r, 0.7, None, _DEFAULT_TEMPORAL_TYPE, None, _DEFAULT_PROVENANCE)
-                for r in rows
-            ]
-        except sqlite3.OperationalError:
-            pass
-        try:
-            rows = conn.execute(
-                "SELECT id, content, kind, salience, embedding, source_session, "
-                "source_message_id, created_at, last_used_at, use_count, pinned, "
-                "metadata FROM memories"
-            ).fetchall()
-            # Append default (tier, revival_score, confidence, event_time,
-            # temporal_type, relevance_until, provenance) for pre-v8 rows.
-            return [
-                (
-                    *r,
-                    _DEFAULT_TIER,
-                    0.0,
-                    0.7,
-                    None,
-                    _DEFAULT_TEMPORAL_TYPE,
-                    None,
-                    _DEFAULT_PROVENANCE,
-                )
-                for r in rows
-            ]
-        except sqlite3.OperationalError:
-            pass
-        try:
-            rows = conn.execute(
-                "SELECT id, content, kind, salience, embedding, source_session, "
-                "source_message_id, created_at, last_used_at, use_count, pinned "
-                "FROM memories"
-            ).fetchall()
-            return [
-                (
-                    *r,
-                    None,
-                    _DEFAULT_TIER,
-                    0.0,
-                    0.7,
-                    None,
-                    _DEFAULT_TEMPORAL_TYPE,
-                    None,
-                    _DEFAULT_PROVENANCE,
-                )
-                for r in rows
-            ]
-        except sqlite3.OperationalError:
-            return None
+            mirror: dict[int, Memory] = {}
+            by_kind: dict[str, dict[int, Memory]] = {}
+            loaded = False
+            for columns in (19, 18, 15, 14, 12, 11):
+                projection = ", ".join(self._MIRROR_COLUMNS[:columns])
+                try:
+                    cursor = conn.execute(f"SELECT {projection} FROM memories ORDER BY id")
+                except sqlite3.OperationalError:
+                    continue
+                defaults = self._MIRROR_DEFAULTS[columns - 11:]
+                with closing(cursor):
+                    for row in cursor:
+                        r = (*row, *defaults) if defaults else row
+                        memory = Memory(
+                            id=r[0],
+                            content=r[1],
+                            kind=r[2],
+                            salience=float(r[3]),
+                            embedding=_decode(r[4]),
+                            source_session=r[5],
+                            source_message_id=r[6],
+                            created_at=r[7],
+                            last_used_at=r[8],
+                            use_count=int(r[9]),
+                            pinned=bool(r[10]),
+                            metadata=_decode_metadata(r[11]),
+                            tier=_normalize_tier(r[12], pinned=bool(r[10])),
+                            revival_score=max(0.0, min(1.0, float(r[13] or 0.0))),
+                            confidence=max(0.0, min(1.0, float(0.7 if r[14] is None else r[14]))),
+                            event_time=r[15] or None,
+                            temporal_type=_coerce_temporal_type(r[16]),
+                            relevance_until=r[17] or None,
+                            provenance=_coerce_provenance(r[18]),
+                        )
+                        mirror[memory.id] = memory
+                        by_kind.setdefault(memory.kind, {})[memory.id] = memory
+                loaded = True
+                break
+            self._vectors.rebuild((m.id, m.embedding) for m in mirror.values())
+            self._mirror = mirror
+            self._by_kind = by_kind
+            self._mirror_loaded = loaded
+        if loaded:
+            log.info("memory store loaded with %d memories", len(mirror))
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
@@ -1167,57 +1079,58 @@ class MemoryStore:
         conn = self._get_conn()
         meta_json = _encode_metadata(metadata)
         pinned_int = 1 if pinned else 0
-        cursor = conn.execute(
-            "INSERT INTO memories ("
-            "  content, kind, salience, embedding, source_session, "
-            "  source_message_id, created_at, last_used_at, use_count, pinned, "
-            "  metadata, tier, revival_score, confidence, "
-            "  event_time, temporal_type, relevance_until, provenance"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0.0, ?, ?, ?, ?, ?)",
-            (
-                cleaned,
-                kind,
-                salience_clipped,
-                _encode(emb),
-                source_session,
-                source_message_id,
-                now,
-                None,
-                pinned_int,
-                meta_json,
-                tier_normalized,
-                confidence_value,
-                event_time_clean,
-                temporal_type_normalized,
-                relevance_until_clean,
-                provenance_normalized,
-            ),
-        )
-        conn.commit()
-        new_id = int(cursor.lastrowid or 0)
-        memory = Memory(
-            id=new_id,
-            content=cleaned,
-            kind=kind,
-            salience=salience_clipped,
-            embedding=emb,
-            source_session=source_session,
-            source_message_id=source_message_id,
-            created_at=now,
-            last_used_at=None,
-            use_count=0,
-            pinned=bool(pinned),
-            metadata=dict(metadata) if metadata else {},
-            tier=tier_normalized,
-            revival_score=0.0,
-            confidence=confidence_value,
-            event_time=event_time_clean,
-            temporal_type=temporal_type_normalized,
-            relevance_until=relevance_until_clean,
-            provenance=provenance_normalized,
-        )
         with self._lock:
+            with conn:
+                cursor = conn.execute(
+                    "INSERT INTO memories ("
+                    "  content, kind, salience, embedding, source_session, "
+                    "  source_message_id, created_at, last_used_at, use_count, pinned, "
+                    "  metadata, tier, revival_score, confidence, "
+                    "  event_time, temporal_type, relevance_until, provenance"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0.0, ?, ?, ?, ?, ?)",
+                    (
+                        cleaned,
+                        kind,
+                        salience_clipped,
+                        _encode(emb),
+                        source_session,
+                        source_message_id,
+                        now,
+                        None,
+                        pinned_int,
+                        meta_json,
+                        tier_normalized,
+                        confidence_value,
+                        event_time_clean,
+                        temporal_type_normalized,
+                        relevance_until_clean,
+                        provenance_normalized,
+                    ),
+                )
+            new_id = int(cursor.lastrowid or 0)
+            memory = Memory(
+                id=new_id,
+                content=cleaned,
+                kind=kind,
+                salience=salience_clipped,
+                embedding=emb,
+                source_session=source_session,
+                source_message_id=source_message_id,
+                created_at=now,
+                last_used_at=None,
+                use_count=0,
+                pinned=bool(pinned),
+                metadata=dict(metadata) if metadata else {},
+                tier=tier_normalized,
+                revival_score=0.0,
+                confidence=confidence_value,
+                event_time=event_time_clean,
+                temporal_type=temporal_type_normalized,
+                relevance_until=relevance_until_clean,
+                provenance=provenance_normalized,
+            )
             self._mirror[new_id] = memory
+            self._by_kind.setdefault(kind, {})[new_id] = memory
             self._vectors.add(new_id, emb)
         if self._rag is not None:
             try:
@@ -1336,28 +1249,28 @@ class MemoryStore:
                 return
             new_salience = max(mem.salience, candidate_salience, mem.salience + 0.05)
             new_salience = min(1.0, new_salience)
+            with conn:
+                conn.execute(
+                    "UPDATE memories SET salience = ?, last_used_at = ? WHERE id = ?",
+                    (new_salience, now, memory_id),
+                )
             mem.salience = new_salience
             mem.last_used_at = now
-        conn.execute(
-            "UPDATE memories SET salience = ?, last_used_at = ? WHERE id = ?",
-            (new_salience, now, memory_id),
-        )
-        conn.commit()
 
     def mark_used(self, ids: Iterable[int]) -> None:
-        ids_list = [int(i) for i in ids if i]
+        ids_list = list(dict.fromkeys(int(i) for i in ids if i))
         if not ids_list:
             return
         conn = self._get_conn()
         now = _now_iso()
         placeholders = ",".join("?" * len(ids_list))
-        conn.execute(
-            f"UPDATE memories SET last_used_at = ?, use_count = use_count + 1 "
-            f"WHERE id IN ({placeholders})",
-            (now, *ids_list),
-        )
-        conn.commit()
         with self._lock:
+            with conn:
+                conn.execute(
+                    f"UPDATE memories SET last_used_at = ?, use_count = use_count + 1 "
+                    f"WHERE id IN ({placeholders})",
+                    (now, *ids_list),
+                )
             for mid in ids_list:
                 mem = self._mirror.get(mid)
                 if mem is not None:
@@ -1374,20 +1287,20 @@ class MemoryStore:
         the decay rebate (see :meth:`decay`) and counts toward
         :class:`MemoryPromotionWorker` promotion gates.
         """
-        ids_list = [int(i) for i in ids if i]
+        ids_list = list(dict.fromkeys(int(i) for i in ids if i))
         if not ids_list or delta == 0:
             return
         d = float(delta)
         conn = self._get_conn()
         placeholders = ",".join("?" * len(ids_list))
-        conn.execute(
-            f"UPDATE memories SET revival_score = "
-            f"MAX(0.0, MIN(1.0, revival_score + ?)) "
-            f"WHERE id IN ({placeholders})",
-            (d, *ids_list),
-        )
-        conn.commit()
         with self._lock:
+            with conn:
+                conn.execute(
+                    f"UPDATE memories SET revival_score = "
+                    f"MAX(0.0, MIN(1.0, revival_score + ?)) "
+                    f"WHERE id IN ({placeholders})",
+                    (d, *ids_list),
+                )
             for mid in ids_list:
                 mem = self._mirror.get(mid)
                 if mem is not None:
@@ -1395,11 +1308,10 @@ class MemoryStore:
 
     def delete(self, memory_id: int) -> bool:
         conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM memories WHERE id = ?", (int(memory_id),))
-        conn.commit()
         with self._lock:
-            self._mirror.pop(int(memory_id), None)
-            self._vectors.remove(int(memory_id))
+            with conn:
+                cursor = conn.execute("DELETE FROM memories WHERE id = ?", (int(memory_id),))
+            self._remove_from_mirror(int(memory_id))
         if self._rag is not None:
             try:
                 self._rag.delete_memory(str(int(memory_id)))
@@ -1417,6 +1329,18 @@ class MemoryStore:
                         exc_info=True,
                     )
         return deleted
+
+    def _remove_kind_entry(self, memory: Memory) -> None:
+        bucket = self._by_kind[memory.kind]
+        del bucket[memory.id]
+        if not bucket:
+            del self._by_kind[memory.kind]
+
+    def _remove_from_mirror(self, memory_id: int) -> None:
+        memory = self._mirror.pop(memory_id, None)
+        if memory is not None:
+            self._remove_kind_entry(memory)
+        self._vectors.remove(memory_id)
 
     _UNSET: object = object()
 
@@ -1465,133 +1389,139 @@ class MemoryStore:
         """
         with self._lock:
             mem = self._mirror.get(int(memory_id))
-        if mem is None:
-            return None
-
-        new_content = mem.content
-        if content is not None:
-            cleaned = str(content).strip()
-            if len(cleaned) < 4:
+            if mem is None:
                 return None
-            new_content = cleaned
 
-        new_kind = mem.kind
-        if kind is not None:
-            requested = str(kind).strip().lower() or "fact"
-            new_kind = requested if requested in VALID_KINDS else "fact"
+            new_content = mem.content
+            if content is not None:
+                cleaned = str(content).strip()
+                if len(cleaned) < 4:
+                    return None
+                new_content = cleaned
 
-        new_salience = mem.salience
-        if salience is not None:
-            new_salience = max(0.0, min(1.0, float(salience)))
+            new_kind = mem.kind
+            if kind is not None:
+                requested = str(kind).strip().lower() or "fact"
+                new_kind = requested if requested in VALID_KINDS else "fact"
 
-        new_embedding = mem.embedding
-        if embedding is not None:
-            emb = np.asarray(embedding, dtype=np.float32)
-            if emb.size > 0:
-                norm = float(np.linalg.norm(emb))
-                if norm > 0.0:
-                    emb = emb / norm
-                new_embedding = emb
+            new_salience = mem.salience
+            if salience is not None:
+                new_salience = max(0.0, min(1.0, float(salience)))
 
-        new_metadata = dict(mem.metadata) if mem.metadata else {}
-        metadata_changed = False
-        if metadata is not None:
-            if metadata_merge:
-                new_metadata = {**new_metadata, **dict(metadata)}
-            else:
-                new_metadata = dict(metadata)
-            metadata_changed = True
+            new_embedding = mem.embedding
+            if embedding is not None:
+                emb = np.asarray(embedding, dtype=np.float32)
+                if emb.size > 0:
+                    norm = float(np.linalg.norm(emb))
+                    if norm > 0.0:
+                        emb = emb / norm
+                    new_embedding = emb
 
-        new_tier = mem.tier
-        if tier is not None:
-            new_tier = _normalize_tier(tier, pinned=mem.pinned)
-        elif mem.pinned and new_tier != "long_term":
-            # Defensive: a pinned row should never be sitting in a
-            # non-long_term tier. Coerce on any update touching the row.
-            new_tier = "long_term"
+            new_metadata = dict(mem.metadata) if mem.metadata else {}
+            metadata_changed = False
+            if metadata is not None:
+                if metadata_merge:
+                    new_metadata = {**new_metadata, **dict(metadata)}
+                else:
+                    new_metadata = dict(metadata)
+                metadata_changed = True
 
-        new_revival = mem.revival_score
-        if revival_score is not None:
-            new_revival = max(0.0, min(1.0, float(revival_score)))
+            new_tier = mem.tier
+            if tier is not None:
+                new_tier = _normalize_tier(tier, pinned=mem.pinned)
+            elif mem.pinned and new_tier != "long_term":
+                # Defensive: a pinned row should never be sitting in a
+                # non-long_term tier. Coerce on any update touching the row.
+                new_tier = "long_term"
 
-        new_confidence = mem.confidence
-        if confidence is not None:
-            new_confidence = max(0.0, min(1.0, float(confidence)))
-            if mem.pinned and new_confidence < 0.9:
-                new_confidence = 0.9
+            new_revival = mem.revival_score
+            if revival_score is not None:
+                new_revival = max(0.0, min(1.0, float(revival_score)))
 
-        new_event_time = mem.event_time
-        if event_time is not self._UNSET:
-            if event_time is None:
-                new_event_time = None
-            elif isinstance(event_time, str) and event_time.strip():
-                new_event_time = event_time.strip()
-            else:
-                new_event_time = None
+            new_confidence = mem.confidence
+            if confidence is not None:
+                new_confidence = max(0.0, min(1.0, float(confidence)))
+                if mem.pinned and new_confidence < 0.9:
+                    new_confidence = 0.9
 
-        new_temporal_type = mem.temporal_type
-        if temporal_type is not None:
-            new_temporal_type = _coerce_temporal_type(temporal_type)
+            new_event_time = mem.event_time
+            if event_time is not self._UNSET:
+                if event_time is None:
+                    new_event_time = None
+                elif isinstance(event_time, str) and event_time.strip():
+                    new_event_time = event_time.strip()
+                else:
+                    new_event_time = None
 
-        new_relevance_until = mem.relevance_until
-        if relevance_until is not self._UNSET:
-            if relevance_until is None:
-                new_relevance_until = None
-            elif isinstance(relevance_until, str) and relevance_until.strip():
-                new_relevance_until = relevance_until.strip()
-            else:
-                new_relevance_until = None
+            new_temporal_type = mem.temporal_type
+            if temporal_type is not None:
+                new_temporal_type = _coerce_temporal_type(temporal_type)
 
-        from app.core.memory.memory_integrity import normalize_memory_time, rewrite_metadata
+            new_relevance_until = mem.relevance_until
+            if relevance_until is not self._UNSET:
+                if relevance_until is None:
+                    new_relevance_until = None
+                elif isinstance(relevance_until, str) and relevance_until.strip():
+                    new_relevance_until = relevance_until.strip()
+                else:
+                    new_relevance_until = None
 
-        content_changed = new_content != mem.content
-        new_provenance = ("inferred" if content_changed else mem.provenance)
-        if provenance is not None:
-            new_provenance = _coerce_provenance(provenance)
-        if content_changed:
-            new_metadata = rewrite_metadata(mem, new_metadata, at=_now_iso(),
-                                            curated=provenance == "stated")
-            metadata_changed = True
-        if content_changed or temporal_type is not None or event_time is not self._UNSET:
-            previous_time = (new_temporal_type, new_event_time)
-            new_temporal_type, new_event_time = normalize_memory_time(
-                new_content, new_temporal_type, new_event_time, _now_iso(),
-            )
-            time_changed = ((new_temporal_type, new_event_time)
-                            != (mem.temporal_type, mem.event_time))
-            if (previous_time != (new_temporal_type, new_event_time)
-                    or (relevance_until is self._UNSET and time_changed)):
-                new_relevance_until = derive_relevance_until(
-                    new_temporal_type, event_time=timephrase.parse_iso(new_event_time),
-                    created_at=timephrase.utcnow(),
+            from app.core.memory.memory_integrity import normalize_memory_time, rewrite_metadata
+
+            content_changed = new_content != mem.content
+            new_provenance = ("inferred" if content_changed else mem.provenance)
+            if provenance is not None:
+                new_provenance = _coerce_provenance(provenance)
+            if content_changed:
+                new_metadata = rewrite_metadata(mem, new_metadata, at=_now_iso(),
+                                                curated=provenance == "stated")
+                metadata_changed = True
+            if content_changed or temporal_type is not None or event_time is not self._UNSET:
+                previous_time = (new_temporal_type, new_event_time)
+                new_temporal_type, new_event_time = normalize_memory_time(
+                    new_content, new_temporal_type, new_event_time, _now_iso(),
+                )
+                time_changed = ((new_temporal_type, new_event_time)
+                                != (mem.temporal_type, mem.event_time))
+                if (previous_time != (new_temporal_type, new_event_time)
+                        or (relevance_until is self._UNSET and time_changed)):
+                    new_relevance_until = derive_relevance_until(
+                        new_temporal_type, event_time=timephrase.parse_iso(new_event_time),
+                        created_at=timephrase.utcnow(),
+                    )
+
+            conn = self._get_conn()
+            with conn:
+                conn.execute(
+                    "UPDATE memories SET content = ?, kind = ?, salience = ?, embedding = ?, "
+                    "metadata = ?, tier = ?, revival_score = ?, confidence = ?, "
+                    "event_time = ?, temporal_type = ?, relevance_until = ?, provenance = ? "
+                    "WHERE id = ?",
+                    (
+                        new_content,
+                        new_kind,
+                        float(new_salience),
+                        _encode(new_embedding),
+                        _encode_metadata(new_metadata),
+                        new_tier,
+                        float(new_revival),
+                        float(new_confidence),
+                        new_event_time,
+                        new_temporal_type,
+                        new_relevance_until,
+                        new_provenance,
+                        int(memory_id),
+                    ),
                 )
 
-        conn = self._get_conn()
-        conn.execute(
-            "UPDATE memories SET content = ?, kind = ?, salience = ?, embedding = ?, "
-            "metadata = ?, tier = ?, revival_score = ?, confidence = ?, "
-            "event_time = ?, temporal_type = ?, relevance_until = ?, provenance = ? WHERE id = ?",
-            (
-                new_content,
-                new_kind,
-                float(new_salience),
-                _encode(new_embedding),
-                _encode_metadata(new_metadata),
-                new_tier,
-                float(new_revival),
-                float(new_confidence),
-                new_event_time,
-                new_temporal_type,
-                new_relevance_until,
-                new_provenance,
-                int(memory_id),
-            ),
-        )
-        conn.commit()
-
-        with self._lock:
             mem.content = new_content
-            mem.kind = new_kind
+            if mem.kind != new_kind:
+                self._remove_kind_entry(mem)
+                bucket = self._by_kind.setdefault(new_kind, {})
+                bucket[mem.id] = mem
+                # Keep ascending memory order when an older row changes kind.
+                self._by_kind[new_kind] = dict(sorted(bucket.items()))
+                mem.kind = new_kind
             mem.salience = new_salience
             mem.embedding = new_embedding
             # Unconditional: overwriting one row costs a dim-length copy,
@@ -1668,30 +1598,29 @@ class MemoryStore:
         """
         with self._lock:
             mem = self._mirror.get(int(memory_id))
-        if mem is None:
-            return None
-        new_pinned = 1 if pinned else 0
-        new_salience = mem.salience
-        new_tier = mem.tier
-        new_confidence = mem.confidence
-        if pinned:
-            new_salience = max(new_salience, 1.0)
-            new_tier = "long_term"
-            new_confidence = max(new_confidence, 0.9)
-        conn = self._get_conn()
-        conn.execute(
-            "UPDATE memories SET pinned = ?, salience = ?, tier = ?, confidence = ? "
-            "WHERE id = ?",
-            (
-                new_pinned,
-                float(new_salience),
-                new_tier,
-                float(new_confidence),
-                int(memory_id),
-            ),
-        )
-        conn.commit()
-        with self._lock:
+            if mem is None:
+                return None
+            new_pinned = 1 if pinned else 0
+            new_salience = mem.salience
+            new_tier = mem.tier
+            new_confidence = mem.confidence
+            if pinned:
+                new_salience = max(new_salience, 1.0)
+                new_tier = "long_term"
+                new_confidence = max(new_confidence, 0.9)
+            conn = self._get_conn()
+            with conn:
+                conn.execute(
+                    "UPDATE memories SET pinned = ?, salience = ?, tier = ?, confidence = ? "
+                    "WHERE id = ?",
+                    (
+                        new_pinned,
+                        float(new_salience),
+                        new_tier,
+                        float(new_confidence),
+                        int(memory_id),
+                    ),
+                )
             mem.pinned = bool(pinned)
             mem.salience = new_salience
             mem.tier = new_tier
@@ -1837,68 +1766,57 @@ class MemoryStore:
             if elapsed_days is None:
                 elapsed_days = 1.0
 
-        # Compute elapsed_days from the persisted anchor if not supplied.
-        if elapsed_days is None:
-            last_dt = self._read_last_decay_run_at()
-            if last_dt is None:
-                # First-ever run: nothing to decay yet. Just persist the
-                # anchor so the next tick has a baseline.
-                self._write_last_decay_run_at(now_dt)
-                return {"elapsed_days": 0.0, "applied": False}
-            delta_seconds = max(0.0, (now_dt - last_dt).total_seconds())
-            elapsed_days = min(
-                float(max_catchup_days), delta_seconds / 86_400.0,
-            )
-
-        stats: dict[str, float] = {
-            "elapsed_days": float(elapsed_days),
-            "applied": False,
-        }
-        if elapsed_days <= 0.0:
-            self._write_last_decay_run_at(now_dt)
-            return stats
-
         conn = self._get_conn()
-        # Per-tier salience update. ``MAX/MIN`` clamp to [0, 1].
-        # ``salience + rebate * revival_score - decay`` -- the rebate
-        # scales with both ``revival_score`` (per-row signal) and
-        # ``elapsed_days`` (uniform), so old high-revival rows
-        # actively gain salience between sweeps.
-        for tier in VALID_TIERS:
-            rate = rates.get(tier, 0.0)
-            decay_amount = rate * float(elapsed_days)
-            rebate = float(revival_coefficient) * float(elapsed_days)
-            if decay_amount <= 0.0 and rebate <= 0.0:
-                continue
-            conn.execute(
-                "UPDATE memories SET salience = "
-                "MAX(0.0, MIN(1.0, salience + ? * revival_score - ?)) "
-                "WHERE tier = ? AND pinned = 0",
-                (rebate, decay_amount, tier),
-            )
+        with self._lock:
+            if elapsed_days is None:
+                last_dt = self._read_last_decay_run_at(conn)
+                elapsed_days = 0.0 if last_dt is None else min(
+                    float(max_catchup_days),
+                    max(0.0, (now_dt - last_dt).total_seconds()) / 86_400.0,
+                )
+            elapsed = float(elapsed_days)
+            with conn:
+                if elapsed <= 0:
+                    self._write_last_decay_run_at(conn, now_dt)
+                    return {"elapsed_days": elapsed, "applied": False}
 
-        # Decay revival_score itself so a one-time spike fades without
-        # gating future rebates.
-        revival_delta = float(revival_decay_per_day) * float(elapsed_days)
-        if revival_delta > 0:
-            conn.execute(
-                "UPDATE memories SET revival_score = "
-                "MAX(0.0, revival_score - ?) WHERE pinned = 0",
-                (revival_delta,),
-            )
+                # The rebate uses the old revival score. Fade it only after
+                # updating salience for every tier.
+                rebate = float(revival_coefficient) * elapsed
+                for tier, rate in rates.items():
+                    decay_amount = rate * elapsed
+                    if decay_amount <= 0.0 and rebate <= 0.0:
+                        continue
+                    conn.execute(
+                        "UPDATE memories SET salience = "
+                        "MAX(0.0, MIN(1.0, salience + ? * revival_score - ?)) "
+                        "WHERE tier = ? AND pinned = 0",
+                        (rebate, decay_amount, tier),
+                    )
+                revival_delta = float(revival_decay_per_day) * elapsed
+                if revival_delta > 0:
+                    conn.execute(
+                        "UPDATE memories SET revival_score = "
+                        "MAX(0.0, revival_score - ?) WHERE pinned = 0",
+                        (revival_delta,),
+                    )
+                updated = conn.execute(
+                    "SELECT id, salience, revival_score FROM memories WHERE pinned = 0"
+                ).fetchall()
+                self._write_last_decay_run_at(conn, now_dt)
 
-        conn.commit()
-        # Refresh the in-memory mirror after the bulk UPDATE so search /
-        # iter helpers see the new salience values immediately.
-        self._reload_mirror()
-        self._write_last_decay_run_at(now_dt)
-        stats["applied"] = True
-        return stats
+            # Publish only committed scalar changes. Keep the same memory
+            # objects, embeddings and indexes as before the sweep.
+            for mid, salience, revival in updated:
+                mem = self._mirror.get(mid)
+                if mem is not None:
+                    mem.salience = float(salience)
+                    mem.revival_score = max(0.0, min(1.0, float(revival or 0.0)))
+        return {"elapsed_days": elapsed, "applied": True}
 
     _KV_LAST_DECAY = "memory.last_decay_run_at"
 
-    def _read_last_decay_run_at(self) -> datetime | None:
-        conn = self._get_conn()
+    def _read_last_decay_run_at(self, conn: sqlite3.Connection) -> datetime | None:
         try:
             row = conn.execute(
                 "SELECT value FROM kv_meta WHERE key = ?",
@@ -1913,8 +1831,7 @@ class MemoryStore:
         except (TypeError, ValueError):
             return None
 
-    def _write_last_decay_run_at(self, when: datetime) -> None:
-        conn = self._get_conn()
+    def _write_last_decay_run_at(self, conn: sqlite3.Connection, when: datetime) -> None:
         try:
             conn.execute(
                 "INSERT INTO kv_meta (key, value, updated_at) "
@@ -1923,8 +1840,9 @@ class MemoryStore:
                 "updated_at = excluded.updated_at",
                 (self._KV_LAST_DECAY, when.isoformat(), when.isoformat()),
             )
-            conn.commit()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            if "no such table: kv_meta" not in str(exc):
+                raise
             # kv_meta missing means a pre-v8 schema; fail silently --
             # the next ChatDatabase init will create the table.
             log.debug("kv_meta unavailable; skipped decay anchor", exc_info=True)
@@ -1944,36 +1862,29 @@ class MemoryStore:
         if all(self._tier_caps.get(t, self._max) is None for t in VALID_TIERS):
             return 0
         total_victims = 0
-        with self._lock:
-            snapshot = list(self._mirror.values())
         for tier in VALID_TIERS:
             cap = self._tier_caps.get(tier, self._max)
             if cap is None:
                 continue
-            tier_rows = [m for m in snapshot if m.tier == tier and not m.pinned]
-            if len(tier_rows) <= cap:
-                continue
-            tier_rows.sort(
-                key=lambda m: (
-                    m.salience
-                    + 0.05 * min(m.use_count, 20)
-                    + 0.1 * m.revival_score
-                ),
-            )
-            excess = len(tier_rows) - cap
-            victims = [m.id for m in tier_rows[:excess]]
-            if not victims:
-                continue
-            conn = self._get_conn()
-            placeholders = ",".join("?" * len(victims))
-            conn.execute(
-                f"DELETE FROM memories WHERE id IN ({placeholders})", victims,
-            )
-            conn.commit()
             with self._lock:
+                tier_rows = [m for m in self._mirror.values() if m.tier == tier and not m.pinned]
+                if len(tier_rows) <= cap:
+                    continue
+                tier_rows.sort(
+                    key=lambda m: (
+                        m.salience
+                        + 0.05 * min(m.use_count, 20)
+                        + 0.1 * m.revival_score
+                    ),
+                )
+                excess = len(tier_rows) - cap
+                victims = [m.id for m in tier_rows[:excess]]
+                conn = self._get_conn()
+                placeholders = ",".join("?" * len(victims))
+                with conn:
+                    conn.execute(f"DELETE FROM memories WHERE id IN ({placeholders})", victims)
                 for mid in victims:
-                    self._mirror.pop(mid, None)
-                    self._vectors.remove(mid)
+                    self._remove_from_mirror(mid)
             if self._rag is not None:
                 for mid in victims:
                     try:
@@ -2031,16 +1942,7 @@ class MemoryStore:
         tier: str | None = None,
         q: str | None = None,
     ) -> list[Memory]:
-        # P33: filter by kind *inside* the lock so a kind-scoped call
-        # neither copies the whole mirror nor sorts rows it will discard.
-        # At the ~16k-row ceiling an unfiltered copy + two sorts to return
-        # 3 catchphrases was the shape this replaces.
-        kind_norm = kind.strip().lower() if kind else ""
-        with self._lock:
-            if kind_norm:
-                mems = [m for m in self._mirror.values() if m.kind == kind_norm]
-            else:
-                mems = list(self._mirror.values())
+        mems = self._kind_snapshot(kind)
         # Tier filter must run BEFORE the offset/limit slice so pagination
         # matches ``count_memories(tier=...)`` — otherwise a tier filter
         # applied to an already-paginated page only catches the rows of
@@ -2068,14 +1970,7 @@ class MemoryStore:
         tier: str | None = None,
         q: str | None = None,
     ) -> list[Memory]:
-        # P33: see ``list_recent`` — kind filtering happens under the lock,
-        # before the sort.
-        kind_norm = kind.strip().lower() if kind else ""
-        with self._lock:
-            if kind_norm:
-                mems = [m for m in self._mirror.values() if m.kind == kind_norm]
-            else:
-                mems = list(self._mirror.values())
+        mems = self._kind_snapshot(kind)
         # See ``list_recent``: filter tier before the slice so pagination
         # is consistent with ``count_memories``.
         if tier:
@@ -2093,35 +1988,26 @@ class MemoryStore:
         stop = start + max(1, int(limit))
         return mems[start:stop]
 
-    def iter_by_kind(self, kind: str) -> list[Memory]:
-        """Snapshot of all memories of a given kind. Cheap (mirror walk)."""
+    def _kind_snapshot(self, kind: str | None) -> list[Memory]:
         kind_norm = (kind or "").strip().lower()
-        if not kind_norm:
-            return []
         with self._lock:
-            return [m for m in self._mirror.values() if m.kind == kind_norm]
+            rows = self._by_kind.get(kind_norm, {}) if kind_norm else self._mirror
+            return list(rows.values())
+
+    def iter_by_kind(self, kind: str) -> list[Memory]:
+        """Snapshot of memories of one kind, in memory ID order."""
+        kind_norm = (kind or "").strip().lower()
+        return self._kind_snapshot(kind_norm) if kind_norm else []
 
     def iter_by_kinds(self, kinds: Iterable[str]) -> list[Memory]:
-        """Snapshot of all memories whose kind is in ``kinds``.
-
-        One locked mirror walk, no sort -- the plural sibling of
-        :meth:`iter_by_kind`. The K22 callback detector (P17) calls this
-        instead of ``list_recent(limit=10_000)``: that path copied the
-        *entire* mirror and paid two O(n log n) sorts before the detector
-        discarded every non-callback-kind row anyway. Filtering to the
-        allow-list here means the per-turn cosine walk only ever touches
-        eligible rows (facts / preferences / shared moments / …), not the
-        high-volume observation / knowledge-gap / scratchpad bulk.
-
-        Empty / falsy ``kinds`` returns ``[]`` (no implicit "all").
-        """
-        kind_set = {
-            k.strip().lower() for k in kinds if k and str(k).strip()
-        }
-        if not kind_set:
-            return []
+        """Snapshot of the requested kinds, in memory ID order."""
+        kind_set = {k.strip().lower() for k in kinds if k and k.strip()}
+        if len(kind_set) == 1:
+            return self._kind_snapshot(kind_set.pop())
         with self._lock:
-            return [m for m in self._mirror.values() if m.kind in kind_set]
+            mems = [mem for kind in kind_set for mem in self._by_kind.get(kind, {}).values()]
+        mems.sort(key=attrgetter("id"))
+        return mems
 
     def iter_by_tier(self, tier: str) -> list[Memory]:
         """Snapshot of all memories in a given tier. Cheap (mirror walk).
@@ -2147,10 +2033,10 @@ class MemoryStore:
         a filter the count ignores produces pages that render empty.
         """
         with self._lock:
-            mems = list(self._mirror.values())
-        if kind:
-            kind_norm = kind.strip().lower()
-            mems = [m for m in mems if m.kind == kind_norm]
+            rows = self._by_kind.get(kind.strip().lower(), {}) if kind else self._mirror
+            if not tier and not q:
+                return len(rows)
+            mems = list(rows.values())
         if tier:
             tier_norm = tier.strip().lower()
             mems = [m for m in mems if m.tier == tier_norm]

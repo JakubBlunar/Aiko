@@ -991,15 +991,41 @@ class ConceptStore:
         """The ``evidence`` edges supporting a concept
         (memory|cluster -> concept), ordered by ``ordinal`` for
         memory-chain kinds."""
-        edges = [
-            e
-            for e in self.edges_into("concept", int(concept_id))
-            if e.relation == "evidence"
-        ]
-        edges.sort(
-            key=lambda e: (e.ordinal if e.ordinal is not None else 1 << 30)
+        edges = self._edge_rows(
+            "dst_type = 'concept' AND relation = 'evidence' AND dst_id = ?",
+            (str(int(concept_id)),),
         )
+        edges.sort(key=self._evidence_order)
         return edges
+
+    @staticmethod
+    def _evidence_order(edge: ConceptEdge) -> tuple[int, int]:
+        ordinal = edge.ordinal if edge.ordinal is not None else 1 << 30
+        return ordinal, edge.edge_id
+
+    def _batched_evidence_rows(
+        self, concept_ids: Iterable[int], *, cluster_only: bool = False,
+    ) -> Iterable[ConceptEdge]:
+        ids = list(dict.fromkeys(int(cid) for cid in concept_ids))
+        where = "dst_type = 'concept' AND relation = 'evidence'"
+        if cluster_only:
+            where += " AND src_type = 'cluster'"
+        # Stay below the 999-variable limit of older SQLite builds.
+        for start in range(0, len(ids), 400):
+            chunk = ids[start:start + 400]
+            marks = ",".join("?" for _ in chunk)
+            yield from self._edge_rows(
+                f"{where} AND dst_id IN ({marks})", tuple(str(cid) for cid in chunk),
+            )
+
+    def evidence_for(self, concept_ids: Iterable[int]) -> dict[int, list[ConceptEdge]]:
+        """Read ordered evidence in batches. IDs without evidence are omitted."""
+        out: dict[int, list[ConceptEdge]] = {}
+        for edge in self._batched_evidence_rows(concept_ids):
+            out.setdefault(int(edge.dst_id), []).append(edge)
+        for edges in out.values():
+            edges.sort(key=self._evidence_order)
+        return out
 
     def cluster_evidence_for(
         self, concept_ids: Iterable[int]
@@ -1016,27 +1042,13 @@ class ConceptStore:
         ``src_id`` is a *memory* id (the cluster's representative), not a
         ``cluster_id``; resolving it is the caller's job.
         """
-        ids = [int(c) for c in concept_ids]
-        if not ids:
-            return {}
         out: dict[int, list[int]] = {}
-        # Chunked so a large candidate set can't blow SQLite's variable
-        # limit (999 by default) on the ``IN`` clause.
-        for start in range(0, len(ids), 400):
-            chunk = ids[start:start + 400]
-            marks = ",".join("?" for _ in chunk)
-            rows = self._edge_rows(
-                "dst_type = 'concept' AND src_type = 'cluster' "
-                f"AND relation = 'evidence' AND dst_id IN ({marks})",
-                tuple(str(i) for i in chunk),
-            )
-            for edge in rows:
-                try:
-                    out.setdefault(int(edge.dst_id), []).append(
-                        int(edge.src_id)
-                    )
-                except (TypeError, ValueError):
-                    continue
+        for edge in self._batched_evidence_rows(concept_ids, cluster_only=True):
+            try:
+                mid = int(edge.src_id)
+            except (TypeError, ValueError):
+                continue
+            out.setdefault(int(edge.dst_id), []).append(mid)
         return {cid: tuple(v) for cid, v in out.items()}
 
     def concept_base_map(

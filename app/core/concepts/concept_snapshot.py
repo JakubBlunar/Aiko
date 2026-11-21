@@ -70,7 +70,7 @@ def _cluster_label_map(
     """Resolve cluster evidence keyed by a member that was representative
     when its edge was written, even if the representative later changes."""
     labels: dict[str, str] = {}
-    if topic_graph is None:
+    if topic_graph is None or not source_ids:
         return labels
     try:
         for cluster in topic_graph.topic_clusters():
@@ -245,7 +245,7 @@ def build_concepts_snapshot(
 
     # Evidence resolution is the expensive half (a join per edge), so it
     # runs only for the rows actually being returned.
-    page_edges = {c.concept_id: store.evidence_of(c.concept_id) for c in page}
+    page_edges = store.evidence_for(c.concept_id for c in page)
     cluster_labels = _cluster_label_map(
         topic_graph,
         {
@@ -338,9 +338,7 @@ def importance_context_for(
 ):
     """An :class:`ImportanceContext` over a set of concepts, or ``None``.
 
-    Takes the already-resolved cluster-evidence ids so neither caller pays
-    for a second edge read: the snapshot reuses the edges its display loop
-    fetched, the quality report does one bulk query for the whole graph.
+    Takes the cluster-evidence IDs from the snapshot or report's edge batch.
     Returns ``None`` without a ``kv_get`` (nothing to read affect from) or
     on any failure -- importance is a lens on the report, never a reason
     for the report to fail.
@@ -412,15 +410,25 @@ def resolve_evidence_facts(
       so a belief resting on shaky recall can be told apart from one
       resting on firm recall.
     """
+    ids = [c.concept_id for c in store.all()]
+    return _evidence_facts_for(ids, store.evidence_for(ids), memory_store, topic_graph)
+
+
+def _evidence_facts_for(
+    concept_ids: list[int],
+    evidence: dict[int, list["ConceptEdge"]],
+    memory_store: "MemoryStore | None",
+    topic_graph: "TopicGraph | None",
+) -> dict[int, "EvidenceFacts"]:
     from app.core.concepts.concept_quality import EvidenceFacts
 
     cluster_of_memory = _memory_cluster_map(topic_graph)
     facts: dict[int, EvidenceFacts] = {}
 
-    for concept in store.all():
+    for cid in concept_ids:
         reps: set[str] = set()
         confidences: list[float] = []
-        for edge in store.evidence_of(concept.concept_id):
+        for edge in evidence.get(cid, ()):
             try:
                 if edge.src_type == "cluster":
                     reps.add(str(edge.src_id))
@@ -437,7 +445,7 @@ def resolve_evidence_facts(
                             )
             except (TypeError, ValueError):
                 continue
-        facts[int(concept.concept_id)] = EvidenceFacts(
+        facts[cid] = EvidenceFacts(
             cluster_span=len(reps),
             memory_confidences=tuple(confidences),
         )
@@ -478,16 +486,17 @@ def build_concept_quality(
         except Exception:
             event_counts = {}
 
-    rows = list(store.all())
+    rows = store.all()
+    ids = [c.concept_id for c in rows]
+    evidence = store.evidence_for(ids)
     return build_quality_report(
         rows,
         event_counts=event_counts,
-        evidence_facts=resolve_evidence_facts(store, memory_store, topic_graph),
+        evidence_facts=_evidence_facts_for(ids, evidence, memory_store, topic_graph),
         thresholds=thresholds,
-        # The report scores the whole graph rather than a page, so it
-        # takes the bulk edge read instead of the snapshot's reuse.
         importance=importance_context_for(
-            store.cluster_evidence_for([c.concept_id for c in rows]),
+            {cid: memory_ids_from_edges(edges) for cid, edges in evidence.items()}
+            if kv_get is not None else {},
             topic_graph,
             kv_get,
         ),

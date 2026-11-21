@@ -478,6 +478,35 @@ class ResolveEvidenceFactsTests(unittest.TestCase):
 
 
 class BuildConceptQualityTests(unittest.TestCase):
+    def test_snapshot_and_quality_batch_evidence_with_original_order(self) -> None:
+        store = _store()
+        concepts = [store.add(_concept(f"belief {i}")) for i in range(401)]
+        for cid in (concepts[0], concepts[-1]):
+            store.add_edge(ConceptEdge("memory", "3", "concept", str(cid), "evidence"))
+            store.add_edge(ConceptEdge("memory", "1", "concept", str(cid), "evidence", ordinal=1))
+            store.add_edge(ConceptEdge("cluster", "2", "concept", str(cid), "evidence", ordinal=1))
+            store.add_edge(ConceptEdge("concept", "4", "concept", str(cid), "contradicts"))
+
+        reads: list[str] = []
+        conn = store._db._get_conn()
+        conn.set_trace_callback(
+            lambda sql: reads.append(sql) if "FROM concept_edges" in sql else None,
+        )
+        try:
+            page = build_concepts_snapshot(store, None, None, limit=1)
+            self.assertEqual(len(reads), 1)
+            row = page["concepts"][0]
+            self.assertEqual(row["id"], concepts[-1])
+            self.assertEqual([edge["src_id"] for edge in row["evidence"]], ["1", "2", "3"])
+            self.assertIn(f"IN ('{concepts[-1]}')", reads[0])
+
+            reads.clear()
+            report = build_concept_quality(store, None, None, kv_get=lambda _: None)
+            self.assertEqual(len(reads), 2)
+            self.assertEqual(report["evidence"]["evidence_facts_resolved"], len(concepts))
+        finally:
+            conn.set_trace_callback(None)
+
     def test_disabled_when_store_none(self) -> None:
         report = build_concept_quality(None, None, None, None)
         self.assertFalse(report["enabled"])
