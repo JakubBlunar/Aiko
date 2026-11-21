@@ -37,6 +37,8 @@ and every relative phrase across the app moves together.
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Sequence
 
@@ -56,6 +58,17 @@ def _default_now() -> datetime:
 
 
 _now_provider: Callable[[], datetime] = _default_now
+_scoped_now: ContextVar[Callable[[], datetime] | None] = ContextVar("scoped_now", default=None)
+
+
+@contextmanager
+def scoped_now(provider: Callable[[], datetime]):
+    """Use a wall clock for the current execution context."""
+    token = _scoped_now.set(provider)
+    try:
+        yield
+    finally:
+        _scoped_now.reset(token)
 
 
 def real_now() -> datetime:
@@ -70,10 +83,10 @@ def real_now() -> datetime:
 def now() -> datetime:
     """Return the current moment as a timezone-aware datetime.
 
-    Routes through :data:`_now_provider` so a debug clock can override it
-    process-wide. Always returns an aware datetime.
+    Uses a scoped clock if present, then the process-wide debug-clock
+    provider. Always returns an aware datetime.
     """
-    value = _now_provider()
+    value = (_scoped_now.get() or _now_provider)()
     return to_aware(value)
 
 

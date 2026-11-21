@@ -1,0 +1,31 @@
+{
+  "name": "Observe the Live policy on a local model",
+  "steps": [
+    {
+      "impulse": "user.typing_started",
+      "state": {"app": "Cursor"},
+      "expect": {"new_policy_calls": 0, "main_wakes": 0}
+    },
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "balcony herbs",
+        "text": "Ask whether the balcony herbs recovered after the rain."
+      }
+    },
+    {
+      "impulse": "silence.wake",
+      "expect": {"new_policy_calls": 1, "main_wakes": 0, "speech_count": 0}
+    },
+    {"impulse": "user.typing_stopped", "state": {"app": ""}},
+    {
+      "advance_ms": 30000,
+      "label": "Give the prepared topic an opening"
+    },
+    {
+      "impulse": "user.message_sent",
+      "payload": {"text": "Can you help me decide what to plant next?"},
+      "expect": {"user_intent_reason": "critical_user_intent"}
+    }
+  ]
+}

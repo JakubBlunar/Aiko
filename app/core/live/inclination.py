@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import replace
 
 from app.core.live.budget import LiveBehaviorBudget
@@ -20,12 +21,14 @@ class LiveInclinationRuntime:
         self,
         *,
         cue_adapter: CueUrgeAdapter | None = None,
+        monotonic: Callable[[], float] | None = None,
     ) -> None:
         self.urges = LiveUrgeStore()
         self.budget = LiveBehaviorBudget()
         self.wait = LiveWaitScheduler()
         self.cue_adapter = cue_adapter or CueUrgeAdapter()
         self._previous_frame: LiveSituationFrame | None = None
+        self._monotonic = monotonic or (lambda: time.monotonic())
 
     def apply(
         self,
@@ -187,7 +190,7 @@ class LiveInclinationRuntime:
 
     def diagnostics(self) -> dict[str, object]:
         wait = self.wait.current
-        now_ms = time.monotonic() * 1000.0
+        now_ms = self._monotonic() * 1000.0
         return {
             "notices": [item.to_payload() for item in self.urges.last_notices()],
             "urges": [item.to_payload() for item in self.urges.all_urges()[-12:]],

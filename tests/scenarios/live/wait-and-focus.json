@@ -1,0 +1,35 @@
+{
+  "name": "Virtual waits, sleep and a learned ritual during coding",
+  "steps": [
+    {
+      "impulse": "silence.wake",
+      "proposal": {
+        "intent": "wait",
+        "arguments": {"wait_horizon": "medium", "wake_set": "user_or_silence"}
+      },
+      "expect": {"policy_calls": 1, "wait": {"reconsider_after_ms": 15000}}
+    },
+    {"advance_ms": 14999, "expect": {"new_policy_calls": 0, "speech_count": 0}},
+    {
+      "advance_ms": 1,
+      "expect": {"new_policy_calls": 1, "decisions": [{"trigger": "idle.reconsider"}]}
+    },
+    {
+      "concept": {"id": 1, "kind": "ritual", "label": "watching anime together"},
+      "expect": {"policy_context": {"policy_concepts": [{"concept_id": 1}]}}
+    },
+    {
+      "impulse": "activity.session_changed",
+      "state": {"app": "Cursor"},
+      "expect": {
+        "speech_budget": "rare",
+        "policy_context": {"modifiers": {"reason_code": "world_truth_coding"}}
+      }
+    },
+    {"impulse": "sleep.status_changed", "state": {"sleep": "asleep"}},
+    {
+      "advance_ms": 60000,
+      "expect": {"new_policy_calls": 0, "speech_count": 0, "speech_budget": "forbidden"}
+    }
+  ]
+}

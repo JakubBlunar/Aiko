@@ -1,0 +1,58 @@
+{
+  "name": "Floor ownership, cue delivery and conversational feedback",
+  "max_wakes_per_hour": 1,
+  "steps": [
+    {"impulse": "user.typing_started", "expect": {"new_policy_calls": 0}},
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "balcony herbs",
+        "text": "Ask whether the balcony herbs recovered after the rain."
+      }
+    },
+    {
+      "impulse": "silence.wake",
+      "proposal": {"intent": "request_main_speech", "select_subject": "balcony herbs"},
+      "expect": {
+        "queued_count": 0,
+        "speech_count": 0,
+        "decisions": [{"reason": "not_allowed", "selected_subject": "balcony herbs"}]
+      }
+    },
+    {"impulse": "user.typing_stopped", "expect": {"new_policy_calls": 0}},
+    {
+      "advance_ms": 30000,
+      "label": "The floor opens",
+      "proposal": {
+        "intent": "request_main_speech",
+        "select_subject": "balcony herbs",
+        "arguments": {"speech_act": "gentle_question"}
+      },
+      "expect": {
+        "main_wakes": 1, "speech_count": 0,
+        "queued_wakes": [{"subject": "balcony herbs", "cue_id": 1}]
+      }
+    },
+    {
+      "dispatch": {"text": "Did the balcony herbs recover after the rain?"},
+      "expect": {
+        "speech_count": 1, "queued_count": 0,
+        "wait": {"reason_code": "budget_exhausted"},
+        "cues": {"balcony herbs": {"state": "awaiting", "surfaced": 1}}
+      }
+    },
+    {
+      "advance_ms": 5000,
+      "label": "The speech budget holds the floor",
+      "expect": {"new_policy_calls": 0, "speech_count": 1}
+    },
+    {
+      "impulse": "user.message_sent",
+      "payload": {"text": "Yes, the balcony herbs recovered."},
+      "expect": {
+        "user_intent_reason": "critical_user_intent", "speech_count": 1,
+        "cues": {"balcony herbs": {"state": "used"}}
+      }
+    }
+  ]
+}

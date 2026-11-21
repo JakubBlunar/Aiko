@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 
 from app.core.live.impulse import LiveImpulse, new_impulse
@@ -11,7 +13,11 @@ from app.core.live.impulse import LiveImpulse, new_impulse
 class LiveImpulseBus:
     """Shadow queue. Nothing here grants action permission."""
 
-    def __init__(self, *, max_pending: int = 256, replay_size: int = 64) -> None:
+    def __init__(
+        self, *, max_pending: int = 256, replay_size: int = 64,
+        monotonic: Callable[[], float] | None = None,
+    ) -> None:
+        self._monotonic = monotonic or (lambda: time.monotonic())
         self._lock = threading.Lock()
         self._pending: deque[LiveImpulse] = deque()
         self._replay: deque[LiveImpulse] = deque(maxlen=max(1, int(replay_size)))
@@ -49,6 +55,7 @@ class LiveImpulseBus:
                 priority=priority,
                 ttl_ms=ttl_ms,
                 payload=payload,
+                now_mono_ms=self._monotonic() * 1000.0,
             )
             if coalesce_key:
                 replaced = False
@@ -88,8 +95,9 @@ class LiveImpulseBus:
             alive: list[LiveImpulse] = []
             expired = 0
             kept: deque[LiveImpulse] = deque()
+            now = self._monotonic() * 1000.0
             for item in self._pending:
-                if item.is_expired():
+                if item.is_expired(now):
                     expired += 1
                     continue
                 kept.append(item)

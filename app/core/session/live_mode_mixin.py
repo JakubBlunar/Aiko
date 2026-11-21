@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from app.core.activity.evidence import ActivityEvidence, evidence_from_store
 from app.core.brain.events import ProactiveEvent
@@ -96,10 +96,14 @@ class LiveModeMixin:
             self._delivery_ledger = ledger
         return ledger
 
-    def _init_live_mode(self) -> None:
+    def _init_live_mode(
+        self, *, monotonic: Callable[[], float] | None = None,
+        dispatch_inference: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
+        self._live_clock = monotonic
         self._live_mode_generation = 0
         self._live_user_intent_sequence = 0
-        self._live_impulse_bus = LiveImpulseBus()
+        self._live_impulse_bus = LiveImpulseBus(monotonic=self._live_monotonic)
         self._live_situation_assembler = LiveSituationAssembler()
         self._live_situation_overlay = None
         self._live_journal: LiveExperienceJournal | None = None
@@ -123,6 +127,7 @@ class LiveModeMixin:
                 pending_provider=self._live_pending_cues,
                 nudge_provider=self._live_prepared_nudge,
             ),
+            monotonic=self._live_monotonic,
         )
         self._live_policy_context = LivePolicyContextRuntime(
             view_provider=self._live_concept_view,
@@ -148,6 +153,8 @@ class LiveModeMixin:
             on_main_wake=self._enqueue_live_main_wake,
             on_action_result=self._publish_live_action_result,
             unprompted_speech_provider=self._live_unprompted_speech_enabled,
+            monotonic=self._live_monotonic,
+            dispatch_inference=dispatch_inference,
         )
         self._live_behavior_resolver = LiveBehaviorResolver()
         self._live_behavior_plan: ResolvedBehaviorPlan | None = None
@@ -165,6 +172,10 @@ class LiveModeMixin:
             drained = threading.Event()
             drained.set()
             self._playback_drained = drained
+
+    def _live_monotonic(self) -> float:
+        clock = getattr(self, "_live_clock", None)
+        return clock() if clock is not None else time.monotonic()
 
     def _live_heartbeat_enabled(self) -> bool:
         return self.is_live_presence() and getattr(self, "_chat_db", None) is not None
@@ -621,7 +632,7 @@ class LiveModeMixin:
         if not intent:
             return ()
         until = float(held.get("hold_until_ms") or 0.0)
-        if until and time.monotonic() * 1000.0 >= until:
+        if until and self._live_monotonic() * 1000.0 >= until:
             return ()
         return (intent,)
 
@@ -687,7 +698,7 @@ class LiveModeMixin:
         )
 
     def _live_mark_aiko_spoke(self) -> None:
-        self._live_last_aiko_spoke_ms = time.monotonic() * 1000.0
+        self._live_last_aiko_spoke_ms = self._live_monotonic() * 1000.0
 
     def refresh_live_situation(
         self,
@@ -741,7 +752,7 @@ class LiveModeMixin:
             impulses=impulses,
             now=timephrase.utcnow(),
             monotonic_ms=(
-                time.monotonic() * 1000.0
+                self._live_monotonic() * 1000.0
                 if now_mono_ms is None
                 else float(now_mono_ms)
             ),
@@ -919,7 +930,7 @@ class LiveModeMixin:
             return
         if bool(getattr(self, "_turn_in_progress", False)):
             return
-        now_mono = time.monotonic()
+        now_mono = self._live_monotonic()
         self._tick_live_affect()
         if now_mono - float(self._live_last_vitality_tick or 0.0) >= _VITALITY_TICK_S:
             self._live_last_vitality_tick = now_mono
@@ -1717,7 +1728,7 @@ class LiveModeMixin:
             return
         self._live_embodiment_signature = signature
         if policy_intent:
-            self._live_last_semantic_action_ms = time.monotonic() * 1000.0
+            self._live_last_semantic_action_ms = self._live_monotonic() * 1000.0
         self._notify_live_embodiment()
 
     def _clear_live_embodiment(self) -> None:

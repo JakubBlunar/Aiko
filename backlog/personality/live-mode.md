@@ -10,6 +10,13 @@ record](shipped/live-mode.md). Live L19-L31 (which are different from concept L 
 [initiative](live-initiative.md). Shared replay is DT4; no additional clock or speech owner is
 proposed.
 
+## Scenario regression harness
+
+Scripted and loopback Ollama scenarios now exercise Live impulses, virtual
+time, policy choices, cadence, topic handoff and cue feedback in isolation.
+Use the fixtures to pin floor ownership, sleep, waits and learned-context
+behavior before changing speech policy. [Scenario runner](../../docs/live-scenarios.md)
+
 ## L4. Authored ambient motion presets
 
 **Status: Deferred / evidence or capability gate.**

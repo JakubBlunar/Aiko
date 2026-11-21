@@ -750,6 +750,9 @@ class OllamaClient:
             "1" if (stop_event is not None and stop_event.is_set()) else "0",
         )
 
+    def _post_structured_chat(self, url: str, **kwargs: Any) -> requests.Response:
+        return requests.post(url, **kwargs)
+
     def chat_json(
         self,
         messages: list[dict[str, Any]],
@@ -800,7 +803,7 @@ class OllamaClient:
             payload["format"] = "json"
         t0 = time.monotonic()
         try:
-            response = requests.post(
+            response = self._post_structured_chat(
                 f"{self._base_url}/api/chat",
                 json=payload,
                 timeout=timeout_seconds if timeout_seconds is not None else self._timeout_seconds,

@@ -89,6 +89,7 @@ def new_impulse(
     priority: str = "attention",
     ttl_ms: int = 8000,
     payload: Mapping[str, Any] | None = None,
+    now_mono_ms: float | None = None,
 ) -> LiveImpulse:
     return LiveImpulse(
         event_id=uuid.uuid4().hex,
@@ -98,7 +99,7 @@ def new_impulse(
         mode_generation=int(mode_generation),
         sequence=int(sequence),
         occurred_at=_occurred_at(),
-        monotonic_ms=time.monotonic() * 1000.0,
+        monotonic_ms=time.monotonic() * 1000.0 if now_mono_ms is None else now_mono_ms,
         priority=str(priority or "attention"),
         ttl_ms=max(0, int(ttl_ms)),
         coalesce_key=str(coalesce_key),

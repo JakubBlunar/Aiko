@@ -2468,13 +2468,14 @@ def _migrate_legacy_audio_keys(user_path: Path) -> None:
         return
 
 
-def load_settings(config_path: Path | None = None) -> AppSettings:
+def load_settings(config_path: Path | None = None, *, read_only: bool = False) -> AppSettings:
     # Strip legacy server-audio keys before the first read so a stale
     # ``user.json`` never re-introduces them via deep-merge.
-    try:
-        _migrate_legacy_audio_keys(USER_CONFIG_PATH)
-    except Exception:
-        pass
+    if not read_only:
+        try:
+            _migrate_legacy_audio_keys(USER_CONFIG_PATH)
+        except Exception:
+            pass
     if config_path is not None:
         base = _read_config(config_path)
     else:
@@ -2741,7 +2742,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             chat_llm=raw.get("chat_llm", {}) or {},
             ollama=raw.get("ollama", {}) or {},
         )
-        if config_path is None:
+        if config_path is None and not read_only:
             _migrate_legacy_llm_config(settings.llm)
 
     # Backfill the workflow route for installs that migrated before the
@@ -2777,7 +2778,7 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
             live_route,
             max_tokens=_DEFAULT_LIVE_POLICY_MAX_TOKENS,
         )
-        if config_path is None:
+        if config_path is None and not read_only:
             try:
                 persist_user_overrides(
                     {

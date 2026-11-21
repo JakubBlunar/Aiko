@@ -124,7 +124,11 @@ class LivePolicyController:
         on_main_wake: Callable[..., bool] | None = None,
         on_action_result: Callable[[LiveActionRecord], None] | None = None,
         unprompted_speech_provider: Callable[[], bool] | None = None,
+        monotonic: Callable[[], float] | None = None,
+        dispatch_inference: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
+        self._monotonic = monotonic or (lambda: time.monotonic())
+        self._dispatch_inference = dispatch_inference or self._start_inference_thread
         self._client_provider = client_provider
         self._model_provider = model_provider
         self._route_provider = route_provider
@@ -207,7 +211,7 @@ class LivePolicyController:
         if int(held.get("generation", -1)) != int(generation):
             return None
         until = float(held.get("hold_until_ms") or 0.0)
-        if until and time.monotonic() * 1000.0 >= until:
+        if until and self._monotonic() * 1000.0 >= until:
             return None
         return dict(held)
 
@@ -292,7 +296,7 @@ class LivePolicyController:
         runtime = self._inclination()
         if runtime is None:
             return False
-        now_ms = time.monotonic() * 1000.0
+        now_ms = self._monotonic() * 1000.0
         try:
             return bool(
                 runtime.wait.should_suppress_inference(
@@ -343,7 +347,12 @@ class LivePolicyController:
                 with self._lock:
                     self._inflight = False
 
-        threading.Thread(target=_run, name="live-policy", daemon=True).start()
+        try:
+            self._dispatch_inference(_run)
+        except Exception:
+            with self._lock:
+                self._inflight = False
+            raise
         inferred = ""
         try:
             inferred = str(getattr(frame.shared.inferred, "label", "") or "")
@@ -358,6 +367,10 @@ class LivePolicyController:
             inferred or "-",
             int(frame.generation),
         )
+
+    @staticmethod
+    def _start_inference_thread(run: Callable[[], None]) -> None:
+        threading.Thread(target=run, name="live-policy", daemon=True).start()
 
     def _record_policy_failure(self, reason: str, generation: int, trigger_kind: str) -> None:
         with self._lock:
@@ -477,7 +490,7 @@ class LivePolicyController:
         runtime = self._inclination()
         eligible_ids = runtime.eligible_policy_urges(
             frame, menu_ids={item["urge_id"] for item in trace["menu"] or ()},
-            now_mono_ms=time.monotonic() * 1000.0,
+            now_mono_ms=self._monotonic() * 1000.0,
             unprompted_speech=self._unprompted_speech_enabled(), user_intent=user_intent,
         ) if runtime is not None else ()
         trace["eligible_urge_ids"] = list(eligible_ids)
@@ -544,6 +557,7 @@ class LivePolicyController:
             generation=int(frame.generation),
             reason=proposal.reason_code,
             urge_id=proposal.selected_urge_id,
+            now_ms=self._monotonic() * 1000.0,
         )
         self._current_action = action
         result = arbitrate_live_proposal(
@@ -570,7 +584,7 @@ class LivePolicyController:
             trace["evaluated_urge_ids"] = list(eligible_ids)
             for urge_id in eligible_ids:
                 runtime.urges.note_opportunity(
-                    urge_id, defer=True, now_mono_ms=time.monotonic() * 1000.0,
+                    urge_id, defer=True, now_mono_ms=self._monotonic() * 1000.0,
                 )
         action_record = self._finish_action(
             result,
@@ -667,7 +681,7 @@ class LivePolicyController:
             return self._execute_main_wake(
                 proposal, frame, extra=extra, user_intent=user_intent,
             )
-        now_ms = time.monotonic() * 1000.0
+        now_ms = self._monotonic() * 1000.0
         current = str(frame.attention.target or "none")
         keep_attention, keep_style = hold_flags_from_proposal(proposal.arguments)
         if user_intent or user_interrupting(frame):
@@ -853,7 +867,7 @@ class LivePolicyController:
     ) -> tuple[bool, dict[str, Any]]:
         extra["budget_class"] = "main_wake"
         self._main_wake_proposed += 1
-        now_ms = time.monotonic() * 1000.0
+        now_ms = self._monotonic() * 1000.0
         runtime = self._inclination()
         urges = ()
         remaining = 0
@@ -1249,7 +1263,7 @@ class LivePolicyController:
                     reason_code="fallback",
                     context_refs=(),
                 ),
-                now_ms=time.monotonic() * 1000.0,
+                now_ms=self._monotonic() * 1000.0,
                 ttl_ms=MIN_WAIT_MS,
                 reason_code="fallback",
             )
@@ -1307,14 +1321,15 @@ class LivePolicyController:
         record = self._current_action
         if record is None:
             return None
+        now_ms = self._monotonic() * 1000.0
         if cancelled and not executed:
-            record = advance_action(record, "cancelled", reason="cancelled")
+            record = advance_action(record, "cancelled", reason="cancelled", now_ms=now_ms)
         elif not result.accepted:
-            record = advance_action(record, "rejected", reason=result.reason)
+            record = advance_action(record, "rejected", reason=result.reason, now_ms=now_ms)
         elif executed:
-            record = advance_action(record, "executing", reason=result.reason)
+            record = advance_action(record, "executing", reason=result.reason, now_ms=now_ms)
             self._emit_action(record)
-            record = advance_action(record, "completed", reason=result.reason)
+            record = advance_action(record, "completed", reason=result.reason, now_ms=now_ms)
         elif str(getattr(result.proposal, "intent", "") or "") == "request_main_speech":
             self._current_action = None
             return None
@@ -1328,7 +1343,7 @@ class LivePolicyController:
                 reason = str(extra.get("micro_skipped") or "not_executed")
             elif result.reason:
                 reason = str(result.reason)
-            record = advance_action(record, "rejected", reason=reason)
+            record = advance_action(record, "rejected", reason=reason, now_ms=now_ms)
         self._current_action = None
         self.last_action = record
         self._emit_action(record)
