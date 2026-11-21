@@ -98,7 +98,7 @@ def _rx(pattern: str) -> re.Pattern[str]:
 
 
 # Explicit help-seeking — when fixing IS the need.
-_PROBLEM_SOLVE: tuple[tuple[re.Pattern[str], float], ...] = (
+_EXPLICIT_PROBLEM_SOLVE = (
     (_rx(r"\bhow (?:do|can|should|could|would) i\b"), 2.0),
     (_rx(r"\bwhat should i\b"), 2.0),
     (_rx(r"\bwhat would you do\b"), 2.0),
@@ -106,6 +106,13 @@ _PROBLEM_SOLVE: tuple[tuple[re.Pattern[str], float], ...] = (
     (_rx(r"\bhelp me\b"), 2.0),
     (_rx(r"\bcan you help\b"), 2.0),
     (_rx(r"\bwhat'?s the best way\b"), 2.0),
+    (_rx(r"\b(?:can|could|would|will) you (?:give|offer) (?:me )?(?:some |any )?"
+         r"(?:advice|ideas|tips|suggestions)\b"), 2.0),
+    (_rx(r"\b(?:i (?:actually |do )?(?:want|need)|please give me) (?:some |your )?"
+         r"(?:advice|ideas|tips|suggestions)\b"), 2.0),
+)
+_PROBLEM_SOLVE: tuple[tuple[re.Pattern[str], float], ...] = (
+    *_EXPLICIT_PROBLEM_SOLVE,
     (_rx(r"\bhow would (?:you|i)\b"), 1.0),
     (_rx(r"\b(?:figure|figuring) (?:this|it|that) out\b"), 1.0),
     (_rx(r"\bnot sure how to\b"), 1.0),
@@ -205,10 +212,13 @@ _NEGATED_PREFIX = _rx(
 )
 _LISTEN_REQUEST = _rx(
     r"\b(?:just|please|only) (?:listen|hear me out)\b|"
-    r"\bi (?:just )?(?:need|want) (?:you to listen|to vent)\b|"
+    r"\b(?:can|could|would|will) you (?:just )?(?:listen|hear me out)\b|"
+    r"\bi (?:just |really )?(?:need|want) you to listen\b|"
     r"\b(?:don't|do not) (?:need|want|give me|offer)(?: any)? "
-    r"(?:advice|solutions|suggestions)\b"
+    r"(?:advice|ideas|solutions|suggestions)\b|"
+    r"\b(?:not asking|not looking) for (?:advice|ideas|solutions|suggestions)\b"
 )
+_VENT_REQUEST = _rx(r"\bi (?:just )?(?:need|want) to vent\b")
 _MIXED_TURN = _rx(r"\b(?:but|however|although|except|yet)\b")
 
 
@@ -219,6 +229,27 @@ def _asserted_matches(pattern: re.Pattern[str], text: str) -> list[re.Match[str]
         if not _NEGATED_PREFIX.search(prefix):
             matches.append(match)
     return matches
+
+
+def unquoted_text(user_text: str) -> str:
+    text = re.sub(r"(?m)^[ \t]*>[^\n]*", " ", user_text or "")
+    text = text.translate(str.maketrans("“”‘’", "\"\"''"))
+    return _QUOTED.sub(" ", text).strip()
+
+
+def explicit_reply_mode(text: str, *, vent_counts_as_listening: bool = False) -> str | None:
+    """Read direct response requests in already unquoted text."""
+    matches = [
+        (match.start(), MODE_PROBLEM_SOLVE)
+        for pattern, _ in _EXPLICIT_PROBLEM_SOLVE
+        for match in _asserted_matches(pattern, text)
+    ]
+    matches.extend((match.start(), MODE_WITNESS)
+                   for match in _asserted_matches(_LISTEN_REQUEST, text))
+    if vent_counts_as_listening:
+        matches.extend((match.start(), MODE_WITNESS)
+                       for match in _asserted_matches(_VENT_REQUEST, text))
+    return max(matches, key=lambda item: item[0])[1] if matches else None
 
 
 def classify(
@@ -246,7 +277,7 @@ def classify(
     Returns a :class:`NeedResult`; ``mode == MODE_NEUTRAL`` on the common
     unremarkable turn.
     """
-    text = _QUOTED.sub(" ", (user_text or "").replace("\u2019", "'")).strip()
+    text = unquoted_text(user_text)
     scores: dict[str, float] = {
         MODE_WITNESS: 0.0,
         MODE_PROBLEM_SOLVE: 0.0,
@@ -257,15 +288,7 @@ def classify(
     if not text:
         return NeedResult(MODE_NEUTRAL, 0.0, scores, ())
 
-    explicit: list[tuple[int, str]] = []
-    for pattern, _weight in _PROBLEM_SOLVE[:7]:
-        explicit.extend(
-            (match.start(), MODE_PROBLEM_SOLVE)
-            for match in _asserted_matches(pattern, text)
-        )
-    explicit.extend(
-        (match.start(), MODE_WITNESS) for match in _LISTEN_REQUEST.finditer(text)
-    )
+    requested = explicit_reply_mode(text, vent_counts_as_listening=True)
 
     # 1) Lexical cues (the bulk of the signal).
     for mode, lexicon in _LEXICONS.items():
@@ -311,8 +334,7 @@ def classify(
         scores[mode] += bump
         reasons.append(f"arc:{arc_key}->{mode}")
 
-    if explicit:
-        requested = max(explicit, key=lambda item: item[0])[1]
+    if requested is not None:
         scores[requested] = max(2.0, scores[requested])
         reasons.append(f"explicit:{requested}")
         mode = requested if scores[requested] >= float(min_confidence) else MODE_NEUTRAL

@@ -114,7 +114,7 @@ names fade within J12 boundaries. Phase-based permission is not learned nickname
 
 ## J14. Remember what changed after a misunderstanding
 
-**Status: Proposed.** Suppose Aiko offers advice while the user is venting. The
+**Status: Cross-session venting pilot.** Suppose Aiko offers advice while the user is venting. The
 user explains that they wanted company, and Aiko offers to listen first next
 time. An apology, the user accepting that offer, and a later report that it
 helped answer three different questions. Keeping those distinctions lets a
@@ -142,3 +142,21 @@ things I actually want ideas.” Score whether
 Aiko acts on the applicable preference, can accurately say what they agreed if
 asked, and can leave the old disagreement unmentioned. A fresh direct request for
 advice should still get advice. Keep prevalence of tension labels out of scoring.
+
+The [isolated replay](../../tests/test_support_preferences.py) exercises the
+normal response-mode prompt. The accepted offer guides the next vent and remains
+available when asked about it. The cheerful ending yields no agreement. The
+work exception prompts a practical idea and leaves the general listening
+preference available for personal vents. A direct request wins, and editing or
+deleting a source changes the result on the next read. The pilot reads the
+original retained transcript and recognizes a small set of explicit forms.
+Broader repair kinds, paraphrase coverage and ordinary-use validation remain
+open.
+
+Eight fictional turns on the local 9B worker exercised the assembled prompts.
+It recalled the explicit agreement, could not verify one after the cheerful
+ending, and distinguished an unconfirmed outcome from a user report that
+listening helped. It offered ideas after the work exception and the direct
+request. The work reply still added an unstated time, and the outcome reply
+inferred why it helped. The replay used a fictional persona and separate
+databases. Main-chat validation remains open.

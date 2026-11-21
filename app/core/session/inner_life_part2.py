@@ -4297,6 +4297,22 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 forced, user_display_name=self.user_display_name,
             )
 
+        # J14 shares this response-mode slot so an applicable explicitly
+        # learned preference and the generic K69 heuristic can't compete.
+        from app.core.conversation.support_preferences import support_context
+
+        try:
+            support = support_context(getattr(self, "_chat_db", None), self.session_key, text)
+        except Exception:
+            log.debug("support preference lookup failed", exc_info=True)
+            support = None
+        if support is not None:
+            self._last_implicit_need = {
+                "mode": support.mode, "confidence": 0.0, "scores": {},
+                "reasons": ["support_history"], "forced": False,
+            }
+            return support.prompt
+
         # Arc (weak prior) -- best-effort, lags by one turn.
         arc: str | None = None
         arc_store = getattr(self, "_arc_store", None)

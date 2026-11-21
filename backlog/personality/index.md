@@ -172,7 +172,7 @@ message through the existing history interface. D9 starts as archive navigation.
 - [J13](moments.md#j13-learned-nickname-adoption-and-reciprocity) — **partial**: Persist explicitly
   adopted names for Aiko, handle changes/reciprocity and let unused names fade within J12
   boundaries. Phase-based permission is not learned nickname adoption.
-- [J14](moments.md#j14-remember-what-changed-after-a-misunderstanding) — **proposed**.
+- [J14](moments.md#j14-remember-what-changed-after-a-misunderstanding) — **pilot**.
   Carry a source-backed adjustment into the next relevant exchange.
 
 ### Integration and wiring

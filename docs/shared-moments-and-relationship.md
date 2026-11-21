@@ -150,6 +150,30 @@ Backed by `togetherView` slice in `web/src/store.ts` and the
 `/api/together` + `/api/shared-moments` + `/api/chat/messages/{id}/mark-moment`
 REST surface in `app/web/server.py`.
 
+## Remembering what helped after a misunderstanding
+
+J14 currently covers listening versus offering ideas when the user explicitly
+opens a vent. Aiko can use a standing request such as “When I vent, please
+listen first,” or an accepted offer from an exchange where the user clarified
+what they wanted. A work-specific preference can apply to a vent explicitly
+about work. The latest applicable preference in that scope guides the reply,
+and a direct request in the current turn takes precedence.
+
+A normal reply gets just the response guidance. When the user asks what they
+agreed or whether listening helped, Aiko can consult the dated exchange.
+The archive keeps the request, offer and endorsement distinguishable. An
+outcome requires a separate user report. A cheerful turn or an affect-based
+repair moment supplies no evidence of agreement or success.
+
+The [support-preference lookup](../app/core/conversation/support_preferences.py)
+reads at most 400 original messages from the preceding 30 days for the
+current owner. The first pass recognizes short English statements and offers,
+with adjacent messages within ten minutes for an agreement. It reads the
+current transcript each time, so changed or deleted evidence takes effect on
+the next lookup. It adds no model call, background job or separate memory
+record. The existing `agent.implicit_need_enabled` setting controls the
+response-mode provider.
+
 ## Privacy + cost posture
 
 - **Track 2 LLM cost gate.** The Track-2 detector is *off* by default
