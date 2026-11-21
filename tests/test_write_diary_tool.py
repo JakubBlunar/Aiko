@@ -24,13 +24,19 @@ def host(tmp_path):
     path = tmp_path / "journal.db"
     db = ChatDatabase(path)
     host = Host()
-    host._memory_store = MemoryStore(path)
+    store = MemoryStore(path)
+    host._memory_store = store
     host._embedder = SimpleNamespace(embed=lambda _: np.ones(4, dtype=np.float32))
     host._settings = SimpleNamespace(memory=SimpleNamespace(enabled=True))
+    host._user_id = "user"
     host.session_key = "user:s1"
     host._notify_memory_added = Mock()
     host._db = db
-    return host
+    try:
+        yield host
+    finally:
+        store.close()
+        db._get_conn().close()
 
 
 def write(host, content="I felt uncertain whether offering another idea would help.", **extra):

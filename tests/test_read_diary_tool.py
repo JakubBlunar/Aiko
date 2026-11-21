@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import json
-import threading
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
-from app.core.memory.memory_store import Memory, MemoryStore
+from app.core.infra import timephrase
+from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_store import MemoryStore
 from app.core.session.memory_facade_mixin import MemoryFacadeMixin
 from app.core.session.tools_registry_mixin import ToolsRegistryMixin
 from app.llm.tools.base import ToolError, ToolRegistry
@@ -20,24 +22,15 @@ class Host(MemoryFacadeMixin, ToolsRegistryMixin):
     pass
 
 
-def _memory(mid, kind, content, metadata=None):
-    return Memory(
-        id=mid, kind=kind, content=content, salience=0.5, embedding=np.zeros(2),
-        source_session=None, source_message_id=None,
-        created_at=f"2026-01-{mid:02d}T08:00:00Z", last_used_at=None, use_count=0,
-        metadata=metadata or {},
-    )
-
-
 @pytest.fixture
-def host():
-    # Exercise MemoryStore's real read-only mirror methods without a database or live install.
-    store = object.__new__(MemoryStore)
-    store._lock = threading.RLock()
-    store._mirror = {
-        1: _memory(1, "reflection", "[dream] orchard"),
-        2: _memory(2, "fact", "Orchard fact"),
-        3: _memory(3, "curiosity_finding", "Orchard reading", {
+def host(tmp_path, monkeypatch):
+    path = tmp_path / "journal.db"
+    ChatDatabase(path)._get_conn().close()
+    store = MemoryStore(path)
+    entries = [
+        ("reflection", "[dream] orchard", None),
+        ("fact", "Orchard fact", None),
+        ("curiosity_finding", "Orchard reading", {
             "source_open_question_id": 4,
             "source_urls": ["https://example.org/orchard"],
             "research_evidence": [{
@@ -45,12 +38,22 @@ def host():
             }],
             "evidence_type": "search_excerpt",
         }),
-        4: _memory(4, "open_question", "What grows?"),
-    }
+        ("open_question", "What grows?", None),
+    ]
     instance = Host()
+    instance._user_id = "user"
+    instance.session_key = "user:s1"
     instance._memory_store = store
     instance._settings = SimpleNamespace(memory=SimpleNamespace(enabled=True))
-    return instance
+    try:
+        with monkeypatch.context() as clock:
+            for day, (kind, content, metadata) in enumerate(entries, start=1):
+                stamp = datetime(2026, 1, day, 8, tzinfo=timezone.utc)
+                clock.setattr(timephrase, "utcnow", lambda stamp=stamp: stamp)
+                store.add(content, kind, np.zeros(2), metadata=metadata, skip_dedupe=True)
+        yield instance
+    finally:
+        store.close()
 
 
 def test_browse_filter_count_pagination_and_empty(host):
@@ -104,9 +107,8 @@ def test_invalid_arguments_and_non_diary_ids_are_tool_errors(host, arguments):
 
 
 def test_limit_maximum_and_blank_query(host):
-    host._memory_store._mirror.update({
-        mid: _memory(mid, "diary", "entry") for mid in range(5, 30)
-    })
+    for _ in range(25):
+        host.memory_store.add("entry", "diary", np.zeros(2), skip_dedupe=True)
     result = json.loads(ReadDiaryTool(host).run({"action": "list", "limit": 20, "q": " "}))
     assert len(result["entries"]) == 20 and result["total"] == 28
 
