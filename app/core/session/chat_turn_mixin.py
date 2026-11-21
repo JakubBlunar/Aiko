@@ -335,6 +335,7 @@ class ChatTurnMixin:
             except Exception:
                 log.debug("post-turn embedding counters failed to start", exc_info=True)
         post_turn_started_at = time.perf_counter()
+        post_turn_stage_ms: dict[str, float] = {}
         try:
             self._post_turn_inner_life(
                 user_text=cleaned,
@@ -349,6 +350,7 @@ class ChatTurnMixin:
                 # after this call returns, so reading it from there would
                 # measure the PREVIOUS assembly.
                 telemetry=telemetry,
+                stage_ms=post_turn_stage_ms,
             )
         except Exception:
             log.debug("post-turn inner life failed", exc_info=True)
@@ -363,16 +365,18 @@ class ChatTurnMixin:
                 except Exception:
                     log.debug("post-turn embedding counters failed to close", exc_info=True)
         post_turn_ms = (time.perf_counter() - post_turn_started_at) * 1000.0
+        post_turn_stage_ms = {name: round(ms, 2) for name, ms in post_turn_stage_ms.items()}
         # Surface slow post-turn completions in the ordinary log.
         log.log(
             logging.INFO if post_turn_ms >= _POST_TURN_SLOW_MS else logging.DEBUG,
             "post-turn done: post_turn_ms=%.1f mode=%s post_turn_embed_calls=%d "
-            "post_turn_embed_ms=%.1f post_turn_embed_wait_ms=%.1f",
+            "post_turn_embed_ms=%.1f post_turn_embed_wait_ms=%.1f post_turn_stage_ms=%s",
             post_turn_ms,
             mode,
             post_turn_embed_calls,
             post_turn_embed_ms,
             post_turn_embed_wait_ms,
+            post_turn_stage_ms,
         )
 
         # Context occupancy uses the largest single Ollama call's prompt
@@ -433,6 +437,7 @@ class ChatTurnMixin:
             "post_turn_embed_calls": post_turn_embed_calls,
             "post_turn_embed_ms": round(post_turn_embed_ms, 1),
             "post_turn_embed_wait_ms": round(post_turn_embed_wait_ms, 1),
+            "post_turn_stage_ms": post_turn_stage_ms,
             "filler_emitted": bool(getattr(result, "filler_emitted", False)),
             # K32: the SQLite ``messages.id`` of the assistant row just
             # persisted, so the frontend can stamp the live bubble's

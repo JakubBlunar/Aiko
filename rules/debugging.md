@@ -35,6 +35,10 @@ Every record is formatted as:
 - **Prompt assembly**: `ctx=`, `budget=`, `est_tokens=`, `sys=`, `hist=`, `user=`, `rag_tokens=`, `history_msgs_in=`, `history_msgs_out=`, `inner_blocks=`, `summary_active=`, `compaction=`, `aggressive=`.
 - **Scheduler**: `jobs_run=`, `elapsed_ms=`, `queue_after=`, `idle=`, `names=`, `submitted=`, `ran=`, `cancelled=`, `windows_opened=`.
 - **Ollama**: `msgs=`, `tools=`, `stream=`, `prompt_tokens=`, `completion_tokens=`, `tool_calls=`, `format_json=`, `stopped=`.
+- **Worker completions** use DEBUG records with `surface=` and `model=`. OpenAI-compatible
+  JSON calls report provider-supplied `reasoning_tokens=` when available. Ollama JSON calls
+  report `thinking_tokens~=` as an estimate from separately returned thinking text. A missing
+  value indicates that the response did not supply that breakdown.
 - **STT**: `chars=`, `duration_ms=`, `model=`, `language=`, `init_ms=`, `device=`, `sample_rate=`, `max_s=`, `silence_s=`.
 - **TTS**: `voice=`, `provider=`, `init_ms=`, `chunk_chars=`, `speed=`, `generate_ms=`, `played_ms=`, `queue_depth=`, `drained_chunks=`.
 - **Proactive**: `source=` (`prepared`|`llm`).

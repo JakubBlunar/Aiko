@@ -791,6 +791,7 @@ Every tick that had due workers logs one line:
 ```
 idle_workers tick: ran=2 due=7 admitted=3 skipped_budget=1 tick_ms=412
   depth=away(1204s) contention=queueing compute_ms=18000 llm_ms=18000
+  compute_spent_ms=409 llm_spent_ms=0 skipped_compute=0 skipped_llm=1 skipped_cap=0
   names=plant_growth,concept_lifecycle
 ```
 
@@ -799,6 +800,9 @@ the demand evaluation actually accepted. A large gap between them is the
 mechanism working — workers were asked and said they had nothing to do.
 `ran` below `admitted` means a lane filled up, `max_per_tick` was hit,
 or the user came back mid-tick (which also appends `stopped_early=1`).
+The two `spent_ms` fields sum worker runtime in each lane. They exclude tick
+overhead. The three `skipped` fields give the lane budget and global run cap
+contributions to `skipped_budget`.
 
 Four MCP debug tools, over the server at `http://localhost:6274/sse`:
 

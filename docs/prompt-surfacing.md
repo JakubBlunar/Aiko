@@ -107,6 +107,10 @@ If the shared query embedding fails, memory recall skips that request for
 the turn when it would use the same embedder. A different recall embedder
 can still run, and a subsequent turn can retry the original route.
 
+The message search indexer backfills retained history in bounded insertion-ID
+pages up to the latest message at startup. The live write listener handles
+subsequent inserts. Backfill reads the canonical transcript without pruning it.
+
 For informational questions, knowledge grounding computes the query norm
 once, then keeps the highest-scoring distinct learned facts up to the prompt
 limit. Scores are compared across knowledge and curiosity findings, with
@@ -117,10 +121,15 @@ with provider work in `post_turn_embed_calls` and `post_turn_embed_ms` and
 shared-request waits in `post_turn_embed_wait_ms`. Cue settlement asks for
 the combined turn vector only when a whole-turn cue has an embedding. It
 shares the vector with the gap resolver and other whole-turn cues.
+The `post_turn_stage_ms` map also appears in the post-turn completion log.
+It measures reply embedding, knowledge-gap resolution, awaiting and current
+cue settlement, deferred opinion checks, and cue/prompt accounting.
+The stages cover selected parts of the cascade and can include embedding time.
 
 The surfacing-outcomes report replays the six default semantic thresholds
 in one ledger query. Each threshold counts only settled, non-lexical rows
 with a recorded score at or above the threshold.
+The report's unsettled count uses an index containing only pending rows.
 
 `get_cue_outcomes` builds reach and decline reasons from one grouped read
 of the requested time window. Filtering by cue narrows the decline reasons

@@ -165,6 +165,7 @@ class PostTurnTimingTests(_Case):
         self.controller._embedder = embedder
 
         def cascade(**_kw):
+            _kw["stage_ms"]["reply_embedding"] = 3.125
             embedder.embed("one text")
             embedder.embed("one text")  # cache hit
             raise RuntimeError("cascade broke")
@@ -176,6 +177,7 @@ class PostTurnTimingTests(_Case):
         metrics = self.controller.get_last_metrics()
         self.assertEqual(metrics["post_turn_embed_calls"], 1)
         self.assertEqual(metrics["post_turn_embed_wait_ms"], 0)
+        self.assertEqual(metrics["post_turn_stage_ms"], {"reply_embedding": 3.12})
         self.assertEqual(embedder.end_turn(), (0, 0.0))
 
 

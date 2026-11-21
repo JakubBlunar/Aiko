@@ -2134,17 +2134,24 @@ class ResponsesApiClientTests(unittest.TestCase):
         self.assertEqual(client.last_usage.cached_tokens, 4)
 
     def test_chat_json_uses_responses_text_format(self) -> None:
-        fake = _fake_responses_response(text="{\"ok\": true}")
+        fake = _fake_responses_response(
+            text="{\"ok\": true}",
+            usage={"output_tokens": 12, "output_tokens_details": {"reasoning_tokens": 7}},
+        )
         client = self._client()
         with patch(
             "app.llm.openai_compatible_client.requests.post",
             return_value=fake,
-        ) as posted:
+        ) as posted, self.assertLogs("app.llm.openai_compatible_client", level="DEBUG") as logs:
             content, _usage = client.chat_json(
                 [{"role": "user", "content": "give me json"}],
                 options={"num_predict": 128},
+                surface="test_worker",
             )
         self.assertEqual(content, "{\"ok\": true}")
+        debug_log = "\n".join(logs.output)
+        self.assertIn("surface=test_worker", debug_log)
+        self.assertIn("completion_tokens=12 reasoning_tokens=7", debug_log)
         self.assertTrue(posted.call_args.args[0].endswith("/responses"))
         payload = posted.call_args.kwargs["json"]
         self.assertEqual(payload.get("text"), {"format": {"type": "json_object"}})

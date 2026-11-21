@@ -891,16 +891,18 @@ class IdleWorkerScheduler:
         candidates.sort(key=lambda c: (c[0], c[1], c[2]))
 
         ran = 0
-        skipped_budget = 0
+        skipped_cap = 0
         ran_names: list[str] = []
         lane_ran = {LANE_COMPUTE: 0, LANE_LLM: 0}
+        lane_skipped = {LANE_COMPUTE: 0, LANE_LLM: 0}
+        lane_spent_ms = {LANE_COMPUTE: 0.0, LANE_LLM: 0.0}
         tick_started_ms = time.monotonic() * 1000.0
         max_runs = self._max_per_tick if self._max_per_tick > 0 else None
         stopped_early = False
 
         for lane_rank, _neg_urgency, _last_run, name, worker, record in candidates:
             if max_runs is not None and ran >= max_runs:
-                skipped_budget += 1
+                skipped_cap += 1
                 continue
             # The user coming back mid-tick must stop us admitting more.
             # The worker already running still finishes -- that wait is
@@ -930,7 +932,7 @@ class IdleWorkerScheduler:
                 elapsed_s=elapsed_s,
                 heartbeat_s=float(worker.interval_seconds),
             ):
-                skipped_budget += 1
+                lane_skipped[lane] += 1
                 record.last_admit_reason = "lane_full"
                 continue
 
@@ -938,10 +940,13 @@ class IdleWorkerScheduler:
             ran += 1
             lane_ran[lane] += 1
             ran_names.append(name)
-            lanes[lane] = max(0.0, lanes[lane] - (record.last_duration_ms or 0.0))
+            run_ms = record.last_duration_ms or 0.0
+            lane_spent_ms[lane] += run_ms
+            lanes[lane] = max(0.0, lanes[lane] - run_ms)
 
         if due_total > 0 or ran > 0:
             tick_elapsed_ms = (time.monotonic() * 1000.0) - tick_started_ms
+            skipped_budget = skipped_cap + sum(lane_skipped.values())
             # A tick that ran nothing, or ran what it was supposed to, is
             # not news once a minute forever. It stays INFO when the
             # budget actually turned work away, which is the state
@@ -956,11 +961,15 @@ class IdleWorkerScheduler:
             emit(
                 "idle_workers tick: ran=%d due=%d admitted=%d "
                 "skipped_budget=%d tick_ms=%.0f depth=%s(%.0fs) "
-                "contention=%s compute_ms=%.0f llm_ms=%.0f%s names=%s",
+                "contention=%s compute_ms=%.0f llm_ms=%.0f "
+                "compute_spent_ms=%.0f llm_spent_ms=%.0f "
+                "skipped_compute=%d skipped_llm=%d skipped_cap=%d%s names=%s",
                 ran, due_total, len(candidates), skipped_budget,
                 tick_elapsed_ms, depth_name, idle_s, grade,
                 float(self._compute_budget_ms) * depth_mult,
                 float(self._tick_budget_ms) * llm_mult,
+                lane_spent_ms[LANE_COMPUTE], lane_spent_ms[LANE_LLM],
+                lane_skipped[LANE_COMPUTE], lane_skipped[LANE_LLM], skipped_cap,
                 " stopped_early=1" if stopped_early else "",
                 ",".join(ran_names) if ran_names else "-",
             )

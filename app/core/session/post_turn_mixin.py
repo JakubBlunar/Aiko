@@ -28,6 +28,7 @@ from typing import Any
 from app.core.infra import timephrase
 from app.llm.turn_outcome import TurnOutcome
 from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
+from app.core.session.prompt_support import _timed_phase
 
 
 log = logging.getLogger("app.session")
@@ -132,6 +133,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
         assistant_message_id: int | None = None,
         telemetry: Any = None,
         turn_outcome: TurnOutcome | None = None,
+        stage_ms: dict[str, float] | None = None,
     ) -> None:
         """Run all post-turn inner-life updates (cheap, no LLM).
 
@@ -151,6 +153,8 @@ class PostTurnMixin(PostTurnHelpersMixin):
                     assistant_message_id=None,
                 )
             return
+        if stage_ms is None:
+            stage_ms = {}
         answer_event = {
             "session_id": self.session_key,
             "user_message_id": user_message_id,
@@ -403,7 +407,8 @@ class PostTurnMixin(PostTurnHelpersMixin):
             and self._embedder is not None
         ):
             try:
-                self._last_assistant_vec = self._embedder.embed(assistant_text)
+                with _timed_phase(stage_ms, "reply_embedding"):
+                    self._last_assistant_vec = self._embedder.embed(assistant_text)
             except Exception:
                 log.debug("assistant reply embed failed", exc_info=True)
 
@@ -422,10 +427,11 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # answered. Reuses the combined user+assistant embedding budget
         # (one embed per turn total, shared with the cue pool below).
         try:
-            self._resolve_knowledge_gaps(
-                user_text=user_text,
-                assistant_text=assistant_text,
-            )
+            with _timed_phase(stage_ms, "knowledge_gaps"):
+                self._resolve_knowledge_gaps(
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                )
         except Exception:
             log.debug(
                 "knowledge_gap auto-resolve failed", exc_info=True,
@@ -454,19 +460,21 @@ class PostTurnMixin(PostTurnHelpersMixin):
         except Exception:
             log.debug("hypothesis ambient listen failed", exc_info=True)
         try:
-            self._settle_awaiting_cues(user_text=user_text, user_message_id=user_message_id)
+            with _timed_phase(stage_ms, "awaiting_cues"):
+                self._settle_awaiting_cues(user_text=user_text, user_message_id=user_message_id)
         except Exception:
             log.debug("awaiting cue settle failed", exc_info=True)
         try:
-            self._settle_pool_cues(
-                user_text=user_text,
-                assistant_text=assistant_text,
-                assistant_message_id=assistant_message_id,
-                reply_vec=getattr(self, "_last_assistant_vec", None),
-                turn_vec_provider=lambda: self._combined_turn_vec(
-                    user_text=user_text, assistant_text=assistant_text,
-                ),
-            )
+            with _timed_phase(stage_ms, "pool_cues"):
+                self._settle_pool_cues(
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                    assistant_message_id=assistant_message_id,
+                    reply_vec=getattr(self, "_last_assistant_vec", None),
+                    turn_vec_provider=lambda: self._combined_turn_vec(
+                        user_text=user_text, assistant_text=assistant_text,
+                    ),
+                )
         except Exception:
             log.debug("cue pool settle failed", exc_info=True)
 
@@ -475,7 +483,8 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # never blocks first-token; a confirmed contradiction arms a cue
         # that renders on the next turn. Definite hits already fired inline.
         try:
-            self._resolve_opinion_injection_pending()
+            with _timed_phase(stage_ms, "deferred_opinion"):
+                self._resolve_opinion_injection_pending()
         except Exception:
             log.debug(
                 "opinion-injection deferred resolve failed", exc_info=True,
@@ -1672,10 +1681,11 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # appends surfaced cues to -- reversing the two would write the
         # cue rows a turn late, against the next reply's id.
         try:
-            self._record_cue_decisions(
-                assistant_message_id=assistant_message_id,
-                telemetry=telemetry,
-            )
+            with _timed_phase(stage_ms, "cue_accounting"):
+                self._record_cue_decisions(
+                    assistant_message_id=assistant_message_id,
+                    telemetry=telemetry,
+                )
         except Exception:
             log.debug("cue accounting raised", exc_info=True)
 
@@ -1684,10 +1694,11 @@ class PostTurnMixin(PostTurnHelpersMixin):
         # above (different table, different store), so it is its own
         # try: a failure in one must not cost the other's row.
         try:
-            self._record_prompt_blocks(
-                assistant_message_id=assistant_message_id,
-                telemetry=telemetry,
-            )
+            with _timed_phase(stage_ms, "prompt_accounting"):
+                self._record_prompt_blocks(
+                    assistant_message_id=assistant_message_id,
+                    telemetry=telemetry,
+                )
         except Exception:
             log.debug("prompt block accounting raised", exc_info=True)
 

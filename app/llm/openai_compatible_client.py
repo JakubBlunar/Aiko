@@ -1484,9 +1484,10 @@ class OpenAICompatibleClient:
         log.debug(
             "openai-compat responses: model=%s surface=%s msgs=%d tools=%d "
             "elapsed_ms=%.0f prompt_tokens=%d completion_tokens=%d "
-            "tool_calls=%d",
+            "reasoning_tokens=%s think=%s tool_calls=%d",
             model, surface, len(messages), len(tools or []), elapsed_ms,
-            usage.prompt_tokens, usage.completion_tokens, len(tool_calls),
+            usage.prompt_tokens, usage.completion_tokens, usage.reasoning_tokens, think,
+            len(tool_calls),
         )
         return content, tool_calls, usage, response_output_items
 
@@ -1959,10 +1960,10 @@ class OpenAICompatibleClient:
         )
         self._announce_connection(use_model)
         log.debug(
-            "openai-compat chat_json: model=%s msgs=%d elapsed_ms=%.0f "
-            "prompt_tokens=%d completion_tokens=%d format_json=%s",
-            use_model, len(messages), elapsed_ms,
-            usage.prompt_tokens, usage.completion_tokens,
+            "openai-compat chat_json: surface=%s model=%s msgs=%d elapsed_ms=%.0f "
+            "prompt_tokens=%d completion_tokens=%d reasoning_tokens=%s think=%s format_json=%s",
+            surface, use_model, len(messages), elapsed_ms,
+            usage.prompt_tokens, usage.completion_tokens, usage.reasoning_tokens, think,
             "1" if format_json else "0",
         )
         return content, usage

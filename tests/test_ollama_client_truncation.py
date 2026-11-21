@@ -209,6 +209,19 @@ class ChatJsonTruncationTests(unittest.TestCase):
             any("truncated" in record.getMessage() for record in cap.records),
         )
 
+    def test_debug_log_identifies_worker_and_reports_visible_thinking_estimate(self) -> None:
+        client = OllamaClient(self._ollama_settings)
+        fake = self._make_response(done_reason="stop")
+        fake.json.return_value["message"]["thinking"] = "private trace text"
+        with patch(
+            "app.llm.ollama_client.requests.post", return_value=fake,
+        ), self.assertLogs("app.llm.ollama_client", level="DEBUG") as cap:
+            client.chat_json([{"role": "user", "content": "hi"}], surface="test_worker")
+        debug_log = "\n".join(cap.output)
+        self.assertIn("surface=test_worker", debug_log)
+        self.assertRegex(debug_log, r"completion_tokens=512 thinking_tokens~=[1-9]\d*")
+        self.assertNotIn("private trace text", debug_log)
+
     def test_stop_is_silent(self) -> None:
         client = OllamaClient(self._ollama_settings)
         fake = self._make_response(done_reason="stop")

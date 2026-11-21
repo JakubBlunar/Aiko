@@ -223,6 +223,7 @@ class ListenersMetricsMixin:
             "post_turn_embed_calls": 0,
             "post_turn_embed_ms": 0.0,
             "post_turn_embed_wait_ms": 0.0,
+            "post_turn_stage_ms": {},
             # P2 (perf backlog): prompt-build phase telemetry. Per-
             # provider wall time so a regression in a single provider
             # can be attributed without instrumenting it by hand.

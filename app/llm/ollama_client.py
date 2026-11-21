@@ -870,14 +870,17 @@ class OllamaClient:
             answer_preview=content,
         )
         self._announce_connection(use_model)
-        log.debug(
-            "ollama chat_json: model=%s msgs=%d elapsed_ms=%.0f "
-            "prompt_tokens=%d completion_tokens=%d format_json=%s schema=%s",
-            use_model, len(messages), elapsed_ms,
-            usage.prompt_tokens, usage.completion_tokens,
-            "1" if format_json else "0",
-            "1" if json_schema else "0",
-        )
+        if log.isEnabledFor(logging.DEBUG):
+            log.debug(
+                "ollama chat_json: surface=%s model=%s msgs=%d elapsed_ms=%.0f "
+                "prompt_tokens=%d completion_tokens=%d thinking_tokens~=%s "
+                "think=%s format_json=%s schema=%s",
+                surface, use_model, len(messages), elapsed_ms,
+                usage.prompt_tokens, usage.completion_tokens,
+                estimate_tokens(thinking) if thinking else None, think,
+                "1" if format_json else "0",
+                "1" if json_schema else "0",
+            )
         return content, usage
 
     def set_model_keep_alive(

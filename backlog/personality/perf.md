@@ -22,6 +22,10 @@ prefetch, the shared query embedding, memory candidates, graph candidates, selec
 rendering in the turn log and last-turn diagnostics. Compare ordinary turns before estimating
 how much typed prefetch could save.
 
+The retained logs still contain no completed-turn stage breakdown. The typed client sends
+composing presence without draft text. Establish the embedding share of the 953 ms before
+adding a new path that sends unsent drafts to the configured embedding provider.
+
 **Remaining:** Add bounded cancellable typed-draft prewarm with explicit privacy/opt-out behavior.
 Composing status alone is not draft prefetch.
 
@@ -36,7 +40,12 @@ Composing status alone is not draft prefetch.
 **Status: Partial.**
 
 **Implemented / available:** Worker routes and provider reasoning controls/telemetry exist; visible
-thinking is filtered.
+thinking is filtered. Debug-level JSON completion logs now identify the worker surface and report
+completion and reasoning tokens on OpenAI-compatible routes. Ollama estimates the thinking tokens
+when separate trace text is available. Missing accounting is reported as unknown.
+
+The retained logs had two Ollama cap records with no thinking-token breakdown. The 50 recent
+prompt-cache records describe chat completions, so they do not measure the worker route.
 
 **Remaining:** Measure reasoning-token leakage on the actual worker model/provider and compare
 native controls before prompt suffixes or model changes; the historic qwen route is not assumed
@@ -64,6 +73,10 @@ The 25 slow typed turns logged at INFO on 19–20 Nov 2026 had a median post-tur
 456 ms. This sample includes only cascades at or above the logging threshold. Isolated tests
 confirmed zero combined embedding requests for empty, reply-only and lexical-only cue pools,
 and one shared request for two embedded whole-turn cues.
+
+The post-turn record now times reply embedding, knowledge-gap resolution, awaiting and current
+cue settlement, deferred opinion checks, and cue/prompt ledger writes individually. These times
+are contained in the total and can include provider time.
 
 **Remaining:** Measure embedding time on ordinary turns and isolate other slow steps before
 moving work off-thread. Preserve next-turn repair and answer state.
@@ -144,7 +157,15 @@ from Lance reconciliation and application startup.
 **Status: Partial.**
 
 **Implemented / available:** Per-block tier-weighted cost telemetry and earlier persona trim exist;
-the historical claim that persona dominates cost was corrected.
+the historical claim that persona dominates cost was corrected. Budget sizing and cache
+breakpoint offsets now use character counts before the system prompt is joined. On an isolated
+82k-character prompt, peak allocation for sizing and offsets fell from 196 KiB to under 1 KiB.
+Token estimates, text and offsets were identical.
+
+The latest 50 retained ordinary turns on `deepseek-v4-1-flash-uncensored` had a median system
+prompt of 82,877 characters, 21,199 actual prompt tokens and 52.2% cached tokens. Median T0
+was 53,609 characters and T3 was 17,933 characters. T3 was the most frequent first changed
+tier (20 turns). This sample does not attribute T0's size to persona alone.
 
 **Remaining:** Remeasure the actual route/cache, then trim duplicate grammar, gate empty blocks and
 audit tier hygiene where evidence warrants. P43/P52 own volatile-tail/context work.
@@ -168,6 +189,10 @@ Trajectory and drift reads use the concept/time index to stop at their requested
 On 240,000 synthetic events, 240 confidence lookups took 3.55 → 0.28 ms and 60 drift
 windows took 20.9 → 12.6 ms. Results matched the previous queries. The additional
 index occupied 8.5 MiB on that corpus and took 270 ms to build once.
+
+Incremental dirty-set reads seek by event ID when the watermark is within 1,024 IDs of the tip.
+The full sweep keeps the concept index for ordered paging. On 240,000 synthetic events with 50
+new rows, the dirty-set query took 3.4 → 0.02 ms and returned the same distinct IDs.
 
 **Remaining:** Measure actual scheduler contention and graph growth; define snapshot/event thinning
 and any remaining dirty-work refinements without discarding durable history. P34/P49 own retention
@@ -204,10 +229,13 @@ ranking allocations fell from 510 to 1.8 KiB, excluding the input rows.
 
 ## P34. Unbounded tables: `messages`, Lance mirror, `concept_events`
 
-**Status: Open implementation.**
+**Status: Partial.**
 
 **Implemented / available:** Transcript/session deletion and task/activity cleanup exist;
-message/concept history remains durable.
+message/concept history remains durable. The message indexer reads startup history in 256-row
+pages in global insertion order up to a starting watermark. The live listener handles new
+messages. A 24,000-message database reduced the history-read peak from 40.9 to 1.7 MiB
+and median read time from 171 to 62 ms. Embedding and Lance writes were outside the measurement.
 
 **Remaining:** Decide retention separately for authoritative messages, the Lance mirror and
 concept-event noise. Add reconciled index filtering/thinning only with explicit
@@ -224,6 +252,8 @@ preservation/deletion semantics.
 
 **Implemented / available:** Staged pooled admission, essential handling pilot and bounded persisted
 content-free assembly/final-claim traces exist, plus offline hypothesis reporting.
+The pilot removes or moves the selected cue by its prompt slot so identical wording in another
+block remains in place. Handling-budget omissions stay visible in the trace.
 
 **Remaining:** Cover eager providers, protect owed/authoritative blocks, allocate complete
 evidence/handling bundles and record actual final inclusion/omissions before learning weights.
@@ -242,6 +272,11 @@ RS1/RS4/RS5 and G6 refine the remaining scope.
 **Status: Deferred / evidence or capability gate.**
 
 **Implemented / available:** Compute workers drain before LLM work but serially.
+
+The current log contains 14 ticks that deferred work against the shared reporting counters,
+all with contention reported as `none`. Those older lines do not say which lane was full.
+New tick records report worker time and budget deferrals by lane, plus deferrals from the
+global run cap. This will distinguish compute pressure from the other causes of a deferred tick.
 
 **Remaining:** Make shared WorldStore/ConceptStore/cache/SQLite state safe before parallel compute
 drain; do not add concurrency solely to reduce queue counters.
@@ -265,6 +300,10 @@ Cue reports share one grouped window read across reach and decline reasons. On 1
 synthetic decisions, the seven-day report's grouped reads took 125 → 66 ms and lifetime
 reads took 1,017 → 516 ms. Counts and rates matched the previous reports.
 
+Pending surfacing outcomes now use a partial time index. On 240,000 synthetic rows with
+957 pending, the pending count took 26.9 → 0.03 ms lifetime and 70.1 → 0.02 ms
+for seven days, with identical counts. This measures the report header query.
+
 **Remaining:** Schedule appropriate ledger retention and fix remaining non-selective aggregates;
 decide transcript/concept-history preservation separately. Bound disk without confusing diagnostics
 with authoritative history.
@@ -282,6 +321,9 @@ with authoritative history.
 
 **Implemented / available:** Conditional handling has a size budget and frequent emotion notes moved
 into cached T0; essential handling is bundled for the staged pilot.
+The hoist reads one persona snapshot per render and tracks its budget using note lengths
+without repeatedly joining the candidate notes. On a ten-note fixture, it checked file
+timestamps once instead of ten times and took 0.71 → 0.10 ms, with identical rendered text.
 
 **Remaining:** Complete semantics-aware content/handling admission for other providers; decide
 frequent pooled-note placement and avoid admitting unexplained cues. The cap itself is already

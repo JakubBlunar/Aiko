@@ -264,9 +264,14 @@ class LaneOrderingTests(unittest.TestCase):
         # Give both a large EMA so neither fits its lane on estimate.
         sched._records["synth"].avg_duration_ms = 5000.0
         sched._records["lifecycle"].avg_duration_ms = 100.0
-        sched._tick()
+        with self.assertLogs("app.idle_worker_scheduler", level="INFO") as logs:
+            sched._tick()
         self.assertEqual(cheap.runs, 1)
         self.assertEqual(llm.runs, 0)
+        tick = next(record.getMessage() for record in logs.records
+                    if record.getMessage().startswith("idle_workers tick:"))
+        self.assertIn("skipped_budget=1", tick)
+        self.assertIn("skipped_compute=0 skipped_llm=1 skipped_cap=0", tick)
 
 
 class FitAndStarvationTests(unittest.TestCase):
