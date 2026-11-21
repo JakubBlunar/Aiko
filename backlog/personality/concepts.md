@@ -137,6 +137,15 @@ around one partial communication note.
   claim is narrowed or withdrawn. Leave uncertain history available for
   inspection. Drive any repair from a reviewed case rather than a bulk backfill.
 
+An [isolated repair replay](../../tests/test_concept_support_repair_replay.py)
+contrasts an inferred diary agreement with an explicit agreement. Withdrawing
+the reviewed diary dependency removes the unsupported claim from current
+recall and leaves the explicit agreement available through its own support.
+The surviving claim now cites the valid alternative. Both source exchanges
+and the old claim remain inspectable. Re-admitting the same dependency in an
+isolated probe made the withdrawn claim assertable again. The repair queue
+still needs a review verdict that future admissions can honor.
+
 **Acceptance.** A one-time choice does not imply effectiveness or a standing
 trait. Multiple paraphrases of one episode retain one evidence basis in the
 review. Withdrawing an unsupported premise changes recall eligibility while an

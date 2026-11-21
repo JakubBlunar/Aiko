@@ -26,6 +26,16 @@ def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
     dependencies = getattr(store, "dependencies", None)
     if dependencies is not None:
         packet["validity"] = dependencies.assess(cid, max_nodes=64)
+    validity = packet["validity"]
+    current_sources = None
+    if validity.get("tracked") and validity.get("viable") and "valid_sets" in validity:
+        # Historical evidence edges may outlive a withdrawn dependency. For a
+        # current claim, start excerpts from its surviving support sets.
+        current_sources = {
+            (kind, str(ident))
+            for index in validity["valid_sets"]
+            for kind, ident, _ in validity["support_sets"][index]
+        }
     try:
         packet["support"] = resolve_support(store, memories, graph, cid, max_nodes=64)
     except (AttributeError, TypeError, ValueError):
@@ -107,6 +117,11 @@ def project_evidence(store: Any, memories: Any, graph: Any, concept: Any,
                 packet["truncated"] |= len(members) > 64
         elif kind == "concept" and depth < 4:
             edges = list(store.evidence_of(ident))
+            if depth == 0 and current_sources is not None:
+                edges = [
+                    edge for edge in edges
+                    if (edge.src_type, str(edge.src_id)) in current_sources
+                ]
             for edge in edges[:64]:
                 if getattr(edge, "polarity", 1) <= 0 or getattr(edge, "strength", 1) <= 0:
                     continue

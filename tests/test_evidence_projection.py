@@ -49,6 +49,19 @@ def test_negative_edges_never_supply_the_supporting_excerpt():
     assert project_evidence(store, NS(get=lambda _: memory(1)), None, concept)["evidence"] == []
 
 
+def test_historical_edges_do_not_crowd_out_current_support_excerpts():
+    concept = NS(concept_id=1)
+    edges = [NS(src_type="memory", src_id=str(mid), polarity=1, strength=1)
+             for mid in range(1, 81)]
+    validity = {"tracked": True, "viable": True, "valid_sets": [0],
+                "support_sets": [[("memory", "80", "r1")]]}
+    store = NS(get=lambda _: concept, evidence_of=lambda _: edges,
+               dependencies=NS(assess=lambda *a, **k: validity))
+    packet = project_evidence(store, NS(get=memory), None, concept)
+    assert [row["memory_id"] for row in packet["evidence"]] == [80]
+    assert not packet["truncated"]
+
+
 def test_concept_view_projection_retains_source_mode_domain_and_conditions():
     from app.core.concepts.concept_view import ConceptView
 

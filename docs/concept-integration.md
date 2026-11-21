@@ -715,6 +715,12 @@ Confidence, reinforcement timestamps and salience alone are not semantic revisio
 fingerprints. Changed content requires a fresh admission before it can support
 the old conclusion again. Unknown historical lineage stays unknown.
 
+When the evidence assessment finds surviving support sets, the packet starts
+its excerpts from their direct sources. A withdrawn diary premise stays in the
+evidence graph for inspection. Exact-ID recall of a claim that lost all support
+still exposes its history with the failed support verdict.
+[Isolated repair replay](../tests/test_concept_support_repair_replay.py)
+
 L3 stores the latest content-free assessment, including which alternatives remain
 and which premises failed, and marks immediate dependents due when the assessment
 changes. Processing remains incremental through the existing due/stalest lanes;
