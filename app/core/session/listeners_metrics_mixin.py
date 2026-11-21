@@ -228,6 +228,7 @@ class ListenersMetricsMixin:
             # can be attributed without instrumenting it by hand.
             "provider_ms": {},
             "rag_lookup_ms": 0.0,
+            "context_stage_ms": {},
             "assemble_ms": 0.0,
             # L26: per-turn concept trace (populated from PromptTelemetry
             # after a real turn; empty on the idle frame).

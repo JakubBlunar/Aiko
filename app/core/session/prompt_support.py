@@ -978,13 +978,14 @@ class PromptTelemetry:
     # bisecting each provider by hand. ``provider_ms`` is keyed by the
     # provider name (``"affect"``, ``"novelty"``, ``"stagnation"``, …);
     # entries are only present when a provider was actually wired and
-    # ran. ``rag_lookup_ms`` covers the prefetch lookup + live RAG call;
+    # ran. ``rag_lookup_ms`` covers the entire relevant-context build;
     # ``assemble_ms`` is the total wall time of ``assemble_with_budget``
     # so consumers can compute "everything else" by subtraction.
     provider_ms: dict[str, float] = field(default_factory=dict)
     provider_outcomes: dict[str, dict[str, str]] = field(default_factory=dict)
     surfacing_trace: list[dict[str, Any]] = field(default_factory=list)
     rag_lookup_ms: float = 0.0
+    context_stage_ms: dict[str, float] = field(default_factory=dict)
     assemble_ms: float = 0.0
     # P31a: per-block *size* alongside per-block time, keyed by the same
     # names as the ``_PROMPT_BLOCK_TIERS`` ladder. ``provider_ms`` answers
@@ -1113,6 +1114,7 @@ class PromptTelemetry:
                 str(k): round(float(v), 2) for k, v in self.provider_ms.items()
             },
             "rag_lookup_ms": round(float(self.rag_lookup_ms), 2),
+            "context_stage_ms": {name: round(ms, 2) for name, ms in self.context_stage_ms.items()},
             "assemble_ms": round(float(self.assemble_ms), 2),
             # P1: per-turn embed budget.
             "embed_calls": int(self.embed_calls),

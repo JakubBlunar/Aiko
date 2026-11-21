@@ -499,6 +499,7 @@ class ChatTurnMixin:
                 # P2: prompt-build phase telemetry.
                 "provider_ms": tdict["provider_ms"],
                 "rag_lookup_ms": tdict["rag_lookup_ms"],
+                "context_stage_ms": tdict["context_stage_ms"],
                 "assemble_ms": tdict["assemble_ms"],
                 # P14: tool-pass gate decision + pass cost.
                 "tool_gate_event": tdict["tool_gate_event"],

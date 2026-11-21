@@ -14,8 +14,10 @@ audit](shipped/audit-2026-10-24.md).
 **21 Nov 2026 baseline:** The live prefetcher reported 50 lookup misses and zero submissions.
 Across 50 recent completed turns, median context-region time (`rag_lookup_ms`) was 953 ms
 and median time to first token was 1,846 ms. The context-region timer includes embedding,
-retrieval and context selection. Compare typed and voice turns before attributing the delay
-to a particular stage or estimating how much prefetch could save.
+retrieval and context selection. `context_stage_ms` now reports the cost of archive lookup,
+prefetch, the shared query embedding, memory candidates, graph candidates, selection, and
+rendering in the turn log and last-turn diagnostics. Compare ordinary turns before estimating
+how much typed prefetch could save.
 
 **Remaining:** Add bounded cancellable typed-draft prewarm with explicit privacy/opt-out behavior.
 Composing status alone is not draft prefetch.
@@ -304,8 +306,14 @@ SQLite wording for changed notes. Isolated Lance fixtures cover a reopened
 index with unchanged, edited, missing, and orphaned rows at the same row count.
 [Storage contract](../../docs/memory-tiers.md#in-memory-the-mirror-and-the-matrix-beside-it).
 
-**Remaining:** Measure cold/warm startup time and bytes written on a larger
-representative corpus. P30 still owns the separate SQLite mirror reload cost.
+Exact comparison now reads unchanged vectors as float32 arrays directly from Arrow.
+On a reopened disposable index with 6,200 memories and 1,024-dimensional vectors,
+warm reconciliation took **1,318 → 59 ms** across seven timed runs per build.
+Both versions wrote zero rows and added zero bytes across the unchanged runs.
+Both also converged after an edit and an orphan removal.
+
+**Remaining:** Measure complete startup under ordinary cold and warm conditions.
+P30 owns the separate SQLite mirror load cost.
 
 ## P54. Share an embedding request between simultaneous cache misses
 

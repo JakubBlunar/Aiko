@@ -442,7 +442,9 @@ class PromptAssemblerBudgetTests(unittest.TestCase):
 
         def _provider(**kw: object) -> RelevantContext:
             seen["degrade_level"] = int(kw.get("degrade_level", -1))  # type: ignore[arg-type]
-            return RelevantContext(text="Relevant context: she likes sushi.")
+            return RelevantContext(
+                text="Relevant context: she likes sushi.", stage_ms={"query_embedding": 16.125},
+            )
 
         with _TempDb() as db:
             assembler = _make_assembler(db, persona_text="P")
@@ -456,6 +458,7 @@ class PromptAssemblerBudgetTests(unittest.TestCase):
                 aggressive=False,
             )
             self.assertGreater(telem_normal.rag_tokens, 0)
+            self.assertEqual(telem_normal.as_dict()["context_stage_ms"], {"query_embedding": 16.12})
             self.assertEqual(seen["degrade_level"], 0)
 
             msgs_aggr, telem_aggr = assembler.assemble_with_budget(

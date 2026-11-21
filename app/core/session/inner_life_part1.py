@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 from app.core.session.inner_life_shared import (
     _circadian,
@@ -1557,6 +1558,15 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         if budget_tokens <= 0:
             return RelevantContext(reason="no_budget")
 
+        stage_ms: dict[str, float] = {}
+        stage_started = time.perf_counter()
+
+        def record_stage(name: str) -> None:
+            nonlocal stage_started
+            now = time.perf_counter()
+            stage_ms[name] = (now - stage_started) * 1000.0
+            stage_started = now
+
         rag = getattr(self, "_rag_retriever", None)
         embedder = getattr(self, "_embedder", None)
         name = self.user_display_name
@@ -1573,6 +1583,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 )
             except Exception:
                 log.debug("relevant_context: original exchange lookup failed", exc_info=True)
+        record_stage("archive_lookup")
 
         # Speculative pre-fetch reuse (Phase 1b): while the user was still
         # talking the RagPrefetcher may have already embedded this turn and
@@ -1593,6 +1604,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 embedding, pooled_hits = cached
             else:
                 prefetch_event = "miss"
+        record_stage("prefetch_lookup")
 
         # Shared turn embedding (embed once, thread to all three sources).
         # Reused from the prefetch on a hit; otherwise computed here.
@@ -1604,6 +1616,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             except Exception:
                 log.debug("relevant_context: shared embed failed", exc_info=True)
                 embedding = None
+        record_stage("query_embedding")
 
         # ── candidate gathering ─────────────────────────────────────────
         mem_cands: list[ContextCandidate] = []
@@ -1652,6 +1665,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 ))
             except Exception:
                 log.debug("shared shorthand context unavailable", exc_info=True)
+        record_stage("memory_candidates")
 
         # Clusters + concepts are cold-start gated by graph maturity (L21),
         # matching the retired interest_map / concept blocks.
@@ -2350,6 +2364,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         arc_blocks = prepare_arcs(self, concept_cands, user_text, estimate_tokens)
 
         # ── budgeted selection ──────────────────────────────────────────
+        record_stage("graph_candidates")
         selector = ContextBudgetSelector({
             "memory": SourceBudget(
                 floor=int(getattr(ms, "context_budget_memory_floor", 1)),
@@ -2411,6 +2426,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             score_components=score_components,
         )
 
+        record_stage("budget_selection")
         # ── rendering ────────────────────────────────────────────────────
         sections: list[str] = [archive_text] if archive_text else []
 
@@ -2580,12 +2596,14 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             log.debug("relevant_context: surfaced stash failed", exc_info=True)
             self._last_surfaced_items = []
 
+        record_stage("render_and_account")
         return RelevantContext(
             text=text,
             selection=selection,
             concept_trace=concept_trace,
             reason="ok" if text else "empty",
             prefetch_event=prefetch_event,
+            stage_ms=stage_ms,
         )
 
     def _render_relevant_clusters(

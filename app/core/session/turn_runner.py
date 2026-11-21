@@ -1218,7 +1218,7 @@ class TurnRunner:
             "compactions=%d filler=%s aborted=%s mood_fallback=%s "
             "rag_prefetch=%s prebuild=%s listen_extensions=%d "
             "embed_calls=%d embed_ms=%.0f embed_waits=%d embed_wait_ms=%.0f "
-            "assemble_ms=%.0f rag_lookup_ms=%.0f "
+            "assemble_ms=%.0f rag_lookup_ms=%.0f context_stage_ms=%s "
             "tool_gate=%s tool_pass_ms=%.0f",
             len(cleaned),
             mood or "neutral",
@@ -1244,6 +1244,7 @@ class TurnRunner:
             telemetry.embed_wait_ms,
             telemetry.assemble_ms,
             telemetry.rag_lookup_ms,
+            {name: round(ms, 1) for name, ms in telemetry.context_stage_ms.items()},
             telemetry.tool_gate_event,
             telemetry.tool_pass_ms,
         )

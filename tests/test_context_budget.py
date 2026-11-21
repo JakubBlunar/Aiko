@@ -529,6 +529,11 @@ class RegionBuilderTests(unittest.TestCase):
         # Concept trace captured.
         self.assertEqual(region.concept_trace["reason"], "surfaced")
         self.assertEqual(region.concept_trace["surfaced"][0]["concept_id"], 7)
+        self.assertEqual(list(region.stage_ms), [
+            "archive_lookup", "prefetch_lookup", "query_embedding", "memory_candidates",
+            "graph_candidates", "budget_selection", "render_and_account",
+        ])
+        self.assertTrue(all(ms >= 0 for ms in region.stage_ms.values()))
         # Only the budgeted subset was marked used (not the whole pool).
         self.assertEqual(len(store.mark_used_calls), 1)
 

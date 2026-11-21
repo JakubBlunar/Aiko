@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from datetime import timedelta
 from pathlib import Path
 
@@ -527,9 +528,13 @@ class BulkAddMemoriesTests(_TmpRagBase):
                    dict(self._record("missing"), created_at=stamp)]
 
         reopened = RagStore(self.tmp, embedding_model="x", vector_dim=4)
-        self.assertEqual(reopened.reconcile_memories(current, chunk_size=2), 3)
+        with patch.object(reopened, "_norm", wraps=reopened._norm) as box_vector:
+            self.assertEqual(reopened.reconcile_memories(current, chunk_size=2), 3)
+            self.assertEqual(box_vector.call_count, 3)
         versions = reopened.fragmentation()["memories"]
-        self.assertEqual(reopened.reconcile_memories(current, chunk_size=2), 0)
+        with patch.object(reopened, "_norm", wraps=reopened._norm) as box_vector:
+            self.assertEqual(reopened.reconcile_memories(current, chunk_size=2), 0)
+            box_vector.assert_not_called()
         self.assertEqual(reopened.fragmentation()["memories"], versions)
         hits = reopened.search_memories(self._vec(77), top_k=10, min_score=-1.)
         self.assertEqual(hits[0].record.id, "vector")

@@ -177,6 +177,7 @@ class RelevantContext:
     # fresh on the hot path with a warm prefetcher ("miss"), or the
     # prefetcher was absent ("skip"). Surfaced into PromptTelemetry.
     prefetch_event: str = "skip"
+    stage_ms: dict[str, float] = field(default_factory=dict)
 
 
 class ContextBudgetSelector:

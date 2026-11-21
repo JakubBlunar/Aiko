@@ -1581,6 +1581,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # telemetry references stay valid on the no-provider path.
         relevant_context_block = ""
         context_budget_telemetry: dict[str, Any] = {}
+        context_stage_ms: dict[str, float] = {}
         region_concept_trace: dict = {"surfaced": [], "reason": "no_provider"}
         rag_prefetch_event = "skip"
         rag_lookup_ms = 0.0
@@ -4046,6 +4047,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 # now (memory retrieval moved out of the assembler), so the
                 # hit/miss/skip event rides back on the region object.
                 rag_prefetch_event = getattr(region, "prefetch_event", "skip")
+                context_stage_ms = getattr(region, "stage_ms", {}) or {}
         if relevant_context_block:
             system_parts.insert(t3_insert_index, relevant_context_block)
 
@@ -4198,6 +4200,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             ),
             history_slid=divergence.history_slid,
             rag_lookup_ms=round(rag_lookup_ms, 2),
+            context_stage_ms=context_stage_ms,
             assemble_ms=round(
                 (time.perf_counter() - assemble_started_at) * 1000.0, 2,
             ),

@@ -468,12 +468,16 @@ class RagStore:
     # ── shared write helpers ────────────────────────────────────────────
 
     @staticmethod
-    def _norm(vec: Sequence[float] | np.ndarray) -> list[float]:
+    def _normalized_vector(vec: Sequence[float] | np.ndarray) -> np.ndarray:
         arr = np.asarray(vec, dtype=np.float32)
         n = float(np.linalg.norm(arr))
         if n > 0.0:
             arr = arr / n
-        return arr.astype(np.float32).tolist()
+        return np.asarray(arr, dtype=np.float32)
+
+    @staticmethod
+    def _norm(vec: Sequence[float] | np.ndarray) -> list[float]:
+        return RagStore._normalized_vector(vec).tolist()
 
     def _check_dim(self, vec: Sequence[float]) -> None:
         size = len(vec)
@@ -507,7 +511,9 @@ class RagStore:
             self._delete_memory_ids([row["id"]])
             self._memories.add([row])
 
-    def _memory_row(self, record: Mapping[str, Any]) -> dict[str, Any] | None:
+    def _memory_row(
+        self, record: Mapping[str, Any], *, with_vector: bool = True,
+    ) -> dict[str, Any] | None:
         content = (str(record.get("content") or "")).strip()
         embedding = record.get("embedding")
         rid = str(record.get("record_id") or "").strip()
@@ -516,7 +522,7 @@ class RagStore:
         self._check_dim(embedding)
         source_message_id = record.get("source_message_id")
         salience = max(0.0, min(1.0, float(record.get("salience", 0.5))))
-        return {
+        row = {
             "id": rid,
             "content": content,
             "kind": (str(record.get("kind") or "fact").strip().lower() or "fact"),
@@ -526,8 +532,10 @@ class RagStore:
             "created_at": record.get("created_at") or _now_iso(),
             "last_used_at": None,
             "use_count": 0,
-            "vector": self._norm(embedding),
         }
+        if with_vector:
+            row["vector"] = self._norm(embedding)
+        return row
 
     def _delete_memory_ids(self, ids: Iterable[str]) -> None:
         ids_csv = ", ".join("'" + rid.replace("'", "''") + "'" for rid in ids)
@@ -585,19 +593,34 @@ class RagStore:
         # Compare the stored projection directly, including vector values. This
         # also works on pre-existing indexes and detects interrupted writes.
         columns = ["id", "content", "kind", "salience", "source_session", "source_message_id",
-                   "created_at", "vector"]
+                   "created_at"]
         chunk = max(1, int(chunk_size))
         seen, changed, orphaned = set(), set(), set()
         with self._lock.write():
-            with self._memories.search().select(columns).to_batches(batch_size=chunk) as batches:
+            scan = self._memories.search().select([*columns, "vector"])
+            with scan.to_batches(batch_size=chunk) as batches:
                 for batch in batches:
-                    for indexed in batch.to_pylist():
+                    vectors = batch.column("vector")
+                    # Fixed-size-list slices retain the parent values buffer.
+                    # Compare float32 directly without boxing every component.
+                    dim = self._vector_dim
+                    flat = vectors.values.slice(vectors.offset * dim, len(vectors) * dim)
+                    matrix = flat.to_numpy(zero_copy_only=False).reshape(len(vectors), dim)
+                    valid = vectors.is_valid().to_numpy(zero_copy_only=False)
+                    for i, indexed in enumerate(batch.select(columns).to_pylist()):
                         rid = indexed["id"]
                         if rid not in desired:
                             orphaned.add(rid)
                             continue
-                        canonical = self._memory_row(desired[rid])
-                        if rid in seen or any(indexed[key] != canonical[key] for key in columns):
+                        record = desired[rid]
+                        canonical = self._memory_row(record, with_vector=False)
+                        if (
+                            rid in seen or not valid[i]
+                            or any(indexed[key] != canonical[key] for key in columns)
+                            or not np.array_equal(
+                                matrix[i], self._normalized_vector(record["embedding"]),
+                            )
+                        ):
                             changed.add(rid)
                         seen.add(rid)
             orphans = iter(sorted(orphaned))

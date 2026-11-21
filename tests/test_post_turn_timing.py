@@ -24,6 +24,7 @@ import numpy as np
 
 from app.core.infra.chat_database import ChatDatabase
 from app.core.infra.settings import LlmEmbedding
+from app.core.session.prompt_support import PromptTelemetry
 from app.core.session.session_controller import SessionController
 from app.core.session.turn_runner import TurnResult
 from app.llm.embedder import Embedder
@@ -147,6 +148,16 @@ class PostTurnTimingTests(_Case):
         self.controller._post_turn_inner_life = lambda **_: None
         self.controller.chat_once_streaming(user_text="hi", mode="typed")
         self.assertIn("post_turn_ms", self.controller.get_last_metrics())
+
+    def test_context_stage_timings_reach_live_metrics(self) -> None:
+        self.controller._post_turn_inner_life = lambda **_: None
+        telemetry = PromptTelemetry(rag_lookup_ms=22.0, context_stage_ms={"archive_lookup": 18.25})
+        result = TurnResult(text="ok", reaction="neutral", telemetry=telemetry)
+        with patch.object(self.controller._turn_runner, "run", return_value=result):
+            self.controller.chat_once_streaming(user_text="hi", mode="typed")
+        metrics = self.controller.get_last_metrics()
+        self.assertEqual(metrics["rag_lookup_ms"], 22.0)
+        self.assertEqual(metrics["context_stage_ms"], {"archive_lookup": 18.25})
 
     def test_post_turn_counts_provider_calls_even_if_the_cascade_raises(self) -> None:
         embedder = Embedder(LlmEmbedding(model="stub"), base_url="")

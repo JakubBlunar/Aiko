@@ -285,8 +285,9 @@ It refreshes those two scores in the existing rows after commit. Embeddings
 and the vector and kind indexes are reused across the sweep.
 
 At startup, the LanceDB memory index is reconciled against the loaded SQLite
-mirror. A batched scan compares the fields and normalized vectors used by
-search. Startup writes only missing or changed rows and removes orphaned IDs.
+mirror. A batched scan compares metadata and the float32 vector values used by
+search. The comparison reads Arrow vector buffers as NumPy arrays. Startup
+writes only missing or changed rows and removes orphaned IDs.
 An unchanged index keeps its existing Lance version and files. An unreadable
 SQLite mirror skips reconciliation. Ordinary recall with a resolved mirror
 join withholds missing IDs and uses the canonical wording of rows still present.

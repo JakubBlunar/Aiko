@@ -97,6 +97,12 @@ parallel. Clearing the cache starts a new set of requests while callers
 already waiting can still receive the original result. Ordinary completed
 cache hits increment neither counter.
 
+`rag_lookup_ms` times the entire relevant-context region. The `context_stage_ms`
+map in `turn done` and `get_last_response_detail` splits that build into archive
+lookup, prefetch lookup, the shared query embedding, memory and graph candidates,
+budget selection, and rendering with surfacing accounting. A prebuilt prompt
+carries timings from when its context was built.
+
 `get_last_response_detail` reports the post-turn cascade as `post_turn_ms`,
 with provider work in `post_turn_embed_calls` and `post_turn_embed_ms` and
 shared-request waits in `post_turn_embed_wait_ms`. Cue settlement asks for
