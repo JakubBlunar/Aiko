@@ -1240,9 +1240,11 @@ So the moment she most needs "we were talking about X, about three hours ago" wa
 
 While the new conversation holds fewer than `agent.continuity_max_messages` messages, a T2 block names how long ago the previous conversation ended and what it was about (its K21 thread note). Two tails, chosen by elapsed time against `CONTINUOUS_WINDOW_SECONDS` (6 h, deliberately under J5's reconnection floor so the two never both speak): under it, "that is close enough to be the same sitting, carry on"; over it, "noticing the gap is natural, but the thread above is where you left off".
 
+The bridge uses saved chats in the configured owner's `user_id:session_id` namespace. Unscoped legacy keys and temporary `:noremember` conversations are ineligible on either side of the bridge. A new chat with no eligible previous conversation opens without the block.
+
 - `agent.continuity_max_messages` *(int, `6`)* — how many messages a conversation may hold and still count as "just opened". `0` disables the block.
 
-Deciding "is this a seam?" costs no query: a compacted session is by definition long, and an uncompacted one has all its messages in the history window already loaded, so the common case is settled from values the assembler has in hand. The two extra reads (`latest_other_session`, `get_thread_note`) only happen on the handful of turns that open a conversation.
+The gate uses the history and summary the assembler already holds. The two extra reads (`latest_other_session`, `get_thread_note`) run on opening turns, including prompt-cache hits, so edits or deletion of the previous conversation take effect on the next turn.
 
 The elapsed phrase is computed from message timestamps and never read out of the note prose — K21 notes carry their own dates and those are not reliable (the live store has one opening "Jacob fell asleep on June 29, 2026" on a thread whose messages are all from August).
 

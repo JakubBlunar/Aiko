@@ -682,11 +682,6 @@ class PromptAssemblerHelpersMixin:
                     if getattr(row, "id", 0) and int(row.id) > already_summarized
                 ]
         thread_note = self._thread_note_block(session_key)
-        continuity_block = self._continuity_block(
-            session_key,
-            history_len=len(history_msgs),
-            already_summarized=already_summarized,
-        )
         ambient = self._ambient_block()
         mood_hint = self._mood_carryover_hint()
         circadian_block = _safe_provider(self._circadian_provider)
@@ -726,7 +721,6 @@ class PromptAssemblerHelpersMixin:
             summary_row=summary,
             already_summarized=already_summarized,
             thread_note=thread_note,
-            continuity_block=continuity_block,
             history_msgs=history_msgs,
             ambient=ambient,
             mood_hint=mood_hint,
@@ -851,7 +845,7 @@ class PromptAssemblerHelpersMixin:
         if history_len >= self._continuity_max_messages:
             return ""
         try:
-            previous = self._db.latest_other_session(session_key)
+            previous = self._db.latest_other_session(session_key, user_id=self._continuity_owner)
             if previous is None:
                 return ""
             prev_session_id, last_iso = previous

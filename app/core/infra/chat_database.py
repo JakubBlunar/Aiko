@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from app.core.infra import timephrase
-from app.core.infra.archive_schema import ARCHIVE_SCHEMA
+from app.core.infra.archive_schema import ARCHIVE_SCHEMA, OWNER_SQL
 from app.core.world.idle_life_schema import IDLE_LIFE_SCHEMA
 from app.core.infra.message_outcomes import MessageOutcomesMixin, OUTCOME_SCHEMA
 from app.core.tasks.result_artifacts import RESULT_SCHEMA
@@ -2989,26 +2989,19 @@ class ChatDatabase(MessageOutcomesMixin):
         return ThreadNoteRow(*row) if row else None
 
     def latest_other_session(
-        self, session_id: str,
+        self, session_id: str, *, user_id: str,
     ) -> tuple[str, str] | None:
-        """The most recently active session that is **not** ``session_id``.
-
-        Returns ``(session_id, last_created_at)``, or ``None`` when this
-        is the only conversation on record. Backs the continuity block,
-        which needs "what were we talking about before this window" — a
-        question no other reader asks, because everything else in the
-        prompt is deliberately scoped to the active session.
-
-        Served by ``idx_messages_session (session_id, created_at)``: a
-        grouped scan over the session count (tens, not thousands), and
-        the caller only asks during the opening messages of a session.
-        """
+        """Return the active owner's latest eligible previous conversation."""
+        owner, _, key = session_id.partition(":")
+        if not user_id or owner != user_id or not key or session_id.endswith(":noremember"):
+            return None
         conn = self._get_conn()
         row = conn.execute(
             "SELECT session_id, MAX(created_at) AS last_at FROM messages "
-            "WHERE session_id != ? GROUP BY session_id "
-            "ORDER BY last_at DESC LIMIT 1",
-            (session_id,),
+            f"WHERE {OWNER_SQL} AND session_id != ? AND session_id != ? "
+            "AND substr(session_id, -11) != ':noremember' AND role IN ('user', 'assistant') "
+            "GROUP BY session_id ORDER BY last_at DESC, session_id LIMIT 1",
+            (user_id, session_id, f"{user_id}:"),
         ).fetchone()
         if not row or not row[0] or not row[1]:
             return None

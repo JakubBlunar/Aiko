@@ -4,6 +4,8 @@ Ownership follows SessionController.session_key: ``user_id:session_id``.
 Unnamespaced legacy rows have no established owner and are excluded.
 """
 
+OWNER_SQL = "substr(session_id, 1, instr(session_id, ':') - 1) = ?"
+
 ARCHIVE_SCHEMA = """
 CREATE INDEX IF NOT EXISTS idx_messages_archive_owner_time
 ON messages(substr(session_id, 1, instr(session_id, ':') - 1), created_at, id);

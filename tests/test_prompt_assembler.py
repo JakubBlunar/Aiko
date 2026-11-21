@@ -2525,14 +2525,14 @@ class ContinuitySlotTests(unittest.TestCase):
     @staticmethod
     def _seed_previous(db: ChatDatabase) -> None:
         db.add_message(
-            session_id="older", role="user", content="hi", token_count=2,
+            session_id="default:older", role="user", content="hi", token_count=2,
         )
         db.add_message(
-            session_id="older", role="assistant", content="hey",
+            session_id="default:older", role="assistant", content="hey",
             token_count=2,
         )
         db.save_thread_note(
-            "older", "Cat plans", "They talked about the cat.", 2,
+            "default:older", "Cat plans", "They talked about the cat.", 2,
         )
 
     def _assemble(self, db: ChatDatabase, session: str) -> str:
@@ -2546,9 +2546,9 @@ class ContinuitySlotTests(unittest.TestCase):
         with _TempDb() as db:
             self._seed_previous(db)
             db.add_message(
-                session_id="fresh", role="user", content="hi", token_count=2,
+                session_id="default:fresh", role="user", content="hi", token_count=2,
             )
-            system = self._assemble(db, "fresh")
+            system = self._assemble(db, "default:fresh")
             self.assertIn(self._MARK, system)
             self.assertIn("They talked about the cat.", system)
 
@@ -2557,29 +2557,29 @@ class ContinuitySlotTests(unittest.TestCase):
             self._seed_previous(db)
             for i in range(8):
                 db.add_message(
-                    session_id="grown", role="user", content="m%d" % i,
+                    session_id="default:grown", role="user", content="m%d" % i,
                     token_count=2,
                 )
-            self.assertNotIn(self._MARK, self._assemble(db, "grown"))
+            self.assertNotIn(self._MARK, self._assemble(db, "default:grown"))
 
     def test_the_first_conversation_ever_has_nothing_to_bridge(self) -> None:
         with _TempDb() as db:
             db.add_message(
-                session_id="only", role="user", content="hi", token_count=2,
+                session_id="default:only", role="user", content="hi", token_count=2,
             )
-            self.assertNotIn(self._MARK, self._assemble(db, "only"))
+            self.assertNotIn(self._MARK, self._assemble(db, "default:only"))
 
     def test_a_previous_session_without_a_note_still_bridges(self) -> None:
         """The elapsed time alone is worth saying: without it she cannot
         tell a new window from a first meeting."""
         with _TempDb() as db:
             db.add_message(
-                session_id="older", role="user", content="hi", token_count=2,
+                session_id="default:older", role="user", content="hi", token_count=2,
             )
             db.add_message(
-                session_id="fresh", role="user", content="hi", token_count=2,
+                session_id="default:fresh", role="user", content="hi", token_count=2,
             )
-            system = self._assemble(db, "fresh")
+            system = self._assemble(db, "default:fresh")
             self.assertIn(self._MARK, system)
             self.assertNotIn("Where that thread stood", system)
 
@@ -2587,13 +2587,13 @@ class ContinuitySlotTests(unittest.TestCase):
         with _TempDb() as db:
             self._seed_previous(db)
             db.add_message(
-                session_id="fresh", role="user", content="hi", token_count=2,
+                session_id="default:fresh", role="user", content="hi", token_count=2,
             )
             assembler = PromptAssembler(
                 db, recent_window=20, continuity_max_messages=0,
             )
             messages, _ = assembler.assemble_with_budget(
-                "fresh", "x", context_window=4096, response_budget=256,
+                "default:fresh", "x", context_window=4096, response_budget=256,
             )
             self.assertNotIn(self._MARK, messages[0]["content"])
 
@@ -2603,9 +2603,9 @@ class ContinuitySlotTests(unittest.TestCase):
             # ordering this asserts must not rest on clock resolution.
             conn = db._get_conn()
             for sid, ts in (
-                ("a", "2026-08-01T10:00:00+00:00"),
-                ("b", "2026-08-02T10:00:00+00:00"),
-                ("c", "2026-08-03T10:00:00+00:00"),
+                ("owner:a", "2026-08-01T10:00:00+00:00"),
+                ("owner:b", "2026-08-02T10:00:00+00:00"),
+                ("owner:c", "2026-08-03T10:00:00+00:00"),
             ):
                 conn.execute(
                     "INSERT INTO messages (session_id, role, content, "
@@ -2613,15 +2613,50 @@ class ContinuitySlotTests(unittest.TestCase):
                     (sid, "user", "hi", 2, ts),
                 )
             conn.commit()
-            self.assertEqual(db.latest_other_session("c")[0], "b")
-            self.assertEqual(db.latest_other_session("a")[0], "c")
+            self.assertEqual(db.latest_other_session("owner:c", user_id="owner")[0], "owner:b")
+            self.assertEqual(db.latest_other_session("owner:a", user_id="owner")[0], "owner:c")
 
     def test_latest_other_session_is_none_when_alone(self) -> None:
         with _TempDb() as db:
             db.add_message(
-                session_id="solo", role="user", content="hi", token_count=2,
+                session_id="owner:solo", role="user", content="hi", token_count=2,
             )
-            self.assertIsNone(db.latest_other_session("solo"))
+            self.assertIsNone(db.latest_other_session("owner:solo", user_id="owner"))
+
+    def test_opening_uses_only_saved_history_from_the_active_owner(self) -> None:
+        with _TempDb() as db:
+            conn = db._get_conn()
+            for day, (session, note) in enumerate((
+                ("owner:older", "Owned continuity detail."),
+                ("owner2:foreign", "Foreign continuity detail."),
+                ("legacy", "Legacy continuity detail."),
+                ("owner:private:noremember", "Transient continuity detail."),
+                ("owner:fresh", ""),
+            ), start=1):
+                db.add_message(session, "user", "hello")
+                conn.execute("UPDATE messages SET created_at=? WHERE session_id=?", (
+                    f"2026-11-{day:02}T12:00:00+00:00", session,
+                ))
+                conn.commit()
+                if note:
+                    db.save_thread_note(session, "Fixture", note, 1)
+            assembler = PromptAssembler(db, continuity_owner="owner")
+
+            def system(session):
+                messages, _ = assembler.assemble_with_budget(
+                    session, "x", context_window=4096, response_budget=256,
+                )
+                return messages[0]["content"]
+
+            opening = system("owner:fresh")
+            self.assertIn("Owned continuity detail.", opening)
+            for hidden in ("Foreign", "Legacy", "Transient"):
+                self.assertNotIn(hidden + " continuity detail.", opening)
+            for current in ("owner:other:noremember", "owner2:fresh", "legacy-new"):
+                self.assertNotIn(self._MARK, system(current))
+            db.delete_session("owner:older")
+            self.assertNotIn(self._MARK, system("owner:fresh"))
+            self.assertEqual(assembler.last_slice_cache_event, "hit")
 
 
 class SharedRitualProviderSlotTests(unittest.TestCase):

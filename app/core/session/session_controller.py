@@ -1040,6 +1040,7 @@ class SessionController(
             continuity_max_messages=int(
                 getattr(self._settings.agent, "continuity_max_messages", 6)
             ),
+            continuity_owner=self._user_id,
         )
 
 

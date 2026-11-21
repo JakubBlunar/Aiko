@@ -1190,5 +1190,4 @@ class _StaticSlices:
     # Bridges a session seam; empty on all but the opening turns of a
     # conversation. Defaulted so the many test fixtures that build slices
     # positionally keep working.
-    continuity_block: str = ""
 

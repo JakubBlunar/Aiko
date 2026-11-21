@@ -665,6 +665,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         cue_register_rotation_enabled: bool = True,
         speech_texture_enabled: bool = True,
         continuity_max_messages: int = 6,
+        continuity_owner: str = "default",
         handling_notes_budget_chars: int = 5000,
     ) -> None:
         self._db = db
@@ -689,6 +690,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # How many messages a conversation may hold and still count as
         # "just opened" for the continuity bridge. 0 disables the block.
         self._continuity_max_messages = max(0, int(continuity_max_messages))
+        self._continuity_owner = continuity_owner
         # P44: last turn's prompt shape per session, for prefix-divergence
         # diagnosis. Bounded because a long-lived process accumulates
         # sessions it will never assemble for again.
@@ -1600,10 +1602,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # until the ThreadResummaryWorker re-drafts). Sits in T2 right after
         # the rolling summary so the cache prefix stays intact.
         thread_note_text = slices.thread_note
-        # Bridges the seam from the previous conversation; empty on all
-        # but the opening turns. Built with the slices so an established
-        # session decides "not a seam" without touching the database.
-        continuity_block = slices.continuity_block
+        # A previous session can change independently of the cached history.
+        continuity_block = self._continuity_block(
+            session_key,
+            history_len=len(slices.history_msgs),
+            already_summarized=already_summarized,
+        )
 
         # Per-turn dynamic blocks read fresh on every assemble (NOT cached
         # in static slices). Vocal-tone is captured by the live-capture

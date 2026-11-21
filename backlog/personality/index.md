@@ -83,14 +83,13 @@ probes used synthetic rows and stub providers.
 | [D9](tools.md#d9-bookmark-a-past-exchange) | Reopen an exact, dated exchange from the current chat. |
 | [D10](tools.md#d10-show-what-changed-since-a-particular-conversation) | Answer what changed since a chosen exchange, with the before and after sources. |
 | [D11](tools.md#d11-rehearse-a-conversation-in-a-disposable-draft) | Try an unsent message or a fictional exchange in a separate preview. |
-| [A8](architecture.md#a8-scope-the-conversation-bridge-to-the-current-owner) | Ensure the ordinary prompt bridge reads only eligible sessions for the active owner. |
+| [A8](architecture.md#a8-scope-the-conversation-bridge-to-the-current-owner) | Implemented owner scoping for the ordinary prompt bridge. |
 | [P53](perf.md#p53-reconcile-the-memory-search-index-without-rewriting-it-on-every-boot) | Skip unchanged vector writes on restart and repair stale index entries. |
 | [P54](perf.md#p54-share-an-embedding-request-between-simultaneous-cache-misses) | Measure and remove duplicate provider work when cold requests overlap. |
 | [P55](perf.md#p55-delay-full-topic-record-formatting-until-the-page-is-selected) | Build full recall records only for the page Aiko will read. |
 
-Start with A8 for the existing ownership boundary and P53 for index integrity
-and startup work. D10 is the first companion candidate. It can accept an exact
-message through the existing history interface. D9 starts as archive navigation.
+Start with P53 for index integrity and startup work. D10 is the first companion candidate.
+It can accept an exact message through the existing history interface. D9 starts as archive navigation.
 
 ## Open items at a glance
 

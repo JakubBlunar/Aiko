@@ -19,6 +19,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.core.infra import timephrase
+from app.core.infra.archive_schema import OWNER_SQL
 from app.core.infra.time_expr import parse_time_window
 
 
@@ -27,7 +28,6 @@ PAGE_ROWS = 20
 TEXT_CHARS = 12000
 MESSAGE_CHARS = 1600
 GENERATOR_VERSION = "extractive-v1"
-OWNER_SQL = "substr(session_id, 1, instr(session_id, ':') - 1) = ?"
 
 
 def resolve_range(
