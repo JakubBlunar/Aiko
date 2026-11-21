@@ -1,50 +1,5 @@
-/**
- * GazeChannel — drives ``adapter.focus(x, y)`` every frame.
- *
- * Priority pipeline (highest first):
- *
- *   0. **Sleep** (asleep / winding_down / woken): no cursor follow and
- *      no saccades — the head eases to a gentle resting droop.
- *
- *   1. **Conversation lock** (``listening`` / ``transcribing`` /
- *      ``speaking``): centred X with slight upward bias so the user
- *      reads as being looked at.
- *
- *   2. **Typed-listening** (``composing``, B8): the user is typing a
- *      message, so settle the gaze on them with the same upward
- *      eye-contact bias as the voice lock, plus a slow low-amplitude
- *      sway so she reads as *actively attending* rather than a frozen
- *      stare. Outranks thinking drift so the moment the user starts
- *      typing she looks up at them.
- *
- *   3. **Thinking drift**: slow random wander while the LLM is
- *      composing (no TTS playing yet).
- *
- *   4. **Held Live gaze** (shared activity / rest / window class):
- *      ignore cursor jitter so a minor mouse move does not break a
- *      held commitment. Conversation lock still outranks this.
- *
- *   5. **Idle break**: window unfocused OR cursor stopped >
- *      ``IDLE_BREAK_MS`` — ease the current target back to centre.
- *
- *   6. **Cursor follow** (default): track normalised mouse offset,
- *      clamped to a comfortable range so the rig saturates near the
- *      bounds and never feels like she's straining.
- *
- * Micro-saccades fire every 1.5–3s so the gaze never freezes; they
- * decay with a 0.92 per-frame factor.
- *
- * This channel does NOT smooth the target itself — the rig's
- * ``focusController`` runs its own velocity-based easing. Layering
- * ours on top would double-smooth and feel sluggish (we tried that
- * during the original gaze build and it felt wrong).
- *
- * Capability gating: there's nothing to gate. ``adapter.focus()``
- * silently no-ops on rigs without ``ParamAngle`` / ``ParamEyeBall``,
- * so passing values through is safe even on minimal rigs.
- */
-import { approach, clamp } from "../math";
-import { gazeFocusForClass, SLEEP_DEGRADE, WORLD_GAZE } from "../behavior/resolver";
+/** Apply the active gaze state and layer the channel's micro-saccade clock. */
+import { GazeStateMachine } from "../behavior/gazeStates";
 import type {
   AvatarChannel,
   ChannelDeps,
@@ -52,32 +7,9 @@ import type {
   MouseSnapshot,
 } from "../types";
 
-const IDLE_BREAK_MS = 1_500;
 const SACCADE_INTERVAL_MIN_MS = 1_500;
 const SACCADE_INTERVAL_RANGE_MS = 1_500;
 const SACCADE_DECAY = 0.92;
-const IDLE_DECAY = 0.92;
-/** How fast (seconds) the head eases to the resting droop when she
- * falls asleep — slow enough to read as settling, not snapping. */
-const SLEEP_REST_TIME_CONSTANT_S = 1.2;
-const LISTENING_REST_TIME_CONSTANT_S = 0.24;
-/** Eye-contact bias when the conversation has the floor. The user is
- * usually below the screen; lifting the gaze ~0.2 reads as "looking
- * at you" rather than "staring at your hairline". */
-const CONVERSATION_LOCK_Y = 0.2;
-/** B8 typed-listening sway amplitudes. Kept tiny so she reads as
- * attentively looking at the user with a little life, not wandering. */
-const COMPOSING_SWAY_X = 0.08;
-const COMPOSING_SWAY_Y = 0.05;
-const CURSOR_X_CLAMP = 0.7;
-const CURSOR_Y_LO = -0.5;
-const CURSOR_Y_HI = 0.7;
-/** Resting gaze while asleep. The rig's focusController eases the head
- * to this, so it reads as a gentle downward droop (a sleeping head
- * tilts forward) rather than a frozen stare. +Y is up, so a small
- * negative Y tips the head down. Saccades are suspended for the same
- * state so the eyes don't keep twitching. */
-const SLEEP_REST_Y = -0.2;
 
 export interface GazeChannelOptions {
   /** Random source, defaults to ``Math.random``. Tests pass a
@@ -92,8 +24,8 @@ export class GazeChannel implements AvatarChannel {
   private _deps: ChannelDeps | null = null;
 
   private readonly _target = { x: 0, y: 0 };
+  private readonly _machine = new GazeStateMachine();
   private readonly _microSaccade = { x: 0, y: 0 };
-  private _lastSaccadeAt = 0;
   private _nextSaccadeAt = 0;
   private readonly _random: () => number;
 
@@ -108,8 +40,8 @@ export class GazeChannel implements AvatarChannel {
     this._target.y = 0;
     this._microSaccade.x = 0;
     this._microSaccade.y = 0;
-    this._lastSaccadeAt = deps.now();
-    this._nextSaccadeAt = this._lastSaccadeAt + this._saccadeInterval();
+    this._machine.reset();
+    this._nextSaccadeAt = deps.now() + this._saccadeInterval();
   }
 
   detach(): void {
@@ -127,91 +59,10 @@ export class GazeChannel implements AvatarChannel {
     if (!adapter || !deps) {
       return;
     }
-    const snap = deps.getStoreSnapshot();
-    const isListening =
-      snap.voiceMode === "listening" || snap.voiceMode === "transcribing";
-    const isSpeaking = snap.ttsState === "speaking";
-    const isThinking =
-      snap.voiceMode === "thinking" ||
-      (snap.turnInProgress && snap.ttsState !== "speaking");
-    const isComposing = snap.composing === true;
-    const cursorStillActive =
-      mouse.lastMoveAt > 0 && now - mouse.lastMoveAt <= IDLE_BREAK_MS;
-    const isIdle = !mouse.windowFocused || !cursorStillActive;
-    // Asleep: no cursor follow, no conversation lock, no saccades. Ease
-    // the head to a gentle resting droop so she reads as sleeping rather
-    // than staring at the screen.
-    const livePlan = snap.liveEmbodiment ?? null;
-    const isSleeping = SLEEP_DEGRADE.has(snap.sleepStatus ?? "awake")
-      || livePlan?.degrade_to_sleep === true;
-    const listenPosture = (isListening || isComposing) && !isSpeaking && !isThinking
-      ? livePlan?.listen_posture
-      : undefined;
-    const quietListening = listenPosture === "give_space" || listenPosture === "hold_still";
-    const worldGaze = WORLD_GAZE[(snap.worldActivity ?? "").toLowerCase()];
-    const gazeClass = livePlan?.gaze_class || worldGaze || "";
-    const holdLiveGaze =
-      !isSleeping
-      && (
-        gazeClass === "rest"
-        || gazeClass === "window"
-        || snap.liveAttentionTarget === "shared_activity"
-      );
-
-    if (isSleeping) {
-      const rate = dt / SLEEP_REST_TIME_CONSTANT_S;
-      this._target.x += (0 - this._target.x) * (1 - Math.exp(-rate));
-      this._target.y += (SLEEP_REST_Y - this._target.y) * (1 - Math.exp(-rate));
-    } else if (quietListening) {
-      const rest = gazeFocusForClass("rest");
-      if (rest !== "cursor") {
-        const rate = dt / LISTENING_REST_TIME_CONSTANT_S;
-        this._target.x = approach(this._target.x, rest.x, rate);
-        this._target.y = approach(this._target.y, rest.y, rate);
-      }
-    } else if (isListening || isSpeaking) {
-      this._target.x = 0;
-      this._target.y = CONVERSATION_LOCK_Y;
-    } else if (isComposing) {
-      // Typed-listening: eye contact with the user + a gentle slow sway
-      // so she's clearly attending rather than staring through them.
-      const t = now / 1000;
-      this._target.x = COMPOSING_SWAY_X * Math.sin(t * 0.5);
-      this._target.y = CONVERSATION_LOCK_Y + COMPOSING_SWAY_Y * Math.sin(t * 0.35);
-    } else if (isThinking) {
-      const t = now / 1000;
-      this._target.x = 0.35 * Math.sin(t * 0.6);
-      this._target.y = 0.18 * Math.cos(t * 0.43) + 0.05;
-    } else if (holdLiveGaze) {
-      const focus = gazeFocusForClass(
-        gazeClass === "window" ? "window" : gazeClass || "rest",
-      );
-      const held = focus === "cursor" ? { x: 0, y: 0 } : focus;
-      this._target.x = held.x;
-      this._target.y = held.y;
-    } else if (isIdle) {
-      this._target.x *= IDLE_DECAY;
-      this._target.y *= IDLE_DECAY;
-    } else if (mouse.x != null && mouse.y != null) {
-      // Cursor follow: normalise against half-viewport and clamp so
-      // the rig saturates inside its comfortable range.
-      const rect = mouse.containerRect;
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const halfW = Math.max(1, mouse.viewportWidth / 2);
-      const halfH = Math.max(1, mouse.viewportHeight / 2);
-      const nx = (mouse.x - cx) / halfW;
-      // Y is flipped because Live2D's focus space uses +Y up while
-      // screen Y grows downward.
-      const ny = -((mouse.y - cy) / halfH);
-      this._target.x = clamp(nx, -CURSOR_X_CLAMP, CURSOR_X_CLAMP);
-      this._target.y = clamp(ny, CURSOR_Y_LO, CURSOR_Y_HI);
-    } else {
-      // No cursor data yet (initial mount) — hold whatever we have.
-    }
-
-    if (!isSleeping && listenPosture !== "hold_still" && now >= this._nextSaccadeAt) {
-      this._lastSaccadeAt = now;
+    const saccadesAllowed = this._machine.advance(
+      this._target, { snapshot: deps.getStoreSnapshot(), mouse, now, dt },
+    );
+    if (saccadesAllowed && now >= this._nextSaccadeAt) {
       this._nextSaccadeAt = now + this._saccadeInterval();
       this._microSaccade.x = (this._random() - 0.5) * 0.1;
       this._microSaccade.y = (this._random() - 0.5) * 0.06;

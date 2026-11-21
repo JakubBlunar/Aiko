@@ -10,6 +10,7 @@ from app.core.live.inclination import LiveInclinationRuntime
 from app.core.live.notice import notices_from_trigger
 from app.core.live.policy_context import situation_summary
 from app.core.live.prompt import LivePolicyPromptAssembler
+from app.core.live.return_glance import LiveReturnGlance
 from app.core.live.urge_store import LiveUrgeStore
 from tests.test_live_mode_pass11 import _NOW, _coding_evidence, _frame, _snapshot
 
@@ -86,6 +87,16 @@ class ActivityTransitionNoticeTests(unittest.TestCase):
             {item.subject for item in notices if item.kind == "returned_to_machine"},
             {"machine"},
         )
+
+    def test_stale_foreground_evidence_cannot_start_a_return_glance(self) -> None:
+        glance = LiveReturnGlance()
+        active = _coding_evidence()
+        away = _coding_evidence(app="", source="lock", os_idle="locked", confidence=0)
+        stale = _coding_evidence(stale=True)
+        for evidence in (active, away, stale):
+            frame = _frame(activity_evidence=evidence)
+            glance.observe(frame, evidence)
+        self.assertIsNone(glance.payload(frame.monotonic_ms, frame.mode_generation))
 
     def test_natural_boundary_after_long_focus(self) -> None:
         previous = _frame(

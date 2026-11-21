@@ -378,6 +378,71 @@ describe("GazeChannel — lifecycle", () => {
 });
 
 describe("GazeChannel — held Live gaze", () => {
+  it("restores the underlying gaze as the floor and sleep ownership change", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const plan = {
+      intent: "remain_present",
+      attention_target: "world_entity",
+      gaze_class: "window",
+      body_class: "open",
+      breath_class: "normal",
+      expression_class: "content",
+      motion_class: "none",
+      degrade_to_sleep: false,
+    } as const;
+    const { deps, clock, setSnapshot } = makeDeps({ liveEmbodiment: plan });
+    channel.attach(adapter, deps);
+    const tick = (dt = 0.05) => {
+      clock.advance(dt * 1000);
+      channel.tickGaze(clock.now(), dt, mouseAt(1600, 400, clock.now()));
+      return channel.target;
+    };
+
+    expect(tick()).toEqual({ x: 0.42, y: 0.22 });
+    setSnapshot({ voiceMode: "listening" });
+    expect(tick()).toEqual({ x: 0, y: 0.2 });
+
+    setSnapshot({ liveEmbodiment: { ...plan, degrade_to_sleep: true } });
+    expect(tick(1.2).y).toBeCloseTo(-0.2 + 0.4 / Math.E);
+
+    setSnapshot({ liveEmbodiment: plan });
+    expect(tick()).toEqual({ x: 0, y: 0.2 });
+    setSnapshot({ voiceMode: "off" });
+    expect(tick()).toEqual({ x: 0.42, y: 0.22 });
+
+    setSnapshot({ liveEmbodiment: null });
+    const cursor = tick();
+    expect(cursor.x).toBeCloseTo(0.7);
+    expect(cursor.y).toBeCloseTo(0);
+  });
+
+  it("pauses new saccades during hold-still and resumes them on floor release", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: () => 1 });
+    const { deps, clock, setSnapshot } = makeDeps({
+      voiceMode: "transcribing",
+      liveEmbodiment: {
+        intent: "attend",
+        attention_target: "user",
+        gaze_class: "rest",
+        body_class: "none",
+        breath_class: "normal",
+        expression_class: "none",
+        motion_class: "none",
+        degrade_to_sleep: false,
+        listen_posture: "hold_still",
+      },
+    });
+    channel.attach(adapter, deps);
+    clock.advance(3500);
+    channel.tickGaze(clock.now(), 0.05, mouseAt(300, 400, clock.now()));
+    expect(adapter.focusCalls.at(-1)).toEqual({ x: 0, y: 0 });
+    setSnapshot({ voiceMode: "off" });
+    channel.tickGaze(clock.now(), 0.05, mouseAt(300, 400, clock.now()));
+    expect(adapter.focusCalls.at(-1)?.x).toBeCloseTo(0.046);
+  });
+
   it("settles during Live composing and yields while playback owns the gaze", () => {
     const adapter = new FakeAdapter();
     const channel = new GazeChannel({ random: noopRandom });
@@ -455,5 +520,64 @@ describe("GazeChannel — held Live gaze", () => {
     const last = adapter.focusCalls[adapter.focusCalls.length - 1];
     expect(last.x).toBeCloseTo(0, 5);
     expect(last.y).toBeCloseTo(0.2, 5);
+  });
+});
+
+describe("GazeChannel — return glance", () => {
+  const windowPlan = {
+    intent: "remain_present",
+    attention_target: "world_entity",
+    gaze_class: "window",
+    body_class: "open",
+    breath_class: "normal",
+    expression_class: "content",
+    motion_class: "none",
+    degrade_to_sleep: false,
+  } as const;
+
+  it("glances for the received time and resumes the original gaze despite repeated packets", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const pulse = { id: "return-1", remaining_ms: 400 };
+    const { deps, clock, setSnapshot } = makeDeps({
+      liveEmbodiment: { ...windowPlan, return_glance: pulse },
+    });
+    channel.attach(adapter, deps);
+    const tick = () => channel.tickGaze(clock.now(), 0.2, mouseAt(1600, 100, clock.now()));
+    tick();
+    expect(channel.target.y).toBeGreaterThan(0.1);
+    expect(channel.target.x).toBeCloseTo(0);
+
+    clock.advance(300);
+    setSnapshot({ liveEmbodiment: { ...windowPlan, return_glance: { ...pulse, remaining_ms: 900 } } });
+    tick();
+    expect(channel.target.x).toBeCloseTo(0);
+
+    clock.advance(100);
+    tick();
+    expect(channel.target).toEqual({ x: 0.42, y: 0.22 });
+  });
+
+  it("drops an interrupted glance and accepts a later independent return", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const { deps, clock, setSnapshot } = makeDeps({
+      liveEmbodiment: { ...windowPlan, return_glance: { id: "return-1", remaining_ms: 900 } },
+    });
+    channel.attach(adapter, deps);
+    const tick = () => channel.tickGaze(clock.now(), 0.2, mouseAt(1600, 100, clock.now()));
+    tick();
+    setSnapshot({ ttsState: "speaking" });
+    tick();
+    expect(channel.target).toEqual({ x: 0, y: 0.2 });
+    setSnapshot({ ttsState: "idle" });
+    tick();
+    expect(channel.target).toEqual({ x: 0.42, y: 0.22 });
+
+    setSnapshot({
+      liveEmbodiment: { ...windowPlan, return_glance: { id: "return-2", remaining_ms: 900 } },
+    });
+    tick();
+    expect(channel.target.x).toBeLessThan(0.2);
   });
 });

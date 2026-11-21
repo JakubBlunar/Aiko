@@ -16,6 +16,7 @@ python scripts/live_scenarios.py tests/scenarios/live/wait-and-focus.json
 python scripts/live_scenarios.py tests/scenarios/live/local-observation.json --local --json
 python scripts/live_scenarios.py tests/scenarios/live/interruption.json --local --repeat 4 --json
 python scripts/live_scenarios.py tests/scenarios/live/listening-posture.json --local --repeat 4 --json
+python scripts/live_scenarios.py tests/scenarios/live/return-glance.json --local --repeat 4 --json
 ```
 
 To compare the same timeline with and without an established preference, use
@@ -86,7 +87,7 @@ and one command.
 | `dispatch` | Deliver the oldest queued main wake through the real dispatch checks. Supply `{"text": "a scripted reply"}` or omit the text to simulate silence. Use `"if_queued": true` when a model might choose to stay silent before this step. |
 | `reply` | Supply scripted assistant text after a submitted user message. It becomes part of the isolated transcript and updates the speech gap. |
 | `new_session` | Switch to a named synthetic conversation for the same user. The trial database stays open, and the Live generation changes. |
-| `activity_sample` | Record a synthetic foreground app name in the trial's activity store and publish the Live activity transition. The virtual clock determines when the evidence becomes stale. |
+| `activity_sample` | Record an app name, `{"source": "idle"}`, or `{"source": "lock"}` in the trial's activity store and publish the Live activity transition. The virtual clock determines when the evidence becomes stale. |
 
 `state` can change `app`, `typing`, `floor`, `present`, `connected`,
 `playback`, `sleep`, `quiet`, `shared`, `activity`, `voice_session` or

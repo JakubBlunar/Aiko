@@ -1,0 +1,55 @@
+{
+  "name": "One brief return glance grounded in desktop activity",
+  "steps": [
+    {
+      "label": "An active desktop without a preceding absence",
+      "state": {"activity": "looking_outside"},
+      "activity_sample": "Firefox",
+      "expect": {"embodiment": {"behavior_plan": {"return_glance": null}}}
+    },
+    {"activity_sample": {"source": "idle"}},
+    {"advance_ms": 180000},
+    {
+      "label": "A fresh observation confirms the user's return",
+      "activity_sample": "Firefox",
+      "expect": {"queued_count": 0}
+    },
+    {"advance_ms": 400},
+    {"label": "Another active sample from the same return", "activity_sample": "Firefox"},
+    {
+      "label": "The original window gaze resumes",
+      "advance_ms": 501,
+      "expect": {"embodiment": {"behavior_plan": {"return_glance": null}}}
+    },
+    {"activity_sample": {"source": "lock"}},
+    {"label": "A later unlock starts its own glance", "activity_sample": "Firefox"},
+    {
+      "label": "Typing preempts the second glance",
+      "impulse": "user.typing_started",
+      "expect": {"embodiment": {"behavior_plan": {"return_glance": null}}}
+    },
+    {
+      "label": "Ending typing does not replay the glance",
+      "impulse": "user.typing_stopped",
+      "expect": {"embodiment": {"behavior_plan": {"return_glance": null}}}
+    },
+    {"activity_sample": {"source": "lock"}},
+    {"new_session": "another-room"},
+    {
+      "label": "A new conversation cannot reuse the old absence",
+      "activity_sample": "Firefox",
+      "expect": {"embodiment": {"behavior_plan": {"return_glance": null}}}
+    },
+    {"activity_sample": {"source": "lock"}},
+    {
+      "label": "Quiet mode suppresses the glance",
+      "state": {"quiet": true},
+      "activity_sample": "Firefox",
+      "expect": {
+        "queued_count": 0,
+        "speech_count": 0,
+        "embodiment": {"behavior_plan": {"return_glance": null}}
+      }
+    }
+  ]
+}

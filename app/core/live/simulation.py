@@ -157,15 +157,21 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
         self._unanswered_text = ""
         self.bump_live_mode_generation("scenario")
 
-    def sample_foreground(self, app: str) -> None:
-        if not isinstance(app, str) or not app.strip():
-            raise ValueError("activity_sample needs a nonempty synthetic app name")
+    def sample_activity(self, sample: Any) -> None:
+        if isinstance(sample, str) and sample.strip():
+            source, app, signal, kind = "foreground", sample, "focus", "activity.session_changed"
+        elif isinstance(sample, dict) and sample == {"source": "idle"}:
+            source, app, signal, kind = "idle", "", "idle", "activity.idle"
+        elif isinstance(sample, dict) and sample == {"source": "lock"}:
+            source, app, signal, kind = "lock", "", "lock", "activity.lock"
+        else:
+            raise ValueError("activity_sample needs an app name or an idle/lock source")
         self.state["app"] = app
         self._activity_store.add_event(ActivityEnvelope(
-            v=1, at=self.clock.now().isoformat(), source="foreground", tier="cheap",
-            subject=ActivitySubject(app=app), signal_kind="focus",
+            v=1, at=self.clock.now().isoformat(), source=source, tier="cheap",
+            subject=ActivitySubject(app=app or None), signal_kind=signal,
         ))
-        self.publish("activity.session_changed", {"app": app, "source": "foreground"})
+        self.publish(kind, {"app": app, "source": source})
 
     def conversation_situation_snapshot(self, *, fresh: bool) -> ConversationSituationSnapshot:
         state = self.state
@@ -464,7 +470,7 @@ def _run_steps(host: _SimulationHost, steps: list, *, name: str) -> dict[str, An
         elif command == "new_session":
             host.new_session(step["new_session"])
         elif command == "activity_sample":
-            host.sample_foreground(step["activity_sample"])
+            host.sample_activity(step["activity_sample"])
         else:
             if command == "cue":
                 host.add_cue(step["cue"])

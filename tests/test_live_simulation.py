@@ -29,6 +29,7 @@ def read_scenario(name: str) -> dict:
     "topic-choice", "quiet-cadence", "interruption", "requested-update", "requested-update-ready",
     "learn-coding-timing",
     "listening-posture",
+    "return-glance",
 ])
 def test_fixture_runs_without_network(name, monkeypatch):
     def unexpected_request(*args, **kwargs):
@@ -63,6 +64,22 @@ def test_listening_posture_tracks_the_floor_without_speaking():
         assert plan["attention_target"] == "user"
     assert report["spoken"] == []
     assert report["dispatches"] == []
+
+
+def test_return_glance_is_bounded_and_preserves_the_underlying_gaze():
+    report = run_live_scenario(read_scenario("return-glance"))
+    assert report["expectation_failures"] == []
+    plans = {step["label"]: step["embodiment"]["behavior_plan"] for step in report["steps"]}
+    original = plans["A fresh observation confirms the user's return"]
+    repeated = plans["Another active sample from the same return"]
+    expired = plans["The original window gaze resumes"]
+    later = plans["A later unlock starts its own glance"]
+    assert original["return_glance"]["remaining_ms"] == 900
+    assert repeated["return_glance"] == {"id": original["return_glance"]["id"], "remaining_ms": 500}
+    assert later["return_glance"]["id"] != original["return_glance"]["id"]
+    assert {plan["gaze_class"] for plan in (original, repeated, expired)} == {"window"}
+    assert not report["spoken"]
+    assert not report["dispatches"]
 
 
 @pytest.mark.parametrize("reference", ["2", "9"])

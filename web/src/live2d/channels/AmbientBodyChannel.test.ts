@@ -234,6 +234,52 @@ describe("AmbientBodyChannel — cat-tail sine", () => {
 });
 
 describe("AmbientBodyChannel — body language", () => {
+  it("blends listening and tiredness, then preserves the independent slump during a hold", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const { deps, clock, setSnapshot } = makeDeps(
+      { has_body_angle_y: true, has_body_angle_z: true, has_breath: true },
+      {
+        voiceMode: "listening",
+        circadianPeriod: "late_night",
+        mood: { label: "content", intensity: 0.3, valence: 0.5, arousal: 0.2 },
+      },
+    );
+    channel.attach(adapter, deps);
+
+    channel.tickTier3(clock.now(), 0.4);
+    const lean = 1 - Math.exp(-1);
+    const slump = 1 - Math.exp(-0.5);
+    expect(adapter.params.get("ParamBodyAngleY")).toBeCloseTo(6 * lean - 3 * slump);
+    expect(adapter.params.get("ParamBodyAngleZ")).toBeCloseTo(1.5 * Math.sin(Math.PI / 3));
+
+    setSnapshot({
+      voiceMode: "transcribing",
+      liveEmbodiment: {
+        intent: "attend",
+        attention_target: "user",
+        gaze_class: "rest",
+        body_class: "none",
+        breath_class: "normal",
+        expression_class: "none",
+        motion_class: "none",
+        degrade_to_sleep: false,
+        listen_posture: "hold_still",
+      },
+    });
+    clock.advance(400);
+    channel.tickTier3(clock.now(), 0.4);
+    const heldBodyY = 6 * lean / Math.E - 3 * (1 - 1 / Math.E);
+    expect(adapter.params.get("ParamBodyAngleY")).toBeCloseTo(heldBodyY);
+    channel.tickPreModel();
+    expect(adapter.params.get("ParamBodyAngleY")).toBeCloseTo(heldBodyY);
+    clock.advance(250);
+    channel.tickPreModel();
+    expect(adapter.params.get("ParamBodyAngleY")).toBeCloseTo(
+      heldBodyY + 1.5 * (1 - Math.exp(-0.25 / 1.2)),
+    );
+  });
+
   it("listening voice mode raises ParamBodyAngleY (lean-in)", () => {
     const adapter = new FakeAdapter();
     const channel = new AmbientBodyChannel();

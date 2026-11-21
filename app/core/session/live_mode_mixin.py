@@ -43,6 +43,7 @@ from app.core.live.main_wake import (
 from app.core.live.micro_utterance import validate_micro_utterance
 from app.core.live.policy_context import LivePolicyContextRuntime
 from app.core.live.resolver import LiveBehaviorResolver, ResolvedBehaviorPlan
+from app.core.live.return_glance import LiveReturnGlance
 from app.core.live.timing_preference import defer_casual_while_coding, observe_timing_instruction
 from app.core.live.urge_menu import menu_urge_ids
 from app.core.services.response_text_service import strip_all_meta_tags
@@ -161,6 +162,7 @@ class LiveModeMixin:
             dispatch_inference=dispatch_inference,
         )
         self._live_behavior_resolver = LiveBehaviorResolver()
+        self._live_return_glance = LiveReturnGlance()
         self._live_behavior_plan: ResolvedBehaviorPlan | None = None
         self._live_embodiment_signature: tuple[Any, ...] | None = None
         self._live_embodiment_listeners: list[Any] = []
@@ -837,6 +839,7 @@ class LiveModeMixin:
             except Exception:
                 log.debug("live policy context apply failed", exc_info=True)
         if self.is_live_presence():
+            self._live_return_glance.observe(frame, inp.activity_evidence)
             self._maybe_run_live_policy(
                 frame, trigger_kind=str(trigger_kind or "heartbeat"),
             )
@@ -1669,7 +1672,7 @@ class LiveModeMixin:
         frame = getattr(
             getattr(self, "_live_situation_assembler", None), "last_frame", None,
         )
-        payload: dict[str, Any] = {"plan": plan.to_payload()}
+        payload: dict[str, Any] = {"plan": self._live_plan_payload(plan)}
         if frame is not None:
             payload["commitment"] = frame.commitment.to_payload()
             payload["world_activity"] = frame.aiko.activity
@@ -1682,9 +1685,20 @@ class LiveModeMixin:
         plan = getattr(self, "_live_behavior_plan", None)
         caps = self._live_semantic_capabilities()
         return {
-            "behavior_plan": plan.to_payload() if plan is not None else None,
+            "behavior_plan": self._live_plan_payload(plan) if plan is not None else None,
             "semantic_capabilities": caps.to_payload(),
         }
+
+    def _live_return_glance_payload(self) -> dict[str, str | int] | None:
+        glance = getattr(self, "_live_return_glance", None)
+        if glance is None or not self.is_live_presence():
+            return None
+        return glance.payload(
+            self._live_monotonic() * 1000.0, int(getattr(self, "_live_mode_generation", 0)),
+        )
+
+    def _live_plan_payload(self, plan: ResolvedBehaviorPlan) -> dict[str, Any]:
+        return {**plan.to_payload(), "return_glance": self._live_return_glance_payload()}
 
     def _live_semantic_capabilities(self):
         payload_fn = getattr(self, "avatar_payload", None)
@@ -1744,6 +1758,7 @@ class LiveModeMixin:
             log.debug("live behavior resolve failed", exc_info=True)
             return
         self._live_behavior_plan = plan
+        return_glance = self._live_return_glance_payload()
         signature = (
             plan.intent,
             plan.attention_target,
@@ -1754,6 +1769,7 @@ class LiveModeMixin:
             plan.reaction_tone,
             plan.reaction_intensity,
             plan.listen_posture,
+            return_glance["id"] if return_glance else None,
             plan.degrade_to_sleep,
             frame.aiko.activity,
             frame.aiko.posture,
@@ -1766,6 +1782,9 @@ class LiveModeMixin:
         self._notify_live_embodiment()
 
     def _clear_live_embodiment(self) -> None:
+        glance = getattr(self, "_live_return_glance", None)
+        if glance is not None:
+            glance.clear()
         self._live_behavior_plan = None
         self._live_embodiment_signature = None
         self._notify_live_embodiment()

@@ -84,14 +84,17 @@ targets drop and private titles never enter policy context.
 
 ## L14. Return and reconnect companion beat
 
-**Status: Open implementation.**
+**Status: Desktop visual return implemented.**
 
-**Implemented / available:** Unlock/reconnect and caught-mid-activity evidence exist.
+**Implemented / available:** A fresh foreground observation after desktop
+idle or lock can trigger one brief return glance. The normal gaze rules
+resume after 900 ms or when a higher-priority state takes over. Verified in
+the replay and avatar channel tests.
 
-**Remaining:** Connect one bounded return beat with source/generation/dedupe checks and existing
-speech acts; no automatic greeting or second speech loop.
+**Remaining:** Validate visual timing on the live rig and evaluate whether
+browser reconnect or shared-activity resume offers a comparable signal.
 
-**Source check:** [activity_notices.py](../../app/core/live/activity_notices.py).
+[Return glance replay](../../tests/scenarios/live/return-glance.json)
 
 ## L15. Compact policy prompt-v2 (keep the 4B reliable)
 

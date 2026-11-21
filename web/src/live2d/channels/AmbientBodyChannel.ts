@@ -56,18 +56,16 @@
  *     defaults to ``1``.
  */
 import { approach } from "../math";
+import {
+  ambientBodyTargets, breathMotionFor, isTailWagActive, tailMotionFor,
+} from "../behavior/ambientBodyStates";
 import type {
   AvatarChannel,
   ChannelDeps,
   Live2DModelAdapter,
 } from "../types";
 
-const SWEAT_MOOD_LABELS = new Set(["concerned", "confused", "frustrated"]);
-const BLUSH_MOOD_LABELS = new Set(["tender", "warm"]);
-const SWEAT_REACTIONS = new Set(["concerned", "confused", "frustrated"]);
 const SASS_REACTIONS = new Set(["amused", "playful"]);
-const SLUMP_MOOD_LABELS = new Set(["tired", "exhausted"]);
-const LISTENING_VOICE_MODES = new Set(["listening", "transcribing"]);
 
 const BLUSH_TIME_CONSTANT_S = 0.6;
 const SWEAT_TIME_CONSTANT_S = 1.5;
@@ -79,26 +77,6 @@ const LEAN_IN_AMPLITUDE = 6;
 const SLUMP_AMPLITUDE = -3;
 const BREATH_AMPLITUDE = 1.5;
 const BREATH_PERIOD_S = 6;
-const TAIL_BOOST_FREQ_MUL = 1.8;
-const TAIL_BOOST_AMP_MUL = 1.5;
-// On rigs that route the cat-tail params through ``physics.evaluate``
-// (Alexia: ``PhysicsSetting16`` with input ``ParamBreath`` -> the
-// five tail segment params), the ``tickTier3`` direct-sine boost
-// above is silently overwritten before render. The fix is to
-// elevate the *physics input* (``ParamBreath``) for the boost
-// window in ``tickPreModel`` (which runs after physics), letting
-// physics propagate the faster wave naturally into all tail
-// segments. Frequency carries the visible "speed" perception;
-// amplitude saturates against the 0..1 ParamBreath clamp at
-// expressiveness=1 but still helps when the user has lowered the
-// expressiveness slider.
-const TAIL_BREATH_BOOST_FREQ_MUL = 2.5;
-const TAIL_BREATH_BOOST_AMP_MUL = 1.5;
-/** Cat-tail damping while asleep. The wave keeps a slow, tiny sway so
- * she still reads as alive (a sleeping tail doesn't freeze), but the
- * speed and amplitude drop to ~a third. */
-const SLEEP_TAIL_FREQ_SCALE = 0.3;
-const SLEEP_TAIL_AMP_SCALE = 0.3;
 /** Base breath frequency (Hz) — matches the pixi-live2d-display
  * default of ~0.21 Hz / 4.8s period. We modulate around this with
  * arousal: low arousal -> slower breath, high arousal -> faster. */
@@ -198,113 +176,85 @@ export class AmbientBodyChannel implements AvatarChannel {
       return;
     }
     const caps = deps.manifest.capabilities ?? {};
-    const overlays = deps.manifest.overlays ?? {};
-    const catTailIds = deps.manifest.cat_tail_param_ids ?? [];
     const snap = deps.getStoreSnapshot();
-    const moodLabel = (snap.mood?.label || "").toLowerCase();
-    const moodIntensity = snap.mood?.intensity ?? 0;
     const arousal = clamp01(snap.mood?.arousal ?? 0.4);
-    const reaction = (snap.reaction || "").toLowerCase();
-    const circadian = snap.circadianPeriod || "";
     const expressiveness = clampExpressiveness(snap.expressiveness);
+    const targets = ambientBodyTargets(snap, arousal);
 
-    // ── auto-blush ───────────────────────────────────────────────
+    this._updateFace(adapter, deps.manifest, targets, dt);
+    if (caps.has_cat_tail) {
+      const motion = tailMotionFor(
+        snap.sleepStatus, isTailWagActive(now, deps.engineState.tailWagBoostUntil),
+      );
+      this._writeTail(adapter, deps.manifest.cat_tail_param_ids ?? [], motion, now, arousal);
+    }
+    if (caps.has_body_angle_y || caps.has_body_angle_z) {
+      this._updatePose(targets, now, dt, expressiveness);
+      this._writePose(adapter, caps);
+    }
+  }
+
+  private _updateFace(
+    adapter: Live2DModelAdapter,
+    manifest: ChannelDeps["manifest"],
+    targets: ReturnType<typeof ambientBodyTargets>,
+    dt: number,
+  ): void {
+    const caps = manifest.capabilities ?? {};
+    const overlays = manifest.overlays ?? {};
     if (caps.has_blush && overlays.blush) {
-      const target =
-        BLUSH_MOOD_LABELS.has(moodLabel) && moodIntensity > 0.4 ? 1 : 0;
-      this._blush = approach(this._blush, target, dt * (1 / BLUSH_TIME_CONSTANT_S));
+      this._blush = approach(this._blush, targets.blush, dt / BLUSH_TIME_CONSTANT_S);
       adapter.setParam(overlays.blush.param_id, this._blush * overlays.blush.on_value);
     }
-
-    // ── auto-sweat ───────────────────────────────────────────────
     if (caps.has_sweat && overlays.sweat) {
-      const target =
-        SWEAT_MOOD_LABELS.has(moodLabel) || SWEAT_REACTIONS.has(reaction) ? 1 : 0;
-      this._sweat = approach(this._sweat, target, dt * (1 / SWEAT_TIME_CONSTANT_S));
+      this._sweat = approach(this._sweat, targets.sweat, dt / SWEAT_TIME_CONSTANT_S);
       adapter.setParam(overlays.sweat.param_id, this._sweat * overlays.sweat.on_value);
     }
+  }
 
-    // ── cat-tail steady-state + tail-wag boost ───────────────────
-    if (caps.has_cat_tail && catTailIds.length > 0) {
-      const boostUntil = deps.engineState.tailWagBoostUntil;
-      // A sleeping Aiko's tail barely moves: slow the wave and shrink
-      // its amplitude, and skip the tail-wag boost (no wagging asleep).
-      // The body-angle sway below is already damped by SleepChannel;
-      // the cat-tail params are its own write so we damp them here.
-      const isSleeping = snap.sleepStatus === "asleep";
-      const tailBoost = !isSleeping && boostUntil > 0 && now < boostUntil;
-      const sleepFreq = isSleeping ? SLEEP_TAIL_FREQ_SCALE : 1;
-      const sleepAmp = isSleeping ? SLEEP_TAIL_AMP_SCALE : 1;
-      const freq = (0.3 + 1.1 * arousal) * (tailBoost ? TAIL_BOOST_FREQ_MUL : 1) * sleepFreq;
-      const amp = (4 + 12 * arousal) * (tailBoost ? TAIL_BOOST_AMP_MUL : 1) * sleepAmp;
-      const t = now / 1000;
-      for (let i = 0; i < catTailIds.length; i += 1) {
-        const phase = i * 0.7;
-        const value = Math.sin(2 * Math.PI * freq * t + phase) * amp;
-        adapter.setParam(catTailIds[i], value);
-      }
+  private _writeTail(
+    adapter: Live2DModelAdapter,
+    ids: readonly string[],
+    motion: ReturnType<typeof tailMotionFor>,
+    now: number,
+    arousal: number,
+  ): void {
+    const angle = 2 * Math.PI * (0.3 + 1.1 * arousal) * motion.frequency * (now / 1000);
+    const amplitude = (4 + 12 * arousal) * motion.amplitude;
+    for (let i = 0; i < ids.length; i += 1) {
+      adapter.setParam(ids[i], Math.sin(angle + i * 0.7) * amplitude);
     }
+  }
 
-    // ── body language ────────────────────────────────────────────
-    if (caps.has_body_angle_y || caps.has_body_angle_z) {
-      let bodyY = 0;
-      let bodyZ = 0;
+  private _updatePose(
+    targets: ReturnType<typeof ambientBodyTargets>,
+    now: number,
+    dt: number,
+    expressiveness: number,
+  ): void {
+    this._leanIn = approach(this._leanIn, targets.lean, dt / LEAN_IN_TIME_CONSTANT_S);
+    this._slump = approach(this._slump, targets.slump, dt / SLUMP_TIME_CONSTANT_S);
+    const phase = (now / 1000) * 2 * Math.PI;
+    const bounce = Math.sin(phase * 1.4) * targets.bounce;
+    const sway = Math.sin(phase / BREATH_PERIOD_S) * BREATH_AMPLITUDE;
+    const sassAge = (now - this._sassTriggeredAt) / 1000;
+    const sass = sassAge >= 0 && sassAge < SASS_DURATION_S
+      ? SASS_AMPLITUDE * (1 - sassAge / SASS_DURATION_S)
+      : 0;
+    // These envelopes are independent. A listening lean and a tired slump
+    // can overlap while each eases toward its own target.
+    this._bodyY = (this._leanIn * LEAN_IN_AMPLITUDE + this._slump * SLUMP_AMPLITUDE + bounce)
+      * expressiveness;
+    this._bodyZ = (sway + sass) * expressiveness;
+  }
 
-      // (a) Listening lean-in — voice listening/transcribing OR (B8)
-      // the user is typing a message, so she leans in attentively in
-      // typed mode too. The ``approach`` easing relaxes the lean back
-      // out when composing clears.
-      const isListeningNow =
-        LISTENING_VOICE_MODES.has(snap.voiceMode) || snap.composing === true;
-      const posture = snap.liveEmbodiment?.listen_posture;
-      const quietListening = posture === "give_space" || posture === "hold_still";
-      this._leanIn = approach(
-        this._leanIn,
-        isListeningNow && !quietListening ? 1 : 0,
-        dt / LEAN_IN_TIME_CONSTANT_S,
-      );
-      bodyY += this._leanIn * LEAN_IN_AMPLITUDE * expressiveness;
-
-      // (b) Tired slump.
-      const slumpTrigger =
-        SLUMP_MOOD_LABELS.has(moodLabel) ||
-        (circadian === "late_night" && arousal < 0.3);
-      this._slump = approach(
-        this._slump,
-        slumpTrigger ? 1 : 0,
-        dt / SLUMP_TIME_CONSTANT_S,
-      );
-      bodyY += this._slump * SLUMP_AMPLITUDE * expressiveness;
-
-      // (c) Excited bounce.
-      if (arousal > 0.6) {
-        bodyY +=
-          Math.sin((now / 1000) * 2 * Math.PI * 1.4) *
-          (1 + arousal * 2) *
-          expressiveness;
-      }
-
-      // (d) Idle breathing sway.
-      bodyZ +=
-        Math.sin(((now / 1000) * 2 * Math.PI) / BREATH_PERIOD_S) *
-        BREATH_AMPLITUDE *
-        expressiveness;
-
-      // (e) Sass tilt on rising edge.
-      const sassAge = (now - this._sassTriggeredAt) / 1000;
-      if (sassAge >= 0 && sassAge < SASS_DURATION_S) {
-        bodyZ += SASS_AMPLITUDE * (1 - sassAge / SASS_DURATION_S) * expressiveness;
-      }
-
-      this._bodyY = bodyY;
-      this._bodyZ = bodyZ;
-      if (caps.has_body_angle_y) {
-        adapter.setParam("ParamBodyAngleY", bodyY);
-      }
-      if (caps.has_body_angle_z) {
-        adapter.setParam("ParamBodyAngleZ", bodyZ);
-      }
-    }
+  private _writePose(
+    adapter: Live2DModelAdapter,
+    caps: NonNullable<ChannelDeps["manifest"]["capabilities"]>,
+    valenceBias = 0,
+  ): void {
+    if (caps.has_body_angle_y) adapter.setParam("ParamBodyAngleY", this._bodyY + valenceBias);
+    if (caps.has_body_angle_z) adapter.setParam("ParamBodyAngleZ", this._bodyZ);
   }
 
   /** Continuous-expressiveness layer.
@@ -340,35 +290,32 @@ export class AmbientBodyChannel implements AvatarChannel {
     // mid-value (0.5) instead of zero. Frequency scales linearly
     // with arousal in the [0.7, 1.4] band around ``BREATH_BASE_HZ``.
     if (caps.has_breath) {
-      if (expressiveness <= 0) {
-        adapter.setParam("ParamBreath", 0.5);
-      } else {
-        const tailBoostUntil = deps.engineState.tailWagBoostUntil;
-        const tailBreathBoost =
-          (caps.has_tail_wag ?? false) &&
-          tailBoostUntil > 0 &&
-          now < tailBoostUntil;
-        const freqMul = tailBreathBoost ? TAIL_BREATH_BOOST_FREQ_MUL : 1;
-        const ampMul = tailBreathBoost ? TAIL_BREATH_BOOST_AMP_MUL : 1;
-        const freq = BREATH_BASE_HZ * (0.7 + 0.7 * arousal) * freqMul;
-        const t = now / 1000;
-        const amplitude = 0.5 * Math.min(1, expressiveness) * ampMul;
-        const clampedAmp = Math.min(0.5, amplitude);
-        const value = 0.5 + clampedAmp * Math.sin(2 * Math.PI * freq * t);
-        adapter.setParam("ParamBreath", value);
-      }
+      const boosted = caps.has_tail_wag === true
+        && isTailWagActive(now, deps.engineState.tailWagBoostUntil);
+      this._writeBreath(
+        adapter, breathMotionFor(expressiveness, boosted), now, arousal, expressiveness,
+      );
     }
 
     if (caps.has_body_angle_y) {
-      const target = valence;
-      const rate = dt > 0 ? dt / VALENCE_TILT_TIME_CONSTANT_S : 0;
-      this._valenceTilt = approach(this._valenceTilt, target, rate);
-      const bias = this._valenceTilt * VALENCE_TILT_AMPLITUDE * expressiveness;
-      adapter.setParam("ParamBodyAngleY", this._bodyY + bias);
+      this._valenceTilt = approach(this._valenceTilt, valence, dt / VALENCE_TILT_TIME_CONSTANT_S);
     }
-    if (caps.has_body_angle_z) {
-      adapter.setParam("ParamBodyAngleZ", this._bodyZ);
-    }
+    this._writePose(adapter, caps, this._valenceTilt * VALENCE_TILT_AMPLITUDE * expressiveness);
+  }
+
+  private _writeBreath(
+    adapter: Live2DModelAdapter,
+    motion: ReturnType<typeof breathMotionFor>,
+    now: number,
+    arousal: number,
+    expressiveness: number,
+  ): void {
+    // Some rigs drive their tail from breath physics. Boost that input
+    // here, after the native driver has run.
+    const frequency = BREATH_BASE_HZ * (0.7 + 0.7 * arousal) * motion.frequency;
+    const amplitude = Math.min(0.5, 0.5 * Math.min(1, expressiveness) * motion.amplitude);
+    const value = amplitude === 0 ? 0.5 : 0.5 + amplitude * Math.sin(2 * Math.PI * frequency * now / 1000);
+    adapter.setParam("ParamBreath", value);
   }
 
   // ── test-only accessors ──────────────────────────────────────────

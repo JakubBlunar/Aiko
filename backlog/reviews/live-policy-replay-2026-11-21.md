@@ -158,3 +158,17 @@ retained its own behavior.
 
 Frontend channel tests exercise the gaze and lean used by the avatar. The
 replay measures semantic plans with synthetic voice events.
+
+## Return glance and avatar channel states
+
+The 64 focused frontend tests passed on the original channels and again
+after the state refactor. They cover gaze priority, saccade timing, and
+blending the listening lean with the tired slump and valence tilt. The
+broader run added the return-glance tests and passed all 266 tests.
+
+Four isolated [return-glance replays](../../tests/scenarios/live/return-glance.json)
+on `qwen3.5:4b` confirmed two return pulses per trial. The first lasted
+900 ms at most. Another foreground sample left its original deadline
+intact. The second was canceled by typing and stayed canceled afterward.
+Switching conversations and quiet mode suppressed additional pulses.
+There were zero autonomous speech requests in 40 policy calls.

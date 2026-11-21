@@ -147,6 +147,14 @@ watermark, and a title-free Level-2 interpretation when one exists.
 MCP `get_companion_activity_state` dumps the Level-3 cue (pending
 rows, last signature, title-free interpretation).
 
+## Return glance in Live mode
+
+In Live mode, a fresh desktop foreground sample after observed idle or
+lock can prompt a brief return glance. The avatar looks over for up to
+900 ms, then resumes its existing gaze. Typing, conversation, playback,
+quiet mode, or sleep take priority. Further foreground samples during the
+same return preserve the original deadline.
+
 ## Disabling
 
 Toggle off in Settings → "Activity awareness (desktop)". The
