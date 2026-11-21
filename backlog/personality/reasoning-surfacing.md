@@ -268,7 +268,7 @@ selector call. Existing P52 continuity remains the comparison baseline.
 
 #### RS3 follow-up. Recall the particular episode the turn needs
 
-**Status: Open.** The [18 November review](../reviews/grounded-cognition-review-2026-11-18.md#4-test-the-experience-in-a-conversation)
+**Status: Offline replay.** The [18 November review](../reviews/grounded-cognition-review-2026-11-18.md#4-test-the-experience-in-a-conversation)
 found that a precise source can coexist with nearby interpretations, generic
 style claims and an undefined referent. The reply needs a detail from the actual
 episode, including what changed or remains open.
@@ -292,6 +292,26 @@ episode, including what changed or remains open.
 partly successful repair's remaining problem, and adapts to a corrected signal.
 An unrelated turn stays on topic and an ambiguous referent receives proportionate
 uncertainty. No extra synchronous memory-selection call is required.
+
+**22 November replay.** [Run the isolated comparison](../../scripts/episode_recall_replay.py)
+with `python -m scripts.episode_recall_replay --seed 53` or `--seed 54`.
+The replay supplies a fixed ranked candidate pool and one memory slot per arm.
+The episode selector checks the stated object context, owner, domain and source
+revisions, then includes the reported action and qualified result. A current
+correction replaces the old result. A tied or stale episode yields no assertion.
+The prompts share a character ceiling. The ranked positive prompts were 33 to
+51 tokens longer. This exercises selection and wording over a controlled pool.
+Show progress and naturally retrieved candidate coverage remain unmeasured.
+
+On the configured local `baytout3/qwen3.5-uncensored:9b`, the episode arm
+preserved the correct action and outcome in all six positive replies across
+both seeds. The ranked arm used a different object in four replies and gave
+the old, corrected outcome in two. The episode arm avoided unrelated callbacks
+in both control turns. In the ambiguous case it withheld both sources, but the
+model invented earlier actions in both runs. Adding an explicit ambiguity note
+produced a clarifying question twice. One reply still invented the possible
+settings. Ordinary chat integration remains open pending a reliable clarification
+path and comparison on naturally ranked candidates.
 
 ### RS4. Admit optional cues jointly with their handling
 
