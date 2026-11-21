@@ -111,3 +111,34 @@ names fade within J12 boundaries. Phase-based permission is not learned nickname
 **Source check:** [relationship.py](../../app/core/relationship/relationship.py),
 [test_relationship_petname.py](../../tests/test_relationship_petname.py),
 [user_profile.py](../../app/core/infra/user_profile.py).
+
+## J14. Remember what changed after a misunderstanding
+
+**Status: Proposed.** Suppose Aiko offers advice while the user is venting. The
+user explains that they wanted company, and Aiko offers to listen first next
+time. An apology, the user accepting that offer, and a later report that it
+helped answer three different questions. Keeping those distinctions lets a
+relationship develop through what the two actually work out together.
+
+[K103](shipped/social-understanding.md#k103-specific-conversational-repair)
+addresses the immediate misunderstanding. The
+[J6 repair detector](../../app/core/relationship/conflict_repair.py) can record
+a shared moment from a recovery in valence. On 21 Nov 2026 the installed graph
+had 34 active relationship concepts, including 28 tensions. That count describes
+stored interpretations. It gives no measure of actual conflict or resolution.
+
+Pilot a later read of the original issue, Aiko's response, what the user
+endorsed and any subsequent account of how it went. Reuse K100's need/response
+capture, the existing correction links and L50 scope. An explicit request to
+listen can guide the next relevant reply immediately. Joint agreement and
+successful repair each require their own evidence. A mood rebound may identify
+an exchange to inspect. It cannot establish either conclusion. An edited source
+or a later change of preference should narrow the current guidance through L52.
+
+**First check.** Start the next session with the same vent after three different
+endings. In one the user endorsed listening first, in another the conversation
+merely became cheerful, and in the third the user later clarified “for work
+things I actually want ideas.” Score whether
+Aiko acts on the applicable preference, can accurately say what they agreed if
+asked, and can leave the old disagreement unmentioned. A fresh direct request for
+advice should still get advice. Keep prevalence of tension labels out of scoring.

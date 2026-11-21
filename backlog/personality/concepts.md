@@ -445,6 +445,27 @@ over-cap rows separately before expanding the supported depth.
 [generalization_aiko.py](../../app/core/concepts/proposers/generalization_aiko.py),
 [concept_dedupe.py](../../app/core/concepts/concept_dedupe.py).
 
+### L46 follow-up. Test competing abstractions on an unseen choice
+
+**Status: Proposed evaluation under L55.** Someone edits photos on copies and
+tries game mods in a separate save. “Likes experimenting” and “wants to keep the
+original recoverable” both fit those episodes. They suggest different replies
+when a new tool offers an irreversible conversion. A depth-2 concept earns its
+place if it helps Aiko notice the distinction and say something useful under
+the right condition.
+
+Construct a chronological replay. Give synthesis eligible concepts from two
+topics, hold back an entire later occasion and all its derivatives, and record
+which condition each candidate expects to matter before revealing the user's
+next choice. Compare the parent abstraction with its children alone at the same
+context budget. In one ending the user asks for a recoverable copy. In another
+they already have a backup and want to experiment freely. Include an ending
+compatible with both readings. Score whether the response attends to the right
+condition, leaves motive open when the evidence is ambiguous, and updates after
+a correction. One successful prediction supports further evaluation. Only
+observed choices or an explicit explanation can supply new evidence about the
+user. Keep the existing depth cap and record source overlap through L49.
+
 <a id="l48-refused-evidence-already-mints-a-new-concept-and-what-it-mints-is-a-twin"></a>
 
 ## L48. Validate evidence routing and duplicate control
@@ -499,6 +520,30 @@ Imported rows with unknown lineage remain explicitly unknown. Explicit user
 boundaries still work after one statement; independence must not weaken them.
 
 </details>
+
+### L49 follow-up. Recognize a retelling across topic clusters
+
+**Status: Proposed.** A conversation can revisit one event for several reasons.
+A bike commute might first come up under repairs and later under getting to work.
+The second account can add what happened next. Counting it as a second breakdown
+would teach Aiko the wrong thing about how often the bike fails.
+
+[Source lineage](../../app/core/concepts/concept_evidence_lineage.py) can group
+overlapping message roots. Separate conversations can have disjoint roots even
+when the speaker explicitly refers back to the same incident. Pilot a link between
+two source-backed accounts when the later one identifies the earlier occasion.
+Keep both snippets, topic assignments and report dates. Let a later account add
+a supported detail or correct one facet. Track the number of accounts separately
+from the number of established occasions in the existing topic evidence profile.
+Start with an explicit callback or dated identifying detail. Leave ambiguous
+matches unresolved and retain the current evidence when the linking span is edited.
+
+**First check.** Replay three versions of the commute story. In one the user
+clarifies that both reports describe Tuesday. In another they explicitly report
+a second breakdown on Friday. In the third they only say “the chain slipped.”
+A later “how often?” reply should recall one confirmed incident, two, or uncertain
+frequency respectively. Check both direct recall and a concept citing both topics.
+Review false joins as well as missed retellings before using the signal in promotion.
 
 ## L50. Context-scoped claims and temporal validity
 
@@ -678,6 +723,62 @@ criteria before tuning on its results. Keep support small when sample sizes are
 small; do not claim human-level cognition from selected successful dialogues.
 
 </details>
+
+## L56. Recall an analogy across different topics
+
+**Status: Proposed.** A useful connection can be temporary. Suppose the user
+once tested a wood finish on an offcut because it would look different when dry.
+Weeks later they are about to print wedding invitations and worry about the ink
+on textured paper. Aiko could suggest printing one proof on the actual stock.
+The earlier conversation helps her think of the suggestion. She can give it
+without announcing a personality trait or bringing up woodworking.
+
+RS3 retrieves a particular episode and L36 transfers a known strategy under
+matching conditions. This pilot asks whether a **single case in a different
+domain** can suggest a useful option before Aiko has learned a general rule.
+Use the existing [observation receipts](../../docs/longitudinal-memory.md) to
+retrieve a bounded candidate through its goal, constraint and reported result.
+Check which relation carries over and what could break the analogy. In the example
+the result depends on the material, and a cheap sample is available before the
+expensive step. Keep the association local to the turn. A new outcome needs its
+own source before it can contribute to L36 or a higher-order concept.
+
+**First check.** Compare current topic recall with the analogy candidate at equal
+prompt budgets on held-out topic pairs. Include a same-word distractor, a case
+where the underlying constraint disappears, and a case where trying a sample is
+itself costly. Score whether the suggestion fits the new situation, whether the
+answer imports an unsupported outcome, and whether the plain reply was already
+as good. Inspect source selection separately from the reply.
+
+## L57. Ground Aiko's changing interests in her own choices
+
+**Status: Proposed.** On 21 Nov 2026 a read-only check found active self-narrative
+`13830` describing how Aiko learned to finish her tea. Its three viable support
+sets span 17 distinct notes about brewing, warming, sipping, clearing tea and
+washing a mug. These support a recurring activity. They supply no clear earlier
+practice followed by a deliberate change. This is one inspected claim, with no
+measurement of how often it affects a reply.
+
+The [pursuit proposer](../../app/core/concepts/proposers/pursuit_aiko.py)
+already looks for returns on different occasions. The
+[idle decision history](../../docs/idle-workers.md) can also tell us which
+activities were available, how one was selected and what actually happened.
+Use those receipts first in a review of self-narratives. Distinguish a required
+chore, an assigned task, a fallback, a choice cued by an existing concept and
+a freely chosen return. A completed activity supports “I did this.” A pattern
+of voluntary returns can support “I keep choosing this.” A claim about *why*
+she likes it needs a reason she expressed. A claim about *change* needs evidence
+of the earlier and later pattern. Leave old records with missing choice context
+at the level their activity notes support.
+
+**First check.** Give two fictional histories the same number of sketching
+sessions. In one all sessions were assigned. In the other Aiko chose to sketch
+on separate occasions when reading and resting were also available. Ask what she
+has been doing and what she has come to enjoy. Both histories support the activity.
+Only the second supports a preference inference, and its reason can remain open.
+Then cue sketching from that preference and check that the resulting action
+cannot independently confirm the belief that prompted it. Judge a later free
+choice as well as the wording of the self-description.
 
 ## Moved out of the active queue
 

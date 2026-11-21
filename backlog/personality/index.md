@@ -61,6 +61,17 @@ can run alongside capture work using isolated data.
 3. [L22 — Review what surfaced concepts actually add](concepts.md#l22-follow-up-review-what-surfaced-concepts-actually-add).
 4. [RS3 — Recall the particular episode the turn needs](reasoning-surfacing.md#rs3-follow-up-recall-the-particular-episode-the-turn-needs).
 
+The 21 November proposals extend this work. Start with the
+[L49 retelling comparison](concepts.md#l49-follow-up-recognize-a-retelling-across-topic-clusters)
+because every higher-order claim depends on what counts as an independent occasion.
+Run the [L46 unseen-choice replay](concepts.md#l46-follow-up-test-competing-abstractions-on-an-unseen-choice)
+to check what a parent concept adds beyond its children. Then try
+[L56 cross-topic analogies](concepts.md#l56-recall-an-analogy-across-different-topics)
+on a held-out conversation with a useful parallel and a tempting false match.
+[L57](concepts.md#l57-ground-aikos-changing-interests-in-her-own-choices) and
+[J14](moments.md#j14-remember-what-changed-after-a-misunderstanding) apply the
+same evidence discipline to Aiko's development and the relationship.
+
 ### Ordinary chat ideas and engineering checks
 
 19 Nov source review through `d9e8b8b2` (topic digest recall).
@@ -161,6 +172,8 @@ message through the existing history interface. D9 starts as archive navigation.
 - [J13](moments.md#j13-learned-nickname-adoption-and-reciprocity) — **partial**: Persist explicitly
   adopted names for Aiko, handle changes/reciprocity and let unused names fade within J12
   boundaries. Phase-based permission is not learned nickname adoption.
+- [J14](moments.md#j14-remember-what-changed-after-a-misunderstanding) — **proposed**.
+  Carry a source-backed adjustment into the next relevant exchange.
 
 ### Integration and wiring
 
@@ -265,6 +278,10 @@ message through the existing history interface. D9 starts as archive navigation.
 - [L55](concepts.md#l55-evaluate-reasoning-independently-of-eloquence) — **partial**: Run repeated
   held-out extraction-to-reply, causal/counterfactual and post-guard fictional-testimony comparisons
   when inference is available. Count timeouts/failures; synthetic correctness is not naturalness.
+- [L56](concepts.md#l56-recall-an-analogy-across-different-topics) — **proposed**.
+  Use the relevant part of a past case to reason about an unfamiliar situation.
+- [L57](concepts.md#l57-ground-aikos-changing-interests-in-her-own-choices) — **proposed**.
+  Distinguish activity, voluntary preference and change in Aiko's self-model.
 
 ### Companion patterns
 
