@@ -531,15 +531,14 @@ class CuePoolMixin:
         assistant_text: str,
         reply_vec: Any = None,
         turn_vec: Any = None,
+        turn_vec_provider: Callable[[], Any] | None = None,
         assistant_message_id: int | None = None,
     ) -> None:
         """Judge every cue that reached this turn's prompt.
 
-        Both vectors are passed in rather than computed here: post-turn
-        already embeds Aiko's reply for K22 and the combined turn for the
-        seed and gap resolvers, and which of the two a cue is matched
-        against is its ``match_scope``. Handing them down is what keeps
-        this check free rather than a third round-trip.
+        Post-turn already has the reply vector. Resolve the combined turn
+        vector only if a whole-turn cue has an embedding to compare. The
+        provider can reuse the vector computed by the gap resolver.
         """
         surfaced = list(getattr(self, "_surfaced_pool_cues", None) or [])
         self._surfaced_pool_cues = []
@@ -561,6 +560,10 @@ class CuePoolMixin:
             if policy is None:
                 continue
             whole_turn = policy.match_scope == MATCH_SCOPE_TURN
+            if whole_turn and row.embedding is not None and turn_vec_provider is not None:
+                if turn_vec is None:
+                    turn_vec = turn_vec_provider()
+                turn_vec_provider = None
             verdict = self._match_cue(
                 row,
                 policy,

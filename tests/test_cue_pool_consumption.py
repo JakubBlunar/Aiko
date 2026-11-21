@@ -506,6 +506,37 @@ class SpokenTests(_Fixture):
 
 
 class CosineTests(_Fixture):
+    def test_combined_embedding_is_skipped_without_an_embedded_whole_turn_cue(self) -> None:
+        embedder = _FakeEmbedder(_vec(1.0, 0.0))
+        for pool_shape in ("empty", "reply_only", "lexical_seed"):
+            if pool_shape == "reply_only":
+                self.store.add("interest_drift", "rust debugging", "cue", embedding=_vec(1, 0))
+                self.host.take_pool_cue("interest_drift")
+            elif pool_shape == "lexical_seed":
+                self.store.add("curiosity_seed", "rust debugging", "seed")
+            self.host._settle_pool_cues(
+                user_text="I've been debugging Rust",
+                assistant_text="Rust debugging is getting easier",
+                reply_vec=_vec(1.0, 0.0),
+                turn_vec_provider=lambda: embedder.embed("combined turn"),
+            )
+        self.assertEqual(embedder.calls, 0)
+
+    def test_embedded_seeds_share_one_on_demand_combined_embedding(self) -> None:
+        vec = _vec(1.0, 0.0)
+        embedder = _FakeEmbedder(vec)
+        seeds = [self.store.add("curiosity_seed", subject, "seed", embedding=vec)
+                 for subject in ("coffee brewing", "film photography")]
+        self.host._settle_pool_cues(
+            user_text="Something unrelated",
+            assistant_text="Another unrelated sentence",
+            turn_vec_provider=lambda: embedder.embed("combined turn"),
+        )
+        self.assertEqual(embedder.calls, 1)
+        for seed in seeds:
+            self.assertEqual(self._state(seed), STATE_USED)
+            self.assertTrue(self._row(seed).used_evidence.startswith("semantic"))
+
     def test_a_pivot_with_no_shared_words_counts_for_wander(self) -> None:
         """Off-topic by construction, so a high cosine means she pivoted."""
         vec = _vec(1.0, 0.0, 0.0)

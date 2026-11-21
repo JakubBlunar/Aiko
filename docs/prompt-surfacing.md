@@ -97,6 +97,16 @@ parallel. Clearing the cache starts a new set of requests while callers
 already waiting can still receive the original result. Ordinary completed
 cache hits increment neither counter.
 
+`get_last_response_detail` reports the post-turn cascade as `post_turn_ms`,
+with provider work in `post_turn_embed_calls` and `post_turn_embed_ms` and
+shared-request waits in `post_turn_embed_wait_ms`. Cue settlement asks for
+the combined turn vector only when a whole-turn cue has an embedding. It
+shares the vector with the gap resolver and other whole-turn cues.
+
+The surfacing-outcomes report replays the six default semantic thresholds
+in one ledger query. Each threshold counts only settled, non-lexical rows
+with a recorded score at or above the threshold.
+
 ## Sources and ownership
 
 | Material | Producer or refresh | Reader and lifetime | Meaning for the brain |

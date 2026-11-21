@@ -28,9 +28,8 @@ from app.core.infra import timephrase
 log = logging.getLogger("app.session")
 
 # P16: post-turn cascade wall time above which the timing line escalates
-# from DEBUG to INFO. The cascade is meant to be pure-Python + SQLite;
-# anything approaching a second means something in it is doing real work
-# on the turn thread.
+# from DEBUG to INFO. The cascade still occupies the turn thread after
+# streaming has finished.
 _POST_TURN_SLOW_MS = 400.0
 
 # P44: how far the per-block breakdown may be rescaled toward the
@@ -323,16 +322,18 @@ class ChatTurnMixin:
         usage = result.usage
         telemetry = result.telemetry
 
-        # Post-turn inner-life (cheap, no LLM on the hot path): updates
-        # affect state, broadcasts mood_state WS, and submits the
-        # ReflectionWorker job to the speaking window scheduler.
-        #
-        # P16 measurement: this cascade had zero instrumentation, and
-        # ``embedder.end_turn()`` has already fired by the time we get
-        # here -- so its 1-4 embeds don't even show up in ``embed_calls``.
-        # ``post_turn_ms`` makes the cost visible before anyone tries the
-        # (Large) fast/slow-lane split. Note the timer wraps the ``except``
-        # too: a cascade that fails slowly is still time the user waited.
+        # TurnRunner has already closed its embedding counters. Give the
+        # post-turn cascade its own interval on this same thread.
+        post_turn_embedder = getattr(self, "_embedder", None)
+        counting_embeds = False
+        post_turn_embed_calls = 0
+        post_turn_embed_ms = post_turn_embed_wait_ms = 0.0
+        if callable(getattr(post_turn_embedder, "begin_turn", None)):
+            try:
+                post_turn_embedder.begin_turn()
+                counting_embeds = True
+            except Exception:
+                log.debug("post-turn embedding counters failed to start", exc_info=True)
         post_turn_started_at = time.perf_counter()
         try:
             self._post_turn_inner_life(
@@ -351,15 +352,27 @@ class ChatTurnMixin:
             )
         except Exception:
             log.debug("post-turn inner life failed", exc_info=True)
+        finally:
+            if counting_embeds:
+                try:
+                    _, post_turn_embed_wait_ms = post_turn_embedder.peek_turn_wait_stats()
+                except Exception:
+                    log.debug("post-turn embedding wait counters unavailable", exc_info=True)
+                try:
+                    post_turn_embed_calls, post_turn_embed_ms = post_turn_embedder.end_turn()
+                except Exception:
+                    log.debug("post-turn embedding counters failed to close", exc_info=True)
         post_turn_ms = (time.perf_counter() - post_turn_started_at) * 1000.0
-        # The cascade is supposed to be cheap; a slow one is latency the
-        # user feels after the reply finished, so it escalates to INFO
-        # rather than hiding at DEBUG with the routine case.
+        # Surface slow post-turn completions in the ordinary log.
         log.log(
             logging.INFO if post_turn_ms >= _POST_TURN_SLOW_MS else logging.DEBUG,
-            "post-turn done: post_turn_ms=%.1f mode=%s",
+            "post-turn done: post_turn_ms=%.1f mode=%s post_turn_embed_calls=%d "
+            "post_turn_embed_ms=%.1f post_turn_embed_wait_ms=%.1f",
             post_turn_ms,
             mode,
+            post_turn_embed_calls,
+            post_turn_embed_ms,
+            post_turn_embed_wait_ms,
         )
 
         # Context occupancy uses the largest single Ollama call's prompt
@@ -417,6 +430,9 @@ class ChatTurnMixin:
             # before it ran -- so read it as "extra latency the user waited
             # after the reply finished streaming".
             "post_turn_ms": round(post_turn_ms, 1),
+            "post_turn_embed_calls": post_turn_embed_calls,
+            "post_turn_embed_ms": round(post_turn_embed_ms, 1),
+            "post_turn_embed_wait_ms": round(post_turn_embed_wait_ms, 1),
             "filler_emitted": bool(getattr(result, "filler_emitted", False)),
             # K32: the SQLite ``messages.id`` of the assistant row just
             # persisted, so the frontend can stamp the live bubble's

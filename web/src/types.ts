@@ -2058,6 +2058,9 @@ export interface MetricsSnapshot {
   // P16: post-turn inner-life cascade wall time. Runs after the reply
   // has finished streaming, so it is not included in ``total_ms``.
   post_turn_ms?: number;
+  post_turn_embed_calls?: number;
+  post_turn_embed_ms?: number;
+  post_turn_embed_wait_ms?: number;
 }
 
 export interface MetricsConfig {

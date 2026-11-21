@@ -463,7 +463,7 @@ class PostTurnMixin(PostTurnHelpersMixin):
                 assistant_text=assistant_text,
                 assistant_message_id=assistant_message_id,
                 reply_vec=getattr(self, "_last_assistant_vec", None),
-                turn_vec=self._combined_turn_vec(
+                turn_vec_provider=lambda: self._combined_turn_vec(
                     user_text=user_text, assistant_text=assistant_text,
                 ),
             )

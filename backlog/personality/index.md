@@ -345,9 +345,8 @@ message through the existing history interface. D9 starts as archive navigation.
 - [P11](perf.md#p11-measure-worker-reasoning-token-overhead-on-the-actual-route) — **partial**:
   Measure reasoning-token leakage on the actual worker model/provider and compare native controls
   before prompt suffixes or model changes; the historic qwen route is not assumed current.
-- [P16](perf.md#p16-post-turn-inner-life-blocks-the-brain-loop) — **partial**: Collect current
-  cost/ordering evidence, then split only safe eventual work with stale-turn guards; next-turn
-  repair/answer state must remain timely.
+- [P16](perf.md#p16-post-turn-inner-life-blocks-the-brain-loop) — **partial**: Cue settlement
+  skips unused embeddings. Use the post-turn counters to measure the remaining synchronous cost.
 - [P24](perf.md#p24-remaining-speech-latency-contracts-and-benchmarks) — **partial**: Complete the
   benchmark and targeted contracts below: useful-audio onset, safe endpointing,
   generation/audio-coverage identity, bounded cancellable finalization, first-chunk release,
@@ -377,10 +376,8 @@ message through the existing history interface. D9 starts as archive navigation.
 - [P46](perf.md#p46-parallel-compute-lane-drain) — **deferred**: Make shared
   WorldStore/ConceptStore/cache/SQLite state safe before parallel compute drain; do not add
   concurrency solely to reduce queue counters.
-- [P49](perf.md#p49-the-telemetry-ledgers-are-the-fastest-growing-tables) — **open**: Schedule
-  appropriate ledger retention and fix remaining non-selective aggregates; decide
-  transcript/concept-history preservation separately. Bound disk without confusing diagnostics with
-  authoritative history.
+- [P49](perf.md#p49-the-telemetry-ledgers-are-the-fastest-growing-tables) — **partial**: The default
+  semantic floor replay reads its ledger window once. Retention and other aggregates remain open.
 - [P50](perf.md#p50-finish-joint-handling-and-content-admission) — **partial**: Complete
   semantics-aware content/handling admission for other providers; decide frequent pooled-note
   placement and avoid admitting unexplained cues. The cap itself is already implemented (RS4).

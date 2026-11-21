@@ -50,10 +50,18 @@ current.
 
 **Status: Partial.**
 
-**Implemented / available:** post_turn_ms measures the inline cascade separately from reply total time.
+**Implemented / available:** `post_turn_ms` measures the inline cascade separately from reply
+time. It now reports embedding provider calls, provider time and shared-request wait time.
+Cue settlement requests a combined turn embedding only when a whole-turn cue has a vector to
+compare. Multiple cues share that vector, and the gap resolver can supply it from its cache.
 
-**Remaining:** Collect current cost/ordering evidence, then split only safe eventual work with
-stale-turn guards; next-turn repair/answer state must remain timely.
+The 25 slow typed turns logged at INFO on 19–20 Nov 2026 had a median post-turn time of
+456 ms. This sample includes only cascades at or above the logging threshold. Isolated tests
+confirmed zero combined embedding requests for empty, reply-only and lexical-only cue pools,
+and one shared request for two embedded whole-turn cues.
+
+**Remaining:** Measure embedding time on ordinary turns and isolate other slow steps before
+moving work off-thread. Preserve next-turn repair and answer state.
 
 [Implemented slice](shipped/audit-2026-10-24.md#perf-p16).
 
@@ -230,9 +238,12 @@ drain; do not add concurrency solely to reduce queue counters.
 
 ## P49. The telemetry ledgers are the fastest-growing tables
 
-**Status: Open implementation.**
+**Status: Partial.**
 
-**Implemented / available:** Telemetry stores expose pruning APIs and bounded diagnostic receipts now exist.
+**Implemented / available:** Telemetry stores expose pruning APIs and bounded diagnostic receipts.
+Semantic-floor replay evaluates all six default thresholds in one ledger query. On a disposable
+120,000-row ledger, seven-day replay took 265 → 46 ms and lifetime replay took 88 → 28 ms
+over nine warm trials per build. Both replay results matched the old query.
 
 **Remaining:** Schedule appropriate ledger retention and fix remaining non-selective aggregates;
 decide transcript/concept-history preservation separately. Bound disk without confusing diagnostics

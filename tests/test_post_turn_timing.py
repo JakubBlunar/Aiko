@@ -18,11 +18,15 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import numpy as np
 
 from app.core.infra.chat_database import ChatDatabase
+from app.core.infra.settings import LlmEmbedding
 from app.core.session.session_controller import SessionController
 from app.core.session.turn_runner import TurnResult
+from app.llm.embedder import Embedder
 
 
 class _FakeTurnRunner:
@@ -143,6 +147,25 @@ class PostTurnTimingTests(_Case):
         self.controller._post_turn_inner_life = lambda **_: None
         self.controller.chat_once_streaming(user_text="hi", mode="typed")
         self.assertIn("post_turn_ms", self.controller.get_last_metrics())
+
+    def test_post_turn_counts_provider_calls_even_if_the_cascade_raises(self) -> None:
+        embedder = Embedder(LlmEmbedding(model="stub"), base_url="")
+        self.addCleanup(embedder.close)
+        self.controller._embedder = embedder
+
+        def cascade(**_kw):
+            embedder.embed("one text")
+            embedder.embed("one text")  # cache hit
+            raise RuntimeError("cascade broke")
+
+        self.controller._post_turn_inner_life = cascade
+        with patch.object(embedder, "_call_ollama", return_value=np.ones(1)) as provider:
+            self.controller.chat_once_streaming(user_text="hi", mode="typed")
+            provider.assert_called_once_with("one text")
+        metrics = self.controller.get_last_metrics()
+        self.assertEqual(metrics["post_turn_embed_calls"], 1)
+        self.assertEqual(metrics["post_turn_embed_wait_ms"], 0)
+        self.assertEqual(embedder.end_turn(), (0, 0.0))
 
 
 class PostTurnLoggingTests(_Case):

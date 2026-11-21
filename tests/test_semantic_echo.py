@@ -549,6 +549,27 @@ class EchoBreakdownTests(unittest.TestCase):
         )
         self.assertEqual(rows[0]["would_match"], 0)
 
+    def test_floor_replay_batches_queries_and_preserves_inclusive_duplicate_floors(self) -> None:
+        self._row(1, echo_detector.EchoVerdict(ECHO_SEMANTIC, 0.75), "engaged")
+        self.store.add_many(
+            2, [SurfacedItem(ITEM_KIND_MEMORY, 2)],
+            echoes={(ITEM_KIND_MEMORY, 2): echo_detector.EchoVerdict(ECHO_NONE, 0.82)},
+        )
+        conn = self.db._get_conn()
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            floors = (0.90, 0.75, 0.50, 0.75)
+            rows = self.store.semantic_floor_candidates(window_days=7, floors=floors)
+            self.assertEqual([r["floor"] for r in rows], list(floors))
+            self.assertEqual([r["would_match"] for r in rows], [0, 1, 1, 1])
+            self.assertEqual(len(statements), 1)
+            statements.clear()
+            self.assertEqual(len(self.store.semantic_floor_candidates(floors=(0.5,) * 129)), 129)
+            self.assertEqual(len(statements), 2)
+        finally:
+            conn.set_trace_callback(None)
+
     def test_the_reads_survive_a_missing_table(self) -> None:
         self.db._get_conn().execute("DROP TABLE surfacing_outcomes")
         self.assertEqual(self.store.echo_breakdown(window_days=7), [])

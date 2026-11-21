@@ -733,30 +733,33 @@ class SurfacingOutcomeStore:
             base_params.append(cutoff.isoformat())
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         out = []
-        for floor in floors:
-            try:
-                row = conn.execute(
-                    "SELECT COUNT(*), "
-                    "       SUM(CASE WHEN engagement_label = ? THEN 1 ELSE 0 END) "
-                    "FROM surfacing_outcomes "
-                    f"WHERE {' AND '.join(base_where)} AND echo_score >= ?",
-                    (ENGAGED_LABEL, *base_params, float(floor)),
-                ).fetchone()
-            except Exception:
-                log.warning(
-                    "surfacing ledger floor replay failed", exc_info=True
+        try:
+            levels = [float(floor) for floor in floors]
+            # Bound SQLite's result columns and bind count for custom sweeps.
+            # The ordinary six-floor report scans the eligible window once.
+            for start in range(0, len(levels), 128):
+                chunk = levels[start:start + 128]
+                counts = ", ".join(
+                    "COUNT(CASE WHEN echo_score >= ? THEN 1 END), "
+                    "COUNT(CASE WHEN echo_score >= ? AND engagement_label = ? THEN 1 END)"
+                    for _ in chunk
                 )
-                return []
-            settled = int(row[0] or 0) if row else 0
-            engaged = int(row[1] or 0) if row else 0
-            out.append({
-                "floor": float(floor),
-                "would_match": settled,
-                "engaged": engaged,
-                "engaged_rate": (
-                    round(engaged / settled, 4) if settled else None
-                ),
-            })
+                params = [value for floor in chunk for value in (floor, floor, ENGAGED_LABEL)]
+                row = conn.execute(
+                    f"SELECT {counts} FROM surfacing_outcomes WHERE {' AND '.join(base_where)}",
+                    (*params, *base_params),
+                ).fetchone()
+                for i, floor in enumerate(chunk):
+                    settled, engaged = row[2 * i:2 * i + 2]
+                    out.append({
+                        "floor": floor,
+                        "would_match": settled,
+                        "engaged": engaged,
+                        "engaged_rate": round(engaged / settled, 4) if settled else None,
+                    })
+        except Exception:
+            log.warning("surfacing ledger floor replay failed", exc_info=True)
+            return []
         return out
 
     def count(self, *, window_days: int | None = None) -> int:
