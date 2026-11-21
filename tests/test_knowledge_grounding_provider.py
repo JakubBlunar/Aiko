@@ -121,6 +121,25 @@ def _embedder() -> _DictEmbedder:
 
 
 class KnowledgeGroundingProviderTests(unittest.TestCase):
+    def test_shortlist_keeps_strongest_duplicate_and_stable_ties(self) -> None:
+        from app.core.memory.knowledge_grounding import rank_knowledge
+
+        query = np.asarray([2.0, 0.0], dtype=np.float32)
+        rows = [
+            _FakeMemory(text, "knowledge", np.asarray(vec, dtype=np.float32))
+            for text, vec in (
+                ("Earlier weak fact", [1.0, 1.0]),
+                ("Same fact", [0.6, 0.8]),
+                ("Independent fact", [3.0, 0.0]),
+                (" SAME FACT ", [1.0, 0.0]),
+                ("Later equal fact", [2.0, 0.0]),
+                ("Invalid fact", [float("nan"), 0.0]),
+            )
+        ]
+        ranked, considered = rank_knowledge(iter(rows), query, threshold=0.5, limit=2)
+        self.assertEqual(ranked, [(1.0, "Independent fact"), (1.0, "SAME FACT")])
+        self.assertEqual(considered, 5)
+
     def test_fires_on_question_with_close_knowledge(self) -> None:
         host = _Host(
             memory_store=_store_with_near_knowledge(),

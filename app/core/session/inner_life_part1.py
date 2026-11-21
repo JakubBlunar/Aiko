@@ -1592,6 +1592,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         prefetcher = getattr(self, "_rag_prefetcher", None)
         prefetch_event = "skip"
         embedding = None
+        shared_embed_failed = False
         pooled_hits: list | None = None
         if prefetcher is not None:
             try:
@@ -1615,7 +1616,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     embedding = embedder.embed(query)
             except Exception:
                 log.debug("relevant_context: shared embed failed", exc_info=True)
-                embedding = None
+                # RAG normally uses the very same embedder and query. A
+                # second request could add another provider timeout to this turn.
+                shared_embed_failed = getattr(rag, "_embedder", None) is embedder
         record_stage("query_embedding")
 
         # ── candidate gathering ─────────────────────────────────────────
@@ -1624,6 +1627,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         if rag is not None:
             if pooled_hits is not None:
                 hits = pooled_hits
+            elif shared_embed_failed:
+                hits = []
             else:
                 try:
                     pool_k = max(0, int(getattr(ms, "context_budget_memory_pool_k", 18)))

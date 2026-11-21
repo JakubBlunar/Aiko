@@ -363,7 +363,8 @@ message through the existing history interface. D9 starts as archive navigation.
   contention and graph growth; define snapshot/event thinning and any remaining dirty-work
   refinements without discarding durable history. P34/P49 own retention decisions.
 - [P33](perf.md#p33-inner-life-providers-walk-the-whole-memory-mirror-every-turn) — **partial**:
-  Kind-filtered reads use a mirror index. Bound the knowledge similarity scan as its corpus grows.
+  Kind-filtered reads use a mirror index and knowledge ranking keeps a bounded shortlist.
+  Measure the remaining similarity scan on ordinary questions.
 - [P34](perf.md#p34-unbounded-tables-messages-lance-mirror-concept_events) — **open**: Decide
   retention separately for authoritative messages, the Lance mirror and concept-event noise. Add
   reconciled index filtering/thinning only with explicit preservation/deletion semantics.

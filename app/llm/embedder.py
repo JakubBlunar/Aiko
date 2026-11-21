@@ -272,10 +272,13 @@ def build_embedder(llm: LlmSettings, **kwargs) -> Embedder:
     return Embedder(config, base_url=provider.base_url, **kwargs)
 
 
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+def cosine_similarity(
+    a: np.ndarray, b: np.ndarray, *, a_norm: float | None = None,
+) -> float:
     """Cosine similarity of two vectors. Vectors should already be unit-norm.
 
     Falls back to a dot/norm calculation if either is not normalized.
+    Repeated comparisons against the same query can pass its precomputed norm.
     """
     if a is None or b is None:
         return 0.0
@@ -283,7 +286,7 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
         return 0.0
     if a.shape != b.shape:
         return 0.0
-    na = float(np.linalg.norm(a))
+    na = float(np.linalg.norm(a)) if a_norm is None else a_norm
     nb = float(np.linalg.norm(b))
     if na == 0.0 or nb == 0.0:
         return 0.0

@@ -103,6 +103,15 @@ lookup, prefetch lookup, the shared query embedding, memory and graph candidates
 budget selection, and rendering with surfacing accounting. A prebuilt prompt
 carries timings from when its context was built.
 
+If the shared query embedding fails, memory recall skips that request for
+the turn when it would use the same embedder. A different recall embedder
+can still run, and a subsequent turn can retry the original route.
+
+For informational questions, knowledge grounding computes the query norm
+once, then keeps the highest-scoring distinct learned facts up to the prompt
+limit. Scores are compared across knowledge and curiosity findings, with
+stable source order for ties.
+
 `get_last_response_detail` reports the post-turn cascade as `post_turn_ms`,
 with provider work in `post_turn_embed_calls` and `post_turn_embed_ms` and
 shared-request waits in `post_turn_embed_wait_ms`. Cue settlement asks for

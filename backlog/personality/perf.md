@@ -10,6 +10,9 @@ audit](shipped/audit-2026-10-24.md).
 **Status: Open implementation.**
 
 **Implemented / available:** Voice RAG prefetch and composing-presence frames exist.
+The context builder skips memory retrieval for the turn when its shared query embedding
+fails and RAG uses that same embedder. When RAG uses a different embedder, its fallback
+still runs. The next turn can try the shared embedder again.
 
 **21 Nov 2026 baseline:** The live prefetcher reported 50 lookup misses and zero submissions.
 Across 50 recent completed turns, median context-region time (`rag_lookup_ms`) was 953 ms
@@ -180,7 +183,13 @@ kind index over the memory mirror. Add, reclassification, deletion, pruning,
 and reload keep it in sync. A snapshot of 155 reflections from 6,200 memories
 fell from about 91 to 0.7 microseconds in an isolated benchmark.
 
-**Remaining:** Bound the per-kind knowledge similarity scan as the learned corpus grows.
+Knowledge grounding now reuses the query norm and keeps only the strongest distinct
+facts up to the prompt limit. It still scores both eligible kinds and preserves input
+order for equal scores. With 5,000 synthetic 1,024-dimensional facts and a two-fact
+limit, median ranking fell from 15.3 to 11.1 ms with identical output. Peak traced
+ranking allocations fell from 510 to 1.8 KiB, excluding the input rows.
+
+**Remaining:** Measure the similarity scan on ordinary questions as the learned corpus grows.
 
 [Implemented slice](shipped/audit-2026-10-24.md#perf-p33).
 

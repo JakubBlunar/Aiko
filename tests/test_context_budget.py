@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import Mock
 from types import SimpleNamespace
 
 import numpy as np
@@ -513,6 +514,33 @@ class RegionBuilderTests(unittest.TestCase):
                 return "Jacob"
 
         return _Host(), store
+
+    def test_failed_query_embedding_only_falls_back_to_a_different_embedder(self) -> None:
+        for same_embedder in (True, False):
+            with self.subTest(same_embedder=same_embedder):
+                host, _ = self._host()
+                failing = SimpleNamespace(embed=Mock(side_effect=TimeoutError("offline")))
+                fallback = host._rag_retriever._embedder
+                host._embedder = failing
+                if same_embedder:
+                    host._rag_retriever._embedder = failing
+                region = host.build_relevant_context(
+                    user_text="tell me about hiking", recent_turns=["weekend plans"],
+                    session_key="s1", budget_tokens=2000,
+                )
+                failing.embed.assert_called_once_with(
+                    host._rag_retriever._build_query("tell me about hiking", ["weekend plans"]),
+                )
+                if same_embedder:
+                    self.assertNotIn("memory 0", region.text)
+                    host._embedder = host._rag_retriever._embedder = fallback
+                    next_region = host.build_relevant_context(
+                        user_text="tell me about hiking", recent_turns=["weekend plans"],
+                        session_key="s1", budget_tokens=2000,
+                    )
+                    self.assertIn("memory 0", next_region.text)
+                else:
+                    self.assertIn("memory 0", region.text)
 
     def test_region_composes_all_three_sources(self) -> None:
         host, store = self._host()

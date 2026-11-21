@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from itertools import chain
 from types import SimpleNamespace
 from typing import Any
 
@@ -170,13 +171,12 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if store is None or embedder is None:
             return ""
         try:
-            rows = list(store.iter_by_kind("knowledge")) + list(
-                store.iter_by_kind("curiosity_finding")
-            )
+            knowledge = list(store.iter_by_kind("knowledge"))
+            findings = list(store.iter_by_kind("curiosity_finding"))
         except Exception:
             log.debug("knowledge-grounding: kind snapshot failed", exc_info=True)
             return ""
-        if not rows:
+        if not knowledge and not findings:
             return ""
         try:
             qvec = embedder.embed(text)
@@ -184,7 +184,7 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
             log.debug("knowledge-grounding: embed failed", exc_info=True)
             return ""
 
-        from app.llm.embedder import cosine_similarity
+        from app.core.memory.knowledge_grounding import rank_knowledge
 
         mem_settings = self._memory_settings
         threshold = float(
@@ -200,43 +200,23 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
                 )
             ),
         )
-        scored: list[tuple[float, str]] = []
-        for mem in rows:
-            emb = getattr(mem, "embedding", None)
-            if emb is None or getattr(emb, "size", 0) == 0:
-                continue
-            try:
-                sim = float(cosine_similarity(qvec, emb))
-            except Exception:
-                continue
-            if sim < threshold:
-                continue
-            content = (getattr(mem, "content", "") or "").strip()
-            if content:
-                scored.append((sim, content))
+        scored, candidate_count = rank_knowledge(
+            chain(knowledge, findings), qvec, threshold=threshold, limit=max_items,
+        )
         if not scored:
             return ""
-        scored.sort(key=lambda t: t[0], reverse=True)
-
         bullets: list[str] = []
-        seen: set[str] = set()
         for _sim, content in scored:
-            key = content.lower()
-            if key in seen:
-                continue
-            seen.add(key)
             snippet = (
                 content
                 if len(content) <= 160
                 else content[:159].rstrip() + "\u2026"
             )
             bullets.append(f"- {snippet}")
-            if len(bullets) >= max_items:
-                break
 
         log.info(
             "knowledge-grounding fire: candidates=%d surfaced=%d top=%.3f",
-            len(scored),
+            candidate_count,
             len(bullets),
             scored[0][0],
         )
