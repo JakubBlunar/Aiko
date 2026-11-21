@@ -145,6 +145,8 @@ _TOOL_FAMILY: dict[str, str] = {
     "available_home_actions": "world",
     "perform_home_action": "world",
     "browse_home_catalogue": "world",
+    "read_keepsake_notes": "world",
+    "leave_keepsake_note": "world",
     # goals
     "add_goal": "goals",
     "update_goal_progress": "goals",
@@ -285,6 +287,8 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
     "world": _compile([
         r"room", r"move", r"couch", r"bed", r"desk", r"window",
         r"bookshelf", r"kitchenette", r"beanbag", r"mirror",
+        r"(?:our|keepsake|memory) box", r"keepsake notes?",
+        r"(?:put|save|leave|open|read)\b[^\n]{0,45}\bthe box",
         r"sit", r"lie down", r"lay down", r"posture", r"stand",
         r"eat", r"drink", r"cookies?", r"tea", r"snacks?",
         r"look around", r"garden", r"plants?", r"water", r"seeds?",

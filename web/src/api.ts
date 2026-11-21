@@ -64,6 +64,8 @@ import type {
   UploadDocumentResponse,
   WorldItem,
   HomeHouseholdSnapshot,
+  KeepsakeNote,
+  KeepsakeNotesPage,
   WorldItemPayload,
   WorldLocation,
   WorldLocationPayload,
@@ -970,6 +972,17 @@ export const api = {
       location: WorldLocation | null;
     }>(`/api/world/scenes/${id}/travel`, { method: "POST" }),
   homeHousehold: () => jsonFetch<HomeHouseholdSnapshot>("/api/world/home"),
+  readKeepsakeNotes: (itemId: number, beforeId: number | null, signal: AbortSignal) =>
+    jsonFetch<KeepsakeNotesPage>(
+      `/api/world/items/${itemId}/keepsake-notes${beforeId === null ? "" : `?before_id=${beforeId}`}`,
+      { signal },
+    ),
+  leaveKeepsakeNote: (itemId: number, text: string, requestKey: string) =>
+    jsonFetch<{ note: KeepsakeNote }>(`/api/world/items/${itemId}/keepsake-notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, request_key: requestKey }),
+    }),
   restoreHomePossession: (token: string) => jsonFetch<{ already_applied: boolean }>(
     "/api/world/home/action", {
       method: "POST", headers: { "Content-Type": "application/json" },

@@ -52,6 +52,9 @@ from app.core.world.home_bathroom_mixin import HomeBathroomMixin
 from app.core.world.home_lifecycle_mixin import HomeLifecycleMixin
 from app.core.world.home_sketchbook_mixin import HomeSketchbookMixin
 from app.core.world.home_belongings import active_item
+from app.core.world.keepsake_box import (
+    KEEPSAKE_BOX_SLUG, KeepsakeBoxMixin, ProtectedKeepsakeBox, is_keepsake_box,
+)
 
 
 log = logging.getLogger("app.world_store")
@@ -896,7 +899,7 @@ _DEFAULT_INITIAL_STATE = {
 
 class WorldStore(
     HomeActionsMixin, HomeBathroomMixin, HomeLifecycleMixin, HomeSketchbookMixin,
-    WorldCarryMixin, WorldScenesMixin,
+    KeepsakeBoxMixin, WorldCarryMixin, WorldScenesMixin,
 ):
     """Thread-safe room model backed by ``world_*`` SQLite tables."""
 
@@ -1404,6 +1407,8 @@ class WorldStore(
         if clean_kind not in VALID_KINDS:
             clean_kind = "other"
         clean_slug = (slug or _slugify(clean_name)).strip().lower()
+        if clean_slug == KEEPSAKE_BOX_SLUG and given_by == "household":
+            raise ProtectedKeepsakeBox()
         clean_qty = max(1, int(quantity))
         clean_state = dict(state or {})
         if clean_kind == "vessel":
@@ -1532,6 +1537,8 @@ class WorldStore(
             item = self._items.get(int(item_id))
         if item is None:
             return None
+        if is_keepsake_box(item):
+            raise ProtectedKeepsakeBox()
         new_name = item.name if name is None else (str(name).strip() or item.name)
         new_desc = item.description if description is None else str(description).strip()
         new_kind = item.kind
@@ -1614,6 +1621,8 @@ class WorldStore(
             item = self._items.get(int(item_id))
         if item is None:
             return None, 0
+        if is_keepsake_box(item):
+            raise ProtectedKeepsakeBox()
         consumed = min(amt, item.quantity)
         new_qty = item.quantity - consumed
         conn = self._get_conn()
@@ -1641,8 +1650,11 @@ class WorldStore(
     def remove_item(self, item_id: int) -> bool:
         iid = int(item_id)
         with self._lock:
-            if iid not in self._items:
+            item = self._items.get(iid)
+            if item is None:
                 return False
+            if is_keepsake_box(item):
+                raise ProtectedKeepsakeBox()
         conn = self._get_conn()
         conn.execute("DELETE FROM world_items WHERE id = ?", (iid,))
         conn.commit()
@@ -2068,6 +2080,7 @@ class WorldStore(
             self.ensure_garden_seed()
         except Exception:
             log.debug("ensure_garden_seed during seed_default failed", exc_info=True)
+        self.ensure_keepsake_box()
         # Initial state.
         starting_loc = slug_to_id.get(_DEFAULT_INITIAL_STATE["location_slug"])
         self.set_state(

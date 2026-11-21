@@ -62,6 +62,14 @@ _ALL_TOOLS = [
 _NO_CONTEXT = GateContext()
 
 
+@pytest.mark.parametrize("text", ["What's in our box?", "Put this moment in the box."])
+def test_keepsake_box_requests_expose_both_tools(text):
+    names = ["read_keepsake_notes", "leave_keepsake_note"]
+    decision = should_run_tool_pass(text, names, context=_NO_CONTEXT)
+    assert decision.reason == "signal_world"
+    assert select_active_tool_names(decision, names, router_enabled=True) == set(names)
+
+
 @pytest.mark.parametrize("text", [
     "Thanks!", "That works, thanks.", "Thanks, that's all.", "Goodbye!",
     "See you later.", "Thanks, that's all. A short goodbye, please.",

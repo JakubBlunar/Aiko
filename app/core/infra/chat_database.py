@@ -436,6 +436,16 @@ CREATE TABLE IF NOT EXISTS world_items (
 CREATE INDEX IF NOT EXISTS idx_world_items_location ON world_items(location_id);
 CREATE INDEX IF NOT EXISTS idx_world_items_slug ON world_items(slug);
 
+-- The shared box refurnishes with the room. Its notes survive a room reset.
+CREATE TABLE IF NOT EXISTS world_keepsake_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    author TEXT NOT NULL CHECK (author IN ('user', 'aiko')),
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    request_key TEXT,
+    UNIQUE (author, request_key)
+);
+
 CREATE TABLE IF NOT EXISTS world_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     scene_id INTEGER,

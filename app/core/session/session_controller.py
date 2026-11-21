@@ -859,12 +859,13 @@ class SessionController(
             except Exception:
                 log.warning("world ensure_garden_seed failed", exc_info=True)
             try:
+                self._world_store.ensure_keepsake_box()
                 self._world_store.ensure_home_drinks()
                 self._world_store.ensure_home_bathroom()
                 self._world_store.ensure_home_lifecycle()
                 self._world_store.ensure_home_sketchbook()
             except Exception:
-                log.warning("world ensure_home_drinks failed", exc_info=True)
+                log.warning("world household setup failed", exc_info=True)
         except Exception:
             log.warning("WorldStore failed to initialise", exc_info=True)
             self._world_store = None

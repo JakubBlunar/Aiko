@@ -5,6 +5,7 @@ import { WorldCreation } from "../WorldCreation";
 import { WorldDrink } from "../WorldDrink";
 import { WorldBathroom } from "../WorldBathroom";
 import { WorldSketchbook } from "../WorldSketchbook";
+import { WorldKeepsakeBox } from "./WorldKeepsakeBox";
 
 interface ItemRowProps {
   item: WorldItem;
@@ -33,6 +34,7 @@ export function WorldItemRow({
   onConsume,
   busy,
 }: ItemRowProps) {
+  const keepsakeBox = item.slug === "shared_keepsake_box" && item.given_by === "household";
   return (
     <li
       className={`rounded-md border px-3 py-2 text-xs ${
@@ -166,6 +168,7 @@ export function WorldItemRow({
             <WorldSketchbook item={item} />
             <WorldDrink item={item} />
             <WorldBathroom item={item} />
+            {keepsakeBox && <WorldKeepsakeBox item={item} />}
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-wide text-ink-100/40">
               <span className="rounded bg-white/5 px-1.5 py-0.5 text-ink-100/60">
                 {item.kind.replace(/_/g, " ")}
@@ -193,7 +196,7 @@ export function WorldItemRow({
               ) : null}
             </div>
           </div>
-          <div className="flex shrink-0 flex-col gap-1">
+          {!keepsakeBox && <div className="flex shrink-0 flex-col gap-1">
             {item.consumable && item.quantity > 0 ? (
               <button
                 type="button"
@@ -219,7 +222,7 @@ export function WorldItemRow({
             >
               remove
             </button>
-          </div>
+          </div>}
         </div>
       )}
     </li>

@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse, Response
 
 from app.core.session.web_facade_mixin import WorkerUnavailable
+from app.core.world.keepsake_box import ProtectedKeepsakeBox
 
 
 log = logging.getLogger("app.web.server")
@@ -13,9 +14,10 @@ log = logging.getLogger("app.web.server")
 
 def register(app, session, hub, _broadcast_context_window, live_session) -> None:
     """REST routes: memory world routes."""
-    from app.web.rest import idle_life_routes
+    from app.web.rest import idle_life_routes, keepsake_box_routes
 
     idle_life_routes.register(app, session)
+    keepsake_box_routes.register(app, session)
     def _on_memory_updated(snapshot: dict[str, Any]) -> None:
         hub.broadcast({"type": "memory_updated", "memory": snapshot})
 
@@ -1208,17 +1210,20 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
         given_by = payload.get("given_by")
         if given_by is not None and not isinstance(given_by, str):
             raise HTTPException(400, "given_by must be a string")
-        result = session.add_world_item(
-            name=name,
-            kind=kind,
-            slug=slug if isinstance(slug, str) and slug.strip() else None,
-            description=description,
-            location_id=location_id,
-            consumable=consumable,
-            quantity=quantity,
-            state=state,
-            given_by=given_by,
-        )
+        try:
+            result = session.add_world_item(
+                name=name,
+                kind=kind,
+                slug=slug if isinstance(slug, str) and slug.strip() else None,
+                description=description,
+                location_id=location_id,
+                consumable=consumable,
+                quantity=quantity,
+                state=state,
+                given_by=given_by,
+            )
+        except ProtectedKeepsakeBox as exc:
+            raise HTTPException(409, str(exc)) from exc
         if result is None:
             raise HTTPException(503, "world store unavailable")
         return JSONResponse({"item": result})
@@ -1253,14 +1258,20 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             kwargs["state"] = value
         if not kwargs:
             raise HTTPException(400, "patch must include at least one field")
-        result = session.update_world_item(int(item_id), **kwargs)
+        try:
+            result = session.update_world_item(int(item_id), **kwargs)
+        except ProtectedKeepsakeBox as exc:
+            raise HTTPException(409, str(exc)) from exc
         if result is None:
             raise HTTPException(404, "item not found")
         return JSONResponse({"item": result})
 
     @app.delete("/api/world/items/{item_id}")
     def delete_world_item(item_id: int) -> JSONResponse:
-        ok = session.delete_world_item(int(item_id))
+        try:
+            ok = session.delete_world_item(int(item_id))
+        except ProtectedKeepsakeBox as exc:
+            raise HTTPException(409, str(exc)) from exc
         if not ok:
             raise HTTPException(404, "item not found")
         return JSONResponse({"deleted_item_id": int(item_id)})
@@ -1275,7 +1286,10 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
             if not isinstance(value, int) or value < 1:
                 raise HTTPException(400, "amount must be a positive integer")
             amount = value
-        result = session.consume_world_item(int(item_id), amount=amount)
+        try:
+            result = session.consume_world_item(int(item_id), amount=amount)
+        except ProtectedKeepsakeBox as exc:
+            raise HTTPException(409, str(exc)) from exc
         if result is None:
             raise HTTPException(404, "item not found")
         return JSONResponse(result)

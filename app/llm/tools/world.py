@@ -974,6 +974,7 @@ def build_world_tools(session: "SessionController") -> list[Any]:
     from app.llm.tools.home_actions import (
         AvailableHomeActionsTool, BrowseHomeCatalogueTool, PerformHomeActionTool,
     )
+    from app.llm.tools.keepsake_box import LeaveKeepsakeNoteTool, ReadKeepsakeNotesTool
 
     return [
         LookAroundTool(session),
@@ -989,4 +990,6 @@ def build_world_tools(session: "SessionController") -> list[Any]:
         AvailableHomeActionsTool(session),
         PerformHomeActionTool(session),
         BrowseHomeCatalogueTool(session),
+        ReadKeepsakeNotesTool(session),
+        LeaveKeepsakeNoteTool(session),
     ]

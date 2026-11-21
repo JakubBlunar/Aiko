@@ -2281,6 +2281,18 @@ export interface WorldSnapshot {
   enabled: boolean;
 }
 
+export interface KeepsakeNote {
+  id: number;
+  author: "user" | "aiko";
+  text: string;
+  created_at: string;
+}
+
+export interface KeepsakeNotesPage {
+  notes: KeepsakeNote[];
+  next_before_id: number | null;
+}
+
 export interface HomeHouseholdSnapshot {
   enabled: boolean;
   catalogue: { id: string; name: string; kind: string }[];

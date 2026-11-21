@@ -25,7 +25,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import timedelta
 from itertools import islice
 from pathlib import Path
@@ -146,6 +146,12 @@ class DocumentChunk:
             content=str(row.get("content", "")),
             created_at=str(row.get("created_at", "")),
         )
+
+
+_SEARCH_COLUMNS = {
+    record: [*(field.name for field in fields(record)), "_distance"]
+    for record in (MemoryRecord, MessageRecord, DocumentChunk)
+}
 
 
 @dataclass(slots=True)
@@ -625,7 +631,7 @@ class RagStore:
             top_k=top_k,
             min_score=min_score,
             source="memory",
-            row_factory=MemoryRecord.from_row,
+            record_type=MemoryRecord,
             extra_filter=_kinds_filter(kinds),
             salience_boost=True,
         )
@@ -857,7 +863,7 @@ class RagStore:
             top_k=top_k,
             min_score=min_score,
             source="message",
-            row_factory=MessageRecord.from_row,
+            record_type=MessageRecord,
             extra_filter=extra,
         )
 
@@ -950,7 +956,7 @@ class RagStore:
             top_k=top_k,
             min_score=min_score,
             source="document",
-            row_factory=DocumentChunk.from_row,
+            record_type=DocumentChunk,
         )
 
     # ── shared search core ──────────────────────────────────────────────
@@ -963,7 +969,7 @@ class RagStore:
         top_k: int,
         min_score: float,
         source: str,
-        row_factory: Any,
+        record_type: type[MemoryRecord] | type[MessageRecord] | type[DocumentChunk],
         extra_filter: str | None = None,
         salience_boost: bool = False,
     ) -> list[RagHit]:
@@ -976,7 +982,8 @@ class RagStore:
                 builder = table.search(q).metric("cosine").limit(int(top_k * 2 + 4))
                 if extra_filter:
                     builder = builder.where(extra_filter, prefilter=True)
-                rows = builder.to_list()
+                # Return the scored record without materializing its vector in Python.
+                rows = builder.select(_SEARCH_COLUMNS[record_type]).to_list()
             except Exception:
                 log.debug("search failed on %s", source, exc_info=True)
                 return []
@@ -995,9 +1002,9 @@ class RagStore:
                 sal = float(row.get("salience", 0.5))
                 score = similarity + 0.05 * (sal - 0.5)
             try:
-                rec = row_factory(row)
+                rec = record_type.from_row(row)
             except Exception:
-                log.debug("row_factory failed on %s", source, exc_info=True)
+                log.debug("record conversion failed on %s", source, exc_info=True)
                 continue
             hits.append(RagHit(source=source, score=score, record=rec))
         hits.sort(key=lambda h: h.score, reverse=True)
@@ -1032,6 +1039,7 @@ class RagStore:
                     self._memories.search(q)
                     .metric("cosine")
                     .limit(want + 2)
+                    .select(["id", "_distance"])
                     .to_list()
                 )
             except Exception:

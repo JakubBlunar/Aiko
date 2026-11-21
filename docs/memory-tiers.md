@@ -289,6 +289,11 @@ join withholds missing IDs and uses the canonical wording of rows still present.
 If a write stops between deleting and replacing an index row, the next startup
 sees a missing row and can insert it again.
 
+LanceDB ranks recall results by vector similarity and returns the fields used
+by the result records, plus the distance score. Topic clustering's neighbor
+lookup returns only IDs and distances. Both paths avoid converting the result
+vectors to Python lists.
+
 The same rows' embeddings are *also* held as one contiguous
 `(rows, dim)` float32 matrix in
 [`VectorIndex`](../app/core/memory/vector_index.py). That is not a

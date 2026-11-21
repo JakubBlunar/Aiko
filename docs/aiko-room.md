@@ -161,6 +161,19 @@ and retrieved through the normal bounded household lifecycle. This is the
 simple sketch backend. More polished image generation/editing, arbitrary crafts,
 and automatic visual critique remain possible extensions, not current abilities.
 
+## Our keepsake box
+
+The apartment's bookshelf holds a shared keepsake box. Open it under
+**World → Belongings → Items → Bookshelf** to read the notes or leave one. Aiko can use
+`read_keepsake_notes` and `leave_keepsake_note` in chat. Each slip retains
+its text, author and saved date. Either of you can leave a note when a
+moment feels worth keeping. Older pages stay available as the box fills.
+
+Existing apartments get the box the next time the backend starts. The
+box stays on the bookshelf and can't be stored, discarded, or removed
+through the World controls. A room reset restores the box with its notes.
+Notes are saved only when one of you writes one.
+
 ## Virtual shopping, storage and the bin
 
 The next-start migration adds a household organizer at the existing desk. Its

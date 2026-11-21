@@ -11,6 +11,12 @@ audit](shipped/audit-2026-10-24.md).
 
 **Implemented / available:** Voice RAG prefetch and composing-presence frames exist.
 
+**21 Nov 2026 baseline:** The live prefetcher reported 50 lookup misses and zero submissions.
+Across 50 recent completed turns, median context-region time (`rag_lookup_ms`) was 953 ms
+and median time to first token was 1,846 ms. The context-region timer includes embedding,
+retrieval and context selection. Compare typed and voice turns before attributing the delay
+to a particular stage or estimating how much prefetch could save.
+
 **Remaining:** Add bounded cancellable typed-draft prewarm with explicit privacy/opt-out behavior.
 Composing status alone is not draft prefetch.
 

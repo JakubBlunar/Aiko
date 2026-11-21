@@ -305,7 +305,7 @@ export function useWorldController(open: boolean, activeTab: string) {
   const onReseedWorld = async () => {
     if (
       !window.confirm(
-        "Reset Aiko's apartment to the default layout? Objects in her apartment will be removed. Scenes you created (your room, etc.) are kept.",
+        "Reset Aiko's apartment to the default layout? This replaces her apartment belongings. Your keepsake notes and custom scenes are kept.",
       )
     ) {
       return;
