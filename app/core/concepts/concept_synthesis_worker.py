@@ -3838,6 +3838,12 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         """
         if not hasattr(self, "_routing_stats"):
             self._routing_begin(stats)
+        if self._concept_store.dependencies.withdrawn_premises(concept.concept_id).intersection(
+            proposal.evidence
+        ):
+            # A reviewed premise can still exist in history. Repeating it must
+            # neither update the belief nor supply wording for a relabel.
+            return
         if proposal.kind == "generalization":
             depth = self._generalization_proposal_depth(proposal)
             if (depth is None or concept.subject != proposal.subject

@@ -81,13 +81,44 @@ class DependencyLedger:
             "FROM memories WHERE id = ?", (int(node[1]),),
         ).fetchone()
 
-    def _has_dependency_edge(self, kind, ident, concept_id):
-        return self.db._get_conn().execute(
-            "SELECT 1 FROM concept_edges WHERE src_type = ? AND src_id = ? "
+    def _dependency_issue(self, kind, ident, concept_id):
+        relations = {row[0] for row in self.db._get_conn().execute(
+            "SELECT relation FROM concept_edges WHERE src_type = ? AND src_id = ? "
             "AND dst_type = 'concept' AND dst_id = ? "
-            "AND relation = 'depends_on' AND polarity > 0 LIMIT 1",
+            "AND relation IN ('depends_on', 'withdrawn_support') AND polarity > 0",
             (str(kind), str(ident), str(concept_id)),
-        ).fetchone() is not None
+        )}
+        if "withdrawn_support" in relations:
+            return "reviewed_premise_withdrawn"
+        return "" if "depends_on" in relations else "dependency_edge_removed"
+
+    def withdrawn_premises(self, concept_id):
+        return set(self.db._get_conn().execute(
+            "SELECT src_type, src_id FROM concept_edges WHERE dst_type = 'concept' "
+            "AND dst_id = ? AND relation = 'withdrawn_support' AND polarity > 0",
+            (str(concept_id),),
+        ))
+
+    def withdraw_premise(self, concept_id, node):
+        """Record a reviewed premise withdrawal for one conclusion. Keep its history."""
+        from app.core.concepts.concept_store import ConceptEdge
+
+        cid = int(concept_id)
+        concept = self.store.get(cid)
+        if concept is None:
+            raise ValueError("dependency conclusion must exist")
+        kind, ident = node
+        node = (str(kind), str(int(ident)))
+        self.capture_legacy(concept)
+        if not any(tuple(member[:2]) == node
+                   for group in self.records.get(cid, []) for member in group):
+            raise ValueError("review requires an existing premise of this conclusion")
+        if node not in self.withdrawn_premises(cid):
+            edge = ConceptEdge(*node, "concept", str(cid), "withdrawn_support")
+            if not self.store.add_edge(edge):
+                raise RuntimeError("premise withdrawal write failed")
+        self.store.mark_lifecycle_due(cid)
+        return self.reconsider(cid)
 
     def fingerprint(self, node):
         kind, ident = node
@@ -126,11 +157,14 @@ class DependencyLedger:
         cid = int(concept_id)
         if self.store.get(cid) is None:
             raise ValueError("dependency conclusion must exist")
+        withdrawn = self.withdrawn_premises(cid)
         proposed = []
         for group in support_sets:
             nodes = sorted({(str(kind), str(int(ident))) for kind, ident in group})
             if not nodes or len(nodes) > MAX_MEMBERS:
                 raise ValueError("dependency support set size out of bounds")
+            if withdrawn.intersection(nodes):
+                continue
             members = []
             for node in nodes:
                 if node[0] not in {"concept", "memory", "cluster", "moment"}:
@@ -271,8 +305,8 @@ class DependencyLedger:
                         reason = "source_missing"
                     elif current != fingerprint:
                         reason = "source_revision_changed"
-                    elif not self._has_dependency_edge(kind, ident, cid):
-                        reason = "dependency_edge_removed"
+                    elif issue := self._dependency_issue(kind, ident, cid):
+                        reason = issue
                     elif kind == "concept":
                         base = self.store.get(int(ident))
                         review = self.store.support.review(int(ident))

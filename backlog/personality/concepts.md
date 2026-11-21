@@ -141,10 +141,13 @@ An [isolated repair replay](../../tests/test_concept_support_repair_replay.py)
 contrasts an inferred diary agreement with an explicit agreement. Withdrawing
 the reviewed diary dependency removes the unsupported claim from current
 recall and leaves the explicit agreement available through its own support.
-The surviving claim now cites the valid alternative. Both source exchanges
-and the old claim remain inspectable. Re-admitting the same dependency in an
-isolated probe made the withdrawn claim assertable again. The repair queue
-still needs a review verdict that future admissions can honor.
+The surviving claim cites the valid alternative. Both source exchanges and
+the old claim remain inspectable. The dependency ledger now saves the reviewed
+withdrawal. The isolated replay verifies that re-admission, a synthesis retry,
+and a merge cannot restore that premise to the reviewed claim. A separate
+claim can still use the same record. The verdict is scoped to the reviewed
+concept and source node. A wider cohort review and repairs for equivalent
+sources with different IDs remain open.
 
 **Acceptance.** A one-time choice does not imply effectiveness or a standing
 trait. Multiple paraphrases of one episode retain one evidence basis in the

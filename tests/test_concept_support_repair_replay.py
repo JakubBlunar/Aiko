@@ -1,6 +1,7 @@
 """Replay a reviewed diary premise and a separate, explicit agreement."""
 
 import json
+from threading import Event
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,6 +9,8 @@ import pytest
 
 from app.core.concepts.concept_evidence_lineage import resolve_support
 from app.core.concepts.concept_store import Concept, ConceptEdge, ConceptStore
+from app.core.concepts.concept_synthesis_worker import ConceptSynthesisWorker
+from app.core.concepts.proposers.base import CandidateProposal
 from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.memory_store import MemoryStore
 from app.core.memory.worker_sources import current, receipt, transcript_packet
@@ -105,23 +108,31 @@ def test_review_withdraws_diary_premise_and_recall_uses_the_explicit_alternative
     assert original["concept"]["concept_id"] == overbroad.concept_id
     assert original["evidence"][0]["authority"] == "model_reflection"
 
-    # The review rejects the diary as support for these claims. The original
-    # evidence edges and frozen transcript are retained for inspection.
-    reviewed_claims = {str(row.concept_id) for row in (overbroad, scoped)}
-    for edge in store.edges_from("memory", diary.id):
-        if (
-            edge.relation == "depends_on" and edge.dst_type == "concept"
-            and edge.dst_id in reviewed_claims
-        ):
-            store.delete_edge(edge.edge_id)
+    diary_node = ("memory", str(diary.id))
+    for row in (overbroad, scoped):
+        store.dependencies.withdraw_premise(row.concept_id, diary_node)
+        store.dependencies.admit(row, [diary_node])
 
     assert not store.is_assertable(overbroad.concept_id)
     assert store.is_assertable(scoped.concept_id)
     report = store.dependencies.reconsider(overbroad.concept_id)
-    assert report["invalid_sets"][0]["failures"][0]["reason"] == "dependency_edge_removed"
+    assert report["invalid_sets"][0]["failures"][0]["reason"] == "reviewed_premise_withdrawn"
 
     reloaded = ConceptStore(db)
     reloaded.load_all()
+    worker = ConceptSynthesisWorker(
+        concept_store=reloaded, topic_graph=None, memory_store=memories, embedder=None,
+        ollama=None, chat_model="unused", cancel_event=Event(), agent_settings=None,
+        memory_settings=None, kv_get=db.kv_get, kv_set=db.kv_set,
+    )
+    stats = {"reinforced": 0}
+    worker._reinforce(reloaded.get(overbroad.concept_id), CandidateProposal(
+        label="A general agreement to stop teasing on viewing nights",
+        rationale="A reinterpretation of the reviewed diary", confidence=0.99,
+        evidence=[diary_node], kind="boundary", subject="aiko",
+        reinforces_id=overbroad.concept_id,
+    ), stats)
+    assert stats["reinforced"] == 0
     for view in (recall, _recall(db, memories, reloaded)):
         result = json.loads(view.run({"query": _QUERY}))
         assert result["concept"]["concept_id"] == scoped.concept_id
@@ -137,6 +148,26 @@ def test_review_withdraws_diary_premise_and_recall_uses_the_explicit_alternative
         assert tuple((row.role, row.content) for row in rows) == exchange
     assert memories.get(diary.id).content == diary.content
     assert current(packet, db)
+
+
+def test_premise_withdrawal_survives_concept_merge_and_is_local_to_the_claim(replay):
+    db, memories, store = replay
+    diary, explicit, _, _, _ = _observations(db, memories)
+    rejected = _concept(store, "We always pause teasing when watching", _MATCH, diary)
+    surviving = _concept(store, "We agreed to pause teasing for an episode", _MATCH, explicit)
+    unrelated = _concept(store, "I reflected on watching quietly", _MATCH, diary)
+    node = ("memory", str(diary.id))
+    with pytest.raises(ValueError, match="existing premise"):
+        store.dependencies.withdraw_premise(rejected.concept_id, ("memory", explicit.id))
+    store.dependencies.withdraw_premise(rejected.concept_id, node)
+    assert store.merge_into(canonical_id=surviving.concept_id, absorbed_id=rejected.concept_id)
+    reloaded = ConceptStore(db)
+    reloaded.load_all()
+    assert reloaded.dependencies.withdrawn_premises(surviving.concept_id) == {node}
+    report = reloaded.dependencies.assess(surviving.concept_id)
+    assert report["viable"]
+    assert report["invalid_sets"][0]["failures"][0]["reason"] == "reviewed_premise_withdrawn"
+    assert reloaded.is_assertable(unrelated.concept_id)
 
 
 def test_paraphrases_keep_one_observation_group_and_diary_adds_no_vote(replay):

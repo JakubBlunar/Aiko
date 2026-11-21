@@ -111,6 +111,13 @@ and corrections schedule a review of dependent concepts. Multiple valid
 memory notes citing the same message count as one recorded support group in
 the lifecycle assessment.
 
+An explicit source review can withdraw a premise from one concept through
+`DependencyLedger.withdraw_premise`. The original evidence and source history
+remain inspectable. Any support set that needs the withdrawn premise becomes
+ineligible. Synthesis cannot reinforce the same concept with that premise, and
+duplicate consolidation carries the withdrawal into the survivor. An unrelated
+concept can still use the source. No automatic semantic review is performed.
+
 An explicit correction or reported preference change asks for review of the
 linked basis. Existing dependent concepts stop being assertable on that basis;
 the lifecycle worker still owns concept status. This does not mark the old
