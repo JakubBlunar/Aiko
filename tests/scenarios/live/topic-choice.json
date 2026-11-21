@@ -1,0 +1,39 @@
+{
+  "name": "Two plausible topics after the user invites a light follow-up",
+  "steps": [
+    {
+      "impulse": "user.message_sent",
+      "payload": {"text": "The balcony herbs survived the rain. I also started a train puzzle. I am happy to chat about either later."}
+    },
+    {
+      "reply": "Glad the herbs made it. We can pick up either thread when you have a moment."
+    },
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "balcony herbs",
+        "text": "Ask whether the recovering balcony herbs have put out new growth."
+      }
+    },
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "train puzzle",
+        "text": "Ask what got the user interested in the train puzzle."
+      }
+    },
+    {
+      "label": "Both topics become relevant during a pause",
+      "advance_ms": 30000,
+      "proposal": {"intent": "request_main_speech", "select_subject": "balcony herbs"}
+    },
+    {"label": "Look at the chosen handoff", "dispatch": {"if_queued": true}},
+    {"label": "Let a minute of quiet pass", "advance_ms": 60000},
+    {
+      "label": "Observe one further silence signal",
+      "impulse": "silence.wake",
+      "proposal": {"intent": "request_main_speech", "select_subject": "train puzzle"}
+    },
+    {"label": "Look at any follow-up handoff", "dispatch": {"if_queued": true}}
+  ]
+}

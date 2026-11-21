@@ -1,0 +1,36 @@
+{
+  "name": "A requested time-sensitive update competes with casual curiosity",
+  "steps": [
+    {
+      "impulse": "user.message_sent",
+      "payload": {
+        "text": "I need to pack the bread before I leave. When it is cool enough, please interrupt and tell me right away. The next chapter can wait."
+      }
+    },
+    {"reply": "I’ll let you know as soon as the bread is cool enough to pack."},
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "next chapter",
+        "text": "Ask what the user thought of the next chapter."
+      }
+    },
+    {
+      "cue": {
+        "type": "away_activities",
+        "subject": "bread is cool enough to pack",
+        "text": "The bread has cooled and is ready to pack. The user asked for this update before leaving."
+      }
+    },
+    {
+      "label": "The requested update is ready and the floor is open",
+      "advance_ms": 30000,
+      "proposal": {
+        "intent": "request_main_speech",
+        "select_subject": "bread is cool enough to pack",
+        "arguments": {"speech_act": "share_observation"}
+      }
+    },
+    {"label": "Inspect the topic handoff", "dispatch": {"if_queued": true}}
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "name": "Quiet baseline, a useful opening and the hourly speech cap",
+  "max_wakes_per_hour": 1,
+  "steps": [
+    {
+      "label": "First quiet minute without a cue",
+      "advance_ms": 60000,
+      "expect": {"new_policy_calls": 0, "speech_count": 0}
+    },
+    {
+      "label": "Two more quiet minutes without a cue",
+      "advance_ms": 120000,
+      "expect": {"new_policy_calls": 0, "speech_count": 0}
+    },
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "sketchbook",
+        "text": "Ask which of the two tiny skyline thumbnails the user liked."
+      }
+    },
+    {
+      "label": "User is typing in an editor",
+      "impulse": "user.typing_started",
+      "state": {"app": "Cursor"},
+      "expect": {"new_policy_calls": 0}
+    },
+    {
+      "label": "Silence during typing",
+      "impulse": "silence.wake",
+      "expect": {"speech_count": 0, "main_wakes": 0}
+    },
+    {
+      "label": "User leaves the editor and stops typing",
+      "impulse": "user.typing_stopped",
+      "state": {"app": ""}
+    },
+    {
+      "label": "A free floor after the editor closes",
+      "advance_ms": 20000,
+      "proposal": {"intent": "request_main_speech", "select_subject": "sketchbook"}
+    },
+    {
+      "label": "Simulate delivery if she asked to speak",
+      "dispatch": {"if_queued": true, "text": "Which skyline thumbnail felt more like you?"}
+    },
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "garden sketch",
+        "text": "Ask if the user decided whether to ink the garden sketch."
+      }
+    },
+    {"label": "Another minute inside the same hour", "advance_ms": 60000},
+    {"label": "Second explicit silence signal inside the cap", "impulse": "silence.wake"},
+    {"label": "Advance beyond the first hour", "advance_ms": 3600000},
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "window plants",
+        "text": "Ask how the window plants are doing after being moved."
+      }
+    },
+    {
+      "label": "Give a fresh topic an opening after replenishment",
+      "advance_ms": 20000,
+      "proposal": {"intent": "request_main_speech", "select_subject": "window plants"}
+    },
+    {"label": "Inspect any handoff after replenishment", "dispatch": {"if_queued": true}}
+  ]
+}

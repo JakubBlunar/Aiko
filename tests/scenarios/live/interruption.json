@@ -1,0 +1,73 @@
+{
+  "name": "Voice onset interrupts a planned topic and a new utterance replaces it",
+  "steps": [
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "bookshelf",
+        "text": "Ask whether the user finished sanding the bookshelf."
+      }
+    },
+    {
+      "label": "Look for an opening before voice onset",
+      "advance_ms": 30000,
+      "proposal": {"intent": "request_main_speech", "select_subject": "bookshelf"}
+    },
+    {
+      "label": "User begins speaking",
+      "state": {"voice_session": true},
+      "impulse": "user.voice_start",
+      "expect": {"frame": {"interaction": {"floor_owner": "user"}}}
+    },
+    {
+      "label": "Check the old handoff while the user owns the floor",
+      "dispatch": {"if_queued": true, "text": "Did you finish sanding the bookshelf?"},
+      "expect": {"speech_count": 0}
+    },
+    {"impulse": "user.voice_stop"},
+    {
+      "label": "The user changes the subject to a timer",
+      "impulse": "user.speech_final",
+      "payload": {"text": "Hold on. I heard the kitchen timer. Let me check that first."},
+      "expect": {"user_intent_reason": "critical_user_intent"}
+    },
+    {"reply": "Go check the timer. I'll be here."},
+    {
+      "label": "User starts talking during the scripted reply playback",
+      "state": {"playback": true},
+      "impulse": "user.voice_start",
+      "expect": {"speech_count": 1}
+    },
+    {"impulse": "aiko.playback_drained"},
+    {"impulse": "user.voice_stop"},
+    {
+      "impulse": "user.speech_final",
+      "payload": {"text": "The timer was for the tea. It is fine now."},
+      "expect": {"user_intent_reason": "critical_user_intent"}
+    },
+    {"label": "Let the voice turn settle and replenish the speech budget", "advance_ms": 600000},
+    {
+      "cue": {
+        "type": "forward_curiosity",
+        "subject": "oolong tea",
+        "text": "Ask whether the new oolong was worth brewing again."
+      }
+    },
+    {
+      "label": "Give the new topic a clear opening",
+      "advance_ms": 20000,
+      "proposal": {"intent": "request_main_speech", "select_subject": "oolong tea"}
+    },
+    {
+      "label": "Latest speech replaces any queued follow-up",
+      "impulse": "user.speech_final",
+      "payload": {"text": "Actually I need a minute to focus. Let's leave the tea and shelf for later."},
+      "expect": {"user_intent_reason": "critical_user_intent"}
+    },
+    {
+      "label": "Check the old handoff after the new intent",
+      "dispatch": {"if_queued": true, "text": "How was the oolong tea?"},
+      "expect": {"speech_count": 1}
+    }
+  ]
+}

@@ -17,6 +17,10 @@ time, policy choices, cadence, topic handoff and cue feedback in isolation.
 Use the fixtures to pin floor ownership, sleep, waits and learned-context
 behavior before changing speech policy. [Scenario runner](../../docs/live-scenarios.md)
 
+The [21 November local replay](../reviews/live-policy-replay-2026-11-21.md)
+records the first repeated samples for quiet cadence, competing topics,
+requested updates and voice interruption.
+
 ## L4. Authored ambient motion presets
 
 **Status: Deferred / evidence or capability gate.**

@@ -31,6 +31,7 @@ from app.llm.chat_client import ChatUsage
 _START = datetime(2026, 1, 1, 16, tzinfo=timezone.utc)
 _STATE_FLAGS = {
     "connected", "present", "typing", "quiet", "playback", "shared", "unprompted_speech",
+    "voice_session",
 }
 _STATE_TEXT = {"app", "floor", "sleep", "activity"}
 _STEP_KEYS = {
@@ -188,6 +189,8 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
             self._settings.agent.live_unprompted_speech = update["unprompted_speech"]
         if "connected" in update:
             self._connected_clients = int(update["connected"])
+        if "voice_session" in update:
+            self._live_voice_session_active = update["voice_session"]
         if "playback" in update:
             if update["playback"]:
                 self.mark_playback_pending()
@@ -246,7 +249,16 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
         )
 
     def dispatch(self, config: dict[str, Any]) -> None:
+        if_queued = config.get("if_queued", False)
+        if type(if_queued) is not bool:
+            raise ValueError("dispatch.if_queued must be a boolean")
         if not self._wake_queue:
+            if if_queued:
+                self.dispatches.append({
+                    "at_ms": self.clock.elapsed_ms, "subject": "",
+                    "speech_act": "", "cue_id": None, "reason": "no_queued_wake",
+                })
+                return
             raise ValueError("dispatch requires a queued main wake")
         text = config.get("text", "")
         if not isinstance(text, str):
@@ -390,6 +402,7 @@ def _run_steps(host: _SimulationHost, steps: list, *, name: str) -> dict[str, An
         host._live_policy_client.proposal = step.get("proposal", {})
         host._apply_state(step.get("state", {}))
         before_calls = host._live_policy_client.calls
+        queued_before = len(host._wake_queue)
         before_decisions = {
             row["decision_id"] for row in
             host._live_policy_controller.diagnostics()["decision_trace"]["decisions"]
@@ -422,7 +435,9 @@ def _run_steps(host: _SimulationHost, steps: list, *, name: str) -> dict[str, An
         for row in result["decisions"]:
             row["selected_subject"] = subjects.get(row["selected_urge_id"], "")
         result["new_policy_calls"] = result["policy_calls"] - before_calls
+        result["queued_before"] = queued_before
         result["step"] = step_index
+        result["event"] = step.get("impulse", command)
         result["label"] = step.get("label", step.get("impulse", command))
         failures.extend(_subset_failures(step.get("expect", {}), result, f"step {step_index}"))
         timeline.append(result)

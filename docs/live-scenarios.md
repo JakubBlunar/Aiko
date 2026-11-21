@@ -14,6 +14,7 @@ Run these commands from the repository root with the project Python environment.
 python scripts/live_scenarios.py tests/scenarios/live/cue-and-floor.json
 python scripts/live_scenarios.py tests/scenarios/live/wait-and-focus.json
 python scripts/live_scenarios.py tests/scenarios/live/local-observation.json --local --json
+python scripts/live_scenarios.py tests/scenarios/live/interruption.json --local --repeat 4 --json
 ```
 
 Scripted mode is the default. It uses each step's `proposal` to reproduce a
@@ -28,6 +29,17 @@ topics, dispatch outcomes and script-delivered speech. The JSON report also
 includes the wait, remaining budgets, cue state, policy concepts, outcome
 ledger, embodiment plan and the actual talk-about block that reaches a
 simulated main turn.
+
+With `--repeat`, each trial starts with fresh state and the JSON output has a
+`summary` and individual `runs`. The summary distinguishes policy calls,
+speech proposals, admitted wakes, dispatch outcomes, and delivered micro
+utterances. Autonomous proposal counts exclude submitted user turns.
+`no_queued_wake` means a dispatch check had no pending request to exercise.
+The interruption summary counts voice-start and transcript-final reactions
+separately and records which interrupts began with an old wake in the queue.
+It also counts decisions with at least one eligible urge and records rejection
+reasons, so a wait at an open opportunity can be distinguished from a rejected
+action.
 Failed expectations or policy transport failures give a nonzero exit code.
 Keep model-based expectations focused on invariants such as preserving the
 user's floor. Choices and wording can vary across local runs.
@@ -45,11 +57,14 @@ and one command.
 | `advance_ms` | Advance both clocks and run one heartbeat at the destination. Use repeated steps to sample intermediate behavior. A wait expiry can produce a real `idle.reconsider` impulse. |
 | `cue` | Add a pool cue with `type`, `subject` and `text`. Optional `ttl_hours` and `hold_hours` exercise timing. |
 | `concept` | Seed a learned policy concept with `id`, `kind` and `label`. Optional `subject` and `confidence` let the same activity run against different learned context. |
-| `dispatch` | Deliver the oldest queued main wake through the real dispatch checks. Supply `{"text": "a scripted reply"}` or `{}` to simulate the main model staying silent. |
+| `dispatch` | Deliver the oldest queued main wake through the real dispatch checks. Supply `{"text": "a scripted reply"}` or omit the text to simulate silence. Use `"if_queued": true` when a model might choose to stay silent before this step. |
 | `reply` | Supply scripted assistant text after a submitted user message. It becomes part of the isolated transcript and updates the speech gap. |
 
 `state` can change `app`, `typing`, `floor`, `present`, `connected`,
-`playback`, `sleep`, `quiet`, `shared`, `activity` or `unprompted_speech`.
+`playback`, `sleep`, `quiet`, `shared`, `activity`, `voice_session` or
+`unprompted_speech`. Set `voice_session` to true when replaying microphone
+events so `user.voice_start` can put the user on the floor. This is a
+simulated capture state.
 A step with just a state update refreshes the situation on a data-only heartbeat.
 For a scripted request to discuss a specific seeded topic, use
 `"proposal": {"intent": "request_main_speech", "select_subject": "balcony herbs"}`.

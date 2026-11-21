@@ -10,7 +10,9 @@ import requests
 
 from app.core.infra import settings, timephrase
 from app.core.live.simulation import run_live_scenario
-from scripts.live_scenarios import LoopbackPolicyClient, loopback_url, require_local_model
+from scripts.live_scenarios import (
+    LoopbackPolicyClient, loopback_url, require_local_model, summarize_trials, trial_metrics,
+)
 
 
 SCENARIOS = Path(__file__).parent / "scenarios" / "live"
@@ -20,7 +22,10 @@ def read_scenario(name: str) -> dict:
     return json.loads((SCENARIOS / f"{name}.json").read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("name", ["cue-and-floor", "wait-and-focus", "local-observation"])
+@pytest.mark.parametrize("name", [
+    "cue-and-floor", "wait-and-focus", "local-observation",
+    "topic-choice", "quiet-cadence", "interruption", "requested-update",
+])
 def test_fixture_runs_without_network(name, monkeypatch):
     def unexpected_request(*args, **kwargs):
         pytest.fail("scripted replay made an HTTP request")
@@ -57,6 +62,28 @@ def test_new_user_intent_preempts_a_queued_topic_before_the_fake_speaker():
     assert "talk_about" not in report["dispatches"][0]
     assert report["steps"][-1]["cues"]["balcony herbs"]["surfaced"] == 0
     assert [event["delivery"] for event in report["spoken"]] == ["Assistant (scripted reply)"]
+
+
+def test_interruption_trials_distinguish_admission_from_dispatch():
+    runs = [run_live_scenario(read_scenario("interruption")) for _ in range(2)]
+    totals = summarize_trials(runs)["totals"]
+    assert totals["main_requests"] == totals["main_admitted"] == 4
+    assert totals["dispatch_outcomes"] == {"floor_busy": 2, "new_user_intent": 2}
+    assert totals["admitted_topics"] == {"bookshelf": 2, "oolong tea": 2}
+    assert totals["interruptions_with_queued_speech"] == {
+        "user.voice_start": 2, "user.speech_final": 2,
+    }
+    assert totals["micro_delivered"] == 0
+    assert all(len(report["spoken"]) == 1 for report in runs)
+
+
+def test_quiet_trial_counts_one_opening_per_window_and_nonadmitted_proposals_separately():
+    report = run_live_scenario(read_scenario("quiet-cadence"))
+    metrics = trial_metrics(report)
+    assert metrics["admitted_topics"] == {"sketchbook": 1, "window plants": 1}
+    assert metrics["dispatch_outcomes"] == {"simulated_reply": 1, "simulated_silence": 1}
+    assert metrics["micro_requests"] == 0
+    assert report["steps"][9]["main_wakes"] == 1
 
 
 def test_virtual_time_expires_impulse_and_cue_without_leaking_the_clock():
