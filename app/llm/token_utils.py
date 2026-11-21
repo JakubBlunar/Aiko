@@ -51,9 +51,14 @@ def chars_per_token() -> float:
 
 def estimate_tokens(text: str) -> int:
     """Estimate token count for a string using a character-based heuristic."""
-    if not text:
+    return estimate_tokens_for_chars(len(text)) if text else 0
+
+
+def estimate_tokens_for_chars(char_count: int) -> int:
+    """Estimate tokens when only the rendered character count is needed."""
+    if char_count <= 0:
         return 0
-    return max(1, int(len(text) / _ratio()))
+    return max(1, int(char_count / _ratio()))
 
 
 def estimate_messages_tokens(messages: list) -> int:

@@ -244,6 +244,21 @@ class ProviderOutcomeTests(unittest.TestCase):
                 {"state": "error", "error": "RuntimeError"},
             )
 
+    def test_handling_budget_drops_only_the_optional_slot_when_text_matches(self) -> None:
+        with _TempDb() as db:
+            assembler = _make_assembler(db, persona_text="Authoritative shared wording.")
+            assembler._handling_notes_budget_chars = 100
+            assembler.set_inner_life_providers(
+                user_correction=lambda: "Corrected fact",
+                interest_drift=lambda text: "Authoritative shared wording.",
+            )
+            _, telemetry = assembler.assemble_with_budget(
+                "s1", "hello", context_window=32000, response_budget=512,
+            )
+            self.assertEqual(telemetry.system_prompt.count("Authoritative shared wording."), 1)
+            self.assertTrue(telemetry.system_prompt.startswith("Authoritative shared wording."))
+            self.assertEqual(telemetry.block_chars["interest_drift_block"], 0)
+
     def test_empty_error_and_unwired_are_distinct_without_content(self) -> None:
         from app.core.session.prompt_support import ProviderTimings, _safe_provider
 

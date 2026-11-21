@@ -1148,7 +1148,9 @@ class PromptAssemblerHelpersMixin:
         self._persona_split_cache = (key, core, sections)
         return core, sections
 
-    def _essential_handling(self, local_vars: dict[str, Any]) -> dict[str, str]:
+    def _essential_handling(
+        self, local_vars: dict[str, Any], sections: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         from app.core.session.surfacing_attempt import current_attempt
 
         notes = dict(_PROTECTED_HANDLING)
@@ -1165,7 +1167,9 @@ class PromptAssemblerHelpersMixin:
                 for block in claim.blocks - {policy.block}:
                     rendered = local_vars.get(block, "")
                     if rendered and claim.text in rendered:
-                        note = self.persona_handling_notes(policy.block)
+                        if sections is None:
+                            _, sections = self._persona_split()
+                        note = self._render_persona_text(sections.get(policy.block, ""))
                         if note:
                             notes[block] = note
         return {name: text for name, text in notes.items() if local_vars.get(name)}
@@ -1216,7 +1220,8 @@ class PromptAssemblerHelpersMixin:
         """
         parts: list[str] = []
         seen: set[str] = set()
-        for block in self._handling_headers():
+        _, sections = self._persona_split()
+        for block, raw_note in sections.items():
             rendered = next(
                 (
                     local_vars[candidate]
@@ -1227,17 +1232,19 @@ class PromptAssemblerHelpersMixin:
             )
             if not isinstance(rendered, str) or not rendered:
                 continue
-            note = self.persona_handling_notes(block)
+            note = self._render_persona_text(raw_note)
             if note and note not in seen:
                 seen.add(note)
                 parts.append(note)
-        essential = list(dict.fromkeys(self._essential_handling(local_vars).values()))
+        essential = list(dict.fromkeys(self._essential_handling(local_vars, sections).values()))
         if essential:
             budget = int(getattr(self, "_handling_notes_budget_chars", 5000))
-            mandatory = "\n\n".join(essential)
             if budget > 0:
-                while parts and len(mandatory) + 2 + len("\n\n".join(parts)) > budget:
-                    parts.remove(max(parts, key=len))
+                total = sum(len(note) + 2 for note in (*essential, *parts)) - 2
+                while parts and total > budget:
+                    widest = max(parts, key=len)
+                    parts.remove(widest)
+                    total -= len(widest) + 2
             parts = [*essential, *parts]
         else:
             parts = self._fit_handling_notes(parts)
@@ -1283,7 +1290,7 @@ class PromptAssemblerHelpersMixin:
         while len(keep) > 1:
             widest = max(keep, key=len)
             keep.remove(widest)
-            total = sum(len(p) for p in keep) + 2 * max(0, len(keep) - 1)
+            total -= len(widest) + 2
             if total <= budget:
                 break
         log.debug(

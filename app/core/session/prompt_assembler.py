@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -32,7 +32,7 @@ from app.core.session.prompt_prefix_telemetry import (
     message_digest,
 )
 from app.llm.chat_client import CACHE_BREAKPOINT_KEY
-from app.llm.token_utils import estimate_tokens
+from app.llm.token_utils import estimate_tokens, estimate_tokens_for_chars
 
 if TYPE_CHECKING:
     from app.core.memory.memory_retriever import MemoryRetriever
@@ -552,6 +552,13 @@ def block_char_table(local_vars: dict[str, Any]) -> dict[str, int]:
 # suppresses the implicit breakpoint. Persona alone is ~9.7k tokens, so
 # this only ever bites on a stub persona.
 _CACHE_BREAKPOINT_MIN_TOKENS = 1536
+_SYSTEM_PART_SEPARATOR = "\n\n---\n\n"
+
+
+def _joined_system_chars(parts: Iterable[str]) -> int:
+    separator_chars = len(_SYSTEM_PART_SEPARATOR)
+    total = sum(len(part) + separator_chars for part in parts if part)
+    return max(0, total - separator_chars)
 
 
 def _stable_prefix_offset(parts: list[str], head_count: int) -> int:
@@ -567,10 +574,10 @@ def _stable_prefix_offset(parts: list[str], head_count: int) -> int:
     """
     if head_count <= 0:
         return 0
-    head = "\n\n---\n\n".join(p for p in parts[:head_count] if p)
-    if not head or estimate_tokens(head) < _CACHE_BREAKPOINT_MIN_TOKENS:
+    head_chars = _joined_system_chars(parts[:head_count])
+    if estimate_tokens_for_chars(head_chars) < _CACHE_BREAKPOINT_MIN_TOKENS:
         return 0
-    return len(head)
+    return head_chars
 
 
 def _cache_breakpoints(
@@ -3594,6 +3601,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # cue-producer family; cooldown + acknowledged-flag gated
             # one-shot. NOT in the K16 suppression set.
             system_parts.append(shared_ritual_block)
+        second_thought_slot = len(system_parts)
         if second_thought_block:
             # K96: a loose end from earlier in this same conversation, the
             # same instinct as self_callback at a much shorter range.
@@ -3605,8 +3613,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # cue-producer surface; not in the gap mutex. After
             # second_thought so the pinned cue-family adjacencies stay.
             system_parts.append(companion_activity_block)
+        interest_continuation_slot = len(system_parts)
         if interest_continuation_block:
             system_parts.append(interest_continuation_block)
+        calendar_anticipation_slot = len(system_parts)
         if calendar_anticipation_block:
             system_parts.append(calendar_anticipation_block)
         if delivery_provenance_block:
@@ -3828,6 +3838,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # K75: user-expertise depth steer — pitch explanation depth to
             # the user's competence, clusters with the other topic-graph cues.
             system_parts.append(user_expertise_block)
+        associative_wander_slot = len(system_parts)
         if associative_wander_block:
             # K64a: associative wandering — "funny, this reminds me of ..."
             # connection cue, sits with the other topic-graph-derived
@@ -3837,6 +3848,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             # K63: long-arc callback — rare "weeks ago you said ..." reach,
             # clusters with the other "this reminds me of" surfaces.
             system_parts.append(long_arc_callback_block)
+        interest_drift_slot = len(system_parts)
         if interest_drift_block:
             # K64b: interest drift — slow "drawn to X lately" / "X gone
             # quiet" register shift.
@@ -3912,16 +3924,16 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # block that can claim a handling note.
         handling_omissions = self._handling_bundle_omissions(locals())
         if "interest_drift_block" in handling_omissions:
-            system_parts = [part for part in system_parts if part != interest_drift_block]
+            system_parts[interest_drift_slot] = ""
             interest_drift_block = ""
         if "associative_wander_block" in handling_omissions:
-            system_parts = [part for part in system_parts if part != associative_wander_block]
+            system_parts[associative_wander_slot] = ""
             associative_wander_block = ""
         if "second_thought_block" in handling_omissions:
-            system_parts = [part for part in system_parts if part != second_thought_block]
+            system_parts[second_thought_slot] = ""
             second_thought_block = ""
         if "calendar_anticipation_block" in handling_omissions:
-            system_parts = [part for part in system_parts if part != calendar_anticipation_block]
+            system_parts[calendar_anticipation_slot] = ""
             calendar_anticipation_block = ""
         handling_notes_block = self._render_handling_notes(locals())
         if handling_notes_block:
@@ -3958,9 +3970,17 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 selected_block in POOLED_CHOICE_BLOCKS
                 and attempt.optional_choice.get("winner") == selected_block
             ):
-                selected_text = dict(_resolve_blocks(locals())).get(selected_block, "")
-                if selected_text and selected_text in system_parts:
-                    system_parts.remove(selected_text)
+                selected_text = locals().get(selected_block, "")
+                if selected_text:
+                    slot = {
+                        "second_thought_block": second_thought_slot,
+                        "interest_drift_block": interest_drift_slot,
+                        "associative_wander_block": associative_wander_slot,
+                        "curiosity_seeds_block": curiosity_seeds_slot,
+                        "interest_continuation_block": interest_continuation_slot,
+                        "calendar_anticipation_block": calendar_anticipation_slot,
+                    }[selected_block]
+                    system_parts[slot] = ""
                     focus_index = len(system_parts) - int(bool(handling_notes_block))
                     system_parts.insert(focus_index, selected_text)
                     attempt.optional_choice["focused_block"] = selected_block
@@ -3968,14 +3988,15 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts.append(stance_block)
 
         # ── T3 relevant_context: reserve the surfacing budget BEFORE
-        #    history is packed. Join the system BASE (everything except the
-        #    not-yet-built region) to size it, then reserve a
+        #    history is packed. Measure the system base (everything except
+        #    the not-yet-built region), then reserve a
         #    context-window-relative slice for the region; history gets the
         #    remainder. On overflow history is the pressure valve (squished
         #    first); the region only degrades as a last resort.
-        system_base = "\n\n---\n\n".join(p for p in system_parts if p)
+        system_base_chars = _joined_system_chars(system_parts)
         system_base_tokens = (
-            estimate_tokens(system_base) + (_MESSAGE_OVERHEAD if system_base else 0)
+            estimate_tokens_for_chars(system_base_chars)
+            + (_MESSAGE_OVERHEAD if system_base_chars else 0)
         )
 
         # Budget for history = context_window - response_budget - safety -
@@ -4051,7 +4072,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if relevant_context_block:
             system_parts.insert(t3_insert_index, relevant_context_block)
 
-        system_prompt = "\n\n---\n\n".join(p for p in system_parts if p)
+        system_prompt = _SYSTEM_PART_SEPARATOR.join(p for p in system_parts if p)
         # The three tier indices were all captured before T3 was inserted,
         # and an insert at ``t3_insert_index`` shifts only what follows it,
         # so they still delimit what they were taken to delimit. T3's own
