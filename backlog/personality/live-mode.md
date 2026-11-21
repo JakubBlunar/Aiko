@@ -48,14 +48,17 @@ TTS/earcon controls, rejecting invalid text before synthesis.
 
 ## L9. Floor manners while the user owns the floor
 
-**Status: Open implementation.**
+**Status: Visual posture implemented.**
 
-**Implemented / available:** Attend/yield/wait/backchannel and presence clamps exist.
+**Implemented / available:** The semantic plan gives space while the user
+composes, leans in during speech, and settles at utterance end or when
+yielding. The avatar uses its existing gaze and body channels. The replay
+covers resumed speech, quiet, sleep and interruption during playback.
 
-**Remaining:** Add listen_posture as a bounded mapping to existing intents; typing cannot speak and
-sleep/DND/floor ownership still win.
+**Remaining:** Evaluate visual feel on the live rig. Audible backchannel
+choices remain with L5.
 
-**Source check:** [presence.py](../../app/core/live/presence.py).
+[Listening posture replay](../../tests/scenarios/live/listening-posture.json)
 
 ## L11. Circadian quieting from a period token
 

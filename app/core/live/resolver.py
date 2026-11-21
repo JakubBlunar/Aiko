@@ -10,12 +10,17 @@ knows the rig.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 from app.core.live.capabilities import SemanticCapabilities
 from app.core.live.frame import SLEEP_SPEECH_FORBID, LiveSituationFrame
-from app.core.live.presence import PRESENCE_STYLE_SET, style_visuals
+from app.core.live.presence import (
+    PRESENCE_STYLE_SET,
+    ListenPosture,
+    listen_posture_for,
+    style_visuals,
+)
 from app.core.live.reaction import REACTION_TONE_SET, tone_visuals
 
 
@@ -124,6 +129,7 @@ class ResolvedBehaviorPlan:
     cancel_reason: str = ""
     reaction_tone: str = ""
     reaction_intensity: str = ""
+    listen_posture: ListenPosture = "none"
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -238,40 +244,13 @@ def _degrade(
         required.append("can_express")
     if motion != "none":
         required.append("can_motion")
-    return dataclass_replace(plan, body=body, breath=breath,
-                             expression=expression, motion=motion,
-                             required=tuple(required))
-
-
-def dataclass_replace(
-    plan: ResolvedBehaviorPlan,
-    *,
-    body: str,
-    breath: str,
-    expression: str,
-    motion: str,
-    required: tuple[str, ...],
-) -> ResolvedBehaviorPlan:
-    return ResolvedBehaviorPlan(
-        intent=plan.intent,
-        attention_target=plan.attention_target,
-        gaze_class=plan.gaze_class,
+    return replace(
+        plan,
         body_class=body,
         breath_class=breath,
         expression_class=expression,
         motion_class=motion,
-        required_capabilities=required,
-        interruptible=plan.interruptible,
-        ttl_ms=plan.ttl_ms,
-        hold_attention=plan.hold_attention,
-        run_during_user_speech=plan.run_during_user_speech,
-        run_during_typing=plan.run_during_typing,
-        run_during_turn=plan.run_during_turn,
-        run_during_tts=plan.run_during_tts,
-        degrade_to_sleep=plan.degrade_to_sleep,
-        cancel_reason=plan.cancel_reason,
-        reaction_tone=plan.reaction_tone,
-        reaction_intensity=plan.reaction_intensity,
+        required_capabilities=tuple(required),
     )
 
 
@@ -345,6 +324,16 @@ class LiveBehaviorResolver:
         target = str(attention_target or "").strip()
         if not target:
             target = frame.attention.target
+        listen_posture = listen_posture_for(frame, intent=intent, style=style)
+        if listen_posture != "none":
+            target = "user"
+            keep_attention = False
+            if listen_posture == "lean_in":
+                gaze, body, expression = "user_eye_contact", "lean_in", "attentive"
+            elif listen_posture == "give_space":
+                gaze, body, expression = "rest", "settle", "content"
+            else:
+                gaze, body, expression = "rest", "none", "none"
         hold = target in {"shared_activity", "world_entity", "user"}
         if keep_attention:
             hold = True
@@ -370,5 +359,6 @@ class LiveBehaviorResolver:
             degrade_to_sleep=False,
             reaction_tone=tone if tone in REACTION_TONE_SET else "",
             reaction_intensity=band,
+            listen_posture=listen_posture,
         )
         return _degrade(plan, caps)

@@ -378,6 +378,38 @@ describe("GazeChannel — lifecycle", () => {
 });
 
 describe("GazeChannel — held Live gaze", () => {
+  it("settles during Live composing and yields while playback owns the gaze", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GazeChannel({ random: noopRandom });
+    const plan = {
+      intent: "attend",
+      attention_target: "user",
+      gaze_class: "rest",
+      body_class: "settle",
+      breath_class: "normal",
+      expression_class: "content",
+      motion_class: "none",
+      degrade_to_sleep: false,
+      listen_posture: "give_space",
+    } as const;
+    const { deps, clock, setSnapshot } = makeDeps({ voiceMode: "listening" });
+    channel.attach(adapter, deps);
+    channel.tickGaze!(clock.now(), 0.016, mouseAt(1600, 100, clock.now()));
+    expect(channel.target.y).toBeCloseTo(0.2);
+
+    setSnapshot({ voiceMode: "off", composing: true, liveEmbodiment: plan });
+    for (let i = 0; i < 30; i += 1) {
+      clock.advance(50);
+      channel.tickGaze!(clock.now(), 0.05, mouseAt(1600, 100, clock.now()));
+    }
+    expect(channel.target.x).toBeCloseTo(0);
+    expect(channel.target.y).toBeLessThan(0.01);
+
+    setSnapshot({ ttsState: "speaking", liveEmbodiment: { ...plan, listen_posture: "hold_still" } });
+    channel.tickGaze!(clock.now(), 0.016, mouseAt(1600, 100, clock.now()));
+    expect(channel.target.y).toBeCloseTo(0.2);
+  });
+
   it("ignores cursor jitter during a shared-activity hold", () => {
     const adapter = new FakeAdapter();
     const channel = new GazeChannel({ random: noopRandom });

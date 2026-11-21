@@ -1753,6 +1753,7 @@ class LiveModeMixin:
             plan.expression_class,
             plan.reaction_tone,
             plan.reaction_intensity,
+            plan.listen_posture,
             plan.degrade_to_sleep,
             frame.aiko.activity,
             frame.aiko.posture,

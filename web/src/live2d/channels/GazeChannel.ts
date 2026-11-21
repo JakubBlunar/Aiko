@@ -43,7 +43,7 @@
  * silently no-ops on rigs without ``ParamAngle`` / ``ParamEyeBall``,
  * so passing values through is safe even on minimal rigs.
  */
-import { clamp } from "../math";
+import { approach, clamp } from "../math";
 import { gazeFocusForClass, SLEEP_DEGRADE, WORLD_GAZE } from "../behavior/resolver";
 import type {
   AvatarChannel,
@@ -60,6 +60,7 @@ const IDLE_DECAY = 0.92;
 /** How fast (seconds) the head eases to the resting droop when she
  * falls asleep — slow enough to read as settling, not snapping. */
 const SLEEP_REST_TIME_CONSTANT_S = 1.2;
+const LISTENING_REST_TIME_CONSTANT_S = 0.24;
 /** Eye-contact bias when the conversation has the floor. The user is
  * usually below the screen; lifting the gaze ~0.2 reads as "looking
  * at you" rather than "staring at your hairline". */
@@ -140,8 +141,13 @@ export class GazeChannel implements AvatarChannel {
     // Asleep: no cursor follow, no conversation lock, no saccades. Ease
     // the head to a gentle resting droop so she reads as sleeping rather
     // than staring at the screen.
-    const isSleeping = SLEEP_DEGRADE.has(snap.sleepStatus ?? "awake");
     const livePlan = snap.liveEmbodiment ?? null;
+    const isSleeping = SLEEP_DEGRADE.has(snap.sleepStatus ?? "awake")
+      || livePlan?.degrade_to_sleep === true;
+    const listenPosture = (isListening || isComposing) && !isSpeaking && !isThinking
+      ? livePlan?.listen_posture
+      : undefined;
+    const quietListening = listenPosture === "give_space" || listenPosture === "hold_still";
     const worldGaze = WORLD_GAZE[(snap.worldActivity ?? "").toLowerCase()];
     const gazeClass = livePlan?.gaze_class || worldGaze || "";
     const holdLiveGaze =
@@ -156,6 +162,13 @@ export class GazeChannel implements AvatarChannel {
       const rate = dt / SLEEP_REST_TIME_CONSTANT_S;
       this._target.x += (0 - this._target.x) * (1 - Math.exp(-rate));
       this._target.y += (SLEEP_REST_Y - this._target.y) * (1 - Math.exp(-rate));
+    } else if (quietListening) {
+      const rest = gazeFocusForClass("rest");
+      if (rest !== "cursor") {
+        const rate = dt / LISTENING_REST_TIME_CONSTANT_S;
+        this._target.x = approach(this._target.x, rest.x, rate);
+        this._target.y = approach(this._target.y, rest.y, rate);
+      }
     } else if (isListening || isSpeaking) {
       this._target.x = 0;
       this._target.y = CONVERSATION_LOCK_Y;
@@ -197,7 +210,7 @@ export class GazeChannel implements AvatarChannel {
       // No cursor data yet (initial mount) — hold whatever we have.
     }
 
-    if (!isSleeping && now >= this._nextSaccadeAt) {
+    if (!isSleeping && listenPosture !== "hold_still" && now >= this._nextSaccadeAt) {
       this._lastSaccadeAt = now;
       this._nextSaccadeAt = now + this._saccadeInterval();
       this._microSaccade.x = (this._random() - 0.5) * 0.1;

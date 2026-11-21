@@ -389,6 +389,7 @@ export interface LiveEmbodimentPlan {
   cancel_reason?: string;
   reaction_tone?: string;
   reaction_intensity?: string;
+  listen_posture?: "none" | "lean_in" | "give_space" | "hold_still";
 }
 
 export interface LiveEmbodimentState {

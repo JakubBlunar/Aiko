@@ -148,17 +148,16 @@ def _speech_active(
     now_ms: float,
     voice_session: bool,
 ) -> tuple[bool, str]:
-    final = _latest(impulses, ("user.speech_final",))
-    if final is not None and (now_ms - final.monotonic_ms) <= SPEECH_HOLD_MS:
-        return True, "final"
-    start = _latest(impulses, ("user.voice_start",))
-    stop = _latest(impulses, ("user.voice_stop", "user.stop"))
-    if start is None:
-        return False, ""
-    if stop is not None and stop.sequence >= start.sequence:
-        return False, ""
-    if voice_session:
-        return True, "listening"
+    latest = _latest(impulses, (
+        "user.speech_final", "user.voice_start", "user.voice_stop", "user.stop",
+    ))
+    if latest is not None:
+        if latest.kind == "user.speech_final" and (
+            now_ms - latest.monotonic_ms <= SPEECH_HOLD_MS
+        ):
+            return True, "final"
+        if latest.kind == "user.voice_start" and voice_session:
+            return True, "listening"
     return False, ""
 
 

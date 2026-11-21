@@ -256,9 +256,11 @@ export class AmbientBodyChannel implements AvatarChannel {
       // out when composing clears.
       const isListeningNow =
         LISTENING_VOICE_MODES.has(snap.voiceMode) || snap.composing === true;
+      const posture = snap.liveEmbodiment?.listen_posture;
+      const quietListening = posture === "give_space" || posture === "hold_still";
       this._leanIn = approach(
         this._leanIn,
-        isListeningNow ? 1 : 0,
+        isListeningNow && !quietListening ? 1 : 0,
         dt / LEAN_IN_TIME_CONSTANT_S,
       );
       bodyY += this._leanIn * LEAN_IN_AMPLITUDE * expressiveness;

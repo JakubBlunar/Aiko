@@ -7,7 +7,7 @@ own target changes.
 """
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from app.core.activity.evidence import CODING_CONFIDENCE_FLOOR
 from app.core.live.frame import SLEEP_SPEECH_FORBID, LiveSituationFrame
@@ -34,6 +34,7 @@ ATTENTION_TARGET_SET = frozenset(ATTENTION_TARGETS)
 ATTENTION_INTENTS = frozenset({"attend", "remain_present"})
 SHARED_STYLES = frozenset({"share_delight", "playful"})
 QUIET_PRESENCE = "give_space"
+ListenPosture = Literal["none", "lean_in", "give_space", "hold_still"]
 
 STYLE_SPEECH_CAP = {
     "neutral": "open",
@@ -92,6 +93,27 @@ def user_interrupting(frame: LiveSituationFrame) -> bool:
     if interaction.typing_active or interaction.speech_active:
         return True
     return str(interaction.floor_owner or "") in {"user", "transition"}
+
+
+def listen_posture_for(
+    frame: LiveSituationFrame, *, intent: str, style: str,
+) -> ListenPosture:
+    """Choose a visual posture within the user's observed floor."""
+    if not user_interrupting(frame):
+        return "none"
+    interaction = frame.interaction
+    if (
+        _quiet_constraint(frame)
+        or interaction.turn_active
+        or interaction.tts_active
+        or interaction.playback_active
+        or intent == "yield_floor"
+        or interaction.endpointing == "final"
+    ):
+        return "hold_still"
+    if interaction.typing_active or style == QUIET_PRESENCE:
+        return "give_space"
+    return "lean_in" if interaction.speech_active else "hold_still"
 
 
 def sharing_active(frame: LiveSituationFrame) -> bool:
@@ -243,6 +265,7 @@ __all__ = [
     "ATTENTION_INTENTS",
     "ATTENTION_TARGETS",
     "ATTENTION_TARGET_SET",
+    "ListenPosture",
     "PRESENCE_STYLES",
     "PRESENCE_STYLE_SET",
     "QUIET_PRESENCE",
@@ -253,6 +276,7 @@ __all__ = [
     "clamp_presence_style",
     "hold_flags_from_proposal",
     "keep_flag",
+    "listen_posture_for",
     "presence_from_proposal",
     "quieter_speech",
     "style_visuals",

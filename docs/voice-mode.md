@@ -276,6 +276,18 @@ Tests: `tests/test_web_server_audio_owner.py` (`AudioOwnerElectionTests`
   persist in `localStorage` and surface to the server in the
   `mic_start.dsp_flags` byte.
 
+## Live listening posture
+
+Live mode gives the user visual space while they compose. The avatar eases
+its gaze toward rest and relaxes the listening lean. With an active voice
+utterance it can lean in and meet the user's gaze. At the end of an utterance,
+or when yielding to an interruption, it settles until the floor changes.
+Quiet mode and a locked desktop use the still posture, and sleep keeps its
+own avatar behavior.
+
+The posture uses the existing gaze and body channels. Playback retains the
+speaking gaze, and voice capture and speech admission use their usual rules.
+
 ## Testing
 
 - Backend: `tests/test_audio_frame_protocol.py`,

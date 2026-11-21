@@ -231,8 +231,11 @@ class ResolverStyleTests(unittest.TestCase):
         self.assertEqual(plan.body_class, "settle")
         self.assertEqual(plan.attention_target, "shared_activity")
 
-    def test_cofocus_leans_in(self) -> None:
-        frame = _coding_frame(typing=True)
+    def test_cofocus_leans_in_for_speech(self) -> None:
+        frame = _coding_frame()
+        frame = replace(
+            frame, interaction=replace(frame.interaction, floor_owner="user", speech_active=True),
+        )
         plan = LiveBehaviorResolver().resolve(
             frame, _caps(),
             policy_intent="attend",
@@ -242,6 +245,16 @@ class ResolverStyleTests(unittest.TestCase):
         self.assertEqual(plan.gaze_class, "user_eye_contact")
         self.assertEqual(plan.body_class, "lean_in")
         self.assertEqual(plan.expression_class, "attentive")
+        self.assertEqual(plan.listen_posture, "lean_in")
+
+    def test_cofocus_gives_a_composing_user_space(self) -> None:
+        plan = LiveBehaviorResolver().resolve(
+            _coding_frame(typing=True), _caps(),
+            policy_intent="attend", presence_style="cofocus",
+        )
+        self.assertEqual(plan.gaze_class, "rest")
+        self.assertEqual(plan.body_class, "settle")
+        self.assertEqual(plan.listen_posture, "give_space")
 
     def test_sleep_outranks_style(self) -> None:
         frame = assemble_live_situation(

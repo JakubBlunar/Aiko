@@ -28,6 +28,7 @@ def read_scenario(name: str) -> dict:
     "cue-and-floor", "wait-and-focus", "local-observation",
     "topic-choice", "quiet-cadence", "interruption", "requested-update", "requested-update-ready",
     "learn-coding-timing",
+    "listening-posture",
 ])
 def test_fixture_runs_without_network(name, monkeypatch):
     def unexpected_request(*args, **kwargs):
@@ -49,6 +50,19 @@ def test_handoff_exposes_topic_and_cue_and_learns_from_the_next_user_message():
     ledger = report["steps"][-1]["policy_context"]["policy_ledger"]
     assert any(row["completed_action"] == "request_main_speech" for row in ledger)
     assert report["steps"][-1]["cues"]["balcony herbs"]["state"] == "used"
+
+
+def test_listening_posture_tracks_the_floor_without_speaking():
+    report = run_live_scenario(read_scenario("listening-posture"))
+    assert report["expectation_failures"] == []
+    steps = {step["label"]: step for step in report["steps"]}
+    for label in ("The user starts speaking", "The user starts a new utterance immediately"):
+        plan = steps[label]["embodiment"]["behavior_plan"]
+        assert plan["listen_posture"] == "lean_in"
+        assert plan["gaze_class"] == "user_eye_contact"
+        assert plan["attention_target"] == "user"
+    assert report["spoken"] == []
+    assert report["dispatches"] == []
 
 
 @pytest.mark.parametrize("reference", ["2", "9"])

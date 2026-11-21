@@ -15,6 +15,7 @@ python scripts/live_scenarios.py tests/scenarios/live/cue-and-floor.json
 python scripts/live_scenarios.py tests/scenarios/live/wait-and-focus.json
 python scripts/live_scenarios.py tests/scenarios/live/local-observation.json --local --json
 python scripts/live_scenarios.py tests/scenarios/live/interruption.json --local --repeat 4 --json
+python scripts/live_scenarios.py tests/scenarios/live/listening-posture.json --local --repeat 4 --json
 ```
 
 To compare the same timeline with and without an established preference, use

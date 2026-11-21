@@ -267,6 +267,36 @@ describe("AmbientBodyChannel — body language", () => {
     expect(channel.leanInEnvelope).toBeLessThan(0.05);
   });
 
+  it("lets the Live pose distinguish active listening from holding still at the endpoint", () => {
+    const adapter = new FakeAdapter();
+    const channel = new AmbientBodyChannel();
+    const plan = {
+      intent: "attend",
+      attention_target: "user",
+      gaze_class: "user_eye_contact",
+      body_class: "lean_in",
+      breath_class: "normal",
+      expression_class: "attentive",
+      motion_class: "none",
+      degrade_to_sleep: false,
+      listen_posture: "lean_in",
+    } as const;
+    const { deps, setSnapshot } = makeDeps(
+      { has_body_angle_y: true },
+      { voiceMode: "listening", liveEmbodiment: plan },
+    );
+    channel.attach(adapter, deps);
+    for (let i = 0; i < 50; i += 1) channel.tickTier3!(0, 0.05);
+    expect(channel.leanInEnvelope).toBeGreaterThan(0.9);
+
+    setSnapshot({
+      voiceMode: "transcribing",
+      liveEmbodiment: { ...plan, listen_posture: "hold_still" },
+    });
+    for (let i = 0; i < 60; i += 1) channel.tickTier3!(0, 0.05);
+    expect(channel.leanInEnvelope).toBeLessThan(0.05);
+  });
+
   it("late-night + low arousal triggers slump (negative Y contribution)", () => {
     const adapter = new FakeAdapter();
     const channel = new AmbientBodyChannel();

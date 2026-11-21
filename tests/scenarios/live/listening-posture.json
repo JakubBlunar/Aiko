@@ -1,0 +1,71 @@
+{
+  "name": "Quiet floor manners while composing, speaking and yielding",
+  "steps": [
+    {"state": {"activity": "reading"}},
+    {
+      "label": "Give the user space to compose",
+      "impulse": "user.typing_started",
+      "expect": {
+        "new_policy_calls": 0,
+        "queued_count": 0,
+        "embodiment": {"behavior_plan": {"listen_posture": "give_space", "gaze_class": "rest"}}
+      }
+    },
+    {
+      "label": "Return attention to the room when typing stops",
+      "impulse": "user.typing_stopped",
+      "expect": {"embodiment": {"behavior_plan": {"listen_posture": "none"}}}
+    },
+    {
+      "label": "The user starts speaking",
+      "state": {"voice_session": true},
+      "impulse": "user.voice_start",
+      "proposal": {"intent": "attend"},
+      "expect": {"queued_count": 0, "speech_count": 0}
+    },
+    {
+      "label": "Hold still as the utterance ends",
+      "impulse": "user.speech_final",
+      "payload": {"text": "I think I found the page we were looking for."},
+      "proposal": {"intent": "attend"},
+      "expect": {"embodiment": {"behavior_plan": {"listen_posture": "hold_still"}}}
+    },
+    {
+      "label": "The user starts a new utterance immediately",
+      "impulse": "user.voice_start",
+      "proposal": {"intent": "attend"},
+      "expect": {"frame": {"interaction": {"endpointing": "listening"}}}
+    },
+    {
+      "label": "A stop releases the listening posture",
+      "impulse": "user.voice_stop",
+      "expect": {"embodiment": {"behavior_plan": {"listen_posture": "none"}}}
+    },
+    {
+      "label": "The user interrupts simulated playback",
+      "state": {"playback": true},
+      "impulse": "user.voice_start",
+      "proposal": {"intent": "yield_floor"},
+      "expect": {
+        "queued_count": 0,
+        "embodiment": {"behavior_plan": {"listen_posture": "hold_still"}}
+      }
+    },
+    {"impulse": "aiko.playback_drained"},
+    {"impulse": "user.voice_stop"},
+    {
+      "label": "Quiet mode keeps typing acknowledgement still",
+      "state": {"quiet": true},
+      "impulse": "user.typing_started",
+      "expect": {"embodiment": {"behavior_plan": {"listen_posture": "hold_still"}}}
+    },
+    {
+      "label": "Sleep owns the avatar",
+      "state": {"sleep": "asleep"},
+      "expect": {
+        "speech_count": 0,
+        "embodiment": {"behavior_plan": {"listen_posture": "none", "degrade_to_sleep": true}}
+      }
+    }
+  ]
+}

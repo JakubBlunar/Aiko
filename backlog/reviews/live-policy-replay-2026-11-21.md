@@ -144,3 +144,17 @@ test selected it there and verified delivery.
 Both conditions used the existing readiness signal for the render. The
 harness supplied the activity samples and simulated the speech handoff. This
 pilot tests a narrow explicit instruction and its carryover.
+
+## Visual floor manners
+
+Four isolated [listening posture replays](../../tests/scenarios/live/listening-posture.json)
+on `qwen3.5:4b` produced 24 policy decisions and zero autonomous speech
+requests. All four runs showed the same visual transitions. Typing gave
+space without a policy call, active speech leaned in, an utterance ending
+settled, and speech resumed before the earlier endpoint could expire.
+An interruption held still during simulated playback and returned to
+active listening after playback drained. Quiet mode held still, and sleep
+retained its own behavior.
+
+Frontend channel tests exercise the gaze and lean used by the avatar. The
+replay measures semantic plans with synthetic voice events.
