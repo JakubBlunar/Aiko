@@ -415,7 +415,9 @@ ordinal order, with ties following edge ID order.
 Confidence sampling reads each concept's last inserted event in a batch of
 indexed seeks. Trajectories and drift windows use event time, with event ID
 breaking ties. The concept/time index lets the history reads stop at their
-requested limits.
+requested limits. The drift worker's incremental dirty-set read seeks the
+short event-ID tail when its watermark is close to the latest event. Full
+history sweeps page in concept-ID order.
 
 **Age is engaged time, not wall-clock** (schema v24). Both the promotion
 floor and the `concept_candidate_ttl_days` cleanup are measured in *engaged*

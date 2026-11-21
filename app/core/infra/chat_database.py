@@ -5,7 +5,7 @@ import json
 import logging
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -791,6 +791,9 @@ CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_message
     ON surfacing_outcomes(assistant_message_id);
 CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_created
     ON surfacing_outcomes(created_at);
+-- Pending outcomes are sparse and queried by both lifetime and recent reports.
+CREATE INDEX IF NOT EXISTS idx_surfacing_outcomes_unsettled
+    ON surfacing_outcomes(created_at) WHERE settled_at IS NULL;
 -- The matching index for the name-keyed kinds lives in
 -- ``_DEPENDENT_LEDGER_INDICES``, not here: ``item_key`` arrives by ALTER on
 -- upgraded databases and this script runs *before* the migrations.
@@ -2831,6 +2834,24 @@ class ChatDatabase(MessageOutcomesMixin):
             "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
         ).fetchone()
         return row[0] if row else 0
+
+    def iter_message_backfill_pages(self, *, page_size: int) -> Iterator[list[MessageRow]]:
+        """Read startup index candidates in id order, with no read held between pages."""
+        page_size = max(1, page_size)
+        conn = self._get_conn()
+        end_id = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()[0]
+        after_id = 0
+        while after_id < end_id:
+            rows = conn.execute(
+                "SELECT id, session_id, role, content, token_count, created_at, "
+                "       arc, dialogue_act, gestures, reactions, attachments "
+                "FROM messages WHERE id > ? AND id <= ? ORDER BY id LIMIT ?",
+                (after_id, end_id, page_size),
+            ).fetchall()
+            if not rows:
+                break
+            after_id = rows[-1][0]
+            yield [MessageRow(*r) for r in rows]
 
     def count_messages_since(
         self, session_id: str, since: datetime | None,

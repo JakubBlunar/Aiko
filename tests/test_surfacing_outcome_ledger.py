@@ -1229,6 +1229,9 @@ class McpReportTests(unittest.TestCase):
         lifetime = self._report(host)
         self.assertEqual(lifetime["rows_total"], 3)
         self.assertEqual(lifetime["rows_unsettled"], 3)
+        self.f.store.settle(102, "engaged")
+        self.assertEqual(self._report(host, window_days=6)["rows_unsettled"], 0)
+        self.assertEqual(self._report(host)["rows_unsettled"], 2)
 
     def setUp(self) -> None:
         self.f = _Fixture()

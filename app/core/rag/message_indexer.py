@@ -40,6 +40,7 @@ _MIN_INDEX_LENGTH = 8
 # embedder can't build an unbounded backlog of pending timers.
 _MAX_INDEX_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = (2.0, 8.0, 30.0)
+_BACKFILL_PAGE_SIZE = 256
 
 
 class MessageIndexer:
@@ -303,28 +304,19 @@ class MessageIndexer:
     def _backfill(self) -> None:
         # We slow-walk the history so we don't hammer the embedding endpoint
         # on a fresh boot.
-        sessions = self._db.list_sessions()
-        if not sessions:
-            return
         count_indexed = 0
-        for sess in sessions:
-            if self._stop.is_set():
-                return
-            session_id = str(sess.get("session_id") or "")
-            if not session_id:
-                continue
-            messages = self._db.get_messages(session_id)
+        for messages in self._db.iter_message_backfill_pages(page_size=_BACKFILL_PAGE_SIZE):
             for row in messages:
                 if self._stop.is_set():
                     return
-                if not _should_index(row):
+                if not row.session_id or not _should_index(row):
                     continue
                 self._index_one(row)
                 count_indexed += 1
                 self._bump("backfill_walked")
-                # Small sleep so the embedder has breathing room and the
-                # rest of the app stays responsive on first launch.
-                time.sleep(0.01)
+                # Give the embedder breathing room and wake promptly on shutdown.
+                if self._stop.wait(0.01):
+                    return
         if count_indexed:
             log.info("message indexer backfill walked %d candidate rows", count_indexed)
 

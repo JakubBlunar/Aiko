@@ -43,6 +43,16 @@ def _event(**kw) -> ConceptEvent:
 
 
 class EventStoreCrudTests(unittest.TestCase):
+    def test_dirty_tail_and_full_sweep_keep_concept_order_and_paging(self) -> None:
+        store = ConceptEventStore(_db())
+        watermark = store.add(_event(concept_id=1))
+        for cid in (5, 3, 5, None, 2):
+            store.add(_event(concept_id=cid))
+        self.assertEqual(store.concepts_with_events_after(watermark, limit=2), [2, 3])
+        self.assertEqual(store.concepts_with_events_after(watermark, after_concept_id=2), [3, 5])
+        self.assertEqual(store.concepts_with_events_after(0), [1, 2, 3, 5])
+        self.assertEqual(store.concepts_with_events_after(store.max_event_id()), [])
+
     def test_add_returns_id_and_counts(self) -> None:
         store = ConceptEventStore(_db())
         self.assertEqual(store.count(), 0)

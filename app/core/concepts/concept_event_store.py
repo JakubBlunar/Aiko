@@ -317,11 +317,13 @@ class ConceptEventStore:
         with more concepts than the page size strands the rest.
         """
         conn = self._db._get_conn()  # type: ignore[attr-defined]
-        sql = (
-            "SELECT DISTINCT concept_id FROM concept_events "
-            "WHERE id > ? AND concept_id IS NOT NULL"
-        )
-        params: list[int] = [int(event_id)]
+        watermark = int(event_id)
+        # A recent watermark leaves a small rowid range. The concept index
+        # avoids a sort for a full sweep, but walks history to find a sparse tail.
+        recent_tail = watermark > 0 and self.max_event_id() - watermark <= 1024
+        table = "concept_events NOT INDEXED" if recent_tail else "concept_events"
+        sql = f"SELECT DISTINCT concept_id FROM {table} WHERE id > ? AND concept_id IS NOT NULL"
+        params: list[int] = [watermark]
         if after_concept_id is not None:
             sql += " AND concept_id > ?"
             params.append(int(after_concept_id))

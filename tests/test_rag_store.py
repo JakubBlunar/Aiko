@@ -655,6 +655,26 @@ class MessageIndexerBackfillTests(_TmpRagBase):
             vector_dim=FakeEmbedder.DIM,
         )
 
+    def test_backfill_pages_past_ineligible_rows(self) -> None:
+        first = self.db.add_message(session_id="s1", role="user", content="first long message")
+        self.db.add_message(session_id="s1", role="user", content="hi")
+        other = self.db.add_message(session_id="s2", role="user", content="another session message")
+        last = self.db.add_message(session_id="s1", role="assistant", content="last long message")
+        indexer = MessageIndexer(self.db, self.store, self.embedder)
+        self.addCleanup(indexer.stop)
+        with (
+            patch("app.core.rag.message_indexer._BACKFILL_PAGE_SIZE", 2),
+            patch.object(indexer, "_index_one") as index_one,
+        ):
+            # A message added during backfill belongs to the already attached live listener.
+            index_one.side_effect = lambda row: (
+                self.db.add_message(session_id="s1", role="user", content="live listener message")
+                if row.id == first else None
+            )
+            indexer._backfill()
+        self.assertEqual([c.args[0].id for c in index_one.call_args_list], [first, other, last])
+        self.assertEqual(indexer.stats()["enqueued"], 1)
+
     def test_backfill_is_idempotent(self) -> None:
         # Seed history with three messages.
         for i in range(3):
