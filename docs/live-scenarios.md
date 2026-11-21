@@ -41,6 +41,11 @@ The main-wake budget is charged when the report reaches dispatch. A second
 interruption ends the retry. The replay shows the selected subject, dispatch
 outcome, and whether the cue surfaced.
 
+The [background-work integration replay](../tests/test_live_work_reporting.py)
+starts a real calculator workflow through `start_workflow`, with a disposable
+database and scripted model responses. It checks Live's floor gates and
+the saved report's single delivery through the regular task outbox.
+
 This command replays an explicitly taught preference across two conversations.
 
 ```powershell

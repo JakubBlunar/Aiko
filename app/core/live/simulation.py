@@ -101,6 +101,7 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
     def __init__(
         self, clock: _Clock, route: LlmRoute, client: Any, max_wakes: int, min_gap_ms: int,
         *, learn_timing: bool, avatar_profile: dict[str, Any],
+        database: ChatDatabase | None = None,
     ) -> None:
         self.clock = clock
         self.route = route
@@ -108,7 +109,7 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
         self._user_id = "scenario-user"
         self._learn_timing = learn_timing
         self._avatar_profile = avatar_profile
-        self._chat_db = ChatDatabase(Path(":memory:"))
+        self._chat_db = database if database is not None else ChatDatabase(Path(":memory:"))
         self._cue_store = CueStore(self._chat_db)
         self._activity_store = ActivityStore(self._chat_db)
         self._settings = SimpleNamespace(agent=SimpleNamespace(

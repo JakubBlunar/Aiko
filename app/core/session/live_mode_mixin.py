@@ -848,9 +848,16 @@ class LiveModeMixin:
                 log.debug("live policy context apply failed", exc_info=True)
         if self.is_live_presence():
             self._live_return_glance.observe(frame, inp.activity_evidence)
-            self._maybe_run_live_policy(
-                frame, trigger_kind=str(trigger_kind or "heartbeat"),
+            queue_work_report = getattr(self, "_queue_live_work_report", None)
+            report_queued = (
+                callable(queue_work_report)
+                and trigger_kind not in {"user.message_sent", "user.speech_final"}
+                and queue_work_report(frame)
             )
+            if not report_queued:
+                self._maybe_run_live_policy(
+                    frame, trigger_kind=str(trigger_kind or "heartbeat"),
+                )
         self._live_situation_overlay = overlay_from_frame(frame)
         self._live_last_sleep_status = frame.constraints.sleep_status
         self._live_last_shared = frame.shared.shared_commitment_active
@@ -1367,6 +1374,13 @@ class LiveModeMixin:
         if str(frame.constraints.sleep_status or "") in SLEEP_SPEECH_FORBID:
             return "sleep"
         if main_wake_floor_busy(frame):
+            return "floor_busy"
+        work_report = getattr(self, "_live_work_report_event", None)
+        if (
+            work_report is not None and work_report.session_key == frame.session_id
+            and work_report.live_generation == current
+            and work_report.live_intent_sequence == frame.interaction.user_intent_sequence
+        ):
             return "floor_busy"
         if frame.constraints.defer_casual_speech and cue_purpose(
             cue, session_id=frame.session_id,

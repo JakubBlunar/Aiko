@@ -10,6 +10,8 @@ import time
 from app.core.infra import timephrase
 from app.core.persona.speech_guide import digest
 from app.core.services.response_text_service import strip_all_meta_tags, parse_reaction_at_start
+from app.core.tasks.handler_names import HANDLER_GOAL_WORKFLOW
+from app.core.tasks.task_handler import INITIATED_BY_AIKO
 from app.core.tasks.workflow.context_budget import TaskBudget, pack_review
 from app.core.tasks.work_report_grounding import owned_evidence, fallback, review_report
 from app.core.tasks.work_report_grounding import certified_sources, speech_facts
@@ -59,6 +61,7 @@ class WorkReports:
         enqueue,
         present,
         free=lambda: True,
+        offer_live=None,
     ):
         self.db, self.orchestrator, self.guide = db, orchestrator, guide
         self.user, self.session, self.client, self.model = user, session, client, model
@@ -70,6 +73,7 @@ class WorkReports:
             free,
         )
         self.closed = threading.Event()
+        self.offer_live = offer_live
         self.lock = threading.Lock()
         self._notified, self._retry = {}, {}
         self.thread = None
@@ -99,6 +103,35 @@ class WorkReports:
             and row.state.get("local_reporting") is True
             and row.notify_aiko
             and (row.metadata or {}).get("source_session")
+        )
+
+    @staticmethod
+    def _is_requested_completion(row):
+        metadata = row.metadata or {}
+        message_id = metadata.get("source_message_id")
+        return (
+            row.handler_name == HANDLER_GOAL_WORKFLOW
+            and row.status == "done"
+            and row.initiated_by == INITIATED_BY_AIKO
+            and row.visible_to_user
+            and not metadata.get("self_initiated")
+            and metadata.get("reply_when_done") is True
+            and type(message_id) is int and message_id > 0
+            and task_outcome(row)["verified"]
+        )
+
+    def is_requested_completion(self, session, report_id):
+        report = self.db.execute_fetchone(
+            "SELECT task_id FROM work_reports WHERE id=? AND session_id=? "
+            "AND status='pending' AND draft!=''",
+            (report_id, session),
+        )
+        task = self.orchestrator.get(report[0]) if report else None
+        return (
+            self.owns(task)
+            and task.user_id == self.user()
+            and task.metadata.get("source_session") == session
+            and self._is_requested_completion(task)
         )
 
     def _basis(self, row):
@@ -175,10 +208,8 @@ class WorkReports:
             for row in self.orchestrator.list_for_user(self.user(), limit=200, roots_only=True):
                 if self.closed.is_set():
                     break
-                if (
-                    not self.owns(row)
-                    or (row.metadata or {}).get("source_session") != self.session()
-                ):
+                session = (row.metadata or {}).get("source_session")
+                if not self.owns(row) or session != self.session():
                     continue
                 source = self._source(row)
                 if source is None:
@@ -191,7 +222,7 @@ class WorkReports:
                         "INSERT OR IGNORE INTO work_reports"
                         "(task_id,event_key,session_id,basis,created_at) "
                         "VALUES (?,?,?,?,?)",
-                        (row.id, event_key, self.session(), basis, timephrase.utcnow().isoformat()),
+                        (row.id, event_key, session, basis, timephrase.utcnow().isoformat()),
                     )
                     conn.execute(
                         "UPDATE work_reports SET status='superseded' WHERE task_id=? "
@@ -204,7 +235,10 @@ class WorkReports:
                     (row.id, event_key),
                 ).fetchone()
                 rid, draft, status, old_basis = report
-                if status != "pending" or self._retry.get(rid, 0) > time.monotonic():
+                if (
+                    session != self.session() or status != "pending"
+                    or self._retry.get(rid, 0) > time.monotonic()
+                ):
                     continue
                 if old_basis != basis:
                     self.db.execute_commit(
@@ -230,7 +264,13 @@ class WorkReports:
                         "SELECT draft FROM work_reports WHERE id=?", (rid,)
                     ).fetchone()
                     if ready and ready[0]:
-                        self.enqueue(self.session(), rid)
+                        offered = (
+                            self.offer_live is not None
+                            and self._is_requested_completion(row)
+                            and self.offer_live(session, rid)
+                        )
+                        if not offered:
+                            self.enqueue(session, rid)
                         self._notified[rid] = time.monotonic()
         finally:
             self.lock.release()
@@ -366,8 +406,14 @@ class WorkReports:
             (text, reaction, rid, basis),
         )
 
-    def deliver(self, session, report_id):
-        if self.closed.is_set() or session != self.session() or not self.free():
+    def deliver(self, session, report_id, *, can_deliver=None):
+        def open_for_report():
+            return (
+                not self.closed.is_set() and session == self.session() and self.free()
+                and (can_deliver is None or can_deliver())
+            )
+
+        if not open_for_report():
             return False
         conn = self.db._get_conn()
         with conn:
@@ -384,8 +430,10 @@ class WorkReports:
             if (
                 not self.owns(row)
                 or row.user_id != self.user()
+                or row.metadata.get("source_session") != session
                 or row.status in {"cancelled", "paused"}
                 or self._basis(row) != basis
+                or not open_for_report()
             ):
                 return False
             stamp = timephrase.utcnow().isoformat()

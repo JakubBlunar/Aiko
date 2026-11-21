@@ -1942,10 +1942,8 @@ class TaskOrchestrationMixin(WorkReportingMixin, PluginSettingsMixin):
             )
             return
         source = getattr(event, "source", "")
-        if source == "work_report":
-            reports = getattr(self, "_work_reports", None)
-            if reports is not None and len(event.parked_cue_ids) == 1:
-                reports.deliver(event.session_key, int(event.parked_cue_ids[0]))
+        if source in {"work_report", "live_work_report"}:
+            self._dispatch_work_report(event)
             return
         if source in ("voice_silence", "typed_silence"):
             if source == "typed_silence" and bool(

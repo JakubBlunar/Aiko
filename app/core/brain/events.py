@@ -250,7 +250,8 @@ class ProactiveEvent:
 
     session_key: str = ""
     source: Literal[
-        "voice_silence", "typed_silence", "task_escalation", "live_main_wake", "work_report"
+        "voice_silence", "typed_silence", "task_escalation", "live_main_wake",
+        "work_report", "live_work_report",
     ] = "typed_silence"
     parked_cue_ids: tuple[str, ...] = ()
     live_generation: int = 0

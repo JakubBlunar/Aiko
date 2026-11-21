@@ -263,6 +263,14 @@ only to speech. A committed chat message is not proof of playback or human
 perception; notification/audio failure after commitment does not trigger a blind
 second spoken report.
 
+In Live, a ready, verified final report for a workflow started from a user
+message with reply-on-complete enabled waits for the first safe opening in
+its original conversation. Live schedules the existing outbox entry and
+checks the floor again at dispatch. Typing, voice activity and newer user
+messages can preempt the attempt. If the user changes conversations, the
+report waits for their return. The same outbox entry and assistant-message
+receipt govern delivery throughout.
+
 Drafts use bounded local calls and at most three dispatched attempts per source
 basis. Queue deferral/cancellation does not use an attempt. Attempt records keep
 reported tokens and active/queue time separately; a lost in-flight attempt keeps
