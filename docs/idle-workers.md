@@ -99,7 +99,15 @@ only when the recorded choice cleared those checks and an alternative activity
 was available. The review can use an explicit reviewer judgment for older
 records with missing fields. The existing room and journal context still shape
 the choice, and an observed selection gives no independent evidence of motive.
-This review uses the same 14-day trace and remains separate from Memory Story.
+Memory Story and the unfiltered `recall_self_history` timeline use these trace
+checks for a sketching pilot. A completed drawing can support an activity report.
+Repeated choices need at least two completed model selections with an alternative
+family available and recorded cue checks. A change needs at least two comparable
+choices in each half of the retained 14-day window, with reading and sketching
+both available. The accepted comparisons must consistently show reading earlier
+and sketching later. The finding cites run and event IDs. Missing cue receipts
+can support the activity report only. This read adds no belief, learning event,
+or input to a later idle choice.
 
 To compare two recorded periods, run the review module against a SQLite backup.
 Each pair of bounds includes the start and excludes the end, with an explicit

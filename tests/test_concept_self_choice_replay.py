@@ -1,6 +1,8 @@
 """Equal activity counts can support different accounts of Aiko's choices."""
 
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
+import json
 import sqlite3
 import sys
 
@@ -10,7 +12,10 @@ from app.core.concepts.concept_learning_event_store import ConceptLearningEventS
 from app.core.concepts.concept_store import Concept, ConceptStore
 from app.core.concepts.self_history import build_self_history
 from app.core.infra.chat_database import ChatDatabase
+from app.core.infra import timephrase
+from app.core.session.memory_facade_mixin import MemoryFacadeMixin
 from app.core.world.idle_life_store import IdleLifeStore
+from app.llm.tools.builtins import RecallSelfHistoryTool
 from scripts.review_self_choices import EpisodeReview, compare_choices, main, review_snapshot
 
 
@@ -138,8 +143,6 @@ def test_choice_reviews_use_actual_model_options_and_reject_cues(replay):
 def test_snapshot_review_reports_retained_choices_and_gaps_without_writing(
     replay, tmp_path, monkeypatch, capsys,
 ):
-    import json
-
     db, store = replay
     stamp = "2026-11-19T10:00:00+00:00"
     monkeypatch.setattr("app.core.world.idle_life_store.real_stamp", lambda: stamp)
@@ -197,3 +200,72 @@ def test_snapshot_review_reports_retained_choices_and_gaps_without_writing(
     assert empty["repeated_return"] is None
     assert empty["changed_choice_pattern"] is None
     assert snapshot.read_bytes() == original
+
+
+@pytest.mark.parametrize(("case", "kind"), [
+    ("legacy", "completed_activity"),
+    ("cued", "completed_activity"),
+    ("voluntary", "repeated_choice"),
+    ("changed", "changed_choice_pattern"),
+    ("counterexample", "repeated_choice"),
+])
+def test_story_and_tool_share_only_the_supported_choice_finding(replay, monkeypatch, case, kind):
+    db, store = replay
+    now = datetime(2026, 11, 22, 12, tzinfo=timezone.utc)
+    moment = now
+    monkeypatch.setattr(timephrase, "real_now", lambda: moment)
+
+    def run(run_id, *, days_ago, picked=_SKETCH, cues=False, route="model", finish=True):
+        nonlocal moment
+        moment = now - timedelta(days=days_ago)
+        store.record("run_started", "away_activity", {}, run_id=run_id)
+        options = None if case == "legacy" else {
+            "choice_inputs": {"version": 1, "optional_inspiration": False,
+                              "daily_intention": False, "ongoing_interest": cues},
+            "offered": [{"action": "new_sketch"}],
+        }
+        _episode(store, run_id, picked=picked, options=options, route=route, unprompted=None)
+        if finish:
+            store.record("run_finished", "away_activity", {}, run_id=run_id)
+
+    for i in range(2):
+        run(f"before-{i}", days_ago=10 - i, picked=_READ, cues=case == "voluntary")
+        run(f"after-{i}", days_ago=5 - i, cues=case == "cued")
+    if case == "counterexample":
+        run("later-reading", days_ago=3, picked=_READ)
+    run("expired", days_ago=15)
+    run("unfinished-trace", days_ago=2, finish=False)
+    run("forced", days_ago=1, route="debug_forced")
+    moment = now
+
+    host = MemoryFacadeMixin()
+    host._user_id = "replay"
+    host._concept_store = ConceptStore(db)
+    host._concept_learning_store = ConceptLearningEventStore(db)
+    host._idle_life_store = store
+    tool = RecallSelfHistoryTool(host.self_history, host.understanding_history)
+    changes = db._get_conn().total_changes
+    story = host.self_history()
+    timeline = json.loads(tool.run({}))
+    history = story["choice_history"]
+    assert story["thin_record"] and timeline["thin_record"]
+    assert timeline["choice_history"] == history
+    assert history["coverage"]["incomplete_runs"] == 1
+    finding = history["finding"]
+    assert finding["kind"] == kind
+    assert [source["run_id"] for source in finding["later"]] == ["after-0", "after-1"]
+    assert "like" not in finding["statement"]
+    for source in finding["later"]:
+        assert store.event(source["completion_event_id"])["payload"]["key"] == _SKETCH
+        choice_id = source["choice_event_id"]
+        if kind == "completed_activity":
+            assert choice_id is None
+        else:
+            assert store.event(choice_id)["payload"] == {"route": "model", "key": _SKETCH}
+    if case == "changed":
+        assert [source["run_id"] for source in finding["earlier"]] == ["before-0", "before-1"]
+    else:
+        assert "earlier" not in finding
+    assert "choice_history" not in json.loads(tool.run({"subject": "user"}))
+    assert "choice_history" not in json.loads(tool.run({"query": "writing"}))
+    assert db._get_conn().total_changes == changes

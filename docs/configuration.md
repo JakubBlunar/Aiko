@@ -711,11 +711,11 @@ A periodic, browsable "here is how I've changed", composed from the same learnin
 
 ### L19 — self-history (the autobiography)
 
-Asked "have you changed?", Aiko walks her own record rather than improvising. [`self_history.py`](../app/core/concepts/self_history.py) builds eras of classified change (flipped / faded / revived / born / settled) across every concept including retired ones, and the `recall_self_history` tool narrates them. Inspect the exact payload the model receives at Settings → Memory → **Story**, `GET /api/concepts/self-history?subject=aiko`, or the MCP `get_self_history`.
+Asked "have you changed?", Aiko can look up her recorded history with `recall_self_history`. [`self_history.py`](../app/core/concepts/self_history.py) builds eras of classified change (flipped / faded / revived / born / settled) across concepts including retired ones. Inspect the eras at Settings → Memory → **Story**, `GET /api/concepts/self-history?subject=aiko`, or the MCP `get_self_history`.
 
 - `tools.recall_self_history` *(bool, `true`)* — the tool gate. It only registers when the concept and learning stores are both wired.
 
-There is no salience or cadence knob here: this is a pull-side read with no worker. The one field that governs behaviour is `thin_record` in the payload — set by the builder when the trail is too sparse to narrate, which obliges her to say she has no record rather than invent a past. `settled` beliefs do not count toward a record being substantive: having beliefs is not the same as having changed.
+`thin_record` means the recorded changes in beliefs are too sparse to narrate. `settled` beliefs supply continuity and do not count as changes. Story and the unfiltered Aiko timeline also share a read-only **Recorded choices** finding when idle-life traces are available. This sketching pilot can describe a completed drawing, repeated choices, or an earlier-to-later pattern change within the retained 14 days. Each finding names its supporting trace events. The evidence leaves motives and lasting preferences open. See [idle-life behavior review](idle-workers.md#reviewing-behavior-and-running-isolated-experiments).
 
 ### L17d — self-correction rules (learning from her own mistakes)
 

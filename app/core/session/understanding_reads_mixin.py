@@ -1,7 +1,10 @@
 """Scoped understanding reads, with no new inference or confidence writes."""
 import json
+import logging
 
 from app.core.infra.read_paging import json_page
+
+log = logging.getLogger("app.session")
 
 
 class UnderstandingReadsMixin:
@@ -72,6 +75,16 @@ class UnderstandingReadsMixin:
             None, self._user_id,
         ) else None
 
+    def _choice_history_payload(self, subject):
+        trace = getattr(self, "_idle_life_store", None)
+        if subject != "aiko" or trace is None:
+            return {}
+        try:
+            return {"choice_history": trace.recent_choice_history()}
+        except Exception:
+            log.debug("Choice history unavailable", exc_info=True)
+            return {}
+
     def understanding_history(self, *, mode="timeline", subject=None, query="", concept_id=None,
                               eras=6, limit=5, before_id=None, entry_id=None, event_id=None,
                               content_offset=0, revision=None):
@@ -99,10 +112,14 @@ class UnderstandingReadsMixin:
                     else:
                         omitted += 1
                 era["entries"] = kept
+            if not query and concept_id is None:
+                payload.update(self._choice_history_payload(payload["subject"]))
             return {"status": "ok", "enabled": True, "read_only": True, **payload,
                     "omitted": omitted, "coverage": "bounded recorded understanding history",
                     "note": "A change in Aiko's understanding does not prove a change in the "
-                            "user or relationship. Thin/omitted history is incomplete."}
+                            "user or relationship. Thin/omitted history is incomplete. "
+                            "Choice history describes recorded actions in a recent window. "
+                            "Leave motives and lasting preferences open."}
         if mode == "learning_event":
             event = learning.get(event_id)
             ids = [i for i in (event.concept_id, event.prior_concept_id) if i] if event else []

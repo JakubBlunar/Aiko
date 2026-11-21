@@ -1600,6 +1600,25 @@ export interface SelfHistoryEra {
   truncated?: number;
 }
 
+export interface RecordedChoiceSource {
+  run_id: string;
+  choice_event_id: number | null;
+  completion_event_id: number;
+  recorded_at: string;
+}
+
+export interface RecordedChoiceHistory {
+  from: string;
+  to: string;
+  truncated: boolean;
+  coverage: { reviewed_runs: number; missing_cue_receipts: number };
+  finding: {
+    statement: string;
+    earlier?: RecordedChoiceSource[];
+    later: RecordedChoiceSource[];
+  } | null;
+}
+
 export interface SelfHistoryArc {
   enabled: boolean;
   subject: string;
@@ -1611,6 +1630,7 @@ export interface SelfHistoryArc {
   total_concepts: number;
   counts: Record<string, number>;
   eras: SelfHistoryEra[];
+  choice_history?: RecordedChoiceHistory;
 }
 
 // ── L17f evolution diary (the periodic "how I've changed" log) ───────

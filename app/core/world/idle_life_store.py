@@ -15,6 +15,7 @@ from app.core.world.idle_life_trace import bounded
 
 log = logging.getLogger("app.idle_life")
 RETENTION_DAYS = 14
+_CHOICE_HISTORY_RUN_LIMIT = 512
 
 
 def real_stamp():
@@ -187,6 +188,31 @@ class IdleLifeStore:
 
     def decision(self, run_id):
         return {**self.read_decision(self._db._get_conn(), run_id), "telemetry": self.health()}
+
+    def recent_choice_history(self):
+        """Read the retained away-activity evidence in one SQLite snapshot."""
+        from app.core.world.idle_choice_review import build_recent_choice_history
+
+        now = timephrase.real_now().astimezone(timezone.utc)
+        cutoff = (now - timedelta(days=RETENTION_DAYS)).isoformat()
+        conn = self._db._get_conn()
+        conn.execute("SAVEPOINT recent_choice_history")
+        try:
+            run_ids = conn.execute(
+                "SELECT run_id FROM idle_life_events WHERE worker='away_activity' "
+                "AND actor='autonomous' AND kind IN ('choice','step_completed') "
+                "AND recorded_at BETWEEN ? AND ? AND run_id<>'' "
+                "GROUP BY run_id ORDER BY MAX(id) DESC LIMIT ?",
+                (cutoff, now.isoformat(), _CHOICE_HISTORY_RUN_LIMIT + 1),
+            ).fetchall()
+            decisions = (self.read_decision(conn, run_id)
+                         for (run_id,) in reversed(run_ids[:_CHOICE_HISTORY_RUN_LIMIT]))
+            return build_recent_choice_history(
+                decisions, now=now, retention_days=RETENTION_DAYS,
+                truncated=len(run_ids) > _CHOICE_HISTORY_RUN_LIMIT,
+            )
+        finally:
+            conn.execute("RELEASE recent_choice_history")
 
     def health(self):
         row = self._db._get_conn().execute(

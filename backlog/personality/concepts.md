@@ -809,6 +809,29 @@ leaves automatic recognition of prerequisites and actual help over topical
 recall open. In the no-spare case the checked reply avoided testing the sole
 sheet, but still proposed a substitute that could not verify the exact stock.
 
+On 22 Nov 2026, `--held-out` replayed six fresh cases about ceramics and slide
+conversion with the local 9B worker (`baytout3/qwen3.5-uncensored:9b`, seeds 56
+and 57, each with and without `--check-current`). A separate reply for each
+positive case received the reviewed source directly. The topical comparison
+received a fictional report from the current domain. This uses curated
+reports and prerequisite annotations, with no live retrieval or conversations.
+
+| Measure | Unchecked | Checked |
+| --- | --- | --- |
+| Expected sources selected | 4/4 | 4/4 |
+| Cases requiring abstention withheld | 0/8 | 8/8 |
+| Replies on the two hard-block cases violated the explicit constraint | 4/4 | 4/4 |
+
+Topical recall already supplied the core action for both positive cases in
+every run. The reviewed source gave no consistent improvement. One glaze
+reply imported the old surface treatment and suggested staining the clay for
+a dry-color check. Both checked runs still proposed testing a mural corner
+and exporting an export-disabled deck after the corresponding analogies were
+withheld. The equal character ceiling gave positive arms within four input
+tokens of one another. Withheld examples left up to 58 fewer input tokens than
+the topical arm. Keep L56 in offline replay. Source eligibility and the
+feasibility of the final suggestion need separate evidence.
+
 ## L57. Ground Aiko's changing interests in her own choices
 
 **Status: Choice-receipt pilot.** On 21 Nov 2026 a read-only check found active self-narrative
@@ -853,6 +876,16 @@ confirmed that drawing can count when the model was offered it, even if drawing
 was absent from the weighted list. Legacy runs can still use an explicit
 reviewer judgment. The [snapshot review command](../../docs/idle-workers.md)
 compares explicit recording-time windows and reports incomplete coverage.
+
+On 22 Nov 2026 the read-only installed trace check found 55 away-activity
+choices, eight model selections and no versioned cue receipts. The retained
+window yielded no sketching finding. Memory Story and the unfiltered
+`recall_self_history` timeline now share a read-only sketching example using
+the retained 14-day trace. Isolated fixtures exercise activity-only evidence,
+repeated choices and a change from reading to sketching when both options
+were available. Later contradictory reading prevents a change finding. Each
+finding cites the supporting events and leaves the reasons open. Ordinary
+use still needs enough comparable choices to yield a finding about change.
 Memory Story integration and ordinary-use validation remain open.
 
 ## Moved out of the active queue

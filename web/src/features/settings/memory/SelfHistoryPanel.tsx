@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { api } from "../../../api";
 import type {
+  RecordedChoiceHistory,
   SelfHistoryArc,
   SelfHistoryEntry,
   SelfHistoryEra,
@@ -12,12 +13,6 @@ import { RefreshButton } from "@/components/RefreshButton";
 import { ErrorBanner } from "@/components/ErrorBanner";
 import { EmptyState } from "@/components/EmptyState";
 
-// L19: the Story tab. This is exactly the payload the
-// `recall_self_history` tool hands the model, so what Aiko *would* say
-// about her past is inspectable before she says it. The one field to watch
-// is `thin_record`: when it is true she is required to say she has no
-// record rather than fill the gap, and seeing that here is how you catch
-// the feature over-claiming.
 export function SelfHistoryPanel() {
   const [subject, setSubject] = useState<string>("aiko");
   const loader = useCallback(
@@ -44,7 +39,7 @@ export function SelfHistoryPanel() {
       <div className="flex items-center justify-between gap-2 text-[11px]">
         <span
           className="font-medium text-ink-100/70"
-          title="What Aiko would say if asked 'have you changed?'. Built from her concepts and their recorded changes -- never composed prose, so every line here is checkable."
+          title="Aiko’s record of changing beliefs and recent activity choices."
         >
           Story
           {data ? (
@@ -83,12 +78,13 @@ export function SelfHistoryPanel() {
       {data?.thin_record ? (
         <div
           className="rounded border border-amber-400/30 bg-amber-500/5 p-2 text-[10px] text-ink-100/70"
-          title="Below the threshold for narrating a past. Asked about it, she will say she has no record rather than invent one."
         >
-          Thin record — not enough substantive change to describe a past
-          yet. Asked "have you changed?", she is expected to say she does
-          not have a record of it.
+          No record of substantial changes in beliefs yet.
         </div>
+      ) : null}
+
+      {subject === "aiko" && data?.subject === "aiko" && data.choice_history ? (
+        <ChoiceHistory history={data.choice_history} />
       ) : null}
 
       {data && Object.keys(data.counts ?? {}).length > 0 ? (
@@ -114,6 +110,47 @@ export function SelfHistoryPanel() {
         </ol>
       )}
     </Panel>
+  );
+}
+
+function ChoiceHistory({ history }: { history: RecordedChoiceHistory }) {
+  const { finding, coverage } = history;
+  const evidenceGroups = [
+    { label: "Earlier", sources: finding?.earlier ?? [] },
+    { label: finding?.earlier ? "Later" : "Recorded occasions", sources: finding?.later ?? [] },
+  ].filter(({ sources }) => sources.length > 0);
+  const formatDay = (at: string) => new Date(at).toLocaleDateString();
+
+  return (
+    <section className="space-y-1 rounded border border-white/10 p-2 text-[11px] text-ink-100/80">
+      <h3 className="font-medium">Recorded choices</h3>
+      <p>{finding?.statement ?? "The retained history has no supported sketching finding yet."}</p>
+      <p className="text-[10px] text-ink-100/50">
+        {formatDay(history.from)} – {formatDay(history.to)} · {coverage.reviewed_runs} runs reviewed
+        {coverage.missing_cue_receipts > 0 &&
+          ` · ${coverage.missing_cue_receipts} choices lacked cue records`}
+        {history.truncated && " · Review limited to the latest runs"}
+      </p>
+      {evidenceGroups.length > 0 && (
+        <details className="text-[10px] text-ink-100/60">
+          <summary className="cursor-pointer">Supporting trace events</summary>
+          {evidenceGroups.map(({ label, sources }) => (
+            <div key={label} className="mt-1">
+              <p>{label}</p>
+              <ul className="space-y-0.5 pl-2">
+                {sources.map((source) => (
+                  <li key={source.completion_event_id} className="break-all" title={source.run_id}>
+                    {formatDay(source.recorded_at)} · {source.choice_event_id !== null &&
+                      `choice #${source.choice_event_id} · `}
+                    completion #{source.completion_event_id}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </details>
+      )}
+    </section>
   );
 }
 

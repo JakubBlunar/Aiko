@@ -114,3 +114,29 @@ def test_preflight_needs_literal_positive_and_unambiguous_evidence():
         ReportedFact("matching_spare", False, "it might not match"),
     )
     assert not check_preconditions("wood_finish", question, (goal, *contradictory))["allowed"]
+
+
+def test_held_out_cases_distinguish_blocked_unknown_and_usable_transfers(tmp_path):
+    path = tmp_path / "analogy.db"
+    db = ChatDatabase(path)
+    with closing(db._get_conn()), closing(MemoryStore(path)) as store:
+        records = seed_episodes(db, store, held_out=True)
+        picks = iter(["wood_finish", "photo_edit", "wood_finish", "wood_finish",
+                      "photo_edit", "wood_finish"])
+
+        def infer(system, prompt, schema):
+            if "candidate_id" in schema["properties"]:
+                assert f"Case {records['pottery_studio'].id}\n" not in prompt
+                assert f"Case {records['slides_layout'].id}\n" not in prompt
+                return {"candidate_id": records[next(picks)].id, "bridge": "proposed transfer"}
+            return {"reply": "Short reply."}
+
+        result = replay(records, store, infer, held_out=True, check_current=True)
+        assert all(case["selection_matches"] for case in result.values())
+        assert result["glaze_matching_tile"]["arms"]["plain_topic"]["source"] == "pottery_studio"
+        assert result["glaze_matching_tile"]["arms"]["reviewed_source"]["source"] == "wood_finish"
+        assert "reviewed_source" not in result["glaze_unmatched_tile"]["arms"]
+        assert result["glaze_unmatched_tile"]["preflight"]["blocked"] == ["matching_spare"]
+        assert result["glaze_unknown_tile"]["preflight"]["unknown"] == ["matching_spare"]
+        assert result["slides_no_copy"]["preflight"]["blocked"] == ["separate_copy_available"]
+        assert result["glaze_collect_only"]["preflight"]["blocked"] == ["physical_check_pending"]

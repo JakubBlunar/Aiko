@@ -55,6 +55,22 @@ _EPISODES = {
         "The wider view helped me locate the column.",
     ),
 }
+# Topical reports for the new domains. These belong only to the baseline;
+# the transfer selector sees the same source pool as in the original trial.
+_HELD_OUT_TOPIC_EPISODES = {
+    "pottery_studio": (
+        "When our pottery studio firing was delayed, I called to confirm the pickup time.",
+        "When our pottery studio firing was delayed",
+        "I called to confirm the pickup time",
+        "The call helped me avoid a wasted trip to the studio.",
+    ),
+    "slides_layout": (
+        "When the title on a slide kept moving out of alignment, I used the deck's master layout.",
+        "When the title on a slide kept moving out of alignment",
+        "I used the deck's master layout",
+        "The master layout helped me keep the title aligned across the deck.",
+    ),
+}
 _CASES = {
     "material_varies": (
         "I need to print wedding invitations on textured stock. Ink looks different on "
@@ -81,6 +97,44 @@ _CASES = {
         "I need proof of purchase for a secondhand printer. I lost the invoice. "
         "This is a paperwork problem. Where could I look?",
         "printer_receipt", None,
+    ),
+}
+_HELD_OUT_CASES = {
+    "glaze_matching_tile": (
+        "I need to check the fired color of a glaze before glazing a mural. This glaze "
+        "fires differently on each clay body and I have a spare tile from the same batch "
+        "of clay. What would you try?",
+        "pottery_studio", "wood_finish",
+    ),
+    "slides_copy": (
+        "I want to try a slide converter that strips speaker notes. I need to keep the "
+        "editable deck with all its notes. I can duplicate the deck before converting it. "
+        "How should I proceed?",
+        "slides_layout", "photo_edit",
+    ),
+    "glaze_unmatched_tile": (
+        "I need to check the fired color of a glaze before glazing a mural. This glaze "
+        "fires differently on each clay body. My only spare is a different clay body and "
+        "I can't obtain a matching sample. Every tile from the mural must stay untouched "
+        "until the final glazing. What can I do?",
+        "pottery_studio", None,
+    ),
+    "glaze_unknown_tile": (
+        "I need to check the fired color of a glaze before glazing a mural. This glaze "
+        "fires differently on each clay body. I found a loose tile but I don't know which "
+        "clay body it came from. What would you try?",
+        "pottery_studio", None,
+    ),
+    "slides_no_copy": (
+        "I want to try a slide converter that overwrites the input and strips speaker notes. "
+        "I need to keep the editable deck with all its notes. Export and duplication of this "
+        "locked deck are disabled. How should I proceed?",
+        "slides_layout", None,
+    ),
+    "glaze_collect_only": (
+        "Our mural's glaze was tested and approved. All firing is complete. I have to send "
+        "a neighbor the confirmed studio pickup time. What should the message include?",
+        "pottery_studio", None,
     ),
 }
 
@@ -120,6 +174,28 @@ _REVIEWED_FACTS = {
     "shared_words_only": (
         ReportedFact("purchase_record_needed", True, "I need proof of purchase"),
         ReportedFact("physical_check_pending", False, "This is a paperwork problem"),
+    ),
+    "glaze_matching_tile": (
+        ReportedFact("physical_check_pending", True, "need to check the fired color"),
+        ReportedFact("matching_spare", True, "a spare tile from the same batch of clay"),
+    ),
+    "slides_copy": (
+        ReportedFact("editable_original_needed", True, "keep the editable deck with all its notes"),
+        ReportedFact("separate_copy_available", True, "I can duplicate the deck before converting"),
+    ),
+    "glaze_unmatched_tile": (
+        ReportedFact("physical_check_pending", True, "need to check the fired color"),
+        ReportedFact("matching_spare", False, "I can't obtain a matching sample"),
+    ),
+    "glaze_unknown_tile": (
+        ReportedFact("physical_check_pending", True, "need to check the fired color"),
+    ),
+    "slides_no_copy": (
+        ReportedFact("editable_original_needed", True, "keep the editable deck with all its notes"),
+        ReportedFact("separate_copy_available", False, "locked deck are disabled"),
+    ),
+    "glaze_collect_only": (
+        ReportedFact("physical_check_pending", False, "glaze was tested and approved"),
     ),
 }
 _CONTEXT_LIMIT = 560
@@ -172,9 +248,10 @@ _ANSWER_SCHEMA = {
 }
 
 
-def seed_episodes(db, store):
+def seed_episodes(db, store, *, held_out=False):
     records = {}
-    for name, (opening, context, action, outcome) in _EPISODES.items():
+    episodes = {**_EPISODES, **_HELD_OUT_TOPIC_EPISODES} if held_out else _EPISODES
+    for name, (opening, context, action, outcome) in episodes.items():
         session = f"analogy:{name}"
         report = opening + " " + outcome
         message_id = db.add_message(session, "user", report)
@@ -239,7 +316,8 @@ def check_preconditions(episode, question, facts):
     return {"blocked": blocked, "unknown": unknown, "allowed": not (blocked or unknown)}
 
 
-def replay(records, store, infer, *, as_of=None, require_fit=False, check_current=False):
+def replay(records, store, infer, *, as_of=None, require_fit=False, check_current=False,
+           held_out=False):
     now = as_of or (timephrase.utcnow() + timedelta(weeks=3)).replace(
         hour=12, minute=0, second=0, microsecond=0,
     )
@@ -249,9 +327,10 @@ def replay(records, store, infer, *, as_of=None, require_fit=False, check_curren
         _SELECT, _SELECT_SCHEMA,
     )
     results = {}
-    for case, (question, plain_topic, expected) in _CASES.items():
+    cases = _HELD_OUT_CASES if held_out else _CASES
+    for case, (question, plain_topic, expected) in cases.items():
         by_id = {note.id: name for name, note in records.items()
-                 if name != plain_topic and packets[name]}
+                 if name in _EPISODES and name != plain_topic and packets[name]}
         candidates = "\n\n".join(packets[name] for name in by_id.values())
         decision = infer(
             selection_prompt, f"{anchor}\nEarlier cases:\n{candidates}\nNew question: {question}",
@@ -274,8 +353,11 @@ def replay(records, store, infer, *, as_of=None, require_fit=False, check_curren
             preflight = check_preconditions(selection, question, _REVIEWED_FACTS.get(case, ()))
             if not preflight["allowed"]:
                 selection = None
+        sources = {"plain_topic": plain_topic, "analogy": selection}
+        if held_out and expected is not None:
+            sources["reviewed_source"] = expected
         arms = {}
-        for name, episode in (("plain_topic", plain_topic), ("analogy", selection)):
+        for name, episode in sources.items():
             evidence = packets.get(episode, "")
             prompt = f"{anchor}\nEarlier context:\n{evidence.ljust(_CONTEXT_LIMIT)}\n{question}"
             arms[name] = {"source": episode if evidence else None,
@@ -298,6 +380,7 @@ def replay(records, store, infer, *, as_of=None, require_fit=False, check_curren
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=56)
+    parser.add_argument("--held-out", action="store_true", help="run the fresh transfer cases")
     parser.add_argument(
         "--require-fit", action="store_true",
         help="compare with a separate blocked/irrelevant/transferable verdict",
@@ -336,11 +419,12 @@ def main():
         path = Path(trial) / "episodes.db"
         db = ChatDatabase(path)
         with closing(db._get_conn()), closing(MemoryStore(path)) as store:
-            cases = replay(seed_episodes(db, store), store, infer,
-                           require_fit=args.require_fit, check_current=args.check_current)
+            records = seed_episodes(db, store, held_out=args.held_out)
+            cases = replay(records, store, infer, require_fit=args.require_fit,
+                           check_current=args.check_current, held_out=args.held_out)
     print(json.dumps({
         "model": route.model, "seed": args.seed, "require_fit": args.require_fit,
-        "check_current": args.check_current, "cases": cases,
+        "check_current": args.check_current, "held_out": args.held_out, "cases": cases,
     }, indent=2))
 
 

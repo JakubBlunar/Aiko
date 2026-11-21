@@ -4,10 +4,6 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 /**
- * L19: the Story sub-tab shows the arc that ``recall_self_history`` hands
- * the model -- the same payload, so what Aiko *would* say about her past
- * is inspectable before she says it.
- *
  * Vitest runs under Node without jsdom (see ``vitest.config.ts``), so we
  * lock in the wiring with source checks rather than rendering.
  */
@@ -50,9 +46,18 @@ describe("SelfHistoryPanel wiring", () => {
     expect(panelSource).toMatch(/"user"/);
   });
 
-  it("surfaces thin_record, the one field the caller must honour", () => {
+  it("surfaces a thin belief record", () => {
     expect(panelSource).toMatch(/thin_record/);
     expect(panelSource).toMatch(/no record/i);
+  });
+
+  it("shows choice history for Aiko and exposes its supporting events", () => {
+    expect(panelSource).toMatch(/subject === "aiko" && data\?\.subject === "aiko"/);
+    expect(panelSource).toMatch(/data\.choice_history/);
+    expect(panelSource).toMatch(/finding\?\.statement/);
+    expect(panelSource).toMatch(/source\.choice_event_id/);
+    expect(panelSource).toMatch(/source\.completion_event_id/);
+    expect(typesSource).toMatch(/choice_history\?: RecordedChoiceHistory/);
   });
 
   it("renders eras with the change, its prior wording, and its reason", () => {

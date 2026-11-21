@@ -1477,7 +1477,7 @@ class MemoryFacadeMixin(MemoryReadsMixin):
                 max_eras=max_eras,
                 max_entries_per_era=max_entries_per_era,
             )
-            return {"enabled": True, **arc.as_dict()}
+            return {"enabled": True, **arc.as_dict(), **self._choice_history_payload(arc.subject)}
         except Exception:
             log.debug("self-history build failed", exc_info=True)
             return {
