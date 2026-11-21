@@ -12,6 +12,7 @@ from app.core.live.presence import (
     STYLE_SPEECH_CAP,
     quieter_speech,
 )
+from app.core.live.reaction import INTENSITY_VALUE
 from app.core.live.urge import URGE_RANK
 from app.core.live.urge_store import LiveUrgeStore
 
@@ -152,6 +153,12 @@ def modifiers_from_situation(
         gap = max(gap, 8_000)
         attention = "shared_activity"
         reason = "shared_media_quiet"
+
+    if frame.temporal.circadian_quiet:
+        speech = _quieter(speech, "rare")
+        intensity = min(intensity, INTENSITY_VALUE["low"])
+        if reason == "default":
+            reason = "circadian_quiet"
 
     return LiveBehaviorModifiers(
         speech_budget=_clamp_speech(speech),

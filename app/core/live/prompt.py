@@ -22,7 +22,7 @@ from app.core.live.urge_menu import UrgeMenuItem, build_urge_menu, render_urge_m
 from app.core.session.prompt_support import clip_text_to_tokens
 from app.llm.token_utils import chars_per_token, estimate_tokens
 
-LIVE_POLICY_PROMPT_VERSION = 5
+LIVE_POLICY_PROMPT_VERSION = 6
 _SAFETY_TOKENS = 256
 _INSTRUCTIONS = """You are a Live behavior policy, not a companion.
 Choose exactly one intent for this moment. Output a complete JSON object.
@@ -146,6 +146,11 @@ class LivePolicyPromptAssembler:
         )
         instructions = _INSTRUCTIONS.strip()
         situation = self._render_situation(frame, trigger_kind=trigger_kind)
+        if frame.temporal.circadian_quiet:
+            situation += (
+                "\nAt night, favor quiet presence and a longer wait when nothing fits. "
+                "An eligible requested update can still be worth sharing."
+            )
         if frame.constraints.defer_casual_speech:
             situation += (
                 "\nLearned timing preference: save casual topics for breaks while coding. "
@@ -265,7 +270,8 @@ class LivePolicyPromptAssembler:
             f"lock_s={int(frame.shared.lock_span_s or 0)} "
             f"activity={activity}\n"
             f"attention={attention} commitment={commit}\n"
-            f"mood={mood} vitality={vitality}\n"
+            f"mood={mood} vitality={vitality} "
+            f"circadian_period={frame.temporal.circadian_period or 'unknown'}\n"
             f"sleep={sleep} speech_budget={budget} "
             f"speech_ok={speech_ok} playback={playback} "
             f"live_quiet={frame.constraints.dnd}\n"

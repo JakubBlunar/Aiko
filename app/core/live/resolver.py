@@ -18,10 +18,11 @@ from app.core.live.frame import SLEEP_SPEECH_FORBID, LiveSituationFrame
 from app.core.live.presence import (
     PRESENCE_STYLE_SET,
     ListenPosture,
+    clamp_presence_style,
     listen_posture_for,
     style_visuals,
 )
-from app.core.live.reaction import REACTION_TONE_SET, tone_visuals
+from app.core.live.reaction import REACTION_TONE_SET, clamp_reaction_intensity, tone_visuals
 
 
 SEMANTIC_INTENTS = frozenset({
@@ -211,10 +212,12 @@ def _body_for(frame: LiveSituationFrame, intent: str) -> str:
 
 
 def _breath_for(frame: LiveSituationFrame) -> str:
-    activity = _activity_key(frame)
-    if activity in _WORLD_BREATH:
-        return _WORLD_BREATH[activity]
-    return "normal"
+    breath = _WORLD_BREATH.get(_activity_key(frame), "normal")
+    if frame.temporal.circadian_period == "late_night":
+        return "quiet"
+    if frame.temporal.circadian_quiet and breath == "normal":
+        return "slow"
+    return breath
 
 
 def _expression_for(intent: str, body_class: str) -> str:
@@ -306,12 +309,16 @@ class LiveBehaviorResolver:
         expression = _expression_for(visual, body)
         style = str(presence_style or "").strip()
         if style in PRESENCE_STYLE_SET:
+            if frame.temporal.circadian_quiet:
+                style = clamp_presence_style(style, frame)
             gaze, body, expression = style_visuals(
                 style, gaze=gaze, body=body, expression=expression,
             )
         tone = str(reaction_tone or "").strip()
         band = str(reaction_intensity or "").strip()
         if tone in REACTION_TONE_SET:
+            if frame.temporal.circadian_quiet:
+                band = clamp_reaction_intensity(band, frame)
             gaze, body, expression = tone_visuals(
                 tone,
                 gaze=gaze,

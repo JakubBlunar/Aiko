@@ -30,6 +30,7 @@ def read_scenario(name: str) -> dict:
     "learn-coding-timing",
     "listening-posture",
     "return-glance",
+    "circadian-quieting",
 ])
 def test_fixture_runs_without_network(name, monkeypatch):
     def unexpected_request(*args, **kwargs):
@@ -80,6 +81,22 @@ def test_return_glance_is_bounded_and_preserves_the_underlying_gaze():
     assert {plan["gaze_class"] for plan in (original, repeated, expired)} == {"window"}
     assert not report["spoken"]
     assert not report["dispatches"]
+
+
+def test_the_night_transition_keeps_affordances_for_a_requested_update():
+    report = run_live_scenario(read_scenario("circadian-quieting"))
+    assert report["expectation_failures"] == []
+    opening = next(
+        step for step in report["steps"] if step["label"] == "First safe opening at night"
+    )
+    assert opening["queued_wakes"][0]["subject"] == "render is ready"
+    dispatch, = report["dispatches"]
+    assert dispatch["at_ms"] == opening["at_ms"]
+    assert "Subject: render is ready" in dispatch["talk_about"]
+    assert report["steps"][-1]["main_wakes"] == 1
+    assert {
+        step["frame"]["shared"]["world_activity"] for step in report["steps"]
+    } == {"looking_outside"}
 
 
 @pytest.mark.parametrize("reference", ["2", "9"])

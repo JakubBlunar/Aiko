@@ -1,0 +1,104 @@
+{
+  "name": "Awake evening, quieter night, and normal requested updates",
+  "start_at": "2026-01-01T21:59:58+01:00",
+  "avatar_profile": {
+    "capabilities": {"has_breath": true, "has_body_angle_y": true}
+  },
+  "steps": [
+    {
+      "label": "Evening in the same room",
+      "state": {"activity": "looking_outside"},
+      "expect": {
+        "new_policy_calls": 0,
+        "frame": {"temporal": {"circadian_period": "evening"}},
+        "speech_budget": "normal",
+        "embodiment": {"behavior_plan": {"breath_class": "normal"}}
+      }
+    },
+    {
+      "label": "Clock enters night while the floor is empty",
+      "advance_ms": 3000,
+      "expect": {
+        "new_policy_calls": 0,
+        "frame": {
+          "temporal": {"circadian_period": "night"},
+          "constraints": {"max_reaction_intensity": 0.33}
+        },
+        "speech_budget": "rare",
+        "embodiment": {"behavior_plan": {"breath_class": "slow"}}
+      }
+    },
+    {
+      "impulse": "user.message_sent",
+      "payload": {"text": "When the render is finished, please tell me right away."}
+    },
+    {"reply": "I'll tell you when the render is ready."},
+    {"advance_ms": 11000},
+    {"impulse": "user.typing_started"},
+    {
+      "cue": {
+        "type": "away_activities",
+        "subject": "render is ready",
+        "text": "The render finished successfully. The user asked to hear when it was ready.",
+        "payload": {"requested_update_ready": true}
+      }
+    },
+    {
+      "label": "The user is still typing as the result arrives",
+      "advance_ms": 3000,
+      "expect": {
+        "queued_count": 0,
+        "frame": {"interaction": {"typing_active": true}}
+      }
+    },
+    {"impulse": "user.typing_stopped"},
+    {
+      "label": "First safe opening at night",
+      "advance_ms": 1000,
+      "proposal": {
+        "intent": "request_main_speech",
+        "select_subject": "render is ready",
+        "arguments": {"speech_act": "share_observation"}
+      }
+    },
+    {"dispatch": {"if_queued": true, "text": "The render is ready."}},
+    {
+      "label": "Quiet mode still forbids speech",
+      "state": {"quiet": true},
+      "expect": {"speech_budget": "forbidden"}
+    },
+    {
+      "label": "Sleep owns the avatar",
+      "state": {"quiet": false, "sleep": "asleep"},
+      "expect": {
+        "speech_budget": "forbidden",
+        "embodiment": {"behavior_plan": {"breath_class": "none", "degrade_to_sleep": true}}
+      }
+    },
+    {
+      "label": "The same clock flows into late night",
+      "advance_ms": 7200000,
+      "expect": {
+        "frame": {"temporal": {"circadian_period": "late_night"}},
+        "embodiment": {"behavior_plan": {"degrade_to_sleep": true}}
+      }
+    },
+    {
+      "label": "An awake avatar at late night breathes quietly",
+      "state": {"sleep": "awake"},
+      "expect": {
+        "speech_budget": "rare",
+        "embodiment": {"behavior_plan": {"breath_class": "quiet"}}
+      }
+    },
+    {
+      "label": "Early morning restores ordinary presence",
+      "advance_ms": 18000000,
+      "expect": {
+        "frame": {"temporal": {"circadian_period": "early_morning"}},
+        "speech_budget": "normal",
+        "embodiment": {"behavior_plan": {"breath_class": "normal"}}
+      }
+    }
+  ]
+}

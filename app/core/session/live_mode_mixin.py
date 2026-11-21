@@ -10,9 +10,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import timezone
 from typing import Any, Callable, Literal
 
 from app.core.activity.evidence import ActivityEvidence, evidence_from_store
+from app.core.affect.circadian import period_for_hour
 from app.core.brain.events import ProactiveEvent
 from app.core.concepts.concept_diets import diet_for, resolve_budget, tuning_from_route
 from app.core.infra import timephrase
@@ -775,10 +777,11 @@ class LiveModeMixin:
                 ),
             )
             trigger_kind = "situation.shared_commitment_changed"
+        local_now = timephrase.now()
         inp = LiveAssembleInput(
             snapshot=snapshot,
             impulses=impulses,
-            now=timephrase.utcnow(),
+            now=local_now.astimezone(timezone.utc),
             monotonic_ms=(
                 self._live_monotonic() * 1000.0
                 if now_mono_ms is None
@@ -806,6 +809,7 @@ class LiveModeMixin:
             goals=self._live_goal_summaries(),
             resource_contention=self._live_resource_contention(),
             activity_evidence=self._live_activity_evidence(),
+            circadian_period=period_for_hour(local_now.hour),
         )
         try:
             frame = assembler.assemble(inp)

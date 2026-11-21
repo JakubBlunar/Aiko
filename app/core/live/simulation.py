@@ -100,13 +100,14 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
 
     def __init__(
         self, clock: _Clock, route: LlmRoute, client: Any, max_wakes: int, min_gap_ms: int,
-        *, learn_timing: bool,
+        *, learn_timing: bool, avatar_profile: dict[str, Any],
     ) -> None:
         self.clock = clock
         self.route = route
         self.session_key = "scenario:live"
         self._user_id = "scenario-user"
         self._learn_timing = learn_timing
+        self._avatar_profile = avatar_profile
         self._chat_db = ChatDatabase(Path(":memory:"))
         self._cue_store = CueStore(self._chat_db)
         self._activity_store = ActivityStore(self._chat_db)
@@ -139,6 +140,9 @@ class _SimulationHost(LiveModeMixin, CuePoolMixin):
 
     def _live_heartbeat_enabled(self) -> bool:
         return False  # Steps invoke the production heartbeat on the scenario thread.
+
+    def avatar_payload(self) -> dict[str, Any]:
+        return self._avatar_profile
 
     def _route_or_none(self, role: str) -> LlmRoute | None:
         return self.route if role == LLM_ROLE_LIVE_POLICY else None
@@ -400,7 +404,7 @@ def run_live_scenario(
     """Replay synthetic inputs with a fresh in-memory SQLite database."""
     if not isinstance(scenario, dict) or set(scenario) - {
         "name", "start_at", "max_wakes_per_hour", "min_gap_after_speech_ms",
-        "initial_concepts", "learn_timing", "steps",
+        "initial_concepts", "learn_timing", "avatar_profile", "steps",
     }:
         raise ValueError("scenario contains unknown fields or is not an object")
     steps = scenario["steps"]
@@ -423,11 +427,15 @@ def run_live_scenario(
     learn_timing = scenario.get("learn_timing", True)
     if type(learn_timing) is not bool:
         raise ValueError("scenario.learn_timing must be a boolean")
+    avatar_profile = scenario.get("avatar_profile", {})
+    if not isinstance(avatar_profile, dict):
+        raise ValueError("scenario.avatar_profile must be an object")
     clock = _Clock(start)
     route = route or LlmRoute(provider_id="scenario", model="scripted", max_tokens=384)
     with timephrase.scoped_now(clock.now):
         host = _SimulationHost(
             clock, route, policy_client, max_wakes, min_gap_ms, learn_timing=learn_timing,
+            avatar_profile=avatar_profile,
         )
         try:
             for concept in initial_concepts:

@@ -168,7 +168,7 @@ def clamp_presence_style(
         token = "neutral"
     if _quiet_constraint(frame):
         return QUIET_PRESENCE
-    if vitality_is_low(frame) and token == "playful":
+    if token == "playful" and (frame.temporal.circadian_quiet or vitality_is_low(frame)):
         return QUIET_PRESENCE
     coding = _coding_fresh(frame)
     interrupting = user_interrupting(frame)

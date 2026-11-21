@@ -17,6 +17,7 @@ python scripts/live_scenarios.py tests/scenarios/live/local-observation.json --l
 python scripts/live_scenarios.py tests/scenarios/live/interruption.json --local --repeat 4 --json
 python scripts/live_scenarios.py tests/scenarios/live/listening-posture.json --local --repeat 4 --json
 python scripts/live_scenarios.py tests/scenarios/live/return-glance.json --local --repeat 4 --json
+python scripts/live_scenarios.py tests/scenarios/live/circadian-quieting.json --local --repeat 4 --json
 ```
 
 To compare the same timeline with and without an established preference, use
@@ -43,6 +44,12 @@ Both conversations share the trial's in-memory database and have separate
 transcripts. The second begins a virtual day later, with no seeded concept.
 For a matched control, set `"learn_timing": false` on a copy and omit the
 expectations specific to learning.
+
+The circadian replay starts just before 22:00 in its explicit local offset.
+It checks the transition into night, the requested result's first safe
+opening, quiet mode, sleep, and the return to ordinary presence in the
+morning. Nighttime lowers the reaction ceiling, softens playful presence,
+and slows the idle breath. A clock transition alone adds no policy call.
 
 Scripted mode is the default. It uses each step's `proposal` to reproduce a
 decision without a model. Steps without one use `noop` if policy runs.
@@ -75,8 +82,9 @@ user's floor. Choices and wording can vary across local runs.
 
 Each JSON file has a `name` and a `steps` list. Optional `start_at` is an ISO
 timestamp with a timezone. Use `max_wakes_per_hour` and `min_gap_after_speech_ms`
-to compare cadence settings. Each step may include a `label`, a `state` update
-and one command.
+to compare cadence settings. An optional synthetic `avatar_profile` can expose
+capabilities such as `has_breath` through the avatar resolver. Each step may
+include a `label`, a `state` update and one command.
 
 | Command | Scenario input |
 | --- | --- |

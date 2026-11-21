@@ -219,6 +219,25 @@ class ArgumentSanitizeTests(unittest.TestCase):
 
 
 class ResolverStyleTests(unittest.TestCase):
+    def test_night_softens_the_style_and_intensity_of_a_held_reaction(self) -> None:
+        day = _shared_frame()
+        night = replace(day, temporal=replace(day.temporal, circadian_period="night"))
+        modifiers = modifiers_from_situation(night)
+        night = replace(night, constraints=replace(
+            night.constraints, max_reaction_intensity=modifiers.max_reaction_intensity,
+        ))
+        arguments = {
+            "policy_intent": "react_affectively", "presence_style": "playful",
+            "reaction_tone": "amused", "reaction_intensity": "high",
+        }
+        resolver = LiveBehaviorResolver()
+        day_plan = resolver.resolve(day, _caps(), **arguments)
+        night_plan = resolver.resolve(night, _caps(), **arguments)
+        self.assertEqual(day_plan.body_class, "perk")
+        self.assertEqual(day_plan.reaction_intensity, "high")
+        self.assertEqual(night_plan.body_class, "settle")
+        self.assertEqual(night_plan.reaction_intensity, "low")
+
     def test_give_space_uses_quiet_classes(self) -> None:
         frame = _shared_frame()
         plan = LiveBehaviorResolver().resolve(

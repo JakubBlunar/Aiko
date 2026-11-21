@@ -83,6 +83,7 @@ class LiveAssembleInput:
     goals: tuple[str, ...] = ()
     resource_contention: str = ""
     activity_evidence: ActivityEvidence | None = None
+    circadian_period: str = ""
 
 
 def _elapsed_ms(now_ms: float, then_ms: float | None) -> int:
@@ -718,6 +719,7 @@ def assemble_live_situation(
             ),
         ),
         temporal=TemporalState(
+            circadian_period=inp.circadian_period,
             typing_active_ms=typing_active_ms,
             typing_idle_ms=0 if typing else since_intent,
             user_speech_active_ms=since_speech if speech else 0,

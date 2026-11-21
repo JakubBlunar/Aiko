@@ -172,3 +172,18 @@ on `qwen3.5:4b` confirmed two return pulses per trial. The first lasted
 intact. The second was canceled by typing and stayed canceled afterward.
 Switching conversations and quiet mode suppressed additional pulses.
 There were zero autonomous speech requests in 40 policy calls.
+
+## Circadian quieting
+
+Four isolated [circadian replays](../../tests/scenarios/live/circadian-quieting.json)
+on `qwen3.5:4b` crossed 22:00 local time. The transition alone produced
+zero policy calls. The awake avatar's semantic breath changed from
+`normal` to `slow` at night and `quiet` at late night. Early morning
+restored the normal breath. Quiet mode and sleep retained their usual
+speech restrictions.
+
+The render update was requested and handed off at the first safe opening
+in all four night trials and all four matched afternoon controls. Both
+conditions had zero speech requests while the user was typing. The
+scenario provided the ready result and simulated the spoken handoff.
+The avatar check measured the semantic plan.

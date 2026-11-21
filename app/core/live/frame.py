@@ -179,6 +179,11 @@ class TemporalState:
     cooldown_remaining_ms: int = 0
     next_reconsideration_ms: int = 0
     phase: str = "settled"
+    circadian_period: str = ""
+
+    @property
+    def circadian_quiet(self) -> bool:
+        return self.circadian_period in {"night", "late_night"}
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)

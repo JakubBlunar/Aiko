@@ -62,14 +62,16 @@ choices remain with L5.
 
 ## L11. Circadian quieting from a period token
 
-**Status: Open implementation.**
+**Status: Implemented in the Live frame and policy.**
 
-**Implemented / available:** Circadian time and quieter-only vitality/posture controls exist.
+**Implemented / available:** The frame carries the existing local circadian
+period. Night and late night cap reaction intensity, soften playful
+presence, and slow the idle breath. The time change adds no policy epoch.
+Requested updates still use the normal floor and speech checks.
 
-**Remaining:** Add deterministic period-token policy quieting with timephrase; night cannot increase
-intensity or speech authority.
+**Remaining:** Validate visual feel on the live rig.
 
-**Source check:** [policy_context.py](../../app/core/live/policy_context.py).
+[Circadian replay](../../tests/scenarios/live/circadian-quieting.json)
 
 ## L13. Glance targets from an allowlisted present-set
 

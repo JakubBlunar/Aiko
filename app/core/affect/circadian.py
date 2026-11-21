@@ -138,7 +138,7 @@ def _format_clock(hour: int, minute: int) -> str:
     return f"{h12}:{minute:02d} {suffix}"
 
 
-def _classify_period(hour: int) -> CircadianPeriod:
+def period_for_hour(hour: int) -> CircadianPeriod:
     """Map a 24h hour to one of our seven named periods."""
     if hour < 5:
         return "late_night"
@@ -162,7 +162,7 @@ def coarse_coactivation_period(hour: int) -> str:
     never co-fire with a 22:00 one). Morning/afternoon/evening/night is
     the grain the co-activation accumulator can actually accrue.
     """
-    period = _classify_period(int(hour))
+    period = period_for_hour(int(hour))
     if period in ("late_night", "night"):
         return "night"
     if period in ("early_morning", "morning", "midday"):
@@ -225,7 +225,7 @@ def compute(
             now = timephrase.now()
     hour = int(now.hour)
     minute = int(now.minute)
-    period = _classify_period(hour)
+    period = period_for_hour(hour)
     energy = _energy_curve(hour, minute, drift=baseline_drift)
     drowsy = period in ("late_night", "night") and energy < 0.25
     # Compose sociability_bias: the daytime peak naturally adds, the night
