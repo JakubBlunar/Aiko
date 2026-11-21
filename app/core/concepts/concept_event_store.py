@@ -214,7 +214,7 @@ class ConceptEventStore:
         read forwards, and ``limit`` keeps the *oldest* rows so the start
         of the story survives on a long-lived concept.
 
-        Cheap: ``idx_concept_events_concept`` covers the filter.
+        The concept/time index can stop after reading the requested rows.
         """
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         try:
@@ -341,28 +341,33 @@ class ConceptEventStore:
 
         This is the watermark the L3 sampler compares against to decide
         whether a concept has drifted far enough since it was last on the
-        timeline to be worth recording. Done as **one** grouped query for
-        the whole lifecycle batch rather than a read per concept, since
-        the sweep already touches up to `concept_lifecycle_batch_size`
-        rows a tick.
+        timeline to be worth recording. Seek to the newest inserted event
+        for each requested ID inside a batched query. Timestamp order can
+        differ from insertion order when older events are backfilled.
         """
-        ids = [int(c) for c in concept_ids if c is not None]
+        ids = list(dict.fromkeys(int(c) for c in concept_ids if c is not None))
         if not ids:
             return {}
-        placeholders = ",".join("?" * len(ids))
         conn = self._db._get_conn()  # type: ignore[attr-defined]
+        confidence: dict[int, float] = {}
         try:
-            rows = conn.execute(
-                "SELECT e.concept_id, e.confidence FROM concept_events e "
-                "JOIN (SELECT concept_id, MAX(id) AS mid FROM concept_events "
-                f"      WHERE concept_id IN ({placeholders}) "
-                "       GROUP BY concept_id) m ON e.id = m.mid",
-                tuple(ids),
-            ).fetchall()
+            for start in range(0, len(ids), 400):
+                batch = ids[start:start + 400]
+                values = ",".join("(?)" for _ in batch)
+                rows = conn.execute(
+                    f"WITH requested(cid) AS (VALUES {values}) "
+                    "SELECT cid, (SELECT COALESCE(confidence, 0) FROM concept_events "
+                    "             WHERE concept_id = requested.cid ORDER BY id DESC LIMIT 1) "
+                    "FROM requested",
+                    batch,
+                )
+                confidence.update(
+                    (int(cid), float(value)) for cid, value in rows if value is not None
+                )
         except Exception:
             log.warning("concept latest-confidence read failed", exc_info=True)
             return {}
-        return {int(r[0]): float(r[1] or 0.0) for r in rows}
+        return confidence
 
     def count(self) -> int:
         conn = self._db._get_conn()  # type: ignore[attr-defined]

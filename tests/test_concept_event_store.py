@@ -135,6 +135,17 @@ class TrajectoryTests(unittest.TestCase):
         store.add(_event(concept_id=1))
         self.assertEqual(store.trajectory(404), [])
 
+    def test_trajectory_and_drift_window_use_timestamp_then_event_id(self) -> None:
+        store = ConceptEventStore(_db())
+        later = store.add(_event(concept_id=7, created_at="2026-03-01T00:00:00+00:00"))
+        first = store.add(_event(concept_id=7, created_at="2026-01-01T00:00:00+00:00"))
+        second = store.add(_event(concept_id=7, created_at="2026-01-01T00:00:00+00:00"))
+        last = store.add(_event(concept_id=7, created_at="2026-03-01T00:00:00+00:00"))
+        self.assertEqual([e.event_id for e in store.trajectory(7, limit=2)], [first, second])
+        self.assertEqual(
+            [e.event_id for e in store.drift_window(7, anchor=1, recent=2)], [first, later, last],
+        )
+
     def test_trajectory_carries_confidence_and_reason(self) -> None:
         store = ConceptEventStore(_db())
         store.add(
@@ -167,6 +178,13 @@ class LatestConfidenceTests(unittest.TestCase):
         store.add(_event(concept_id=1, confidence=0.0))
         got = store.latest_confidence([1, 42])
         self.assertEqual(got, {1: 0.0})
+
+    def test_latest_confidence_uses_insert_order_and_handles_concepts_across_batches(self) -> None:
+        store = ConceptEventStore(_db())
+        store.add(_event(concept_id=1, confidence=0.5, created_at="2026-03-01T00:00:00+00:00"))
+        store.add(_event(concept_id=1, confidence=0.7, created_at="2026-01-01T00:00:00+00:00"))
+        store.add(_event(concept_id=405, confidence=0.8))
+        self.assertEqual(store.latest_confidence([*range(1, 406), 1, 405]), {1: 0.7, 405: 0.8})
 
     def test_empty_input_skips_the_query(self) -> None:
         self.assertEqual(ConceptEventStore(_db()).latest_confidence([]), {})

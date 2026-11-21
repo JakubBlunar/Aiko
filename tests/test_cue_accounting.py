@@ -849,6 +849,33 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.fx.store.reach(window_days=30), [])
         self.assertEqual(len(self.fx.store.reach()), 1)
 
+    def test_report_groups_once_and_only_filters_declines_by_cue(self) -> None:
+        from app.mcp.server_tools.cue_outcome_tools import build_report
+
+        self.fx.store.add_many(1, [
+            ("tension", OUTCOME_DECLINED, REASON_PROVIDER),
+            ("follow_up", OUTCOME_DECLINED, REASON_QUESTION_BALANCE),
+            ("self_callback", OUTCOME_DECLINED, REASON_CADENCE_BLOCK),
+        ])
+        self.fx.store.add_many(2, [("follow_up", OUTCOME_SURFACED, "")])
+        self.fx.backdate("self_callback", 90)
+        expected_reach = self.fx.store.reach(window_days=7)
+        expected_declines = self.fx.store.decline_reasons(window_days=7, cue="follow_up")
+        statements: list[str] = []
+        conn = self.fx.db._get_conn()
+        conn.set_trace_callback(statements.append)
+        try:
+            report = build_report(
+                SimpleNamespace(_cue_decision_store=self.fx.store),
+                window_days=7, cue="follow_up",
+            )
+        finally:
+            conn.set_trace_callback(None)
+        self.assertEqual(report["reach"], expected_reach)
+        self.assertEqual(report["decline_reasons"], expected_declines)
+        self.assertEqual(report["rows_total"], 4)
+        self.assertEqual(sum("GROUP BY" in sql for sql in statements), 1)
+
     def test_rows_without_a_message_id_are_dropped(self) -> None:
         # The id is the only link to the reply a cue helped produce, so a
         # row without one is unattributable rather than merely incomplete.

@@ -122,6 +122,10 @@ The surfacing-outcomes report replays the six default semantic thresholds
 in one ledger query. Each threshold counts only settled, non-lexical rows
 with a recorded score at or above the threshold.
 
+`get_cue_outcomes` builds reach and decline reasons from one grouped read
+of the requested time window. Filtering by cue narrows the decline reasons
+while reach still covers every cue in that window.
+
 ## Sources and ownership
 
 | Material | Producer or refresh | Reader and lifetime | Meaning for the brain |

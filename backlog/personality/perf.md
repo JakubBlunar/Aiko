@@ -162,7 +162,12 @@ audit tier hygiene where evidence warrants. P43/P52 own volatile-tail/context wo
 **Status: Partial.**
 
 **Implemented / available:** Lifecycle work is bounded/batched and synthesis participates in demand
-scheduling; the old interval-only readiness claim is stale.
+scheduling. Confidence sampling seeks the latest inserted event for each concept in a batch.
+Trajectory and drift reads use the concept/time index to stop at their requested limits.
+
+On 240,000 synthetic events, 240 confidence lookups took 3.55 → 0.28 ms and 60 drift
+windows took 20.9 → 12.6 ms. Results matched the previous queries. The additional
+index occupied 8.5 MiB on that corpus and took 270 ms to build once.
 
 **Remaining:** Measure actual scheduler contention and graph growth; define snapshot/event thinning
 and any remaining dirty-work refinements without discarding durable history. P34/P49 own retention
@@ -255,6 +260,10 @@ drain; do not add concurrency solely to reduce queue counters.
 Semantic-floor replay evaluates all six default thresholds in one ledger query. On a disposable
 120,000-row ledger, seven-day replay took 265 → 46 ms and lifetime replay took 88 → 28 ms
 over nine warm trials per build. Both replay results matched the old query.
+
+Cue reports share one grouped window read across reach and decline reasons. On 180,000
+synthetic decisions, the seven-day report's grouped reads took 125 → 66 ms and lifetime
+reads took 1,017 → 516 ms. Counts and rates matched the previous reports.
 
 **Remaining:** Schedule appropriate ledger retention and fix remaining non-selective aggregates;
 decide transcript/concept-history preservation separately. Bound disk without confusing diagnostics

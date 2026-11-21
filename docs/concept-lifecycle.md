@@ -412,6 +412,11 @@ quality report batches evidence for the full graph and reuses those edges for
 its confidence, topic-span, and importance metrics. Evidence chains keep their
 ordinal order, with ties following edge ID order.
 
+Confidence sampling reads each concept's last inserted event in a batch of
+indexed seeks. Trajectories and drift windows use event time, with event ID
+breaking ties. The concept/time index lets the history reads stop at their
+requested limits.
+
 **Age is engaged time, not wall-clock** (schema v24). Both the promotion
 floor and the `concept_candidate_ttl_days` cleanup are measured in *engaged*
 (active-conversation) days via a per-concept anchor

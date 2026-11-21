@@ -711,6 +711,8 @@ CREATE TABLE IF NOT EXISTS concept_events (
 );
 CREATE INDEX IF NOT EXISTS idx_concept_events_created ON concept_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_concept_events_concept ON concept_events(concept_id);
+CREATE INDEX IF NOT EXISTS idx_concept_events_concept_created
+    ON concept_events(concept_id, created_at);
 
 -- Schema v26 (L37): surfacing outcome ledger. An APPEND-ONLY record of
 -- which remembered items actually reached the system prompt and what

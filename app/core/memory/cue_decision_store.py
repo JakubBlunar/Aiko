@@ -25,6 +25,7 @@ Never raises: a diagnostic write must not be able to break a turn.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Sequence
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -128,10 +129,13 @@ class CueDecisionStore:
         never once in play, which is either a correctly rare cue or a
         cadence set faster than the shelf refills.
         """
+        return self._reach_from_groups(self._grouped_decisions(window_days))
+
+    def _grouped_decisions(self, window_days: int | None) -> list[tuple]:
         clause, params = self._window_clause(window_days)
         conn = self._db._get_conn()  # type: ignore[attr-defined]
         try:
-            rows = conn.execute(
+            return conn.execute(
                 "SELECT cue, outcome, reason, COUNT(*) AS n "
                 "FROM cue_decisions "
                 f"WHERE 1=1{clause} "
@@ -141,6 +145,9 @@ class CueDecisionStore:
         except Exception:
             log.warning("cue reach read failed", exc_info=True)
             return []
+
+    @staticmethod
+    def _reach_from_groups(rows: list[tuple]) -> list[dict]:
         # Aggregated in Python rather than SQL because eligibility is a
         # prefix test on the reason (``lost_priority:<winner>``), and a
         # LIKE-per-reason clause here would be a second place the
@@ -179,6 +186,23 @@ class CueDecisionStore:
                 ),
             })
         return out
+
+    def reach_and_declines(
+        self, *, window_days: int | None = None, cue: str | None = None,
+    ) -> tuple[list[dict], list[dict]]:
+        """Build both report sections from the same grouped ledger read."""
+        rows = self._grouped_decisions(window_days)
+        filtered_cue = str(cue) if cue else None
+        declines: Counter[tuple[str, str]] = Counter()
+        for name, outcome, reason, count in rows:
+            if outcome != OUTCOME_SURFACED and (filtered_cue is None or name == filtered_cue):
+                declines[(name, reason)] += count
+        return self._reach_from_groups(rows), [
+            {"cue": name, "reason": reason, "count": count}
+            for (name, reason), count in sorted(
+                declines.items(), key=lambda item: (-item[1], item[0]),
+            )
+        ]
 
     def decline_reasons(
         self, *, window_days: int | None = None, cue: str | None = None,

@@ -98,8 +98,7 @@ def build_report(
     from app.core.proactive.cue_accounting import COARSE_ARMING, CUE_SPECS
 
     total = store.count()
-    reach = store.reach(window_days=window_days)
-    declines = store.decline_reasons(window_days=window_days, cue=cue)
+    reach, declines = store.reach_and_declines(window_days=window_days, cue=cue)
 
     # Registered cues with no rows at all. Distinct from a low reach rate
     # and a more common finding: a cue whose journal is never written, or
