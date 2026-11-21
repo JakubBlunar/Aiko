@@ -11,6 +11,9 @@ from app.core.memory.memory_store import MemoryStore
 from app.core.memory.memory_origin import memory_origin, claim_source_refusal
 from app.core.session.memory_facade_mixin import MemoryFacadeMixin
 from app.core.session.tools_registry_mixin import ToolsRegistryMixin
+from app.core.session.turn_runner import TurnRunner
+from app.core.world.sleep_state import ASLEEP
+from app.core.world.sleep_store import SleepStore
 from app.llm.tools.base import ToolError
 from app.llm.tools.diary import ReadDiaryTool, WriteDiaryTool
 
@@ -108,6 +111,50 @@ def test_asleep_or_unavailable_storage_fails_without_writing(host):
     with pytest.raises(ToolError, match="not saved"):
         write(host)
     host._notify_memory_added.assert_not_called()
+
+
+@pytest.mark.parametrize("channel", ["tool", "inline"])
+def test_falling_asleep_during_embedding_discards_diary_write_until_awake(host, channel):
+    sleep = host._sleep_store = SleepStore(host._db)
+    content = "I felt uncertain whether offering another idea would help."
+    reply = host._db.add_message(host.session_key, "assistant", "I need a quiet moment.")
+    runner = object.__new__(TurnRunner)
+    runner._db = host._db
+    runner._memory_store = host.memory_store
+    runner._diary_allowed_provider = lambda: sleep.get_state().status != ASLEEP
+    runner._self_tagged_salience = .7
+    runner._on_memory_added = host._notify_memory_added
+    runner._embedder = host._embedder
+    embed = host._embedder.embed
+
+    def fall_asleep(text):
+        state = sleep.transition("wind_down")
+        sleep.transition("fall_asleep", expected_generation=state.generation)
+        return embed(text)
+
+    def save():
+        if channel == "tool":
+            return write(host, content)
+        return runner._extract_diary_memories(
+            f"[[diary:{content}]]", session_key=host.session_key, assistant_message_id=reply,
+        )
+
+    host._embedder.embed = fall_asleep
+    if channel == "tool":
+        with pytest.raises(ToolError, match="asleep"):
+            save()
+    else:
+        save()
+    assert sleep.get_state().status == ASLEEP
+    assert host.memory_store.count() == 0
+    host._notify_memory_added.assert_not_called()
+
+    host._embedder.embed = embed
+    sleep.transition("wake")
+    save()
+    note, = host.memory_store.iter_by_kinds(["diary"])
+    assert note.content == content
+    assert host._notify_memory_added.call_count == 1
 
 
 def test_notification_failure_does_not_hide_a_successful_write(host):

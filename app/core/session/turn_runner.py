@@ -1855,17 +1855,24 @@ class TurnRunner:
             or not raw_text
         ):
             return
-        diary_allowed_provider = getattr(self, "_diary_allowed_provider", None)
-        if diary_allowed_provider is not None:
+        entries = extract_diary_entries(raw_text)
+        if not entries:
+            return
+        provider = getattr(self, "_diary_allowed_provider", None)
+
+        def writable() -> bool:
             try:
-                if not bool(diary_allowed_provider()):
-                    log.info("diary memory suppressed: Aiko is asleep")
-                    return
+                if provider is None or provider():
+                    return True
+                log.info("diary memory suppressed: Aiko is asleep")
             except Exception:
                 log.debug("diary sleep gate failed closed", exc_info=True)
-                return
+            return False
+
+        if not writable():
+            return
         seen: set[str] = set()
-        for body in extract_diary_entries(raw_text):
+        for body in entries:
             content = body.strip()
             # A diary entry should be a real sentence, not a stray token.
             if len(content) < 8:
@@ -1895,6 +1902,8 @@ class TurnRunner:
             except Exception as exc:
                 log.debug("diary memory embed failed: %s", exc)
                 continue
+            if not writable():
+                return
             try:
                 memory = self._memory_store.add(
                     content=content,

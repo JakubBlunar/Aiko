@@ -51,6 +51,9 @@ to the `journal` tool family. It is available on diary/journal requests but is
 excluded from the strictly narrowed premise-recall pass. Adding it does not
 force a tool round-trip on every ordinary conversation turn. Inline diary tags
 remain compatible with spontaneous notes on turns where no tool pass runs.
+Both chosen write paths recheck the sleep gate after embedding and before
+saving. If Aiko falls asleep while an entry is being prepared, a later awake
+write can save it with a fresh receipt.
 
 ## Awareness and authorship
 

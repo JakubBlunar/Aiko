@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -80,6 +81,45 @@ _CASES = {
         "I need proof of purchase for a secondhand printer. I lost the invoice. "
         "This is a paperwork problem. Where could I look?",
         "printer_receipt", None,
+    ),
+}
+
+
+@dataclass(frozen=True)
+class ReportedFact:
+    name: str
+    holds: bool
+    quote: str
+
+
+# Reviewed annotations for the fictional replay. These are independently
+# checkable goals and resources, rather than expected source IDs.
+_TRANSFER_REQUIRES = {
+    "wood_finish": ("physical_check_pending", "matching_spare"),
+    "printer_receipt": ("purchase_record_needed", "order_history_available"),
+    "photo_edit": ("editable_original_needed", "separate_copy_available"),
+    "spreadsheet_layout": ("field_search_needed", "zoomable_layout"),
+}
+_REVIEWED_FACTS = {
+    "material_varies": (
+        ReportedFact("physical_check_pending", True, "Ink looks different on different paper"),
+        ReportedFact("matching_spare", True, "I have spare sheets of the exact stock"),
+    ),
+    "irreversible_change": (
+        ReportedFact("editable_original_needed", True, "need to be able to go back"),
+        ReportedFact("separate_copy_available", True, "I can duplicate the sheet"),
+    ),
+    "no_spare_stock": (
+        ReportedFact("physical_check_pending", True,
+                     "Ink can behave differently on the textured paper"),
+        ReportedFact("matching_spare", False, "I cannot get a matching spare"),
+    ),
+    "constraint_removed": (
+        ReportedFact("physical_check_pending", False, "finished and approved a proof"),
+    ),
+    "shared_words_only": (
+        ReportedFact("purchase_record_needed", True, "I need proof of purchase"),
+        ReportedFact("physical_check_pending", False, "This is a paperwork problem"),
     ),
 }
 _CONTEXT_LIMIT = 560
@@ -184,7 +224,22 @@ def evidence_context(memory, store, now):
     return block if len(block) <= _CONTEXT_LIMIT else ""
 
 
-def replay(records, store, infer, *, as_of=None, require_fit=False):
+def check_preconditions(episode, question, facts):
+    """Check a proposed transfer against independently reviewed, literal current evidence."""
+    blocked, unknown = [], []
+    for requirement in _TRANSFER_REQUIRES.get(episode, ("reviewed_requirements",)):
+        reports = {
+            fact.holds for fact in facts if fact.name == requirement
+            and fact.quote.strip() and fact.quote in question
+        }
+        if reports == {False}:
+            blocked.append(requirement)
+        elif reports != {True}:
+            unknown.append(requirement)
+    return {"blocked": blocked, "unknown": unknown, "allowed": not (blocked or unknown)}
+
+
+def replay(records, store, infer, *, as_of=None, require_fit=False, check_current=False):
     now = as_of or (timephrase.utcnow() + timedelta(weeks=3)).replace(
         hour=12, minute=0, second=0, microsecond=0,
     )
@@ -214,6 +269,11 @@ def replay(records, store, infer, *, as_of=None, require_fit=False):
                 fit != "transferable" or considered is not None
             )
         selection = considered if valid and (not require_fit or fit == "transferable") else None
+        preflight = None
+        if selection is not None and check_current:
+            preflight = check_preconditions(selection, question, _REVIEWED_FACTS.get(case, ()))
+            if not preflight["allowed"]:
+                selection = None
         arms = {}
         for name, episode in (("plain_topic", plain_topic), ("analogy", selection)):
             evidence = packets.get(episode, "")
@@ -224,6 +284,7 @@ def replay(records, store, infer, *, as_of=None, require_fit=False):
             "expected_analogy": expected,
             "considered_case": considered,
             "fit": fit,
+            "preflight": preflight,
             "selected_analogy": selection,
             "selection_matches": valid and selection == expected,
             "invalid_candidate": not valid,
@@ -240,6 +301,10 @@ def main():
     parser.add_argument(
         "--require-fit", action="store_true",
         help="compare with a separate blocked/irrelevant/transferable verdict",
+    )
+    parser.add_argument(
+        "--check-current", action="store_true",
+        help="veto transfers without independently reviewed current prerequisites",
     )
     args = parser.parse_args()
     settings = load_settings(read_only=True)
@@ -271,9 +336,11 @@ def main():
         path = Path(trial) / "episodes.db"
         db = ChatDatabase(path)
         with closing(db._get_conn()), closing(MemoryStore(path)) as store:
-            cases = replay(seed_episodes(db, store), store, infer, require_fit=args.require_fit)
+            cases = replay(seed_episodes(db, store), store, infer,
+                           require_fit=args.require_fit, check_current=args.check_current)
     print(json.dumps({
-        "model": route.model, "seed": args.seed, "require_fit": args.require_fit, "cases": cases,
+        "model": route.model, "seed": args.seed, "require_fit": args.require_fit,
+        "check_current": args.check_current, "cases": cases,
     }, indent=2))
 
 

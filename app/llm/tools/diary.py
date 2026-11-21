@@ -162,9 +162,12 @@ class WriteDiaryTool:
             if (store is None or embedder is None
                     or not getattr(getattr(session._settings, "memory", None), "enabled", False)):
                 raise ToolError("write_diary: memory writing is unavailable")
-            sleep = getattr(session, "_sleep_store", None)
-            if sleep is not None and sleep.get_state().status == "asleep":
-                raise ToolError("write_diary: writing is unavailable while asleep")
+            def check_writable():
+                sleep = getattr(session, "_sleep_store", None)
+                if sleep is not None and sleep.get_state().status == "asleep":
+                    raise ToolError("write_diary: writing is unavailable while asleep")
+
+            check_writable()
             earlier = arguments.get("revisits_entry_id")
             if "revisits_entry_id" in arguments:
                 earlier = ReadDiaryTool._integer(earlier, "revisits_entry_id", 1)
@@ -173,7 +176,7 @@ class WriteDiaryTool:
                     raise ToolError("write_diary: the earlier diary entry was not found")
             row, created = append_chosen_entry(
                 store, embedder.embed, arguments.get("content"), session_key=session.session_key,
-                revisits_entry_id=earlier,
+                revisits_entry_id=earlier, check_writable=check_writable,
             )
             notify = getattr(session, "_notify_memory_added", None)
             if created and notify is not None:

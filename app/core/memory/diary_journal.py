@@ -31,7 +31,9 @@ def journal_authorship(metadata: dict) -> str:
     return "unspecified"
 
 
-def append_chosen_entry(store, embed, content, *, session_key, revisits_entry_id=None):
+def append_chosen_entry(
+    store, embed, content, *, session_key, revisits_entry_id=None, check_writable=None,
+):
     """Return (saved row, created). Repeating the same dated write is idempotent."""
     if not isinstance(content, str) or not 16 <= len(content.strip()) <= 2000:
         raise ValueError("content must be 16-2000 characters of first-person journal prose")
@@ -55,8 +57,11 @@ def append_chosen_entry(store, embed, content, *, session_key, revisits_entry_id
         return saved, False
     metadata = journal_metadata("tool", revisits_entry_id=revisits_entry_id)
     metadata["admission_key"] = admission_key
+    embedding = embed(content)
+    if check_writable is not None:
+        check_writable()
     saved = store.add(
-        content=content, kind="diary", embedding=embed(content),
+        content=content, kind="diary", embedding=embedding,
         salience=0.6, source_session=session_key, metadata=metadata,
         tier="long_term", temporal_type="past_event", event_time=now, skip_dedupe=True,
     )

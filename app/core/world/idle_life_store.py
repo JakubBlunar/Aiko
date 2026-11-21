@@ -176,13 +176,17 @@ class IdleLifeStore:
         ).fetchone()
         return self._row(row) if row is not None else None
 
-    def decision(self, run_id):
-        rows = self._db._get_conn().execute(
+    @classmethod
+    def read_decision(cls, conn, run_id):
+        """Read one trace using a supplied connection, including from backups."""
+        rows = conn.execute(
             "SELECT * FROM idle_life_events WHERE run_id=? ORDER BY id LIMIT 501",
             (str(run_id),),
         ).fetchall()
-        return {"events": [self._row(row) for row in rows[:500]],
-                "truncated": len(rows) > 500, "telemetry": self.health()}
+        return {"events": [cls._row(row) for row in rows[:500]], "truncated": len(rows) > 500}
+
+    def decision(self, run_id):
+        return {**self.read_decision(self._db._get_conn(), run_id), "telemetry": self.health()}
 
     def health(self):
         row = self._db._get_conn().execute(

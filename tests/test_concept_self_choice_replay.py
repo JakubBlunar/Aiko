@@ -1,5 +1,9 @@
 """Equal activity counts can support different accounts of Aiko's choices."""
 
+from contextlib import closing
+import sqlite3
+import sys
+
 import pytest
 
 from app.core.concepts.concept_learning_event_store import ConceptLearningEventStore
@@ -7,7 +11,7 @@ from app.core.concepts.concept_store import Concept, ConceptStore
 from app.core.concepts.self_history import build_self_history
 from app.core.infra.chat_database import ChatDatabase
 from app.core.world.idle_life_store import IdleLifeStore
-from scripts.review_self_choices import EpisodeReview, compare_choices
+from scripts.review_self_choices import EpisodeReview, compare_choices, main, review_snapshot
 
 
 _SKETCH = "home_new_sketch"
@@ -129,3 +133,67 @@ def test_choice_reviews_use_actual_model_options_and_reject_cues(replay):
     assert review["later"]["returns"] == ["sketch-0", "sketch-1"]
     assert len(review["later"]["completed"]) == len(later)
     assert review["changed_choice_pattern"]
+
+
+def test_snapshot_review_reports_retained_choices_and_gaps_without_writing(
+    replay, tmp_path, monkeypatch, capsys,
+):
+    import json
+
+    db, store = replay
+    stamp = "2026-11-19T10:00:00+00:00"
+    monkeypatch.setattr("app.core.world.idle_life_store.real_stamp", lambda: stamp)
+    options = {
+        "choice_inputs": {"version": 1, "optional_inspiration": False,
+                          "daily_intention": False, "ongoing_interest": False},
+        "offered": [{"action": "new_sketch"}],
+    }
+
+    def run(run_id, start, picked, *, end=None, actor="autonomous"):
+        nonlocal stamp
+        stamp = start
+        store.record("run_started", "away_activity", {}, run_id=run_id, actor=actor)
+        _episode(store, run_id, picked=picked, options=options, unprompted=None)
+        if end is not None:
+            stamp = end
+            store.record("run_finished", "away_activity", {}, run_id=run_id, actor=actor)
+
+    for i in range(2):
+        early = f"2026-11-19T10:0{i}:00+00:00"
+        run(f"early-{i}", early, _READ, end=early)
+    for i in range(2):
+        late = f"2026-11-20T11:0{i}:00+00:00"
+        run(f"late-{i}", late, _SKETCH, end=late)
+    run("unfinished", "2026-11-20T11:18:00+00:00", _SKETCH)
+    run("boundary", "2026-11-20T11:59:00+00:00", _SKETCH, end="2026-11-20T12:00:00+00:00")
+    run("debug", "2026-11-20T11:58:00+00:00", _SKETCH,
+        end="2026-11-20T11:58:00+00:00", actor="direct_worker")
+
+    snapshot = tmp_path / "backup.db"
+    with closing(sqlite3.connect(snapshot)) as backup:
+        db._get_conn().backup(backup)
+    original = snapshot.read_bytes()
+    earlier = ("2026-11-19T11:00:00+01:00", "2026-11-19T12:00:00+01:00")
+    later = ("2026-11-20T11:00:00Z", "2026-11-20T12:00:00Z")
+    monkeypatch.setattr(sys, "argv", [
+        "review_self_choices", "--snapshot", str(snapshot), "--target", _SKETCH,
+        "--earlier", *earlier, "--later", *later,
+    ])
+    main()
+    report = json.loads(capsys.readouterr().out)
+    assert report["target"] == _SKETCH
+    assert report["changed_choice_pattern"] is True
+    assert report["earlier"]["chose_alternative"] == ["early-0", "early-1"]
+    assert report["later"]["returns"] == ["late-0", "late-1"]
+    assert report["later"]["coverage"] == {
+        "included_runs": 2, "incomplete_runs": 1, "boundary_runs": 1, "eligible_episodes": 2,
+    }
+
+    empty = review_snapshot(
+        snapshot, _SKETCH, earlier=earlier,
+        later=("2026-11-21T11:00:00Z", "2026-11-21T12:00:00Z"),
+    )
+    assert empty["later"]["coverage"]["included_runs"] == 0
+    assert empty["repeated_return"] is None
+    assert empty["changed_choice_pattern"] is None
+    assert snapshot.read_bytes() == original

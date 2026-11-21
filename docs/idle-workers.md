@@ -101,6 +101,19 @@ records with missing fields. The existing room and journal context still shape
 the choice, and an observed selection gives no independent evidence of motive.
 This review uses the same 14-day trace and remains separate from Memory Story.
 
+To compare two recorded periods, run the review module against a SQLite backup.
+Each pair of bounds includes the start and excludes the end, with an explicit
+timezone.
+
+```text
+python -m scripts.review_self_choices --snapshot snapshot.db --target home_new_sketch --earlier 2026-11-12T00:00:00+01:00 2026-11-15T00:00:00+01:00 --later 2026-11-15T00:00:00+01:00 2026-11-18T00:00:00+01:00
+```
+
+The JSON report shows which retained autonomous runs support the pattern.
+For runs that start in a window, it counts incomplete traces and runs that
+finish at or after the window cutoff separately. A `null` comparison means
+the retained windows contain too few eligible choices.
+
 The standalone module runs against a **read-only SQLite backup**, in a disposable
 child process under `.tmp-idle-life/run-*`, and removes its own scratch afterward:
 

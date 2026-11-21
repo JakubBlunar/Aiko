@@ -799,6 +799,16 @@ had ruled out. Reply prompts in each pair differed by two to four input
 tokens. These runs exercise fictional constraints and motivate keeping
 cross-topic transfer in replay until the negative controls pass.
 
+The follow-up `--check-current` arm checks every required goal and resource
+against independently reviewed, literal quotes from the new question. Missing
+or contradictory evidence withholds the proposed analogy. In two more local
+9B runs, the unchecked selector matched two of five expected cases per run.
+The checked arm retained both useful examples and withheld all three false
+transfers per run. This evaluates the check using supplied annotations. It
+leaves automatic recognition of prerequisites and actual help over topical
+recall open. In the no-spare case the checked reply avoided testing the sole
+sheet, but still proposed a substitute that could not verify the exact stock.
+
 ## L57. Ground Aiko's changing interests in her own choices
 
 **Status: Choice-receipt pilot.** On 21 Nov 2026 a read-only check found active self-narrative
@@ -841,8 +851,9 @@ settled entry for all three histories. The
 model options and recorded cue flags for new runs. An isolated sketch run
 confirmed that drawing can count when the model was offered it, even if drawing
 was absent from the weighted list. Legacy runs can still use an explicit
-reviewer judgment. Memory Story integration and ordinary-use validation remain
-open.
+reviewer judgment. The [snapshot review command](../../docs/idle-workers.md)
+compares explicit recording-time windows and reports incomplete coverage.
+Memory Story integration and ordinary-use validation remain open.
 
 ## Moved out of the active queue
 
