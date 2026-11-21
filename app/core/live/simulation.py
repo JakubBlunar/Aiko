@@ -19,7 +19,7 @@ from app.core.infra.agent_settings_parse import (
 from app.core.infra.chat_database import ChatDatabase
 from app.core.infra.settings import LLM_ROLE_LIVE_POLICY, LlmRoute
 from app.core.live.diagnostics import sanitize_live_dump
-from app.core.live.urge_menu import menu_urge_ids
+from app.core.live.urge_menu import build_urge_menu
 from app.core.proactive.cue_accounting import CUE_POLICIES
 from app.core.proactive.cue_store import CueStore
 from app.core.session.cue_pool_mixin import CuePoolMixin
@@ -80,10 +80,10 @@ class _PolicyClient:
         }
         if subject is not None:
             urges = self.host._live_inclination.urges.active()
-            menu = menu_urge_ids(urges)
+            references = {item.urge_id: item.reference for item in build_urge_menu(urges)}
             proposal["selected_urge_id"] = next(
-                (urge.urge_id for urge in urges
-                 if urge.subject == subject and urge.urge_id in menu),
+                (references[urge.urge_id] for urge in urges
+                 if urge.subject == subject and urge.urge_id in references),
                 None,
             )
         return json.dumps(proposal), ChatUsage()
@@ -361,12 +361,18 @@ def run_live_scenario(
 ) -> dict[str, Any]:
     """Replay synthetic inputs with a fresh in-memory SQLite database."""
     if not isinstance(scenario, dict) or set(scenario) - {
-        "name", "start_at", "max_wakes_per_hour", "min_gap_after_speech_ms", "steps",
+        "name", "start_at", "max_wakes_per_hour", "min_gap_after_speech_ms",
+        "initial_concepts", "steps",
     }:
         raise ValueError("scenario contains unknown fields or is not an object")
     steps = scenario["steps"]
     if not isinstance(steps, list) or not steps:
         raise ValueError("scenario.steps must be a nonempty list")
+    initial_concepts = scenario.get("initial_concepts", [])
+    if not isinstance(initial_concepts, list) or not all(
+        isinstance(concept, dict) for concept in initial_concepts
+    ):
+        raise ValueError("scenario.initial_concepts must be a list of concept objects")
     start = datetime.fromisoformat(scenario["start_at"]) if "start_at" in scenario else _START
     if start.tzinfo is None:
         raise ValueError("start_at must include a timezone")
@@ -381,6 +387,8 @@ def run_live_scenario(
     with timephrase.scoped_now(clock.now):
         host = _SimulationHost(clock, route, policy_client, max_wakes, min_gap_ms)
         try:
+            for concept in initial_concepts:
+                host.add_concept(concept)
             return _run_steps(host, steps, name=scenario.get("name", "Live scenario"))
         finally:
             host._chat_db._get_conn().close()

@@ -1,4 +1,4 @@
-"""Numbered peek-only urge menu for the Live 4B.
+"""Request-local cue references for the Live 4B.
 
 The model may copy ``selected_urge_id`` from this list or omit it.
 It never takes a cue, never sees titles or cue bodies, and never
@@ -25,13 +25,17 @@ class UrgeMenuItem:
     parked: bool = False
     purpose: str = ""
 
+    @property
+    def reference(self) -> str:
+        return str(self.index)
+
 
 def build_urge_menu(
     urges: Sequence[LiveUrge],
     *,
     limit: int = MAX_URGE_MENU,
 ) -> tuple[UrgeMenuItem, ...]:
-    """Active urges as a numbered pick list. Subjects are privacy-capped."""
+    """Active urges in display order. Subjects are privacy-capped."""
     cap = max(0, int(limit))
     active = [
         urge for urge in urges
@@ -61,12 +65,13 @@ def build_urge_menu(
 
 def render_urge_menu(
     urges: Sequence[LiveUrge], *, now_mono_ms: float | None = None,
+    menu: tuple[UrgeMenuItem, ...] | None = None,
 ) -> str:
-    items = build_urge_menu(urges)
+    items = build_urge_menu(urges) if menu is None else menu
     if not items:
         return "CANDIDATE URGES: none"
     lines = [
-        "CANDIDATE URGES (pick selected_urge_id or omit for wait/noop):",
+        "CANDIDATE URGES (set selected_urge_id to a ref below, or null):",
     ]
     by_id = {urge.urge_id: urge for urge in urges}
     for item in items:
@@ -84,7 +89,7 @@ def render_urge_menu(
                 source_remaining = max(0, int(urge.source_deadline_ms - now_mono_ms))
                 lifetime += f" source_remaining_ms={source_remaining}"
         lines.append(
-            f"{item.index}. id={item.urge_id} kind={item.kind}"
+            f'ref="{item.reference}" kind={item.kind}'
             f"{parked}{subject_bit}{purpose_bit}{lifetime}"
         )
     return "\n".join(lines)

@@ -67,7 +67,6 @@ from app.core.live.prompt import (
     LivePolicyPromptAssembler,
 )
 from app.core.live.proposal import LIVE_POLICY_JSON_SCHEMA, LivePolicyProposal
-from app.core.live.urge_menu import build_urge_menu
 from app.core.live.wait import (
     DEFAULT_WAIT_MS,
     MAX_WAIT_MS,
@@ -479,12 +478,26 @@ class LivePolicyController:
         cue_ids = {
             urge.urge_id: urge.cue_id for urge in prompt_input.get("urges") or ()
         }
-        trace["menu"] = None if callable(self._prompt_builder) else [
+        menu = prompt.urge_menu
+        references = {item.reference: item.urge_id for item in menu or ()}
+        known_urge_ids = prompt_input.get("known_urge_ids") or ()
+        schema = LIVE_POLICY_JSON_SCHEMA
+        # An ID-only caller has no displayed menu. An explicit empty menu permits no cue.
+        if menu is not None and "urges" in prompt_input:
+            known_urge_ids = tuple(references.values())
+            schema = {
+                **schema,
+                "properties": {
+                    **schema["properties"],
+                    "selected_urge_id": {"enum": [None, *references]},
+                },
+            }
+        trace["menu"] = None if menu is None else [
             {
                 "urge_id": item.urge_id, "kind": item.kind, "purpose": item.purpose,
-                "cue_id": cue_ids.get(item.urge_id),
+                "cue_id": cue_ids.get(item.urge_id), "reference": item.reference,
             }
-            for item in build_urge_menu(prompt_input.get("urges") or ())
+            for item in menu
         ]
         trace["prompt_regions"] = dict(prompt.region_tokens)
         runtime = self._inclination()
@@ -508,7 +521,7 @@ class LivePolicyController:
             model=model,
             options=options,
             format_json=True,
-            json_schema=LIVE_POLICY_JSON_SCHEMA,
+            json_schema=schema,
             think=False,
             keep_alive=_KEEP_ALIVE_ON,
             surface="live_policy",
@@ -546,7 +559,19 @@ class LivePolicyController:
                 shadow=False, user_intent=user_intent, extra=extra,
             )
             return result
-        proposal = replace(proposal, snapshot_generation=int(frame.generation))
+        reference = proposal.selected_urge_id
+        if reference in references:
+            trace["selected_urge_reference"] = reference
+        proposal = replace(
+            proposal,
+            snapshot_generation=int(frame.generation),
+            selected_urge_id=references.get(reference, reference),
+            context_refs=tuple(
+                f"urge:{references[ref[5:]]}"
+                if ref.startswith("urge:") and ref[5:] in references else ref
+                for ref in proposal.context_refs
+            ),
+        )
         trace["intent"] = proposal.intent
         trace["reason"] = "execution_failure"
         menu_ids = {item["urge_id"] for item in trace["menu"] or ()}
@@ -563,7 +588,7 @@ class LivePolicyController:
         result = arbitrate_live_proposal(
             proposal,
             snapshot_generation=int(frame.generation),
-            known_urge_ids=prompt_input.get("known_urge_ids") or (),
+            known_urge_ids=known_urge_ids,
             known_context_refs=prompt_input.get("known_context_refs") or (),
             user_intent=user_intent,
             allowed_actions=frame.constraints.allowed_actions,

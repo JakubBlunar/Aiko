@@ -94,7 +94,7 @@ class AdmissionRecordShapeTests(unittest.TestCase):
         assert urge is not None
         client = _FakePolicyClient({
             "snapshot_generation": frame.generation,
-            "selected_urge_id": urge.urge_id,
+            "selected_urge_id": "1",
             "intent": "attend", "arguments": {"reasoning": "private reasoning"},
             "reason_code": "private_reason", "context_refs": [],
         })
@@ -112,9 +112,10 @@ class AdmissionRecordShapeTests(unittest.TestCase):
         self.assertTrue(row["inference_completed"])
         self.assertEqual(row["menu"], [{
             "urge_id": urge.urge_id, "kind": "share_observation", "purpose": "share",
-            "cue_id": 123,
+            "cue_id": 123, "reference": "1",
         }])
         self.assertEqual(row["selected_urge_id"], urge.urge_id)
+        self.assertEqual(row["selected_urge_reference"], "1")
         self.assertEqual(row["intent"], "attend")
         self.assertEqual(row["reason"], "ok")
         self.assertEqual(len(trace["identity"]["decision_code_sha256"]), 64)

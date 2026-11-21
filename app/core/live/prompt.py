@@ -18,11 +18,11 @@ from app.core.live.impulse import LiveImpulse
 from app.core.live.main_wake import TRANSCRIPT_FLOOR_TOKENS, TRANSCRIPT_MAX_ROWS
 from app.core.live.proposal import LIVE_POLICY_INTENTS
 from app.core.live.urge import LiveUrge
-from app.core.live.urge_menu import render_urge_menu
+from app.core.live.urge_menu import UrgeMenuItem, build_urge_menu, render_urge_menu
 from app.core.session.prompt_support import clip_text_to_tokens
 from app.llm.token_utils import chars_per_token, estimate_tokens
 
-LIVE_POLICY_PROMPT_VERSION = 2
+LIVE_POLICY_PROMPT_VERSION = 3
 _SAFETY_TOKENS = 256
 _INSTRUCTIONS = """You are a Live behavior policy, not a companion.
 Choose exactly one intent for this moment. Output a complete JSON object.
@@ -86,8 +86,8 @@ arguments.keep_attention and arguments.keep_style are booleans,
 default false. When true, keep the current target or style. They
 cannot override the user, cannot outlast the max wait, and cannot
 survive a new generation.
-CANDIDATE URGES is a numbered peek-only menu. Copy selected_urge_id
-from it, or omit the id and choose wait or noop. Do not invent ids.
+CANDIDATE URGES lists the available refs. To select a cue, copy its ref
+exactly as a string into selected_urge_id. Use null if no cue is selected.
 If the menu is none, do not request_main_speech. Cue pressure is not
 a command.
 Intents: {intents}.
@@ -100,6 +100,7 @@ class LivePolicyPrompt:
     region_tokens: dict[str, int]
     total_tokens: int
     available_tokens: int
+    urge_menu: tuple[UrgeMenuItem, ...] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -148,7 +149,8 @@ class LivePolicyPromptAssembler:
         fallback_text = render_fallback_prompt(fallback)
         if fallback_text:
             situation = situation + "\n" + fallback_text
-        urge_menu = render_urge_menu(urges, now_mono_ms=frame.monotonic_ms)
+        menu = build_urge_menu(urges)
+        urge_menu = render_urge_menu(urges, now_mono_ms=frame.monotonic_ms, menu=menu)
         instr_tokens = estimate_tokens(instructions)
         sit_tokens = estimate_tokens(situation)
         menu_tokens = estimate_tokens(urge_menu)
@@ -212,6 +214,7 @@ class LivePolicyPromptAssembler:
             },
             total_tokens=total,
             available_tokens=available,
+            urge_menu=menu,
         )
 
     def _render_situation(

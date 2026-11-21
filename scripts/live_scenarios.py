@@ -204,11 +204,17 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print the complete decision trace.")
     parser.add_argument("--repeat", type=int, default=1, help="Run independent trials in sequence.")
+    parser.add_argument(
+        "--concept-file", type=Path, help="Seed one JSON concept before the first impulse.",
+    )
     args = parser.parse_args()
     if args.repeat < 1:
         parser.error("--repeat must be positive")
     try:
         scenario = json.loads(args.scenario.read_text(encoding="utf-8"))
+        if args.concept_file is not None:
+            concept = json.loads(args.concept_file.read_text(encoding="utf-8"))
+            scenario["initial_concepts"] = [*scenario.get("initial_concepts", []), concept]
         run = run_local if args.local else run_live_scenario
         reports = [run(scenario) for _ in range(args.repeat)]
     except (OSError, ValueError, TypeError, KeyError) as exc:

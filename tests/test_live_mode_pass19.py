@@ -265,10 +265,10 @@ class PromptTests(unittest.TestCase):
             max_tokens=64,
             prompt_ceiling=12000,
         ).messages[0]["content"]
-        self.assertIn("1. id=u1 kind=ask_about_result subject=film photography", prompt)
+        self.assertIn('ref="1" kind=ask_about_result subject=film photography', prompt)
         self.assertNotIn("secret.example", prompt)
         self.assertNotIn("https://", prompt)
-        self.assertIn("2. id=u2 kind=ask_about_result", prompt)
+        self.assertIn('ref="2" kind=ask_about_result', prompt)
         self.assertNotIn("subject=https://", prompt)
 
     def test_cap_live_subject_drops_unsafe(self) -> None:

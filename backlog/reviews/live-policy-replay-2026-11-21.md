@@ -59,3 +59,36 @@ python scripts/live_scenarios.py tests/scenarios/live/requested-update.json --lo
 python scripts/live_scenarios.py tests/scenarios/live/interruption.json --local --repeat 4 --json
 python scripts/live_scenarios.py tests/scenarios/live/interruption.json --repeat 2
 ```
+
+## Cue reference retest
+
+Each menu row now exposes one request-local reference. The model's JSON
+schema lists the displayed references and null. The controller resolves the
+selected reference to the internal urge ID before arbitration.
+
+Replayed the requested update four times per condition with the same local
+`qwen3.5:4b` route, timeline, transcript and cues. The seeded condition
+started with the synthetic preference “Share time-sensitive updates the user
+requested when the floor opens.” The trace confirmed the preference was
+visible to the policy on all four openings.
+
+| Condition | Openings with both topics eligible | Policy choice at the opening | Full / micro speech requests |
+| --- | ---: | --- | ---: |
+| Without preference | 4 | `remain_present` with ref `"3"` (ambient presence) in all four | 0 / 0 |
+| With preference | 4 | `wait` with no reference in all four | 0 / 0 |
+
+The policy chose neither the bread update nor the next chapter. The eight
+trials produced 16 policy calls, with zero transport failures or
+`unknown_urge` rejections. Four additional interruption runs produced 36
+policy calls with zero `unknown_urge` rejections. There were no autonomous
+speech requests during those runs. A deterministic regression check also
+sent ref `"2"` and confirmed that the bread update reached the speech
+handoff. An out-of-menu reference was rejected.
+
+A preference alone did not get the requested update spoken in this replay.
+The next comparison can give a user-requested update an explicit readiness
+signal and measure whether it surfaces on the first safe opening while the
+casual cue stays queued for later. This retest seeded an established
+preference. It did not exercise concept acquisition.
+
+[Commands and preference fixture](../../docs/live-scenarios.md#run-a-scenario)

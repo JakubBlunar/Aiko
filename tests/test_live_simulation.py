@@ -10,6 +10,7 @@ import requests
 
 from app.core.infra import settings, timephrase
 from app.core.live.simulation import run_live_scenario
+from app.llm.chat_client import ChatUsage
 from scripts.live_scenarios import (
     LoopbackPolicyClient, loopback_url, require_local_model, summarize_trials, trial_metrics,
 )
@@ -46,6 +47,57 @@ def test_handoff_exposes_topic_and_cue_and_learns_from_the_next_user_message():
     ledger = report["steps"][-1]["policy_context"]["policy_ledger"]
     assert any(row["completed_action"] == "request_main_speech" for row in ledger)
     assert report["steps"][-1]["cues"]["balcony herbs"]["state"] == "used"
+
+
+@pytest.mark.parametrize("reference", ["2", "9"])
+def test_policy_reference_resolves_only_a_displayed_cue(reference):
+    def policy_reply(messages, **kwargs):
+        schema = kwargs["json_schema"]["properties"]["selected_urge_id"]
+        if 'ref="2"' not in messages[0]["content"]:
+            intent, selection = "acknowledge_user", None
+        else:
+            assert schema["enum"] == [None, "1", "2", "3"]
+            assert 'ref="2" kind=share_observation subject=bread is cool enough to pack' in (
+                messages[0]["content"]
+            )
+            intent, selection = "request_main_speech", reference
+        return json.dumps({
+            "intent": intent,
+            "selected_urge_id": selection,
+            "arguments": {"speech_act": "share_observation"},
+            "reason_code": "test",
+            "context_refs": [],
+        }), ChatUsage()
+
+    report = run_live_scenario(
+        read_scenario("requested-update"), policy_client=Mock(chat_json=policy_reply),
+    )
+    decision, = report["steps"][4]["decisions"]
+    if reference == "2":
+        assert decision["selected_urge_reference"] == "2"
+        assert decision["selected_subject"] == "bread is cool enough to pack"
+        assert decision["selected_urge_id"] in decision["eligible_urge_ids"]
+        assert "Subject: bread is cool enough to pack" in report["dispatches"][0]["talk_about"]
+    else:
+        assert decision["reason"] == "unknown_urge"
+        assert decision["selected_subject"] == ""
+        assert report["steps"][4]["queued_count"] == 0
+
+
+def test_initial_preference_is_visible_from_the_first_impulse():
+    preference = json.loads(
+        (SCENARIOS / "preferences" / "requested-update.json").read_text(encoding="utf-8")
+    )
+    scenario = read_scenario("requested-update")
+    base = run_live_scenario(scenario)
+    seeded = run_live_scenario({**scenario, "initial_concepts": [preference]})
+    assert base["steps"][0]["policy_context"]["policy_concepts"] == []
+    assert seeded["steps"][0]["policy_context"]["policy_concepts"][0]["label"] == (
+        preference["label"]
+    )
+    assert [(s["event"], s["at_ms"]) for s in seeded["steps"]] == [
+        (s["event"], s["at_ms"]) for s in base["steps"]
+    ]
 
 
 def test_new_user_intent_preempts_a_queued_topic_before_the_fake_speaker():

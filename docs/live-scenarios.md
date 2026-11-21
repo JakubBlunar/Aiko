@@ -17,6 +17,16 @@ python scripts/live_scenarios.py tests/scenarios/live/local-observation.json --l
 python scripts/live_scenarios.py tests/scenarios/live/interruption.json --local --repeat 4 --json
 ```
 
+To compare the same timeline with and without an established preference, use
+`--concept-file` on one set of runs. The file holds one concept with the same
+fields as a `concept` step. It is visible before the first impulse and
+starts fresh in each trial.
+
+```powershell
+python scripts/live_scenarios.py tests/scenarios/live/requested-update.json --local --repeat 4 --json
+python scripts/live_scenarios.py tests/scenarios/live/requested-update.json --local --repeat 4 --json --concept-file tests/scenarios/live/preferences/requested-update.json
+```
+
 Scripted mode is the default. It uses each step's `proposal` to reproduce a
 decision without a model. Steps without one use `noop` if policy runs.
 `--local` ignores scripted proposals and uses the configured `live_policy`
@@ -69,6 +79,10 @@ A step with just a state update refreshes the situation on a data-only heartbeat
 For a scripted request to discuss a specific seeded topic, use
 `"proposal": {"intent": "request_main_speech", "select_subject": "balcony herbs"}`.
 The subject resolves to an urge only if it is in the real policy menu.
+The policy uses a reference such as `"2"` from that request's menu. The
+decision trace shows the reference and its resolved internal urge ID.
+Scenarios can also include an `initial_concepts` list to seed concepts before
+the timeline starts.
 
 An `expect` object matches a subset of that step's JSON. Arrays match in order
 and length. For example, `{"new_policy_calls": 0, "speech_count": 0}` checks that

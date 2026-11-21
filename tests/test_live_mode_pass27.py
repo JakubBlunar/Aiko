@@ -99,7 +99,7 @@ class UrgeMenuTests(unittest.TestCase):
         store.expire_due(50_000.0)
         self.assertEqual(store.all_urges()[0].purpose, "share")
 
-    def test_numbers_ids_and_drops_unsafe_subjects(self) -> None:
+    def test_renders_references_and_drops_unsafe_subjects(self) -> None:
         items = build_urge_menu((
             _urge(urge_id="safe", subject="film photography"),
             _urge(
@@ -130,7 +130,7 @@ class UrgeMenuTests(unittest.TestCase):
             _urge(urge_id="safe", subject="film photography"),
             _urge(urge_id="url", subject="https://intranet/secret.md"),
         ))
-        self.assertIn("1. id=safe kind=share_delight subject=film photography", text)
+        self.assertIn('ref="1" kind=share_delight subject=film photography', text)
         self.assertNotIn("intranet", text)
         self.assertNotIn("secret.md", text)
         self.assertNotIn("https://", text)
@@ -176,7 +176,7 @@ class UrgeMenuTests(unittest.TestCase):
         self.assertTrue(known.accepted)
         self.assertTrue(known.talk_about)
 
-    def test_prompt_is_numbered_and_omits_cue_bodies(self) -> None:
+    def test_prompt_uses_references_and_omits_internal_ids_and_cue_bodies(self) -> None:
         row = SimpleNamespace(
             id=4,
             cue_type="curiosity_seed",
@@ -202,7 +202,8 @@ class UrgeMenuTests(unittest.TestCase):
         )
         text = prompt.messages[0]["content"]
         self.assertIn("CANDIDATE URGES", text)
-        self.assertIn(f"1. id={created[0].urge_id} kind=ask_about_result", text)
+        self.assertIn('ref="1" kind=ask_about_result', text)
+        self.assertNotIn(created[0].urge_id, text)
         self.assertIn("subject=curiosity_seed", text)
         self.assertNotIn("SECRET BODY", text)
         self.assertNotIn("intranet", text)
