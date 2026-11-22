@@ -701,7 +701,7 @@ _ACTIVITY_OPEN_TAIL_PATTERN = re.compile(r"\[\[activity:[^\]]*\Z", re.IGNORECASE
 _META_TAG_NAMES: tuple[str, ...] = (
     "reaction", "remember", "agenda", "moment", "diary", "arc", "gap",
     "conflict", "goal", "predict", "overlay", "outfit", "motion",
-    "touch", "activity", "prosody", "sleep",
+    "touch", "activity", "prosody", "sleep", "clarify",
 )
 #: Backstop for the whole family, including single or mismatched brackets
 #: emitted by models that do not follow the canonical ``[[name:body]]`` grammar.

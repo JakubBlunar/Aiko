@@ -29,6 +29,22 @@ from app.core.session.prompt_support import _SPEECH_GRAMMAR_ADDENDUM
 
 
 class ProviderOutcomeTests(unittest.TestCase):
+    def test_answered_clarification_is_preserved_as_context_for_the_next_reply(self) -> None:
+        with _TempDb() as db:
+            session = "default:arrival"
+            db.add_message(session, "user", "Draft an arrival text for Mira.")
+            question_id = db.add_message(session, "assistant", "What time should I use?")
+            assembler = _make_assembler(db, persona_text="P")
+            messages, telemetry = assembler.assemble_with_budget(
+                session, "3 PM.", context_window=4096, response_budget=256,
+            )
+            self.assertIn("Prior clarification:", messages[0]["content"])
+            self.assertIn("What time should I use?", messages[0]["content"])
+            self.assertEqual([message["role"] for message in messages[1:]], ["user", "user"])
+            self.assertEqual(messages[-1]["content"], "3 PM.")
+            self.assertEqual(db.get_message_row(question_id).content, "What time should I use?")
+            self.assertIn("current_reply_guidance", telemetry.block_chars)
+
     def test_calendar_anticipation_is_t6_staged_and_prefix_stable(self) -> None:
         from datetime import datetime, timezone
         from types import SimpleNamespace

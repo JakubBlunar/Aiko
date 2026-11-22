@@ -215,6 +215,58 @@ class InlineSleepTagTests(unittest.TestCase):
                 self.assertEqual(result.raw_text, raw)
 
 
+class ClarificationReplyTests(unittest.TestCase):
+    def test_clarification_discards_invented_options_and_side_effects(self) -> None:
+        for raw, expected in (
+            (" \n[[clarify: reference ]] The kitchen fire or the garage leak? "
+             "[[outfit:day]][[remember:self:There was a fire.]]", "Which one do you mean?"),
+            ("[[reaction:curious]]\n[[clarify:time]] Was it Tuesday or Thursday?",
+             "What time should I use?"),
+            ("[[clarify:made_up]] Was it a flood?", "Could you tell me a little more?"),
+            ("[[clarify:reference", "Could you tell me a little more?"),
+        ):
+            with self.subTest(raw=raw):
+                runner = _build_runner(stream_tokens=list(raw))
+                visible, spoken, outfits = [], [], []
+                result = runner.run(
+                    session_key="default:main", user_text="What happened with that?",
+                    on_token=visible.append,
+                    on_tts_chunk=lambda text, mood, parts=spoken: parts.append(text),
+                    on_outfit=outfits.append,
+                )
+                self.assertEqual(result.text, expected)
+                self.assertEqual(result.raw_text, expected)
+                self.assertEqual(visible, [expected])
+                self.assertEqual(spoken, [expected])
+                self.assertEqual(outfits, [])
+                self.assertEqual(runner._db.add_message.call_args.kwargs["content"], expected)
+
+    def test_late_clarification_tag_does_not_replace_an_answer_already_streamed(self) -> None:
+        raw = "The answer is seven.[[clarify:reference]]"
+        runner = _build_runner(stream_tokens=list(raw))
+        visible = []
+        result = runner.run(session_key="default:main", user_text="How many?",
+                            on_token=visible.append)
+        self.assertEqual(result.text, "The answer is seven.")
+        self.assertEqual("".join(visible), result.text)
+
+    def test_cancelled_clarification_is_neither_shown_nor_saved(self) -> None:
+        runner = _build_runner(stream_tokens=[])
+        visible = []
+
+        def stream():
+            yield "[[clarify:reference]]"
+            runner._stop.set()
+
+        runner._ollama.chat_stream.return_value = stream()
+        result = runner.run(session_key="default:main", user_text="Which one?",
+                            on_token=visible.append, resume_user_message_id=1)
+        self.assertTrue(result.aborted)
+        self.assertEqual(visible, [])
+        self.assertIsNone(result.assistant_message_id)
+        runner._db.add_message.assert_not_called()
+
+
 class MalformedReactionTagTests(unittest.TestCase):
     def test_malformed_reaction_never_reaches_ui_speech_or_persistence(self) -> None:
         for tag in (

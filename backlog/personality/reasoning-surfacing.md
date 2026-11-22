@@ -310,8 +310,10 @@ the old, corrected outcome in two. The episode arm avoided unrelated callbacks
 in both control turns. In the ambiguous case it withheld both sources, but the
 model invented earlier actions in both runs. Adding an explicit ambiguity note
 produced a clarifying question twice. One reply still invented the possible
-settings. Ordinary chat integration remains open pending a reliable clarification
-path and comparison on naturally ranked candidates.
+settings. The [separate clarification replay](../../scripts/clarification_replay.py)
+now checks the normal reply's bounded question with that ambiguous evidence.
+Integration of episode selection remains open pending comparison on naturally
+ranked candidates.
 
 ### RS4. Admit optional cues jointly with their handling
 

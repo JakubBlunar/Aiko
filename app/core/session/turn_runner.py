@@ -42,6 +42,9 @@ from app.core.session.prompt_prefix_telemetry import (
     emit_prefix_record,
     prompt_cache_sink_enabled,
 )
+from app.core.conversation.clarification_reply import (
+    clarification_question, starts_clarification,
+)
 from app.core.services.response_text_service import (
     extract_diary_entries,
     parse_reaction_at_start,
@@ -819,7 +822,7 @@ class TurnRunner:
         # rather than re-``join``-ing a list every token: CPython amortises
         # string concatenation to linear, so the stream loop no longer pays
         # O(n^2) allocation churn on long replies (P18).
-        full = ""
+        full = body = ""
         mood: str | None = None
         ui_sent_chars = 0       # chars of meta-stripped body already sent to UI
         tts_appended_chars = 0  # chars of meta-stripped body already routed to TTS
@@ -897,13 +900,17 @@ class TurnRunner:
                     _m, body = parse_reaction_at_start(full)
                     if _m is None:
                         body = full
+                if starts_clarification(body):
+                    # Only the host-rendered question reaches the final flush.
+                    continue
 
                 # Use the streaming-safe prefix so partial tokens like "[[spo"
                 # never reach the UI / TTS. Anything past the last unresolved
                 # `[` is held back until the next delta arrives.
                 visible = safe_visible_prefix(body)
 
-                if on_token is not None and len(visible) > ui_sent_chars:
+                if (on_token is not None and len(visible) > ui_sent_chars
+                        and (ui_sent_chars or visible.strip())):
                     on_token(visible[ui_sent_chars:])
                     ui_sent_chars = len(visible)
 
@@ -939,6 +946,9 @@ class TurnRunner:
 
         # A client may stop cooperatively without yielding another delta.
         aborted = aborted or self._stop.is_set() or self._is_stop_requested(stop_requested)
+        question = clarification_question(body)
+        if question is not None:
+            full = "" if aborted else question
         outcome.finish(
             reason=self._ollama.last_usage.done_reason, cancelled=aborted,
             has_answer=bool(strip_all_meta_tags(full).strip()),

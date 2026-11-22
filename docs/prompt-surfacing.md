@@ -360,6 +360,17 @@ reach denominator. Downstream feedback stays on the existing cue rows.
 5. Dispatch real calls, append identified results, then stream the substantive
   reply. Large tool exchanges can cause further trimming of old history.
 
+On an ordinary reply, the model can request a clarification when an unresolved
+reference, goal, time, place, requirement, or other detail prevents a useful
+answer. It chooses a leading `[[clarify:…]]` directive in the same reply call.
+The response boundary turns that into one short question using fixed wording.
+It discards text and action tags after the directive before display and
+persistence. The model decides when clarification is necessary. A clear
+request or an answer supplied by the conversation should proceed directly.
+On the next turn, the prior question is supplied as prompt context so the model
+can use the user's answer without echoing the question. It remains in the
+conversation transcript.
+
 Tool descriptions live in schemas; the registry is rebuilt from enabled
 capabilities. A background workflow uses its own planner/skill inventory and
 returns through the task system. Long work, privacy-sensitive access and

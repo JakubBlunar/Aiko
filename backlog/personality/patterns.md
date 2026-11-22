@@ -332,8 +332,26 @@ budget, without adding a synchronous call to each turn.
 **Implemented / available:** Observer-signaled memory needs can trigger strict enabled-built-in
 recall-only passes with freshness/topic/attempt guards.
 
-**Remaining:** Evaluate decisions/latency and consider bounded ask/tool/wait choices beyond recall;
-empty/disabled subsets stay closed.
+The ordinary reply can also choose one bounded clarification for an unresolved
+reference, goal, time, place, requirement or other essential detail. The app
+renders the question from a fixed set, and keeps the prior question in context
+when the user replies. No extra model call is required. See the
+[ordinary reply path](../../docs/prompt-surfacing.md#what-to-say-or-do).
+
+The [22 November clarification replay](../../scripts/clarification_replay.py)
+passed ten fictional cases on each of seeds 101 and 102 with the local 9B
+worker. It uses the normal prompt assembler and streamed turn runner in a
+disposable database. Five cases needed a short clarification across episode,
+ordinary reference, goal and time ambiguity. The other five covered a known
+episode, two answered clarifications and two requests that could be answered
+directly. It checks both displayed and saved text. Earlier versions echoed a
+previous question even after the user supplied the detail. Presenting the prior
+question as context on the next turn resolved those two replay cases. This
+measures the configured local model on a small synthetic cohort.
+
+**Remaining:** Evaluate ordinary-use decisions and latency. Consider bounded
+verification or defer choices beyond recall. Empty or disabled recall subsets
+stay closed.
 
 [Implemented slice](shipped/audit-2026-10-24.md#patterns-k101).
 

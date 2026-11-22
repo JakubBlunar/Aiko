@@ -23,7 +23,11 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.core.conversation import cue_register
+from app.core.conversation.clarification_reply import (
+    CLARIFICATION_GUIDANCE, CURRENT_REPLY_GUIDANCE, is_clarification_question,
+)
 from app.core.conversation.stance import POOLED_CHOICE_BLOCKS
+from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.session.prompt_prefix_telemetry import (
     PrefixDivergence,
@@ -90,7 +94,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
     # T0 — stable across sessions. Persona file edit / config flip is
     # the only thing that should ever invalidate this.
     #
-    # The run from ``persona`` through ``learned_style_addendum`` is also
+    # The run from ``persona`` through ``clarification_guidance`` is also
     # the explicit GPT-5.6 cache prefix (``stable_head_parts`` in
     # ``assemble_with_budget``). Inserting anything that moves per turn
     # into that run silently costs the whole ~9.7k-token discount, and
@@ -108,6 +112,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # communication_style lines that surface at T3. Constant text, so
         # it belongs in the cache prefix alongside the other addenda.
         "learned_style_addendum",
+        "clarification_guidance",
         "profile_block",
         "petname_block",
         "catchphrase_block",
@@ -423,6 +428,7 @@ _PROMPT_BLOCK_TIERS: dict[str, tuple[str, ...]] = {
         # Lands before handling notes / K92 so INITIATE already has a
         # provider when stance runs.
         "live_talk_about_block",
+        "current_reply_guidance",
         # The handling notes for whichever hoisted blocks rendered above,
         # lifted out of the persona so they cost nothing on the turns
         # their block is absent. Second-last in the tier because it is
@@ -3146,8 +3152,6 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # after. This is where the explicit cache breakpoint goes, so it
         # deliberately stops short of ``profile_block`` — which is filed
         # under T0 but measured moving on 30% of turns.
-        stable_head_parts = 0
-
         # ── T0: STABLE ────────────────────────────────────────────────
         # Persona + grammar addenda + narrative + profile +
         # petname + catchphrase. THIS IS THE CACHE PREFIX — adding any
@@ -3186,10 +3190,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 self._resolve_user_display_name(),
             )
             system_parts.append(learned_style_addendum)
-            # End of the genuinely constant head. Everything appended
-            # from here on moves on some cadence, so the breakpoint must
-            # not include it.
-            stable_head_parts = len(system_parts)
+        clarification_guidance = CLARIFICATION_GUIDANCE
+        system_parts.append(clarification_guidance)
+        stable_head_parts = len(system_parts)
         if profile_block:
             system_parts.append(profile_block)
         if petname_block:
@@ -3939,6 +3942,24 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if "calendar_anticipation_block" in handling_omissions:
             system_parts[calendar_anticipation_slot] = ""
             calendar_anticipation_block = ""
+        current_reply_guidance = CURRENT_REPLY_GUIDANCE if (user_text or "").strip() else ""
+        prompt_history = history_msgs
+        if current_reply_guidance:
+            if (history_msgs and history_msgs[-1].role == "assistant"
+                    and is_clarification_question(history_msgs[-1].content)):
+                prior = history_msgs[-1]
+                age = (timephrase.age_prefix(prior.created_at, timephrase.now())
+                       if self._history_age_prefix_enabled else "")
+                question = f"[{age}] {prior.content.strip()}" if age else prior.content.strip()
+                # Carry the prior question as context instead of inviting the model to echo it.
+                prompt_history = history_msgs[:-1]
+                current_reply_guidance = (
+                    "Your previous reply asked for clarification. The latest user message may "
+                    "supply the answer. Use any detail they supplied to complete their request "
+                    "directly and briefly. If the request is still blocked, acknowledge what "
+                    f"remains unknown without guessing.\nPrior clarification: {question}"
+                )
+            system_parts.append(current_reply_guidance)
         handling_notes_block = self._render_handling_notes(locals())
         if handling_notes_block:
             # The persona's handling notes for the blocks that actually
@@ -4115,7 +4136,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             128, budget_tokens - system_tokens - user_tokens,
         )
         history_dicts, history_tokens, kept_count, dropped_count = self._fit_history(
-            history_msgs,
+            prompt_history,
             history_budget,
             prefix_enabled=self._history_age_prefix_enabled,
         )
@@ -4157,7 +4178,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         prompt_tokens_estimate = system_tokens + history_tokens + user_tokens
         compaction_triggered = (
             prompt_tokens_estimate > budget_tokens
-            or (history_msgs and not history_dicts and not aggressive)
+            or (prompt_history and not history_dicts and not aggressive)
         )
 
         # P44: both tables are read off this frame's locals, so they must
