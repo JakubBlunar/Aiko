@@ -299,6 +299,14 @@ class ConceptView:
         """True when a concept store is wired (the layer is available)."""
         return self._store is not None
 
+    def preference_selection(self, text, situation, *, owner, db=None):
+        """One source-aware preference selection shared by this turn's concept lanes."""
+        from app.core.concepts.preference_selection import PreferenceSelection
+
+        return PreferenceSelection(self._store, self._memory_store,
+                                   db or getattr(self._store, "_db", None),
+                                   owner, text, situation)
+
     # ── concept lookup ────────────────────────────────────────────────
 
     def core(

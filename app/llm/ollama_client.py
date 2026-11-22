@@ -223,6 +223,10 @@ def _truncation_split(
 
 
 class OllamaClient:
+    # Ollama accepts a partially constrained grammar with an open object for
+    # ordinary memories. OpenAI-compatible strict schemas cannot express this.
+    supports_open_object_schema = True
+
     def __init__(
         self,
         settings: OllamaSettings,

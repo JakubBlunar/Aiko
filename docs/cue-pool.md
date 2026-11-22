@@ -349,11 +349,14 @@ the user's message — the same two-clock shape
 exists in the next message. No answer → released under
 `reask_cooldown_hours`, or expired at `max_asks`.
 
-`either_party` cues (just `curiosity_seed`) are the one case that looks
-beyond what surfaced: a seed is spent the moment the conversation lands
-on its subject, whoever steered it there and whether or not Aiko was
-ever shown the cue. Holding a seed open for a topic the two of them
-just spent a turn on would be the opposite of curiosity.
+Pending curiosity seeds can settle before Aiko sees them. A seed with an
+explicit question checks a speaker's statement for an answer about the
+referent and the requested property. A volunteered answer can settle it on
+the same turn. A subject-directed seed can also settle from Aiko's answer.
+A surfaced question that Aiko actually asks enters `awaiting`, where a short
+reply such as “velvet” can answer the verified material question. A mention
+of the object, an unanswered question or an expression of uncertainty keeps
+the question open. Topic-only seeds retain whole-turn topical matching.
 
 Embeddings are shared, not recomputed: post-turn already embeds the
 reply for K22 and the combined turn for the gap resolver, and

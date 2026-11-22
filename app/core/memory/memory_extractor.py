@@ -34,6 +34,7 @@ labelled read-only context so a pronoun at the boundary still resolves.
 from __future__ import annotations
 
 import json
+from functools import partial
 from copy import deepcopy
 import logging
 import re
@@ -505,20 +506,39 @@ class MemoryExtractor:
             system_content += "\n" + RELATION_RULE
         if intentions:
             system_content += "\n" + PLAN_RULE
-        from app.core.memory.shared_shorthand import EXTRACTION_RULE
+        from app.core.memory.shared_shorthand import COMPACT_RULE, EXTRACTION_RULE
         from app.core.memory.learned_strategies import EXTRACTION_RULE as STRATEGY_RULE
+        from app.core.memory.learned_strategies import COMPACT_RULE as COMPACT_STRATEGY_RULE
 
         offered_text = "\n".join(row.content for row in [*context_rows, *rows])
         from app.core.memory.pattern_accounting import count_intake
 
-        if re.search(r"\b(?:call|calling|mean|means|rename)\b", offered_text, re.I):
+        offer_names = bool(re.search(r"\b(?:call|calling|mean|means|rename)\b", offered_text, re.I))
+        if offer_names:
             system_content += "\n" + EXTRACTION_RULE
             count_intake(self._db, pattern_owner, shorthand_schema_batches=1)
         from app.core.memory.strategy_outcomes import outcome_schema_needed
 
-        if outcome_schema_needed([*context_rows, *rows]):
+        offer_strategies = outcome_schema_needed([*context_rows, *rows])
+        if offer_strategies:
             system_content += "\n" + STRATEGY_RULE
             count_intake(self._db, pattern_owner, strategy_schema_batches=1)
+        simple_name = offer_names and any(
+            row.role == "user" and re.search(
+                r"\b(?:let['’]s call|we(?:['’]ll| will) call|yes|agreed|let['’]s use)\b",
+                row.content, re.I,
+            ) for row in rows
+        ) and not re.search(
+            r"\b(?:always|from now on|until|only (?:when|during)|stop calling|rename|instead)\b",
+            offered_text, re.I,
+        )
+        compact_system = system_content
+        if offer_strategies:
+            compact_system += "\n" + COMPACT_STRATEGY_RULE
+        if simple_name:
+            compact_system += "\n" + COMPACT_RULE
+        allow_compact = ((simple_name or offer_strategies)
+                         and getattr(self._ollama, "supports_open_object_schema", False) is True)
         try:
             context_window = self._context_window()
         except Exception:
@@ -532,12 +552,13 @@ class MemoryExtractor:
         packed = None
         selected_context: list[MessageRow] = []
         selected_existing = False
+        selected_compact = False
         for include_existing in ((True, False) if existing else (False,)):
             for context_count in range(len(context_rows), -1, -1):
                 context = context_rows[-context_count:] if context_count else []
 
                 def render(
-                    selected, *, keep_existing=include_existing, old_context=context,
+                    selected, *, compact=False, keep_existing=include_existing, old_context=context,
                 ) -> list[dict[str, str]]:
                     parts: list[str] = []
                     if keep_existing:
@@ -554,23 +575,36 @@ class MemoryExtractor:
                         "New turns since the last pass (most recent last). Extract ONLY "
                         "from these lines:\n" + self._format_transcript(selected)
                     )
+                    if compact and simple_name:
+                        parts.append("Fill shared_names with explicitly adopted definitions. "
+                                     "Use [] for a proposal or refusal.")
+                    if compact and offer_strategies:
+                        parts.append("Fill approaches with source spans for the reported method, "
+                                     "result and explicit constraints. Otherwise use [].")
                     parts.append("Return the JSON now.")
+                    instructions = compact_system if compact else system_content
                     return [
-                        {"role": "system", "content": system_content},
+                        {"role": "system", "content": instructions},
                         {"role": "user", "content": "\n\n".join(parts)},
                     ]
 
-                candidate = pack_worker_prompt(
-                    rows, render, context_window=context_window,
-                    output_tokens=output_tokens, surface="memory_extractor",
-                    log=log, report=False,
-                )
-                if candidate is not None and (
-                    packed is None or candidate.item_count > packed.item_count
-                ):
-                    packed = candidate
-                    selected_context = context
-                    selected_existing = include_existing
+                # The optional grammar must never prevent the next ordinary turn
+                # from being mined on a small route. On ties keep the richer packet.
+                for compact in ((True, False) if allow_compact else (False,)):
+                    candidate = pack_worker_prompt(
+                        rows, partial(render, compact=compact), context_window=context_window,
+                        output_tokens=output_tokens, surface="memory_extractor",
+                        log=log, report=False,
+                    )
+                    if candidate is not None and (
+                        packed is None or candidate.item_count > packed.item_count
+                    ):
+                        packed = candidate
+                        selected_context = context
+                        selected_existing = include_existing
+                        selected_compact = compact
+                    if packed is not None and packed.item_count == len(rows):
+                        break
                 if packed is not None and packed.item_count == len(rows):
                     break
             if packed is not None and packed.item_count == len(rows):
@@ -593,6 +627,11 @@ class MemoryExtractor:
         has_more = packed.item_count < len(rows) or len(rows) == self._max_window
         rows = rows[:packed.item_count]
 
+        from app.core.memory.pattern_extraction import extraction_schema
+
+        # The compact name form is for a fresh, explicitly accepted session name.
+        # Keep richer scopes, retirement and corrections on their original schema.
+        schema = extraction_schema(simple_name, offer_strategies) if selected_compact else None
         t0 = time.monotonic()
         try:
             content, usage = self._ollama.chat_json(
@@ -601,6 +640,7 @@ class MemoryExtractor:
                 timeout_seconds=self._timeout,
                 options={"temperature": 0.2, "num_predict": self._max_tokens},
                 format_json=True,
+                **({"json_schema": schema} if schema else {}),
                 think=self._think,
                 surface="memory_extractor",
             )
@@ -641,7 +681,13 @@ class MemoryExtractor:
         # with set_log_level("app.memory_extractor", "DEBUG").
         log.debug("extractor raw response: %r", (content or "")[:1000])
 
-        candidates, understood = self._parse_answer(content)
+        offered_messages = {row.id: row for row in [*context_rows, *rows]}
+        compact_fields = {}
+        if selected_compact and simple_name:
+            compact_fields["shared_names"] = "shared_term"
+        if selected_compact and offer_strategies:
+            compact_fields["approaches"] = "strategy"
+        candidates, understood = self._parse_answer(content, offered_messages, compact_fields)
         if not candidates:
             if understood:
                 if self._write_watermark(session_key, rows[-1].id):
@@ -703,6 +749,13 @@ class MemoryExtractor:
                 })
                 if pattern is not None:
                     admitted.append(pattern)
+                continue
+            from app.core.memory.pattern_extraction import naming_only_plan, one_off_naming_refusal
+
+            adopted_names = [p["metadata"]["shared_shorthand"]["term"] for p in admitted
+                             if p.get("metadata", {}).get("shared_shorthand")]
+            if (naming_only_plan(cand, offered_messages, adopted_names)
+                    or (offer_names and one_off_naming_refusal(cand, offered_messages))):
                 continue
             cand, admission = admit_source_note(
                 cand, rows, session_key=session_key, writer="extractor",
@@ -924,7 +977,7 @@ class MemoryExtractor:
         """Validate the model's JSON and return a list of candidate dicts."""
         return self._parse_answer(raw)[0]
 
-    def _parse_answer(self, raw: str) -> tuple[list[dict], bool]:
+    def _parse_answer(self, raw: str, offered_messages=None, compact_fields=None):
         """As :meth:`_parse_response`, plus "did we understand the answer".
 
         The two are different questions and the watermark needs the second
@@ -957,7 +1010,7 @@ class MemoryExtractor:
                 # Salvage counts as understood: whatever was cut off was cut
                 # from the *answer*, not from the reading of the transcript,
                 # and re-running would re-answer the same turns.
-                return self._validate_entries(salvaged), True
+                return self._validate_entries(salvaged, offered_messages), True
             log.warning("extractor: response was not valid JSON: %r", text[:200])
             return [], False
         if not isinstance(parsed, dict):
@@ -965,15 +1018,27 @@ class MemoryExtractor:
         memories = parsed.get("memories")
         if not isinstance(memories, list):
             return [], False
-        return self._validate_entries(memories), True
+        if offered_messages:
+            specialized = []
+            for field, kind in (compact_fields or {}).items():
+                items = parsed.get(field)
+                if isinstance(items, list):
+                    specialized.extend({**entry, "kind": kind, "content": "Source-linked pattern"}
+                                       for entry in items if isinstance(entry, dict))
+            memories = specialized + memories
+        return self._validate_entries(memories, offered_messages), True
 
-    def _validate_entries(self, memories: list) -> list[dict]:
+    def _validate_entries(self, memories: list, offered_messages=None) -> list[dict]:
         """Normalise + filter a list of raw memory dicts into candidates."""
         user_name = self._resolve_user_name()
         out: list[dict] = []
         for entry in memories:
             if not isinstance(entry, dict):
                 continue
+            if offered_messages and entry.get("kind") in ("shared_term", "strategy"):
+                from app.core.memory.pattern_extraction import compact_pattern
+
+                compact_pattern(entry, offered_messages)
             content = str(entry.get("content") or "").strip()
             if not content or len(content) < 6:
                 continue

@@ -1709,7 +1709,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         graph = getattr(self, "_topic_graph", None)
         # L24: read concepts through the single ConceptView facade rather
         # than the store directly (identity pin lane + turn-relevant path).
-        from app.core.concepts.concept_view import concept_view_from
+        from app.core.concepts.concept_view import ConceptView, concept_view_from
 
         view = concept_view_from(self)
         mature = True
@@ -1858,7 +1858,13 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         style_contexts = current_contexts(user_text, snapshot)
         style_states: dict[int, str] = {}
         style_scopes: dict[int, dict | None] = {}
-        applicability = getattr(getattr(self, "_concept_store", None), "applicability", None)
+        owner = getattr(self, "_user_id", None) or (
+            session_key.split(":", 1)[0] if ":" in session_key else "default"
+        )
+        preferences = (view or ConceptView(None)).preference_selection(
+            user_text, snapshot, owner=owner, db=getattr(self, "_chat_db", None),
+        )
+        applicability = preferences.applicability
 
         def _habituation(cid: int, floor: float) -> float:
             if not hab_enabled:
@@ -1947,7 +1953,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 # fresh -- so a core belief is never suppressed out of contention.
                 fresh: list = []
                 stale: list = []
-                for concept in core_concepts:
+                for concept, _ in preferences.select((c, None) for c in core_concepts):
                     label = (getattr(concept, "label", "") or "").strip()
                     if not label:
                         continue
@@ -2030,6 +2036,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                     state = "source_changed"
                 style_states[cid] = state
                 style_scopes[cid] = scope
+                if cid in preferences.keys and state == "other_context":
+                    state = style_states[cid] = "unknown_context"
                 if state not in {"matched", "unknown", "unknown_context"}:
                     return False
                 style_cost = estimate_tokens(scope_hint(scope)) + 8
@@ -2294,7 +2302,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             )
 
         if pairs:
-            for i, (concept, cos) in enumerate(pairs):
+            for i, (concept, cos) in enumerate(preferences.select(pairs, pinned_ids)):
                 cid = int(getattr(concept, "concept_id", 0))
                 if cid in pinned_ids:
                     continue
@@ -2308,12 +2316,13 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         # Add the activated neighbours that weren't already relevant/pinned, at
         # zero direct cosine -- surfacing purely on association.
         if activation_map:
-            for j, (cid, (concept, strength)) in enumerate(
-                sorted(
-                    activation_map.items(),
-                    key=lambda kv: kv[1][1], reverse=True,
-                )
+            for j, (concept, strength) in enumerate(
+                preferences.select(sorted(
+                    activation_map.values(),
+                    key=lambda pair: pair[1], reverse=True,
+                ), seen_concept_ids)
             ):
+                cid = concept.concept_id
                 if cid in seen_concept_ids:
                     continue
                 if _add_scored(concept, 0.0, activation=strength,
@@ -2496,6 +2505,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             concept_pairs, pinned_ids=pinned_ids,
             score_components=score_components,
             style_states=style_states, style_scopes=style_scopes,
+            preference_ids=preferences.keys,
         )
         # L39: record the dedupe so an empty concept lane is distinguishable
         # from a cold layer -- a claimed concept is still in the prompt via T0,
@@ -3046,6 +3056,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         score_components: "dict[int, dict] | None" = None,
         style_states: "dict[int, str] | None" = None,
         style_scopes: "dict[int, dict | None] | None" = None,
+        preference_ids=(),
     ) -> tuple[str, dict]:
         """Render the budget-chosen concepts as hedged impressions, reusing
         the L5 confidence hedging + evidence grounding. Returns
@@ -3155,9 +3166,16 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 lead = (f"{hedge} this {description} fits the current context:"
                         if state == "matched" else f"A possible {description}, not a current rule:")
                 rationale_clause += f" ({hint})"
-            groups.setdefault((subject, family), []).append(
-                f"- {lead} {label}{grounding}{rationale_clause}"
-            )
+            if cid_int in preference_ids:
+                family = "reported_preference"
+                line = f"- {label}"
+                if (style_scopes or {}).get(cid_int):
+                    line += f" ({hint})"
+                support = []
+                rationale_clause = ""
+            else:
+                line = f"- {lead} {label}{grounding}{rationale_clause}"
+            groups.setdefault((subject, family), []).append(line)
             entry = {
                 "concept_id": cid_int,
                 "label": label,
@@ -3193,20 +3211,20 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 "generalization", "trait", "value", "affective", "taste",
                 "conduct",
                 "ritual", "narrative", "aspiration", "boundary",
-                "communication_style",
+                "communication_style", "reported_preference",
             ):
                 lines = groups.get((subject, family))
                 if not lines:
                     continue
-                sections.append(
-                    self._concept_group_header(subject, family, name) + "\n"
-                    + "\n".join(lines)
-                )
+                header = ("Earlier preference notes (keep the stated scope):"
+                          if family == "reported_preference"
+                          else self._concept_group_header(subject, family, name))
+                sections.append(header + "\n" + "\n".join(lines))
         if not sections:
             return "", {"surfaced": [], "reason": "no_eligible"}
-        return "\n\n".join(
-            [self._concept_stance_preamble(name), *sections]
-        ), {
+        if any(family != "reported_preference" for _, family in groups):
+            sections.insert(0, self._concept_stance_preamble(name))
+        return "\n\n".join(sections), {
             "surfaced": surfaced_trace, "reason": "surfaced",
         }
 

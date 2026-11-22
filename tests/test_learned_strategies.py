@@ -33,6 +33,9 @@ def episode():
 def test_strategy_requires_an_actual_user_outcome_and_explicit_conditions():
     rows, candidate = episode()
     assert admit_strategy(candidate, rows, session_key="s", owner="u")
+    rows[2].content = "That never worked."
+    candidate["strategy"]["outcome"].update(text="worked", quote=rows[2].content)
+    assert not admit_strategy(candidate, rows, session_key="s", owner="u")
     for content in ("Sounds good", "That would have worked", "Imagine that worked", "worked?"):
         rows[2].content = content
         candidate["strategy"]["outcome"].update(text=content, quote=content)

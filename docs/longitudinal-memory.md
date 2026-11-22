@@ -3,6 +3,12 @@
 This implements the four follow-ups in [memory-topic-correctness.md](../backlog/reviews/memory-topic-correctness.md).
 These records enrich the basis of an interpretation; they are not confidence votes.
 
+For a fresh shared name or a reported strategy, the extractor can propose
+message IDs with literal terms or spans. Ollama can constrain these fields in
+the same call as ordinary memories. The worker expands them using the messages
+in its packed transcript and checks adoption, speaker, goal, constraints and
+reported outcome before writing. A naming agreement alone supplies no booking.
+
 ## Topic evidence profiles
 
 `topic_evidence_profile` is a bounded read model over current eligible topic members.

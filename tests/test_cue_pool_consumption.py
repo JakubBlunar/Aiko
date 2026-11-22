@@ -92,6 +92,21 @@ class _Fixture(unittest.TestCase):
 
 
 class SurfacingTests(_Fixture):
+    def test_specific_question_waits_for_an_answer_after_verified_ask(self):
+        question = "What is the cello carrier made of?"
+        ident = self._surface("curiosity_seed", "material of the cello carrier", question)
+        self.host._settle_pool_cues(user_text="The carrier arrived.", assistant_text=question)
+        self.assertEqual(self._state(ident), STATE_AWAITING)
+        self.host._settle_awaiting_cues(user_text="Canvas.")
+        self.assertEqual(self._state(ident), STATE_USED)
+
+    def test_assistant_speculation_cannot_answer_the_users_question(self):
+        question = "What is the cello carrier made of?"
+        ident = self.store.add("curiosity_seed", "material of the cello carrier", question)
+        self.host._settle_pool_cues(user_text="The cello carrier arrived.",
+                                    assistant_text="Maybe the cello carrier is made of canvas.")
+        self.assertEqual(self._state(ident), STATE_PENDING)
+
     def test_saved_question_paces_seed_provider_without_losing_topical_seed(self) -> None:
         from app.core.session.inner_life_providers_mixin import InnerLifeProvidersMixin
 

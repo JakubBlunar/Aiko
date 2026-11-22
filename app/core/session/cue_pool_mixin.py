@@ -572,6 +572,26 @@ class CuePoolMixin:
             )
             evidence = self._verdict_evidence(verdict)
             asked_text = assistant_text[:1000]
+            verified_curiosity_ask = False
+            if row.cue_type == "curiosity_seed":
+                question = str(row.payload.get("prompt_text") or row.text)
+                if "?" in question:
+                    from app.core.proactive.curiosity_answer import specific_ask, volunteered_answer
+
+                    answered = volunteered_answer(row.subject, question, user_text, verdict)
+                    if not answered and row.payload.get("about") == "subject":
+                        answered = volunteered_answer(
+                            row.subject, question, assistant_text, verdict,
+                        )
+                    if not answered:
+                        asked_text = (specific_ask(question, assistant_text, subject=row.subject)
+                                      if was_surfaced else "")
+                        if not asked_text:
+                            if was_surfaced:
+                                self._retire_or_retry(store, row, policy, evidence="question_open")
+                            continue
+                        policy = replace(policy, fulfilment=FULFILMENT_ANSWERED)
+                        verified_curiosity_ask = True
             if row.cue_type == "forward_curiosity":
                 from app.core.proactive.forward_curiosity_worker import is_hers
 
@@ -602,7 +622,8 @@ class CuePoolMixin:
                         )
                         self._retire_or_retry(store, row, policy, evidence="not_asked")
                     continue
-            if not verdict.echoed and not (row.cue_type == "concept_hypothesis" and asked_text):
+            if (not verdict.echoed and not verified_curiosity_ask
+                    and not (row.cue_type == "concept_hypothesis" and asked_text)):
                 if was_surfaced:
                     store.record_feedback(
                         row.id, "not_expressed", assistant_message_id=assistant_message_id,
@@ -619,7 +640,9 @@ class CuePoolMixin:
                     "asked_message_id": assistant_message_id,
                     "asked_session_id": getattr(self, "session_key", None),
                     "asked_text": asked_text,
-                    "ask_verified": row.cue_type in {"concept_hypothesis", "forward_curiosity"},
+                    "ask_verified": row.cue_type in {
+                        "concept_hypothesis", "forward_curiosity", "curiosity_seed",
+                    },
                 })
                 store.record_feedback(
                     row.id, "no_answer_yet", assistant_message_id=assistant_message_id,
@@ -826,15 +849,24 @@ class CuePoolMixin:
             verdict = self._match_cue(
                 row, policy, tokens=user_tokens, text_vec=user_vec,
             )
+            matched = verdict.echoed
+            if row.cue_type == "curiosity_seed":
+                from app.core.proactive.curiosity_answer import short_answer, volunteered_answer
+
+                question = str(row.payload.get("asked_text") or "")
+                matched = volunteered_answer(row.subject, question, user_text, verdict) or (
+                    row.payload.get("ask_verified") and short_answer(question, user_text)
+                )
             store.record_feedback(
-                row.id, "answer_matched" if verdict.echoed else "unrelated_answer",
+                row.id, "answer_matched" if matched else "unrelated_answer",
                 user_message_id=user_message_id, observed_at=now.isoformat(),
             )
-            if verdict.echoed:
+            if matched:
                 self._mark_cue_used(
                     store,
                     row,
-                    evidence=f"answered/{self._verdict_evidence(verdict)}",
+                    evidence=(f"answered/{self._verdict_evidence(verdict)}" if verdict.echoed
+                              else "answered/direct"),
                 )
                 continue
             # The question went by. That is a real signal rather than only

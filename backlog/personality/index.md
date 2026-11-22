@@ -72,6 +72,14 @@ on a held-out conversation with a useful parallel and a tempting false match.
 [J14](moments.md#j14-remember-what-changed-after-a-misunderstanding) apply the
 same evidence discipline to Aiko's development and the relationship.
 
+The [22 November fictional local replay](../rollouts/concept-pattern-rollout.md#fictional-local-comparison-22-november-2026)
+compares a scoped preference with repeated labels, checks which unanswered
+curiosities were consumed, and traces an adopted name and a reported strategy
+through extraction. The [runtime follow-up](../rollouts/concept-pattern-rollout.md#runtime-follow-up-on-the-same-local-models)
+checks both activities, volunteered answers, declined names and an independent
+booking through the updated paths. Ordinary-use validation remains open for
+L22/L48/L50, H35, K106 and L36.
+
 ### Ordinary chat ideas and engineering checks
 
 19 Nov source review through `d9e8b8b2` (topic digest recall).

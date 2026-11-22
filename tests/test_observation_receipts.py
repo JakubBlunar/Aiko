@@ -143,7 +143,10 @@ def test_scoped_memories_remain_separate_and_changed_quotes_fail_revalidation(tm
         store.close()
 
 
-def test_actual_extractor_round_trip_preserves_receipts_and_rejects_stale_queued_sources(tmp_path):
+@pytest.mark.parametrize("supports_compact", [False, True])
+def test_actual_extractor_round_trip_preserves_receipts_and_rejects_stale_queued_sources(
+    tmp_path, supports_compact,
+):
     from app.core.memory.memory_extractor import MemoryExtractor
     from tests.test_memory_extractor_watermark import _FakeOllama, _FakeEmbedder
 
@@ -158,6 +161,7 @@ def test_actual_extractor_round_trip_preserves_receipts_and_rejects_stale_queued
     store = MemoryStore(path)
     try:
         model = _FakeOllama([json.dumps({"memories": [value]})])
+        model.supports_open_object_schema = supports_compact
         worker = MemoryExtractor(db, store, _FakeEmbedder(), model, model="fake",
                                  min_window_messages=1)
         assert worker.extract_for_session("s") == 1

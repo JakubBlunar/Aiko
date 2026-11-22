@@ -35,6 +35,14 @@ or retiring it; its established scope is inherited without broadening it.
 These entries share the existing memory count/output budget; emit none when
 the exchange does not establish a useful shared meaning.
 """
+
+COMPACT_RULE = """
+For an ordinary new name put the short entry in the top-level shared_names array, e.g.
+{"term":"blue pass","meaning":"silent sorting","definition_id":12,"adoption_id":13}.
+Copy the two strings exactly and use the real numbered messages. A naming agreement
+establishes a definition. Scheduling the named activity requires separate evidence.
+Omit duplicate ordinary memories for the same definition.
+"""
 _NONLITERAL = re.compile(r"\b(?:role.?play|hypothetical|pretend|imagine|fictional)\b", re.I)
 _ADOPT = re.compile(r"\b(?:let'?s (?:always )?call|we(?:'ll| will) call|call (?:it|this|that)|"
                     r"by .{1,60} (?:I|we) mean|means?|rename)\b", re.I)
@@ -100,7 +108,9 @@ def admit_shorthand(candidate, rows, context_rows=(), *, session_key, owner,
             if definition.role == "assistant":
                 previous = max((i for i in offered if i < adopter.id), default=0)
                 explicit_name = term.casefold() in agreement.casefold() and _ADOPT.search(agreement)
-                if previous != definition.id or not (_YES.search(agreement) or explicit_name):
+                qualified = re.search(r"\b(?:but|except|rather)\b", agreement, re.I)
+                accepts_name = _YES.search(agreement) and _ADOPT.search(quote) and not qualified
+                if previous != definition.id or not (accepts_name or explicit_name):
                     return reject("direct_agreement_missing")
             elif definition.id != adopter.id or not _ADOPT.search(agreement):
                 return reject("explicit_naming_missing")

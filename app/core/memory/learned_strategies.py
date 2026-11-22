@@ -37,6 +37,12 @@ An explicit result can use natural wording such as 'now it is working' or
 Approach and outcome may share one message only when their literal spans clearly
 place the completed approach before the observed result. Do not infer causality.
 """
+
+COMPACT_RULE = """
+Use the top-level approaches array for new strategies. Each field cites its literal text
+and message_id. Fill constraints from the user's stated limits and exceptions only if given.
+Copy complete qualifying language, preserving negation. Use actual transcript IDs.
+"""
 _NONLITERAL = re.compile(
     r"\b(?:role.?play|hypothetical|pretend|imagine|fictional|would|might)\b", re.I,
 )
@@ -80,8 +86,13 @@ def admit_strategy(candidate, rows, context_rows=(), *, session_key, owner, memo
         outcome = value.get("outcome", {})
         result, result_row = citation(outcome)
         success = outcome.get("success")
+        # Inspect the containing clause, even if the proposed span omitted "never".
+        clauses = re.split(r"[.!?;]|\bbut\b", result_row.content, flags=re.I)
+        negated = any(result in clause and re.search(
+            r"\b(?:not|never|didn['’]?t)\b", clause, re.I,
+        ) for clause in clauses)
         if (type(success) is not bool or result_row.id not in {r.id for r in rows}
-                or (success and (not SUCCESS.search(result)
+                or (success and (negated or not SUCCESS.search(result)
                                  or re.search(r"\b(?:not|never|didn'?t)\b", result, re.I)))
                 or (not success and not FAILURE.search(result))):
             return reject("explicit_outcome_missing")

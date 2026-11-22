@@ -9,6 +9,14 @@ direction-of-truth table.
 
 ## The one read path: `ConceptView`
 
+In ordinary chat, user boundary and communication-style candidates backed
+by a scoped preference share one selection pass across the pinned, relevant
+and associated concepts. The pass checks the activity, exceptions and validity
+when available. A direct recall question can retrieve the earlier request by
+subject. Rephrasings of the same source and scope contribute one preference
+note. Its wording comes from the current user receipts, or from the stored
+note for older memories with a literal activity qualifier.
+
 Every deriver / background worker / prompt-time consumer reads concepts
 through a single facade — [`ConceptView`](../app/core/concepts/concept_view.py)
 — never through `ConceptStore` directly, and never by re-resolving evidence

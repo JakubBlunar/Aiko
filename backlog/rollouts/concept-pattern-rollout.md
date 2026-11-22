@@ -150,3 +150,104 @@ adopted shared terms enter long-term memory; conditional strategy records retain
 the existing scratchpad/promotion policy. `npm run lint`, documentation link
 checks (83 files), whitespace and LF checks passed. No full-suite or live-model
 run was performed. Managed test scratch was cleaned up.
+
+## Fictional local comparison, 22 November 2026
+
+Run `python -m scripts.companion_pattern_replay --seed 71` from the project
+environment. The [runner](../../scripts/companion_pattern_replay.py) uses an
+installed loopback Ollama model and local embeddings. Each history has its own
+disposable SQLite database. Seeds 71 and 73 used
+`baytout3/qwen3.5-uncensored:9b` and `qwen3-embedding:0.6b`. Both used the
+same fictional cases. The second run also guarded Python file opens against
+the installed data directory and user config, SQLite connections against paths
+outside replay scratch, and socket connections against destinations other than
+loopback Ollama. It completed with zero guarded access violations.
+
+### Scoped preference (L22/L48/L50)
+
+The user asked for compass bearings during map drawing. Three supplied concept
+labels included two invented explanations. An alternative used one cited
+request, gated by the existing applicability functions. The third arm supplied
+no memory. This comparison controls the material offered to the reply model.
+Natural synthesis, ranking and multi-turn retrieval remain open.
+
+| Later turn | Three labels | One scoped request | Empty context |
+| --- | --- | --- | --- |
+| Place a pier above a tower on a north-up map | North (90 input tokens) | Due north (67) | South (51) |
+| Troubleshoot a silent metronome | Check power (81) | Check power (42) | Check power (42) |
+| Recall the earlier request | Extended it to discussing maps (83) | Preserved the drawing condition (60) | Invented a request to draw a world map (44) |
+
+Both seeds gave the same replies. The next comparison should use the ordinary
+concept selector and a second activity. Check whether it delivers the narrower
+note when the user refers back without naming the activity.
+
+### When a curiosity has been answered (H35)
+
+Six independent histories started with the same pending question about the
+lining material of a violin case. Aiko's settlement path consumed both
+volunteered answers, including a paraphrase about a satin-lined fiddle carrier.
+It also consumed three of four unanswered controls: the case arrived, a coat
+had a fleece lining, and the user explicitly said they could not identify the
+case lining. The unrelated choir update left the question open. All six had
+zero prompt appearances. This measures whether the specific question was
+answered; curiosity seeds currently also retire on topical conversation.
+
+An offline 9B reviewer asked for an exact answer span got four of six right
+at each seed, compared with three of six for settlement. It kept the delivery
+case open, but credited the coat and “Maybe the maker knows.” Verbatim words
+alone did not identify the object or establish a known answer. A subsequent
+pilot should distinguish a topic being discussed from a resolved question
+and retain naturally volunteered answers under paraphrase. Neither method
+earned a change to the live completion policy on this comparison.
+
+### Shared names and learned approaches (K106/L36/K100)
+
+Each seed exercised the real extractor and storage path on four pre-labelled
+opportunities. We compared the current optional instructions with a short
+clarification about naming versus scheduling and copying exact strategy spans.
+
+| Opportunity | Current instructions | Clarified instructions |
+| --- | --- | --- |
+| Adopt a name for a dark rehearsal | 0/2 definitions. Both stored an invented scheduling agreement. | 0/2 definitions. Both proposed the right kind without its required payload. |
+| Decline the name | 0/2 definitions | 0/2 definitions |
+| Report that blotting a stamp fixed bleeding ink under a supply constraint | 1/2 strategies | 0/2 strategies |
+| Plan to try blotting after lunch | 0/2 strategies | 0/2 strategies |
+
+The one admitted strategy retained the goal, constraint, approach and reported
+result. The naming case exposes two different failures: inventing a planned
+event, and losing a valid definition at structured output. Keep the source
+checks. Trial an example of the nested payload on fresh names, with a declined
+name and a separately agreed appointment as controls. Ordinary-use quality
+and cross-topic transfer remain open.
+
+### Runtime follow-up on the same local models
+
+Seeds 71 and 73 exercised ordinary chat concept selection, cue settlement and
+memory extraction in fresh databases. The replay guard blocked access to the
+installed data tree and user config, restricted SQLite to replay scratch and
+allowed model traffic only to loopback Ollama. All assertions passed at both
+seeds. Repeating a fixture at a second seed measures repeatability.
+
+| Path | Observed behavior at each seed |
+| --- | --- |
+| Ordinary preference selection | Seven turns across map drawing and block printing. Each relevant turn received the single source note, and each unrelated turn received zero. Both subject-only recall questions recovered the activity qualifier. |
+| Replies | Aiko placed the pier due north and ordered the inks yellow, orange, navy. She recalled each request within its original activity. A shorter rendering removed an earlier reply's scope expansion to describing maps. |
+| Pending curiosity | Two volunteered answers settled the violin-case question, including the paraphrase. Four unanswered controls stayed pending. All six had zero prompt appearances. The offline model reviewer credited two unanswered controls. |
+| Shared names | The extractor stored “lantern round” and “cloud pass” with the intended meanings. Declining a name produced zero memories. The independently booked rehearsal room retained December 8. |
+| Strategy | The ink-blotting report yielded one successful strategy with the existing-supplies constraint. The plan to try it after lunch remained a plan. Neither seed stored a clock time for it. |
+
+Use `--section preferences`, `--section curiosity` or `--section extraction`
+to repeat one part. The preference replay seeds concept edges and isolates the
+concept lane. Learning those edges from a new conversation and their interaction
+with other recall sources still need ordinary-use validation. The curiosity
+cases exercise one paraphrased referent and do not measure general semantic
+accuracy across questions.
+
+The affected test run surfaced a small-context regression: the optional
+extraction instructions could crowd out the transcript on a 4,096-token route.
+The packer now falls back to the ordinary format when it fits more turns.
+Both capability modes passed the source-receipt round trip, and the final
+extractor-focused selection passed 152 tests. Three other failures reproduced
+on the unchanged revision `568d8d76`. Inline-memory admission refused a
+literal fallback with `lost_condition`, and two forced hypothesis-verdict
+tests expected a graduated concept. Those remain open.
