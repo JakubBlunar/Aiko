@@ -4061,6 +4061,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         )
         region_reserved = surfacing_budget
         if surfacing_budget > 0 and self._relevant_context_provider is not None:
+            from app.core.memory.episode_recall import pending_episode_question
+
+            pending_episode = pending_episode_question(cleaned_user, history_msgs)
             recent_turns = [
                 (row.content or "").strip()
                 for row in history_msgs[-3:]
@@ -4074,6 +4077,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     session_key=session_key,
                     budget_tokens=surfacing_budget,
                     degrade_level=region_degrade,
+                    episode_question=pending_episode.text if pending_episode else "",
                 )
             except Exception:
                 log.debug("relevant_context provider raised", exc_info=True)
@@ -4098,6 +4102,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 if current_reply_guidance and getattr(region, "reply_guidance", ""):
                     current_reply_guidance = region.reply_guidance
                     system_parts[reply_guidance_slot] = current_reply_guidance
+                if pending_episode and getattr(region, "episode_question_resolved", False):
+                    # Give the model the resolved request as one turn. The stored exchange
+                    # stays verbatim, and any history predating the clarification still fits.
+                    prompt_history = history_msgs[:pending_episode.history_index]
+                    cleaned_user = f"{cleaned_user}\n\n{pending_episode.text}"
+                    user_tokens = estimate_tokens(cleaned_user) + _MESSAGE_OVERHEAD
         if relevant_context_block:
             system_parts.insert(t3_insert_index, relevant_context_block)
 

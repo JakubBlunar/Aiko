@@ -87,6 +87,18 @@ def replay(db, store, rag_store, embedder, settings, client, route, persona_path
         resolved = ask("chat", "I mean the kitchen extractor fan.")
         unrelated = ask("chat", "New topic. Give me one calm name for a coffee shop.")
         corrected = ask("purifier-recall", "What happened with the bedroom air purifier?")
+        def start_deictic(session, question="Did that fix it?"):
+            db.add_message(f"replay:{session}", "user", "I was thinking about a fan that rattled.")
+            db.add_message(f"replay:{session}", "assistant", "I see.")
+            return ask(session, question)
+
+        deictic_question = start_deictic("deictic")
+        deictic_resolved = ask("deictic", "I mean the kitchen extractor fan.")
+        repeated_question = start_deictic("repeated")
+        deictic_still_ambiguous = ask("repeated", "I mean the fan that rattled.")
+        repeated_resolved = ask("repeated", "I mean the kitchen extractor fan.")
+        desk_question = start_deictic("desk-recall", "Did that fix it completely?")
+        desk_resolved = ask("desk-recall", "The office desk fan.")
         registry = ToolRegistry()
         registry.register(ConversationHistoryTool(db, user_id="replay"))
         runner.set_tool_registry(registry)
@@ -95,8 +107,14 @@ def replay(db, store, rag_store, embedder, settings, client, route, persona_path
             "Summarize what I told you.",
         )
 
-    cases = {"ambiguous": ambiguous, "resolved": resolved, "corrected": corrected,
-             "unrelated": unrelated, "history_changes": changes}
+    cases = {
+        "ambiguous": ambiguous, "resolved": resolved, "corrected": corrected,
+        "unrelated": unrelated, "history_changes": changes,
+        "deictic_question": deictic_question, "deictic_resolved": deictic_resolved,
+        "repeated_question": repeated_question, "deictic_still_ambiguous": deictic_still_ambiguous,
+        "repeated_resolved": repeated_resolved, "desk_question": desk_question,
+        "desk_resolved": desk_resolved,
+    }
     for case in cases.values():
         case["reply"] = case["reply"].strip()
     ambiguous["passes"] = (ambiguous["recall"].get("status") == "ambiguous"
@@ -108,6 +126,25 @@ def replay(db, store, rag_store, embedder, settings, client, route, persona_path
         and all(word in resolved["reply"].casefold() for word in ("screws", "hum"))
         and "grille" not in resolved["reply"].casefold()
     )
+    for pending in (deictic_question, repeated_question, deictic_still_ambiguous, desk_question):
+        pending["passes"] = (pending["recall"].get("status") == "ambiguous"
+                             and pending["reply"] == "Which one do you mean?"
+                             and "mounting screws" not in pending["prompt"]
+                             and "cleaned the grille" not in pending["prompt"])
+    for answered, episode, expected, excluded in (
+        (deictic_resolved, "extractor", ("screws", "rattle", "hum"), ("grille",)),
+        (repeated_resolved, "extractor", ("screws", "rattle", "hum"), ("grille",)),
+        (desk_resolved, "desk", ("grille", "rattle"),
+         ("screws", "hum", "ever since", "since then", "still quiet")),
+    ):
+        answer = answered["reply"].casefold()
+        source_message_id = episodes[episode].source_message_id
+        answered["passes"] = (
+            answered["recall"].get("source_message_ids") == [source_message_id]
+            and all(word in answer for word in expected)
+            and all(word not in answer for word in excluded)
+            and all(word not in answer for word in ("?", "probably", "nothing to worry about"))
+        )
     corrected["passes"] = (corrected["recall"].get("status") == "matched"
                            and len(corrected["recall"].get("source_message_ids", [])) == 2
                            and any(result in corrected["reply"].casefold() for result in (

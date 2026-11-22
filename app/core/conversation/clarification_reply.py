@@ -29,8 +29,9 @@ CURRENT_REPLY_GUIDANCE = (
 )
 
 _START = re.compile(r"\s*\[\[clarify:", re.IGNORECASE)
+REFERENCE_QUESTION = "Which one do you mean?"
 _QUESTIONS = {
-    "reference": "Which one do you mean?",
+    "reference": REFERENCE_QUESTION,
     "goal": "What would you like to achieve?",
     "time": "What time should I use?",
     "place": "Which place do you mean?",

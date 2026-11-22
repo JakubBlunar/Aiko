@@ -1520,6 +1520,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         session_key: str,
         budget_tokens: int,
         degrade_level: int = 0,
+        episode_question: str = "",
     ) -> "RelevantContext":
         """Build the single turn-relevance-scored ``relevant_context`` region.
 
@@ -1649,7 +1650,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             ):
                 from app.core.memory.episode_recall import context_from_hits, requested_episode
 
-                query = requested_episode(user_text, recent_turns)
+                query = requested_episode(
+                    user_text, recent_turns, pending_question=episode_question,
+                )
                 if query:
                     try:
                         episode_context = context_from_hits(
@@ -2645,6 +2648,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         return RelevantContext(
             text=text,
             reply_guidance=reply_guidance,
+            episode_question_resolved=bool(episode_question and reply_guidance),
             selection=selection,
             concept_trace=concept_trace,
             reason="ok" if text else "empty",

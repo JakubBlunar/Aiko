@@ -179,6 +179,7 @@ class RelevantContext:
     prefetch_event: str = "skip"
     stage_ms: dict[str, float] = field(default_factory=dict)
     reply_guidance: str = ""
+    episode_question_resolved: bool = False
 
 
 class ContextBudgetSelector:

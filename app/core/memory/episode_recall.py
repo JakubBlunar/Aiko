@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import re
 
+from app.core.conversation.clarification_reply import REFERENCE_QUESTION
 from app.core.infra import timephrase
 from app.core.memory.learned_strategies import words
 from app.core.memory.memory_origin import memory_origin
@@ -26,7 +27,8 @@ _CONTEXT_LIMIT = 480
 MATCHED_REPLY_GUIDANCE = (
     "The current question has a verified matching episode in the original user reports. "
     "Answer now in one or two sentences. State what the user did and the latest result, "
-    "including what still happens. End after the reported facts."
+    "including what was still unresolved. End after the reported facts. "
+    "Leave the duration of the result and anything that happened later unstated."
 )
 
 
@@ -41,20 +43,46 @@ def _terms(text):
     return words(text) - _STOP
 
 
-def requested_episode(user_text, recent_turns):
+def _is_identification(text):
+    return (len(text) <= 100 and _FOLLOW_UP.match(text) is not None
+            and "?" not in text and _OTHER_REQUEST.search(text) is None)
+
+
+@dataclass(frozen=True)
+class PendingEpisodeQuestion:
+    text: str
+    history_index: int
+
+
+def pending_episode_question(user_text, history):
+    """Find the original question in consecutive user/reference-clarification pairs."""
+    if not _is_identification(user_text.strip()):
+        return None
+    for index in range(len(history) - 1, 0, -2):
+        question, clarification = history[index - 1], history[index]
+        if (question.role != "user" or clarification.role != "assistant"
+                or clarification.content.strip() != REFERENCE_QUESTION):
+            break
+        text = question.content.strip()
+        if _RECALL.match(text) and len(text) <= 240 and not _OTHER_REQUEST.search(text):
+            return PendingEpisodeQuestion(text, index - 1)
+        if not _is_identification(text):
+            break
+    return None
+
+
+def requested_episode(user_text, recent_turns, *, pending_question=""):
     """Recognize a past-action question or the immediate answer to its clarification."""
     text = user_text.strip()
     recent = recent_turns or ()
     if _OTHER_REQUEST.search(text):
         return ""
+    if pending_question:
+        return text
     if _RECALL.match(text):
         if len(_terms(text)) >= 2:
             return text
         return next((turn for turn in reversed(recent) if len(_terms(turn)) >= 2), "")
-    if (len(recent) >= 2 and recent[-1].strip() == "Which one do you mean?"
-            and _RECALL.match(recent[-2].strip()) and len(text) <= 100
-            and _FOLLOW_UP.match(text) and "?" not in text):
-        return text
     return ""
 
 

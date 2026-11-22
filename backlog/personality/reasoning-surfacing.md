@@ -322,8 +322,15 @@ question for the ambiguous fan, recalled its partial repair after the user
 named it, used the purifier correction, answered the new topic and requested
 the history comparison by topic. The ordinary chat path uses the existing
 retrieval pool and context reservation. Wider phrasing and ordinary use remain
-open. In an exploratory run with “Did that fix it?”, the model repeated the
-question after retrieval found the named episode.
+open.
+
+The follow-up replay reproduced the “Did that fix it?” loop even with the right
+episode selected. A second clarification could also lose the original question.
+The chat path now carries the original question through consecutive
+clarifications and pairs it with the user's identification after a verified
+match. The expanded replay checks both fan outcomes and an identification that
+still leaves the reference ambiguous. All 12 checks passed on each of seeds
+53, 54 and 55 with the same local 9B model and disposable data.
 
 ### RS4. Admit optional cues jointly with their handling
 

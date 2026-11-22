@@ -155,7 +155,11 @@ A short follow-up can borrow the subject from recent conversation. The selected
 evidence includes the action and latest reported result, including any remaining
 problem. A verified correction replaces the earlier result. When several
 episodes fit equally well, Aiko is prompted to ask one short question. She can
-then use the named subject to retrieve the episode on the next turn.
+use a named subject to retrieve the episode on the next turn. Once the match is
+verified, the reply model receives the identification and original question as
+one request. A second clarification can carry the request forward while the
+original question is in recent history. The transcript retains the original
+messages.
 
 Episode recall reuses the existing retrieval candidates and context budget.
 Source checks exclude virtual, transient and other users' episodes. Restricted

@@ -74,7 +74,8 @@ class PromptAssemblerHelpersMixin:
         The provider is called during ``assemble_with_budget`` with keyword
         args ``user_text``, ``recent_turns``, ``session_key``,
         ``budget_tokens`` (the reserved surfacing budget) and
-        ``degrade_level``; it returns a ``RelevantContext`` (``.text`` +
+        ``degrade_level`` and ``episode_question`` (an earlier request awaiting
+        an episode identification). It returns a ``RelevantContext`` (``.text`` +
         ``.selection`` + ``.concept_trace``). ``None`` disables the region
         (memories / clusters / concepts simply don't surface).
         """
