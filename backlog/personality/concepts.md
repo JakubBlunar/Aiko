@@ -230,6 +230,38 @@ and the ordinary chat runner. Repeat with `--archive-case missing` or
 Ordinary-use wording and questions outside the standalone decision lookup
 remain open.
 
+**Ordinary conversation check, November 22.** A read-only screen covered 492
+saved user messages across ten ordinary chats in the November 8–22 window.
+The newest turn was November 20. None used the standalone decision-question
+opening, and there were no recorded decision clarifications or quoted recaps.
+In one earlier exchange an ambiguous reference to something Aiko had said
+prompted a clarification, and the user identified the remark on the next turn.
+In a different exchange, Aiko supplied a nighttime detail for an event recorded
+in the morning. Both precede the change. Fresh ordinary-use validation stays open.
+
+The [chat replay](../../scripts/concept_repair_chat_replay.py) now accepts
+`--conversation-check --occasion soundcheck` and `--occasion rehearsal` with
+the same flag. At seed 71, the local models above handled 16 disposable chats
+(28 replies) with preceding small talk and the ordinary tool gate. Only
+`recall` and `conversation_history` were registered. Each missing case had a
+speculative diary and concept without an original dialogue. In competing cases
+both proposals were searchable and neither had been accepted.
+
+- The four distinct plain opening questions gave the appropriate clarification.
+  Prefixing exactly the same questions with “Oh, before I forget,” bypassed
+  decision lookup and produced four unsupported agreements.
+- “The second one” recovered the undecided reply on both occasions. “Oh, the
+  second one, I think” turned identifying the exchange into accepting the plan
+  on both occasions.
+- On both “I don't remember” turns the lookup correctly marked the decision
+  unresolved, but a history tool result returned control to the model, which
+  asked “Which one do you mean?” The two hedged date replies also kept the
+  issue alive. One promised another search and the other supplied an agreement.
+- All four explicit topic changes moved on. Preserve this behavior when
+  broadening recognition. The next fix should cover casual openings and
+  qualified selections, and let a user end an unresolved lookup even when a
+  tool runs. Count future ordinary turns separately from these paired replays.
+
 **Acceptance.** A one-time choice does not imply effectiveness or a standing
 trait. Multiple paraphrases of one episode retain one evidence basis in the
 review. Withdrawing an unsupported premise changes recall eligibility while an

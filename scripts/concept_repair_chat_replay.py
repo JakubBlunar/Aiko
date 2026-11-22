@@ -4,6 +4,7 @@ Run python -m scripts.concept_repair_chat_replay --seed 71. Repeat with
 --occasion soundcheck for an independent exchange. Check speaker, assent,
 and any claimed outcome against the source lines in the original order.
 Use --without-archive to exercise concept withdrawal alongside ordinary memory recall.
+Use --conversation-check with --occasion to compare casual turns with matched controls.
 """
 
 import argparse
@@ -28,6 +29,9 @@ from app.core.rag.rag_retriever import RagRetriever
 from app.core.rag.rag_store import RagStore
 from app.core.session.prompt_assembler import PromptAssembler
 from app.core.session.turn_runner import TurnRunner
+from app.llm.tools.base import ToolRegistry
+from app.llm.tools.builtins import RecallTool
+from app.llm.tools.conversation_history import ConversationHistoryTool
 from scripts.companion_pattern_replay import BASE, LocalEmbeddings, ReplayModel
 from scripts.episode_chat_replay import ReplayContext
 from scripts.live_scenarios import require_local_model
@@ -76,8 +80,48 @@ OCCASIONS = {
 }
 
 
+def conversation_check(db, prompt, rag, client, model, question, archive_case, style):
+    """A real chat runner with two local, read-only tools and an ongoing fictional chat."""
+    session = "replay:recall"
+    db.add_message(session, "user", "I've got a few minutes before dinner.")
+    db.add_message(session, "assistant", "Good timing. What's on your mind?")
+    registry = ToolRegistry()
+    registry.register(RecallTool(rag, user_id="replay"))
+    registry.register(ConversationHistoryTool(db, "replay"))
+    calls = []
+    runner = TurnRunner(client, db, prompt, model=model, context_window=8192, temperature=0,
+                        max_tokens=512, filler_enabled=False, tool_registry=registry,
+                        on_tool_result=lambda name, _, ok: calls.append((name, ok)))
+
+    def ask(line, expected):
+        calls.clear()
+        result = runner.run(session_key=session, user_text=line)
+        return {"user": line, "expected": expected, "reply": result.text,
+                "finish": result.usage.done_reason,
+                "selection": result.telemetry.concepts_surfaced.get("reason"),
+                "tools": list(calls)}
+
+    request = question
+    if style == "casual":
+        request = "Oh, before I forget, " + question[0].lower() + question[1:]
+    missing = archive_case == "missing"
+    turns = [ask(request, "Leave the decision open and ask for a clue." if missing else
+                 "Distinguish both proposals and ask which exchange the user meant.")]
+    if style == "topic-change":
+        turns.append(ask("Actually, let's drop that. Give me a name for a pet cactus.",
+                         "Name the cactus and let the earlier question rest."))
+    elif style != "casual":
+        if missing:
+            detail = "I don't remember." if style == "plain" else "Honestly, I don't remember when."
+            turns.append(ask(detail, "Let the question rest with the decision unresolved."))
+        else:
+            detail = "The second one." if style == "plain" else "Oh, the second one, I think."
+            turns.append(ask(detail, "Recall the second proposal and the user's undecided reply."))
+    return {"archive_case": archive_case, "style": style, "turns": turns}
+
+
 def trial(root, client, embeddings, model, occasion, case, reviewed, question, *, archive,
-          archive_case="unique"):
+          archive_case="unique", conversation_style=""):
     fixture = OCCASIONS[occasion]
     agreed = case == "agreement"
     response = fixture.assent if agreed else fixture.neutral_reply
@@ -89,6 +133,8 @@ def trial(root, client, embeddings, model, occasion, case, reviewed, question, *
         ("assistant", fixture.suggestion),
         ("user", response),
     )
+    if conversation_style and archive_case == "missing":
+        exchange = ()  # Only the fictional diary impression survives in this arm.
     root.mkdir()
     persona = root / "persona.txt"
     persona.write_text("You are Aiko. Answer {user_name} naturally and briefly.", encoding="utf-8")
@@ -113,18 +159,23 @@ def trial(root, client, embeddings, model, occasion, case, reviewed, question, *
                 index.add_message(session_id=session, message_id=mid, role=role, content=line,
                                   embedding=embeddings.embed(line), created_at=row.created_at)
         if archive_case == "competing":
-            db.add_message("replay:other", "assistant", {
+            other = {
                 "atlas": "We could put a ribbon in the atlas.",
                 "soundcheck": "We could reserve channel three for the soundcheck.",
                 "rehearsal": "We could leave the handbell backstage for the curtain call.",
-            }[occasion])
-            db.add_message("replay:other", "user", "I'm still thinking about that.")
+            }[occasion]
+            for role, line in (("assistant", other), ("user", "I'm still thinking about that.")):
+                mid = db.add_message("replay:other", role, line)
+                if conversation_style:
+                    index.add_message(session_id="replay:other", message_id=mid, role=role,
+                                      content=line, embedding=embeddings.embed(line),
+                                      created_at=db.get_message_row(mid).created_at)
         diary_text = fixture.diary
         diary = memories.add(
             diary_text, "diary", embeddings.embed(diary_text), source_session=session,
             metadata={"reflective_derivation": receipt(
                 transcript_packet(rows, session_key=session),
-            )},
+            )} if rows else {},
             temporal_type="past_event", skip_dedupe=True,
         )
         concepts = ConceptStore(db)
@@ -153,6 +204,9 @@ def trial(root, client, embeddings, model, occasion, case, reviewed, question, *
         prompt = PromptAssembler(db, persona_path=persona, continuity_max_messages=0)
         host._prompt_assembler = prompt
         prompt.set_relevant_context_provider(host.build_relevant_context)
+        if conversation_style:
+            return conversation_check(db, prompt, rag, client, model, fixture.open_question,
+                                      archive_case, conversation_style)
         runner = TurnRunner(client, db, prompt, model=model, context_window=8192,
                             temperature=0, max_tokens=512, filler_enabled=False)
         user_text = fixture.direct_question if question == "direct" else fixture.open_question
@@ -219,6 +273,8 @@ def main():
     parser.add_argument("--archive-case", choices=("unique", "missing", "competing"),
                         default="unique")
     parser.add_argument("--without-archive", action="store_true")
+    parser.add_argument("--conversation-check", action="store_true",
+                        help="Run the missing/competing ordinary-chat comparison for --occasion.")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
     scratch.mkdir(exist_ok=True)
@@ -235,6 +291,17 @@ def main():
 
         with (patch("app.llm.ollama_client.requests.post", post),
               timephrase.scoped_now(lambda: datetime(2026, 11, 22, 12, tzinfo=timezone.utc))):
+            if args.conversation_check:
+                for archive_case in ("missing", "competing"):
+                    for style in ("plain", "casual", "hedged-detail", "topic-change"):
+                        row = trial(Path(tmp) / f"{archive_case}-{style}", client, embeddings,
+                                    args.model, args.occasion, "suggestion", False, "open",
+                                    archive=True, archive_case=archive_case,
+                                    conversation_style=style)
+                        print(json.dumps({"model": args.model, "embedding": args.embedding,
+                                          "seed": args.seed, "occasion": args.occasion, **row}),
+                              flush=True)
+                return
             for case in ("suggestion", "agreement"):
                 for reviewed in (False, True):
                     for question in ((args.question,) if args.question else ("direct", "open")):
