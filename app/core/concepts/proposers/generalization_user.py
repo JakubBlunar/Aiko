@@ -111,7 +111,10 @@ def propose_generalization_user(
     concepts: Sequence[TensionBase] = (),
     existing: Sequence[ExistingConcept] = (),
     stacking: bool = False,
+    target_depth: int | None = None,
 ) -> list[CandidateProposal]:
+    if target_depth is not None:
+        stacking = target_depth > 1
     system = (
         _stacking_system(ctx.user_name, ctx.assistant_name)
         if stacking

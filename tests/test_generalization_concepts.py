@@ -848,8 +848,11 @@ class StackingPassTests(unittest.TestCase):
                 first_evidence_at=now, last_reinforced_at=now,
                 embedding=vec,
             ))
-        pool = h.worker._active_generalization_bases("user", 24)
-        labels = {b.label for b in pool}
+        from app.core.concepts.generalization_reviews import review_key
+
+        h.worker.run()
+        batch = h.worker._load_sigs(review_key("user", 1))["reviews"][-1]
+        labels = {h.store.get(int(cid)).label for cid in batch["premises"]}
         self.assertIn("twin ritual one", labels)
         self.assertNotIn("twin ritual two", labels)
         self.assertIn("other theme", labels)

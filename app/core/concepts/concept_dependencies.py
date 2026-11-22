@@ -272,7 +272,7 @@ class DependencyLedger:
             tracked = cid in self.records
             if depth > MAX_GENERALIZATION_DEPTH:
                 return {"tracked": tracked, "viable": False, "reason": "generalization_depth_limit"}
-            if depth == 2 and not tracked:
+            if depth > 1 and not tracked:
                 return {"tracked": False, "viable": False, "reason": "untracked_abstraction"}
             if not tracked:
                 return {"tracked": False, "viable": True, "reason": "legacy_untracked"}
@@ -280,7 +280,7 @@ class DependencyLedger:
             invalid = []
             source_roots = {}
             for index, group in enumerate(self.records[cid]):
-                if depth == 2 and generalization_support_depth(
+                if depth > 1 and generalization_support_depth(
                     self.store, conclusion.subject, ((kind, ident) for kind, ident, _ in group),
                     memo=depth_memo,
                 ) != depth:

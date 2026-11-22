@@ -611,6 +611,91 @@ Both comparisons used supplied context in one fictional story. Replay mined
 parents across several held-out occasions and judge the response text alongside
 its action field before changing synthesis, ranking or the context budget.
 
+### L46 follow-up. Prepare the shared graph for deeper abstractions
+
+**Architecture review, 22 Nov 2026.** The original L1 design still fits. A
+generalization at either supported level is an ordinary concept with typed
+premise-to-conclusion evidence edges. Structural depth is computed on those
+edges. L52 adds revisioned support sets because a flat list cannot express
+“both A and B, or independently C and D.” It uses the same concept IDs and
+edge store. Lifecycle, recall and provenance already consume that distinction.
+Keep the shared concept row, kind registry, edge store and lifecycle worker.
+[Original design](shipped/concepts.md#l1-concept-store--schema-kind-parameterized)
+and [current support contract](../../docs/concept-integration.md#live-depth-2-generalizations-l46).
+
+**Current graph.** The read-only openness diagnostic found 219 generalizations
+at structural depth 2. Of these, 197 were retired, three dormant and 19
+candidates. None of the 19 had a viable support set. Ten candidates had at
+least one set fail on a retired premise, nine on the wrong premise depth and
+seven on a revised source. These categories overlap. At depth 1 there were 16 active
+generalizations with surviving support (seven user, nine Aiko). Another 241
+stored generalizations exceeded the supported cap. The installation had
+13,364 concept rows overall, including 1,236 active. Measure walks and queue
+coverage against that scale. These counts describe one snapshot.
+[Report](../../scripts/concept_openness_report.py).
+
+1. **Finish and checkpoint each synthesis level independently.** Both passes
+   save their pool signature before the outer loop persists their proposals.
+   An isolated probe gave the first pass a proposal and the stacking pass an
+   unusable answer. The worker made two proposer calls, saved the first
+   signature and made zero persistence calls. Commit processed outcomes before
+   advancing that level's checkpoint, make retries idempotent, and let a
+   failed level retry independently. A usable empty answer can complete a
+   review. An exception, cancellation or stale input must keep it eligible.
+   [Worker dispatch](../../app/core/concepts/concept_synthesis_worker.py).
+2. **Record which premises a level actually considered.** All four current
+   generalization signature records contain only a pool hash and count. The
+   hash covers IDs, rounded confidence and activity hints. A second probe
+   changed a premise's label and rationale and produced the same hash.
+   Extend the existing per-proposer, per-subject KV state with target depth,
+   a policy version, and a bounded batch receipt of offered IDs, semantic
+   revisions, completion time and outcome. Include the relevant support and
+   scope revisions when they affect the decision. Use the narrative clock for
+   timestamps. Keep lifecycle evaluation time and reinforcement time dedicated
+   to their present jobs. On upgrade, old signatures give unknown review
+   times. Drain changed or previously unoffered eligible premises in bounded
+   batches alongside familiar comparison premises. Record the inputs actually
+   seen together, since a new partner can make an old premise worth revisiting.
+   [Pool selection and signatures](../../app/core/concepts/concept_synthesis_worker.py)
+   and [existing bounded input selection](../../app/core/concepts/concept_synthesis_inputs.py).
+3. **Share the depth policy and the evidence a proposer sees.** Replace the
+   separate base/stacking pass assumptions and depth-two checks with one
+   generalization rule parameterized by target depth. Use it for selection,
+   creation, reinforcement, retry and live support validation. Begin with the
+   two supported levels. Give each offered premise a compact projection of
+   its surviving support, original observations and applicable conditions.
+   Two children citing the same occasion can describe different aspects of
+   it but contribute only one independent occasion. Unknown lineage stays
+   unknown. Reuse L49's lineage resolver and L52's viable alternatives, with
+   a budget for shared ancestors. A withdrawal or revision should wake the
+   existing dependent-review path and invalidate affected synthesis receipts.
+   Coalesce repeated changes and retain the ordinary oldest-first sweep.
+   [Depth rules](../../app/core/concepts/concept_meta_depth.py),
+   [support sets](../../app/core/concepts/concept_dependencies.py) and
+   [source lineage](../../app/core/concepts/concept_evidence_lineage.py).
+
+**Implemented on 22 Nov.** Each level now persists its proposals independently.
+The worker tracks completed review batches, handles legacy signatures and
+retries, and exposes the latest partners and review time in concept provenance.
+Selection and validation share the premise-depth rule. Review revisions
+include claim, scope and live support. The depth cap is two. A read-only
+selection probe over 13,364 stored concepts used the default 24-premise cap.
+User and Aiko batches offered 24 base concepts each and seven and nine
+stacking premises respectively. Selecting all four batches took 1.15 seconds
+in one local run, excluding model calls, persistence and prompt-time recall.
+[Current contract](../../docs/concept-integration.md#generalization-review-history)
+and [regressions](../../tests/test_generalization_reviews.py).
+
+**Acceptance before enabling another level.** Exercise a failed second pass
+and a restart, a correction with stable confidence, a new partner for a
+previously reviewed premise, shared ancestry, and a withdrawn premise with a
+surviving independent alternative. Measure prompt-path validation on a broad
+graph with shared ancestors. Record depth and eligible support at the time a
+parent surfaces so later merges cannot rewrite the interpretation of past
+usage. Run the held-out-choice comparison above on mined parents at the same
+context budget as their children. Enable a depth-3 pilot only once depth 2
+has demonstrated a benefit on fresh occasions and handles corrections.
+
 <a id="l48-refused-evidence-already-mints-a-new-concept-and-what-it-mints-is-a-twin"></a>
 
 ## L48. Validate evidence routing and duplicate control

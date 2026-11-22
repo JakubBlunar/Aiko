@@ -781,6 +781,40 @@ shows current eligibility alongside stored depth and recent T3 records grouped
 by the row's current depth. Shared original observations and the usefulness of
 the inferred principle still need a semantic review.
 
+#### Generalization review history
+
+The synthesis worker reviews one subject and target depth at a time. Each
+successful review records the UTC completion time, policy version, IDs and
+input revisions of all premises offered together, and batch outcome. The
+concept provenance endpoint exposes the latest ordinary review and latest
+focused reconsideration at each level under `generalization_reviews`. The
+outcome belongs to the batch. Being offered together does not imply that the
+model cited either premise. A usable empty answer records zero proposals.
+Older installations begin with unknown review history.
+
+Receipts share the existing per-subject generalization signature keys in
+`kv_meta`. A batch stays available while it is the latest for any member.
+Only IDs, hashes, times and accounting data are persisted here. A later
+review of one member preserves its former partners' last complete batch.
+Focused reconsiderations reload current premises and leave ordinary review
+coverage intact. In the Evolution panel, expanding a concept shows the most
+recent review time and partner IDs for each level and review type.
+
+Each level persists its proposals and routing decisions before recording
+completion. An unfinished batch records handled proposals for restart. Failed
+model calls, cancellation and changed inputs leave the batch eligible. New
+and revised premises get priority in a bounded, diverse pool, with familiar
+premises available for comparison. Claim wording, scope, surviving support
+alternatives, a coarse confidence band and activity affect the review revision.
+Stacked inputs also carry a bounded sample of supporting patterns and source
+references. Matching source references signal recorded overlap. Gaps remain
+unknown. Review time is independent of lifecycle evaluation and reinforcement.
+
+The target depth selects the required premise level for ordinary synthesis,
+focused retries and validation. Base concepts support target depth one.
+Higher levels require same-subject generalizations exactly one level below
+the target. The maximum supported depth remains two.
+
 **Rollout limits.** New L2 admissions and reinforced legacy rows participate;
 untouched historical claims and other creation paths remain `legacy_untracked`
 and keep existing lifecycle behavior. Frozen message/URL manifests are not a full

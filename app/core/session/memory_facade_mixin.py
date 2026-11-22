@@ -1252,7 +1252,10 @@ class MemoryFacadeMixin(MemoryReadsMixin):
         store = getattr(self, "_concept_store", None)
         if learning is None:
             return {"enabled": False, "concept_id": int(concept_id)}
+        from app.core.concepts.generalization_reviews import last_premise_reviews
+
         cid = int(concept_id)
+        db = getattr(self, "_chat_db", None)
         try:
             resolved = learning.resolve_alias(cid)
             concept = store.get(resolved) if store is not None else None
@@ -1278,6 +1281,9 @@ class MemoryFacadeMixin(MemoryReadsMixin):
                 "status": (concept.status if concept is not None else ""),
                 "dependencies": (store.dependencies.assess(resolved)
                                  if store is not None else {}),
+                "generalization_reviews": (last_premise_reviews(
+                    db.kv_get, cid, concept.subject if concept is not None else None,
+                ) if db is not None else []),
                 "alias_chain": learning.alias_chain(cid),
                 "absorbed": [
                     {

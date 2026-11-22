@@ -627,8 +627,9 @@ class SynthesisRoutingMixin:
                 ("ritual_synthesis_enabled",),
             )[0]
         enabled = bool(getattr(self._agent_settings, flag, True))
-        if kwargs.get("stacking"):
-            enabled = enabled and self._generalization_max_depth() >= 2 and bool(
+        depth = kwargs.get("target_depth", 2 if kwargs.get("stacking") else 1)
+        if depth > 1:
+            enabled = enabled and self._generalization_max_depth() >= depth and bool(
                 getattr(
                     self._agent_settings,
                     "generalization_stacking_enabled",
@@ -677,9 +678,17 @@ class SynthesisRoutingMixin:
                 continue
             old = kwargs.get("existing", [])
             if spec.population == "generalization":
+                depth = kwargs.get("target_depth", 2 if kwargs.get("stacking") else 1)
+                review_ids = [item.id for item in kwargs.get("concepts", ())]
+                review_inputs = self._review_inputs(review_ids, spec.subject, depth)
+                if len(review_inputs) < 2:
+                    row["state"] = "source_unavailable"
+                    self._routing_stats["source_unavailable"] += 1
+                    continue
+                kwargs["concepts"] = [item[0] for item in review_inputs.values()]
                 fresh = self._existing_generalizations(
                     spec,
-                    depth=2 if kwargs.get("stacking") else 1,
+                    depth=depth,
                     concepts=kwargs.get("concepts", ()),
                 )
                 old = []
@@ -742,6 +751,14 @@ class SynthesisRoutingMixin:
             supported = False
             created = False
             unresolved = self._synthesis_call_failed
+            retry_revisions = None
+            if spec.population == "generalization" and not unresolved:
+                retry_revisions = {cid: item[1] for cid, item in review_inputs.items()}
+                live = self._review_inputs(review_ids, spec.subject, depth)
+                if retry_revisions != {cid: item[1] for cid, item in live.items()}:
+                    unresolved = True
+                    retry_revisions = None
+                    proposals = []
             for proposal in proposals:
                 if not nodes.intersection(proposal.evidence):
                     self._routing_stats["retry_outside_focus"] += 1
@@ -761,6 +778,10 @@ class SynthesisRoutingMixin:
                 self._retrying = True
                 try:
                     self._persist(proposal, stats)
+                except SynthesisCallFailed:
+                    unresolved = True
+                    retry_revisions = None
+                    break
                 finally:
                     self._retrying = False
                 created = created or int(stats.get("added", 0)) > before
@@ -774,11 +795,14 @@ class SynthesisRoutingMixin:
                 row["state"] = "pending" if row["attempts"] < MAX_ATTEMPTS else "exhausted"
             else:
                 row["state"] = "same_claim" if supported else "no_claim"
+            if retry_revisions is not None and not self._cancel_event.is_set():
+                self._record_reconsidered_premises(spec.subject, depth, retry_revisions,
+                                                   row["state"])
             row["assessment_state"] = "supported_pending" if supported else "not_assessed"
             row["next_at"] = (timephrase.utcnow() + timedelta(hours=RETRY_HOURS)).isoformat()
             self._routing_stats[row["state"]] += 1
 
-    def _routing_finish(self, stats: dict[str, Any]) -> None:
+    def _save_routing_queue(self):
         rows = list(self._reconsiderations.values())
         while len(rows) > QUEUE_CAP or len(json.dumps(rows)) > QUEUE_BYTES:
             terminal = next(
@@ -788,6 +812,10 @@ class SynthesisRoutingMixin:
             rows.pop(terminal)
             self._routing_stats["evicted"] += 1
         self._kv_set(ROUTING_KEY, json.dumps(rows))
+        return rows
+
+    def _routing_finish(self, stats: dict[str, Any]) -> None:
+        rows = self._save_routing_queue()
         for name, nodes in self._routing_sources.items():
             self._routing_stats[f"unique_{name}"] = len(nodes)
         self._routing_stats["repeat_source_attempts"] = self._routing_stats[

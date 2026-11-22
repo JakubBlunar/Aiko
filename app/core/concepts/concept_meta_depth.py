@@ -91,8 +91,17 @@ def meta_depth(
     return depth
 
 
+def generalization_target_depth(store, premise, *, memo=None) -> int | None:
+    """The single level at which this kind of premise may support a generalization."""
+    if premise.evidence_model != "meta":
+        return 1
+    if premise.kind == "generalization":
+        return 1 + meta_depth(store, premise.concept_id, memo=memo)
+    return None
+
+
 def generalization_support_depth(store, subject, nodes, *, memo=None) -> int | None:
-    """A base-only bundle makes depth 1. A depth-1 abstraction bundle makes depth 2."""
+    """Require at least two distinct, same-subject premises from one permitted level."""
     memo = {} if memo is None else memo
     members = set()
     depths = set()
@@ -104,12 +113,12 @@ def generalization_support_depth(store, subject, nodes, *, memo=None) -> int | N
         premise = store.get(cid) if kind == "concept" else None
         if premise is None or premise.subject != subject:
             return None
-        depth = meta_depth(store, cid, memo=memo)
-        if depth > 1 or (depth == 1 and premise.kind != "generalization"):
+        depth = generalization_target_depth(store, premise, memo=memo)
+        if depth is None or depth > MAX_GENERALIZATION_DEPTH:
             return None
         members.add(cid)
         depths.add(depth)
-    return depths.pop() + 1 if len(members) >= 2 and len(depths) == 1 else None
+    return depths.pop() if len(members) >= 2 and len(depths) == 1 else None
 
 
 def descendant_ids(
@@ -163,4 +172,7 @@ def would_cycle(
     return parent in descendant_ids(store, child, max_walk=max_walk)
 
 
-__all__ = ["descendant_ids", "meta_depth", "would_cycle"]
+__all__ = [
+    "MAX_GENERALIZATION_DEPTH", "descendant_ids", "generalization_support_depth",
+    "generalization_target_depth", "meta_depth", "would_cycle",
+]

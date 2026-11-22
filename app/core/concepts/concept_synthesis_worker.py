@@ -61,6 +61,7 @@ from app.core.concepts.concept_evidence_admission import (
     save_fit_sample,
 )
 from app.core.concepts.concept_event_store import ConceptEvent
+from app.core.concepts.generalization_reviews import GeneralizationReviewMixin
 from app.core.concepts.concept_source_policy import ConceptSourcePolicyMixin
 from app.core.concepts.concept_kinds import core_lane_kinds
 from app.core.concepts.concept_meta_depth import (
@@ -210,7 +211,9 @@ def _salvage_concepts(text: str) -> list[dict[str, Any]]:
     return out
 
 
-class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
+class ConceptSynthesisWorker(
+    GeneralizationReviewMixin, ConceptSourcePolicyMixin, SynthesisRoutingMixin,
+):
     """Idle worker that proposes candidate identity concepts."""
 
     name = "concept_synthesis"
@@ -281,6 +284,7 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         # P36: the previous pass's stats double as this worker's demand
         # signal. See :meth:`demand`.
         self._last_stats: dict[str, Any] | None = None
+        self._run_lock = threading.Lock()
 
     @staticmethod
     def _resolve_name(
@@ -360,6 +364,7 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             )
         remaining = int(stats.get("user_dirty_remaining", 0) or 0)
         remaining += int(stats.get("memory_dirty_remaining", 0) or 0)
+        remaining += int(stats.get("generalization_dirty_remaining", 0))
         if remaining > 0:
             return WorkSignal(
                 pressure=pressure_from_count(
@@ -975,6 +980,14 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         would otherwise short-circuit and propose nothing. Scheduled idle
         runs leave ``force=False`` and stay incremental.
         """
+        if not self._run_lock.acquire(blocking=False):
+            return {"skipped": True, "reason": "already_running"}
+        try:
+            return self._run(force=force)
+        finally:
+            self._run_lock.release()
+
+    def _run(self, *, force: bool) -> dict[str, Any]:
         if not bool(getattr(self._agent_settings, "concepts_enabled", False)):
             return {"skipped": True, "reason": "disabled"}
         if self._cancel_event.is_set():
@@ -1055,14 +1068,8 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
                 elif spec.population == "tension":
                     proposals = self._run_tension_pass(ctx, spec, stats, force)
                 elif spec.population == "generalization":
-                    proposals = self._run_generalization_pass(
-                        ctx, spec, stats, force
-                    )
-                    proposals.extend(
-                        self._run_generalization_stacking_pass(
-                            ctx, spec, stats, force
-                        )
-                    )
+                    self._run_generalization_levels(ctx, spec, stats, force)
+                    continue
                 elif spec.population == "self_correction":
                     proposals = self._run_self_correction_pass(
                         ctx, spec, stats, force
@@ -2730,123 +2737,6 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
         )
         return proposals
 
-    def _run_generalization_pass(
-        self,
-        ctx: ProposerContext,
-        spec: ProposerSpec,
-        stats: dict[str, Any],
-        force: bool = False,
-    ) -> list[CandidateProposal]:
-        """L20 generalization pass -- the abstraction *meta* proposer. Like the
-        tension pass its raw material is the active BASE (non-meta) concepts for
-        ``spec.subject`` (``user`` / ``aiko`` only -- an abstraction is over one
-        subject's own concepts, never cross-subject), and the proposer names a
-        higher-order super-concept 2+ of them are facets of, cited as
-        ``("concept", id)`` evidence.
-
-        Offering only non-meta actives keeps L1 from stacking; L46's
-        stacking pass is a separate pool of depth-1 generalizations.
-        Reading ``status="active"`` is the dependency-ordering guarantee.
-        Dirty-tracked on the same base-pool fingerprint as tension (ids +
-        rounded confidence + live/quiet hint) so a settled graph is a fast
-        no-op. Gated by ``agent.generalization_synthesis_enabled``."""
-        if not bool(
-            getattr(
-                self._agent_settings, "generalization_synthesis_enabled", True
-            )
-        ):
-            return []
-        subject = spec.subject
-        pool = self._active_generalization_bases(
-            subject, self._max_generalization_concepts
-        )
-        # An abstraction needs at least two concepts to generalise over.
-        if len(pool) < 2:
-            return []
-
-        sig_key = spec.sig_key or (
-            "concept_synth.generalization_sig." + subject
-        )
-        prev = self._load_sigs(sig_key)
-        fingerprint = self._tension_fingerprint(pool)
-        prev_fp = str(prev.get("fingerprint", "")) if prev else ""
-        is_dirty = force or fingerprint != prev_fp
-        stats["generalization_dirty"] = bool(
-            stats.get("generalization_dirty")
-        ) or bool(is_dirty)
-        if not is_dirty:
-            return []
-
-        proposals = spec.propose(
-            ctx,
-            concepts=pool,
-            existing=self._existing_generalizations(spec, depth=1, concepts=pool),
-        )
-        self._save_sigs(
-            sig_key, {"fingerprint": fingerprint, "count": len(pool)}
-        )
-        return proposals
-
-    def _run_generalization_stacking_pass(
-        self,
-        ctx: ProposerContext,
-        spec: ProposerSpec,
-        stats: dict[str, Any],
-        force: bool = False,
-    ) -> list[CandidateProposal]:
-        """L46: second-order generalization pass.
-
-        Offers only active depth-1 ``generalization`` rows for
-        ``spec.subject`` -- never tensions, never L2s, never mixed with
-        bases -- and asks the same proposer (``stacking=True``) to name a
-        view two or more of them share. Own dirty fingerprint so a base
-        wiggle does not re-spend this LLM call. Gated by both the L20
-        synthesis switch and ``agent.generalization_stacking_enabled``.
-        """
-        if self._generalization_max_depth() < 2:
-            return []
-        if not bool(
-            getattr(
-                self._agent_settings, "generalization_synthesis_enabled", True
-            )
-        ):
-            return []
-        if not bool(
-            getattr(
-                self._agent_settings, "generalization_stacking_enabled", True
-            )
-        ):
-            return []
-        subject = spec.subject
-        pool = self._active_stacking_bases(subject, self._max_l2_concepts)
-        if len(pool) < 2:
-            return []
-
-        sig_key = "concept_synth.generalization_l2_sig." + subject
-        prev = self._load_sigs(sig_key)
-        fingerprint = self._tension_fingerprint(pool)
-        prev_fp = str(prev.get("fingerprint", "")) if prev else ""
-        is_dirty = force or fingerprint != prev_fp
-        stats["generalization_l2_dirty"] = bool(
-            stats.get("generalization_l2_dirty")
-        ) or bool(is_dirty)
-        if not is_dirty:
-            return []
-
-        proposals = spec.propose(
-            ctx,
-            concepts=pool,
-            existing=self._existing_generalizations(spec, depth=2, concepts=pool),
-            stacking=True,
-        )
-        stats["generalization_l2_proposed"] = stats.get("generalization_l2_proposed", 0) + len(
-            proposals
-        )
-        self._save_sigs(
-            sig_key, {"fingerprint": fingerprint, "count": len(pool)}
-        )
-        return proposals
-
     # ── L17d self-correction pass ──────────────────────────────────────
 
     def _run_self_correction_pass(
@@ -3084,59 +2974,6 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             )
             for c in rows
         ]
-
-    def _active_generalization_bases(
-        self, subject: str, limit: int
-    ) -> list[TensionBase]:
-        """L1 generalization pool: active non-meta concepts, highest
-        confidence first, then diversified by label cosine so a family of
-        near-twin rituals cannot fill the cap (L48 assist). Tension still
-        uses :meth:`_active_tension_bases` unfiltered -- similar pairs are
-        the point of a friction."""
-        try:
-            rows = [
-                c
-                for c in self._concept_store.list_by(
-                    status="active", subject=subject
-                )
-                if c.evidence_model != "meta"
-            ]
-        except Exception:
-            log.debug(
-                "generalization base list failed (%s)", subject, exc_info=True
-            )
-            return []
-        rows.sort(key=lambda c: float(c.confidence), reverse=True)
-        rows = self._pick_diverse_concepts(rows, limit)
-        now = _parse_iso(_now_iso())
-        return [self._as_tension_base(c, now) for c in rows]
-
-    def _active_stacking_bases(
-        self, subject: str, limit: int
-    ) -> list[TensionBase]:
-        """L46 stacking pool: active depth-1 generalizations only."""
-        cap = max(2, int(limit))
-        try:
-            rows = [
-                c
-                for c in self._concept_store.list_by(
-                    status="active", subject=subject, kind="generalization"
-                )
-            ]
-        except Exception:
-            log.debug(
-                "stacking base list failed (%s)", subject, exc_info=True
-            )
-            return []
-        memo: dict[int, int] = {}
-        depth_one = [
-            c for c in rows
-            if meta_depth(self._concept_store, int(c.concept_id), memo=memo) == 1
-        ]
-        depth_one.sort(key=lambda c: float(c.confidence), reverse=True)
-        depth_one = self._pick_diverse_concepts(depth_one, cap)
-        now = _parse_iso(_now_iso())
-        return [self._as_tension_base(c, now) for c in depth_one]
 
     def _as_tension_base(
         self, concept: Concept, now: "datetime | None"
@@ -3550,11 +3387,13 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
 
         try:
             vec = self._embedder.embed(proposal.label)
-        except Exception:
+        except Exception as exc:
             log.warning(
                 "concept label embed failed: %s", proposal.label,
                 exc_info=True,
             )
+            if proposal.kind == "generalization":
+                raise SynthesisCallFailed("generalization embedding unavailable") from exc
             return
 
         # L46: a stacked label that restates a cited child is a rename,
@@ -3625,8 +3464,9 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
                     proposal.supersedes_id, cid, proposal.applicability["correction"],
                 )
         stats["added"] += 1
-        if generalization_depth == 2:
-            stats["generalization_l2_added"] = stats.get("generalization_l2_added", 0) + 1
+        if generalization_depth and generalization_depth > 1:
+            key = f"generalization_l{generalization_depth}_added"
+            stats[key] = stats.get(key, 0) + 1
         self._bump_subject(stats, proposal.subject, "added")
         self._record_discovery(concept, proposal, top_sim, now)
         if self._notify_concept_added is not None:
@@ -3929,8 +3769,9 @@ class ConceptSynthesisWorker(ConceptSourcePolicyMixin, SynthesisRoutingMixin):
             # say in how it is worded either.
             return
         stats["reinforced"] += 1
-        if proposal.kind == "generalization" and depth == 2:
-            stats["generalization_l2_reinforced"] = stats.get("generalization_l2_reinforced", 0) + 1
+        if proposal.kind == "generalization" and depth > 1:
+            key = f"generalization_l{depth}_reinforced"
+            stats[key] = stats.get(key, 0) + 1
         self._bump_subject(stats, proposal.subject, "reinforced")
         if proposal.kind == "communication_style" and proposal.supersedes_id is not None:
             self._concept_store.applicability.supersede(

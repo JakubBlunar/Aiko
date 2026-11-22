@@ -456,6 +456,30 @@ function ProvenanceDetail({ conceptId }: { conceptId: number }) {
         ) : null}
       </div>
 
+      {data.generalization_reviews?.length ? (
+        <div>
+          <div className="mb-0.5 uppercase tracking-wide text-ink-100/40">
+            Latest generalization reviews
+          </div>
+          <ul className="space-y-0.5 border-l border-white/10 pl-2 text-ink-100/60">
+            {data.generalization_reviews.map((review) => {
+              const partners = Object.keys(review.premises)
+                .filter((id) => id !== String(conceptId))
+                .map((id) => `#${id}`).join(", ");
+              return (
+                <li key={`${review.target_depth}-${review.lane}`} className="break-words">
+                  Depth {review.target_depth} {review.lane === "reviews" ? "review" : "retry"}{" "}
+                  <time dateTime={review.completed_at} title={review.completed_at}>
+                    {formatRelative(review.completed_at)}
+                  </time>{" "}
+                  with {partners}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+
       {data.prior_labels && data.prior_labels.length > 1 ? (
         <div>
           <div className="mb-0.5 uppercase tracking-wide text-ink-100/40">

@@ -1546,6 +1546,14 @@ export interface ConceptProvenance {
     merged_at: string;
   }[];
   prior_labels?: string[]; // every wording this belief has worn
+  generalization_reviews?: {
+    target_depth: number;
+    lane: "reviews" | "reconsiderations";
+    completed_at: string;
+    premises: Record<string, string>; // offered concept ID to input revision
+    policy_version: number;
+    outcome: string | { proposals: number; added: number; reinforced: number };
+  }[];
   learning_events?: ConceptLearningEvent[];
   lifecycle?: ConceptLifecyclePoint[];
 }
