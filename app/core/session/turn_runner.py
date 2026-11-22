@@ -825,9 +825,9 @@ class TurnRunner:
         tool_calls = sum(1 for m in messages if m.get("role") == "tool")
         # A dispatched tool may have supplied newer evidence or performed
         # another requested action. Let the model report its result normally.
-        quoted_decision = telemetry.quoted_decision if not tool_calls else ""
+        decision_reply = telemetry.decision_reply if not tool_calls else ""
         full = body = ""
-        mood: str | None = "neutral" if quoted_decision else None
+        mood: str | None = "neutral" if decision_reply else None
         ui_sent_chars = 0       # chars of meta-stripped body already sent to UI
         tts_appended_chars = 0  # chars of meta-stripped body already routed to TTS
         tts_buffer = ""         # rolling buffer of body chars not yet spoken
@@ -840,14 +840,14 @@ class TurnRunner:
         # Skipped when the tool pass already announced a slow lookup: she
         # has just said "hang on, let me check", and a "Hmm," on top of it
         # sounds like two false starts rather than one held beat.
-        if not quoted_decision and not self._spoke_slow_tool_notice:
+        if not decision_reply and not self._spoke_slow_tool_notice:
             self._filler.arm(
                 on_tts_chunk,
                 carry_over_reaction=self._last_reaction,
             )
 
         try:
-            stream = (quoted_decision,) if quoted_decision else self._ollama.chat_stream(
+            stream = (decision_reply,) if decision_reply else self._ollama.chat_stream(
                 messages,
                 options={
                     "temperature": self._temperature,
@@ -953,8 +953,12 @@ class TurnRunner:
         question = clarification_question(body)
         if question is not None:
             full = "" if aborted else question
-        stream_usage = (OllamaUsage(done_reason="quoted_exchange") if quoted_decision
-                        else self._ollama.last_usage)
+        if decision_reply:
+            reason = ("quoted_exchange" if telemetry.concepts_surfaced.get("reason")
+                      == "decision_exchange" else "decision_clarification")
+            stream_usage = OllamaUsage(done_reason=reason)
+        else:
+            stream_usage = self._ollama.last_usage
         outcome.finish(
             reason=stream_usage.done_reason, cancelled=aborted,
             has_answer=bool(strip_all_meta_tags(full).strip()),
@@ -989,8 +993,8 @@ class TurnRunner:
         # ``%r`` keeps multi-line responses on a single log line. The
         # tag-presence summary is greppable ("llm tags:") so the common
         # "is reaction missing again?" question takes seconds to answer.
-        if quoted_decision:
-            log.info("quoted decision response: %r", full_raw)
+        if decision_reply:
+            log.info("archive decision response: %r", full_raw)
         else:
             log.info("llm raw response: %r", full_raw)
         log.info(

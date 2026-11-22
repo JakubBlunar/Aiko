@@ -72,14 +72,15 @@ class MessageOutcomesMixin:
                 "model", "route_revision", "finish_reason")
         return [dict(zip(keys, row, strict=True)) for row in rows]
 
-    def quoted_exchange_message_ids(self, assistant_ids):
-        """Identify prior recap questions and their answers in a bounded archive read."""
+    def decision_recall_message_ids(self, assistant_ids):
+        """Exclude earlier decision recaps and clarifications from decision evidence."""
         if not assistant_ids:
             return set()
         marks = ",".join("?" for _ in assistant_ids)
         pairs = self._get_conn().execute(
             "SELECT user_message_id, assistant_message_id FROM turn_outcomes "
-            f"WHERE assistant_message_id IN ({marks}) AND finish_reason='quoted_exchange'",
+            f"WHERE assistant_message_id IN ({marks}) "
+            "AND finish_reason IN ('quoted_exchange','decision_clarification')",
             tuple(assistant_ids),
         )
         return {mid for pair in pairs for mid in pair if mid is not None}

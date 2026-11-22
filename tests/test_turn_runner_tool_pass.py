@@ -310,7 +310,7 @@ class ToolPassGateTests(unittest.TestCase):
         )
         runner._prompt.assemble_with_budget.side_effect = None
         runner._prompt.assemble_with_budget.return_value = (
-            [], PromptTelemetry(quoted_decision="An earlier exchange."),
+            [], PromptTelemetry(decision_reply="An earlier exchange."),
         )
         result = runner.run(session_key="default:main", user_text="What was our plan?")
         self.assertTrue(registry.dispatch.called)

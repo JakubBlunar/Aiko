@@ -180,7 +180,7 @@ class RelevantContext:
     stage_ms: dict[str, float] = field(default_factory=dict)
     reply_guidance: str = ""
     episode_question_resolved: bool = False
-    quoted_decision: str = ""
+    decision_reply: str = ""
 
 
 class ContextBudgetSelector:

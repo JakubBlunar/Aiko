@@ -72,7 +72,7 @@ def test_plan_recall_keeps_the_whole_original_exchange_and_its_owner(tmp_path):
         text, selected = recall(question)
         assert selected == ids[1:] and "The recorder is ready" not in text
         assert 'Aiko: "Shall we use' in text and 'Robin: "I\'d like to read' in text
-        assert recall(question, budget=45) == ("", [])
+        assert not recall(question, budget=45)[1]
         assert recall("What was the plan?") == ("", [])
         assert recall("Did I agree to the brass bell? Can you set a reminder?") == ("", [])
 
@@ -88,10 +88,14 @@ def test_plan_recall_defers_when_another_exchange_mentions_the_topic(tmp_path, l
         db.add_message("owner:first", "user", "Sounds good.")
         db.add_message("owner:later", "user", later_turn)
         db.add_message("owner:later", "assistant", "I see.")
-        assert exchange_evidence(
+        lookup = lookup_exchange(
             db, "What was the plan for the brass bell?", "owner:recall", "Robin",
             budget=450, estimate_tokens=estimate_tokens,
-        ) == ("", [])
+        )
+        if later_turn.startswith("Actually"):
+            assert lookup.reason == "decision_incomplete" and not lookup.message_ids
+        else:
+            assert lookup.reason == "decision_ambiguous" and later_turn in lookup.reply
 
 
 def test_decision_context_marks_the_users_proposal_and_clears_prior_selections(tmp_path):
@@ -111,7 +115,7 @@ def test_decision_context_marks_the_users_proposal_and_clears_prior_selections(t
         assert region.concept_trace["surfaced"] == [] and region.reply_guidance
         assert 'Robin: "We could try the amber lamp."' in region.text
         assert 'Aiko: "Yes, for the first reading."' in region.text
-        assert region.quoted_decision == (
+        assert region.decision_reply == (
             'You suggested “We could try the amber lamp.” I said “Yes, for the first reading.”'
         )
         assert not host._last_surfaced_items and not host._last_context_concept_ids
@@ -160,10 +164,11 @@ def test_open_recap_is_the_same_in_chat_speech_and_history_on_repeat(tmp_path, s
         assert cancelled.aborted and not cancelled.text and not spoken
         client.chat_stream.assert_not_called()
         db.add_message("owner:later", "user", "Actually, I'll wind the clock after the tour.")
-        assert not lookup_exchange(
+        later = lookup_exchange(
             db, "What was the plan for the clock?", "owner:fresh", "Robin",
             budget=450, estimate_tokens=estimate_tokens,
-        )[2]
+        )
+        assert later.reason == "decision_incomplete" and not later.message_ids
 
 
 @pytest.mark.parametrize("question,reply", [
@@ -178,9 +183,9 @@ def test_direct_mixed_or_tagged_exchanges_use_normal_generation(tmp_path, questi
     with closing(db._get_conn()):
         db.add_message("owner:test", "assistant", "We could try the bell.")
         db.add_message("owner:test", "user", reply)
-        _, _, recap = lookup_exchange(db, question, "owner:fresh", "Robin", budget=450,
-                                      estimate_tokens=estimate_tokens)
-        assert recap == ""
+        result = lookup_exchange(db, question, "owner:fresh", "Robin", budget=450,
+                                 estimate_tokens=estimate_tokens)
+        assert result.reply == ""
 
 
 def test_reported_speech_does_not_make_the_reporting_speaker_the_proposer(tmp_path):
@@ -188,8 +193,117 @@ def test_reported_speech_does_not_make_the_reporting_speaker_the_proposer(tmp_pa
     with closing(db._get_conn()):
         db.add_message("owner:test", "user", "You said we could try the bronze bell.")
         db.add_message("owner:test", "assistant", "Yes, that was my idea.")
-        text, ids, recap = lookup_exchange(
+        result = lookup_exchange(
             db, "What was our plan for the bronze bell?", "owner:fresh", "Robin",
             budget=450, estimate_tokens=estimate_tokens,
         )
-        assert text and len(ids) == 2 and not recap
+        assert result.text and len(result.message_ids) == 2 and not result.reply
+
+
+def test_missing_then_date_then_named_second_proposal_through_chat(tmp_path):
+    db = ChatDatabase(tmp_path / "clarify.db")
+    with closing(db._get_conn()):
+        question = "Did I agree to use a lantern?"
+        old = datetime(2026, 10, 2, 12, tzinfo=timezone.utc)
+        now = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
+        with timephrase.scoped_now(lambda: old):
+            db.add_message("owner:a", "assistant", "We could use a brass lantern.")
+            db.add_message("owner:a", "user", "Yes, for the first reading only.")
+            second = db.add_message("owner:b", "user", "We could borrow the silver lantern.")
+            reply = db.add_message("owner:b", "assistant", "I can ask about it.")
+        with timephrase.scoped_now(lambda: now):
+            for session in ("stranger:lamps", "owner:noremember"):
+                db.add_message(session, "assistant", "We could use the secret lantern.")
+                db.add_message(session, "user", "I'll bring it.")
+            host = SimpleNamespace(_chat_db=db, _memory_settings=SimpleNamespace(),
+                                   user_display_name="Robin")
+            persona = tmp_path / "persona.txt"
+            persona.write_text("You are Aiko.", encoding="utf-8")
+            prompt = PromptAssembler(db, persona_path=persona, continuity_max_messages=0)
+            prompt.set_relevant_context_provider(
+                lambda **kwargs: InnerLifePart1Mixin.build_relevant_context(host, **kwargs),
+            )
+            client = Mock(last_usage=OllamaUsage())
+            runner = TurnRunner(client, db, prompt, model="test", context_window=8192,
+                                max_tokens=512, temperature=0, filler_enabled=False)
+
+            def ask(line):
+                shown, spoken = [], []
+                result = runner.run(
+                    session_key="owner:recall", user_text=line, on_token=shown.append,
+                    on_tts_chunk=lambda chunk, _: spoken.append(chunk),
+                )
+                assert shown and spoken
+                assert result.text == db.get_message_row(result.assistant_message_id).content
+                return result
+
+            missing = ask(question)
+            assert "can't find the original exchange" in missing.text
+            assert missing.usage.done_reason == "decision_clarification"
+            options = ask("October 2, 2026.")
+            assert "brass lantern" in options.text and "silver lantern" in options.text
+            assert "secret" not in options.text and "first reading" not in options.text
+            assert options.telemetry.concepts_surfaced["reason"] == "decision_ambiguous"
+            result = ask("The silver one.")
+            assert result.text == ('You suggested "We could borrow the silver lantern." '
+                                   'I said "I can ask about it."')
+            assert result.telemetry.concepts_surfaced["original_exchange_message_ids"] == [
+                second, reply,
+            ]
+            ask(question)
+            unresolved = ask("I don't remember.")
+            assert unresolved.telemetry.concepts_surfaced["reason"] == "decision_unresolved"
+            assert "?" not in unresolved.text
+            client.chat_stream.assert_not_called()
+
+
+@pytest.mark.parametrize("extra", ["third", "identical", "markup", "partial"])
+def test_ambiguous_lookup_only_offers_choices_it_can_distinguish(tmp_path, extra):
+    db = ChatDatabase(tmp_path / "choices.db")
+    with closing(db._get_conn()):
+        first = "We could use a copper lantern."
+        other = {"identical": first, "markup": "We could use a [[touch:lantern]]."}.get(
+            extra, "We could use a silver lantern.",
+        )
+        for session, proposal in (("owner:a", first), ("owner:b", other)):
+            db.add_message(session, "assistant", proposal)
+            db.add_message(session, "user", "Only for rehearsal.")
+        if extra == "third":
+            db.add_message("owner:c", "user", "We could buy a glass lantern.")
+            db.add_message("owner:c", "assistant", "I can check.")
+        if extra == "partial":
+            db.add_message("owner:c", "user", "I've since changed my mind about the lantern.")
+        result = lookup_exchange(db, "What did we decide about the lantern?", "owner:recall",
+                                 "Robin", budget=450, estimate_tokens=estimate_tokens)
+        assert result.reason == "decision_ambiguous" and not result.message_ids
+        assert "more than one possible match" in result.reply and "[[" not in result.reply
+
+
+def test_neighboring_proposals_in_one_chat_keep_separate_replies(tmp_path):
+    db = ChatDatabase(tmp_path / "nearby.db")
+    with closing(db._get_conn()):
+        session = "owner:studio"
+        first = db.add_message(session, "assistant", "We could use a glass lantern.")
+        db.add_message(session, "user", "Sure, just for the reading.")
+        second = db.add_message(session, "assistant", "We could borrow the steel lantern.")
+        db.add_message(session, "user", "I'd like to think about that.")
+        result = lookup_exchange(db, "What was the plan for the lantern?", "owner:recall",
+                                 "Robin", budget=450, estimate_tokens=estimate_tokens)
+        assert result.reason == "decision_ambiguous" and result.message_ids == [first, second]
+        assert "glass lantern" in result.reply and "steel lantern" in result.reply
+        assert "just for the reading" not in result.reply and "think about that" not in result.reply
+
+
+def test_partial_exchange_quotes_only_the_available_turn_and_uses_given_date(tmp_path):
+    db = ChatDatabase(tmp_path / "fragment.db")
+    with closing(db._get_conn()):
+        mid = db.add_message("owner:a", "assistant", "We could bring the glass lantern.")
+        result = lookup_exchange(db, "Did I agree to the lantern today?", "owner:recall",
+                                 "Robin", budget=450, estimate_tokens=estimate_tokens)
+        assert result.reason == "decision_incomplete" and result.message_ids == [mid]
+        assert "I said “We could bring the glass lantern.”" in result.reply
+        assert "?" not in result.reply
+        absent = lookup_exchange(db, "What did we decide about the telescope yesterday?",
+                                 "owner:recall", "Robin", budget=450,
+                                 estimate_tokens=estimate_tokens)
+        assert absent.reason == "decision_missing" and "?" not in absent.reply

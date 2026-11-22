@@ -20,17 +20,28 @@ about the amber lamp?” can use the original exchange. The bounded archive
 lookup searches the user's messages and Aiko's replies for a matching proposal.
 If one exchange fits, the relevance block quotes the proposal and subsequent
 turns in order, with their speakers. Opening remarks cannot serve as the reply
-to a later suggestion. Competing matches, missing replies, and excerpts that
-exceed the budget use ordinary recall. The search covers up to 400 messages
+to a later suggestion. The search covers up to 400 messages
 within a window of at most 14 days. Other prompt blocks keep their regular roles.
 
 For an open question such as “What was our plan for the clock?”, Aiko can
 answer directly from the archived words. She identifies who suggested it and
 quotes what each person said next. This preserves a change of subject, an
 undecided reply, or a one-time agreement. The same recap goes through chat,
-speech and history. Asking again uses the original dialogue. Direct yes/no
-questions, requests for another format, reported speech, and turns with a
-new tool result use the model to compose the answer.
+speech and history. Asking again uses the original dialogue. When the exchange
+is clear, direct yes/no questions and requests for another format use the model
+to compose the answer. Reported speech and new tool results can also require
+interpretation.
+
+When that search misses, Aiko says she couldn't find the original exchange
+and asks when it happened. A date can move the search back beyond the initial
+14-day window. With two distinguishable proposals, she quotes the options
+and accepts a short answer such as “the second one” or “the silver one.”
+She checks the options again before quoting the selected exchange and its
+replies. If there are more matches, overlapping evidence, or an incomplete
+exchange, she leaves the decision open. A single usable line can still be
+quoted with its speaker. When the user can't remember either,
+she lets the question rest. These replies are recorded as clarifications so
+future searches can distinguish them from the original discussion.
 
 Focused recall regressions: 110 passed. The combined verification is recorded
 below. Live-model wording remains to be checked after a backend restart and

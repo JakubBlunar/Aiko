@@ -4,12 +4,14 @@ import json
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from datetime import timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.core.conversation.archive import resolve_range
 from app.core.infra import timephrase
 from app.core.infra.time_expr import parse_time_window
+from app.core.session.session_text_utils import sanitize_assistant_text
 
 
 _HISTORY_REQUEST = re.compile(
@@ -75,6 +77,33 @@ def decision_request(text):
     return request
 
 
+@dataclass
+class ExchangeLookup:
+    text: str = ""
+    message_ids: list[int] = field(default_factory=list)
+    reply: str = ""
+    reason: str = ""
+
+
+_MISSING = "I can't find the original exchange in the messages I can see. When did we discuss it?"
+_INCOMPLETE = "I found a mention, but I can't tell what we settled on. When did we discuss it?"
+_PARTIAL = "I found this part."
+_OTHER_MENTION = ("I found the suggestion and another mention of it. "
+                  "Which conversation were you thinking of?")
+_COMPETING = "I found more than one possible match. Which day were you thinking of?"
+_CHOICES = "I found two suggestions."
+_UNRESOLVED_GUIDANCE = (
+    "The archive could not establish one decision from the original dialogue. "
+    "Keep agreement and follow-through open. Ask for the detail that would identify the exchange."
+)
+
+
+def _safe_quote(content):
+    normalized = unicodedata.normalize("NFKC", content)
+    return bool(content and content.isprintable() and "[" not in normalized
+                and "<" not in normalized)
+
+
 def _quoted_decision(rows):
     """Attribute whole utterances without inferring assent, refusal or follow-through."""
     # "You said we could..." can locate a discussion but doesn't establish
@@ -86,8 +115,7 @@ def _quoted_decision(rows):
         content = row["content"].strip()
         # Stored dialogue is data. Never send markup through the assistant's
         # inline action/tag dispatch as part of a quoted reply.
-        normalized = unicodedata.normalize("NFKC", content)
-        if not content or not content.isprintable() or "[" in normalized or "<" in normalized:
+        if not _safe_quote(content):
             return ""
         if index == 0:
             lead = "My suggestion was" if row["role"] == "assistant" else "You suggested"
@@ -97,48 +125,194 @@ def _quoted_decision(rows):
     return " ".join(parts)
 
 
-def _decision_evidence(history, speaker, zone, budget, estimate_tokens, *, open_question):
-    match = None
-    topic_ids = set()
+def _decision_evidence(history, speaker, zone, budget, estimate_tokens, *, open_question,
+                       plain_reply, previous_reply, choice, dated):
+    candidates = []
+    mentions = {}
+    unanswered = False
     for dialog in history.values():
         for index, (row, stamp, shared) in enumerate(dialog):
             if not shared:
                 continue
-            topic_ids.add(row["message_id"])
+            mentions[row["message_id"]] = (row, stamp)
             if not _PROPOSAL.search(row["content"]):
                 continue
             window = [item for item in dialog[max(0, index - 2):index + 4]
                       if abs(item[1] - stamp) <= timedelta(minutes=10)]
-            replies = [(r, t) for r, t, _ in window if r["message_id"] > row["message_id"]]
+            replies = []
+            for later, sent, later_terms in window:
+                if later["message_id"] <= row["message_id"]:
+                    continue
+                if later_terms and _PROPOSAL.match(later["content"].strip()):
+                    break
+                replies.append((later, sent))
             if not any(r["role"] != row["role"] for r, _ in replies):
+                unanswered |= bool(_PROPOSAL.match(row["content"].strip()))
                 continue
-            if match is not None:
-                return "", [], ""
-            match = ([(row, stamp), *replies], {r["message_id"] for r, _, _ in window})
+            preceding = {r["message_id"] for r, _, _ in window
+                         if r["message_id"] < row["message_id"]}
+            sources = [(row, stamp), *replies]
+            candidates.append((sources, preceding | {r["message_id"] for r, _ in sources}))
 
-    # Another exchange or a later correction could change the answer.
-    if match is None or not topic_ids.issubset(match[1]):
-        return "", [], ""
+    def unresolved(reason, reply, sources=()):
+        text, ids = _render_sources(sources, speaker, zone, budget, estimate_tokens,
+                                    _UNRESOLVED_GUIDANCE, complete=True)
+        if sources and not ids:
+            reply = "I can't read enough of the original messages to give you a reliable answer."
+        if not text and estimate_tokens(_UNRESOLVED_GUIDANCE) <= budget:
+            text = _UNRESOLVED_GUIDANCE
+        return ExchangeLookup(text, ids, reply if plain_reply else "", reason)
+
+    topic_ids = set(mentions)
+    if not candidates:
+        if len(mentions) == 1:
+            row, _ = next(iter(mentions.values()))
+            line = row["content"].strip()
+            if len(line) <= 140 and _safe_quote(line) and not decision_request(line):
+                who = "You said" if row["role"] == "user" else "I said"
+                end = ("That's the part I can verify around then." if dated else
+                       "When did we discuss it?")
+                reply = f"{_PARTIAL} {who} “{line}” {end}"
+                if estimate_tokens(reply) <= budget:
+                    return unresolved("decision_incomplete", reply, mentions.values())
+        if topic_ids:
+            return unresolved("decision_incomplete", _INCOMPLETE if not dated else
+                              "I found a mention around then, but only part of the conversation.")
+        return unresolved("decision_missing", _MISSING if not dated else
+                          "I can't find the exchange around then, so I can't say "
+                          "what we decided.")
+    ambiguous = ("I found several possible matches around then, so I can't pin down the decision."
+                 if dated else _COMPETING)
+    if unanswered:
+        return unresolved("decision_ambiguous", ambiguous)
+    if len(candidates) == 1:
+        match = candidates[0]
+        if choice is not None:
+            return unresolved("decision_incomplete", "I can't reliably match that choice anymore.")
+        if not topic_ids.issubset(match[1]):
+            return unresolved("decision_incomplete", ambiguous if dated else _OTHER_MENTION)
+    else:
+        # Present two actual proposals in stable chronological order. Never
+        # splice either one's reply onto the other or discard an outside correction.
+        if len(candidates) != 2:
+            return unresolved("decision_ambiguous", ambiguous)
+        candidates.sort(key=lambda pair: (pair[0][0][1], pair[0][0][0]["message_id"]))
+        anchors = [rows[0] for rows, _ in candidates]
+        lines = [row["content"].strip() for row, _ in anchors]
+        passages = [{r["message_id"] for r, _ in rows} for rows, _ in candidates]
+        separate = passages[0].isdisjoint(passages[1])
+        if (not separate or not topic_ids.issubset(candidates[0][1] | candidates[1][1])
+                or lines[0] == lines[1]
+                or not all(_PROPOSAL.match(s) and _safe_quote(s) and len(s) <= 140 for s in lines)):
+            return unresolved("decision_ambiguous", ambiguous)
+        prompt = f'{_CHOICES} The first was “{lines[0]}” The second was “{lines[1]}” Which one?'
+        if estimate_tokens(prompt) > budget:
+            return unresolved("decision_ambiguous", ambiguous)
+        if choice is None or previous_reply != sanitize_assistant_text(prompt):
+            return unresolved("decision_ambiguous", prompt, anchors)
+        if choice in ("first", "second"):
+            match = candidates[int(choice == "second")]
+        else:
+            terms = _terms(choice)
+            named = [pair for pair, line in zip(candidates, lines, strict=True)
+                     if terms and terms.issubset(_terms(line))]
+            if len(named) != 1:
+                return unresolved("decision_ambiguous", prompt, anchors)
+            match = named[0]
     header = ("The original proposal and the replies that followed, in order. "
               "Aiko is the assistant speaking with the user.")
     text, ids = _render_sources(match[0], speaker, zone, budget, estimate_tokens, header,
                                 complete=True)
-    return text, ids, _quoted_decision(match[0]) if ids and open_question else ""
+    if not ids:
+        return unresolved("decision_incomplete",
+                          "I can't read enough of that exchange to say what we settled on.")
+    return ExchangeLookup(text, ids, _quoted_decision(match[0]) if open_question else "",
+                          "decision_exchange")
+
+
+_RELATIVE_DETAIL = re.compile(
+    r"(?:on |last )?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|today|yesterday|"
+    r"(?:last|this) (?:week|month)|(?:\d+|a|one|two|three) (?:days?|weeks?) ago"
+)
+_CALENDAR_DETAIL = re.compile(
+    r"(?:on )?(?:\d{4}-\d{2}-\d{2}|[a-z]+ \d{1,2}(?:st|nd|rd|th)?(?:,? \d{4})?|"
+    r"\d{1,2} [a-z]+(?: \d{4})?)"
+)
+
+
+def _decision_detail(text, previous):
+    detail = text.strip().rstrip(".!").lower()
+    if previous.startswith(_CHOICES):
+        ordinal = re.fullmatch(r"(?:the )?(first|second)(?: one| suggestion)?", detail)
+        named = re.fullmatch(r"the ([\w'-]+(?: [\w'-]+){0,4}) one", detail)
+        if ordinal or named:
+            return (ordinal or named)[1], ""
+    if (previous in (_MISSING, _INCOMPLETE, _OTHER_MENTION, _COMPETING)
+            or previous.startswith((_CHOICES, _PARTIAL))):
+        if detail in ("i don't remember", "i don’t remember", "i don't know", "i’m not sure",
+                      "i'm not sure", "not sure"):
+            return "can't identify", ""
+        if _RELATIVE_DETAIL.fullmatch(detail):
+            return None, detail
+        if _CALENDAR_DETAIL.fullmatch(detail):
+            day = timephrase.parse_loose_datetime(detail)
+            if day:
+                return None, day.date().isoformat()
+    return None, ""
+
+
+def _decision_followup(db, session_key, user_text, recent_turns):
+    unchanged = user_text, "", None, ""
+    if not recent_turns:
+        return unchanged
+    previous = recent_turns[-1]
+    choice, date_hint = _decision_detail(user_text, previous)
+    if choice is None and not date_hint:
+        return unchanged
+    # Follow only consecutive question/clarification pairs from this chat.
+    # A date may have narrowed a search to two choices on the previous turn.
+    rows = db.get_messages(session_key, limit=9)
+    if rows and rows[-1].role == "user" and rows[-1].content.strip() == user_text.strip():
+        rows.pop()
+    if not rows or rows[-1].content.strip() != previous:
+        return unchanged
+    receipts = db.decision_recall_message_ids([r.id for r in rows if r.role == "assistant"])
+    for i in range(len(rows) - 1, 0, -2):
+        user, assistant = rows[i - 1:i + 1]
+        if user.role != "user" or assistant.role != "assistant" or assistant.id not in receipts:
+            break
+        if decision_request(user.content):
+            return user.content, previous, choice, date_hint
+        if i < 2:
+            break
+        prior_choice, prior_date = _decision_detail(user.content, rows[i - 2].content)
+        if prior_choice is None and not prior_date:
+            break
+        date_hint = date_hint or prior_date
+    return unchanged
 
 
 def lookup_exchange(
     db, user_text, session_key, speaker, *, budget, estimate_tokens, tz_name="system",
+    recent_turns=(),
 ):
     """Read a small, owner-scoped neighborhood with exact message times."""
     if not db or ":" not in session_key or budget <= 0:
-        return "", [], ""
+        return ExchangeLookup()
+    current_text = user_text
+    user_text, previous_reply, choice, date_hint = _decision_followup(
+        db, session_key, user_text, recent_turns,
+    )
+    if choice == "can't identify":
+        return ExchangeLookup(reply="That's okay. I'll leave what we decided open.",
+                              reason="decision_unresolved")
     decision = decision_request(user_text)
     request = decision or _HISTORY_REQUEST.search(user_text)
     if request is None or (
         request.group().lower().startswith(("you forgot", "don", "do not"))
         and not _PAST_EXCHANGE.search(user_text)
     ):
-        return "", [], ""
+        return ExchangeLookup()
     clause_start = max(user_text.rfind(mark, 0, request.start()) for mark in ".!?\n") + 1
     clause_end = re.search(r"[.!?\n]", user_text[request.end():])
     clause_end = request.end() + clause_end.start() if clause_end else len(user_text)
@@ -150,32 +324,37 @@ def lookup_exchange(
     else:
         terms = _terms(user_text[clause_start:clause_end]) or _terms(user_text)
     if not terms:
-        return "", [], ""
+        return ExchangeLookup()
 
     zone = None if tz_name == "system" else ZoneInfo(tz_name)
     now = timephrase.now().astimezone(zone)
-    weekday = _WEEKDAY.search(user_text)
+    when = date_hint or user_text
+    weekday = _WEEKDAY.search("on " + when)
     window = (parse_time_window("on " + weekday[1], now) if weekday
-              else parse_time_window(user_text, now))
-    dated = window is not None and window.guardable
+              else parse_time_window(when, now))
+    dated = window is not None and (window.guardable or bool(date_hint)
+                                    or (decision is not None and window.label == "today"))
     end = min(window.end, now) if dated else now
     start = max(window.start, end - timedelta(days=14)) if dated else end - timedelta(days=14)
-    if dated and window.start.hour == 0 and window.end.hour == 23:
+    exact_date = date_hint and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_hint)
+    if exact_date or (dated and window.start.hour == 0 and window.end.hour == 23):
         span = resolve_range(
-            start=start.date().isoformat(), end=end.date().isoformat(), tz_name=tz_name,
+            start=date_hint if exact_date else start.date().isoformat(),
+            end=date_hint if exact_date else end.date().isoformat(), tz_name=tz_name,
         )
         end = min(now, timephrase.parse_iso(span["end_exclusive"]) - timedelta(microseconds=1))
         start = max(end - timedelta(days=14), timephrase.parse_iso(span["start"]))
     user_id = session_key.split(":", 1)[0]
     if not user_id:
-        return "", [], ""
+        return ExchangeLookup()
     rows = db.messages_in_range(
         start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat(),
         limit=400, user_id=user_id,
     )
     current_id = next((row["message_id"] for row in rows
                        if row["session_id"] == session_key
-                       and row["content"].strip() == user_text.strip()), None)
+                       and row["role"] == "user"
+                       and row["content"].strip() == current_text.strip()), None)
 
     history = defaultdict(list)
     matches = Counter()
@@ -183,15 +362,15 @@ def lookup_exchange(
     # Use the recorded turn outcome so a human-written quote stays eligible.
     previous_recaps = set()
     if decision:
-        previous_recaps = db.quoted_exchange_message_ids(
+        previous_recaps = db.decision_recall_message_ids(
             [r["message_id"] for r in rows if r["role"] == "assistant"],
         )
     for row in reversed(rows):
+        if row["session_id"].endswith(":noremember"):
+            continue
         if current_id is not None and row["message_id"] >= current_id:
             continue
-        if row["message_id"] in previous_recaps and (
-            row["role"] == "assistant" or decision_request(row["content"])
-        ):
+        if row["message_id"] in previous_recaps:
             continue
         stamp = timephrase.parse_iso(row["created_at"])
         if stamp is None:
@@ -201,9 +380,12 @@ def lookup_exchange(
         matches.update(shared)
 
     if decision:
+        plain = not _RECAP_QUALIFIER.search(user_text)
+        open_question = bool(decision.group("open") or previous_reply)
         return _decision_evidence(history, speaker, zone, budget, estimate_tokens,
-                                  open_question=bool(decision.group("open"))
-                                  and not _RECAP_QUALIFIER.search(user_text))
+                                  open_question=plain and open_question, plain_reply=plain,
+                                  previous_reply=previous_reply, choice=choice,
+                                  dated=bool(dated or exact_date))
     candidates = []
     for dialog in history.values():
         for index, (row, stamp, shared) in enumerate(dialog):
@@ -223,7 +405,7 @@ def lookup_exchange(
     if not candidates:
         note = ("The archive lookup found no matching original exchange in its bounded search. "
                 "Treat any exact time or wording as unverified.")
-        return (note if estimate_tokens(note) <= budget else ""), [], ""
+        return ExchangeLookup(note if estimate_tokens(note) <= budget else "")
     header = (
         "Original chat around the likely match. Times are message times in the local timezone. "
         "Use the user's own reports and corrections for what happened. An earlier assistant "
@@ -241,14 +423,14 @@ def lookup_exchange(
     rows = sorted(selected.values(), key=lambda item: (item[1], item[0]["message_id"]))
     text, ids = _render_sources(rows, speaker, zone, budget, estimate_tokens, header,
                                 complete=False)
-    return text, ids, ""
+    return ExchangeLookup(text, ids)
 
 
 def exchange_evidence(db, user_text, session_key, speaker, *, budget, estimate_tokens,
                       tz_name="system"):
-    text, ids, _ = lookup_exchange(db, user_text, session_key, speaker, budget=budget,
-                                   estimate_tokens=estimate_tokens, tz_name=tz_name)
-    return text, ids
+    result = lookup_exchange(db, user_text, session_key, speaker, budget=budget,
+                             estimate_tokens=estimate_tokens, tz_name=tz_name)
+    return result.text, result.message_ids
 
 
 def _render_sources(rows, speaker, zone, budget, estimate_tokens, header, *, complete):

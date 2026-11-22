@@ -216,6 +216,20 @@ the user accepted. The runs used local `baytout3/qwen3.5-uncensored:9b` and
 `qwen3-embedding:0.6b`. Fresh ordinary use and cases where the archive cannot
 identify a single exchange remain open under L22.
 
+**Missing and competing decision exchanges, November 22.** In the initial
+eight fictional atlas replies at seed 71, the model chose the bookmark every
+time. This included four cases where the user had only asked to look at the
+harbor map. The bounded search either missed the 30-day-old original or
+found another proposal about a ribbon. After the change, all 16 atlas and
+rehearsal trials asked for a date or showed the two proposals. All 16
+follow-ups recovered the selected speakers and replies, including the limit
+to the first rehearsal. Four unique atlas controls kept their original
+recaps. Each trial used disposable stores, the same local models as above,
+and the ordinary chat runner. Repeat with `--archive-case missing` or
+`--archive-case competing`. This closes the reproduced fallback cases.
+Ordinary-use wording and questions outside the standalone decision lookup
+remain open.
+
 **Acceptance.** A one-time choice does not imply effectiveness or a standing
 trait. Multiple paraphrases of one episode retain one evidence basis in the
 review. Withdrawing an unsupported premise changes recall eligibility while an

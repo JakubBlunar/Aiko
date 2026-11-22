@@ -1571,28 +1571,31 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         rag = getattr(self, "_rag_retriever", None)
         embedder = getattr(self, "_embedder", None)
         name = self.user_display_name
-        from app.core.conversation.exchange_recall import (
-            DECISION_GUIDANCE, decision_request, lookup_exchange,
-        )
+        from app.core.conversation.exchange_recall import DECISION_GUIDANCE, lookup_exchange
 
         settings = getattr(self, "_settings", None)
-        archive_text, archive_ids, quoted_decision = "", [], ""
+        archive_text, archive_ids = "", []
+        exchange = None
         if getattr(getattr(settings, "agent", None), "rag_direct_recall_enabled", True):
             try:
-                archive_text, archive_ids, quoted_decision = lookup_exchange(
+                exchange = lookup_exchange(
                     getattr(self, "_chat_db", None), user_text, session_key, name,
                     budget=min(450, budget_tokens // 2), estimate_tokens=estimate_tokens,
                     tz_name=getattr(getattr(settings, "tools", None), "archive_timezone", "system"),
+                    recent_turns=recent_turns or (),
                 )
+                archive_text, archive_ids = exchange.text, exchange.message_ids
             except Exception:
                 log.debug("relevant_context: original exchange lookup failed", exc_info=True)
         record_stage("archive_lookup")
-        if archive_ids and decision_request(user_text):
+        if exchange and exchange.reason:
             return RelevantContext(
-                text=archive_text, reply_guidance=DECISION_GUIDANCE,
-                quoted_decision=quoted_decision,
-                reason="decision_exchange", stage_ms=stage_ms,
-                concept_trace={"surfaced": [], "reason": "decision_exchange",
+                text=archive_text, reply_guidance=(DECISION_GUIDANCE
+                                                   if exchange.reason == "decision_exchange"
+                                                   else ""),
+                decision_reply=exchange.reply,
+                reason=exchange.reason, stage_ms=stage_ms,
+                concept_trace={"surfaced": [], "reason": exchange.reason,
                                "original_exchange_message_ids": archive_ids},
             )
 

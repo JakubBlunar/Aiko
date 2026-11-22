@@ -9,7 +9,7 @@ Use --without-archive to exercise concept withdrawal alongside ordinary memory r
 import argparse
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -76,7 +76,8 @@ OCCASIONS = {
 }
 
 
-def trial(root, client, embeddings, model, occasion, case, reviewed, question, *, archive):
+def trial(root, client, embeddings, model, occasion, case, reviewed, question, *, archive,
+          archive_case="unique"):
     fixture = OCCASIONS[occasion]
     agreed = case == "agreement"
     response = fixture.assent if agreed else fixture.neutral_reply
@@ -102,12 +103,22 @@ def trial(root, client, embeddings, model, occasion, case, reviewed, question, *
                                score_threshold=settings.memory.score_threshold)) as rag):
         memories.attach_rag_store(index)
         rows = []
-        for role, line in exchange:
-            mid = db.add_message(session, role, line)
-            row = db.get_message_row(mid)
-            rows.append(row)
-            index.add_message(session_id=session, message_id=mid, role=role, content=line,
-                              embedding=embeddings.embed(line), created_at=row.created_at)
+        source_age = {"unique": 0, "competing": 1, "missing": 30}[archive_case]
+        source_time = timephrase.utcnow() - timedelta(days=source_age)
+        with timephrase.scoped_now(lambda: source_time):
+            for role, line in exchange:
+                mid = db.add_message(session, role, line)
+                row = db.get_message_row(mid)
+                rows.append(row)
+                index.add_message(session_id=session, message_id=mid, role=role, content=line,
+                                  embedding=embeddings.embed(line), created_at=row.created_at)
+        if archive_case == "competing":
+            db.add_message("replay:other", "assistant", {
+                "atlas": "We could put a ribbon in the atlas.",
+                "soundcheck": "We could reserve channel three for the soundcheck.",
+                "rehearsal": "We could leave the handbell backstage for the curtain call.",
+            }[occasion])
+            db.add_message("replay:other", "user", "I'm still thinking about that.")
         diary_text = fixture.diary
         diary = memories.add(
             diary_text, "diary", embeddings.embed(diary_text), source_session=session,
@@ -157,7 +168,26 @@ def trial(root, client, embeddings, model, occasion, case, reviewed, question, *
         assert viable == (case == "agreement" or not reviewed)
         sources = [i + 1 for i, (_, s) in enumerate(exchange) if s in system]
         snippet_order = sorted(sources, key=lambda i: system.index(exchange[i - 1][1]))
-        if archive:
+        follow_up = ""
+        if archive_case != "unique" and archive:
+            expected = ("Say the original exchange wasn't found and ask for a clue."
+                        if archive_case == "missing" else
+                        "Distinguish the matches and ask which one. Leave agreement open.")
+            assert trace["reason"] == {"missing": "decision_missing",
+                                       "competing": "decision_ambiguous"}[archive_case]
+            assert result.usage.done_reason == "decision_clarification" and spoken and displayed
+            assert cid not in selected and diary_text not in system
+            assert result.text.count("?") == 1 and response not in result.text
+            if archive_case == "competing":
+                assert len(archive_ids) == 2 and fixture.suggestion in result.text
+            else:
+                assert not archive_ids and "can't find the original exchange" in result.text
+            detail = "The first one." if archive_case == "competing" else "30 days ago."
+            resolved = runner.run(session_key="replay:recall", user_text=detail)
+            assert resolved.usage.done_reason == "quoted_exchange", resolved.text
+            follow_up = resolved.text
+            assert fixture.suggestion in follow_up and response in follow_up
+        elif archive:
             assert archive_ids == [row.id for row in rows[1:]] and snippet_order == [2, 3]
             assert cid not in selected and diary_text not in system
             if question == "open":
@@ -169,13 +199,14 @@ def trial(root, client, embeddings, model, occasion, case, reviewed, question, *
             assert (cid in selected) == viable
         assert result.text.strip(), "ordinary chat returned an empty reply"
         return {"occasion": occasion, "case": case, "question": question, "reviewed": reviewed,
+                "archive_case": archive_case, "selection": trace.get("reason"),
                 "expected_reply": expected,
                 "assertable": viable, "concept_selected": cid in selected,
                 "diary_in_prompt": diary_text in system,
                 "source_lines_in_prompt": sources,
                 "archive_ids": archive_ids,
                 "snippet_order": snippet_order,
-                "reply": result.text}
+                "reply": result.text, "follow_up": follow_up}
 
 
 def main():
@@ -185,6 +216,8 @@ def main():
     parser.add_argument("--seed", type=int, default=71)
     parser.add_argument("--occasion", choices=OCCASIONS, default="atlas")
     parser.add_argument("--question", choices=("open", "direct"))
+    parser.add_argument("--archive-case", choices=("unique", "missing", "competing"),
+                        default="unique")
     parser.add_argument("--without-archive", action="store_true")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
@@ -207,7 +240,8 @@ def main():
                     for question in ((args.question,) if args.question else ("direct", "open")):
                         result = trial(Path(tmp) / f"{case}-{reviewed}-{question}", client,
                                        embeddings, args.model, args.occasion, case, reviewed,
-                                       question, archive=not args.without_archive)
+                                       question, archive=not args.without_archive,
+                                       archive_case=args.archive_case)
                         print(json.dumps({"model": args.model, "embedding": args.embedding,
                                           "seed": args.seed, **result}), flush=True)
 
