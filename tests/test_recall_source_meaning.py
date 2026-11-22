@@ -47,6 +47,18 @@ def test_expansion_keeps_virtual_source_and_unknown_occurrence():
     assert "only when invited" in block
 
 
+@pytest.mark.parametrize("expanded", [False, True])
+def test_reflection_is_qualified_when_recalling_agreement(expanded):
+    impression = memory("aiko", "reflection")
+    impression.kind = "diary"
+    stated = memory("user", "observation")
+    for row, qualifier in ((impression, True), (stated, False)):
+        hit = RagRetriever._memory_to_hit(row, score=0.8, expansion=expanded)
+        block = RagRetriever.format_block([hit])
+        assert row.content in block
+        assert ("Use the user's words to establish what they agreed to" in block) == qualifier
+
+
 def test_unhydrated_vector_kind_is_not_authority_for_subject():
     record = MemoryRecord("1", "A fact of unresolved origin.", "fact", 0.5,
                           None, None, "2026-10-01", None, 0)

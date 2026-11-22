@@ -66,6 +66,8 @@ def recall_origin(hit) -> MemoryOrigin:
 def recall_scope(hit) -> str:
     origin = recall_origin(hit)
     label = f"subject={origin.subject}; source={origin.mode}; domain={origin.domain}"
+    if origin.subject == "aiko" and origin.mode == "reflection":
+        label += "; your own impression. Use the user's words to establish what they agreed to"
     if getattr(hit.record, "kind", "") == "catchphrase":
         label += "; recurring quotation, not a personal claim; authorship unproven"
     if getattr(hit, "memory_context", ""):

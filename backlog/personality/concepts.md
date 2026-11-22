@@ -154,6 +154,28 @@ claim can still use the same record. The verdict is scoped to the reviewed
 concept and source node. A wider cohort review and repairs for equivalent
 sources with different IDs remain open.
 
+On 22 November a read-only check found that both historical concepts still
+passed the current recall gate on diary `11669` alone. The ledger recorded
+40 selections for `13690` and 13 for `13691` across 44 distinct replies
+from 15 to 20 November. In reply `11579` the user had already brought up
+behaving in that turn. Reply `11328`, flagged as an echo for `13691`, discussed
+another topic. Neither establishes that the diary introduced an agreement
+into a live reply.
+
+The [fictional ordinary-chat replay](../../scripts/concept_repair_chat_replay.py)
+uses separate stores for a bookmark suggestion and an explicit one-session
+agreement, before and after withdrawing the diary premise. On local
+`baytout3/qwen3.5-uncensored:9b` with `qwen3-embedding:0.6b`, seed 71,
+the direct question distinguished them, but an open question still produced
+“we agreed” after withdrawal. The concept disappeared, yet memory recall
+included the diary alongside all three original messages. Qualifying Aiko's
+reflection at recall time preserved the distinction on all eight post-review
+replies across seeds 71 and 73. Before withdrawal, the open suggestion case
+still claimed agreement on both seeds. In the explicit case the open replies
+recalled the decision but cited opening the atlas as confirmation. This is
+one paired fictional exchange. The historical premises still await review
+for repair, and accuracy across other conversations remains open.
+
 **Acceptance.** A one-time choice does not imply effectiveness or a standing
 trait. Multiple paraphrases of one episode retain one evidence basis in the
 review. Withdrawing an unsupported premise changes recall eligibility while an

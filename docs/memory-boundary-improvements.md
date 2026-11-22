@@ -12,6 +12,8 @@ authoritative join remains explicitly unresolved. Catchphrases are labelled as
 recurring quotations rather than personal claims or proven original authorship.
 Associative notes retain whole qualifications and the ordinary temporal tags;
 oversized notes are omitted rather than cut to a misleading prefix.
+When a recalled note is Aiko's own reflection, both direct and topic-expanded
+recall identify it as her impression and point to the user's words for agreement.
 
 Focused recall regressions: 110 passed. The combined verification is recorded
 below. Live-model wording remains to be checked after a backend restart and
