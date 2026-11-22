@@ -144,6 +144,11 @@ row; the old zero-exit headline is stale.
 recorded exit alone cannot close this: an earlier audit found unrelated confirmations. Keep H7
 evidence review and post-guard model revalidation; do not lower support bars.
 
+22 November read-only check found one retained graduated row (12 October) and
+zero merged rows. The graduated row lists one answer-memory ID and predates
+the distinct-message guard. A fresh post-guard exit with independent current
+sources is still needed.
+
 [Implemented slice](shipped/audit-2026-10-24.md#health-h44).
 
 **Source check:** [hypothesis_graduation.py](../../app/core/concepts/hypothesis_graduation.py),
@@ -180,15 +185,7 @@ not lower thresholds to manufacture names. Historical counts are not current.
 
 ## H21-followup. Decide the question-style axis
 
-**Status: deferred.**
-
-**Implemented / available:** K13's baseline-relative style signal retains five axes and register
-calibration.
-
-**Remaining:** Measure whether the question axis carries useful variation before retaining, retiring
-or recalibrating it; do not label a current stream dead from the old snapshot.
-
-**Source check:** [style_signal.py](../../app/core/persona/style_signal.py).
+Closed 22 November. [Corpus replay and decision](shipped/health.md#h21-follow-up-question-style-axis).
 
 ## H20-followup. Fact-check claim selection coverage
 

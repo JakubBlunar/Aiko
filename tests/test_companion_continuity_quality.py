@@ -31,8 +31,9 @@ def test_aging_that_exposes_more_old_messages_cannot_reopen_diary(monkeypatch):
     assert worker.run()["reason"] == "no_new_conversation"
     assert len(worker._ollama.calls) == 2
     rows[-1].content = "A new thought about a different subject."
-    assert worker.run()["fired"] == 1
-    assert len(worker._ollama.calls) == 4
+    # The new source permits composition, but the fixture repeats the previous entry.
+    assert worker.run()["reason"] == "duplicate_entry"
+    assert len(worker._ollama.calls) == 3
 
 
 def test_diary_rejects_identical_entry_even_with_new_dialogue():

@@ -1,7 +1,51 @@
 # Idle life: concepts, conversation continuity and behavioral observability
 
-Status: core implementation complete, 15 November 2026. Runtime restart and
-ordinary-use evaluation remain pending.
+**22 November validation update.** The initial request to observe several
+ordinary away periods and verify trace persistence across restarts is complete.
+In a read-only query for 15–21 November UTC, completed away-activity steps
+occurred on all seven dates. The store retained six distinct scheduler boots
+across three runtime fingerprints. It held 55 choices and 56 completed steps
+across 55 runs. The choices comprised 46 weighted selections, eight model
+selections and one household follow-up. Recorded holds included sleep, shared
+conversation and cooldown. The [17 November review](../reviews/companion-continuity-review-2026-11-17.md#3-independent-life-observation)
+documents gaps within the window and distinguishes a saved effect from thinking
+about one.
+
+The same review asked for rejection reasons once the new recorder had run.
+From 18–21 November UTC it recorded 13 rejected plans in 13 autonomous
+away-activity runs. All 13 reported `invalid_household_selection`. That
+identifies which selection check to investigate. The receipt stores only the
+reason and cannot identify the offending action or field.
+
+**Household follow-up, 22 November.** Trace events 71955–71962 show 16
+offered 64-character tokens, a rejection during model-plan parsing, then a
+weighted reheating choice that executed successfully. The old reason covered
+three parser checks, so those events cannot identify which check rejected the
+original selection. In a disposable kitchenette with a coffee intention,
+the local 9B worker returned a household token and a nonempty item-change
+field on seeds 71 and 73. Both plans were rejected before execution.
+
+The planner now names each offered household action in the activity menu and
+resolves the selected name to the original token. It accepts a redundant
+name for that action's own item. Regression checks cover an unoffered choice,
+an additional item or creation, and a second plan becoming stale after the
+first fills the vessel. Recheck rejection reasons and completed receipts in
+ordinary away periods after restart. [Planner contract](../../docs/idle-workers.md#shared-household-capabilities)
+
+With the updated prompt on local `baytout3/qwen3.5-uncensored:9b`, seeds
+71 and 73 both chose the offered coffee recipe and the real executor recorded
+coffee in the mug. Both replies repeated the correct vessel name. With a
+quiet-stretch intention in the same fictional room, one chose tea and one
+chose thinking. Those intentions are optional. The replay verifies selection
+and execution for the named cases and leaves general activity preference open.
+
+Still open are full 14-day retention, the cost of capture and context, and
+whether eligible choices show meaningful voluntary returns. The first observed
+week spans multiple builds. Context and tracing shipped together, so it cannot
+supply a controlled before/after comparison. [Choice evidence and eligibility](../personality/concepts.md#l57-ground-aikos-changing-interests-in-her-own-choices)
+
+**15 November implementation record.** The following phase notes describe the
+checks available at implementation time.
 
 Phase 1 implements the 14-day store, scheduler/admission and action tracing,
 read-only REST/MCP queries and a World timeline. Validation: 117 focused backend

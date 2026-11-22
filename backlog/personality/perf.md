@@ -357,7 +357,7 @@ own follow-up experiments.
 
 ## P53. Reconcile the memory search index without rewriting it on every boot
 
-**Status: Partial.** Startup compares the LanceDB memory projection against
+**Status: Validation.** Startup compares the LanceDB memory projection against
 SQLite in batches and writes only missing or changed rows. An unchanged index
 keeps its version and files. An empty authoritative store clears orphaned
 index entries, while an unreadable mirror skips reconciliation. Ordinary
@@ -377,7 +377,7 @@ P30 owns the separate SQLite mirror load cost.
 
 ## P54. Share an embedding request between simultaneous cache misses
 
-**Status: Partial.** Concurrent misses for one key share a provider request.
+**Status: Validation.** Concurrent misses for one key share a provider request.
 Different keys still run independently. The provider sets the request timeout,
 and a waiting caller uses that same timeout for its join. A failure releases
 waiters and the next call can retry. Cache clearing detaches old work so it
@@ -386,30 +386,14 @@ Ordinary-turn telemetry exposes join count and wait time separately from HTTP
 calls. [Telemetry contract](../../docs/prompt-surfacing.md#what-a-surfacing-measurement-means).
 
 **Remaining:** Use ordinary-chat telemetry to measure how often requests
-overlap and how much turn time is spent waiting on shared work.
+overlap and how much turn time is spent waiting on shared work. On 22 November
+the six retained app logs contained no `embed_waits` field. Older embedding
+timings cannot supply a zero-wait sample. Recheck once completed turns log
+the join count and duration.
 
 ## P55. Delay full topic record formatting until the page is selected
 
-**Status: Partial.** Topic paging batch-fetches members when the store
-supports it, then ranks lightweight source state and revisions. Repeated
-message reads share a request-local cache. Only selected rows build full
-records, using fresh source reads. A selected source change prompts a
-restart. Tests cover ordering, historical reads and revision-bound pages,
-including 50-, 500-, and 2,000-member fixtures with eight records built per
-page. [Read contract](../../docs/fast-brain-tool-improvements.md#topic-page-cost).
-
-An isolated comparison with a shared source message and stub stores measured
-these median times for the first and second eight-result pages (five runs
-per case). Source reads and full records are totals across both pages.
-
-| Members | Source reads, before → after | Full records, before → after | First / next ms, before → after |
-| ---: | ---: | ---: | --- |
-| 50 | 232 → 34 | 116 → 16 | 1.5 / 1.5 → 1.2 / 1.2 |
-| 500 | 2,032 → 34 | 1,016 → 16 | 15.5 / 13.8 → 7.3 / 8.2 |
-| 2,000 | 8,032 → 34 | 4,016 → 16 | 52.6 / 53.4 → 32.3 / 31.4 |
-
-**Remaining:** Measure first-page and continuation latency on ordinary-use
-clusters with diverse source messages.
+Closed 22 November. [Implementation and paging measurements](shipped/perf.md#p55-topic-paging-on-ordinary-use-clusters).
 
 ## P24a. Repair the STT partial-read and recorder-lifetime contracts
 

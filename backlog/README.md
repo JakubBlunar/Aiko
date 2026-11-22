@@ -11,7 +11,7 @@ describes its dated baseline; it is not a specification of the latest code.
 | Personality and subsystem work            | [Open index](personality/index.md)                                                                                                                                                              |
 | Completed personality work                | [Shipped index](personality/shipped.md)                                                                                                                                                         |
 | Broader plugin/job platform design        | [Platform roadmap](personality/plugin-system.md)                                                                                                                                                |
-| Ordinary-use quality findings             | [15 November worker review](reviews/ordinary-use-review-2026-11-15.md), [12 November review](reviews/ordinary-use-review-2026-11-12.md), [earlier follow-up](reviews/ordinary-use-follow-up.md) |
+| Ordinary-use quality findings             | [17 November continuity review](reviews/companion-continuity-review-2026-11-17.md), [worker cohort summaries](personality/workers.md#memorytime-quality-ordinary-use-follow-up), [12 November review](reviews/ordinary-use-review-2026-11-12.md) |
 
 ## Reviews
 

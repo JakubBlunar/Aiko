@@ -10,6 +10,13 @@ When an entry lands, move its write-up here and leave the open file only a one-l
 
 ---
 
+## 22 November 2026 backlog closures
+
+- **A8. Conversation bridge ownership.** The opening prompt selects the most recent eligible saved conversation for the active owner. Foreign, legacy and temporary sessions cannot supply the bridge. Removing the last eligible source removes it from the prompt. All eight continuity-slot tests passed on 22 November. [Current contract](../../docs/configuration.md#k91--session-continuity-bridge) · [Prompt regressions](../../tests/test_prompt_assembler.py)
+- [F17. Keep discounted retention credit for semantic echoes](shipped/awareness.md#f17-retention-credit-for-semantic-echoes)
+- [Health H21 follow-up. Keep the question-style axis](shipped/health.md#h21-follow-up-question-style-axis)
+- [P55. Topic paging on ordinary-use clusters](shipped/perf.md#p55-topic-paging-on-ordinary-use-clusters)
+
 ## [Shipped slice — K102/K103 social understanding](shipped/social-understanding.md)
 
 - [K102 pragmatic frames](shipped/social-understanding.md#k102-pragmatic-frames) — bounded cited context; broader behavioral validation open.
@@ -68,6 +75,7 @@ When an entry lands, move its write-up here and leave the open file only a one-l
 
 ## [Shipped — Performance & observability (P-series)](shipped/perf.md)
 
+- [P39. Batched concept evidence](shipped/perf.md#p39-batched-concept-evidence)
 - [P1. Per-turn embed budget + timing](shipped/perf.md#p1-per-turn-embed-budget--timing)
 - [P2. Prompt-build phase telemetry](shipped/perf.md#p2-prompt-build-phase-telemetry)
 - [P3. Cheap slice-cache validation (skip two SQLite reads on a hit)](shipped/perf.md#p3-cheap-slice-cache-validation-skip-two-sqlite-reads-on-a-hit)

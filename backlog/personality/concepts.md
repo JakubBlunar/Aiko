@@ -57,7 +57,7 @@ is the next foundation; evidence-count or lifecycle tuning cannot establish it.
 ### L22 follow-up: post-restart memory quality cohort (6 Nov 2026)
 
 **Status: Fresh cohorts reviewed through 15 Nov; semantic follow-ups remain.**
-The [15 November follow-up](../reviews/ordinary-use-review-2026-11-15.md) closes an
+The [15 November worker review summary](workers.md#memorytime-quality-ordinary-use-follow-up) records the closure of an
 uncited-admission bypass and adds bounded meaning checks. Its 18-concept sample
 still exposes unsupported relations; missing history and unjudged axes remain
 explicit. No promotion-policy or historical-data changes were made.
@@ -93,9 +93,14 @@ the actual source messages, not only metadata coverage or counts.
   cohort is not automatically a failure or a reason to manufacture data.
 - [ ] Check missed important information as well as false admissions; separate
   valid abstention, malformed output, budget omission and missing source support.
-- [ ] Trace a small resulting concept cohort back to its memories. Keep
-  historical review candidates separate from post-restart generation results;
-  document denominators and unresolved uncertainty before tuning promotion gates.
+- [x] Trace a small resulting concept cohort back to its memories. The
+  [12 November sample](../reviews/ordinary-use-review-2026-11-12.md#cohort-and-activation-boundary)
+  covered 18 of 131 eligible concepts. Three support sets justified their labels,
+  11 fell short and four were unjudged. The [17 November review](../reviews/companion-continuity-review-2026-11-17.md#1-source-to-memory-to-later-understanding)
+  traced both newly active concepts in its window to the same unsupported diary
+  claim. This completes the initial tracing task. The separate
+  [surfaced-concept review](#l22-follow-up-review-what-surfaced-concepts-actually-add)
+  owns the exposure-weighted sample and post-repair checks.
 - [ ] After the additional [reflective-producer restart](../../docs/reflective-producer-quality.md),
   check goal-note novelty and genuine reported outcomes, narrow shared-moment
   citations/event dates, and dream input qualifications/derivations. Record this

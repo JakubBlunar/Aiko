@@ -34,6 +34,9 @@ class _FakeStore:
         self.added.append(mem)
         return mem
 
+    def list_recent(self, *, limit, kind):
+        return [row for row in reversed(self.added) if row.kind == kind][:limit]
+
 
 class _FakeLLM:
     def __init__(self, entry: str = "The quiet felt different without them.") -> None:
@@ -290,6 +293,7 @@ class JournalQualityTests(unittest.TestCase):
         assert worker.run()["reason"] == "no_new_conversation"
         assert len(worker._ollama.calls) == 1
         revision[0] = "session:44"
+        worker._ollama.entry = "I was surprised by how much I enjoyed the next conversation."
         assert worker.run()["fired"] == 1
         assert len(worker._memory_store.added) == 2
         journal = worker._memory_store.added[-1].kw["metadata"]["journal"]

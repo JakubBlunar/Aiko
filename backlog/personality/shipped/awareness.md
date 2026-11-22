@@ -4,6 +4,25 @@ Part of the [shipped log index](../shipped.md). One paragraph per entry; full de
 
 ---
 
+## F17. Retention credit for semantic echoes
+
+**Decision, 22 November 2026.** Keep discounted credit for a semantic-only hit.
+The retained default-owner chat had 50 such memory hits on 35 replies from
+12–20 November UTC. Comparing the saved item with the user turn and the reply
+shows why blanket full credit would reward some memories for sharing a topic.
+
+| Surfacing outcome ID | What the reply supports |
+| --- | --- |
+| 245585 | The memory concerned a wake-up preference. The reply discussed a sound for falling asleep. The semantic hit credited a different action. |
+| 250976 | The reply restated a goal, but the user had just explained that goal in the same turn. Its appearance cannot identify the saved memory as the source. |
+| 248669 | The reply playfully paraphrased the stored reaction to a gesture. The preceding user turn also supplied the gesture. The wording fits the memory, with attribution uncertain. |
+
+These examples answer the full-credit decision. They give no estimate of the
+best numeric discount or similarity threshold. The comparison uses the retained
+wording of each memory. The ledger does not snapshot its text at selection time.
+[Previous denominator correction](../../reviews/ordinary-use-review-2026-11-12.md) ·
+[Echo detector](../../../app/core/memory/echo_detector.py)
+
 ## F1. Background fact-checker worker
 
 Idle worker that fact-checks recently surfaced claims in the
@@ -222,12 +241,9 @@ rather than being folded into `none`: they were judged by the lexical test
 alone, and back-filling `lexical` would claim a semantic comparison had
 been made and lost.
 
-**Deferred on purpose.** Whether a semantic hit should earn *full*
-retention credit is [F17](../awareness.md#f17-should-a-semantic-echo-earn-full-retention-credit),
-to be settled from the data above rather than from intuition now. The
-user-side credit half of the original entry — rewarding a memory for the
-*user's* engagement rather than Aiko's own verbosity — is also still open
-there; L37's ledger already records exactly that join.
+The [F17 review](#f17-retention-credit-for-semantic-echoes) resolved the full-credit
+question. [F12](../awareness.md#f12-attributable-user-side-memory-retention-credit)
+still owns attribution of user-side outcomes.
 
 **Settings.** `memory.semantic_revival_enabled` (default on),
 `memory.semantic_revival_min_cosine` (0.62; `0` disables),

@@ -1,6 +1,6 @@
 # Aiko personality backlog
 
-**Reviewed 24 Oct 2026, checkout 8c666cf.** This index lists only unfinished implementation,
+**Baseline audit 24 October 2026. Validation triage updated 22 November.** This index lists unfinished implementation,
 explicit validation and deferred decisions. Completed write-ups live in [shipped](shipped.md); the
 [migration audit](shipped/audit-2026-10-24.md) records completed slices and source checks. [Dated
 review history](shipped/review-history.md) is reference, not a queue or current production
@@ -9,8 +9,8 @@ measurement.
 28 Oct implementation update: L29b, L30a/RS2, L36, L50 and K106 now have the
 [bounded concept/pattern rollout](../rollouts/concept-pattern-rollout.md). Live-model evaluation remains.
 
-6 Nov follow-up: the post-restart memory/time-quality review is explicitly waiting
-for ordinary-use data under [L22's checklist](concepts.md#l22-follow-up-post-restart-memory-quality-cohort-6-nov-2026).
+The 12 and 17 November reviews collected ordinary-use data for
+[L22's checklist](concepts.md#l22-follow-up-post-restart-memory-quality-cohort-6-nov-2026).
 Reflective producer-quality improvements are implemented, with ordinary-use validation under
 [workers](workers.md#next-producer-quality-candidates-source-review-6-nov-2026).
 
@@ -25,20 +25,21 @@ exposed source-valid but semantically wrong interpretations across workers.
 Admission/time/research/accounting fixes are implemented; model meaning fidelity,
 positive structured-learning/arc cases and post-fix activation remain open.
 
-15 Nov follow-up: [worker meaning review](../reviews/ordinary-use-review-2026-11-15.md)
+15 Nov follow-up: the [worker review summary](workers.md#memorytime-quality-ordinary-use-follow-up)
 uses a separate fresh cohort, closes an uncited-extraction bypass and adds bounded
 promise, timing and reflection checks. Diary/research quality, missed useful
 information and downstream semantic support remain open; no historical rows or
 promotion thresholds were changed.
 
-Implementation/test sources were inspected. No model calls, app startup, runtime settings changes or
-test runs were made in this documentation-only audit. SQLite observations are read-only dated
-aggregates, not a quality score. Earlier synthetic runs do not establish general naturalness or
-device behavior.
+The [22 November closure record](shipped.md#22-november-2026-backlog-closures)
+covers the two data-backed decisions, topic paging measurements and conversation
+bridge verification. IDs are namespaced by area, including health versus
+immersion H, concepts versus Live L, and performance versus plugin P.
 
-**Queue:** 172 tracked items/follow-ups (67 open, 86 partial, 9 validation, 10 deferred). IDs are
-namespaced: health H versus immersion H, concepts L versus Live L, and performance P versus plugin
-P.
+On 22 November the [active index](#open-items-at-a-glance) contains 177 named
+entries. Of those, 62 are open, 89 partial, 14 awaiting validation, nine
+deferred, two in pilot and one in replay. This counts each domain entry once.
+Checklists inside an entry and the separate workflow plan have their own scope.
 
 ## Where to start
 
@@ -61,13 +62,15 @@ can run alongside capture work using isolated data.
 3. [L22 — Review what surfaced concepts actually add](concepts.md#l22-follow-up-review-what-surfaced-concepts-actually-add).
 4. [RS3 — Recall the particular episode the turn needs](reasoning-surfacing.md#rs3-follow-up-recall-the-particular-episode-the-turn-needs).
 
-The 21 November proposals extend this work. Start with the
-[L49 retelling comparison](concepts.md#l49-follow-up-recognize-a-retelling-across-topic-clusters)
-because every higher-order claim depends on what counts as an independent occasion.
-Run the [L46 unseen-choice replay](concepts.md#l46-follow-up-test-competing-abstractions-on-an-unseen-choice)
-to check what a parent concept adds beyond its children. Then try
-[L56 cross-topic analogies](concepts.md#l56-recall-an-analogy-across-different-topics)
-on a held-out conversation with a useful parallel and a tempting false match.
+The [L49 retelling pilot](concepts.md#l49-follow-up-recognize-a-retelling-across-topic-clusters)
+already distinguished callbacks, repeat events and ambiguous reports in fictional
+histories. Broader paraphrases and ordinary chat routing remain open. For
+[L46](concepts.md#l46-follow-up-test-competing-abstractions-on-an-unseen-choice),
+compare mined parents with their children across new held-out occasions. The
+first supplied story gave them equal scores on the configured worker route.
+[L56](concepts.md#l56-recall-an-analogy-across-different-topics) stays in offline
+replay. Its held-out cases still produced infeasible suggestions after the
+analogy was withheld.
 [L57](concepts.md#l57-ground-aikos-changing-interests-in-her-own-choices) and
 [J14](moments.md#j14-remember-what-changed-after-a-misunderstanding) apply the
 same evidence discipline to Aiko's development and the relationship.
@@ -82,22 +85,9 @@ L22/L48/L50, H35, K106 and L36.
 
 ### Ordinary chat ideas and engineering checks
 
-19 Nov source review through `d9e8b8b2` (topic digest recall).
-The proposals below use ordinary typed chat, storage and retrieval. The source
-probes used synthetic rows and stub providers.
-
-| Item | First payoff |
-| --- | --- |
-| [D9](tools.md#d9-bookmark-a-past-exchange) | Reopen an exact, dated exchange from the current chat. |
-| [D10](tools.md#d10-show-what-changed-since-a-particular-conversation) | Answer what changed since a chosen exchange, with the before and after sources. |
-| [D11](tools.md#d11-rehearse-a-conversation-in-a-disposable-draft) | Try an unsent message or a fictional exchange in a separate preview. |
-| [A8](architecture.md#a8-scope-the-conversation-bridge-to-the-current-owner) | Implemented owner scoping for the ordinary prompt bridge. |
-| [P53](perf.md#p53-reconcile-the-memory-search-index-without-rewriting-it-on-every-boot) | Skip unchanged vector writes on restart and repair stale index entries. |
-| [P54](perf.md#p54-share-an-embedding-request-between-simultaneous-cache-misses) | Measure and remove duplicate provider work when cold requests overlap. |
-| [P55](perf.md#p55-delay-full-topic-record-formatting-until-the-page-is-selected) | Build full recall records only for the page Aiko will read. |
-
-Start with P53 for index integrity and startup work. D10 is the first companion candidate.
-It can accept an exact message through the existing history interface. D9 starts as archive navigation.
+The [tools queue](#tools-and-developer-diagnostics) tracks archive navigation
+and natural references to earlier conversations. The [performance queue](#performance-and-observability)
+tracks startup and embedding measurements.
 
 ## Open items at a glance
 
@@ -150,11 +140,7 @@ It can accept an exact message through the existing history interface. D9 starts
   callback sharing F15 cadence. Existing age callbacks are not this archive resurrection path.
 - [F12](awareness.md#f12-attributable-user-side-memory-retention-credit) — **partial**: Design
   attributable user-side retention credit and decide tiers-disabled recording. Shared following-turn
-  engagement is not item-level usefulness; coordinate H34/RS9. F17 owns semantic-credit calibration.
-- [F17](awareness.md#f17-should-a-semantic-echo-earn-full-retention-credit) — **validation**:
-  Separate real paraphrase use from topical leakage using source/item-level outcomes before changing
-  credit. Similar shared-turn engagement does not establish usefulness. No credit policy was changed
-  in this audit.
+  engagement is not item-level usefulness; coordinate H34/RS9.
 - [F15](awareness.md#f15-memory-repair-requests----admit-the-hole-instead-of-getting-vaguer) —
   **open**: Nominate low-stakes degraded-but-important memories, ask once, capture a source-linked
   answer and refresh the right row. Share F11 cadence and exclude sensitive losses. The old claim
@@ -200,7 +186,7 @@ It can accept an exact message through the existing history interface. D9 starts
 - [G6](workers.md#g6-per-provider-decline-attribution) — **partial**: Instrument remaining generic
   provider bailouts by failing family; preserve supply-versus-gate and error-versus-silence
   distinctions. Accurate final inclusion precedes learned selection.
-- [G7](workers.md#g7-worker-prompt-budget-adoption-beyond-the-first-three-writers) — **partial**:
+- [G7](workers.md#g7-worker-prompt-budget-rollout) — **partial**:
   Roll out to other worker builders with their actual route/output limits and worker-owned reduction
   rules. The helper and summary cursor repair are already implemented.
 -
@@ -393,8 +379,6 @@ It can accept an exact message through the existing history interface. D9 starts
 - [P34](perf.md#p34-unbounded-tables-messages-lance-mirror-concept_events) — **open**: Decide
   retention separately for authoritative messages, the Lance mirror and concept-event noise. Add
   reconciled index filtering/thinning only with explicit preservation/deletion semantics.
-- [P39](shipped/perf.md#p39-batched-concept-evidence) — **shipped**: Batched evidence for
-  the Concepts page and the quality report. Measured pairwise report cost.
 - [P43](perf.md#p43-105-blocks-no-arbitration----replace-the-aggressive-denylist) — **partial**:
   Cover eager providers, protect owed/authoritative blocks, allocate complete evidence/handling
   bundles and record actual final inclusion/omissions before learning weights. RS1/RS4/RS5 and G6
@@ -411,6 +395,10 @@ It can accept an exact message through the existing history interface. D9 starts
   concept caps and topic-aware carry-over with quality/token/cache controls. Historical
   29.6-line/8.5k-char figures are snapshots, not current measurements; RS3/RS7 own follow-up
   experiments.
+- [P53](perf.md#p53-reconcile-the-memory-search-index-without-rewriting-it-on-every-boot) — **validation**.
+  Measure full cold and warm startup. Unchanged-index reconciliation has its own benchmark.
+- [P54](perf.md#p54-share-an-embedding-request-between-simultaneous-cache-misses) — **validation**.
+  Measure join frequency and wait time once ordinary chat turns emit the new counters.
 - [P24a](perf.md#p24a-repair-the-stt-partial-read-and-recorder-lifetime-contracts) — **partial**:
   Add phrase/generation/revision/audio-coverage identity, bound/cancel finalization and exercise a
   real recorder on isolated synthetic audio plus microphone checks.
@@ -478,15 +466,17 @@ It can accept an exact message through the existing history interface. D9 starts
 - [H22-followup](health.md#h22-followup-distinguish-a-shared-ritual-from-a-timing-habit) —
   **deferred**: Decide and evaluate evidence that makes a repeated calendar slot a shared ritual; do
   not lower thresholds to manufacture names. Historical counts are not current.
-- [H21-followup](health.md#h21-followup-decide-the-question-style-axis) — **deferred**: Measure
-  whether the question axis carries useful variation before retaining, retiring or recalibrating it;
-  do not label a current stream dead from the old snapshot.
 - [H20-followup](health.md#h20-followup-fact-check-claim-selection-coverage) — **deferred**: Measure
   source-grounded sentence coverage and false-positive search cost, then decide whether to widen
   named-entity/measurement/date heuristics.
 
 ### Tools and developer diagnostics
 
+- [D9](tools.md#d9-bookmark-a-past-exchange) — **open**. Reopen a bookmarked exchange from chat.
+- [D10](tools.md#d10-show-what-changed-since-a-particular-conversation) — **validation**.
+  Check ambiguous references, paraphrases and reported versus event dates in ordinary chat.
+- [D11](tools.md#d11-rehearse-a-conversation-in-a-disposable-draft) — **open**.
+  Rehearse an unsent exchange in a disposable preview.
 - [D8](tools.md#d8-conversation-archive-recall-with-daily-overviews) — **partial**: Archive review UI
   and source-cited generated discussion summaries are implemented. Real-model recap/tool-selection
   checks, end-to-end latency/token measurements, semantic search, cross-day correction links and
@@ -586,17 +576,14 @@ It can accept an exact message through the existing history interface. D9 starts
 - [L5](live-mode.md#l5-bounded-micro-and-earcon-delivery) — **open**: Add validated
   delivery_style/backchannel_delivery enums mapped through shared TTS/earcon controls, rejecting
   invalid text before synthesis.
-- [L9](live-mode.md#l9-floor-manners-while-the-user-owns-the-floor) — **open**: Add listen_posture
-  as a bounded mapping to existing intents; typing cannot speak and sleep/DND/floor ownership still
-  win.
-- [L11](live-mode.md#l11-circadian-quieting-from-a-period-token) — **open**: Add deterministic
-  period-token policy quieting with timephrase; night cannot increase intensity or speech authority.
-- [L13](live-mode.md#l13-glance-targets-from-an-allowlisted-present-set) — **implemented**:
-  Ground the gaze target in the current scene and briefly look toward the present user.
-  Live-rig timing and spontaneous selection during shared moments still need evaluation.
-- [L14](live-mode.md#l14-return-and-reconnect-companion-beat) — **open**: Connect one bounded return
-  beat with source/generation/dedupe checks and existing speech acts; no automatic greeting or
-  second speech loop.
+- [L9](live-mode.md#l9-floor-manners-while-the-user-owns-the-floor) — **validation**.
+  Observe the listening posture on the live rig while typing, speaking and yielding the floor.
+- [L11](live-mode.md#l11-circadian-quieting-from-a-period-token) — **validation**.
+  Observe the night and late-night breath and reaction changes on the live rig.
+- [L13](live-mode.md#l13-glance-targets-from-an-allowlisted-present-set) — **validation**.
+  Check live-rig timing and spontaneous glances during shared moments.
+- [L14](live-mode.md#l14-return-and-reconnect-companion-beat) — **partial**.
+  Check desktop return-glance timing and evaluate an equivalent signal for browser reconnect or activity resume.
 - [L15](live-mode.md#l15-compact-policy-prompt-v2-keep-the-4b-reliable) — **partial**: Measure a
   compact actual-route prompt at equal decision quality, preserving schema/rails/menu. Temporal
   context is implemented; smaller sufficient input is not validated.
@@ -651,7 +638,8 @@ It can accept an exact message through the existing history interface. D9 starts
   [RS2](reasoning-surfacing.md#rs2-preserve-evidence-identity-through-concept-recall-and-compact-context)
   — **open**: Preserve evidence identity through concept recall and compact context
 - [RS3](reasoning-surfacing.md#rs3-select-a-sufficient-working-set-for-the-current-question) —
-  **open**: Select a sufficient working set for the current question
+  **partial**. Episode clarification works in the local chat replay. Check wider phrasing,
+  show progress and source selection in ordinary conversation.
 - [RS4](reasoning-surfacing.md#rs4-admit-optional-cues-jointly-with-their-handling) — **open**:
   Admit optional cues jointly with their handling
 - [RS5](reasoning-surfacing.md#rs5-commit-t3-accounting-from-complete-final-evidence-bundles) —

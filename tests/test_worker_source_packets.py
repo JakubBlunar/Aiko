@@ -69,6 +69,71 @@ def test_diary_uses_original_session_and_rejects_source_edits(tmp_path, action):
         store.close()
 
 
+@pytest.mark.parametrize(("case", "reason"), [
+    ("distinct", None), ("repeated", "duplicate_entry"),
+    ("foreign", "novelty_unavailable"), ("malformed", "novelty_unavailable"),
+    ("edited", "persist_failed"), ("stale_repeat", "source_changed"),
+    ("unsupported", "unsupported_claim"),
+])
+def test_diary_compares_prior_entries_only_after_fresh_source_review(tmp_path, case, reason):
+    path = tmp_path / "comparison.db"
+    db = ChatDatabase(path)
+    mid = db.add_message("u:s", "user", "The cracked tile sounded lower than the others.")
+    store = MemoryStore(path)
+    old = "Sorting the blue tiles helped me settle."
+    new = "The cracked tile made me wonder what I could learn by listening."
+    calls = []
+    kv = {}
+
+    def generate(messages, *, surface, **kwargs):
+        calls.append(surface)
+        if surface == "diary_worker":
+            return json.dumps({"entry": new}), None
+        payload = json.loads(messages[-1]["content"])
+        assert new == payload["proposed_entry"]
+        if surface == "diary_grounding":
+            assert old not in messages[-1]["content"]
+            supported = case != "unsupported"
+            return json.dumps({"supported": supported, "reason": (
+                "supported" if supported else "unsupported_claim")}), None
+        assert surface == "diary_novelty" and old in payload["earlier_entries"]
+        assert f"ID {mid} " in payload["conversation"]
+        if case == "edited":
+            db.execute_commit("UPDATE messages SET content=? WHERE id=?", ("Changed.", mid))
+        if case == "malformed":
+            return "{}", None
+        if case == "stale_repeat":
+            store.update(prior.id, content="An entirely different earlier reflection.")
+        if case in {"repeated", "stale_repeat"}:
+            return '{"decision":"repeated"}', None
+        return json.dumps({"decision": "distinct",
+                           "message_id": mid + 1 if case == "foreign" else mid}), None
+
+    try:
+        prior = store.add(old, "diary", np.ones(2), source_session="u:s")
+        def snapshot():
+            return transcript_packet(db.get_messages("u:s"), session_key="u:s")
+        worker = DiaryWorker(
+            memory_store=store, embed=lambda _: np.ones(2), source_snapshot_provider=snapshot,
+            recent_context_provider=lambda: snapshot()["text"], is_away_provider=lambda: True,
+            user_display_name_provider=lambda: "Morgan", kv_get=kv.get, kv_set=kv.__setitem__,
+            ollama=SimpleNamespace(chat_json=generate), model="fixture", min_context_chars=1,
+        )
+        assert worker.run().get("reason") == reason
+        entries = store.iter_by_kind("diary")
+        assert len(entries) == (2 if case == "distinct" else 1)
+        if case == "distinct":
+            saved = next(row for row in entries if row.content == new)
+            assert saved.metadata["reflective_derivation"]["novelty_review"] == {
+                "decision": "distinct", "message_id": mid,
+            }
+        assert ("diary_novelty" in calls) == (case != "unsupported")
+        assert ("diary_worker.last_context_key" in kv) == (
+            case in {"distinct", "repeated", "unsupported"})
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("overlong", [False, True])
 def test_post_sleep_diary_keeps_output_whole_and_original_session(overlong):
     from app.core.proactive.post_sleep_diary_worker import PostSleepDiaryWorker

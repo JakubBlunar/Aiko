@@ -1817,6 +1817,20 @@ because 0.333 never crossed 0.40, and the relative one because it has no
 variance to depart from. Worth deciding whether a fifth axis that has never
 spoken under either design should stay.
 
+#### H21 follow-up. Question-style axis
+
+**Decision, 22 November 2026.** Keep the question axis at the existing sensitivity.
+A read-only chronological replay of 5,654 nonblank saved default-owner user turns
+(21 May–20 November UTC) used the current analyzer, a 30-turn window, sensitivity
+3.0 and the usual two-label limit. After 60 turns each window was eligible.
+“Asking back more than usual” appeared on 47 turns in two runs beginning
+13 August and 12 October. The lower-direction label never appeared. Across the
+817 turns after 24 October the axis stayed quiet. The signal can pick out a
+sustained rise in question endings without adding a routine prompt on recent turns.
+Overlapping windows make those 47 labels two episodes of variation. Whether the
+resulting replies felt better was outside this calibration decision.
+[Style analyzer](../../../app/core/persona/style_signal.py)
+
 **A refinement to the query, from the one block this sweep could not classify.**
 `intimacy_pacing_block` renders at a constant 177 characters across 146 turns —
 the same signature the entry used to convict `style_signal_block`, on a block

@@ -267,18 +267,24 @@ def test_chat_and_idle_use_same_actions_and_save_only_success(home):
         PerformHomeActionTool(session).run({"token": "made up"})
 
 
-def test_worker_model_is_taught_live_tokens_and_rejects_invented_capabilities(home, monkeypatch):
+def test_worker_resolves_only_the_offered_household_choice(home, monkeypatch):
     store, db, _ = home
     action = find_action(store, "prepare_drink", recipe="coffee")
-    prompts = []
+    response = {}
+    recipe = "coffee"
     events = []
     monkeypatch.setattr("app.core.world.idle_activity_composition_mixin.emit",
                         lambda kind, payload: events.append((kind, payload)))
 
     class Model:
         def chat_json(self, messages, **kwargs):
-            prompts.append(messages[-1]["content"])
-            return json.dumps({"home_action_token": action["token"], "creation": None}), {}
+            prompt = messages[-1]["content"]
+            menu, _ = json.JSONDecoder().raw_decode(
+                prompt.split("Available household actions (data): ", 1)[1])
+            selected = next(row for row in menu if row.get("recipe") == recipe)
+            assert action["token"] not in prompt
+            return json.dumps({"activity": selected["choice"],
+                               "changed_item": selected["item"], **response}), {}
 
     worker = IdleAwayActivityWorker(
         world_store=store, kv_get=db.kv_get, kv_set=db.kv_set,
@@ -286,12 +292,30 @@ def test_worker_model_is_taught_live_tokens_and_rejects_invented_capabilities(ho
     )
     plan = worker._compose_plan_llm("Test user", store.list_locations(), store.list_items())
     assert plan.home_action_token == action["token"]
-    assert "coffee" in prompts[0] and "home_action_token" in prompts[0]
-    action["token"] = "invented"
-    assert worker._compose_plan_llm(
-        "Test user", store.list_locations(), store.list_items(),
-    ) is None
-    assert ("plan_rejected", {"reason": "invalid_household_selection"}) in events
+    offered = next(payload["offered"] for kind, payload in events if kind == "model_options")
+    assert any(row["token"] == plan.home_action_token and row["choice"] for row in offered)
+    for invalid, reason in [
+        ({"activity": "home_99_unoffered"}, "household_choice_not_offered"),
+        ({"activity": "", "home_action_token": []}, "household_choice_not_offered"),
+        ({"home_action_token": action["token"]}, "conflicting_household_selectors"),
+        ({"creation": {}}, "household_choice_with_creation"),
+        ({"changed_item": "another vessel"}, "household_choice_with_other_item"),
+    ]:
+        response.clear()
+        response.update(invalid)
+        assert worker._compose_plan_llm(
+            "Test user", store.list_locations(), store.list_items(),
+        ) is None
+        assert events[-1] == ("plan_rejected", {"reason": reason})
+
+    recipe = "tea"
+    response.clear()
+    alternative = worker._compose_plan_llm("Test user", store.list_locations(), store.list_items())
+    receipt = worker._apply_world_mutation(plan)
+    assert receipt["token"] == action["token"]
+    with pytest.raises(ValueError, match="stale"):
+        worker._apply_world_mutation(alternative)
+    assert drink_view(store.get_item(action["item_id"]), now=NOW)["recipe"] == "coffee"
 
 
 def test_malformed_user_vessel_does_not_break_world_inspection(home):

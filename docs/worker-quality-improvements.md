@@ -26,6 +26,15 @@ draft as a new session's experience. Thread resummary uses the same packing with
 its existing history-edit save guard. Post-sleep diary output is accepted whole
 or rejected, and retains the session captured before generation.
 
+The background worker checks concrete claims against the frozen transcript
+alone. Once that review passes, a draft with earlier eligible diary inputs gets
+one additional novelty review against those same dated entries (up to three).
+A restated reflection spends the source watermark. A new event, feeling,
+condition or outcome can justify revisiting a theme. A distinct verdict must
+identify a message in the current packet. The saved derivation records that
+message ID for later inspection. An unavailable or malformed review leaves the
+source eligible for retry after cooldown.
+
 Regression coverage includes source edits at both generation boundaries, session
 switches, long-message final negation and overlong sleep-diary output. The combined
 focused worker set passed 242 tests and 6 subtests; lint passed.

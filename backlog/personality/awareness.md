@@ -78,8 +78,7 @@ hedged callback sharing F15 cadence. Existing age callbacks are not this archive
 threshold-based scratchpad retention are implemented.
 
 **Remaining:** Design attributable user-side retention credit and decide tiers-disabled recording.
-Shared following-turn engagement is not item-level usefulness; coordinate H34/RS9. F17 owns
-semantic-credit calibration.
+Coordinate attributable user outcomes with H34/RS9. The [F17 decision](shipped/awareness.md#f17-retention-credit-for-semantic-echoes) covers the existing semantic discount.
 
 [Implemented slice](shipped/audit-2026-10-24.md#awareness-f12).
 
@@ -92,24 +91,7 @@ semantic-credit calibration.
 
 ## F17. Should a semantic echo earn full retention credit?
 
-**Status: Validation remaining.**
-
-**Implemented / available:** Cosines, echo-kind breakdown and floor replay are recorded and inspectable.
-
-**Remaining:** Separate real paraphrase use from topical leakage using source/item-level outcomes
-before changing credit. Similar shared-turn engagement does not establish usefulness. No credit
-policy was changed in this audit.
-
-12 Nov: [the ordinary-use review](../reviews/ordinary-use-review-2026-11-12.md) found
-and fixed lifetime header counts mixed with windowed rates. The recent cohort
-has 14,860 item rows across 233 measured replies, with 190 unsettled rows.
-This fixes denominators; item-level semantic-use validation remains open.
-
-[Implemented slice](shipped/audit-2026-10-24.md#awareness-f17).
-
-**Source check:** [surfacing_outcome_store.py](../../app/core/memory/surfacing_outcome_store.py),
-[surfacing_outcome_tools.py](../../app/mcp/server_tools/surfacing_outcome_tools.py),
-[test_semantic_echo.py](../../tests/test_semantic_echo.py).
+Closed 22 November. [Item-level review and retention decision](shipped/awareness.md#f17-retention-credit-for-semantic-echoes).
 
 ## F15. Memory repair requests -- admit the hole instead of getting vaguer
 

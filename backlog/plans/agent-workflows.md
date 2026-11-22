@@ -29,7 +29,7 @@ These are implementation facts. They do not close the ordinary-use checks below.
 
 ## Remaining product and platform work
 
-The [15 November correctness review](../reviews/agentic-correctness-review-2026-11-15.md)
+The 15 November correctness review
 reproduced unsupported approvals through the production review functions with
 the configured local 9B model. Three isolated full-harness trials did not falsely
 succeed, but exposed missing-evidence-ID retries and missing verification tools.
@@ -67,8 +67,13 @@ source changes in an existing app process.
 ## Ordinary-use acceptance still needed
 
 The [12 November review](../reviews/ordinary-use-review-2026-11-12.md) found only
-one recent workflow row. That cohort cannot validate representative work or
-delivery quality. Use existing permitted resources and record task IDs and
+one recent workflow row. On 22 November a read-only check found four retained
+root workflows. The newest started 9 November, and no root or child task had
+been created since 15 November. Resume the post-fix review when a new ordinary
+workflow supplies a plan, source evidence and a report to inspect.
+[Current completion contract](../../docs/agent-harness.md#evidence-and-completion)
+
+Use existing permitted resources and record task IDs and
 observations without committing personal dialogue:
 
 - Start a read-only comparison from main chat; inspect whether the plan and

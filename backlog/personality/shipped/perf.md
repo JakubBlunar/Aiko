@@ -4,6 +4,43 @@ Part of the [shipped log index](../shipped.md). One paragraph per entry; full de
 
 ---
 
+## P55. Topic paging on ordinary-use clusters
+
+Topic paging batch-fetches members when the store
+supports it, then ranks lightweight source state and revisions. Repeated
+message reads share a request-local cache. Only selected rows build full
+records, using fresh source reads. A selected source change prompts a
+restart. Tests cover ordering, historical reads and revision-bound pages,
+including 50-, 500-, and 2,000-member fixtures with eight records built per
+page. [Read contract](../../../docs/fast-brain-tool-improvements.md#topic-page-cost).
+
+An isolated comparison with a shared source message and stub stores measured
+these median times for the first and second eight-result pages (five runs
+per case). Source reads and full records are totals across both pages.
+
+| Members | Source reads, before → after | Full records, before → after | First / next ms, before → after |
+| ---: | ---: | ---: | --- |
+| 50 | 232 → 34 | 116 → 16 | 1.5 / 1.5 → 1.2 / 1.2 |
+| 500 | 2,032 → 34 | 1,016 → 16 | 15.5 / 13.8 → 7.3 / 8.2 |
+| 2,000 | 8,032 → 34 | 4,016 → 16 | 52.6 / 53.4 → 32.3 / 31.4 |
+
+On 22 November a read-only SQLite snapshot supplied the three saved clusters
+with the most distinct source-message IDs. Each run used the production topic
+graph, memory mirror, SQLite message reader and `recall_topic_page`. A cached
+centroid supplied the query vector to isolate page latency from embedding HTTP.
+The continuation used the revision and offset returned by page one.
+
+| Cluster ID | Members scanned | Distinct source-message IDs | Eligible results | First page (ms) | Next page (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 40 | 128 | 55 | 88 | 3.46 | 3.63 |
+| 87 | 112 | 45 | 59 | 2.85 | 3.07 |
+| 10 | 124 | 41 | 85 | 3.10 | 3.38 |
+
+Times are medians of seven warm pairs per cluster after one warm-up pair.
+Each pair returned 16 distinct records across two eight-result pages.
+This completes the ordinary-cluster paging check. Chat latency and model tool
+selection are outside this measurement.
+
 ## P1. Per-turn embed budget + timing
 
 Single shared

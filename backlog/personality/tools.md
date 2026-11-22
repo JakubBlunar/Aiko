@@ -96,7 +96,7 @@ change and remembering the conversation in between.
 
 ## D10. Show what changed since a particular conversation
 
-**Status: Partial.** Aiko's history tool can compare later reports on a
+**Status: Validation.** Aiko's history tool can compare later reports on a
 literal topic against an exact earlier exchange or resolve it from a unique
 current source link. It returns original-message
 IDs, separate report and event times, and bounded coverage. Current

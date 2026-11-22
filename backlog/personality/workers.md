@@ -75,7 +75,7 @@ fixes age-dependent source identity, and adds bounded diary grounding and
 project-purpose research checks. It also reviews 72 hours of independent activity
 and makes new plan rejections diagnosable. Ordinary-use validation of these fixes,
 historical repair, omissions and broader semantic calibration remain open.
-The [15 November follow-up](../reviews/ordinary-use-review-2026-11-15.md) found
+The 15 November follow-up found
 an uncited-admission bypass, fresh promise/clock/return interpretation failures,
 and downstream concept overreach. Bounded fixes preserve positive cases;
 diary novelty, research relevance, omissions and broader semantic fidelity remain
@@ -97,10 +97,30 @@ matched the packet, and all 90 message references still matched the saved revisi
 Each packet had a distinct context key. Entries 11840 and 11861 still repeat the same
 reflection with close paraphrasing across different exchanges. The later entry brings
 back an earlier simile absent from its fresh transcript, while the earlier diary entry
-appears in its memory inputs. The current duplicate gate catches normalized exact matches.
-Review a source-aware novelty check that allows recurring themes when the new exchange
-adds a distinct event, feeling, qualification, or outcome. This review covers provenance
-and one repetition example. Omission and broader meaning checks remain open.
+appears in its memory inputs. At that review the duplicate gate caught normalized
+exact matches. This review covers provenance and one repetition example.
+
+**22 November diary follow-up.** The background worker now compares a grounded
+draft with the same eligible earlier entries used during composition. An accepted
+new reflection cites a current message ID. A failed comparison can retry, and
+editing a source during review prevents a stale write. [Worker contract](../../docs/worker-quality-improvements.md#background-diary-and-thread-inputs)
+
+In disposable SQLite runs on local `baytout3/qwen3.5-uncensored:9b` (seeds 71
+and 73), the composer supplied fixed fictional drafts and the model performed
+the reviews. Before the change, both runs stored a paraphrase of a diary about
+sorting tiles. The updated novelty check rejected it on both seeds with the
+same single-message context and retained a new reflection on a cracked tile's
+lower note. An invented agreement was rejected by the independent grounding
+check. With an unrelated message added, grounding sometimes rejected the
+paraphrase first. The changed-outcome draft still reached storage on both seeds.
+
+Held-out paper-boat cases exposed a wording limit. Source review withheld the
+repeat and a changed-outcome draft that described *seeing* the boat float,
+although the transcript contained a user's report. A separately tested draft
+that attributed the result to the user passed both reviews on both seeds.
+Ordinary-use acceptance still needs newly written entries, missed good drafts
+and inspection of any later concept that uses them. Historical diaries and
+concepts retain their original records.
 
 <a id="next-producer-quality-candidates-source-review-6-nov-2026"></a>
 

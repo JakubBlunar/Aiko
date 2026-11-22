@@ -125,11 +125,4 @@ not reopen the six resolved wiring bugs.
 
 ## A8. Scope the conversation bridge to the current owner
 
-**Status: Implemented.** The previous-session lookup now filters saved chats
-by the active owner before ordering by activity. The opening-turn gate still
-applies. Unscoped legacy keys and temporary `:noremember` chats are ineligible
-as either the current session or the source. The isolated prompt regression
-selects an older owned chat despite fresher foreign, legacy and temporary
-chats. Deleting the sole eligible source removes the bridge.
-[Current contract](../../docs/configuration.md#k91--session-continuity-bridge),
-[assembled prompt tests](../../tests/test_prompt_assembler.py).
+Closed 22 November. [Implementation and verification](shipped.md#22-november-2026-backlog-closures).

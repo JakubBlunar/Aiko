@@ -187,9 +187,12 @@ and bounded supply replenishment, plus bathroom routines with staged baths.
 See [Household drinks](aiko-room.md#household-drinks-and-shared-actions)
 for the object state and provisioning contract.
 
-Both model-planned activities and deterministic fallback selection receive
-eligible action tokens. The model cannot invent an action ID, recipe, target,
-or missing equipment. The executor revalidates inside its write transaction,
+For a household activity the model selects a short, named choice from its
+current menu. The worker binds that choice to the original action token. A
+repeated target name is harmless only when it matches the selected item. An
+unoffered choice, a second target or a simultaneous writing request rejects
+the plan with a distinct reason in the idle trace. The weighted fallback uses
+the catalogue's tokens directly. The executor revalidates inside its write transaction,
 checks autonomous admission again, and saves mutations and a receipt together.
 Only successful effects reach the away journal. Exact retries recover an
 existing receipt; they do not repeat effects. These synchronous small steps

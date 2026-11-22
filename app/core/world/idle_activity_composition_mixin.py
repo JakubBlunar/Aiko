@@ -141,12 +141,25 @@ class ActivityCompositionMixin:
         choices.extend(action for action in home["actions"]
                        if action["action"] == "prepare_drink" and action not in choices)
         home_actions = {action["token"]: action for action in choices[:24]}
+        # Short selectors belong to this one prompt. Only its original state-bound
+        # token travels with the plan to the executor.
+        menu = {}
+        for number, row in enumerate(home_actions.values(), 1):
+            label = row["action"]
+            if row.get("recipe"):
+                label += "_" + row["recipe"]
+            menu[f"home_{label}_{number}"] = row
+        model_menu = [
+            {"choice": choice, **{k: v for k, v in row.items() if k != "token"}}
+            for choice, row in menu.items()
+        ]
         home_context = (
             "\nSupported household capabilities: " + home.get("capabilities", "")
             + "\nAvailable household actions (data): "
-            + json.dumps(list(home_actions.values())[:24], ensure_ascii=True)
-            + "\nTo choose one, return its exact home_action_token with creation=null "
-            "and changed_item empty. Its stored summary defines what actually happens. "
+            + json.dumps(model_menu, ensure_ascii=True)
+            + '\nFor a household activity set "activity" to the exact choice from this menu. '
+            "The choice already specifies the item, location "
+            "and effect. Leave changed_item empty and creation null. "
             "For a drawing action, include drawing={title,strokes,note}. The title is "
             "2-80 characters and the optional note at most 240. Supply 1-24 strokes, each "
             "with points=[[x,y],...] (2-32 points), width=0.5-8, shade=0-3, filled=true "
@@ -154,7 +167,6 @@ class ActivityCompositionMixin:
             "total. Supply the actual strokes, not a description or markup. "
             "Other actions use drawing=null. Fictional "
             "references are authored material, not an actual visual observation. "
-            "Otherwise home_action_token must be empty. "
         ) if home_actions else ""
         intent_line = ""
         if intention:
@@ -177,9 +189,9 @@ class ActivityCompositionMixin:
         inspiration = context.render()
         emit("model_options", {
             "offered": [
-                {key: row[key] for key in ("token", "action", "item_id", "location_id")
-                 if key in row}
-                for row in home_actions.values()
+                {"choice": choice, **{k: row[k] for k in ("token", "action", "item_id",
+                                                          "location_id") if k in row}}
+                for choice, row in menu.items()
             ],
             "household_actions_total": len(home["actions"]),
             "household_actions_omitted": max(0, len(home["actions"]) - len(home_actions)),
@@ -209,13 +221,15 @@ class ActivityCompositionMixin:
             + ("Writing is available. " if can_write else
                "The writing allowance is used; choose another activity, creation=null. ")
             + "Choose one small, believable thing to do right now, grounded in "
-            "what's actually in the room — the states in brackets are real, "
-            "so prefer something they suggest. Reply with JSON only:\n"
-            '{"location_slug": "<one of the slugs above>", '
+            "what's actually in the room. Return a JSON object. "
+            + "Choose exactly one activity from the listed values. A household choice already "
+            "specifies its target. Use changed_item only for a non-household item action.\n"
+            '{"activity": "<' + "|".join([*menu, "thinking", "idle", "stretching", "reading",
+                                         "making_tea", "watering_plants", "writing"]) + '>", '
+            '"location_slug": "<one of the slugs above>", '
             '"posture": "<sitting|lying|standing|curled_up|leaning>", '
-            '"activity": "<thinking|idle|stretching|reading|making_tea|watering_plants|writing>", '
             '"changed_item": "<exact supported item name; empty string for none>", '
-            '"home_action_token": "", "drawing": null, "creation": null, '
+            '"creation": null, '
             '"choice_reason": "<own_interest|room_need|continue_work|rest|context|other>", '
             '"inspired_by": ["<optional offered source ref; empty if none>"]}. '
             "Source refs are optional attribution, not a request for private reasoning. "
@@ -226,7 +240,8 @@ class ActivityCompositionMixin:
             '"item_id": null, "base_revision": 0}. '
             "For a revision, use the existing work's item_id and latest revision as "
             "base_revision; you may retitle or reshape your work. For a new work use null and 0. "
-            "Do not claim sleep: the sleep system owns sleep, not this activity choice."
+            "Keep creation null for every activity except writing. For a quiet rest choose idle, "
+            "thinking or stretching with changed_item empty. The sleep system owns sleep."
         )
         try:
             content, _usage = self._ollama.chat_json(
@@ -256,11 +271,28 @@ class ActivityCompositionMixin:
             return self._reject_plan("invalid_object")
         context.attribution(blob)
 
-        if blob.get("home_action_token"):
-            action = home_actions.get(str(blob["home_action_token"]))
-            if (action is None or blob.get("creation") is not None
-                    or str(blob.get("changed_item") or "").strip()):
-                return self._reject_plan("invalid_household_selection")
+        activity_choice = blob.get("activity")
+        choice = (activity_choice if isinstance(activity_choice, str)
+                  and activity_choice.startswith("home_") else None)
+        token = blob.get("home_action_token")  # Older recorded model responses.
+        if choice or token not in (None, ""):
+            if choice and token not in (None, ""):
+                return self._reject_plan("conflicting_household_selectors")
+            selector = choice or token
+            offered = menu if choice else home_actions
+            action = offered.get(selector) if isinstance(selector, str) else None
+            if action is None:
+                return self._reject_plan("household_choice_not_offered")
+            if blob.get("creation") is not None:
+                return self._reject_plan("household_choice_with_creation")
+            # Some models repeat the selected vessel's name in the generic
+            # field. It names the same target and must never add a second effect.
+            changed_item = blob.get("changed_item")
+            if changed_item is not None and (
+                not isinstance(changed_item, str)
+                or changed_item.strip().casefold() not in ("", action["item"].casefold())
+            ):
+                return self._reject_plan("household_choice_with_other_item")
             drawing = blob.get("drawing")
             if action.get("parameters", {}).get("drawing_required"):
                 from app.core.world.home_sketches import validate_drawing
