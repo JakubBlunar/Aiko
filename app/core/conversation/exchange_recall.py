@@ -9,6 +9,7 @@ from datetime import timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.core.conversation.archive import resolve_range
+from app.core.conversation.occasion_recall import occasion_frequency
 from app.core.infra import timephrase
 from app.core.infra.time_expr import parse_time_window
 from app.core.session.session_text_utils import sanitize_assistant_text
@@ -319,6 +320,10 @@ def lookup_exchange(
     """Read a small, owner-scoped neighborhood with exact message times."""
     if not db or ":" not in session_key or budget <= 0:
         return ExchangeLookup()
+    frequency = occasion_frequency(db, user_text, session_key)
+    if frequency:
+        reply, ids = frequency
+        return ExchangeLookup(message_ids=ids, reply=reply, reason="occasion_frequency")
     current_text = user_text
     user_text, previous_reply, choice, date_hint = _decision_followup(
         db, session_key, user_text, recent_turns,

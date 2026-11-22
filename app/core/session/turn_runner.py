@@ -957,8 +957,10 @@ class TurnRunner:
         if question is not None:
             full = "" if aborted else question
         if decision_reply:
-            reason = ("quoted_exchange" if telemetry.concepts_surfaced.get("reason")
-                      == "decision_exchange" else "decision_clarification")
+            reason = {"decision_exchange": "quoted_exchange",
+                      "occasion_frequency": "occasion_frequency"}.get(
+                telemetry.concepts_surfaced.get("reason"), "decision_clarification",
+            )
             stream_usage = OllamaUsage(done_reason=reason)
         else:
             stream_usage = self._ollama.last_usage

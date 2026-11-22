@@ -51,6 +51,14 @@ construct the view with the store alone.
 
 ## Shadow evidence independence (L49 / L55)
 
+Ordinary chat can compare two original user reports when asked “How many times
+did my bike chain slip?” The archive scans up to 400 recent messages in the
+owner's past 14 days. It can recognize an explicit recurrence or a repair tied
+to the earlier incident, including “that chain problem.” The reply scopes its
+count to those reports. Ambiguous or competing mentions leave the count open.
+The comparison rereads the source text each time and changes no memory rows
+or concept evidence weights.
+
 `evidence_independence` is an on-demand diagnostic, not a new confidence model.
 It never changes promotion, retrieval, diets, explicit boundary handling or
 `distinct_source_count`. The existing MCP `get_concept_provenance` accepts

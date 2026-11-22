@@ -9,7 +9,7 @@ from app.core.memory.shared_shorthand import source_receipt
 @dataclass(frozen=True)
 class Account:
     memory_id: int | None
-    topic_id: int
+    topic_id: int | str
     message_id: int
     session_id: str
     recorded_at: str

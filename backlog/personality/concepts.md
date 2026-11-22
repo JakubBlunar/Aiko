@@ -771,6 +771,14 @@ boundaries still work after one statement; independence must not weaken them.
 
 ### L49 follow-up. Recognize a retelling across topic clusters
 
+Ordinary frequency questions now have a bounded source comparison in
+`occasion_recall.py`. The fictional chat regression runs the prompt assembler
+and turn runner with a bike incident in one conversation and a repair in another.
+Editing the repair to an explicit recurrence changes one incident to two.
+Withdrawing the recurrence leaves the count open. The route uses source receipts
+and a narrow English question form. Broader paraphrases and independent
+support during concept promotion remain open.
+
 **Status: Reviewed-pair pilot.** A conversation can revisit one event for several reasons.
 A bike commute might first come up under repairs and later under getting to work.
 The second account can add what happened next. Counting it as a second breakdown
