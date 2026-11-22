@@ -11,13 +11,9 @@ Two audiences, one file, and the split between them is the point:
   included, every lifecycle field exposed. The rows this layer hides
   from Aiko are exactly the ones that explain why nothing is happening.
 
-The write half (:meth:`force_hypothesis_verdict`) exists because the
-lifecycle is otherwise untestable by hand: walking a guess to graduation
-needs two adjudicated confirmations across two conversations. It routes
-through ``_apply_invented_answer`` -- the *live* post-turn writer -- rather
-than reimplementing the credence math, so a forced verdict cannot drift
-from a real one. That is the whole design constraint; see
-``docs/hypotheses.md``.
+Manual verdicts use the post-turn writer for credence, linking and answer
+receipts. Graduation checks those receipts against recorded chat messages.
+See ``docs/hypotheses.md``.
 
 State ownership (``self._hypothesis_store``, ``self._concept_store``,
 ``self._memory_settings``, ``self._agent_settings``) lives in
@@ -314,27 +310,10 @@ class HypothesisDebugMixin:
     def force_hypothesis_verdict(
         self, hypothesis_id: int, verdict: str, text: str = "",
     ) -> dict[str, Any]:
-        """Answer one of Aiko's guesses by hand, as if the user had.
+        """Record a manual verdict and apply the ordinary credence and linking rules.
 
-        Goes through ``_apply_invented_answer`` -- the same writer the
-        post-turn resolver uses -- rather than reimplementing any of it.
-        A forced confirm therefore stamps ``linked_concept_id``, and
-        graduates the row when it reaches the bar, exactly as a real
-        answer would. Reimplementing the credence math here would give a
-        debug path that slowly stopped telling the truth about the real
-        one.
-
-        ``text`` stands in for what the user would have said, and is not
-        cosmetic: it is stored as the ordinary ``fact`` memory the live
-        path stores, which is the *only* evidence a graduated concept
-        inherits. Confirming with no text mints a concept with zero
-        evidence edges that L3 then demotes straight back, so a confirm
-        without text is refused rather than quietly producing a
-        misleading result.
-
-        Returns a before/after diff -- ``_apply_invented_answer`` returns
-        nothing, so the row is re-read afterwards instead of changing the
-        live path's signature for a debug caller's benefit.
+        A manual answer has no source message. Graduation requires current receipts
+        from distinct user messages confirming this hypothesis.
         """
         wanted = (verdict or "").strip().lower()
         if wanted not in FORCEABLE_VERDICTS:
@@ -349,11 +328,7 @@ class HypothesisDebugMixin:
             raise LookupError(f"no hypothesis {hypothesis_id}")
         body = " ".join(str(text or "").split())
         if wanted == "confirm" and not body:
-            raise ValueError(
-                "a forced confirm needs the answer text: it becomes the "
-                "memory a graduated concept rests on, and without it "
-                "graduation mints a concept with no evidence"
-            )
+            raise ValueError("a manual confirmation requires answer text")
         before = _row_summary(row)
 
         from app.core.concepts.answer_adjudicator import AnswerVerdict

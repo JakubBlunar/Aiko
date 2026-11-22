@@ -68,6 +68,8 @@ new concept evidence or topic-summary inputs are admitted. Source edits/deletion
 invalidate them. Direct and topic recall recheck notes that carry earlier
 qualifiers and show their verbatim facets while the sources are current. Literal
 fallbacks keep any observation receipt that passes the same admission checks.
+If an optional observation fails validation, the writer drops its facets and
+checks the literal note again before saving it.
 The original qualifiers remain in content and are also rendered in memory source
 annotations. Differently scoped facets cannot collapse through cosine dedupe or
 consolidation. The semantic revision includes these fields only when present,

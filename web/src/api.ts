@@ -718,9 +718,7 @@ export const api = {
       "/api/concepts/hypotheses/ask",
       { method: "POST" },
     ),
-  /** Answer a guess by hand. ``text`` stands in for what the user would
-   *  have said and is stored as the memory a graduated concept rests on,
-   *  so a confirm without it is rejected by the backend. */
+  /** Record a manual verdict. Confirmations require answer text. */
   forceHypothesisVerdict: (
     hypothesisId: number,
     verdict: string,

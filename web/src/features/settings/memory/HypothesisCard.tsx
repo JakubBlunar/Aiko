@@ -21,7 +21,7 @@ const STATUS_TONE: Record<string, string> = {
 const STATUS_HELP: Record<string, string> = {
   open: "Invented and never answered. Ages out after hypothesis_ttl_hours if it is never asked.",
   supported:
-    "Confirmed at least once. Graduates into a concept once it clears graduate_min_support and graduate_min_credence.",
+    "Confirmed at least once. Graduation requires sufficient credence and support from distinct recorded user messages.",
   refuted:
     "Denied. Closed outright rather than merely weakened -- Aiko made it up, and being told no is the end of it. Kept as a row so the novelty gate cannot re-invent it.",
   expired:
@@ -34,7 +34,7 @@ const STATUS_HELP: Record<string, string> = {
 
 const VERDICT_PROMPT: Record<string, string> = {
   confirm:
-    "What would they have said? Required -- it is stored as the memory a graduated concept rests on, and without it graduation would mint a concept resting on nothing.",
+    "Enter the answer to record with this manual confirmation. Graduation requires confirmations tied to distinct user messages in chat.",
   correct:
     "Their better wording. This replaces the statement and costs half a credence step, because being close enough to be refined is partly a hit.",
   deny: "What they said (optional). A deny closes the row outright.",

@@ -32,7 +32,10 @@ from app.core.concepts.hypothesis_store import (
     Hypothesis,
     HypothesisStore,
 )
+from app.core.concepts.answer_adjudicator import AnswerVerdict
 from app.core.infra.chat_database import ChatDatabase
+from app.core.memory.memory_store import MemoryStore
+from app.core.session.answer_event import current_answer_event
 from app.core.session.hypothesis_debug_mixin import HypothesisDebugMixin
 from app.core.session.post_turn_helpers_mixin import PostTurnHelpersMixin
 
@@ -47,28 +50,6 @@ _NEAR_B = _unit(0.98, 0.2)
 _FAR = _unit(0.0, 1.0)
 
 
-class _FakeMemoryStore:
-    """Just enough to hand back ids and answer "is it still there?".
-
-    A real ``MemoryStore`` would drag an embedder and a Lance mirror into
-    a test about the facade; what matters here is only that the answer
-    memory gets an id and that graduation can probe for it.
-    """
-
-    def __init__(self) -> None:
-        self.rows: dict[int, SimpleNamespace] = {}
-        self._next = 900
-
-    def add(self, *, content: str, **_kw) -> SimpleNamespace:
-        self._next += 1
-        row = SimpleNamespace(id=self._next, content=content)
-        self.rows[self._next] = row
-        return row
-
-    def get(self, memory_id: int):
-        return self.rows.get(int(memory_id))
-
-
 class _Host(HypothesisDebugMixin, PostTurnHelpersMixin):
     """The two mixins the panel exercises, and nothing else."""
 
@@ -80,9 +61,12 @@ class _Fixture(unittest.TestCase):
         self.db = ChatDatabase(Path(tmp.name) / "test.db")
         self.concepts = ConceptStore(self.db)
         self.hypotheses = HypothesisStore(self.db)
-        self.memories = _FakeMemoryStore()
+        self.addCleanup(self.db._get_conn().close)
+        self.memories = MemoryStore(Path(tmp.name) / "test.db")
+        self.addCleanup(self.memories.close)
 
         host = _Host()
+        host._chat_db = self.db
         host._hypothesis_store = self.hypotheses
         host._concept_store = self.concepts
         host._memory_store = self.memories
@@ -285,51 +269,45 @@ class ForcedVerdictTests(_Fixture):
             self.hypotheses.get(row.hypothesis_id).answer_memory_ids, [mid]
         )
 
-    def test_two_confirms_graduate_into_a_concept(self) -> None:
+    def test_two_manual_confirms_update_support_without_graduating(self) -> None:
         row = self._row(credence=0.6)
+        for text in ("yes, that's me", "still true"):
+            result = self.host.force_hypothesis_verdict(row.hypothesis_id, "confirm", text)
+            receipt = self.memories.get(result["answer_memory_id"]).metadata["hypothesis_answer"]
+            self.assertEqual(receipt["sources"], [])
+        self.assertEqual(result["after"]["support_count"], 2)
+        self.assertEqual(result["after"]["status"], STATUS_SUPPORTED)
+        self.assertIsNone(result["after"]["graduated_concept_id"])
 
-        self.host.force_hypothesis_verdict(
-            row.hypothesis_id, "confirm", "yes, that's me"
-        )
-        result = self.host.force_hypothesis_verdict(
-            row.hypothesis_id, "confirm", "still true"
-        )
-
-        cid = result["after"]["graduated_concept_id"]
-        self.assertIsNotNone(cid)
-        self.assertEqual(result["after"]["status"], STATUS_GRADUATED)
-        self.assertEqual(self.concepts.get(cid).label, row.statement)
-
-    def test_the_minted_concept_rests_on_the_forced_answers(self) -> None:
-        """The point of requiring text: real evidence, not a bare row.
-
-        A graduated concept inherits exactly the answer memories, and L3
-        promotes on distinct sources -- so a concept minted with none is
-        one L3 demotes straight back.
-        """
+    def test_graduation_uses_the_recorded_replies_after_a_manual_confirm(self) -> None:
         row = self._row(credence=0.6)
-        first = self.host.force_hypothesis_verdict(
-            row.hypothesis_id, "confirm", "yes, that's me"
-        )
-        second = self.host.force_hypothesis_verdict(
-            row.hypothesis_id, "confirm", "still true"
-        )
-
-        cid = second["after"]["graduated_concept_id"]
-        sources = {
-            e.src_id
-            for e in self.concepts.evidence_of(cid)
-            if e.src_type == "memory"
-        }
-
-        self.assertEqual(
-            sources,
-            {
-                str(first["answer_memory_id"]),
-                str(second["answer_memory_id"]),
-            },
-        )
-        self.assertEqual(self.concepts.get(cid).distinct_source_count, 2)
+        forced = self.host.force_hypothesis_verdict(row.hypothesis_id, "confirm", "still true")
+        cue = SimpleNamespace(subject=row.statement, payload={
+            "target_id": row.hypothesis_id, "target_type": "hypothesis",
+        })
+        answers = []
+        for text in ("I sorted my desk when the delivery slipped.",
+                     "I tidied my desk again after the next missed deadline."):
+            mid = self.db.add_message("test", "user", text)
+            token = current_answer_event.set({"session_id": "test", "user_message_id": mid})
+            try:
+                self.assertTrue(self.host._write_hypothesis_answer(
+                    cue, row.statement, AnswerVerdict(verdict="confirm", evidence=text), text,
+                ))
+            finally:
+                current_answer_event.reset(token)
+            updated = self.hypotheses.get(row.hypothesis_id)
+            answers.append(updated.answer_memory_ids[-1])
+            if len(answers) == 1:
+                self.assertIsNone(updated.graduated_concept_id)
+        self.assertEqual(updated.status, STATUS_GRADUATED)
+        cid = updated.graduated_concept_id
+        concept = self.concepts.get(cid)
+        self.assertEqual(concept.label, row.statement)
+        sources = {e.src_id for e in self.concepts.evidence_of(cid) if e.src_type == "memory"}
+        self.assertEqual(sources, {str(mid) for mid in answers})
+        self.assertNotIn(str(forced["answer_memory_id"]), sources)
+        self.assertEqual(concept.distinct_source_count, 2)
 
     def test_a_confirm_without_text_is_refused(self) -> None:
         """Otherwise it would mint a concept resting on nothing.

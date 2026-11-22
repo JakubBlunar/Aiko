@@ -28,6 +28,9 @@ graduation — and the boundary is deliberately narrow.
 | Surfacing adapter | [`hypothesis_lane.py`](../app/core/concepts/hypothesis_lane.py) |
 | The shared dedupe bar | [`concept_dedupe.py`](../app/core/concepts/concept_dedupe.py) |
 
+Manual confirmations in the debug panel update credence and store an answer receipt.
+Graduation counts confirmations tied to distinct, current user messages about the same claim.
+
 ## Why the layer exists
 
 Everything else in the concept stack runs **backwards from evidence**. L2

@@ -250,4 +250,6 @@ Both capability modes passed the source-receipt round trip, and the final
 extractor-focused selection passed 152 tests. Three other failures reproduced
 on the unchanged revision `568d8d76`. Inline-memory admission refused a
 literal fallback with `lost_condition`, and two forced hypothesis-verdict
-tests expected a graduated concept. Those remain open.
+tests expected a graduated concept. The follow-up fixed the literal retry
+and verified that only confirmations backed by distinct current user messages
+supply graduation evidence. All three failing cases now have passing coverage.

@@ -67,6 +67,11 @@ def admit_source_note(candidate: dict, rows, *, session_key: str, writer: str,
         fallback["observation"] = candidate["observation"]
     supported = admit_memory(fallback, rows, session_key=session_key, writer=writer,
                              proposal_message_id=proposal_message_id, context_rows=context_rows)
+    if supported.metadata.get("claim_fidelity_refusal") == "unsupported_observation":
+        # Recheck the literal note on its own when only the proposed facets failed.
+        del fallback["observation"]
+        supported = admit_memory(fallback, rows, session_key=session_key, writer=writer,
+                                 proposal_message_id=proposal_message_id, context_rows=context_rows)
     if supported.accepted:
         supported.metadata["source_note_fallback"] = "lost_condition"
         return fallback, supported

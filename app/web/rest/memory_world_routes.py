@@ -520,15 +520,7 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
     def force_hypothesis_verdict(
         hypothesis_id: int, payload: dict[str, Any] | None = None,
     ) -> JSONResponse:
-        """Answer one of Aiko's guesses by hand, as if the user had.
-
-        Runs the *live* post-turn writer, so a forced confirm links and
-        graduates exactly as a real answer would. ``text`` stands in for
-        what the user said and is stored as the ordinary memory a
-        graduated concept inherits as evidence -- which is why a confirm
-        without it is rejected rather than quietly minting a concept that
-        rests on nothing.
-        """
+        """Record a manual verdict. A confirmation requires answer text."""
         body = payload or {}
         try:
             result = session.force_hypothesis_verdict(
