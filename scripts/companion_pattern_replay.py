@@ -261,7 +261,7 @@ def main():
     parser.add_argument("--embedding", default="qwen3-embedding:0.6b")
     parser.add_argument("--seed", type=int, default=71)
     parser.add_argument("--section", choices=("all", "preferences", "curiosity", "extraction",
-                                              "occasions"),
+                                              "occasions", "occasion-links"),
                         default="all")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
@@ -289,8 +289,16 @@ def main():
                 from scripts.occasion_reply_replay import occasion_reply_replay
 
                 report["occasions"] = occasion_reply_replay(root, client, embeddings)
+            if args.section in {"all", "occasion-links"}:
+                from scripts.occasion_link_replay import occasion_link_replay
+
+                report["occasion_links"] = occasion_link_replay(
+                    root, client, embeddings, args.model,
+                )
     print(json.dumps(report, indent=2))
     misses = [k for k, v in report.get("curiosity", {}).items() if v["expected"] != v["actual"]]
+    misses.extend(item["case"] for item in report.get("occasion_links", [])
+                  if item["expected"] != item["relation"])
     for case, result in report.get("extraction", {}).items():
         rows = result["stored"]
         if case == "plan_only":

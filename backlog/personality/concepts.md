@@ -599,6 +599,32 @@ to Aiko. The pilot now returns a short frequency answer from the verified
 pair and reopens uncertainty when a source edit invalidates the review.
 Ordinary chat routing and automatic discovery of matching occasions remain open.
 
+**Automatic pair pilot, 22 November.** Run
+`python -m scripts.companion_pattern_replay --section occasion-links --seed 71`.
+Nine fictional histories ask how many times a counter jammed, a crate split,
+or a tap leaked. Two edits revisit the counter history. The local 9B model
+receives the retrieved source messages and proposes a relation with literal
+evidence from each. The pilot checks the excerpts against the current messages.
+For the tested question form it also checks that a recurrence names the
+subject and repeats the event, or that a callback refers to the earlier event.
+The displayed answer comes from the resulting source comparison.
+
+At both seeds (71 and 73), the model proposed the expected relation on 9/11
+checks. It twice treated the same ambiguous repair-slip wording as a new jam,
+once in a fresh history and once after an edit. The evidence check withheld
+both proposals. All 11 answers matched the expected frequency, including the
+two held-out tap cases. Editing away the callback changed the answer from
+one to uncertain. A further edit explicitly reporting another jam changed it
+to two.
+
+The counter callback ran through actual memory extraction. Seed 71 stored
+only the first report as a memory, so the pilot recovered the second user
+message with a literal topic search in the local conversation archive. Seed
+73 stored both. The other eight histories seeded source-linked memories to
+isolate the comparison. Histories used disposable databases, including their
+question and reply turns. Topic assignments were supplied. Automatic linking
+under broader paraphrases, ordinary chat routing and promotion remain open.
+
 ## L50. Context-scoped claims and temporal validity
 
 **Status: Partial.**

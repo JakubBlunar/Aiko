@@ -12,6 +12,7 @@ from app.core.conversation.occasion_review import compare_accounts, reported_acc
 from app.core.conversation.topic_evidence import topic_evidence_profile
 from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.memory_store import MemoryStore
+from app.core.memory.shared_shorthand import source_receipt
 from app.core.rag.rag_retriever import RagRetriever
 from app.llm.tools.builtins import RecallConceptTool
 from app.llm.tools.conversation_history import ConversationHistoryTool
@@ -132,3 +133,20 @@ def test_review_requires_two_distinct_user_reports(replay):
     assert reported_account(assistant, 2, db) is None
     with pytest.raises(ValueError, match="two chronological accounts"):
         review_pair(reported_account(note, 1, db), reported_account(note, 2, db), "same")
+
+
+def test_extracted_paraphrase_can_locate_only_its_current_report(replay):
+    from dataclasses import replace
+
+    db, memories, _ = replay
+    note = _write_report(db, memories, "repair", _FIRST)
+    row = db.get_message_row(note.source_message_id)
+    receipt = source_receipt(row, row.content)
+    paraphrase = replace(note, content="An interpretation of the incident.", provenance="inferred",
+                         metadata={"claim_fidelity": {"version": 1, "basis": "reported",
+                                                      "sources": [receipt]}})
+    account = reported_account(paraphrase, 1, db)
+    assert account.statement == _FIRST
+    assert not reported_account(replace(paraphrase, metadata={}), 1, db)
+    assert db.update_message_content(row.id, "The report has changed.")
+    assert not reported_account(paraphrase, 1, db)
