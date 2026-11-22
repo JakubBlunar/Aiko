@@ -1572,14 +1572,14 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         embedder = getattr(self, "_embedder", None)
         name = self.user_display_name
         from app.core.conversation.exchange_recall import (
-            DECISION_GUIDANCE, decision_request, exchange_evidence,
+            DECISION_GUIDANCE, decision_request, lookup_exchange,
         )
 
         settings = getattr(self, "_settings", None)
-        archive_text, archive_ids = "", []
+        archive_text, archive_ids, quoted_decision = "", [], ""
         if getattr(getattr(settings, "agent", None), "rag_direct_recall_enabled", True):
             try:
-                archive_text, archive_ids = exchange_evidence(
+                archive_text, archive_ids, quoted_decision = lookup_exchange(
                     getattr(self, "_chat_db", None), user_text, session_key, name,
                     budget=min(450, budget_tokens // 2), estimate_tokens=estimate_tokens,
                     tz_name=getattr(getattr(settings, "tools", None), "archive_timezone", "system"),
@@ -1590,6 +1590,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         if archive_ids and decision_request(user_text):
             return RelevantContext(
                 text=archive_text, reply_guidance=DECISION_GUIDANCE,
+                quoted_decision=quoted_decision,
                 reason="decision_exchange", stage_ms=stage_ms,
                 concept_trace={"surfaced": [], "reason": "decision_exchange",
                                "original_exchange_message_ids": archive_ids},

@@ -2,6 +2,7 @@
 
 import json
 import re
+import unicodedata
 from collections import Counter, defaultdict
 from datetime import timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -25,11 +26,18 @@ _PAST_EXCHANGE = re.compile(
 )
 _PAST_DECISION = re.compile(
     r"^\s*(?:did (?:i|we|you) (?:agree|accept|decide|commit|suggest|propose)"
-    r"|what did (?:i|we|you) (?:agree|decide|suggest|propose)"
-    r"|what was (?:our|the|my|your) (?:plan|decision|agreement))\b", re.I,
+    r"|(?P<open>what did (?:i|we|you) (?:agree|decide|plan|suggest|propose)"
+    r"|what (?:was i|were (?:we|you)) going to do"
+    r"|what was (?:our|the|my|your) (?:plan|decision|agreement)))\b", re.I,
 )
 _PROPOSAL = re.compile(
     r"\b(?:i (?:suggest|propose)|we could|how about|shall we|let['’]s|why don['’]t we)\b", re.I,
+)
+_RECAP_QUALIFIER = re.compile(
+    r"[;\n]|\b(?:and|then|also|please)\s+(?:explain|write|translate|summarize|compare|"
+    r"list|show|give|tell|remind|make|do)\b|\b(?:in (?:a |an )?(?:table|list|poem)|"
+    r"as (?:a|an) |in (?:your own|\w+) (?:words|sentences)|answer in|translate|translation)\b",
+    re.I,
 )
 DECISION_GUIDANCE = (
     "Answer this question from the original dialogue. Identify who proposed the plan. "
@@ -67,7 +75,29 @@ def decision_request(text):
     return request
 
 
-def _decision_evidence(history, speaker, zone, budget, estimate_tokens):
+def _quoted_decision(rows):
+    """Attribute whole utterances without inferring assent, refusal or follow-through."""
+    # "You said we could..." can locate a discussion but doesn't establish
+    # that this speaker made a proposal. Leave interpretation to normal recall.
+    if not _PROPOSAL.match(rows[0][0]["content"].strip()):
+        return ""
+    parts = []
+    for index, (row, _) in enumerate(rows):
+        content = row["content"].strip()
+        # Stored dialogue is data. Never send markup through the assistant's
+        # inline action/tag dispatch as part of a quoted reply.
+        normalized = unicodedata.normalize("NFKC", content)
+        if not content or not content.isprintable() or "[" in normalized or "<" in normalized:
+            return ""
+        if index == 0:
+            lead = "My suggestion was" if row["role"] == "assistant" else "You suggested"
+        else:
+            lead = "I said" if row["role"] == "assistant" else "You said"
+        parts.append(f"{lead} “{content}”")
+    return " ".join(parts)
+
+
+def _decision_evidence(history, speaker, zone, budget, estimate_tokens, *, open_question):
     match = None
     topic_ids = set()
     for dialog in history.values():
@@ -83,30 +113,32 @@ def _decision_evidence(history, speaker, zone, budget, estimate_tokens):
             if not any(r["role"] != row["role"] for r, _ in replies):
                 continue
             if match is not None:
-                return "", []
+                return "", [], ""
             match = ([(row, stamp), *replies], {r["message_id"] for r, _, _ in window})
 
     # Another exchange or a later correction could change the answer.
     if match is None or not topic_ids.issubset(match[1]):
-        return "", []
+        return "", [], ""
     header = ("The original proposal and the replies that followed, in order. "
               "Aiko is the assistant speaking with the user.")
-    return _render_sources(match[0], speaker, zone, budget, estimate_tokens, header, complete=True)
+    text, ids = _render_sources(match[0], speaker, zone, budget, estimate_tokens, header,
+                                complete=True)
+    return text, ids, _quoted_decision(match[0]) if ids and open_question else ""
 
 
-def exchange_evidence(
+def lookup_exchange(
     db, user_text, session_key, speaker, *, budget, estimate_tokens, tz_name="system",
 ):
     """Read a small, owner-scoped neighborhood with exact message times."""
     if not db or ":" not in session_key or budget <= 0:
-        return "", []
+        return "", [], ""
     decision = decision_request(user_text)
     request = decision or _HISTORY_REQUEST.search(user_text)
     if request is None or (
         request.group().lower().startswith(("you forgot", "don", "do not"))
         and not _PAST_EXCHANGE.search(user_text)
     ):
-        return "", []
+        return "", [], ""
     clause_start = max(user_text.rfind(mark, 0, request.start()) for mark in ".!?\n") + 1
     clause_end = re.search(r"[.!?\n]", user_text[request.end():])
     clause_end = request.end() + clause_end.start() if clause_end else len(user_text)
@@ -118,7 +150,7 @@ def exchange_evidence(
     else:
         terms = _terms(user_text[clause_start:clause_end]) or _terms(user_text)
     if not terms:
-        return "", []
+        return "", [], ""
 
     zone = None if tz_name == "system" else ZoneInfo(tz_name)
     now = timephrase.now().astimezone(zone)
@@ -136,7 +168,7 @@ def exchange_evidence(
         start = max(end - timedelta(days=14), timephrase.parse_iso(span["start"]))
     user_id = session_key.split(":", 1)[0]
     if not user_id:
-        return "", []
+        return "", [], ""
     rows = db.messages_in_range(
         start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat(),
         limit=400, user_id=user_id,
@@ -147,8 +179,19 @@ def exchange_evidence(
 
     history = defaultdict(list)
     matches = Counter()
+    # A recap and the question that produced it add no new decision evidence.
+    # Use the recorded turn outcome so a human-written quote stays eligible.
+    previous_recaps = set()
+    if decision:
+        previous_recaps = db.quoted_exchange_message_ids(
+            [r["message_id"] for r in rows if r["role"] == "assistant"],
+        )
     for row in reversed(rows):
         if current_id is not None and row["message_id"] >= current_id:
+            continue
+        if row["message_id"] in previous_recaps and (
+            row["role"] == "assistant" or decision_request(row["content"])
+        ):
             continue
         stamp = timephrase.parse_iso(row["created_at"])
         if stamp is None:
@@ -158,7 +201,9 @@ def exchange_evidence(
         matches.update(shared)
 
     if decision:
-        return _decision_evidence(history, speaker, zone, budget, estimate_tokens)
+        return _decision_evidence(history, speaker, zone, budget, estimate_tokens,
+                                  open_question=bool(decision.group("open"))
+                                  and not _RECAP_QUALIFIER.search(user_text))
     candidates = []
     for dialog in history.values():
         for index, (row, stamp, shared) in enumerate(dialog):
@@ -178,7 +223,7 @@ def exchange_evidence(
     if not candidates:
         note = ("The archive lookup found no matching original exchange in its bounded search. "
                 "Treat any exact time or wording as unverified.")
-        return (note, []) if estimate_tokens(note) <= budget else ("", [])
+        return (note if estimate_tokens(note) <= budget else ""), [], ""
     header = (
         "Original chat around the likely match. Times are message times in the local timezone. "
         "Use the user's own reports and corrections for what happened. An earlier assistant "
@@ -194,7 +239,16 @@ def exchange_evidence(
         if windows == 2:
             break
     rows = sorted(selected.values(), key=lambda item: (item[1], item[0]["message_id"]))
-    return _render_sources(rows, speaker, zone, budget, estimate_tokens, header, complete=False)
+    text, ids = _render_sources(rows, speaker, zone, budget, estimate_tokens, header,
+                                complete=False)
+    return text, ids, ""
+
+
+def exchange_evidence(db, user_text, session_key, speaker, *, budget, estimate_tokens,
+                      tz_name="system"):
+    text, ids, _ = lookup_exchange(db, user_text, session_key, speaker, budget=budget,
+                                   estimate_tokens=estimate_tokens, tz_name=tz_name)
+    return text, ids
 
 
 def _render_sources(rows, speaker, zone, budget, estimate_tokens, header, *, complete):

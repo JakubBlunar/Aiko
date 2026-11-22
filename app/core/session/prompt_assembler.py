@@ -1598,6 +1598,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         context_budget_telemetry: dict[str, Any] = {}
         context_stage_ms: dict[str, float] = {}
         region_concept_trace: dict = {"surfaced": [], "reason": "no_provider"}
+        quoted_decision = ""
         rag_prefetch_event = "skip"
         rag_lookup_ms = 0.0
 
@@ -4085,6 +4086,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             rag_lookup_ms = (time.perf_counter() - region_started) * 1000.0
             if region is not None:
                 relevant_context_block = getattr(region, "text", "") or ""
+                quoted_decision = getattr(region, "quoted_decision", "")
                 sel = getattr(region, "selection", None)
                 if sel is not None:
                     try:
@@ -4280,6 +4282,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 **dict(region_concept_trace or {}),
                 "aggressive": bool(aggressive),
             },
+            quoted_decision=quoted_decision,
             coactivation_surfaced={
                 **dict(slices.coactivation_trace or {}),
                 "slice_cache_event": slice_event,

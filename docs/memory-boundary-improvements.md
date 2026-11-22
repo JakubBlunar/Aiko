@@ -24,6 +24,14 @@ to a later suggestion. Competing matches, missing replies, and excerpts that
 exceed the budget use ordinary recall. The search covers up to 400 messages
 within a window of at most 14 days. Other prompt blocks keep their regular roles.
 
+For an open question such as “What was our plan for the clock?”, Aiko can
+answer directly from the archived words. She identifies who suggested it and
+quotes what each person said next. This preserves a change of subject, an
+undecided reply, or a one-time agreement. The same recap goes through chat,
+speech and history. Asking again uses the original dialogue. Direct yes/no
+questions, requests for another format, reported speech, and turns with a
+new tool result use the model to compose the answer.
+
 Focused recall regressions: 110 passed. The combined verification is recorded
 below. Live-model wording remains to be checked after a backend restart and
 ordinary use. Legacy image rows with only an uploader/event-kind fallback now

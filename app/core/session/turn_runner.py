@@ -822,8 +822,12 @@ class TurnRunner:
         # rather than re-``join``-ing a list every token: CPython amortises
         # string concatenation to linear, so the stream loop no longer pays
         # O(n^2) allocation churn on long replies (P18).
+        tool_calls = sum(1 for m in messages if m.get("role") == "tool")
+        # A dispatched tool may have supplied newer evidence or performed
+        # another requested action. Let the model report its result normally.
+        quoted_decision = telemetry.quoted_decision if not tool_calls else ""
         full = body = ""
-        mood: str | None = None
+        mood: str | None = "neutral" if quoted_decision else None
         ui_sent_chars = 0       # chars of meta-stripped body already sent to UI
         tts_appended_chars = 0  # chars of meta-stripped body already routed to TTS
         tts_buffer = ""         # rolling buffer of body chars not yet spoken
@@ -836,14 +840,14 @@ class TurnRunner:
         # Skipped when the tool pass already announced a slow lookup: she
         # has just said "hang on, let me check", and a "Hmm," on top of it
         # sounds like two false starts rather than one held beat.
-        if not self._spoke_slow_tool_notice:
+        if not quoted_decision and not self._spoke_slow_tool_notice:
             self._filler.arm(
                 on_tts_chunk,
                 carry_over_reaction=self._last_reaction,
             )
 
         try:
-            stream = self._ollama.chat_stream(
+            stream = (quoted_decision,) if quoted_decision else self._ollama.chat_stream(
                 messages,
                 options={
                     "temperature": self._temperature,
@@ -949,8 +953,10 @@ class TurnRunner:
         question = clarification_question(body)
         if question is not None:
             full = "" if aborted else question
+        stream_usage = (OllamaUsage(done_reason="quoted_exchange") if quoted_decision
+                        else self._ollama.last_usage)
         outcome.finish(
-            reason=self._ollama.last_usage.done_reason, cancelled=aborted,
+            reason=stream_usage.done_reason, cancelled=aborted,
             has_answer=bool(strip_all_meta_tags(full).strip()),
         )
         if outcome.status == "empty":
@@ -983,7 +989,10 @@ class TurnRunner:
         # ``%r`` keeps multi-line responses on a single log line. The
         # tag-presence summary is greppable ("llm tags:") so the common
         # "is reaction missing again?" question takes seconds to answer.
-        log.info("llm raw response: %r", full_raw)
+        if quoted_decision:
+            log.info("quoted decision response: %r", full_raw)
+        else:
+            log.info("llm raw response: %r", full_raw)
         log.info(
             "llm tags: reaction=%s outfit=%s motion=%s overlay=%s remember=%s",
             "Y" if "[[reaction:" in full_raw else "n",
@@ -1107,7 +1116,7 @@ class TurnRunner:
         # per-message framing (which the model counts but our char sum does not)
         # so the ratio isn't biased by message count. Best-effort.
         try:
-            stream_prompt_tokens = int(self._ollama.last_usage.prompt_tokens)
+            stream_prompt_tokens = int(stream_usage.prompt_tokens)
             if stream_prompt_tokens > 0:
                 prompt_chars = sum(
                     len(m.get("content", "") or "") for m in messages
@@ -1121,7 +1130,7 @@ class TurnRunner:
         # totals reflect every Ollama call we made. NOTE: ``merge`` ADDS the
         # per-pass prompt tokens, so ``usage.prompt_tokens`` is the turn's
         # TOTAL billed prompt tokens — NOT the context-window occupancy.
-        usage = self._ollama.last_usage.merge(tool_usage)
+        usage = stream_usage.merge(tool_usage)
         duration_ms = (time.monotonic() - t0) * 1000.0
 
         # Context-window occupancy is a PER-CALL property: the tool decision
@@ -1131,7 +1140,7 @@ class TurnRunner:
         # turns — a ~37k streaming call reads as ~68k). Use the LARGEST single
         # call for the occupancy readout + the compaction trigger.
         context_prompt_tokens = max(
-            int(self._ollama.last_usage.prompt_tokens),
+            int(stream_usage.prompt_tokens),
             int(tool_usage.prompt_tokens),
         )
         if telemetry is not None:
@@ -1161,7 +1170,7 @@ class TurnRunner:
                 session_id=session_key,
                 role="assistant",
                 content=cleaned,
-                token_count=(self._ollama.last_usage.answer_tokens or estimate_tokens(cleaned)),
+                token_count=(stream_usage.answer_tokens or estimate_tokens(cleaned)),
                 outcome=outcome,
             )
             self._extract_self_tagged_memories(
@@ -1187,7 +1196,6 @@ class TurnRunner:
             if self._context_window and context_prompt_tokens
             else 0.0
         )
-        tool_calls = sum(1 for m in messages if m.get("role") == "tool")
         listen_extensions = 0
         if self._listen_extensions_provider is not None:
             try:
@@ -1266,7 +1274,7 @@ class TurnRunner:
             telemetry=telemetry,
             usage=usage,
             messages=messages,
-            stream_prompt_tokens=int(self._ollama.last_usage.prompt_tokens),
+            stream_prompt_tokens=int(stream_usage.prompt_tokens),
             tool_prompt_tokens=int(tool_usage.prompt_tokens),
             context_prompt_tokens=context_prompt_tokens,
             ctx_pct=ctx_pct,

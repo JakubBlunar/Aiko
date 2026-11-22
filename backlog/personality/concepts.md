@@ -203,6 +203,19 @@ and cases outside the archive lookup open.
 The eight-reply atlas control with archive lookup disabled reproduced the
 wrong citation on both open questions about the explicit agreement.
 
+**Open atlas attribution resolved in the isolated replay.** At seed 71,
+speaker instructions alone still let the chat model exchange the roles. The
+open recap now quotes the original turns with their speakers. Across 12
+fictional replies (atlas, soundcheck and a held-out rehearsal, two responses
+to each proposal, before and after withdrawing the diary premise), all 12
+matched the original words. The atlas reply preserved the user's wish to look
+at the harbor map first. The rehearsal distinguished accepting the lanterns
+from deciding about the handbell, and kept “for the first rehearsal only”
+when the user did agree. Four direct atlas controls still identified whether
+the user accepted. The runs used local `baytout3/qwen3.5-uncensored:9b` and
+`qwen3-embedding:0.6b`. Fresh ordinary use and cases where the archive cannot
+identify a single exchange remain open under L22.
+
 **Acceptance.** A one-time choice does not imply effectiveness or a standing
 trait. Multiple paraphrases of one episode retain one evidence basis in the
 review. Withdrawing an unsupported premise changes recall eligibility while an

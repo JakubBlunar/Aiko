@@ -1,13 +1,17 @@
 from contextlib import closing
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
-from app.core.conversation.exchange_recall import exchange_evidence
+from app.core.conversation.exchange_recall import exchange_evidence, lookup_exchange
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.session.inner_life_part1 import InnerLifePart1Mixin
+from app.core.session.prompt_assembler import PromptAssembler
+from app.core.session.turn_runner import TurnRunner
+from app.llm.ollama_client import OllamaUsage
 from app.llm.token_utils import estimate_tokens
 
 
@@ -107,4 +111,85 @@ def test_decision_context_marks_the_users_proposal_and_clears_prior_selections(t
         assert region.concept_trace["surfaced"] == [] and region.reply_guidance
         assert 'Robin: "We could try the amber lamp."' in region.text
         assert 'Aiko: "Yes, for the first reading."' in region.text
+        assert region.quoted_decision == (
+            'You suggested “We could try the amber lamp.” I said “Yes, for the first reading.”'
+        )
         assert not host._last_surfaced_items and not host._last_context_concept_ids
+
+
+@pytest.mark.parametrize("session", ["owner:recall", "owner:museum"])
+def test_open_recap_is_the_same_in_chat_speech_and_history_on_repeat(tmp_path, session):
+    db = ChatDatabase(tmp_path / "chat.db")
+    with closing(db._get_conn()):
+        proposal = "We could wind the clock before the tour."
+        other_plan = "I'll open the gallery first."
+        db.add_message("owner:museum", "assistant", proposal)
+        db.add_message("owner:museum", "user", other_plan)
+        host = SimpleNamespace(_chat_db=db, _memory_settings=SimpleNamespace(),
+                               user_display_name="Robin")
+        persona = tmp_path / "persona.txt"
+        persona.write_text("You are Aiko.", encoding="utf-8")
+        prompt = PromptAssembler(db, persona_path=persona, continuity_max_messages=0)
+        prompt.set_relevant_context_provider(
+            lambda **kwargs: InnerLifePart1Mixin.build_relevant_context(host, **kwargs),
+        )
+        client = Mock(last_usage=OllamaUsage(prompt_tokens=450, completion_tokens=99))
+        runner = TurnRunner(client, db, prompt, model="test", context_window=8192,
+                            max_tokens=512, temperature=0,
+                            filler_enabled=False)
+        expected = f'My suggestion was "{proposal}" You said "{other_plan}"'
+        spoken = []
+        for _ in range(2):
+            visible = []
+            spoken.clear()
+            result = runner.run(
+                session_key=session, user_text="What was our plan for the clock?",
+                on_token=visible.append, on_tts_chunk=lambda s, _: spoken.append(s),
+            )
+            assert result.text == expected
+            assert proposal in "".join(visible) and other_plan in " ".join(spoken)
+            assert result.usage.done_reason == "quoted_exchange"
+            assert (result.usage.prompt_tokens, result.usage.completion_tokens) == (0, 0)
+            assert db.get_message_row(result.assistant_message_id).content == expected
+        client.chat_stream.assert_not_called()
+        spoken.clear()
+        cancelled = runner.run(
+            session_key=session, user_text="What was our plan for the clock?",
+            stop_requested=lambda: True, on_tts_chunk=lambda s, _: spoken.append(s),
+        )
+        assert cancelled.aborted and not cancelled.text and not spoken
+        client.chat_stream.assert_not_called()
+        db.add_message("owner:later", "user", "Actually, I'll wind the clock after the tour.")
+        assert not lookup_exchange(
+            db, "What was the plan for the clock?", "owner:fresh", "Robin",
+            budget=450, estimate_tokens=estimate_tokens,
+        )[2]
+
+
+@pytest.mark.parametrize("question,reply", [
+    ("Did I agree to the bell?", "Yes, for the first reading."),
+    ("What was the plan for the bell? Also translate it.", "Yes."),
+    ("What was the plan for the bell in a table?", "Yes."),
+    ("What was the plan for the bell in your own words?", "Yes."),
+    ("What was the plan for the bell?", "Maybe. [[remember:testing]]"),
+])
+def test_direct_mixed_or_tagged_exchanges_use_normal_generation(tmp_path, question, reply):
+    db = ChatDatabase(tmp_path / "decision.db")
+    with closing(db._get_conn()):
+        db.add_message("owner:test", "assistant", "We could try the bell.")
+        db.add_message("owner:test", "user", reply)
+        _, _, recap = lookup_exchange(db, question, "owner:fresh", "Robin", budget=450,
+                                      estimate_tokens=estimate_tokens)
+        assert recap == ""
+
+
+def test_reported_speech_does_not_make_the_reporting_speaker_the_proposer(tmp_path):
+    db = ChatDatabase(tmp_path / "decision.db")
+    with closing(db._get_conn()):
+        db.add_message("owner:test", "user", "You said we could try the bronze bell.")
+        db.add_message("owner:test", "assistant", "Yes, that was my idea.")
+        text, ids, recap = lookup_exchange(
+            db, "What was our plan for the bronze bell?", "owner:fresh", "Robin",
+            budget=450, estimate_tokens=estimate_tokens,
+        )
+        assert text and len(ids) == 2 and not recap

@@ -302,6 +302,22 @@ def _build_full_runner(
 class ToolPassGateTests(unittest.TestCase):
     """P14: the heuristic gate decides whether the decision pass runs."""
 
+    def test_dispatched_tool_result_reaches_model_even_with_an_archive_recap(self) -> None:
+        from app.core.session.prompt_assembler import PromptTelemetry
+
+        runner, ollama, registry = _build_full_runner(
+            gate_enabled=False, tool_calls=[_tool_call("get_time", call_id="c1")],
+        )
+        runner._prompt.assemble_with_budget.side_effect = None
+        runner._prompt.assemble_with_budget.return_value = (
+            [], PromptTelemetry(quoted_decision="An earlier exchange."),
+        )
+        result = runner.run(session_key="default:main", user_text="What was our plan?")
+        self.assertTrue(registry.dispatch.called)
+        ollama.chat_stream.assert_called_once()
+        self.assertIn("hi there", result.text)
+        self.assertNotEqual(result.usage.done_reason, "quoted_exchange")
+
     def test_banter_skips_tool_pass_entirely(self) -> None:
         runner, ollama, _ = _build_full_runner()
         result = runner.run(

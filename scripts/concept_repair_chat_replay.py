@@ -64,6 +64,15 @@ OCCASIONS = {
         "Did I accept the green tape idea for the soundcheck, or did you just suggest it?",
         "What was the plan for marking the channel at the soundcheck?",
     ),
+    "rehearsal": Occasion(
+        "I'm setting out the rehearsal props.", "We could ring a handbell at the curtain call.",
+        "Yes to the lanterns. I haven't decided about the handbell.",
+        "I'll ring the handbell for the first rehearsal only.",
+        "The user chose to ring the handbell for the first rehearsal only.",
+        "I remember that we agreed to ring the handbell at the curtain call.",
+        "Did I agree to ring the handbell at the curtain call?",
+        "What were we going to do about the handbell at the curtain call?",
+    ),
 }
 
 
@@ -136,7 +145,10 @@ def trial(root, client, embeddings, model, occasion, case, reviewed, question, *
         runner = TurnRunner(client, db, prompt, model=model, context_window=8192,
                             temperature=0, max_tokens=512, filler_enabled=False)
         user_text = fixture.direct_question if question == "direct" else fixture.open_question
-        result = runner.run(session_key="replay:recall", user_text=user_text)
+        displayed, spoken = [], []
+        result = runner.run(session_key="replay:recall", user_text=user_text,
+                            on_token=displayed.append,
+                            on_tts_chunk=lambda line, mood: spoken.append(line))
         trace = result.telemetry.concepts_surfaced
         system = result.telemetry.system_prompt
         selected = [r["concept_id"] for r in trace.get("surfaced", [])]
@@ -148,6 +160,10 @@ def trial(root, client, embeddings, model, occasion, case, reviewed, question, *
         if archive:
             assert archive_ids == [row.id for row in rows[1:]] and snippet_order == [2, 3]
             assert cid not in selected and diary_text not in system
+            if question == "open":
+                expected_text = f'My suggestion was "{fixture.suggestion}" You said "{response}"'
+                assert result.text == expected_text
+                assert result.usage.done_reason == "quoted_exchange" and spoken and displayed
         else:
             assert not archive_ids and diary_text in system and sources == [1, 2, 3]
             assert (cid in selected) == viable
@@ -168,6 +184,7 @@ def main():
     parser.add_argument("--embedding", default="qwen3-embedding:0.6b")
     parser.add_argument("--seed", type=int, default=71)
     parser.add_argument("--occasion", choices=OCCASIONS, default="atlas")
+    parser.add_argument("--question", choices=("open", "direct"))
     parser.add_argument("--without-archive", action="store_true")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
@@ -187,7 +204,7 @@ def main():
               timephrase.scoped_now(lambda: datetime(2026, 11, 22, 12, tzinfo=timezone.utc))):
             for case in ("suggestion", "agreement"):
                 for reviewed in (False, True):
-                    for question in ("direct", "open"):
+                    for question in ((args.question,) if args.question else ("direct", "open")):
                         result = trial(Path(tmp) / f"{case}-{reviewed}-{question}", client,
                                        embeddings, args.model, args.occasion, case, reviewed,
                                        question, archive=not args.without_archive)

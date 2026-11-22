@@ -1025,6 +1025,7 @@ class PromptTelemetry:
     # reflect what actually went into the prompt rather than a fresh
     # recompute.
     concepts_surfaced: dict[str, Any] = field(default_factory=dict)
+    quoted_decision: str = field(default="", repr=False)
     coactivation_surfaced: dict[str, Any] = field(default_factory=dict)
     # Unified context budget breakdown (the T3 ``relevant_context`` region):
     # ``reserved`` / ``used_tokens`` (budget vs spend), ``degrade_level``,
