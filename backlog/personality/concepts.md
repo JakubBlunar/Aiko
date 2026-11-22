@@ -611,6 +611,24 @@ Both comparisons used supplied context in one fictional story. Replay mined
 parents across several held-out occasions and judge the response text alongside
 its action field before changing synthesis, ranking or the context budget.
 
+**Mined choice comparison.** Run `python -m scripts.mined_choice_replay --seed 71`.
+Four literal fictional user reports stand in for eligible base concepts. The production
+proposer generated two children and one view about stewardship. Only the parent or its
+two cited children were shown per arm, with the same 600-character allocation and the
+same turns and generation settings. This tests the proposer and reply, with base
+extraction, lifecycle promotion and ordinary-chat retrieval outside the experiment.
+
+Local `baytout3/qwen3.5-uncensored:9b` finished all 16 replies across an audio mix and
+a loom draft. On manual reading, both arms preserved the only original in 2/2 cases,
+and neither asked whether a copy existed in the two unknown cases per arm. With a
+verified backup the parent endorsed proceeding on both, while the children suggested
+loading the copy on the audio case. After a correction the parent protected the loom
+draft but also said to proceed with the audio overwrite. The children failed to
+establish a safe current-project copy on either correction. Some replies described
+rituals or standards that the user had never named. The initial 140-token pilot
+truncated the first reply; the completed comparison used 350 for both arms. This
+sample gives no reason to raise the depth cap.
+
 ### L46 follow-up. Prepare the shared graph for deeper abstractions
 
 **Architecture review, 22 Nov 2026.** The original L1 design still fits. A
