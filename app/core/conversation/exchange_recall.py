@@ -26,9 +26,16 @@ _PAST_EXCHANGE = re.compile(
     r"|we already (?:talked|discussed))\b",
     re.I,
 )
+_CASUAL_OPENING = re.compile(
+    r"^\s*(?:(?:oh|hey(?: aiko)?|so|wait|okay|ok|well|hmm|honestly|by the way|before i forget|"
+    r"quick question|remind me(?=[,:\u2013\u2014-]))\b[\s,.!:\u2013\u2014-]+)*", re.I,
+)
 _PAST_DECISION = re.compile(
-    r"^\s*(?:did (?:i|we|you) (?:agree|accept|decide|commit|suggest|propose)"
-    r"|(?P<open>what did (?:i|we|you) (?:agree|decide|plan|suggest|propose)"
+    r"(?:did (?:i|we|you) (?:ever )?(?:agree|accept|decide|commit|suggest|propose|settle on)"
+    r"|(?P<open>what did (?:i|we|you) (?:agree|decide|plan|suggest|propose|settle on|"
+    r"end up (?:deciding|choosing))"
+    r"|(?:do you remember|(?:(?:can|could) you )?remind me) what (?:i|we|you) "
+    r"(?:agreed|decided|planned|suggested|proposed|settled on)"
     r"|what (?:was i|were (?:we|you)) going to do"
     r"|what was (?:our|the|my|your) (?:plan|decision|agreement)))\b", re.I,
 )
@@ -70,9 +77,13 @@ def _terms(text):
 
 def decision_request(text):
     """Recognize a standalone question about an earlier proposal or agreement."""
-    request = _PAST_DECISION.match(text)
-    if request and re.search(r"[.!?]\s*\S|\band (?:can|could|would|will|please|tell|help|"
-                             r"remind|what|why|how|when|where|did)\b", text, re.I):
+    # Match on the original text so the caller's topic slice keeps its offsets.
+    start = _CASUAL_OPENING.match(text).end()
+    request = _PAST_DECISION.match(text, start)
+    if request and re.search(
+        r"[.!?]\s*\S|\b(?:and|then) (?:can|could|would|will|please|tell|help|remind|set|add|"
+        r"book|check|look up|what|why|how|when|where|did)\b", text[start:], re.I,
+    ):
         return None
     return request
 
@@ -241,23 +252,32 @@ _CALENDAR_DETAIL = re.compile(
 
 
 def _decision_detail(text, previous):
-    detail = text.strip().rstrip(".!").lower()
+    if not (previous in (_MISSING, _INCOMPLETE, _OTHER_MENTION, _COMPETING)
+            or previous.startswith((_CHOICES, _PARTIAL))):
+        return None, ""
+    # Strip conversational framing only inside a pending clarification. Keep
+    # the remaining utterance whole so a new request or correction passes through.
+    detail = text[_CASUAL_OPENING.match(text).end():].lower().replace("’", "'").strip()
+    detail = detail.rstrip(".!?").rstrip()
+    detail = re.sub(r"^(?:i think|maybe|probably)[,\s]+", "", detail)
+    detail = re.sub(r"(?:,\s*|\s+)(?:i think|i guess|probably|maybe)$", "", detail)
+    # The chat input sanitizer may turn a typographic apostrophe into a space.
+    if re.fullmatch(r"(?:(?:i )?(?:don[' ]?t|do not|can[' ]?t|cannot) (?:really )?"
+                    r"(?:remember|recall|know)|(?:i[' ]?m |i am )?not sure)"
+                    r"(?: (?:when|which(?: one)?|either|exactly))?(?:,? sorry)?",
+                    detail):
+        return "can't identify", ""
     if previous.startswith(_CHOICES):
         ordinal = re.fullmatch(r"(?:the )?(first|second)(?: one| suggestion)?", detail)
         named = re.fullmatch(r"the ([\w'-]+(?: [\w'-]+){0,4}) one", detail)
         if ordinal or named:
             return (ordinal or named)[1], ""
-    if (previous in (_MISSING, _INCOMPLETE, _OTHER_MENTION, _COMPETING)
-            or previous.startswith((_CHOICES, _PARTIAL))):
-        if detail in ("i don't remember", "i don’t remember", "i don't know", "i’m not sure",
-                      "i'm not sure", "not sure"):
-            return "can't identify", ""
-        if _RELATIVE_DETAIL.fullmatch(detail):
-            return None, detail
-        if _CALENDAR_DETAIL.fullmatch(detail):
-            day = timephrase.parse_loose_datetime(detail)
-            if day:
-                return None, day.date().isoformat()
+    if _RELATIVE_DETAIL.fullmatch(detail):
+        return None, detail
+    if _CALENDAR_DETAIL.fullmatch(detail):
+        day = timephrase.parse_loose_datetime(detail)
+        if day:
+            return None, day.date().isoformat()
     return None, ""
 
 
@@ -304,7 +324,7 @@ def lookup_exchange(
         db, session_key, user_text, recent_turns,
     )
     if choice == "can't identify":
-        return ExchangeLookup(reply="That's okay. I'll leave what we decided open.",
+        return ExchangeLookup(reply="That's okay. We can leave it there.",
                               reason="decision_unresolved")
     decision = decision_request(user_text)
     request = decision or _HISTORY_REQUEST.search(user_text)

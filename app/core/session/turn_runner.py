@@ -756,7 +756,10 @@ class TurnRunner:
         # slow-first-token filler.
         self._spoke_slow_tool_notice = False
         if self._tool_registry is not None and len(self._tool_registry) > 0:
-            gate_decision = self._gate_tool_pass(cleaned_user, messages)
+            decision_reason = (telemetry.concepts_surfaced.get("reason", "")
+                               if telemetry.decision_reply else "")
+            gate_decision = self._gate_tool_pass(cleaned_user, messages,
+                                                 decision_reason=decision_reason)
             telemetry.tool_gate_event = gate_decision.as_event()
             if gate_decision.run:
                 tool_pass_t0 = time.monotonic()
@@ -1416,6 +1419,8 @@ class TurnRunner:
         self,
         user_text: str,
         messages: list[dict[str, Any]],
+        *,
+        decision_reason: str = "",
     ) -> GateDecision:
         """P14: decide whether the tool-decision pass runs this turn.
 
@@ -1425,6 +1430,13 @@ class TurnRunner:
         quo).
         """
         self._tool_gate_turns += 1
+        if decision_reason == "decision_unresolved":
+            # The user just declined our archived decision clarification. A
+            # lookup here would reopen it and replace the acknowledgement.
+            self._tool_gate_force_next = False
+            decision = GateDecision(run=False, reason="decision_unresolved")
+            self._tool_gate_last = decision
+            return decision
         if not self._tool_pass_gate_enabled:
             decision = GateDecision(run=True, reason="disabled")
             self._tool_gate_last = decision
@@ -1470,6 +1482,14 @@ class TurnRunner:
             )
             if decision.reason == "premise_recall":
                 self._information_need_seen = need_key
+            duplicate_recall = decision.reason in ("premise_recall", "signal_recall")
+            if decision_reason and (duplicate_recall or (
+                "remind me what" in user_text.lower()
+                and decision.reason in ("signal_reminders", "signal_recall+reminders")
+            )):
+                # A standalone recap already answered from the archive needs
+                # no second lookup when phrased as "remind me what we decided".
+                decision = GateDecision(run=False, reason="decision_exchange")
         except Exception:
             log.exception("tool-pass gate raised; defaulting to run")
             decision = GateDecision(run=True, reason="gate_error")

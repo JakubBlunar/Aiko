@@ -5,7 +5,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from app.core.conversation.exchange_recall import exchange_evidence, lookup_exchange
+from app.core.conversation.exchange_recall import (
+    _decision_detail, decision_request, exchange_evidence, lookup_exchange,
+)
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.session.inner_life_part1 import InnerLifePart1Mixin
@@ -200,10 +202,15 @@ def test_reported_speech_does_not_make_the_reporting_speaker_the_proposer(tmp_pa
         assert result.text and len(result.message_ids) == 2 and not result.reply
 
 
-def test_missing_then_date_then_named_second_proposal_through_chat(tmp_path):
+@pytest.mark.parametrize("selection,decline", [
+    ("The silver one.", "I don't remember."),
+    ("Oh, the second one, I think.", "Honestly, I don't remember when."),
+    ("I think the silver one.", "I can’t really recall which one."),
+])
+def test_missing_then_date_then_named_second_proposal_through_chat(tmp_path, selection, decline):
     db = ChatDatabase(tmp_path / "clarify.db")
     with closing(db._get_conn()):
-        question = "Did I agree to use a lantern?"
+        question = "Oh, before I forget, did I agree to use a lantern?"
         old = datetime(2026, 10, 2, 12, tzinfo=timezone.utc)
         now = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
         with timephrase.scoped_now(lambda: old):
@@ -244,17 +251,56 @@ def test_missing_then_date_then_named_second_proposal_through_chat(tmp_path):
             assert "brass lantern" in options.text and "silver lantern" in options.text
             assert "secret" not in options.text and "first reading" not in options.text
             assert options.telemetry.concepts_surfaced["reason"] == "decision_ambiguous"
-            result = ask("The silver one.")
+            result = ask(selection)
             assert result.text == ('You suggested "We could borrow the silver lantern." '
                                    'I said "I can ask about it."')
             assert result.telemetry.concepts_surfaced["original_exchange_message_ids"] == [
                 second, reply,
             ]
             ask(question)
-            unresolved = ask("I don't remember.")
+            unresolved = ask(decline)
             assert unresolved.telemetry.concepts_surfaced["reason"] == "decision_unresolved"
             assert "?" not in unresolved.text
             client.chat_stream.assert_not_called()
+
+            ask(question)
+            client.chat_stream.return_value = iter(["I can check the archive."])
+            request = ask("I don't remember when. Could you check the archive?")
+            assert not request.telemetry.decision_reply
+            client.chat_stream.assert_called_once()
+
+
+@pytest.mark.parametrize("question", [
+    "Hey Aiko, what did we settle on for the lantern?",
+    "Quick question. Did we ever decide about the lantern?",
+    "By the way, do you remember what we decided about the lantern?",
+    "Could you remind me what we agreed about the lantern?",
+])
+def test_casual_request_keeps_the_topic_in_the_original_string(question):
+    match = decision_request(question)
+    assert match and "lantern" in question[match.end():]
+
+
+@pytest.mark.parametrize("line", [
+    "I wrote down 'what was our plan for the lantern?'",
+    "Before I forget, set a reminder for the lantern.",
+    "Hey, what was our plan for the lantern? Now look up the price.",
+    "Oh, what was our plan for the lantern and book a room?",
+    "Hey, should we decide about the lantern now?",
+])
+def test_casual_openings_do_not_capture_other_requests(line):
+    assert decision_request(line) is None
+
+
+@pytest.mark.parametrize("line", [
+    "I don't remember when. Can you check?",
+    "The second one, I think we should do it.",
+    "Not the second one.",
+    "Maybe the second one, but I decided against it.",
+    "Actually, let's drop that. Give me a name for a cactus.",
+])
+def test_detail_preserves_a_correction_new_decision_or_request(line):
+    assert _decision_detail(line, "I found two suggestions. Which one?") == (None, "")
 
 
 @pytest.mark.parametrize("extra", ["third", "identical", "markup", "partial"])

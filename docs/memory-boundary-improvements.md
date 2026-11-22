@@ -35,12 +35,15 @@ interpretation.
 When that search misses, Aiko says she couldn't find the original exchange
 and asks when it happened. A date can move the search back beyond the initial
 14-day window. With two distinguishable proposals, she quotes the options
-and accepts a short answer such as “the second one” or “the silver one.”
+and accepts a short answer such as “the second one, I think” or “the silver one.”
+Casual lead-ins such as “Oh, before I forget” can introduce the same lookup.
 She checks the options again before quoting the selected exchange and its
 replies. If there are more matches, overlapping evidence, or an incomplete
 exchange, she leaves the decision open. A single usable line can still be
-quoted with its speaker. When the user can't remember either,
-she lets the question rest. These replies are recorded as clarifications so
+quoted with its speaker. If the user answers the clarification with “Honestly,
+I don’t remember when,” she acknowledges it and ends the lookup. An explicit
+request to keep looking or a change of subject goes through normal chat.
+These replies are recorded as clarifications so
 future searches can distinguish them from the original discussion.
 
 Focused recall regressions: 110 passed. The combined verification is recorded

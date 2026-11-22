@@ -107,16 +107,23 @@ def conversation_check(db, prompt, rag, client, model, question, archive_case, s
     missing = archive_case == "missing"
     turns = [ask(request, "Leave the decision open and ask for a clue." if missing else
                  "Distinguish both proposals and ask which exchange the user meant.")]
+    assert turns[0]["selection"] == ("decision_missing" if missing else "decision_ambiguous"), turns
+    assert turns[0]["finish"] == "decision_clarification", turns
     if style == "topic-change":
         turns.append(ask("Actually, let's drop that. Give me a name for a pet cactus.",
                          "Name the cactus and let the earlier question rest."))
+        assert not (turns[-1]["selection"] or "").startswith("decision_"), turns
     elif style != "casual":
         if missing:
             detail = "I don't remember." if style == "plain" else "Honestly, I don't remember when."
             turns.append(ask(detail, "Let the question rest with the decision unresolved."))
+            assert turns[-1]["selection"] == "decision_unresolved" and not turns[-1]["tools"], turns
+            assert turns[-1]["finish"] == "decision_clarification" and "?" not in turns[-1]["reply"]
         else:
             detail = "The second one." if style == "plain" else "Oh, the second one, I think."
             turns.append(ask(detail, "Recall the second proposal and the user's undecided reply."))
+            assert turns[-1]["finish"] == "quoted_exchange", turns
+            assert '''You said "I'm still thinking about that."''' in turns[-1]["reply"], turns
     return {"archive_case": archive_case, "style": style, "turns": turns}
 
 

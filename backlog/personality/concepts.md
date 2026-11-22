@@ -262,6 +262,16 @@ both proposals were searchable and neither had been accepted.
   qualified selections, and let a user end an unresolved lookup even when a
   tool runs. Count future ordinary turns separately from these paired replays.
 
+**Casual decision recall fixed in replay.** Repeating the tool-enabled check
+at seed 71 on soundcheck, rehearsal, and atlas produced 42 replies in 24
+fictional chats. All six openings with “Oh, before I forget” asked for a clue
+or offered the two recorded proposals. All six selections, including three
+with “I think,” preserved the original undecided reply. All six plain or
+hedged “I don't remember” replies ended the lookup without a tool call or
+another question. All six explicit topic changes answered the new request.
+The replay now checks these regressions. Fresh ordinary-use validation after
+a backend restart remains open.
+
 **Acceptance.** A one-time choice does not imply effectiveness or a standing
 trait. Multiple paraphrases of one episode retain one evidence basis in the
 review. Withdrawing an unsupported premise changes recall eligibility while an

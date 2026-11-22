@@ -302,6 +302,38 @@ def _build_full_runner(
 class ToolPassGateTests(unittest.TestCase):
     """P14: the heuristic gate decides whether the decision pass runs."""
 
+    def test_declining_an_archive_clarification_ends_the_lookup(self) -> None:
+        from app.core.session.prompt_assembler import PromptTelemetry
+
+        runner, ollama, registry = _build_full_runner(gate_enabled=False)
+        answer = "That's okay. We can leave it there."
+        runner._prompt.assemble_with_budget.side_effect = None
+        runner._prompt.assemble_with_budget.return_value = (
+            [], PromptTelemetry(decision_reply=answer,
+                                concepts_surfaced={"reason": "decision_unresolved"}),
+        )
+        result = runner.run(session_key="default:main", user_text="Honestly, I don't remember.")
+        self.assertEqual(result.text, answer)
+        self.assertEqual(result.telemetry.tool_gate_event, "skip:decision_unresolved")
+        ollama.chat_with_tools.assert_not_called()
+        ollama.chat_stream.assert_not_called()
+        registry.dispatch.assert_not_called()
+
+    def test_remind_me_about_an_archived_decision_skips_redundant_lookup(self) -> None:
+        from app.core.session.prompt_assembler import PromptTelemetry
+
+        runner, ollama, registry = _build_full_runner()
+        registry.names.return_value = ["reminders", "recall", "conversation_history"]
+        runner._prompt.assemble_with_budget.side_effect = None
+        runner._prompt.assemble_with_budget.return_value = (
+            [], PromptTelemetry(decision_reply="I found two suggestions. Which one?",
+                                concepts_surfaced={"reason": "decision_ambiguous"}),
+        )
+        result = runner.run(session_key="default:main",
+                            user_text="Could you remind me what we decided about the lantern?")
+        self.assertEqual(result.telemetry.tool_gate_event, "skip:decision_exchange")
+        ollama.chat_with_tools.assert_not_called()
+
     def test_dispatched_tool_result_reaches_model_even_with_an_archive_recap(self) -> None:
         from app.core.session.prompt_assembler import PromptTelemetry
 
