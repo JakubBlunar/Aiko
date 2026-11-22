@@ -1575,6 +1575,14 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
 
         settings = getattr(self, "_settings", None)
         archive_text, archive_ids = "", []
+        comparison = getattr(self, "reviewed_comparison_reply", None)
+        if callable(comparison):
+            reply = comparison(user_text)
+            if isinstance(reply, str) and reply:
+                return RelevantContext(
+                    decision_reply=reply, reason="reviewed_comparison",
+                    concept_trace={"surfaced": [], "reason": "reviewed_comparison"},
+                )
         exchange = None
         if getattr(getattr(settings, "agent", None), "rag_direct_recall_enabled", True):
             try:

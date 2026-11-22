@@ -14,6 +14,7 @@ from app.core.conversation.conversation_situation import (
     ConversationSituationStore,
     parse_extraction,
     reduce_situation,
+    suspend_reported_comparison,
     substantive_interest_answer,
     social_message_ids,
     working_source_revision,
@@ -456,6 +457,7 @@ class ConversationSituationWorker:
                 return previous
             source_message_id = max(valid_ids)
             self._stats["social_notes_rejected"] += len(rejection_reasons)
+            extraction = suspend_reported_comparison(previous, extraction, rows)
             state = reduce_situation(
                 previous,
                 extraction,

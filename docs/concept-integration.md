@@ -323,11 +323,19 @@ There is still one situation row per session, not a second task store. Optional
 fields default empty when restoring older rows. One `suspended` working set can
 survive an explicit interruption; it neither renders its old situation summary
 nor supplies recall demand. A paused `keep` makes the old situation uncertain.
-The observer must explicitly resupply notes on a return to the same task. A
-replacement is whole-record, so corrections can remove dependent interpretations
-and hypotheses. Missing notes still clear the working set, and explicit completion
-or cancellation clears it immediately; this is not a task backlog or guaranteed
-indefinite resumption service.
+The observer resupplies notes when it resumes work. A replacement is whole-record,
+so corrections can remove dependent interpretations and hypotheses. A reported
+causal comparison can survive an explicit topic change in the existing suspended
+slot when the observer supplies no competing working set and its sources fit the
+evidence budget. The fallback checks the original result age (six hours), source
+revisions and intervening turns. Explicit completion or cancellation clears it.
+
+On a named return such as “Back to the desk microphone clicks,” the first reply
+can already use the suspended comparison. A simple request for the better-fitting
+explanation recaps the recorded result directly. Corrections use ordinary chat
+with the prior predictions and the latest report. A similarly named problem
+receives no result from that comparison. This path requires an identifiable
+subject in the original question.
 
 Before the existing observer call, cited messages are reloaded from the same
 session, without increasing its transcript cap (default 14). At least two recent

@@ -828,7 +828,9 @@ class TurnRunner:
         tool_calls = sum(1 for m in messages if m.get("role") == "tool")
         # A dispatched tool may have supplied newer evidence or performed
         # another requested action. Let the model report its result normally.
-        decision_reply = telemetry.decision_reply if not tool_calls else ""
+        decision_reply = telemetry.decision_reply
+        if tool_calls or not isinstance(decision_reply, str):
+            decision_reply = ""
         full = body = ""
         mood: str | None = "neutral" if decision_reply else None
         ui_sent_chars = 0       # chars of meta-stripped body already sent to UI
@@ -958,6 +960,7 @@ class TurnRunner:
             full = "" if aborted else question
         if decision_reply:
             reason = {"decision_exchange": "quoted_exchange",
+                      "reviewed_comparison": "reviewed_comparison",
                       "occasion_frequency": "occasion_frequency"}.get(
                 telemetry.concepts_surfaced.get("reason"), "decision_clarification",
             )

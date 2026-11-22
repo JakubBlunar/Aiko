@@ -23,6 +23,9 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.core.conversation import cue_register
+from app.core.conversation.conversation_situation import (
+    OTHER_COMPARISON_HEADER, RETURNED_COMPARISON_HEADER,
+)
 from app.core.conversation.clarification_reply import (
     CLARIFICATION_GUIDANCE, CURRENT_REPLY_GUIDANCE, is_clarification_question,
 )
@@ -3947,7 +3950,20 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         reply_guidance_slot = len(system_parts)
         prompt_history = history_msgs
         if current_reply_guidance:
-            if (history_msgs and history_msgs[-1].role == "assistant"
+            if conversation_situation_block.startswith(OTHER_COMPARISON_HEADER):
+                current_reply_guidance = (
+                    "The current subject has no result from the earlier test. If you have no "
+                    "separate source about it, say you only have the symptom the user just "
+                    "named. Give no additional observations or diagnoses without a source."
+                )
+            elif conversation_situation_block.startswith(RETURNED_COMPARISON_HEADER):
+                current_reply_guidance = (
+                    "Answer with one sentence in this form: Given [the newest observation], "
+                    "[one explanation] fits better, although [the alternative] is still "
+                    "possible. If the test assumptions changed, explain in one sentence "
+                    "why the comparison is inconclusive instead."
+                )
+            elif (history_msgs and history_msgs[-1].role == "assistant"
                     and is_clarification_question(history_msgs[-1].content)):
                 prior = history_msgs[-1]
                 age = (timephrase.age_prefix(prior.created_at, timephrase.now())

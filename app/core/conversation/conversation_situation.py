@@ -32,6 +32,8 @@ VALID_OPERATIONS = frozenset({KEEP, REPLACE, CLEAR})
 MAX_SUMMARY_CHARS = 360
 MAX_FIELD_CHARS = 120
 MAX_EVIDENCE_IDS = 8
+RETURNED_COMPARISON_HEADER = "[Earlier troubleshooting comparison]"
+OTHER_COMPARISON_HEADER = "[Comparison concerns another problem]"
 IMPLICIT_CLEAR_MISSES = 2
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
@@ -180,6 +182,44 @@ def working_set_message_ids(notes: ConversationWorkingSet | None) -> set[int]:
     items = (notes.question, *notes.facts, *notes.constraints, *notes.hypotheses,
              notes.interpretation, notes.unresolved, notes.next_check, notes.check_result)
     return {message_id for item in items if item for message_id in item.evidence_message_ids}
+
+
+_DETOUR = re.compile(
+    r"^(?:new topic|different topic|changing (?:the )?subject|on a different note|"
+    r"let['’]s talk about something else|switching topics)\b", re.I,
+)
+
+
+def starts_detour(text: str) -> bool:
+    return bool(_DETOUR.match(text.strip()))
+
+
+def suspend_reported_comparison(previous, extraction, rows):
+    """Retain a checked comparison through an explicit diversion in the existing slot."""
+    prior = previous.working_set if previous else None
+    if (prior is None or prior.causal_check is None or prior.check_result is None
+            or not previous.working_source_revision or extraction.working_set is not None
+            or extraction.explicit_end):
+        return extraction
+    new_users = [row for row in rows if row.role == "user" and row.id > previous.source_message_id]
+    if not new_users or (not prior.suspended and not starts_detour(new_users[0].content)):
+        return extraction
+    # Once the discussion touches the diagnosis again, only a fresh observation
+    # can advance it. Never carry an old verdict past an unprocessed correction.
+    terms = set(re.findall(r"\b[a-z]{4,}\b", prior.question.text.lower()))
+    if any(terms.intersection(re.findall(r"\b[a-z]{4,}\b", row.content.lower()))
+           or re.search(r"\b(?:actually|correction|wrong|retested|tested|fixed|forget|"
+                        r"solved|drop|back to)\b", row.content, re.I) for row in new_users):
+        return extraction
+    result_ids = prior.check_result.evidence_message_ids
+    stamp = next((_parse_iso(row.created_at) for row in rows if row.id == max(result_ids)), None)
+    if stamp is None or (timephrase.utcnow() - stamp).total_seconds() > 21600:
+        return extraction
+    ids = working_set_message_ids(prior) | set(extraction.evidence_message_ids)
+    if len(ids) > MAX_EVIDENCE_IDS or not ids.issubset({row.id for row in rows}):
+        return extraction
+    return replace(extraction, working_set=replace(prior, suspended=True),
+                   evidence_message_ids=tuple(sorted(ids)))
 
 
 def working_source_revision(rows: Iterable[tuple[int, str, str, str]]) -> str:

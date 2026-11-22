@@ -987,6 +987,20 @@ action, personal experiment or intervention occurs without normal permissions.
 
 </details>
 
+**Return after a detour.** `python -m scripts.diagnostic_return_replay --seed 71`
+uses fictional source messages, a fixed observer extraction, two observed pottery
+turns, the ordinary prompt assembler and turn runner. With local
+`baytout3/qwen3.5-uncensored:9b`, seeds 71 and 83 each met the six reply expectations.
+Three sourced recaps distinguished clicks present, clean audio, and a test of
+the wrong input. Three generated replies revised the leading explanation after
+a correction, withheld the result for a different microphone, and answered an
+unrelated bakery question. Early generated replies had needlessly clarified or
+ruled out the alternative. These final runs exercise using an existing comparison.
+The independent `--model-observer --case present` probe (seed 83) stopped before
+the return. The observer attributed its diagnostic question to the assistant
+in the field reserved for the user's goal. The evidence validator rejected it.
+Capturing the comparison reliably from ordinary conversation remains open.
+
 ## L54. Choose evidence by how much it can change a decision
 
 **Status: Partial.**
