@@ -65,10 +65,20 @@ def compare_accounts(first, later, review=None):
     accounts = tuple(account for account in (first, later) if account is not None)
     verified = review is not None and (first, later) == (review.first, review.later)
     relation = review.relation if verified else "unresolved"
+    occasion_count = {"same": 1, "distinct": 2}.get(relation)
+    account_count = len({account.message_id for account in accounts})
+    frequency_reply = None
+    if account_count == 2:
+        frequency_reply = {
+            1: "Both reports describe one incident.",
+            2: "The reports describe two separate incidents.",
+            None: "I have two reports. I can't tell whether they describe one incident or two.",
+        }[occasion_count]
     return {
         "accounts": accounts,
-        "account_count": len({account.message_id for account in accounts}),
-        "occasion_count": {"same": 1, "distinct": 2}.get(relation),
+        "account_count": account_count,
+        "occasion_count": occasion_count,
+        "frequency_reply": frequency_reply,
         "relation": relation,
         "review_stale": review is not None and not verified,
     }

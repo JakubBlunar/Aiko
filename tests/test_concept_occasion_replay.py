@@ -73,6 +73,12 @@ def test_retelling_keeps_both_topics_and_counts_only_reviewed_occasions(
     comparison = compare_accounts(*accounts, reviewed)
     assert comparison["account_count"] == 2
     assert comparison["occasion_count"] == count
+    if count is None:
+        assert "can't tell" in comparison["frequency_reply"]
+    else:
+        assert ("one incident" if count == 1 else "two separate incidents") in (
+            comparison["frequency_reply"]
+        )
     assert comparison["accounts"][1].statement == later_text
 
     archive = ConversationHistoryTool(db, "replay")
@@ -113,6 +119,8 @@ def test_source_edit_expires_the_relationship_and_reopens_frequency(replay):
     profile = compare_accounts(first_account, reported_account(later, 2, db), review)
     assert profile["review_stale"]
     assert profile["occasion_count"] is None
+    assert "can't tell" in profile["frequency_reply"]
+    assert compare_accounts(first_account, None, review)["frequency_reply"] is None
     assert [account.statement for account in profile["accounts"]] == [_FIRST, _VARIANTS[2][0]]
     assert memories.get(later.id).content == _VARIANTS[0][0]
 

@@ -574,8 +574,30 @@ breakdown and an unresolved count for the ambiguous report. Archive lookup
 retained both dated statements and concept recall retained both source notes.
 Editing the callback expired the relationship and left the edited statement
 available. The pilot takes a reviewer verdict and checks both sources. Automatic
-link discovery, topic-profile integration and model replies about frequency
-still need evaluation.
+link discovery and topic-profile integration still need evaluation.
+
+**22 November local reply check.** Run
+`python -m scripts.companion_pattern_replay --section occasions --seed 71`.
+Four fictional histories start with a torn puppet screen. The later report
+recounts the tear, explicitly reports a second tear, leaves the occasion
+ambiguous, or describes a later repair. The expected frequencies are one,
+two, uncertain and one. Each history uses a separate disposable database.
+The test supplies the reviewer's relation and exercises the source comparison.
+
+| Reply from the local 9B model or the reviewed pair | Correct frequency per seed |
+| --- | --- |
+| Plain reply from the two dated reports | 3/4 |
+| Plain reply with the reviewed count supplied | 2/4 |
+| Structured frequency and reply | 1/4 in each arm (reports alone, relation supplied, count supplied) |
+| Frequency reply rendered directly from the reviewed pair | 4/4 |
+
+Seeds 71 and 73 gave the same results. Scores cover the frequency claim only.
+The plain reply invented a second incident for the ambiguous report. With the
+reviewed count supplied, one reply opened with two, reconsidered, and ended
+incomplete. Several replies also attributed the user's repair or patch order
+to Aiko. The pilot now returns a short frequency answer from the verified
+pair and reopens uncertainty when a source edit invalidates the review.
+Ordinary chat routing and automatic discovery of matching occasions remain open.
 
 ## L50. Context-scoped claims and temporal validity
 

@@ -260,7 +260,8 @@ def main():
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
     parser.add_argument("--embedding", default="qwen3-embedding:0.6b")
     parser.add_argument("--seed", type=int, default=71)
-    parser.add_argument("--section", choices=("all", "preferences", "curiosity", "extraction"),
+    parser.add_argument("--section", choices=("all", "preferences", "curiosity", "extraction",
+                                              "occasions"),
                         default="all")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
@@ -284,6 +285,10 @@ def main():
                 report["curiosity"] = cue_replay(root, embeddings, client)
             if args.section in {"all", "extraction"}:
                 report["extraction"] = extraction_replay(root, client, args.model, embeddings)
+            if args.section in {"all", "occasions"}:
+                from scripts.occasion_reply_replay import occasion_reply_replay
+
+                report["occasions"] = occasion_reply_replay(root, client, embeddings)
     print(json.dumps(report, indent=2))
     misses = [k for k, v in report.get("curiosity", {}).items() if v["expected"] != v["actual"]]
     for case, result in report.get("extraction", {}).items():
