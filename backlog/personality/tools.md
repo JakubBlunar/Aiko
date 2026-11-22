@@ -97,16 +97,19 @@ change and remembering the conversation in between.
 ## D10. Show what changed since a particular conversation
 
 **Status: Partial.** Aiko's history tool can compare later reports on a
-literal topic against an exact earlier exchange. It returns original-message
+literal topic against an exact earlier exchange or resolve it from a unique
+current source link. It returns original-message
 IDs, separate report and event times, and bounded coverage. Current
 follow-through and correction receipts supply links to earlier statements.
 Fixtures cover an unrelated similar report, repeated wording, later memory
 extraction, edited or deleted sources, and a window ending before the latest
-chat. [Read contract](../../docs/conversation-archive.md#changes-since-an-exchange), [regressions](../../tests/test_conversation_archive.py).
+chat. The isolated 9B chat replay resolved the topic-only purifier request and
+attributed the later correction to the user on seeds 53 and 54.
+[Read contract](../../docs/conversation-archive.md#changes-since-an-exchange), [regressions](../../tests/test_conversation_archive.py).
 
-**Remaining:** Check whether the ordinary chat model chooses the right
-starting message from natural references, asks when several exchanges fit,
-and preserves the reported versus event dates in its answer. Literal matching
+**Remaining:** Check broader natural references in ordinary chat, whether the
+model asks when several exchanges fit, and whether it preserves the reported
+versus event dates in its answer. Literal matching
 can miss paraphrases and unmarked reports. Measure those misses before trying
 semantic retrieval or adding more categories of change.
 

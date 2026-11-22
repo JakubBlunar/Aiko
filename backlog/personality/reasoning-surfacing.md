@@ -268,7 +268,7 @@ selector call. Existing P52 continuity remains the comparison baseline.
 
 #### RS3 follow-up. Recall the particular episode the turn needs
 
-**Status: Offline replay.** The [18 November review](../reviews/grounded-cognition-review-2026-11-18.md#4-test-the-experience-in-a-conversation)
+**Status: Ordinary chat pilot.** The [18 November review](../reviews/grounded-cognition-review-2026-11-18.md#4-test-the-experience-in-a-conversation)
 found that a precise source can coexist with nearby interpretations, generic
 style claims and an undefined referent. The reply needs a detail from the actual
 episode, including what changed or remains open.
@@ -312,8 +312,18 @@ model invented earlier actions in both runs. Adding an explicit ambiguity note
 produced a clarifying question twice. One reply still invented the possible
 settings. The [separate clarification replay](../../scripts/clarification_replay.py)
 now checks the normal reply's bounded question with that ambiguous evidence.
-Integration of episode selection remains open pending comparison on naturally
-ranked candidates.
+
+**Ordinary chat replay.** [Run the isolated chat path](../../scripts/episode_chat_replay.py)
+with `python -m scripts.episode_chat_replay --seed 53` or `--seed 54`.
+The replay uses real local embeddings, SQLite, LanceDB, the chat prompt and the
+streamed reply. All five checks passed on each of seeds 53 and 54 with local
+`baytout3/qwen3.5-uncensored:9b` and `qwen3-embedding:0.6b`. The model asked one
+question for the ambiguous fan, recalled its partial repair after the user
+named it, used the purifier correction, answered the new topic and requested
+the history comparison by topic. The ordinary chat path uses the existing
+retrieval pool and context reservation. Wider phrasing and ordinary use remain
+open. In an exploratory run with “Did that fix it?”, the model repeated the
+question after retrieval found the named episode.
 
 ### RS4. Admit optional cues jointly with their handling
 

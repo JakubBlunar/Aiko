@@ -147,6 +147,20 @@ report's scope. A short follow-up can use the goal and constraints from a fresh,
 active troubleshooting working set, including a chat-only task with no world
 anchor. A suspended or conflicting working set supplies no inherited context.
 
+## Recalling a particular episode
+
+For supported retrospective questions, ordinary chat checks the retrieved
+memories for a current, user-reported episode that matches the named subject.
+A short follow-up can borrow the subject from recent conversation. The selected
+evidence includes the action and latest reported result, including any remaining
+problem. A verified correction replaces the earlier result. When several
+episodes fit equally well, Aiko is prompted to ask one short question. She can
+then use the named subject to retrieve the episode on the next turn.
+
+Episode recall reuses the existing retrieval candidates and context budget.
+Source checks exclude virtual, transient and other users' episodes. Restricted
+wording, missing retrieval candidates and unavailable sources can limit recall.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

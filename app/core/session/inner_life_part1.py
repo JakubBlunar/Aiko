@@ -1624,6 +1624,8 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         # ── candidate gathering ─────────────────────────────────────────
         mem_cands: list[ContextCandidate] = []
         mem_hit_by_id: dict[int, object] = {}
+        episode_context = episode_hit = None
+        episode_included = False
         if rag is not None:
             if pooled_hits is not None:
                 hits = pooled_hits
@@ -1642,6 +1644,30 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
                 except Exception:
                     log.debug("relevant_context: memory candidates failed", exc_info=True)
                     hits = []
+            if not archive_ids and getattr(
+                getattr(settings, "agent", None), "rag_direct_recall_enabled", True,
+            ):
+                from app.core.memory.episode_recall import context_from_hits, requested_episode
+
+                query = requested_episode(user_text, recent_turns)
+                if query:
+                    try:
+                        episode_context = context_from_hits(
+                            query, hits, getattr(self, "_memory_store", None),
+                            owner=getattr(self, "_user_id", None), session_key=session_key,
+                        )
+                    except Exception:
+                        log.debug("relevant_context: episode lookup failed", exc_info=True)
+                if (episode_context and episode_context.text
+                        and estimate_tokens(episode_context.text) <= budget_tokens // 2):
+                    episode_included = True
+                    archive_text = episode_context.text
+                    if episode_context.episode is not None:
+                        memory_id = str(episode_context.episode.memory_id)
+                        episode_hit = next((hit for hit in hits if hit.source == "memory"
+                                            and str(hit.record.id) == memory_id), None)
+                    # Do not surface competing retellings or a corrected result beside this read.
+                    hits = [hit for hit in hits if hit.source == "document"]
             for i, hit in enumerate(hits):
                 if getattr(getattr(hit, "record", None), "kind", "") in {"shared_term", "strategy"}:
                     continue
@@ -1664,10 +1690,11 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             from app.core.session.pattern_context import pattern_candidates
 
             try:
-                mem_cands.extend(pattern_candidates(
-                    self, rag, user_text=user_text, session_key=session_key,
-                    estimate_tokens=estimate_tokens,
-                ))
+                if not episode_included:
+                    mem_cands.extend(pattern_candidates(
+                        self, rag, user_text=user_text, session_key=session_key,
+                        estimate_tokens=estimate_tokens,
+                    ))
             except Exception:
                 log.debug("shared shorthand context unavailable", exc_info=True)
         record_stage("memory_candidates")
@@ -2543,6 +2570,19 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             concept_trace["rendering_clipped"] = len(text) < original_length
         if archive_ids:
             concept_trace["original_exchange_message_ids"] = archive_ids
+        reply_guidance = ""
+        if episode_context is not None:
+            included = bool(episode_context.text and episode_context.text in text)
+            concept_trace["episode_recall"] = {
+                "status": episode_context.status, "included": included,
+            }
+            if included and episode_context.episode is not None:
+                reply_guidance = episode_context.reply_guidance
+                concept_trace["episode_recall"]["source_message_ids"] = list(
+                    episode_context.episode.message_ids,
+                )
+                if episode_hit is not None:
+                    chosen_hits.append(episode_hit)
         concept_trace["patterns"] = [
             {"memory_id": hit.record.id, "kind": hit.record.kind, "included": hit.text in text}
             for hit in chosen_hits
@@ -2604,6 +2644,7 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         record_stage("render_and_account")
         return RelevantContext(
             text=text,
+            reply_guidance=reply_guidance,
             selection=selection,
             concept_trace=concept_trace,
             reason="ok" if text else "empty",

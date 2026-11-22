@@ -35,11 +35,13 @@ class ConversationHistoryTool:
                 "chronologically, optionally with "
                 "a literal topic filter; use message + message_id for exact quotes and full "
                 "long-message character pages. For 'what changed since we talked about X?', "
-                "use changes with after_message_id from the exact earlier exchange and a literal "
-                "topic phrase. Find that ID in messages if needed; ask if several exchanges fit. "
+                "use changes with a literal topic phrase. Supply after_message_id when you know "
+                "the exact earlier exchange. Otherwise the tool can resolve a unique linked "
+                "exchange. If the anchor is unresolved, ask one short clarification. "
                 "Optional through_message_id ends the comparison there, inclusively. Changes "
                 "returns selective later user reports, their message times, and linked earlier "
-                "sources when available. Preserve later corrections and the difference between "
+                "sources when available. Summarize the reports in your own words, using 'you' "
+                "for the user. Preserve later corrections and the difference between "
                 "when something was reported and when it happened. Check coverage before making "
                 "a period-wide claim. Follow next_cursor using only cursor and mode. "
                 "Missing overviews never prevent reading messages."
@@ -74,7 +76,7 @@ class ConversationHistoryTool:
                     "message_id": {"type": "integer", "minimum": 1},
                     "after_message_id": {
                         "type": "integer", "minimum": 1,
-                        "description": "Required for changes; original exchange, exclusive.",
+                        "description": "Exact original exchange for changes, exclusive.",
                     },
                     "through_message_id": {
                         "type": "integer", "minimum": 1,
@@ -144,10 +146,8 @@ class ConversationHistoryTool:
                     cursor=cursor,
                 )
             elif mode == "changes":
-                if "after_message_id" not in arguments:
-                    raise ValueError("after_message_id is required for changes.")
                 result = archive.changes(
-                    arguments["after_message_id"], arguments.get("topic", ""),
+                    arguments.get("after_message_id"), arguments.get("topic", ""),
                     through_message_id=arguments.get("through_message_id"),
                     limit=arguments.get("limit", 6),
                 )

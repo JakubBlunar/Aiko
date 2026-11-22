@@ -2,10 +2,15 @@
 
 from contextlib import closing
 from dataclasses import replace
+from types import SimpleNamespace
+
+import numpy as np
 
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.memory.memory_store import MemoryStore
+from app.core.rag.rag_retriever import RagRetriever
+from scripts.episode_chat_replay import ReplayContext, _index
 from scripts.episode_recall_replay import replay, seed_episodes, select_episode
 
 
@@ -64,3 +69,52 @@ def test_episode_replay_rejects_foreign_virtual_ambiguous_and_changed_sources(tm
         assert status == "matched" and selected.memory_id == extractor.id
         assert db.update_message_content(extractor.source_message_id, "I removed that report.")
         assert select_episode(query, records.values(), store, now) == (None, "source_unavailable")
+
+
+def test_episode_selection_in_ordinary_retrieval(tmp_path):
+    path = tmp_path / "chat.db"
+    db = ChatDatabase(path)
+    embedder = SimpleNamespace(embed=lambda _text: np.array([1.0, 0.0], dtype=np.float32))
+    settings = SimpleNamespace(memory=SimpleNamespace(), agent=SimpleNamespace())
+    with closing(db._get_conn()), closing(MemoryStore(path)) as store:
+        episodes = seed_episodes(db, store)
+        with closing(_index(tmp_path / "index", db, store, embedder, "test")) as index:
+            with closing(RagRetriever(index, embedder, memory_store=store, chat_db=db)) as rag:
+                host = ReplayContext(db, store, rag, embedder, settings)
+
+                def build(text, history=(), session="replay:chat", budget=800):
+                    return host.build_relevant_context(
+                        user_text=text, recent_turns=list(history), session_key=session,
+                        budget_tokens=budget,
+                    )
+
+                question = "Did that fix it?"
+                result = build(question, ["I was thinking about a fan that rattled.", "I see."])
+                assert result.concept_trace["episode_recall"] == {
+                    "status": "ambiguous", "included": True,
+                }
+                assert "[[clarify:reference]]" in result.text
+                assert "screws" not in result.text and "grille" not in result.text
+
+                result = build("I mean the kitchen extractor fan.", [
+                    question, "Which one do you mean?",
+                ])
+                assert result.concept_trace["episode_recall"]["source_message_ids"] == [
+                    episodes["extractor"].source_message_id,
+                ]
+                assert "screws" in result.text and "hums" in result.text and result.reply_guidance
+                assert "grille" not in result.text
+
+                result = build("Did my change fix the bedroom air purifier?")
+                assert result.concept_trace["episode_recall"]["status"] == "matched"
+                assert "still clicks" in result.text
+                assert "That fixed the clicking" not in result.text
+
+                assert "episode_recall" not in build("Give me a title for a novel.").concept_trace
+                transient = build(
+                    "Did my change fix the bedroom air purifier?", session="replay:chat:noremember",
+                )
+                assert not transient.concept_trace["episode_recall"]["included"]
+                assert not transient.reply_guidance
+                result = build("Did my change fix the bedroom air purifier?", budget=24)
+                assert not result.reply_guidance

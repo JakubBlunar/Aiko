@@ -2,7 +2,7 @@
 
 import argparse
 from contextlib import closing
-from dataclasses import dataclass
+from datetime import timedelta
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,12 +18,10 @@ from app.core.infra.settings import (
     load_settings,
     transport_for_provider,
 )
-from app.core.memory.learned_strategies import words
-from app.core.memory.memory_origin import memory_origin
-from app.core.memory.memory_relations import admit_relation, incoming_relations, reference_revision
+from app.core.memory.episode_recall import select_episode as _select_episode
+from app.core.memory.memory_relations import admit_relation, reference_revision
 from app.core.memory.memory_store import MemoryStore
-from app.core.memory.observation_receipts import admit_observation, longitudinal_sources_current
-from app.core.memory.reflective_evidence import eligible
+from app.core.memory.observation_receipts import admit_observation
 from app.core.rag.rag_retriever import RagRetriever
 from scripts.live_scenarios import LoopbackPolicyClient, require_local_model
 
@@ -53,82 +51,16 @@ _CASES = {
 }
 
 
-@dataclass(frozen=True)
-class Episode:
-    memory_id: int
-    message_ids: tuple[int, ...]
-    text: str
-
-
-def _format_receipt(receipt, now):
-    return timephrase.format_transcript([{
-        "role": receipt["role"], "content": receipt["quote"], "created_at": receipt["source_at"],
-    }], now)
-
-
-def _packet(memory, observation, store, now):
-    sources = observation["sources"]
-    action, outcome = observation.get("action"), observation.get("outcome")
-    fields = [observation["context"], action, outcome, *observation.get("exceptions", [])]
-    if any(not isinstance(field, dict) or field not in sources or field.get("role") != "user"
-           or field.get("session_id") != memory.source_session for field in fields):
-        return None
-    corrections, truncated = incoming_relations(memory, store)
-    if truncated:
-        return None
-    for row in corrections:
-        relation = row["receipt"]
-        if relation["relation"] == "correction":
-            if not row["current"] or not relation["report"]["session_id"].startswith(f"{_OWNER}:"):
-                return None
-            outcome = relation["report"]
-            break
-    fields = [observation["context"], action, outcome, *observation.get("exceptions", [])]
-    text = "\n".join(dict.fromkeys(_format_receipt(field, now) for field in fields))
-    if len(text) > _CONTEXT_LIMIT:
-        return None
-    message_ids = tuple(sorted({item["message_id"] for item in [*sources, outcome]}))
-    return Episode(memory.id, message_ids, text)
-
-
 def select_episode(question, candidates, store, now):
-    """Select only a unique literal match among eligible user report receipts."""
-    query_words = words(question)
-    matches = []
-    for memory in candidates:
-        observation = (memory.metadata or {}).get("observation")
-        origin = memory_origin(memory)
-        if (not isinstance(observation, dict) or observation.get("subject") != "user"
-                or origin.subject != "user" or origin.mode != "observation"
-                or origin.domain != "conversation"
-                or not (memory.source_session or "").startswith(f"{_OWNER}:")):
-            continue
-        context = observation.get("context") or {}
-        if context.get("context_only") or context.get("role") != "user":
-            continue
-        overlap = len(query_words.intersection(words(context.get("quote", ""))))
-        if overlap >= 2:
-            matches.append((overlap, memory, observation))
-    if not matches:
-        return None, "no_match"
-    best = max(item[0] for item in matches)
-    episodes = {}
-    for overlap, memory, observation in matches:
-        if overlap == best:
-            if not eligible(memory) or not longitudinal_sources_current(memory, store):
-                return None, "source_unavailable"
-            packet = _packet(memory, observation, store, now)
-            if packet is None:
-                return None, "source_unavailable"
-            episodes.setdefault(packet.message_ids, packet)
-    if len(episodes) > 1:
-        return None, "ambiguous"
-    return next(iter(episodes.values())), "matched"
+    return _select_episode(question, candidates, store, now, owner=_OWNER)
 
 
-def seed_episodes(db, store):
-    vector = np.array([1.0, 0.0], dtype=np.float32)
+def seed_episodes(db, store, *, embed=None):
+    def embedding(text):
+        return embed(text) if embed is not None else np.array([1.0, 0.0], dtype=np.float32)
+
     episodes = {}
+    now = timephrase.utcnow()
     for name, context, action, outcome in (
         ("extractor", "When the kitchen extractor fan rattled on high",
          "I tightened the mounting screws", "That fixed the rattle but it still hums on high."),
@@ -139,7 +71,8 @@ def seed_episodes(db, store):
     ):
         session = f"{_OWNER}:{name}"
         content = f"{context}, {action}. {outcome}"
-        mid = db.add_message(session, "user", content)
+        with timephrase.scoped_now(lambda: now - timedelta(days=5)):
+            mid = db.add_message(session, "user", content)
         row = db.get_message_row(mid)
         observation = admit_observation({
             facet: {"message_id": mid, "quote": quote} for facet, quote in (
@@ -147,7 +80,7 @@ def seed_episodes(db, store):
             )
         }, [row], session_key=session, subject="user")
         episodes[name] = store.add(
-            content, "event", vector, source_session=session, source_message_id=mid,
+            content, "event", embedding(content), source_session=session, source_message_id=mid,
             metadata={"observation": observation}, temporal_type="past_event",
             provenance="stated", skip_dedupe=True,
         )
@@ -155,13 +88,15 @@ def seed_episodes(db, store):
     prior = episodes["purifier"]
     session = f"{_OWNER}:later"
     correction = "Correction, the bedroom air purifier still clicks after I reseated the filter."
-    mid = db.add_message(session, "user", correction)
+    with timephrase.scoped_now(lambda: now - timedelta(days=2)):
+        mid = db.add_message(session, "user", correction)
     relation = admit_relation({
         "prior_memory_id": prior.id, "relation": "correction",
         "report": {"message_id": mid, "quote": correction},
     }, [db.get_message_row(mid)], {prior.id: {"revision": reference_revision(prior)}}, store,
         session_key=session, subject="user")
-    store.add(correction, "fact", vector, source_session=session, source_message_id=mid,
+    store.add(correction, "fact", embedding(correction),
+              source_session=session, source_message_id=mid,
               metadata={"contextual_relation": relation}, provenance="stated", skip_dedupe=True)
     return episodes
 

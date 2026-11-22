@@ -3943,6 +3943,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             system_parts[calendar_anticipation_slot] = ""
             calendar_anticipation_block = ""
         current_reply_guidance = CURRENT_REPLY_GUIDANCE if (user_text or "").strip() else ""
+        reply_guidance_slot = len(system_parts)
         prompt_history = history_msgs
         if current_reply_guidance:
             if (history_msgs and history_msgs[-1].role == "assistant"
@@ -4094,6 +4095,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 # hit/miss/skip event rides back on the region object.
                 rag_prefetch_event = getattr(region, "prefetch_event", "skip")
                 context_stage_ms = getattr(region, "stage_ms", {}) or {}
+                if current_reply_guidance and getattr(region, "reply_guidance", ""):
+                    current_reply_guidance = region.reply_guidance
+                    system_parts[reply_guidance_slot] = current_reply_guidance
         if relevant_context_block:
             system_parts.insert(t3_insert_index, relevant_context_block)
 

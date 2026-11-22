@@ -178,6 +178,7 @@ class RelevantContext:
     # prefetcher was absent ("skip"). Surfaced into PromptTelemetry.
     prefetch_event: str = "skip"
     stage_ms: dict[str, float] = field(default_factory=dict)
+    reply_guidance: str = ""
 
 
 class ContextBudgetSelector:

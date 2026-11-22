@@ -19,6 +19,7 @@ RECEIPT_LIMIT = 500
 PREVIEW_CHARS = 1000
 BASELINE_ROWS = 32
 MAX_RESULTS = 8
+_PREVIEW = "CASE WHEN length(content)<=? THEN content END"
 _CORRECTION = re.compile(r"^(?:correction\s*[:,]|i (?:was wrong about|meant)\b)", re.I)
 _UPDATE = re.compile(
     r"^(?:update\s*[:,]|(?:i|we) (?:started|finished|completed|tried|moved|changed|"
@@ -177,55 +178,96 @@ def _raw_change(text, phrase):
     return None
 
 
-def read_changes(archive, conn, after_message_id, topic, *, through_message_id, limit):
-    phrase = _normalize(topic)
-    if not phrase or not 1 <= limit <= MAX_RESULTS:
-        raise ValueError("Changes need a literal topic and a limit of 1-8.")
-    anchor = _owned_source(archive, conn, after_message_id)
-    if anchor is None:
-        return {"status": "anchor_not_found", "changes": []}
-    end = None
-    if through_message_id is not None:
-        end = _owned_source(archive, conn, through_message_id)
-        if end is None:
-            return {"status": "end_not_found", "changes": []}
-        if _position(end) <= _position(anchor):
-            raise ValueError("through_message_id must point to a later exchange.")
-
+def _read_reports(archive, conn, *, anchor, end, linked_only=False):
     # Same ordering as archive history. A later insertion of an older report
     # does not move that report into the requested interval.
-    preview = "CASE WHEN length(content)<=? THEN content END"
     sql = (
-        f"SELECT id, session_id, created_at, {preview} FROM messages WHERE {OWNER_SQL} "
+        f"SELECT id, session_id, created_at, {_PREVIEW} FROM messages WHERE {OWNER_SQL} "
         "AND role='user' AND substr(session_id, -11) != ':noremember' "
-        "AND (created_at, id) > (?, ?)"
     )
-    params = [PREVIEW_CHARS, archive.user_id, *_position(anchor)]
+    params = [PREVIEW_CHARS, archive.user_id]
+    if anchor is not None:
+        sql += " AND (created_at, id) > (?, ?)"
+        params.extend(_position(anchor))
     if end is not None:
         sql += " AND (created_at, id) <= (?, ?)"
         params.extend(_position(end))
+    if linked_only:
+        report_ids = " UNION ALL ".join(
+            f"SELECT json_extract(metadata, '$.{field}.report.message_id') "
+            "FROM memories WHERE json_valid(metadata) "
+            f"AND json_type(metadata, '$.{field}.report.message_id')='integer'"
+            for field, *_ in _RECEIPTS
+        )
+        sql += f" AND id IN ({report_ids})"
     rows = conn.execute(sql + " ORDER BY created_at DESC, id DESC LIMIT ?",
                         (*params, SCAN_LIMIT + 1)).fetchall()
     messages = {mid: {"message_id": mid, "session_id": session, "role": "user",
                       "created_at": stamp, "text": text}
                 for mid, session, stamp, text in reversed(rows[:SCAN_LIMIT])}
-    linked, receipts_incomplete = _linked_reports(archive, conn, messages, phrase)
+    return messages, len(rows) > SCAN_LIMIT
+
+
+def _infer_anchor(archive, conn, phrase, end):
+    messages, truncated = _read_reports(archive, conn, anchor=None, end=end, linked_only=True)
+    linked, incomplete = _linked_reports(archive, conn, messages, phrase)
+    candidates = {change["before"]["message_id"]: change["before"]
+                  for reports in linked.values() for change in reports}
+    coverage = {"inspected_linked_reports": len(messages),
+                "scan_complete": not truncated and not incomplete}
+    if len(candidates) == 1 and coverage["scan_complete"]:
+        return _owned_source(archive, conn, next(iter(candidates))), coverage, linked
+    if len(candidates) > 1:
+        status = "anchor_ambiguous"
+    elif coverage["scan_complete"]:
+        status = "anchor_not_found"
+    else:
+        status = "anchor_search_incomplete"
+    return None, {"status": status, "changes": [], "anchor_search": coverage,
+                  "note": "The earlier exchange is unresolved. Ask one short question "
+                          "about which earlier exchange the user means."}, {}
+
+
+def read_changes(archive, conn, after_message_id, topic, *, through_message_id, limit):
+    phrase = _normalize(topic)
+    if not phrase or not 1 <= limit <= MAX_RESULTS:
+        raise ValueError("Changes need a literal topic and a limit of 1-8.")
+    anchor = anchor_search = None
+    linked, receipts_incomplete = {}, False
+    if after_message_id is not None:
+        anchor = _owned_source(archive, conn, after_message_id)
+        if anchor is None:
+            return {"status": "anchor_not_found", "changes": []}
+    end = None
+    if through_message_id is not None:
+        end = _owned_source(archive, conn, through_message_id)
+        if end is None:
+            return {"status": "end_not_found", "changes": []}
+    if anchor is None:
+        anchor, anchor_search, linked = _infer_anchor(archive, conn, phrase, end)
+        if anchor is None:
+            return anchor_search
+    if end is not None and _position(end) <= _position(anchor):
+        raise ValueError("through_message_id must point to a later exchange.")
+
+    messages, reports_truncated = _read_reports(archive, conn, anchor=anchor, end=end)
+    if after_message_id is not None:
+        linked, receipts_incomplete = _linked_reports(archive, conn, messages, phrase)
 
     baseline = conn.execute(
-        f"SELECT {preview} FROM messages WHERE session_id=? AND role='user' "
+        f"SELECT {_PREVIEW} FROM messages WHERE session_id=? AND role='user' "
         "AND (created_at, id) <= (?, ?) ORDER BY created_at DESC, id DESC LIMIT ?",
         (PREVIEW_CHARS, anchor["session_id"], *_position(anchor), BASELINE_ROWS),
     ).fetchall()
     seen = {_normalize(text) for (text,) in baseline if text}
-    changes, long_messages = [], 0
+    changes = [change for reports in linked.values() for change in reports]
+    long_messages = 0
     for mid, message in messages.items():
         text = message["text"]
         normalized = _normalize(text) if text else ""
         if text is None:
             long_messages += 1
-        if mid in linked:
-            changes.extend(linked[mid])
-        elif text:
+        if text and mid not in linked:
             kind = _raw_change(text, phrase) if normalized not in seen else None
             if kind:
                 changes.append({"kind": kind, "reported_at": message["created_at"], "quote": text,
@@ -233,7 +275,8 @@ def read_changes(archive, conn, after_message_id, topic, *, through_message_id, 
         if normalized:
             seen.add(normalized)
 
-    scan_complete = len(rows) <= SCAN_LIMIT and not receipts_incomplete and not long_messages
+    scan_complete = not reports_truncated and not receipts_incomplete and not long_messages
+    changes.sort(key=lambda item: (item["reported_at"], item["after"]["message_id"]))
     selected = changes[-limit:]
     while selected and len(json.dumps(selected, ensure_ascii=False)) > TEXT_CHARS:
         selected = selected[1:]
@@ -241,6 +284,8 @@ def read_changes(archive, conn, after_message_id, topic, *, through_message_id, 
     return {
         "status": "ok" if selected else status,
         "anchor": _reference(anchor), "through": _reference(end) if end else None,
+        **({"anchor_search": anchor_search, "anchor_resolution": "unique_linked_topic"}
+           if after_message_id is None else {}),
         "topic": topic, "changes": selected,
         "coverage": {
             "selection": "literal_topic_and_cited_links", "scan_complete": scan_complete,
@@ -248,7 +293,8 @@ def read_changes(archive, conn, after_message_id, topic, *, through_message_id, 
             "results_truncated": len(selected) < len(changes),
             "oldest_inspected_message_id": next(iter(messages), None),
         },
-        "authority": "Retained user reports. Report time is when the user said it. "
+        "authority": "Retained reports from the user. In a quote, 'I' means the user. "
+                     "Report time is when the user said it. "
                      "Only a source-backed event date or time describes when it happened. "
                      "A missing before source means the original claim was not linked. "
                      "Results are selective, including when the scan completed.",

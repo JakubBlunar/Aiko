@@ -413,7 +413,7 @@ def test_registry_exposes_archive_without_embeddings_and_honors_switch(db):
         {"mode": "messages", "extra": "bad"},
         {"mode": "overviews", "topic": "bad"},
         {"mode": "messages", "timezone": "Mars/Bad"},
-        {"mode": "changes", "topic": "plants"},
+        {"mode": "changes"},
         {"mode": "changes", "topic": "plants", "after_message_id": True},
         {"mode": "changes", "topic": "  ", "after_message_id": 1},
         {"mode": "changes", "topic": "plants", "after_message_id": 1, "limit": 9},
@@ -440,7 +440,8 @@ def test_read_only_review_adapter_never_writes_source_or_config(db):
 
 def change_lookup(db, anchor, **filters):
     return json.loads(ConversationHistoryTool(db, "alice").run({
-        "mode": "changes", "after_message_id": anchor, "topic": "balcony plants", **filters,
+        "mode": "changes", "topic": "balcony plants", **filters,
+        **({"after_message_id": anchor} if anchor is not None else {}),
     }))
 
 
@@ -514,12 +515,61 @@ def test_changes_read_original_corrections_and_linked_outcomes_across_sessions(d
     assert outcome["reported_at"] == "2026-10-22T12:00:00+00:00"
     assert outcome["event_date"] == "2026-10-19" and "event_time" not in outcome
 
+    ambiguous = change_lookup(db, None)
+    assert ambiguous["status"] == "anchor_ambiguous" and not ambiguous["changes"]
+    resolved = change_lookup(db, None, through_message_id=correction_id)
+    assert resolved["anchor_resolution"] == "unique_linked_topic"
+    assert resolved["anchor"]["message_id"] == prior_id
+    reported_update, resolved_correction = resolved["changes"]
+    assert reported_update["after"]["message_id"] == older and reported_update["before"] is None
+    assert resolved_correction == correction
+
     db.delete_message_rows("alice:main", [plan_id])
     db.execute_commit("UPDATE messages SET content=? WHERE id=?",
                       ("I am still thinking about the amount of light.", correction_id))
     after_edit = change_lookup(db, anchor, through_message_id=end_id)["changes"]
     assert [item["kind"] for item in after_edit] == ["reported_update"]
     assert after_edit[0]["before"] is None and "event_date" not in after_edit[0]
+    assert change_lookup(db, None)["status"] == "anchor_not_found"
+
+
+def test_topic_anchor_skips_unlinked_chatter_and_abstains_on_receipt_limit(db, monkeypatch):
+    from app.core.conversation import archive_changes
+
+    def add_link(store, session, prior_text, report_text):
+        first = add(db, prior_text, session=session)
+        last = add(db, report_text, session=session)
+        vector = np.ones(4)
+        prior = store.add(prior_text, "fact", vector, source_message_id=first,
+                          source_session=session, skip_dedupe=True)
+        relation = admit_relation(
+            {"prior_memory_id": prior.id, "relation": "correction",
+             "report": {"message_id": last, "quote": report_text}},
+            [db.get_message_row(last)], {prior.id: {"revision": reference_revision(prior)}},
+            store, session_key=session, subject="user",
+        )
+        assert relation
+        store.add(report_text, "fact", vector, metadata={"contextual_relation": relation},
+                  source_message_id=last, source_session=session, skip_dedupe=True)
+        return first, last
+
+    with closing(MemoryStore(db._db_path)) as store:
+        original, report = add_link(store, "alice:main", "The balcony plants are in shade.",
+                                    "Correction: the balcony plants get full sun.")
+        add_link(store, "bob:other", "The balcony plants have white flowers.",
+                 "Correction: the balcony plants have purple flowers.")
+        add(db, "I like the balcony plants.")
+        monkeypatch.setattr(archive_changes, "SCAN_LIMIT", 1)
+        result = change_lookup(db, None)
+        assert result["anchor"]["message_id"] == original
+        assert result["changes"][0]["after"]["message_id"] == report
+        assert result["anchor_search"] == {"inspected_linked_reports": 1, "scan_complete": True}
+        assert not result["coverage"]["scan_complete"]
+        add_link(store, "alice:other", "The balcony plants need less water.",
+                 "Correction: the balcony plants need more water.")
+        assert change_lookup(db, None)["status"] == "anchor_search_incomplete"
+        bounded = change_lookup(db, None, through_message_id=report)
+        assert bounded["anchor"]["message_id"] == original
 
 
 def test_changes_hide_foreign_and_transient_sources_and_bound_scan(db, monkeypatch):

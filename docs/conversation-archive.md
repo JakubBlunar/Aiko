@@ -29,8 +29,8 @@ D8 uses the retained `messages` rows across the current user's sessions instead.
 - `message`: original message text in character pages. Start with `message_id`;
   follow `next_cursor` for long messages. `content_offset` also permits a direct
   current-source slice. Quote from these rows, not a future generated summary.
-- `changes`: later user reports on a literal topic, starting after an exact
-  retained message ID. See [Changes since an exchange](#changes-since-an-exchange).
+- `changes`: later user reports on a literal topic, starting after a retained
+  exchange. See [Changes since an exchange](#changes-since-an-exchange).
 
 Examples:
 
@@ -58,11 +58,15 @@ conversation sources.
 
 ## Changes since an exchange
 
-D10 is an ordinary chat read through `conversation_history`. If Aiko needs the
-starting message ID, `messages` can find an earlier exchange by date and topic.
-`changes` requires that exact ID and a literal topic phrase. It reads the current
-owner's retained user turns across chats. An optional `through_message_id`
-includes that final exchange and excludes later ones. The normal transcript
+D10 is an ordinary chat read through `conversation_history`. `changes` takes a
+literal topic phrase and accepts an exact `after_message_id` when available.
+`messages` can find an earlier exchange by date and topic. With a topic alone,
+`changes` looks for a unique earlier exchange linked by current follow-through or
+correction receipts. The bounded anchor search inspects up to 500 linked user
+reports across the owner's retained chats. If the search is incomplete or leaves
+the exchange unresolved, Aiko can ask which earlier exchange the user means.
+An optional `through_message_id` includes that final exchange and excludes
+later ones. The normal transcript
 order (message timestamp, then ID) resolves ties and late imports. The read
 keeps the current conversation and world timeline in place.
 

@@ -311,7 +311,7 @@ class ConversationArchive:
                 "authority": "source_messages; context may overlap adjacent pages",
             }
 
-    def changes(self, after_message_id: int, topic: str, *,
+    def changes(self, after_message_id: int | None, topic: str, *,
                 through_message_id: int | None = None, limit: int = 6) -> dict:
         from app.core.conversation.archive_changes import read_changes
 
