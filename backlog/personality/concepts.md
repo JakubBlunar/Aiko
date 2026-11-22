@@ -176,6 +176,33 @@ recalled the decision but cited opening the atlas as confirmation. This is
 one paired fictional exchange. The historical premises still await review
 for repair, and accuracy across other conversations remains open.
 
+The follow-up replay traced the mistaken citation to how the original messages
+reached chat. For the explicit agreement, both questions received the user's
+acceptance first, Aiko's proposal second and the opening remark last. On a new
+soundcheck exchange, the open question turned accepting a plan to mark a channel
+into having marked it. Ordering excerpts by itself left false agreements.
+
+For a standalone question about a past decision, the
+[archive lookup](../../app/core/conversation/exchange_recall.py) now presents the
+matching proposal and the following replies in order. The relevance block uses
+them directly when it can fit the whole passage and no competing topic match
+sits outside the exchange. This also works before the reviewed diary premise is
+withdrawn. Generic recall remains available in the replay with
+`--without-archive`. The distinction between accepting a plan and carrying it
+out still needs ordinary-use validation.
+
+On the same local models, seeds 71 and 73 produced 32 replies across the two
+occasions, two questions, and both dependency states. All eight direct replies
+about an actual agreement cited the accepting turn. None of the four open
+soundcheck replies about that agreement claimed that the channel had been
+marked, though they repeated the decision without identifying the speaker of
+the acceptance. For a suggestion alone, all eight direct replies distinguished
+it from assent. The four open atlas replies still attributed some intention to
+the user, including “you were going to use” the bookmark. Keep that wording
+and cases outside the archive lookup open.
+The eight-reply atlas control with archive lookup disabled reproduced the
+wrong citation on both open questions about the explicit agreement.
+
 **Acceptance.** A one-time choice does not imply effectiveness or a standing
 trait. Multiple paraphrases of one episode retain one evidence basis in the
 review. Withdrawing an unsupported premise changes recall eligibility while an

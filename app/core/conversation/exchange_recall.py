@@ -23,6 +23,20 @@ _PAST_EXCHANGE = re.compile(
     r"|we already (?:talked|discussed))\b",
     re.I,
 )
+_PAST_DECISION = re.compile(
+    r"^\s*(?:did (?:i|we|you) (?:agree|accept|decide|commit|suggest|propose)"
+    r"|what did (?:i|we|you) (?:agree|decide|suggest|propose)"
+    r"|what was (?:our|the|my|your) (?:plan|decision|agreement))\b", re.I,
+)
+_PROPOSAL = re.compile(
+    r"\b(?:i (?:suggest|propose)|we could|how about|shall we|let['’]s|why don['’]t we)\b", re.I,
+)
+DECISION_GUIDANCE = (
+    "Answer this question from the original dialogue. Identify who proposed the plan. "
+    "If the other person accepted it, ground your answer in their actual words of acceptance. "
+    "If their reply only changes the subject, describe the suggestion and leave agreement open. "
+    "A report of carrying it out requires separate evidence."
+)
 _WEEKDAY = re.compile(
     r"\b(?:(?:last|on|was(?: (?:on|in))?)\s+)"
     r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -44,13 +58,50 @@ def _terms(text):
     return {word[:6] for word in re.findall(r"[^\W\d_]{4,}", normalized) if word not in _STOP}
 
 
+def decision_request(text):
+    """Recognize a standalone question about an earlier proposal or agreement."""
+    request = _PAST_DECISION.match(text)
+    if request and re.search(r"[.!?]\s*\S|\band (?:can|could|would|will|please|tell|help|"
+                             r"remind|what|why|how|when|where|did)\b", text, re.I):
+        return None
+    return request
+
+
+def _decision_evidence(history, speaker, zone, budget, estimate_tokens):
+    match = None
+    topic_ids = set()
+    for dialog in history.values():
+        for index, (row, stamp, shared) in enumerate(dialog):
+            if not shared:
+                continue
+            topic_ids.add(row["message_id"])
+            if not _PROPOSAL.search(row["content"]):
+                continue
+            window = [item for item in dialog[max(0, index - 2):index + 4]
+                      if abs(item[1] - stamp) <= timedelta(minutes=10)]
+            replies = [(r, t) for r, t, _ in window if r["message_id"] > row["message_id"]]
+            if not any(r["role"] != row["role"] for r, _ in replies):
+                continue
+            if match is not None:
+                return "", []
+            match = ([(row, stamp), *replies], {r["message_id"] for r, _, _ in window})
+
+    # Another exchange or a later correction could change the answer.
+    if match is None or not topic_ids.issubset(match[1]):
+        return "", []
+    header = ("The original proposal and the replies that followed, in order. "
+              "Aiko is the assistant speaking with the user.")
+    return _render_sources(match[0], speaker, zone, budget, estimate_tokens, header, complete=True)
+
+
 def exchange_evidence(
     db, user_text, session_key, speaker, *, budget, estimate_tokens, tz_name="system",
 ):
     """Read a small, owner-scoped neighborhood with exact message times."""
     if not db or ":" not in session_key or budget <= 0:
         return "", []
-    request = _HISTORY_REQUEST.search(user_text)
+    decision = decision_request(user_text)
+    request = decision or _HISTORY_REQUEST.search(user_text)
     if request is None or (
         request.group().lower().startswith(("you forgot", "don", "do not"))
         and not _PAST_EXCHANGE.search(user_text)
@@ -59,7 +110,13 @@ def exchange_evidence(
     clause_start = max(user_text.rfind(mark, 0, request.start()) for mark in ".!?\n") + 1
     clause_end = re.search(r"[.!?\n]", user_text[request.end():])
     clause_end = request.end() + clause_end.start() if clause_end else len(user_text)
-    terms = _terms(user_text[clause_start:clause_end]) or _terms(user_text)
+    if decision:
+        terms = _terms(user_text[decision.end():clause_end]) - _terms(
+            "plan agree accept idea just suggestion suggest propose decision agreement "
+            "something anything doing using during session before after earlier again"
+        )
+    else:
+        terms = _terms(user_text[clause_start:clause_end]) or _terms(user_text)
     if not terms:
         return "", []
 
@@ -100,6 +157,8 @@ def exchange_evidence(
         history[row["session_id"]].append((row, stamp, shared))
         matches.update(shared)
 
+    if decision:
+        return _decision_evidence(history, speaker, zone, budget, estimate_tokens)
     candidates = []
     for dialog in history.values():
         for index, (row, stamp, shared) in enumerate(dialog):
@@ -120,11 +179,11 @@ def exchange_evidence(
         note = ("The archive lookup found no matching original exchange in its bounded search. "
                 "Treat any exact time or wording as unverified.")
         return (note, []) if estimate_tokens(note) <= budget else ("", [])
-    lines = [
+    header = (
         "Original chat around the likely match. Times are message times in the local timezone. "
         "Use the user's own reports and corrections for what happened. An earlier assistant "
-        "reply shows what you said. Give a time or quote only when these messages support it.",
-    ]
+        "reply shows what you said. Give a time or quote only when these messages support it."
+    )
     selected = {}
     windows = 0
     for _, neighbors in sorted(candidates, key=lambda candidate: -candidate[0]):
@@ -134,9 +193,17 @@ def exchange_evidence(
         windows += 1
         if windows == 2:
             break
-    ids = []
-    for mid, (row, stamp) in sorted(selected.items(), key=lambda item: item[1][1]):
+    rows = sorted(selected.values(), key=lambda item: (item[1], item[0]["message_id"]))
+    return _render_sources(rows, speaker, zone, budget, estimate_tokens, header, complete=False)
+
+
+def _render_sources(rows, speaker, zone, budget, estimate_tokens, header, *, complete):
+    lines, ids = [header], []
+    for row, stamp in rows:
+        mid = row["message_id"]
         if len(row["content"]) > 700:
+            if complete:
+                return "", []
             continue
         who = speaker if row["role"] == "user" else "Aiko"
         sent = stamp.astimezone(zone).isoformat(sep=" ", timespec="minutes")
@@ -145,4 +212,6 @@ def exchange_evidence(
         if estimate_tokens("\n".join([*lines, line])) <= budget:
             lines.append(line)
             ids.append(mid)
+        elif complete:
+            return "", []
     return ("\n".join(lines), ids) if ids else ("", [])

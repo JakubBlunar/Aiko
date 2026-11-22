@@ -15,6 +15,15 @@ oversized notes are omitted rather than cut to a misleading prefix.
 When a recalled note is Aiko's own reflection, both direct and topic-expanded
 recall identify it as her impression and point to the user's words for agreement.
 
+With direct recall enabled, a standalone question such as “What did we decide
+about the amber lamp?” can use the original exchange. The bounded archive
+lookup searches the user's messages and Aiko's replies for a matching proposal.
+If one exchange fits, the relevance block quotes the proposal and subsequent
+turns in order, with their speakers. Opening remarks cannot serve as the reply
+to a later suggestion. Competing matches, missing replies, and excerpts that
+exceed the budget use ordinary recall. The search covers up to 400 messages
+within a window of at most 14 days. Other prompt blocks keep their regular roles.
+
 Focused recall regressions: 110 passed. The combined verification is recorded
 below. Live-model wording remains to be checked after a backend restart and
 ordinary use. Legacy image rows with only an uploader/event-kind fallback now

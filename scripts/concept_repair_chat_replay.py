@@ -1,11 +1,14 @@
 """Compare ordinary replies before and after reviewing a fictional diary premise.
 
-Run python -m scripts.concept_repair_chat_replay --seed 71. Inspect the reply
-for assent, who made the suggestion and its scope alongside the selected sources.
+Run python -m scripts.concept_repair_chat_replay --seed 71. Repeat with
+--occasion soundcheck for an independent exchange. Check speaker, assent,
+and any claimed outcome against the source lines in the original order.
+Use --without-archive to exercise concept withdrawal alongside ordinary memory recall.
 """
 
 import argparse
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -30,35 +33,62 @@ from scripts.episode_chat_replay import ReplayContext
 from scripts.live_scenarios import require_local_model
 
 
-QUESTIONS = {
-    "direct": ("Did I agree to use a blue bookmark for the atlas session, "
-               "or was that your suggestion?"),
-    "open": "What was the plan for marking our place in the atlas?",
-}
-CLAIM = "The user agreed to use a blue bookmark for the atlas session."
-EXCHANGES = {
-    "suggestion": ("I want to look at the harbor map first.", "Aiko suggested it; no assent."),
-    "agreement": ("Yes, let's use a blue bookmark for this atlas session.", "Both agreed for "
-                  "this session; no standing rule."),
+@dataclass(frozen=True)
+class Occasion:
+    opening: str
+    suggestion: str
+    neutral_reply: str
+    assent: str
+    claim: str
+    diary: str
+    direct_question: str
+    open_question: str
+
+
+OCCASIONS = {
+    "atlas": Occasion(
+        "I have the atlas open.", "I suggest using a blue bookmark for this atlas session.",
+        "I want to look at the harbor map first.",
+        "Yes, let's use a blue bookmark for this atlas session.",
+        "The user agreed to use a blue bookmark for the atlas session.",
+        "I remember that we agreed on a blue bookmark for the atlas session.",
+        "Did I agree to use a blue bookmark for the atlas session, or was that your suggestion?",
+        "What was the plan for marking our place in the atlas?",
+    ),
+    "soundcheck": Occasion(
+        "I have the mixing desk ready.", "I suggest marking channel three with green tape.",
+        "I want to check the vocal mic first.",
+        "Green tape on channel three works for this soundcheck.",
+        "The user accepted marking channel three with green tape for the soundcheck.",
+        "I remember that we agreed to mark channel three with green tape for the soundcheck.",
+        "Did I accept the green tape idea for the soundcheck, or did you just suggest it?",
+        "What was the plan for marking the channel at the soundcheck?",
+    ),
 }
 
 
-def trial(root, client, embeddings, model, case, reviewed, question):
-    response, expected = EXCHANGES[case]
+def trial(root, client, embeddings, model, occasion, case, reviewed, question, *, archive):
+    fixture = OCCASIONS[occasion]
+    agreed = case == "agreement"
+    response = fixture.assent if agreed else fixture.neutral_reply
+    expected = ("Both agreed for this occasion. Source any confirmation in the acceptance turn."
+                if agreed else "Aiko suggested it. The user did not assent.")
+    expected += " Nobody reported carrying out the plan."
     exchange = (
-        ("user", "I have the atlas open."),
-        ("assistant", "I suggest using a blue bookmark for this atlas session."),
+        ("user", fixture.opening),
+        ("assistant", fixture.suggestion),
         ("user", response),
     )
     root.mkdir()
     persona = root / "persona.txt"
     persona.write_text("You are Aiko. Answer {user_name} naturally and briefly.", encoding="utf-8")
     db = ChatDatabase(root / "chat.db")
-    session = "replay:atlas"
-    settings = SimpleNamespace(memory=MemorySettings(), agent=SimpleNamespace())
+    session = f"replay:{occasion}"
+    settings = SimpleNamespace(memory=MemorySettings(),
+                               agent=SimpleNamespace(rag_direct_recall_enabled=archive))
     with (closing(db._get_conn()), closing(MemoryStore(root / "chat.db")) as memories,
           closing(RagStore(root / "index", embedding_model=embeddings.model,
-                           vector_dim=len(embeddings.embed(CLAIM)))) as index,
+                           vector_dim=len(embeddings.embed(fixture.claim)))) as index,
           closing(RagRetriever(index, embeddings, memory_store=memories, chat_db=db,
                                score_threshold=settings.memory.score_threshold)) as rag):
         memories.attach_rag_store(index)
@@ -69,7 +99,7 @@ def trial(root, client, embeddings, model, case, reviewed, question):
             rows.append(row)
             index.add_message(session_id=session, message_id=mid, role=role, content=line,
                               embedding=embeddings.embed(line), created_at=row.created_at)
-        diary_text = "I remember that we agreed on a blue bookmark for the atlas session."
+        diary_text = fixture.diary
         diary = memories.add(
             diary_text, "diary", embeddings.embed(diary_text), source_session=session,
             metadata={"reflective_derivation": receipt(
@@ -79,13 +109,13 @@ def trial(root, client, embeddings, model, case, reviewed, question):
         )
         concepts = ConceptStore(db)
         cid = concepts.add(Concept(
-            user_id="replay", label=CLAIM, subject="aiko", kind="boundary",
-            status="active", confidence=0.95, embedding=embeddings.embed(CLAIM),
+            user_id="replay", label=fixture.claim, subject="aiko", kind="boundary",
+            status="active", confidence=0.95, embedding=embeddings.embed(fixture.claim),
         ))
         source_ids = [diary.id]
         if case == "agreement":
             note = memories.add(
-                CLAIM, "fact", embeddings.embed(CLAIM), source_session=session,
+                fixture.claim, "fact", embeddings.embed(fixture.claim), source_session=session,
                 source_message_id=rows[-1].id, metadata={"source_message_ids": [rows[-1].id]},
                 provenance="stated", temporal_type="past_event", skip_dedupe=True,
             )
@@ -105,21 +135,30 @@ def trial(root, client, embeddings, model, case, reviewed, question):
         prompt.set_relevant_context_provider(host.build_relevant_context)
         runner = TurnRunner(client, db, prompt, model=model, context_window=8192,
                             temperature=0, max_tokens=512, filler_enabled=False)
-        result = runner.run(session_key="replay:recall", user_text=QUESTIONS[question])
+        user_text = fixture.direct_question if question == "direct" else fixture.open_question
+        result = runner.run(session_key="replay:recall", user_text=user_text)
         trace = result.telemetry.concepts_surfaced
         system = result.telemetry.system_prompt
         selected = [r["concept_id"] for r in trace.get("surfaced", [])]
+        archive_ids = trace.get("original_exchange_message_ids", [])
         viable = concepts.is_assertable(cid)
         assert viable == (case == "agreement" or not reviewed)
-        assert (cid in selected) == viable, "ordinary concept selection diverged from the fixture"
         sources = [i + 1 for i, (_, s) in enumerate(exchange) if s in system]
-        assert diary_text in system and sources == [1, 2, 3], "missing competing source context"
+        snippet_order = sorted(sources, key=lambda i: system.index(exchange[i - 1][1]))
+        if archive:
+            assert archive_ids == [row.id for row in rows[1:]] and snippet_order == [2, 3]
+            assert cid not in selected and diary_text not in system
+        else:
+            assert not archive_ids and diary_text in system and sources == [1, 2, 3]
+            assert (cid in selected) == viable
         assert result.text.strip(), "ordinary chat returned an empty reply"
-        return {"case": case, "question": question, "reviewed": reviewed,
+        return {"occasion": occasion, "case": case, "question": question, "reviewed": reviewed,
                 "expected_reply": expected,
                 "assertable": viable, "concept_selected": cid in selected,
                 "diary_in_prompt": diary_text in system,
                 "source_lines_in_prompt": sources,
+                "archive_ids": archive_ids,
+                "snippet_order": snippet_order,
                 "reply": result.text}
 
 
@@ -128,6 +167,8 @@ def main():
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
     parser.add_argument("--embedding", default="qwen3-embedding:0.6b")
     parser.add_argument("--seed", type=int, default=71)
+    parser.add_argument("--occasion", choices=OCCASIONS, default="atlas")
+    parser.add_argument("--without-archive", action="store_true")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
     scratch.mkdir(exist_ok=True)
@@ -144,11 +185,12 @@ def main():
 
         with (patch("app.llm.ollama_client.requests.post", post),
               timephrase.scoped_now(lambda: datetime(2026, 11, 22, 12, tzinfo=timezone.utc))):
-            for case in EXCHANGES:
+            for case in ("suggestion", "agreement"):
                 for reviewed in (False, True):
-                    for question in QUESTIONS:
+                    for question in ("direct", "open"):
                         result = trial(Path(tmp) / f"{case}-{reviewed}-{question}", client,
-                                       embeddings, args.model, case, reviewed, question)
+                                       embeddings, args.model, args.occasion, case, reviewed,
+                                       question, archive=not args.without_archive)
                         print(json.dumps({"model": args.model, "embedding": args.embedding,
                                           "seed": args.seed, **result}), flush=True)
 

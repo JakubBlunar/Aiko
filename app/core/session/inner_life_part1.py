@@ -1571,7 +1571,9 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         rag = getattr(self, "_rag_retriever", None)
         embedder = getattr(self, "_embedder", None)
         name = self.user_display_name
-        from app.core.conversation.exchange_recall import exchange_evidence
+        from app.core.conversation.exchange_recall import (
+            DECISION_GUIDANCE, decision_request, exchange_evidence,
+        )
 
         settings = getattr(self, "_settings", None)
         archive_text, archive_ids = "", []
@@ -1585,6 +1587,13 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             except Exception:
                 log.debug("relevant_context: original exchange lookup failed", exc_info=True)
         record_stage("archive_lookup")
+        if archive_ids and decision_request(user_text):
+            return RelevantContext(
+                text=archive_text, reply_guidance=DECISION_GUIDANCE,
+                reason="decision_exchange", stage_ms=stage_ms,
+                concept_trace={"surfaced": [], "reason": "decision_exchange",
+                               "original_exchange_message_ids": archive_ids},
+            )
 
         # Speculative pre-fetch reuse (Phase 1b): while the user was still
         # talking the RagPrefetcher may have already embedded this turn and
