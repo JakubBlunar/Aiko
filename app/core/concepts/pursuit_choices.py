@@ -77,7 +77,38 @@ def supported_pursuits(concepts, memories, owner):
     return supported
 
 
-_REASON = re.compile(r"I (?:like|love|enjoy) (.+?) because ([^.!?\n]{3,140})[.!]?", re.I)
+def recent_pursuit_account(activity, activities, split):
+    """Keep a lasting pursuit and the evidence for a present-tense answer distinct."""
+    record = activities[activity]
+    finding = record.get("finding") or {}
+    kind = finding.get("kind")
+    if kind == "changed_choice_pattern":
+        return {"statement": finding["statement"], "finding_activity": activity}
+
+    # A shift is filed under the later choice. The same paired evidence also
+    # answers a question about the earlier activity, within those opportunities.
+    shifts = (row["finding"] for row in activities.values()
+              if (row.get("finding") or {}).get("previous_activity") == activity)
+    change = max(shifts, key=lambda item: item["later"][-1]["recorded_at"], default=None)
+    if change:
+        later = change["activity"]
+        return {"statement": f"I was {activity} earlier. Lately, when I had a free choice "
+                             f"between {activity} and {later}, I picked {later}.",
+                "finding_activity": later}
+    if kind == "repeated_choice" and split and finding["later"][-1]["recorded_at"] < split:
+        return {"statement": f"I remember choosing {activity} a week or two ago. "
+                             "I'm not sure how often I've chosen it since.",
+                "finding_activity": activity}
+    pursuit = record.get("pursuit")
+    if pursuit and kind == "repeated_choice":
+        return {"statement": pursuit["statement"] + ".", "finding_activity": activity}
+    if finding:
+        return {"statement": finding["statement"], "finding_activity": activity}
+    return {"statement": f"{activity.capitalize()} is something I've come back to before. "
+                         "I can't say how often I've been doing it lately."}
+
+
+_REASON = re.compile(r"I (?:like|love|enjoy) (.+?) because ([^.!?\r\n\[\]<>*]{3,140})[.!]?", re.I)
 _RETRACT = re.compile(r"I (?:no longer|don['’]t|do not) (?:like|love|enjoy) ("
                       + ACTIVITY_WORDS.pattern + ")", re.I)
 

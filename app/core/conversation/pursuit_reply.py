@@ -17,6 +17,12 @@ _WHY = re.compile(r"(?:what do you (?:like|enjoy) about|why do you (?:like|enjoy
 _ADDITIONAL = re.compile(r"\b(?:also|as well as|and \w+ing)\b", re.I)
 
 
+def _reason(activity, record):
+    reason = record.get("expressed_reason")
+    return ("I remember saying " + reason["statement"].rstrip(".!") + "." if reason else
+            f"I haven't pinned down what I like about {activity} yet.")
+
+
 def pursuit_reply(text, history, provider):
     if provider is None:
         return ""
@@ -25,6 +31,7 @@ def pursuit_reply(text, history, provider):
     named = why or _NAMED.fullmatch(text)
     topic = None
     prior_reply = ""
+    previous_named = None
     if named:
         referent = named[1].lower()
         if why and referent in {"it", "that"}:
@@ -42,7 +49,8 @@ def pursuit_reply(text, history, provider):
                 if (_ADDITIONAL.search(prior_reply)
                         or previous_named and ALIASES[previous_named[1].lower()] != topic):
                     return ""
-            elif len(mentions) != 2 or "Lately I've been choosing " not in prior_reply:
+            elif len(mentions) != 2 or (not previous_named
+                                        and "Lately I've been choosing " not in prior_reply):
                 return ""
         else:
             topic = ALIASES.get(referent)
@@ -54,6 +62,13 @@ def pursuit_reply(text, history, provider):
     facts = provider("aiko").get("choice_history", {})
     activities = facts.get("activities", {})
     if prior_reply and not topic:
+        if previous_named:
+            earlier = ALIASES[previous_named[1].lower()]
+            account = activities.get(earlier, {}).get("recent_account", {})
+            later = account.get("finding_activity")
+            if account.get("statement") == prior_reply and later and later != earlier:
+                reasons = (_reason(name, activities[name]) for name in (earlier, later))
+                return " ".join(reasons)
         # A change mentions two subjects. Only resolve "it" when the previous
         # answer describes the recorded change and names its current activity.
         topic = next((name for name, row in activities.items()
@@ -65,20 +80,10 @@ def pursuit_reply(text, history, provider):
     if not record and not (facts and named and topic):
         return ""
     record = record or {}
-    finding = record.get("finding") or {}
-    pursuit = record.get("pursuit") or {}
     if why:
-        reason = record.get("expressed_reason")
-        answer = ("I remember saying " + reason["statement"].rstrip(".!") + "." if reason else
-                  f"I haven't pinned down what I like about {topic} yet.")
-    elif finding.get("kind") == "changed_choice_pattern":
-        answer = finding["statement"]
-    elif pursuit:
-        answer = pursuit["statement"] + "."
-    elif finding:
-        answer = finding["statement"]
+        answer = _reason(topic, record)
+    elif account := record.get("recent_account"):
+        answer = account["statement"]
     else:
         answer = f"I don't have enough to say how often I've been {topic} lately."
-    return ("The user asked for a fact about your own experience. Reply with exactly the text "
-            "inside the quotation marks. This is the whole reply, including its final period. "
-            "Output no continuation or question.\n" + f'"{answer}"')
+    return answer

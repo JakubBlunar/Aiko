@@ -125,6 +125,17 @@ that activity. For example, “I enjoy reading because I get to meet unfamiliar
 characters” can explain reading. A later retraction withdraws that explanation.
 Without one she can say she is still figuring it out.
 
+“Are you still reading?” checks recent choices even when reading is an active
+pursuit. If the comparable opportunities show a shift from reading to writing,
+Aiko can say she chose writing when both were available. If reading was last
+chosen in the earlier half of the 14-day window, she can date that observation.
+With only an older pursuit, she remembers the habit and leaves its current
+frequency open. A recent requested reading session supports saying she read.
+These answers use the existing concept and trace records without changing them.
+Direct pursuit questions use the recorded wording in chat. A follow-up that
+could refer to either side of a reported shift can give each activity's own
+explanation. Other conversation continues through the usual reply path.
+
 To compare two recorded periods, run the review module against a SQLite backup.
 Each pair of bounds includes the start and excludes the end, with an explicit
 timezone.

@@ -10,6 +10,8 @@ from app.core.concepts.concept_source_policy import ConceptSourcePolicyMixin
 from app.core.concepts.proposers.base import ExistingConcept, ProposerContext
 from app.core.concepts.proposers.pursuit_aiko import propose_pursuit_aiko
 from app.core.conversation.pursuit_reply import pursuit_reply
+from app.core.session.prompt_assembler import PromptAssembler
+from app.core.session.turn_runner import TurnRunner
 from app.core.world import in_progress_beat
 from app.core.world.pursuit_activities import pursuit_label
 from scripts.pursuit_chat_replay import CASES, EXAMPLES, INTEREST, NOW, REASON, WHY, history
@@ -133,3 +135,60 @@ def test_unrelated_question_and_ambiguous_followup_need_no_history():
     assert not pursuit_reply(WHY, [SimpleNamespace(role="user", content="I like sketching."),
                                    SimpleNamespace(role="assistant", content="I do too.")],
                              unexpected)
+
+
+@pytest.mark.parametrize(("case", "expected"), [
+    ("changed", "I was reading earlier. Lately, when I had a free choice between reading and "
+                "writing, I picked writing."),
+    ("unavailable", "I remember choosing reading a week or two ago. "
+                    "I'm not sure how often I've chosen it since."),
+    ("quiet", "Reading is something I've come back to before. "
+              "I can't say how often I've been doing it lately."),
+])
+def test_current_answer_distinguishes_a_shift_from_missing_opportunities(tmp_path, case, expected):
+    with history(tmp_path, case, "writing", paired=True) as (db, host):
+        before = db._get_conn().total_changes
+        provider = host._pursuit_reply_history
+        facts = provider("aiko")["choice_history"]
+        reading = facts["activities"]["reading"]
+        assert reading["pursuit"]["statement"] == pursuit_label("reading")
+        direct = "Are you still reading books?"
+        assert expected in pursuit_reply(direct, [], provider)
+        assert reading["recent_account"]["statement"] == expected
+        if case == "changed":
+            assert reading["recent_account"]["finding_activity"] == "writing"
+            turns = [SimpleNamespace(role="user", content=direct),
+                     SimpleNamespace(role="assistant", content=expected)]
+            reply = pursuit_reply(WHY, turns, provider)
+            assert EXAMPLES["read_book"][2] in reply and EXAMPLES["writing"][2] in reply
+            assert EXAMPLES["read_book"][2] in pursuit_reply("Why do you like reading?", [],
+                                                             provider)
+        assert db._get_conn().total_changes == before
+
+
+def test_expired_choices_do_not_turn_a_recent_requested_activity_into_a_habit(tmp_path):
+    with history(tmp_path, "requested_return", "writing", paired=True) as (db, host):
+        provider = host._pursuit_reply_history
+        record = provider("aiko")["choice_history"]["activities"]["reading"]
+        assert record["finding"]["kind"] == "completed_activity"
+        assert record["pursuit"]["concept_id"]
+        answer = pursuit_reply("Are you still reading?", [], provider)
+        assert answer == "I've spent some time reading."
+        db.add_message("replay:reason", "assistant", "I enjoy reading because [[goal:replay]].")
+        assert "haven't pinned down" in pursuit_reply("Why do you like reading?", [], provider)
+
+
+def test_quiet_pursuit_answer_reaches_stream_and_transcript(tmp_path):
+    with history(tmp_path, "quiet", "writing", paired=True) as (db, host):
+        persona = tmp_path / "persona.txt"
+        persona.write_text("You are Aiko.", encoding="utf-8")
+        prompt = PromptAssembler(db, persona_path=persona, continuity_max_messages=0)
+        prompt.set_inner_life_providers(pursuit_history=host._pursuit_reply_history)
+        runner = TurnRunner(SimpleNamespace(), db, prompt, model="unused", context_window=8192,
+                            max_tokens=240, temperature=0, filler_enabled=False)
+        visible = []
+        session = "replay:conversation"
+        turn = runner.run(session, "Are you still reading?", on_token=visible.append)
+        assert turn.telemetry.decision_reply == turn.text == "".join(visible)
+        assert "I can't say how often" in turn.text
+        assert db.get_messages(session)[-1].content == turn.text

@@ -1256,10 +1256,19 @@ two chat turns. Prompted drawings produce an activity report. Independent
 choices support a sketching pursuit, and a subsequent cued drawing supplies
 no new concept evidence. Earlier reading choices ground a change, and an
 explicit earlier explanation grounds a reason. The first scope covers
-sketching. Ordinary-use validation and other activities remain open.
+sketching. Ordinary-use validation remains open.
 With local `baytout3/qwen3.5-uncensored:9b` at seeds 71 and 83, all six
 answers per seed matched the evidence. The model echoed the quotation marks
 around the supplied factual wording.
+
+On 23 Nov the same rule covers six planner activities. A fictional replay
+with active reading and writing pursuits asks whether Aiko is still reading.
+Two earlier choices of reading and three later choices of writing support a
+shift when both were available. Removing writing from the earlier menu leaves
+only the dated reading observation. Letting the entire window expire leaves
+the old pursuit and an unknown current frequency. The replay checks both the
+recorded answers and a subsequent ordinary model turn. See the
+[current behavior](../../docs/idle-workers.md#reviewing-behavior-and-running-isolated-experiments).
 
 ## Moved out of the active queue
 

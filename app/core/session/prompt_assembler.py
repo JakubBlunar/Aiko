@@ -3951,10 +3951,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if "calendar_anticipation_block" in handling_omissions:
             system_parts[calendar_anticipation_slot] = ""
             calendar_anticipation_block = ""
-        pursuit_guidance = _safe_provider(
+        pursuit_answer = _safe_provider(
             lambda: pursuit_reply(user_text, history_msgs, self._pursuit_history_provider),
             timing_sink=provider_ms, timing_name="pursuit_history",
         ) if self._pursuit_history_provider is not None else ""
+        pursuit_guidance = (f"Recorded answer to the user's question:\n{pursuit_answer}"
+                            if pursuit_answer else "")
         current_reply_guidance = ((pursuit_guidance
                                    or choice_guidance(user_text, (m.content for m in history_msgs))
                                    or CURRENT_REPLY_GUIDANCE)
@@ -4156,6 +4158,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     prompt_history = history_msgs[:pending_episode.history_index]
                     cleaned_user = f"{cleaned_user}\n\n{pending_episode.text}"
                     user_tokens = estimate_tokens(cleaned_user) + _MESSAGE_OVERHEAD
+        if (pursuit_answer and current_reply_guidance == pursuit_guidance
+                and not decision_reply and comparison_report is None):
+            decision_reply = pursuit_answer
         if relevant_context_block:
             system_parts.insert(t3_insert_index, relevant_context_block)
 

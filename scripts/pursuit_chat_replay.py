@@ -52,8 +52,21 @@ EXAMPLES = {
     "home_revise_sketch": ("I revised the sketch on page {day}.", "revise_sketch", ""),
 }
 
+READING_NOW = "Are you still reading books?"
+RECENT_CASES = {
+    "changed": [(READING_NOW, "I was reading earlier. Lately, when I had a free choice "
+                              "between reading and writing, I picked writing."),
+                (WHY, "I remember saying " + EXAMPLES["read_book"][2] +
+                      " I remember saying " + EXAMPLES["writing"][2]),
+                ("Why do you like reading?", "I remember saying " + EXAMPLES["read_book"][2])],
+    "unavailable": [(READING_NOW, "I remember choosing reading a week or two ago. "
+                                  "I'm not sure how often I've chosen it since.")],
+    "quiet": [(READING_NOW, "Reading is something I've come back to before. "
+                            "I can't say how often I've been doing it lately.")],
+}
 
-def _episode(trace, writer, days, *, key=SKETCH, source=""):
+
+def _episode(trace, writer, days, *, key=SKETCH, source="", writing_available=True):
     moment = NOW - timedelta(days=days)
     with (timephrase.scoped_now(lambda: moment),
           patch.object(timephrase, "real_now", lambda: moment),
@@ -61,7 +74,8 @@ def _episode(trace, writer, days, *, key=SKETCH, source=""):
         eligible = ("read_book", "stretching", "nap", "garden", "tea")
         emit("candidates", {"eligible": [{"key": k} for k in eligible]})
         offered = [{"action": "new_sketch"}, {"action": "revise_sketch"}]
-        emit("model_options", {"offered": offered, "writing_available": True, "choice_inputs": {
+        emit("model_options", {"offered": offered, "writing_available": writing_available,
+                               "choice_inputs": {
             "version": 1, "optional_inspiration": bool(source), "daily_intention": False,
             "ongoing_interest": False}})
         emit("context_attribution", {"choice_reason": "context" if source else "own_interest",
@@ -80,7 +94,7 @@ def _episode(trace, writer, days, *, key=SKETCH, source=""):
 
 @contextmanager
 def history(root, case, key=SKETCH, previous="read_book", paired=False):
-    path = root / f"{case}-{key}.db"
+    path = root / f"{case}-{key}{'-paired' if paired else ''}.db"
     db = ChatDatabase(path)
     with closing(db._get_conn()), closing(MemoryStore(path)) as memories:
         concepts, trace = ConceptStore(db), IdleLifeStore(db)
@@ -119,12 +133,18 @@ def history(root, case, key=SKETCH, previous="read_book", paired=False):
         with timephrase.scoped_now(lambda: NOW - timedelta(days=11)):
             ConceptLifecycleWorker(concept_store=concepts, agent_settings=settings,
                                    memory_settings=settings).run()
-        if case == "changed":
+        if case in {"changed", "unavailable"}:
             for day in (10, 9):
-                _episode(trace, writer, day, key=previous)
-        for day in (5, 4, 3):
-            choose(day)
+                _episode(trace, writer, day, key=previous, writing_available=case == "changed")
+        if case not in {"quiet", "requested_return"}:
+            for day in (5, 4, 3):
+                choose(day)
         synthesize(2)
+        if case == "requested_return":
+            with timephrase.scoped_now(lambda: NOW - timedelta(days=2)):
+                mid = db.add_message("replay:requests", "user",
+                                     "Please read the next chapter for me.")
+            _episode(trace, writer, 1, key=previous, source=f"message:{mid}")
         if case == "voluntary":
             # A choice cued by this pursuit cannot add a seventh evidence edge.
             pursuit, = concepts.list_by(status="active", kind="pursuit")
@@ -165,9 +185,10 @@ def main():
             return client._post_structured_chat(url, json=payload, **kwargs)
 
         with patch("app.llm.ollama_client.requests.post", post):
-            for key, case in [(k, c) for k in (SKETCH, "writing") for c in CASES]:
+            trials = [(k, c, False) for k in (SKETCH, "writing") for c in CASES]
+            trials.extend(("writing", c, True) for c in RECENT_CASES)
+            for key, case, paired in trials:
                 activity = ACTIVITY_BY_KEY[key]
-                expected = CASES[case]
                 replies = {
                     "assigned": f"I've spent some time {activity}.",
                     "voluntary": f"I keep coming back to {activity} in my own time.",
@@ -176,24 +197,40 @@ def main():
                 }
                 why = ("I remember saying " + EXAMPLES[key][2] if case == "changed" else
                        f"I haven't pinned down what I like about {activity} yet.")
-                with history(root, case, key) as (db, host):
+                questions = (RECENT_CASES[case] if paired else
+                             [(INTEREST, replies[case]), (WHY, why)])
+                with history(root, case, key, paired=paired) as (db, host):
                     facts = host._choice_history_payload("aiko")["choice_history"]
-                    assert facts["finding"]["kind"] == expected
-                    assert bool(facts.get("pursuit")) == (case != "assigned")
+                    if paired:
+                        pursuit = facts["activities"]["reading"]["pursuit"]
+                        assert pursuit["concept_id"]
+                    else:
+                        pursuit = facts.get("pursuit")
+                        assert facts["finding"]["kind"] == CASES[case]
+                        assert bool(pursuit) == (case != "assigned")
                     assembler = PromptAssembler(db, persona_path=persona, continuity_max_messages=0)
                     assembler.set_inner_life_providers(pursuit_history=host._pursuit_reply_history)
                     runner = TurnRunner(client, db, assembler, model=args.model,
                                         context_window=8192, max_tokens=240, temperature=0,
                                         filler_enabled=False)
-                    for question, answer in ((INTEREST, replies[case]), (WHY, why)):
+                    for question, answer in questions:
                         result = runner.run(session_key="replay:chat", user_text=question)
-                        assert "a fact about your own experience" in result.telemetry.system_prompt
-                        print(json.dumps({"case": case, "activity": activity, "question": question,
-                                          "expected": expected,
-                                          "concept": facts.get("pursuit"), "reply": result.text,
-                                          "model": args.model, "seed": args.seed}), flush=True)
-                        if result.text.strip().strip('"“”') != answer:
+                        assert result.telemetry.decision_reply == answer
+                        print(json.dumps({
+                            "case": case, "activity": "reading" if paired else activity,
+                            "question": question, "expected": answer, "concept": pursuit,
+                            "reply": result.text, "route": "recorded_answer",
+                        }), flush=True)
+                        if result.text != answer:
                             raise RuntimeError(f"{case}: inspect the reply against its evidence")
+                    if paired and case == "changed":
+                        # Switching subject must release the fixed-answer path.
+                        ordinary = runner.run(session_key="replay:chat",
+                                              user_text="Give me a synonym for quiet.")
+                        assert not ordinary.telemetry.decision_reply
+                        assert ordinary.text.strip() and "I remember saying" not in ordinary.text
+                        print(json.dumps({"case": "subject_switch", "reply": ordinary.text,
+                                          "model": args.model, "seed": args.seed}), flush=True)
 
 
 if __name__ == "__main__":

@@ -88,7 +88,9 @@ class UnderstandingReadsMixin:
         if subject != "aiko":
             return {}
         try:
-            from app.core.concepts.pursuit_choices import expressed_reasons, supported_pursuits
+            from app.core.concepts.pursuit_choices import (
+                expressed_reasons, recent_pursuit_account, supported_pursuits,
+            )
 
             history = trace.recent_choice_history() if trace is not None else {}
             memories = getattr(self, "_memory_store", None)
@@ -104,6 +106,10 @@ class UnderstandingReadsMixin:
                 for name, reason in expressed_reasons(db, self._user_id, activities).items():
                     activities[name]["expressed_reason"] = reason
             if activities:
+                for name, record in activities.items():
+                    record["recent_account"] = recent_pursuit_account(
+                        name, activities, history.get("split"),
+                    )
                 history["activities"] = activities
                 primary = ((history.get("finding") or {}).get("activity")
                            or next(reversed(activities)))
@@ -148,7 +154,8 @@ class UnderstandingReadsMixin:
                     "note": "A change in Aiko's understanding does not prove a change in the "
                             "user or relationship. Thin/omitted history is incomplete. "
                             "Choice history describes recorded actions in a recent window. "
-                            "Use the matching pursuit or expressed reason when present."}
+                            "Use recent_account for what she does lately and expressed_reason "
+                            "for her own explanation."}
         if mode == "learning_event":
             event = learning.get(event_id)
             ids = [i for i in (event.concept_id, event.prior_concept_id) if i] if event else []
