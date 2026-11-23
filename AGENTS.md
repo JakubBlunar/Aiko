@@ -57,6 +57,11 @@ Read on demand; don't load all of it up front:
 - [`rules/debugging.md`](rules/debugging.md) — the **log stream**: where to look, line shape + canonical fields, the symptom → grep-target table, level cheat sheet, and workflow.
 
 Current behavior and subsystem contracts live under [`docs/`](docs/README.md).
+For the separate [Rig Studio](tools/rig-studio/README.md), use its project skills
+for [persona artwork](tools/rig-studio/.agents/skills/prepare-persona-art/SKILL.md)
+and [rigging and animation](tools/rig-studio/.agents/skills/animate-persona-rig/SKILL.md).
+For the installed Alexia atlas, use [Extend an atlas persona](tools/rig-studio/.agents/skills/extend-atlas-persona/SKILL.md)
+and the [reconstruction and hot-reload workflow](tools/rig-studio/atlas-workflow.md).
 Reviews, audits, future plans and rollout records belong in [`backlog/`](backlog/README.md);
 update the owning current guide when behavior changes instead of adding a new
 implementation-pass document to `docs/`.

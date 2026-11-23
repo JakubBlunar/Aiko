@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rig Studio · Aiko</title><link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header><span class="mark" aria-hidden="true">◇</span><strong>Aiko</strong><span class="divide"></span> Rig Studio
+  <select id="source" aria-label="Character"><option value="example">Pip example</option></select>
+  <label class="open">Open rig folder<input id="folder" type="file" webkitdirectory multiple></label>
+</header>
+<main>
+  <section class="workspace">
+    <div class="title"><div><small>Animation workspace</small><h1 id="title">Rig Studio</h1></div>
+      <label class="check" hidden id="followLabel"><input id="follow" type="checkbox"> Follow pointer</label>
+      <label class="check"><input id="bones" type="checkbox"> Show skeleton</label></div>
+    <div class="views">
+      <article><div class="caption"><strong>Custom rig</strong><span id="layerCount"></span></div>
+        <div class="surface"><canvas id="custom" aria-label="Custom rig preview"></canvas>
+          <canvas hidden id="atlas" aria-label="Deformed character preview"></canvas></div></article>
+      <article><div class="caption"><strong>Live2D reference</strong><span id="referenceName">Optional</span>
+        <button hidden id="neutral">Export neutral PNG</button></div>
+        <div class="surface"><canvas id="reference" aria-label="Reference preview"></canvas>
+          <div id="refPrompt"><p id="refStatus" role="status">Checking reference…</p><button hidden id="loadRef">Load reference</button></div>
+        </div></article>
+    </div>
+    <section class="transport"><div class="row"><label>Motion <select id="motion"></select></label><output id="time"></output></div>
+      <input aria-label="Timeline in seconds" id="seek" type="range" min="0" step="any" value="0">
+      <div class="buttons"><button id="prev" aria-label="Previous frame">−1 frame</button><button id="play">Play</button>
+      <button id="next" aria-label="Next frame">+1 frame</button><span>30 fps</span></div>
+    </section>
+  </section>
+  <aside aria-labelledby="inspector-title" tabindex="0"><div class="panel-head"><h2 id="inspector-title">Pose inspector</h2><button id="reset">Reset overrides</button></div>
+    <div id="parameters"></div>
+    <label hidden id="isolateLabel">Isolate artwork <select id="isolate"></select></label>
+    <details id="joints"><summary>Edit joint pivot</summary><label>Joint <select id="joint"></select></label>
+      <div class="coords"><label>X <input id="jointX" type="number" step="any"></label>
+      <label>Y <input id="jointY" type="number" step="any"></label></div>
+      <button id="save">Export rig.json</button>
+    </details>
+    <p id="status" role="status"></p>
+  </aside>
+</main>
+<script type="module" src="/dist/studio.js"></script>
+</body></html>
