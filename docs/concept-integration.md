@@ -397,6 +397,14 @@ changes the prompt.
 
 ### Troubleshooting decision checks (L54)
 
+On an advice turn, Aiko uses the user's stated criterion and recent dialogue
+to decide whether one missing fact could change her recommendation. When the
+user wants a way back from overwriting their work, she can ask whether a
+verified copy of this version exists. The following turn uses the answer.
+A correction that the backup belongs to another item calls for reconsidering
+the advice. For a choice with an explicit count cutoff, the prompt carries
+the user's quantity and unit into the question.
+
 The existing observer can attach two proposed next steps to one yes/no
 troubleshooting question. An answer can point to a cited user fact or a later
 user-reported check result. A newer result takes precedence over a binding to

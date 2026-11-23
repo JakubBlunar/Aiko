@@ -27,7 +27,8 @@ from app.core.conversation.conversation_situation import (
     OTHER_COMPARISON_HEADER, RETURNED_COMPARISON_HEADER,
 )
 from app.core.conversation.clarification_reply import (
-    CLARIFICATION_GUIDANCE, CURRENT_REPLY_GUIDANCE, is_clarification_question,
+    CLARIFICATION_GUIDANCE, COPY_ANSWER_GUIDANCE, CURRENT_REPLY_GUIDANCE,
+    answered_copy_question, choice_guidance, is_clarification_question,
 )
 from app.core.conversation.stance import POOLED_CHOICE_BLOCKS
 from app.core.infra import timephrase
@@ -3946,7 +3947,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if "calendar_anticipation_block" in handling_omissions:
             system_parts[calendar_anticipation_slot] = ""
             calendar_anticipation_block = ""
-        current_reply_guidance = CURRENT_REPLY_GUIDANCE if (user_text or "").strip() else ""
+        current_reply_guidance = ((choice_guidance(user_text, (m.content for m in history_msgs))
+                                   or CURRENT_REPLY_GUIDANCE)
+                                  if (user_text or "").strip() else "")
         reply_guidance_slot = len(system_parts)
         prompt_history = history_msgs
         if current_reply_guidance:
@@ -3963,6 +3966,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     "possible. If the test assumptions changed, explain in one sentence "
                     "why the comparison is inconclusive instead."
                 )
+            elif (history_msgs and history_msgs[-1].role == "assistant"
+                  and answered_copy_question(user_text, history_msgs[-1].content)):
+                current_reply_guidance = COPY_ANSWER_GUIDANCE
             elif (history_msgs and history_msgs[-1].role == "assistant"
                     and is_clarification_question(history_msgs[-1].content)):
                 prior = history_msgs[-1]

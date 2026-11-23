@@ -1041,6 +1041,14 @@ hold conversation and latency budgets constant when comparing policies.
 
 </details>
 
+In a ten-turn fictional chat replay (`python -m scripts.choice_chat_replay
+--seed 83`), the local 9B model asked about a recoverable copy for both a mix
+and a loom draft. It used a verified copy, advised preserving a sole original,
+and revised its advice when the backup belonged to another map. It answered a
+preview request directly. For invitations, it asked how many guests were
+coming and applied the user's cutoff to eight guests. Some replies included
+extra explanation alongside the question.
+
 ## L55. Evaluate reasoning independently of eloquence
 
 **Status: Partial.**
