@@ -1001,6 +1001,21 @@ the return. The observer attributed its diagnostic question to the assistant
 in the field reserved for the user's goal. The evidence validator rejected it.
 Capturing the comparison reliably from ordinary conversation remains open.
 
+**Independent capture follow-up.** With local `baytout3/qwen3.5-uncensored:9b`,
+`python -m scripts.diagnostic_return_replay --capture-only --seed 83` went
+from 1/3 to 3/3. The cases check an assistant-proposed microphone test, a
+user-proposed printing-press test with the prediction order reversed, and a fan
+hypothesis without a test. Both positive cases retained the exact questions and
+source IDs.
+
+`--ordinary --seed 83` generates each reply and observes each completed turn
+in an empty fictional session. In the seven-turn press replay the fresh plate
+initially streaked, favoring the roller. A pottery detour left the comparison
+available. After the user corrected the print to clean, the observer stored
+the negative result and the next recap favored the plate. The opening reply
+can still ask a generic clarification. An earlier variant that asked for a bowl
+name exposed the existing one-working-problem limit.
+
 ## L54. Choose evidence by how much it can change a decision
 
 **Status: Partial.**

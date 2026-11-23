@@ -364,6 +364,19 @@ remains L52 work.
 
 ### Comparing troubleshooting explanations (L53)
 
+For explicit two-way tests, the observer binds the user's causal question, the
+yes/no test and both predictions to their original dialogue. Either speaker may
+propose the test. When two “would” predictions and both “if yes / if no” steps
+are present, the same observer call identifies the hypothesis predicting yes.
+An unanswered check therefore has a direction before any outcome arrives.
+Other forms continue through the general situation extractor.
+
+A later user report is assessed against those frozen predictions. A corrected
+report replaces the result and has its own message receipt. A stated change
+from the required input can leave the result inconclusive. A plain topic
+change can suspend the signed comparison even if the new observer notes fail
+validation. An independently established new working problem can replace it.
+
 An optional causal comparison reuses the working set's two tentative
 hypotheses and one yes/no decision check. The observer records which
 hypothesis predicts yes and one condition for each prediction. The comparison

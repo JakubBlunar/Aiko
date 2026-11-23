@@ -9,7 +9,9 @@ from unittest.mock import patch
 
 import requests
 
-from app.core.conversation.conversation_situation import ConversationSituationStore
+from app.core.conversation.conversation_situation import (
+    ConversationSituationStore, _extract_json_object,
+)
 from app.core.conversation.conversation_situation_worker import ConversationSituationWorker
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
@@ -37,6 +39,29 @@ CASES = {
 RESULT = {"yes": "I hear the clicks in the local recording of the same input.",
           "no": "The local recording of the same input is clean.",
           "unknown": "The recording is clean, but it used a different input."}
+
+# Gold opportunities fixed before running the observer. The press owner proposes
+# the test. The fan explanation supplies no discriminator or predicted outcomes.
+EXAMPLES = {
+    "microphone": (QUESTION, CHECK, [
+        ("user", QUESTION),
+        ("assistant", "An input fault would click even in a local recording of the same input. "
+         "A call transport fault would leave that recording clean if it bypasses the call. "
+         "If yes, inspect the input. If no, inspect the call path. " + CHECK),
+    ]),
+    "press": ("Why are my press prints streaky?", "Does a fresh plate also leave streaks?", [
+        ("user", "Why are my press prints streaky?"),
+        ("assistant", "We could distinguish a plate defect from a roller defect."),
+        ("user", "Does a fresh plate also leave streaks?"),
+        ("assistant", "A damaged plate would leave the fresh print clean. A faulty roller would "
+         "leave streaks even with the fresh plate. If yes, inspect the roller. "
+         "If no, inspect the original plate."),
+    ]),
+    "fan": ("Why does the loft fan hum?", None, [
+        ("user", "Why does the loft fan hum?"),
+        ("assistant", "A loose grille might explain the sound."),
+    ]),
+}
 
 
 class RecordedObserver:
@@ -68,11 +93,8 @@ def seed(db, case, *, observer_client=None, model="fixture"):
     )
     session = host.session_key
     answer, _ = CASES[case]
-    goal = db.add_message(session, "user", QUESTION)
-    check = db.add_message(session, "assistant", "An input fault would click even in a local "
-                           "recording of the same input. A call transport fault would leave "
-                           "that recording clean if it bypasses the call. If yes, inspect the "
-                           "input. If no, inspect the call path. " + CHECK)
+    goal, check = [db.add_message(session, role, content)
+                   for role, content in EXAMPLES["microphone"][2]]
 
     def note(text, mid):
         return {"text": text, "evidence_message_ids": [mid]}
@@ -118,6 +140,10 @@ def main():
     parser.add_argument("--model-observer", action="store_true",
                         help="also perform extraction with the installed model")
     parser.add_argument("--case", choices=CASES)
+    parser.add_argument("--capture-only", action="store_true",
+                        help="inspect independent initial captures, including attribution controls")
+    parser.add_argument("--ordinary", action="store_true",
+                        help="generate every assistant reply and observe each completed turn")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
     scratch.mkdir(exist_ok=True)
@@ -135,6 +161,98 @@ def main():
         moment = timephrase.parse_iso("2026-11-22T12:00:00Z")
         with (patch("app.llm.ollama_client.requests.post", chat_post),
               timephrase.scoped_now(lambda: moment)):
+            if args.ordinary:
+                db = ChatDatabase(Path(tmp) / "ordinary.db")
+                with closing(db._get_conn()):
+                    host = Host()
+                    host._chat_db = db
+                    host._conversation_situation_store = store = ConversationSituationStore(db)
+                    prompt = PromptAssembler(db, persona_path=persona, recent_window=2,
+                                             continuity_max_messages=0)
+                    host._prompt_assembler = prompt
+                    prompt.set_relevant_context_provider(host.build_relevant_context)
+                    prompt.set_inner_life_providers(
+                        conversation_situation=host._render_conversation_situation_block)
+                    runner = TurnRunner(client, db, prompt, model=args.model, context_window=8192,
+                                        max_tokens=300, temperature=0, filler_enabled=False)
+                    worker = ConversationSituationWorker(
+                        client=client, chat_db=db, store=store, model=args.model,
+                        world_snapshot_provider=dict, judgment_shadow_enabled=False,
+                    )
+                    goal, check, dialogue = EXAMPLES["press"]
+                    recap = "Back to the press prints. Which explanation fits better?"
+                    turns = [
+                        (goal, None), (dialogue[-1][1] + " " + check, None),
+                        ("I tested the fresh plate. It also leaves streaks.", "yes"),
+                        ("New topic. I'm glazing a blue bowl in pottery class.", "yes"),
+                        (recap, "yes"), ("Back to the press prints. Correction: I mixed up the "
+                                         "plates. The fresh plate actually prints clean. "
+                                         "Which cause fits now?", "no"), (recap, "no"),
+                    ]
+                    failures = []
+                    for index, (message, expected) in enumerate(turns):
+                        result = runner.run(session_key=host.session_key, user_text=message)
+                        state = worker.run(host.session_key)
+                        notes = state.working_set if state else None
+                        observed = _extract_json_object(client.responses[-1][0]) or {}
+                        decision = notes.decision_check if notes else None
+                        answer = decision.answer if decision else None
+                        if answer != expected or (index > 0 and not (notes and notes.causal_check)):
+                            failures.append(index + 1)
+                        if message == recap:
+                            favored = "faulty roller" if expected == "yes" else "damaged plate"
+                            if (not result.telemetry.decision_reply
+                                    or favored not in result.text.lower()):
+                                failures.append(index + 1)
+                        print(json.dumps({
+                            "user": message, "reply": result.text,
+                            "goal": notes.question.text if notes else None,
+                            "check": notes.next_check.text if notes and notes.next_check else None,
+                            "answer": answer,
+                            "reported": notes.check_result.text
+                            if notes and notes.check_result else None,
+                            "verdict": observed.get("diagnostic_verdict"),
+                            "operation": observed.get("operation"),
+                            "returned": "Check already performed" in result.telemetry.system_prompt,
+                        }), flush=True)
+                    if failures:
+                        raise SystemExit(f"Failed stored result or recap: {sorted(set(failures))}")
+                return
+            if args.capture_only:
+                failed = []
+                for name, (goal, check, dialogue) in EXAMPLES.items():
+                    db = ChatDatabase(Path(tmp) / f"{name}.db")
+                    with closing(db._get_conn()):
+                        ids = [db.add_message(Host.session_key, role, content)
+                               for role, content in dialogue]
+                        worker = ConversationSituationWorker(
+                            client=client, chat_db=db, store=ConversationSituationStore(db),
+                            model=args.model, world_snapshot_provider=dict,
+                            judgment_shadow_enabled=False,
+                        )
+                        state = worker.run(Host.session_key)
+                        notes = state.working_set if state else None
+                        captured = bool(notes and notes.causal_check)
+                        passed = (not captured if not check else bool(
+                            captured and notes.question.text == goal
+                            and notes.next_check.text == check
+                            and notes.question.evidence_message_ids == (ids[0],)
+                            and notes.next_check.evidence_message_ids ==
+                            (ids[1 if name == "microphone" else 2],)
+                            and notes.causal_check.expects_yes == (0 if name == "microphone" else 1)
+                        ))
+                        if not passed:
+                            failed.append(name)
+                        observed = _extract_json_object(client.responses[-1][0]) or {}
+                        print(json.dumps({"example": name, "pass": passed, "captured": captured,
+                                          "verdict": observed.get("diagnostic_verdict"),
+                                          "goal": str(notes.question) if notes else None,
+                                          "test": str(notes.next_check) if notes else None,
+                                          "finish": client.responses[-1][1]}), flush=True)
+                if failed:
+                    raise SystemExit(f"Failed diagnostic attribution: {failed}")
+                return
+            missing = []
             for case in ([args.case] if args.case else CASES):
                 _, question = CASES[case]
                 db = ChatDatabase(Path(tmp) / f"{case}.db")
@@ -145,6 +263,7 @@ def main():
                     except MissingObservation as exc:
                         if not args.model_observer:
                             raise
+                        missing.append(case)
                         print(json.dumps({"case": case, "model": args.model, "seed": args.seed,
                                           "observer": "model", "missing": str(exc),
                                           "last_observation": client.responses[-1]}), flush=True)
@@ -165,6 +284,8 @@ def main():
                                       client.last_usage.done_reason, "reply": result.text,
                                       "returned": "Check already performed" in
                                       result.telemetry.system_prompt}), flush=True)
+            if missing:
+                raise SystemExit(f"Missing diagnostic observations: {missing}")
 
 
 if __name__ == "__main__":

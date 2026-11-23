@@ -12,15 +12,18 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.core.conversation.conversation_situation import (
     ConversationSituationState,
     ConversationSituationStore,
+    SituationExtraction,
     parse_extraction,
     reduce_situation,
     suspend_reported_comparison,
+    starts_detour,
     substantive_interest_answer,
     social_message_ids,
     working_source_revision,
     working_set_message_ids,
 )
 from app.core.conversation import judgment_shadow
+from app.core.conversation.diagnostic_capture import diagnostic_capture
 from app.core.infra import timephrase
 from app.core.proactive.topic_match import topical
 
@@ -223,6 +226,7 @@ class ConversationSituationWorker:
         self._last_live_run_at: dict[str, float] = {}
         self._invalid_reasons: Counter[str] = Counter()
         self._stats = {
+            "explicit_detours_after_rejection": 0,
             "scheduled": 0,
             "completed": 0,
             "failed": 0,
@@ -363,6 +367,20 @@ class ConversationSituationWorker:
                 validation_reason=self._last_result.get(key, {}).get("validation_reason", ""),
             )
             target = None
+            diagnostic = diagnostic_capture(recent_rows, previous)
+            system_prompt = _SYSTEM_PROMPT
+            if diagnostic and diagnostic.instruction:
+                prompt += "\n\n" + diagnostic.instruction
+                choices = json.dumps("|".join(diagnostic.options))
+                system_prompt = system_prompt.replace(
+                    '  "operation":', f'  "diagnostic_verdict": {choices},\n  "operation":', 1,
+                )
+            elif previous and previous.working_set and previous.working_set.suspended:
+                prompt += (
+                    "\nThe prior working problem is parked. For casual updates leave working_set "
+                    "null. Create a replacement only for a problem the user actually raised; "
+                    "Aiko's curiosity about a detail is not a question from the user."
+                )
             try:
                 if self._judgment_shadow_enabled:
                     target = judgment_shadow.target_exchange(recent_rows)
@@ -387,7 +405,7 @@ class ConversationSituationWorker:
                         "role": "system",
                         "content": (
                             f"{timephrase.today_anchor()}\n\n"
-                            f"{_SYSTEM_PROMPT}\n\n"
+                            f"{system_prompt}\n\n"
                             f"{timephrase.STORED_TEXT_TIME_RULE}"
                             + ("\n\n" + shadow_prompt if shadow_prompt else "")
                         ),
@@ -426,13 +444,33 @@ class ConversationSituationWorker:
                 return self._store.get(key)
             rejection_reasons: list[str] = []
             extraction = parse_extraction(
-                raw, valid_message_ids=valid_ids,
+                diagnostic.bind(raw) if diagnostic and not output_limit_hit else raw,
+                valid_message_ids=valid_ids,
                 valid_user_message_ids={int(row.id) for row in rows if row.role == "user"},
                 rejection_reasons=rejection_reasons,
+                successor_eligible=not (previous and previous.working_set and (
+                    previous.working_set.suspended or (previous.working_set.causal_check and any(
+                        row.role == "user" and row.id > previous.source_message_id
+                        and starts_detour(row.content) for row in rows
+                    ))
+                )),
             )
             if output_limit_hit and extraction is not None:
                 extraction = None
                 rejection_reasons.insert(0, "output_truncated")
+            if (extraction is None and not output_limit_hit and previous and previous.working_set
+                    and previous.working_set.check_result and previous.working_set.causal_check):
+                # A literal topic change can park the signed record even when the
+                # observer's new notes fail validation. Store none of those notes.
+                users = [r for r in rows if r.role == "user" and r.id > previous.source_message_id]
+                if (len(users) == 1 and starts_detour(users[0].content)
+                        and "?" not in users[0].content):
+                    pause = suspend_reported_comparison(previous, SituationExtraction(
+                        operation="clear", evidence_message_ids=(users[0].id,),
+                    ), rows)
+                    if pause.working_set:
+                        extraction = pause
+                        self._stats["explicit_detours_after_rejection"] += 1
             if extraction is None:
                 validation_reason = next(iter(rejection_reasons), "invalid_working_set")
                 self._stats["invalid"] += 1

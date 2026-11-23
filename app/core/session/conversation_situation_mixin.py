@@ -21,6 +21,7 @@ from app.core.conversation.conversation_situation import (
     state_age_seconds,
 )
 from app.core.infra import timephrase
+from app.core.conversation.diagnostic_capture import RETURN_TO, comparison_recap, return_subject
 
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
@@ -55,24 +56,9 @@ def _working_goal_matches(user_text: str, question: str) -> bool:
     return bool(terms.intersection(re.findall(r"[a-z]{4,}", user_text.casefold())))
 
 
-_RETURN_TO = re.compile(r"^(?:back to|returning to|about) (?:the |my )?([\w -]+?)(?:[.,:?!—]|$)",
-                        re.I)
-
-
-def _return_subject(notes, user_text):
-    match = _RETURN_TO.match(user_text.strip())
-    if not match:
-        return "", False
-    subject = match[1].strip().casefold()
-    if (len(subject.split()) < 2 or subject in {"same issue", "same problem", "earlier issue"}
-            or re.search(r"\b(?:forget|drop|stop discussing)\b", user_text, re.I)):
-        return "", False
-    return subject, bool(re.search(rf"\b{re.escape(subject)}\b", notes.question.text, re.I))
-
-
 def _resumed_comparison(notes: ConversationWorkingSet, user_text: str) -> str:
     """On the first returning turn, recover only the named problem and its evidence."""
-    subject, matches = _return_subject(notes, user_text)
+    subject, matches = return_subject(notes, user_text)
     if (not subject or notes.causal_check is None or notes.check_result is None
             or notes.decision_check is None or notes.next_check is None):
         return ""
@@ -115,7 +101,7 @@ class ConversationSituationMixin:
     """Assemble one authoritative snapshot for prompts, debug, and guards."""
 
     def _comparison_current_on_return(self, state, text):
-        if not _RETURN_TO.match(text.strip()):
+        if not RETURN_TO.match(text.strip()):
             return False
         rows = self._chat_db.get_messages_after(
             state.session_id, after_id=state.source_message_id, limit=3,
@@ -128,18 +114,15 @@ class ConversationSituationMixin:
         from app.core.conversation.exchange_recall import _safe_quote
 
         text = user_text.strip()
-        opening = _RETURN_TO.match(text)
-        if (not opening or not re.fullmatch(
-                r"which (?:cause|explanation|hypothesis) (?:fits|fit)(?: the (?:test|result))? "
-                r"(?:best|better)\??", text[opening.end():].strip(), re.I)
+        if (not comparison_recap(text)
                 or not getattr(self._settings.agent, "conversation_situation_enabled", True)):
             return ""
         snapshot = self.conversation_situation_snapshot(user_text=text)
         state = snapshot.inferred
         notes = state.working_set if state else None
-        if (not notes or not notes.suspended or not state.working_source_revision
+        if (not notes or not state.working_source_revision
                 or not notes.check_result or not notes.causal_check or not notes.decision_check
-                or not _return_subject(notes, text)[1]
+                or not return_subject(notes, text)[1]
                 or snapshot.inferred_stale or not self._comparison_current_on_return(state, text)):
             return ""
         result = notes.check_result.text
@@ -148,10 +131,10 @@ class ConversationSituationMixin:
         ids = notes.check_result.evidence_message_ids
         row = self._chat_db.get_message_row(ids[0]) if len(ids) == 1 else None
         if (row and row.role == "user" and row.session_id == state.session_id
-                and row.content.strip() == result):
+                and result in row.content):
             report = f"You reported, “{result}”"
         else:
-            report = f"The recorded observation was “{result}”."
+            report = f"The recorded observation was “{result.rstrip('.')}”."
         if not notes.causal_check.result_applies:
             return f"{report} That leaves both explanations open."
         yes = notes.causal_check.expects_yes
@@ -509,7 +492,19 @@ class ConversationSituationMixin:
         notes = state.working_set
         if notes is not None and notes.causal_check is not None and starts_detour(user_text):
             return ""
-        if notes is not None and notes.suspended:
+        if (notes and not notes.suspended and notes.causal_check and notes.next_check
+                and not notes.check_result and state.status == ACTIVE
+                and re.search(r"\b(?:I (?:tested|checked|tried|hear|heard)|the test showed)\b",
+                              user_text, re.I)
+                and _working_goal_matches(user_text, notes.next_check.text)):
+            yes = notes.causal_check.expects_yes
+            return (f"{RETURNED_COMPARISON_HEADER}\nEarlier test: {notes.next_check.text}\n"
+                    f"A yes result favors {notes.hypotheses[yes].text}. "
+                    f"A no result favors {notes.hypotheses[1 - yes].text}. "
+                    "Compare the user's report with these predictions only if the same setup "
+                    "was tested. A changed setup leaves the result inconclusive.")
+        if notes is not None and (notes.suspended or (notes.check_result and
+                                  return_subject(notes, user_text)[1] and notes.causal_check)):
             if (not state.working_source_revision or notes.causal_check is None
                     or not self._comparison_current_on_return(state, user_text)):
                 return ""

@@ -198,12 +198,28 @@ def suspend_reported_comparison(previous, extraction, rows):
     """Retain a checked comparison through an explicit diversion in the existing slot."""
     prior = previous.working_set if previous else None
     if (prior is None or prior.causal_check is None or prior.check_result is None
-            or not previous.working_source_revision or extraction.working_set is not None
-            or extraction.explicit_end):
+            or not previous.working_source_revision or extraction.explicit_end):
         return extraction
     new_users = [row for row in rows if row.role == "user" and row.id > previous.source_message_id]
     if not new_users or (not prior.suspended and not starts_detour(new_users[0].content)):
         return extraction
+    proposed = extraction.working_set
+    if proposed is not None and (
+        proposed.question.evidence_message_ids != prior.question.evidence_message_ids
+        or working_set_message_ids(proposed).intersection(row.id for row in new_users)
+    ):
+        # The observer sometimes turns "The pots have blue glaze" into its own
+        # question about what the user wants to discuss. A casual detail can
+        # change the situation summary without establishing a second problem.
+        sources = [r.content for r in rows if r.role == "user"
+                   and r.id in proposed.question.evidence_message_ids]
+        curiosity = re.match(r"what (?:aspects?|details?|context|topics?|else)\b",
+                             proposed.question.text, re.I)
+        if (not curiosity or not sources or proposed.next_check or proposed.unresolved
+                or proposed.hypotheses or proposed.constraints or any(
+                    re.search(r"\?|\b(?:want|need|help|suggest|give|tell|find|show|explain)\b",
+                              s, re.I) for s in sources)):
+            return extraction
     # Once the discussion touches the diagnosis again, only a fresh observation
     # can advance it. Never carry an old verdict past an unprocessed correction.
     terms = set(re.findall(r"\b[a-z]{4,}\b", prior.question.text.lower()))
@@ -533,6 +549,7 @@ def parse_extraction(
     valid_message_ids: Iterable[int],
     valid_user_message_ids: Iterable[int] | None = None,
     rejection_reasons: list[str] | None = None,
+    successor_eligible: bool = True,
 ) -> SituationExtraction | None:
     """Parse worker JSON without trusting model confidence or evidence ids."""
     def reject(reason: str) -> None:
@@ -588,6 +605,7 @@ def parse_extraction(
     if payload.get("working_set") is not None and working_set is None:
         return None
     if working_set is not None and valid_user_message_ids is not None:
+        valid_user_message_ids = set(valid_user_message_ids)
         if not set(working_set.question.evidence_message_ids).intersection(valid_user_message_ids):
             return reject("working_set.question.user_evidence_missing")
         for constraint in working_set.constraints:
@@ -600,9 +618,22 @@ def parse_extraction(
         answer = decision_answer_source(working_set)
         if answer is not None and not set(answer.evidence_message_ids) <= valid_user_message_ids:
             working_set = replace(working_set, decision_check=None, causal_check=None)
+        # One assistant suggestion may ground a hypothesis. The same citation
+        # cannot independently establish the observation used to test it.
+        hypothesis_ids = {mid for note in working_set.hypotheses
+                          for mid in note.evidence_message_ids}
+        keep = [i for i, note in enumerate(working_set.facts)
+                if not set(note.evidence_message_ids) <= hypothesis_ids
+                or valid_user_message_ids.intersection(note.evidence_message_ids)]
+        if len(keep) < len(working_set.facts):
+            decision = working_set.decision_check
+            if decision is not None and decision.fact_index is not None:
+                decision = replace(decision, fact_index=keep.index(decision.fact_index))
+            working_set = replace(working_set, facts=tuple(working_set.facts[i] for i in keep),
+                                  decision_check=decision)
 
     successor = None
-    proposed = payload.get("successor")
+    proposed = payload.get("successor") if successor_eligible else None
     if proposed is not None:
         if not isinstance(proposed, dict):
             return reject("successor.shape")
