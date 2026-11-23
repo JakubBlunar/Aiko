@@ -68,6 +68,59 @@ def discovery_page(ranked, matches, page, size, *, browse, fallback=0):
     return ranked[page * size:(page + 1) * size]
 
 
+def route_followup_reads(menu, ranked, query, observation, size):
+    """Use new words in an observation to surface lookups, never to dispatch them."""
+    novel = {t for t in terms(observation[:1200]) if len(t) >= 3 and not t.isdigit()}
+    novel.difference_update(terms(query))
+    if not novel:
+        return menu
+    # Match registered identifiers, not arbitrary examples in tool descriptions.
+    # Ties retain the goal ranking. Results can only nominate declared reads.
+    candidates = []
+    for row in ranked:
+        if row.get("effect") != "read" or row.get("terminal"):
+            continue
+        identifiers = terms(row["name"]) + terms(row.get("group", ""))
+        overlap = len(novel.intersection(identifiers))
+        if overlap:
+            candidates.append((overlap, row))
+    candidates.sort(key=lambda pair: -pair[0])
+    suggestions = [row for _, row in candidates[:min(3, size // 2)]]
+    suggested = {row["name"] for row in suggestions}
+    visible = {row["name"] for row in menu}
+    extra = [row for row in suggestions if row["name"] not in visible]
+    if not extra:
+        return menu
+    goal_rows = [row for row in menu if row["name"] not in suggested]
+    keep = suggested.union(row["name"] for row in goal_rows[:size - len(suggestions)])
+    return [row for row in menu if row["name"] in keep] + extra
+
+
+def latest_read_hint(state, current_observation=None):
+    steps = state.get("steps", [])
+    boundary = state.get("routing_after_step", 0)
+    index = len(steps) - 1
+    # Inspecting a saved result is part of the same read, even across several pages.
+    while index >= boundary and steps[index].get("skill") == "inspect_result":
+        index -= 1
+    if index < boundary:
+        return ""
+    last = steps[index]
+    if (last.get("status") == "done" and last.get("effect") == "read"
+            and type(last.get("child_id")) is int):
+        inspections = state.get("inspections", [])
+        if index < len(steps) - 1 and inspections:
+            inspected = inspections[-1]
+            if inspected.get("task_id") == last["child_id"] and inspected.get("content"):
+                return inspected["content"]
+        if (current_observation and current_observation.get("status") == "current"
+                and current_observation.get("source_task_id") == last["child_id"]
+                and isinstance(current_observation.get("content"), str)):
+            return current_observation["content"] or last.get("observation", "")
+        return last.get("observation", "")
+    return ""
+
+
 def routing_query(state):
     if state.get("query"):
         return state["query"]

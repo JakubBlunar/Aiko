@@ -27,7 +27,10 @@ discarding a constraint.
 Current observation, whole tool schemas and capability guidance come before
 optional excerpts, plans, notes and older history. Menus contain up to six tools
 with up to six items per discovery page. Ranking uses the goal and latest
-guidance, or an explicit discovery query. Capability groups, procedures and
+guidance, or an explicit discovery query. In the automatic menu the router can
+use up to 1,200 characters of the latest successful read or its inspected passage
+to select follow-up reads by registered name or group. These suggestions occupy
+at most half the page and share its existing schema budget. Capability groups, procedures and
 playbook titles also get bounded pages. The highest-ranked entries get first
 use of the remaining prompt space. Schemas and their
 descriptions remain whole; the compact renderer avoids repeating argument lists

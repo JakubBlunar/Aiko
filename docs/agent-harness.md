@@ -73,10 +73,14 @@ roles, not concurrent autonomous agents. No user profile setup is necessary.
 Each planning call sees up to six complete operation contracts within its
 context budget. The router ranks the current profile's skills by name, group,
 description and parameter names against the goal and latest user guidance.
-For a large catalogue it sends matching tools. With no match it offers up to
-three starting tools. Explicit discovery can browse the ranked catalogue in
-pages or pin a registered name. New user guidance resets the discovery query,
-page and pins. Ranking requires no model call.
+For a large catalogue it sends matching tools. With no goal match it offers up to
+three starting tools. When a completed read introduces a term in another read
+operation's name or group, up to three of the six slots can expose those lookups.
+Inspecting the same child keeps this handoff available, including terms in the
+inspected passage. The planner still chooses the operation and its arguments.
+Explicit discovery can browse the ranked catalogue in pages or pin a registered
+name. New user guidance resets the discovery query, page, pins and prior read
+hint. Ranking requires no model call.
 Full JSON schemas, including nested fields and enums, are validated before
 dispatch; an undisclosed operation cannot be invoked. Legacy native operations
 with an empty v1 schema remain explicitly open object contracts.

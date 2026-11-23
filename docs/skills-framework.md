@@ -41,11 +41,13 @@ than appending conditional tool instructions to the always-on persona.
 
 ## Checkpointed workflow disclosure
 
-The current harness uses [`profiles.catalogue`](../app/core/tasks/workflow/profiles.py)
+The current harness uses [`profiles.route_catalogue`](../app/core/tasks/workflow/profiles.py)
 and lexical [discovery ranking](../app/core/tasks/workflow/discovery.py), not the
 legacy group router as its primary menu. A planning step selects up to six
 complete operation schemas under the dynamic [context budget](task-context-budget.md).
-Profile, task relevance, explicit discovery and pins determine the candidate set.
+Within the active profile, the goal and latest guidance determine the initial
+menu. A successful read can bring related read operations into that menu as the
+task proceeds. Explicit discovery and pins take precedence.
 A schema that cannot fit is omitted whole, never shortened into a different
 contract. A manifest advertises omitted capabilities for discovery.
 

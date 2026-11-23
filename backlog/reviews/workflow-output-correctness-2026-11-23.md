@@ -116,11 +116,52 @@ both sources. The larger run dispatched zero distractors. The small run
 reworded the report and retrieved both page quotations behind the new wording.
 The large run repeated the certified finding and skipped the narration review.
 These trials exercise catalogue growth with lexically distinct distractors.
-Routing accuracy across overlapping tool descriptions remains open.
 
-**Next experiment.** Evaluate automatic tool choice on multi-step requests that
-change capability midway. Include user wording that shares few terms with the
-registered description. Measure first-turn selection, recovery via discovery,
-wrong dispatches, total calls and prompt tokens per correct delivered answer.
-Repeat a clause-specific source question in ordinary chat after a document
-summary and a schedule update.
+### Switching capabilities after reading a source
+
+The [multi-step replay](../../scripts/workflow_switch_replay.py) starts a reader
+workflow with the same request and six similar pickup-note tools in each case.
+Only the latest personal note identifies the next register. Both fictional
+registers accept the same identifier and return different locations, and each
+register has a current, archive and preview lookup. A third note explicitly
+says it has no reference. The oracle checks the actual calls and arguments, the
+verified finding, the delivered report and its saved quotations. Run it with
+`python -m scripts.workflow_switch_replay --model <installed-local-model> --case all`.
+
+Before this change, reading the note left the planner looking at the same six
+note tools. The model recovered through explicit discovery on both positive
+cases. A first revision exposed the right register after the read, then lost it
+when the model inspected the note. The host correctly rejected a request for
+the newly hidden operation and exposed it for a retry. Keeping the latest read
+available across inspections addresses that extra round trip. The negative case
+tests whether an absent reference leads to a speculative lookup.
+
+One baseline and one final run per fixture used the configured local 9B model,
+65,536-token context, seed 71 and temperature zero. Counts below are baseline
+→ final. Total calls and token counts include verification, report composition
+and any report review through delivery.
+
+| Note content | Planner calls | Total model calls | Input tokens | Generated tokens |
+| --- | ---: | ---: | ---: | ---: |
+| Waybill reference | 6 → 4 | 8 → 6 | 17,934 → 11,695 | 8,944 → 7,630 |
+| Claimcheck reference | 5 → 4 | 7 → 6 | 14,151 → 11,682 | 9,326 → 6,578 |
+| No reference | 3 → 3 | 6 → 5 | 9,399 → 8,613 | 11,624 → 8,318 |
+
+All six runs delivered the expected answer with zero incorrect tool
+dispatches. Both final positive runs inspected the note once, used the current
+lookup directly and retained quotes from both sources. The first planner input
+was 2,020 tokens in each run. The no-reference planner performed the same
+actions before and after. Its final run skipped a separate report review, so
+the difference in that row cannot be credited to routing. Its report correctly
+quoted the missing reference but went on to say “in the entry,” which leaves
+the distinction between the note and a linked record less clear than it could be.
+
+**Next experiment.** Give the note an indirect reference (for example, a
+shipping document described entirely in everyday language) and give a different
+note two plausible registers with no indication which is current. Check whether
+discovery finds the first and whether the planner asks for clarification or
+reports the ambiguity in the second. Use the same identifier in both stores
+and score both dispatches and delivered claims. That would test the limits of
+lexical routing before adding aliases or another inference call. Ordinary-chat
+selection of the workflow and clause-specific follow-up after a document
+summary or schedule update remain separate open checks.

@@ -106,3 +106,58 @@ def test_workflow_extensions_route_beyond_the_first_installed_page():
     assert len(later["procedures"]) == 4 and len(later["playbook_index"]) == 6
     for key in ("procedures", "playbook_index"):
         assert not ({r["name"] for r in later[key]} & {r["name"] for r in page[key]})
+
+
+def test_completed_read_can_surface_a_new_lookup_without_replacing_goal_or_explicit_discovery():
+    from app.core.tasks.workflow.profiles import route_catalogue
+    from app.core.tasks.workflow.skill_registry import WorkflowSkill, WorkflowSkillRegistry
+
+    reg = WorkflowSkillRegistry()
+    for i in range(8):
+        reg.register(WorkflowSkill(name=f"notebook_{i}", description="Find a notebook entry",
+                                   group="notes", effect="read"))
+    for suffix, effect in (("catalogue", "read"), ("index", "read"), ("change", "write"),
+                           ("legacy", "unknown")):
+        reg.register(WorkflowSkill(name=f"accession_{suffix}", description="Collection service",
+                                   group="museum", effect=effect))
+    # This tool mentions the topic only in prose. It is outside the read handoff.
+    reg.register(WorkflowSkill(name="other_search", description="Example: accession",
+                               group="other", effect="read"))
+    query = "Find my notebook entry"
+
+    def menu(**options):
+        rows, _ = route_catalogue(reg, "general", query=query, page_size=6, **options)
+        return [r["name"] for r in rows]
+
+    original = menu()
+    hint = "Specimen accession MV-377; change the legacy record."
+    switched = menu(read_hint=hint)
+    assert len(switched) == 6 and original[:3] == switched[:3]
+    assert set(switched) - set(original) == {"accession_catalogue", "accession_index"}
+    assert menu(read_hint="Notebook entry 7") == original
+    assert menu(read_hint=hint, browse=True) == original
+    assert menu(read_hint=hint, preferred=["notebook_7"])[0] == "notebook_7"
+    assert menu(read_hint=hint, page=1) == menu(page=1)
+
+
+def test_only_an_owned_completed_read_since_guidance_supplies_routing_terms():
+    from app.core.tasks.workflow.discovery import latest_read_hint
+
+    lookup = {"status": "done", "effect": "read", "child_id": 8, "observation": "Specimen A17"}
+    assert latest_read_hint({"steps": [lookup]}) == "Specimen A17"
+    projection = {"status": "current", "source_task_id": 8, "content": "Accession A17"}
+    assert latest_read_hint({"steps": [lookup]}, projection) == "Accession A17"
+    for change in ({"source_task_id": 7}, {"status": "stale"}):
+        assert latest_read_hint({"steps": [lookup]}, {**projection, **change}) == "Specimen A17"
+    inspect = {"skill": "inspect_result", "status": "done"}
+    state = {"steps": [lookup, inspect, inspect],
+             "inspections": [{"task_id": 8, "content": "Museum accession A17"}]}
+    assert latest_read_hint(state, projection) == "Museum accession A17"
+    assert latest_read_hint({**state, "inspections": [{"task_id": 7, "content": "Unrelated"}]},
+                            projection) == "Accession A17"
+    assert not latest_read_hint({**state, "routing_after_step": 1})
+    assert not latest_read_hint({"steps": [lookup], "routing_after_step": 1})
+    assert latest_read_hint({"steps": [lookup, lookup], "routing_after_step": 1}) == "Specimen A17"
+    for change in ({"effect": "write"}, {"effect": "unknown"}, {"status": "failed"},
+                   {"child_id": None}):
+        assert not latest_read_hint({"steps": [lookup, {**lookup, **change}]})

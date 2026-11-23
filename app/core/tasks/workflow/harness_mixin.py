@@ -17,7 +17,7 @@ from app.core.tasks.workflow.context_budget import TaskContextOverflow
 from app.core.infra import timephrase
 from app.core.tasks.task_handler import TaskCompleted, TaskFailed, TaskInputNeeded, TaskProgress
 from app.core.tasks.workflow.harness_results import inspect_result, result_text, verify_completion
-from app.core.tasks.workflow.discovery import routing_query
+from app.core.tasks.workflow.discovery import latest_read_hint, routing_query
 from app.core.tasks.workflow.profiles import PROFILES, route_catalogue, supports
 from app.core.tasks.workflow.operation_contract import admit_step_once
 from app.core.tasks.workflow.skill_registry import SpawnContext
@@ -205,6 +205,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 state.pop("query", None)
                 state.pop("pinned_tools", None)
                 state.pop("catalogue_page", None)
+                state["routing_after_step"] = len(state.get("steps", []))
                 state["guidance"].append(
                     {
                         "role": "user",
@@ -394,10 +395,12 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 state["active_reserved"] = 0
                 if not self._save(task_id, state):
                     return
+                current_observation = self._current_context(state)
                 skills, groups = route_catalogue(
                     self._skills,
                     state["profile"],
                     query=routing_query(state),
+                    read_hint=latest_read_hint(state, current_observation),
                     browse="query" in state,
                     page=state.get("catalogue_page", 0),
                     page_size=6,
@@ -438,7 +441,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                                 "profile": state["profile"],
                                 "reporting": state.get("reporting", "meaningful"),
                                 "failures": state["failures"] + state.get("admission_failures", 0),
-                                "current_observation": self._current_context(state),
+                                "current_observation": current_observation,
                                 "profile_instructions": PROFILES[state["profile"]],
                                 "profiles": PROFILES,
                                 "capability_groups": groups,

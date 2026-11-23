@@ -1,18 +1,10 @@
 """Run a fictional chat handoff, worker comparison and source follow-up on loopback."""
 import argparse
-from contextlib import closing
 import json
-import multiprocessing
-from pathlib import Path
 import re
-from tempfile import TemporaryDirectory
 import time
 from types import SimpleNamespace as NS
 
-import requests
-
-from app.core.infra.chat_database import ChatDatabase
-from app.core.infra.settings import OllamaSettings
 from app.core.tasks.handlers.web_search import WebSearchHandler
 from app.core.tasks.task_events import TaskEventStore
 from app.core.tasks.task_handler import TaskCompleted
@@ -24,7 +16,7 @@ from app.core.tasks.work_outcome import task_outcome
 from app.core.tasks.work_reports import WorkReports
 from app.core.tasks.workflow.work_discussion import WorkDiscussion
 from app.llm.tools.workflow_tools import CheckMyWorkTool, StartWorkflowTool
-from scripts.live_scenarios import LoopbackPolicyClient, require_local_model
+from scripts.workflow_replay_runner import run_isolated
 
 
 def matches_fixture_prices(text):
@@ -167,47 +159,13 @@ def time_anchor_and_transcript(db, session_key):
     return timephrase.today_anchor() + "\n" + transcript
 
 
-def replay_process(tmp, model, large_catalogue):
-    base = "http://127.0.0.1:11434"
-    with requests.Session() as session:
-        class LocalWorker(LoopbackPolicyClient):
-            def chat_json(self, messages, *, options=None, **kwargs):
-                raw, usage = super().chat_json(
-                    messages, options={**(options or {}), "temperature": 0, "seed": 71}, **kwargs,
-                )
-                print(json.dumps({"surface": kwargs.get("surface"), "input": usage.prompt_tokens,
-                                  "generated": usage.completion_tokens}), flush=True)
-                return raw, usage
-
-        client = LocalWorker(OllamaSettings(base, chat_model=model, context_window=65536),
-                             base, session)
-        require_local_model(session, base, model)
-        db = ChatDatabase(Path(tmp) / "work.db")
-        with closing(db._get_conn()):
-            raise SystemExit(0 if run(db, client, model, large_catalogue) else 1)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--large-catalogue", action="store_true",
                         help="Register 512 unrelated fictional lookup skills.")
     args = parser.parse_args()
-    scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
-    scratch.mkdir(exist_ok=True)
-    with TemporaryDirectory(dir=scratch, prefix="workshops-") as tmp:
-        # Worker threads own SQLite connections. Process exit closes them before cleanup.
-        proc = multiprocessing.get_context("spawn").Process(target=replay_process,
-                                                            args=(tmp, args.model,
-                                                                  args.large_catalogue))
-        proc.start()
-        try:
-            proc.join()
-        finally:
-            if proc.is_alive():
-                proc.terminate()
-                proc.join()
-        return proc.exitcode
+    return run_isolated(run, args.model, "workshops-", args.large_catalogue)
 
 
 if __name__ == "__main__":
