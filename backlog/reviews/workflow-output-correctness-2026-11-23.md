@@ -215,3 +215,60 @@ selections and time to a verified answer. The five fictional cases exercise
 workflow start through report delivery on the configured local 9B model at
 65,536 context, temperature zero and seed 71. Ordinary-chat workflow selection,
 an exact 8B checkpoint and follow-up after a document or schedule change remain open.
+
+## How much reasoning does a target choice need?
+
+The paired replay holds the model (`baytout3/qwen3.5-uncensored:9b`), context
+(65,536), seed (71), temperature (zero), date and answer allowance (512) fixed.
+Five pickup prompts cover an assignment, a blank selection, a correction with
+reversed candidate order, conflicting records and an explicit request for both.
+The three held-out survey prompts change the names, wording and order.
+The oracle checks the selected source and decisive quotation, both options in
+a clarification, or both catalogue terms in a comparison.
+
+| First choice | Original prompt, pickup | Revised prompt, pickup | Revised prompt, survey |
+| --- | --- | --- | --- |
+| Thinking disabled | 4/5 | 5/5 | 3/3 |
+| Thinking enabled, 0 extra tokens | 1/5 | 5/5 | 3/3 |
+| Thinking enabled, 1,024 extra | 3/5 | 5/5 | Unmeasured |
+| Thinking enabled, 4,096 extra | Unmeasured | 5/5 | Unmeasured |
+| Thinking enabled, 8,192 extra | 4/5 | 5/5 | Unmeasured |
+
+On the original prompt, three choices used the entire 512-token allowance
+without returning a decision. Even the largest allowance missed the requested
+comparison. The revised prompt asks about the scope of the user's request first.
+Across the eight cases it used 267 generated tokens with thinking disabled,
+versus 2,653 with thinking enabled and zero extra tokens. The individual direct
+answers took 24–39 tokens. With thinking disabled, 39 answer tokens was the
+lowest tested cap at which all eight returned correct JSON with a normal stop.
+At 38 the disagreement question still parsed but hit the length limit. These
+totals cover the target choice only. The runtime keeps the normal answer
+allowance so longer candidate names and supporting quotations have room.
+
+With the full workflow context the direct pass once selected the waybill and
+quoted two sentences that explicitly assigned the claimcheck. The old substring
+check accepted the citation, and verification accepted the resulting wrong
+location. The new fast pass requires a single complete statement naming just
+the selected candidate. When it saw the same response (56 tokens), it withheld
+the lookup. The bounded reasoned retry (171 tokens) cited the assignment,
+selected the claimcheck and delivered Pearl Rotunda. A repeated unsupported
+target and citation on retry yields a partial result. This check establishes
+where the words came from. Whether they designate the right source still
+depends on the model.
+
+Both ambiguous workflow branches asked with 35 generated tokens, after reading
+only the note. Each used the user's reply to look up the chosen register. In a
+repeat of the waybill branch, the planner inspected already-read results five
+times and paused after verification, without delivering a report. An isolated
+rerun delivered Copper Alcove in four planner calls. Both clarification branches
+delivered the right locations but omitted that the user supplied the choice.
+One explicit-selection report phrased the pickup note as the item to collect.
+The location and source assertions in this replay do not check those details.
+Report attribution and repeat inspection remain separate follow-ups.
+
+Reproduce the paired runs with
+`python -m scripts.workflow_choice_budget_replay --model baytout3/qwen3.5-uncensored:9b --headroom off 0 1024 4096 8192`.
+Add `--holdout` for the survey cases or `--answer-tokens` to vary the shared
+answer allowance. The full workflow replay uses `scripts.workflow_switch_replay`
+with the same model and `--case resolved`, `--case ambiguous-waybill` or
+`--case ambiguous-claimcheck`.

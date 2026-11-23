@@ -36,6 +36,7 @@ class ReplayWorker(LoopbackPolicyClient):
                 trace["action"] = decision.get("action") or decision.get("resolution")
                 if "resolution" in decision:
                     trace["choice"] = decision
+                    trace["think"] = kwargs.get("think")
                 if trace["action"] in {"discover", "ask_user", "inspect_result"}:
                     trace["args"] = decision.get("args")
             except (ValueError, AttributeError):

@@ -94,6 +94,12 @@ quote and searches the catalogue for the next operation. The model can also
 request further discovery or ask the user. Its automatic search expires after
 the child operation returns. A question pauses the same task. The resumed
 planner and verifier see the question alongside the user's answer.
+On the tested local 9B checkpoint the first choice runs with thinking disabled.
+A direct selection needs a complete quoted sentence or line naming just the
+selected candidate. A direct question must name every candidate. A direct
+multi-source search must cover candidates explicitly named in the request.
+If these checks fail, the planner retries with reasoning before searching or
+asking. This permits indirect evidence to receive a second reading.
 Full JSON schemas, including nested fields and enums, are validated before
 dispatch; an undisclosed operation cannot be invoked. Legacy native operations
 with an empty v1 schema remain explicitly open object contracts.

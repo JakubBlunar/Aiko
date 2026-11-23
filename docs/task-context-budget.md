@@ -100,9 +100,9 @@ remain in the plugin; the host hook is generic.
 The existing priority order remains conversation workers, maintenance workers,
 then task inference. Gate admission is FIFO within each tier. Running inference
 is non-preemptive; shorter task calls create more frequent scheduling points.
-Workflow planning, inference-only repair, completion review, report generation,
-report review and work discussion enable reasoning, including routine browser
-decisions. Each reserves up to 8,192 reasoning tokens, scaled down to at most an
+Workflow planning normally enables reasoning, as do inference-only repair,
+completion review, report generation, report review and work discussion.
+These calls reserve up to 8,192 reasoning tokens, scaled down to at most an
 eighth of the configured window. Routine browser decisions retain a 384-token
 answer cap; other planning answers retain their existing cap up to 768. Structured
 completion/report reviews scale their answer allowance with the proposed answer,
@@ -111,6 +111,13 @@ are included before packing input; the normal input target remains up to 12,288.
 This changes generation allowance, not the configured model context. There is
 no automatic context increase to 90k. Per-call headroom remains context-local;
 cognition and speech-guide distillation keep their own policies.
+
+On `baytout3/qwen3.5-uncensored:9b` the focused choice between named
+references starts with thinking disabled and the usual planner answer allowance.
+If its grounding or response shape fails validation, the existing inference-only
+repair can use the normal reasoning allowance. Input packing leaves room for
+that retry. On Ollama an enabled thinking pass shares its generation cap with
+the answer, so zero *extra* headroom still lets thinking consume the whole cap.
 
 Planning and completion calls have a 120-second request allowance bounded further
 by remaining work time. Report composition and review share a 180-second active

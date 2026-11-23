@@ -351,6 +351,77 @@ def test_selected_reference_requires_a_known_candidate_and_a_real_quote():
     assert _reference_decision({**selection, "target": "drafts"}, source) is None
 
 
+@pytest.mark.parametrize("choice", [
+    {"resolution": "selected", "target": "maps", "quote": "use maps."},
+    {"resolution": "selected", "target": "maps", "quote": "Maps."},
+    {"resolution": "ambiguous", "question": "Maps or surveysheets?"},
+    {"resolution": "explore", "query": "maps surveys"},
+])
+def test_direct_choice_defers_incomplete_support_or_an_unrequested_search(choice):
+    from app.core.tasks.workflow.workflow_planner import _reference_decision
+
+    source = {"request": "Find S17 in its assigned source.",
+              "possible_targets": ["maps", "surveys"],
+              "source_excerpt": "Maps. Do not use maps. Use surveys."}
+    assert _reference_decision(choice, source, direct=True) is None
+
+
+def test_direct_reference_choice_repairs_a_quote_that_does_not_distinguish_the_target():
+    from app.llm.call_scope import current_call_scope
+
+    source = "Both maps and surveys contain S17. Use the surveys copy."
+    ctx = context(reference_candidates=["maps", "surveys"], reference_excerpt=source)
+    calls = []
+
+    def answer(messages, **kwargs):
+        scope = current_call_scope()
+        calls.append((kwargs["think"], scope.reasoning_tokens, scope.reasoning_required))
+        if len(calls) == 1:
+            return json.dumps({"resolution": "selected", "target": "maps", "quote": source}), None
+        return json.dumps({"resolution": "selected", "target": "surveys",
+                           "quote": "Use the surveys copy."}), None
+
+    result = decide_next_action(SimpleNamespace(chat_json=answer), ctx, valid_skill_names=set(),
+                                model="baytout3/qwen3.5-uncensored:9b", context_window=65536)
+    assert calls == [(False, 0, True), (True, 8192, True)]
+    assert result.args == {"query": "surveys"} and result.budget["repair_attempted"]
+    assert result.budget["reasoning_reserved"] == 8192
+
+
+def test_reasoned_retry_cannot_reuse_the_same_rejected_selection():
+    source = "Both maps and surveys contain S17. Use the surveys copy."
+    ctx = context(reference_candidates=["maps", "surveys"], reference_excerpt=source)
+    worker = SimpleNamespace(chat_json=lambda *args, **kwargs: (json.dumps(
+        {"resolution": "selected", "target": "maps", "quote": source}), None))
+    result = decide_next_action(worker, ctx, valid_skill_names=set(),
+                                model="baytout3/qwen3.5-uncensored:9b", context_window=65536)
+    assert result.is_finish and result.outcome == "partial" and result.budget["repair_attempted"]
+
+
+@pytest.mark.parametrize(("model", "reference", "expected_think"), [
+    ("baytout3/qwen3.5-uncensored:9b", True, False),
+    ("baytout3/qwen3.5-uncensored:9b", False, True),
+    ("another-model", True, True),
+])
+def test_direct_budget_only_applies_to_the_measured_target_choice(model, reference, expected_think):
+    from app.llm.call_scope import current_call_scope
+
+    ctx = context(reference_candidates=["maps", "surveys"] if reference else [],
+                  reference_excerpt="Both list S17. The choice is blank.")
+
+    def answer(messages, **kwargs):
+        assert kwargs["think"] is expected_think
+        assert current_call_scope().reasoning_tokens == (8192 if expected_think else 0)
+        if reference:
+            return '{"resolution":"ambiguous","question":"Maps or surveys?"}', None
+        return '{"action":"ask_user","args":{"question":"Which source?"}}', None
+
+    result = decide_next_action(SimpleNamespace(chat_json=answer), ctx, valid_skill_names=set(),
+                                model=model, context_window=65536)
+    assert result.action == "ask_user" and not result.budget["repair_attempted"]
+    assert result.budget["reasoning_reserved"] == (8192 if expected_think else 0)
+
+
 def test_task_thinking_headroom_is_local_to_call_scope():
     from app.llm.ollama_client import OllamaClient
 
