@@ -16,6 +16,29 @@ def set_result(env, tid, result):
     env[0].execute_commit("UPDATE tasks SET result=? WHERE id=?", (json.dumps(result), tid))
 
 
+@pytest.mark.parametrize("change_source", [False, True])
+def test_identical_workflow_report_reuses_review_only_while_sources_are_current(env, change_source):
+    reports, tid, _, queued, shown, _ = make_reports(env)
+    row = env[1].get(tid)
+    child = row.result["steps"][0]["child_id"]
+    calls = []
+
+    def narrate(messages, **kwargs):
+        calls.append(kwargs["surface"])
+        if change_source:
+            set_result(env, child, {"content": "The orchard is green."})
+        return json.dumps({"text": row.result["content"], "reaction": "cheerful"}), None
+
+    reports.client = lambda: NS(chat_json=narrate)
+    reports.tick()
+    assert calls == ["work_report"]
+    if change_source:
+        assert not queued and not shown
+        return
+    assert reports.deliver(*queued[0])
+    assert shown[0][1] == row.result["content"] and shown[0][3] == "cheerful"
+
+
 @pytest.mark.parametrize("outcome", ["partial", "blocked", "nothing_found"])
 def test_no_evidence_result_never_asks_narrator_to_fill_in_the_answer(env, outcome):
     reports, tid, calls, queued, shown, _ = make_reports(env)

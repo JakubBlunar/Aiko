@@ -95,18 +95,16 @@ The chat-tool invocation was explicit in the replay. The ordinary-chat gate
 was tested separately with the same question. This leaves real chat tool choice,
 final streamed wording and live-site reliability open.
 
-An inexpensive reporting experiment is to reuse the existing certificate when
-a final draft is byte-for-byte identical to the current certified finding.
-Measure how often this actually occurs before budgeting the saving. When a
-report paraphrases the finding, retain the report review’s own source pointers
-so a question about that exact wording can recover its supporting clause.
+Final drafts that repeat the current certified finding verbatim now reuse its
+review. A source change during composition invalidates the draft. Measure how
+often the narrator actually returns an identical draft before estimating savings.
+Seeing identical delivered text alone cannot distinguish a matching draft from
+a rejected rewrite that fell back to the original finding.
 
-**Next improvement.** Try a comparison skill that returns each item's identity,
-amount, currency and source pointer together. Let the host compute same-currency
-differences using decimal arithmetic. Use the model to resolve what the user
-means and interpret qualifications such as a deposit or a price valid only on a
-particular date. Load this skill on demand, following Hermes’s approach to skill
-discovery. Compare verification cost and final chat accuracy with this replay.
-Include swapped city/price pairs, equal prices, a deposit versus a full price,
-one missing price and different currencies. Score an honest partial as correct
-where the requested comparison cannot be made. [Hermes skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
+**Next experiment.** Trace a reworded report back to the evidence used to approve
+that wording. The report reviewer checks quotations, but returns a boolean. A
+later source question retrieves the original finding's quotations. Test whether
+a follow-up about one specific clause can recover the passage that justified
+the delivered wording. Use the same check for a document summary, a schedule
+update and the two-workshop example. This will show which evidence needs to
+survive delivery across capabilities.

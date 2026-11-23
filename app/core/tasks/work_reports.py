@@ -370,7 +370,11 @@ class WorkReports:
                 text = parsed.get("text") if isinstance(parsed, dict) else None
                 if not isinstance(text, str) or not 5 <= len(text) <= 6000:
                     raise ValueError("Invalid local work report")
-                if not review_report(
+                # Final drafts reach this path only after the answer and its sources
+                # have passed certified_sources. _save_draft and deliver recheck the basis.
+                same_finding = (facts["kind"] == "final" and facts["objective_outcome"]["verified"]
+                                and text == result.get("content"))
+                if not same_finding and not review_report(
                     route, text, facts, sources, timeout=max(1, 180 - scope.active_seconds)
                 ):
                     log.warning("Ungrounded work report rejected: task=%s report=%s", row.id, rid)

@@ -274,8 +274,9 @@ pending progress.
 
 The narrator receives saved task facts and owned evidence envelopes, not recent
 conversation as evidence. A source-current certificate is required before
-narrating a final answer. Generated drafts receive a separate reasoning grounding
-review with full clause/quotation coverage; rejected drafts fall back to the
+narrating a final answer. A final draft that repeats the certified finding
+verbatim reuses its review. Reworded drafts and progress reports go through
+grounding review with full clause/quotation coverage. Rejected drafts fall back to the
 certified finding or an honest incomplete result. The review's tokens/time count
 in the same attempt record. Pending drafts bind current source revisions;
 already committed reports are not replayed. Planning, review, reporting and work

@@ -33,10 +33,19 @@ The [23 November output-correctness review](../reviews/workflow-output-correctne
 records the fixes for search evidence, submission receipts and repeated reads.
 The configured 9B route passed six isolated completion checks at 64K, including
 an hours-only partial and two accurate quotations that missed the objective.
-A fictional workshop comparison now exercises referenced items and source lookup.
-Extend it to missing prices, different currencies, reversed subject/price pairs
-and ordinary chat delivery. Measure both unnecessary abstentions and false completions
-before adding the reminder action.
+The next priority is the shared flow from the user's request through evidence,
+completion, delivery and follow-up. Exercise it with unrelated companion tasks:
+summarize a document, reconcile a calendar change, or answer a question using
+two sources. The workshop comparison provides one regression case. For each
+task, change one source or remove it and check whether Aiko still gives the
+supported part, asks a useful question, or can explain where an answer came from.
+Track false completions, unnecessary abstentions and inference calls per delivered answer.
+
+A new capability earns its place when it gives Aiko access to something she
+cannot currently observe or do. A reusable procedure can also earn its place
+when several different requests need the same reliable sequence. For example,
+looking up a calendar entry can serve many goals, while deciding which of two
+options fits a user's constraints exercises the general workflow.
 
 The 15 November correctness review
 reproduced unsupported approvals through the production review functions with
