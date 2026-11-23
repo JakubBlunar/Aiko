@@ -230,6 +230,7 @@ class PromptAssemblerHelpersMixin:
         promise_followthrough: Callable[[], str] | None = None,
         misattunement: Callable[[str], str] | None = None,
         implicit_need: Callable[[str], str] | None = None,
+        pursuit_history: Callable[[str], dict] | None = None,
         opinion_injection: Callable[[str], str] | None = None,
         boundary_clash: Callable[[str], str] | None = None,
         stance_persistence: Callable[[str], str] | None = None,
@@ -412,6 +413,8 @@ class PromptAssemblerHelpersMixin:
             self._misattunement_provider = misattunement
         if implicit_need is not None:
             self._implicit_need_provider = implicit_need
+        if pursuit_history is not None:
+            self._pursuit_history_provider = pursuit_history
         if opinion_injection is not None:
             self._opinion_injection_provider = opinion_injection
         if boundary_clash is not None:

@@ -236,6 +236,17 @@ class _Worker:
 
 
 class PassTests(unittest.TestCase):
+    def test_small_delta_batch_can_revisit_distinct_sketch_occasions(self):
+        notes = self._mems(4)
+        for note in notes[1:]:
+            note.metadata = {"source": "away_beat", "keys": ["home_new_sketch"],
+                             "sketch_choice": {"run_id": str(note.id), "choice_event_id": 2,
+                                               "completion_event_id": 3,
+                                               "alternatives": ["read_book"]}}
+        worker = _Worker(notes)
+        worker._run_pursuit_pass(None, worker.spec(), {})
+        self.assertEqual({note.id for note in worker.offered[0]}, {1, 2, 3, 4})
+
     def _mems(self, count: int) -> list[_Mem]:
         out = []
         for i in range(count):

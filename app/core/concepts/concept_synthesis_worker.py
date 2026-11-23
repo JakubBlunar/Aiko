@@ -1743,6 +1743,7 @@ class ConceptSynthesisWorker(
         prev = self._load_sigs(sig_key)
         memory_batch = select_memory_batch(
             pop, prev, excluded_ids=set(), limit=self._max_pursuit_memories, force=force,
+            metadata_keys=("sketch_choice", "keys", "source", "topic"),
         )
         stats["memory_dirty_remaining"] = (
             int(stats.get("memory_dirty_remaining", 0)) + memory_batch.remaining
@@ -1755,6 +1756,21 @@ class ConceptSynthesisWorker(
         batch = sorted(
             memory_batch.rows, key=lambda memory: str(getattr(memory, "created_at", "") or ""),
         )
+
+        # A new sketch may be the only new note this tick. Include enough
+        # earlier independent occasions to check recurrence even in a busy pool.
+        from app.core.concepts.pursuit_choices import independent_run
+
+        runs = {run for note in batch if (run := independent_run(note))}
+        required = max(3, getattr(ctx, "min_sources", 3))
+        if 0 < len(runs) < required:
+            for note in reversed(pop):
+                run = independent_run(note)
+                if run and run not in runs:
+                    runs.add(run)
+                    batch.append(note)
+                    if len(runs) >= required:
+                        break
 
         proposals = spec.propose(
             ctx,
@@ -3515,6 +3531,15 @@ class ConceptSynthesisWorker(
         not (see that module).
         """
         exclude: set[int] = set()
+        if proposal.kind == "pursuit":
+            from app.core.concepts.pursuit_choices import SKETCH_PURSUIT
+
+            # Exact choice evidence establishes recurrence. Cosine similarity
+            # cannot establish the motive in a more specific, older belief.
+            observed_choice = proposal.label == SKETCH_PURSUIT
+            exclude.update(c.concept_id for c in self._concept_store.list_by(
+                subject=proposal.subject, kind=proposal.kind,
+            ) if (c.label == SKETCH_PURSUIT) != observed_choice)
         if proposal.kind == "communication_style" or proposal.applicability:
             from app.core.concepts.concept_applicability import scope_key
 

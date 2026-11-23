@@ -162,6 +162,28 @@ def _evidence(choice, step):
     }
 
 
+def sketch_choice_receipt(chain):
+    """Snapshot the original choice while its trace still exists, including for delayed notes."""
+    if [beat.key for beat in chain] != [_SKETCH]:
+        return None
+    from app.core.world.idle_life_trace import current_run
+
+    run = current_run()
+    if run is None or run.worker != "away_activity" or run.actor != "autonomous":
+        return None
+    decision = run.store.decision(run.run_id)
+    events = decision["events"]
+    if decision["truncated"] or any(row["kind"] == "planning_fallback" for row in events):
+        return None
+    found = list(_completed_choices(events, None, Counter()))
+    if len(found) == 1:
+        key, options, choice, step = found[0]
+        alternatives = sorted(option for option in options if family(option) != family(key))
+        if key == _SKETCH and alternatives:
+            return {**_evidence(choice, step), "alternatives": alternatives}
+    return None
+
+
 def build_recent_choice_history(decisions, *, now, retention_days, truncated=False):
     """Project one bounded drawing example from complete autonomous decisions."""
     start = (now - timedelta(days=retention_days)).isoformat()

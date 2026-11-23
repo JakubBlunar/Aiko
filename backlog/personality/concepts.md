@@ -1249,7 +1249,17 @@ repeated choices and a change from reading to sketching when both options
 were available. Later contradictory reading prevents a change finding. Each
 finding cites the supporting events and leaves the reasons open. Ordinary
 use still needs enough comparable choices to yield a finding about change.
-Memory Story integration and ordinary-use validation remain open.
+
+The [ordinary chat replay](../../scripts/pursuit_chat_replay.py) now exercises
+pursuit-note admission, synthesis, lifecycle promotion, reinforcement, and
+two chat turns. Prompted drawings produce an activity report. Independent
+choices support a sketching pursuit, and a subsequent cued drawing supplies
+no new concept evidence. Earlier reading choices ground a change, and an
+explicit earlier explanation grounds a reason. The first scope covers
+sketching. Ordinary-use validation and other activities remain open.
+With local `baytout3/qwen3.5-uncensored:9b` at seeds 71 and 83, all six
+answers per seed matched the evidence. The model echoed the quotation marks
+around the supplied factual wording.
 
 ## Moved out of the active queue
 

@@ -27,6 +27,7 @@ from app.core.conversation.conversation_situation import (
     OTHER_COMPARISON_HEADER, PENDING_COMPARISON_HEADER, RETURNED_COMPARISON_HEADER,
 )
 from app.core.conversation.diagnostic_capture import proposed_test
+from app.core.conversation.pursuit_reply import pursuit_reply
 from app.core.conversation.clarification_reply import (
     CLARIFICATION_GUIDANCE, COPY_ANSWER_GUIDANCE, CURRENT_REPLY_GUIDANCE,
     answered_copy_question, choice_guidance, is_clarification_question,
@@ -943,6 +944,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # ``user_text``; silent on the common neutral turn. NOT dropped
         # under aggressive mode (sibling of misattunement).
         self._implicit_need_provider: Callable[[str], str] | None = None
+        self._pursuit_history_provider = None
         # K29 — opinion injection detector. Per-turn provider that
         # fires a one-line cue when {user_name}'s latest message
         # contradicts one of Aiko's stored ``kind="self"`` stance
@@ -3949,7 +3951,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if "calendar_anticipation_block" in handling_omissions:
             system_parts[calendar_anticipation_slot] = ""
             calendar_anticipation_block = ""
-        current_reply_guidance = ((choice_guidance(user_text, (m.content for m in history_msgs))
+        pursuit_guidance = _safe_provider(
+            lambda: pursuit_reply(user_text, history_msgs, self._pursuit_history_provider),
+            timing_sink=provider_ms, timing_name="pursuit_history",
+        ) if self._pursuit_history_provider is not None else ""
+        current_reply_guidance = ((pursuit_guidance
+                                   or choice_guidance(user_text, (m.content for m in history_msgs))
                                    or CURRENT_REPLY_GUIDANCE)
                                   if (user_text or "").strip() else "")
         reply_guidance_slot = len(system_parts)

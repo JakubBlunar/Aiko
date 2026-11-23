@@ -75,12 +75,32 @@ class UnderstandingReadsMixin:
             None, self._user_id,
         ) else None
 
+    def _pursuit_reply_history(self, subject):
+        tools = getattr(self._settings, "tools", None)
+        if not (getattr(self._settings.agent, "concepts_enabled", False)
+                and getattr(tools, "enabled", False)
+                and getattr(tools, "recall_self_history", True)):
+            return {}
+        return self._choice_history_payload(subject)
+
     def _choice_history_payload(self, subject):
         trace = getattr(self, "_idle_life_store", None)
-        if subject != "aiko" or trace is None:
+        if subject != "aiko":
             return {}
         try:
-            return {"choice_history": trace.recent_choice_history()}
+            from app.core.concepts.pursuit_choices import expressed_reason, supported_pursuit
+
+            history = trace.recent_choice_history() if trace is not None else {}
+            memories = getattr(self, "_memory_store", None)
+            if memories is not None and (pursuit := supported_pursuit(
+                self._concept_store, memories, self._user_id,
+            )):
+                history["pursuit"] = pursuit
+            db = getattr(self, "_chat_db", None)
+            if db is not None and (history.get("finding") or history.get("pursuit")):
+                if reason := expressed_reason(db, self._user_id):
+                    history["expressed_reason"] = reason
+            return {"choice_history": history} if history else {}
         except Exception:
             log.debug("Choice history unavailable", exc_info=True)
             return {}

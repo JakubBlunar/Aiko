@@ -81,6 +81,7 @@ class InProgressBeat:
     used_item_id: int | None = None
     # Steps already completed while the wider activity is still ongoing.
     effects: list[dict[str, Any]] = field(default_factory=list)
+    choice_receipt: dict[str, Any] | None = None
 
     @property
     def interrupted(self) -> bool:
@@ -147,6 +148,7 @@ def build(
     rng: random.Random | None = None,
     used_item_id: int | None = None,
     effects: list[dict[str, Any]] | None = None,
+    choice_receipt: dict[str, Any] | None = None,
 ) -> InProgressBeat:
     """Open a beat now, ending after a plausible span."""
     minutes = pick_duration_minutes(key, rng)
@@ -161,6 +163,7 @@ def build(
         ).isoformat(timespec="seconds"),
         used_item_id=int(used_item_id) if used_item_id is not None else None,
         effects=list(effects or []),
+        choice_receipt=choice_receipt,
     )
 
 
@@ -188,6 +191,7 @@ def load(kv_get: Callable[[str], str | None]) -> InProgressBeat | None:
             expected_end_at=str(blob.get("expected_end_at") or ""),
             interrupted_at=str(blob.get("interrupted_at") or ""),
             effects=[e for e in (blob.get("effects") or []) if isinstance(e, dict)],
+            choice_receipt=blob.get("choice_receipt"),
             used_item_id=(
                 int(blob["used_item_id"])
                 if blob.get("used_item_id") is not None

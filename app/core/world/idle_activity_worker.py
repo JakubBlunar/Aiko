@@ -65,6 +65,7 @@ from app.core.world import (
     in_progress_beat,
 )
 from app.core.world.activity_selection import weighted_pick
+from app.core.world.idle_choice_review import sketch_choice_receipt
 from app.core.world.idle_activity_composition_mixin import ActivityCompositionMixin
 from app.core.world.idle_activity_candidates_mixin import (
     ActivityCandidatesMixin,
@@ -456,6 +457,11 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         if leave_open and last.move_item_id is not None and last.restore_moved_item:
             last_held = last.move_item_id
         self._restore_moved_items(chain, keep_id=last_held)
+        try:
+            choice_receipt = sketch_choice_receipt(chain)
+        except Exception:
+            log.debug("Sketch choice trace unavailable", exc_info=True)
+            choice_receipt = None
         if leave_open:
             open_beat = in_progress_beat.build(
                 key=chain[-1].key,
@@ -466,6 +472,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
                 rng=self._rng,
                 used_item_id=last_held,
                 effects=effects,
+                choice_receipt=choice_receipt,
             )
             if not in_progress_beat.save(self._kv_set, open_beat):
                 # The step already happened. Fall through to its journal,
@@ -478,7 +485,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             intention, chain, summary, now, effects=effects,
         )
         return self._journal_completed_chain(
-            now, user_name, chain, summary, effects, closed_intention,
+            now, user_name, chain, summary, effects, closed_intention, choice_receipt,
         )
 
     def _started_beat_result(self, open_beat, chain, effects, now) -> dict[str, Any]:
@@ -502,7 +509,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         return result_open
 
     def _journal_completed_chain(
-        self, now, user_name, chain, summary, effects, closed_intention,
+        self, now, user_name, chain, summary, effects, closed_intention, choice_receipt=None,
     ) -> dict[str, Any]:
         entry: dict[str, Any] = {
             "at": now.isoformat(timespec="seconds"),
@@ -521,6 +528,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             pending = in_progress_beat.build(
                 key=chain[0].key, activity=chain[-1].activity, posture=chain[-1].posture,
                 summary=summary, now=now, effects=effects, rng=self._rng,
+                choice_receipt=choice_receipt,
             )
             pending.expected_end_at = now.isoformat()
             in_progress_beat.save(self._kv_set, pending)
@@ -528,7 +536,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         if closed_intention:
             self._commit_intention(now)
         noted = self._note_pursuit(
-            now, chain, summary, effects, closed_intention,
+            now, chain, summary, effects, closed_intention, choice_receipt,
         )
         self._mark_fired(now)
         log.info(
@@ -631,7 +639,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         if closed:
             self._commit_intention(now)
         completed_at = _parse_iso(beat.started_at) or now
-        self._note_pursuit(completed_at, chain, summary, beat.effects, closed)
+        self._note_pursuit(completed_at, chain, summary, beat.effects, closed, beat.choice_receipt)
         in_progress_beat.clear(self._kv_set)
         self._restore_used_item(getattr(beat, "used_item_id", None))
         log.info(
@@ -686,6 +694,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         summary: str,
         effects: list[dict[str, Any]],
         closed_intention: bool,
+        choice_receipt: dict | None = None,
     ) -> int | None:
         """Write a ``pursuit_note`` for a beat with something behind it.
 
@@ -707,6 +716,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             at=now,
             extra={
                 "keys": [b.key for b in chain],
+                **({"sketch_choice": choice_receipt} if choice_receipt else {}),
                 "changed": [str(e.get("effect") or "") for e in effects],
                 "closed_intention": bool(closed_intention),
                 "clauses": [{"activity": beat.key, "text": beat.summary,

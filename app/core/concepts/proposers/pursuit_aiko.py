@@ -24,6 +24,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from app.core.concepts.pursuit_choices import (
+    SKETCH_PURSUIT, independent_run, mentions_sketch, sketch_note,
+)
 from app.core.concepts.proposers.base import (
     CandidateProposal,
     ExistingConcept,
@@ -91,7 +94,17 @@ def propose_pursuit_aiko(
     existing: Sequence[ExistingConcept] = (),
     **_ignored: Any,
 ) -> list[CandidateProposal]:
-    return propose_aiko_hybrid(
+    # Sketches carry a planner receipt. An assigned or concept-cued drawing
+    # still belongs in the journal, but cannot independently justify a pursuit.
+    runs = {}
+    other = []
+    for memory in memories:
+        if sketch_note(memory):
+            if run := independent_run(memory):
+                runs[run] = memory.id
+        else:
+            other.append(memory)
+    proposals = propose_aiko_hybrid(
         ctx,
         kind="pursuit",
         system=_system(ctx.user_name, ctx.assistant_name),
@@ -99,7 +112,7 @@ def propose_pursuit_aiko(
         known_label="ALREADY-KNOWN AIKO PURSUITS",
         focus_clusters=(),
         cluster_index=(),
-        memories=memories,
+        memories=other,
         existing=existing,
         prompt_tail=(
             f"Propose NEW first-person pursuits about {ctx.assistant_name} "
@@ -109,6 +122,18 @@ def propose_pursuit_aiko(
             "through several notes; ignore anything that happened once."
         ),
     )
+    sketch_ids = {row.id for row in existing if mentions_sketch(row.label)}
+    proposals = [p for p in proposals if not mentions_sketch(p.label)
+                 and p.reinforces_id not in sketch_ids]
+    known = next((row for row in existing if row.label == SKETCH_PURSUIT), None)
+    if runs and ((known and known.reinforce) or
+                 (known is None and len(runs) >= max(3, ctx.min_sources))):
+        proposals.append(CandidateProposal(
+            label=SKETCH_PURSUIT, rationale="Chose to sketch with other activities available.",
+            confidence=0.75, evidence=[("memory", str(mid)) for mid in runs.values()],
+            kind="pursuit", subject="aiko", reinforces_id=known.id if known else None,
+        ))
+    return proposals
 
 
 SPEC = ProposerSpec(
