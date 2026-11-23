@@ -1,16 +1,16 @@
 """Anchor explicitly contrasted checks to their original, speaker-owned sentences."""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import re
 
 from app.core.conversation.conversation_situation import (
-    MAX_EVIDENCE_IDS, _extract_json_object, starts_detour,
+    ACTIVE, MAX_EVIDENCE_IDS, _extract_json_object, starts_detour, state_age_seconds,
 )
 from app.core.infra import timephrase
 
 
-RETURN_TO = re.compile(r"^(?:back to|returning to|about) (?:the |my )?([\w -]+?)(?:[.,:?!—]|$)",
-                       re.I)
+RETURN_TO = re.compile(r"^(?:(?:let['’]s (?:get|go) )?back to|returning to|about) "
+                       r"(?:the |my )?([\w -]+?)(?:[.,:?!—]|$)", re.I)
 
 
 def return_subject(notes, text):
@@ -30,6 +30,45 @@ def comparison_recap(text):
         r"which (?:cause|explanation|hypothesis) (?:fits|fit)(?: the (?:test|result))? "
         r"(?:best|better)\??", text.strip()[opening.end():].strip(), re.I,
     )
+
+
+def starts_separate_task(notes, text):
+    """Recognize an independently stated request with a disjoint subject."""
+    if not notes or not notes.check_result or not notes.causal_check:
+        return False
+    request = text.strip()
+    if not re.fullmatch(r"(?:(?:why |what (?:causes|makes) )[^.!?]{5,145}\?|"
+                        r"(?:please )?(?:suggest|name|write|draft|design|plan) "
+                        r"[^.!?]{5,145}[.!?]?)", request, re.I):
+        return False
+    noise = {"what", "causes", "makes", "does", "that", "this", "with", "have", "would"}
+    def terms(s):
+        return set(re.findall(r"\b[a-z]{3,}\b", s.lower())) - noise - {"why", "the", "are"}
+    subject = terms(request)
+    evidence = " ".join(n.text for n in (notes.question, notes.next_check, *notes.hypotheses) if n)
+    return len(subject) >= 2 and not subject.intersection(terms(evidence))
+
+
+def named_problem(store, state, text, *, max_age=21600):
+    """Select a unique, current comparison without restoring old world or social state."""
+    if not state or not state.parked_comparison or not RETURN_TO.match(text.strip()):
+        return state
+    parked = state.parked_comparison
+    if not return_subject(parked.working_set, text)[1]:
+        return state
+    candidate = replace(
+        state, status=ACTIVE, summary=parked.working_set.question.text,
+        working_set=parked.working_set, evidence_message_ids=parked.evidence_message_ids,
+        working_source_revision=parked.working_source_revision, updated_at=parked.updated_at,
+        shared=False, shared_activity="", place_ref="", aiko_activity="",
+        pragmatic_frame=None, repair_target=None, parked_comparison=None, miss_count=0,
+    )
+    age = state_age_seconds(candidate)
+    if age is None or age > max_age or not store.working_sources_current(candidate):
+        return state
+    if state.working_set and return_subject(state.working_set, text)[1]:
+        return None
+    return candidate
 
 
 def _note(text, row):
@@ -116,7 +155,12 @@ def diagnostic_capture(rows, previous):
         users = [r for r in rows if r.id > previous.source_message_id and r.role == "user"]
         text = users[0].content.strip() if len(users) == 1 else ""
         named = bool(text and return_subject(prior, text)[1])
-        if named and comparison_recap(text) and prior.check_result:
+        request = text[RETURN_TO.match(text).end():].strip() if named else ""
+        resume = named and re.fullmatch(
+            r"(?:where were we|what (?:should (?:I|we) (?:try|check|do) next|was the result))?\??",
+            request, re.I,
+        )
+        if named and (comparison_recap(text) or resume) and prior.check_result:
             return DiagnosticCapture(asdict(prior), set(previous.evidence_message_ids),
                                      "", recap=True)
         correction = named and re.search(r"\b(?:correction|actually|wrong|mixed up)\b", text, re.I)

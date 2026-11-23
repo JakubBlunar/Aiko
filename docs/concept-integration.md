@@ -375,7 +375,13 @@ A later user report is assessed against those frozen predictions. A corrected
 report replaces the result and has its own message receipt. A stated change
 from the required input can leave the result inconclusive. A plain topic
 change can suspend the signed comparison even if the new observer notes fail
-validation. An independently established new working problem can replace it.
+validation. When a second task takes focus, the same session row can hold one
+earlier tested comparison. It retains the original question, predictions and
+latest user result with their own message IDs and revision. An explicit return
+such as “Back to the press prints” selects a unique matching question. Aiko
+can then use or correct that result and park the other tested problem in turn.
+Parked evidence stays out of ordinary prompts and is checked for edits and age
+when selected. A shared subject that matches both problems cannot select one.
 
 An optional causal comparison reuses the working set's two tentative
 hypotheses and one yes/no decision check. The observer records which

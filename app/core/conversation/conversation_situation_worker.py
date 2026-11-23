@@ -23,7 +23,9 @@ from app.core.conversation.conversation_situation import (
     working_set_message_ids,
 )
 from app.core.conversation import judgment_shadow
-from app.core.conversation.diagnostic_capture import diagnostic_capture
+from app.core.conversation.diagnostic_capture import (
+    comparison_recap, diagnostic_capture, named_problem, return_subject, starts_separate_task,
+)
 from app.core.infra import timephrase
 from app.core.proactive.topic_match import topical
 
@@ -342,7 +344,27 @@ class ConversationSituationWorker:
                 return self._store.get(key)
             recent_rows = rows
             saved = self._store.get(key, check_sources=False)
-            previous = saved if self._store.working_sources_current(saved) else None
+            active = self._store.with_current_sources(saved)
+            previous = active
+            focus_since = active.focus_since_id if active else 0
+            new_users = [r for r in rows if r.role == "user" and
+                         (saved is None or r.id > saved.source_message_id)]
+            if active and new_users and all(comparison_recap(r.content) for r in new_users[:-1]):
+                turn = new_users[-1]
+                previous = named_problem(self._store, active, turn.content)
+                if previous is None:  # The name could refer to either problem.
+                    return active
+                if previous is not active:
+                    focus_since = turn.id
+            if (active and previous is active and new_users
+                    and starts_separate_task(active.working_set, new_users[0].content)):
+                previous = None
+                focus_since = new_users[0].id
+            if focus_since:
+                rows = [r for r in rows if r.id >= focus_since]
+                if not rows:
+                    return active
+                recent_rows = rows
             known_ids = {int(row.id) for row in rows}
             retained_ids = working_set_message_ids(
                 previous.working_set if previous is not None else None,
@@ -492,7 +514,7 @@ class ConversationSituationWorker:
                     key, rows, target, raw, "invalid_situation", call_ms, output_limit_hit, usage,
                     validation_reason=validation_reason,
                 )
-                return previous
+                return active
             source_message_id = max(valid_ids)
             self._stats["social_notes_rejected"] += len(rejection_reasons)
             extraction = suspend_reported_comparison(previous, extraction, rows)
@@ -505,6 +527,28 @@ class ConversationSituationWorker:
             if state is not None:
                 if previous is None and saved is not None:
                     state = replace(state, generation=saved.generation + 1)
+                parked = active.parked_comparison if active else None
+                if parked and ((previous is not None and previous is not active) or any(
+                    return_subject(parked.working_set, r.content)[1] and
+                    not comparison_recap(r.content) for r in new_users
+                )):
+                    # A return or correction consumes this copy. Only the newly
+                    # validated result can represent that problem from now on.
+                    parked = None
+                if active and previous is None and focus_since and not state.working_set:
+                    parked = self._store.park_comparison(active) or parked
+                elif active and state.working_set and active.working_set:
+                    old_goal = active.working_set.question.evidence_message_ids
+                    new_goal = state.working_set.question.evidence_message_ids
+                    if (set(old_goal).isdisjoint(new_goal) and (previous is not active
+                            or any(mid > active.source_message_id for mid in new_goal))):
+                        displaced = self._store.park_comparison(active)
+                        if displaced:
+                            parked = displaced
+                        if parked and previous is active:
+                            focus_since = min(new_goal)
+                state = replace(state, focus_since_id=0 if extraction.explicit_end else focus_since,
+                                parked_comparison=None if extraction.explicit_end else parked)
                 if state.working_set is not None:
                     cited_ids = set(state.evidence_message_ids)
                     state = replace(state, working_source_revision=working_source_revision(

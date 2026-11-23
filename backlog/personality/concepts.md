@@ -1014,7 +1014,18 @@ initially streaked, favoring the roller. A pottery detour left the comparison
 available. After the user corrected the print to clean, the observer stored
 the negative result and the next recap favored the plate. The opening reply
 can still ask a generic clarification. An earlier variant that asked for a bowl
-name exposed the existing one-working-problem limit.
+name exposed the original one-working-problem limit.
+
+The two-problem follow-up uses the ordinary chat and observer paths from an
+empty fictional session. In ten turns, the user corrected a streaked press
+print to clean, then tested a desk microphone and heard clicks. Before the
+change all three named recaps failed. With one stored earlier comparison the
+microphone, press and microphone recaps each quoted the relevant report and
+favored the input fault, damaged plate and input fault respectively. Run
+`python -m scripts.diagnostic_return_replay --two-problems --seed 83` with
+the local 9B model. In this run the model prematurely described the microphone
+test as confirmed when it was proposed. The stored answer stayed open until
+the user supplied the result.
 
 ## L54. Choose evidence by how much it can change a decision
 

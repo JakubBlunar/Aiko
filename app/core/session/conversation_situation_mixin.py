@@ -21,7 +21,9 @@ from app.core.conversation.conversation_situation import (
     state_age_seconds,
 )
 from app.core.infra import timephrase
-from app.core.conversation.diagnostic_capture import RETURN_TO, comparison_recap, return_subject
+from app.core.conversation.diagnostic_capture import (
+    RETURN_TO, comparison_recap, named_problem, return_subject, starts_separate_task,
+)
 
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
@@ -100,14 +102,27 @@ def _resumed_comparison(notes: ConversationWorkingSet, user_text: str) -> str:
 class ConversationSituationMixin:
     """Assemble one authoritative snapshot for prompts, debug, and guards."""
 
+    def _problem_for_turn(self, state, text):
+        return named_problem(
+            getattr(self, "_conversation_situation_store", None), state, text,
+            max_age=max(300, getattr(self._settings.agent,
+                                     "conversation_situation_stale_seconds", 21600)),
+        )
+
     def _comparison_current_on_return(self, state, text):
         if not RETURN_TO.match(text.strip()):
             return False
         rows = self._chat_db.get_messages_after(
-            state.session_id, after_id=state.source_message_id, limit=3,
+            state.session_id, after_id=state.source_message_id, limit=7,
         )
-        return not rows or (len(rows) == 1 and rows[0].role == "user"
-                            and rows[0].content.strip() == text.strip())
+        if len(rows) >= 7:
+            return False
+        if rows and rows[-1].role == "user" and rows[-1].content.strip() == text.strip():
+            rows = rows[:-1]
+        # Recap requests introduce no new observation. A pending report or
+        # correction still withholds the old verdict until the worker reviews it.
+        return not rows or (any(r.role == "user" for r in rows) and
+                            all(comparison_recap(r.content) for r in rows if r.role == "user"))
 
     def reviewed_comparison_reply(self, user_text: str) -> str:
         """Answer a standalone recap of an already assessed check from its signed sources."""
@@ -118,7 +133,7 @@ class ConversationSituationMixin:
                 or not getattr(self._settings.agent, "conversation_situation_enabled", True)):
             return ""
         snapshot = self.conversation_situation_snapshot(user_text=text)
-        state = snapshot.inferred
+        state = self._problem_for_turn(snapshot.inferred, text)
         notes = state.working_set if state else None
         if (not notes or not state.working_source_revision
                 or not notes.check_result or not notes.causal_check or not notes.decision_check
@@ -486,10 +501,15 @@ class ConversationSituationMixin:
         from app.core.conversation.social_understanding import social_context_block
 
         snapshot = self.conversation_situation_snapshot(user_text=user_text)
-        state = snapshot.inferred
+        state = self._problem_for_turn(snapshot.inferred, user_text)
         if state is None or snapshot.inferred_stale:
             return ""
         notes = state.working_set
+        if starts_separate_task(notes, user_text):
+            return ""
+        if (state.parked_comparison and RETURN_TO.match(user_text.strip())
+                and (not notes or not return_subject(notes, user_text)[1])):
+            return ""
         if notes is not None and notes.causal_check is not None and starts_detour(user_text):
             return ""
         if (notes and not notes.suspended and notes.causal_check and notes.next_check

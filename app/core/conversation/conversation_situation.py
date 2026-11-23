@@ -466,6 +466,14 @@ class SituationExtraction:
 
 
 @dataclass(frozen=True, slots=True)
+class ParkedComparison:
+    working_set: ConversationWorkingSet
+    evidence_message_ids: tuple[int, ...]
+    working_source_revision: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationSituationState:
     """Durable semantic state inferred from a bounded transcript."""
 
@@ -485,10 +493,14 @@ class ConversationSituationState:
     pragmatic_frame: PragmaticFrame | None = None
     repair_target: RepairTarget | None = None
     working_source_revision: str | None = None
+    parked_comparison: ParkedComparison | None = None
+    focus_since_id: int = 0
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
         payload.pop("working_source_revision")
+        payload.pop("parked_comparison")
+        payload.pop("focus_since_id")
         return payload
 
 
@@ -540,6 +552,8 @@ class ConversationSituationSnapshot:
         payload = asdict(self)
         if payload["inferred"] is not None:
             payload["inferred"].pop("working_source_revision")
+            payload["inferred"].pop("parked_comparison")
+            payload["inferred"].pop("focus_since_id")
         return payload
 
 
@@ -838,10 +852,53 @@ class ConversationSituationStore:
                 pragmatic_frame=frame,
                 repair_target=repair,
                 working_source_revision=state.get("working_source_revision"),
+                parked_comparison=self._parse_parked(state.get("parked_comparison")),
+                focus_since_id=max(0, int(state.get("focus_since_id", 0))),
             )
         except (TypeError, ValueError, json.JSONDecodeError):
             return None
-        return result if not check_sources or self.working_sources_current(result) else None
+        return self.with_current_sources(result) if check_sources else result
+
+    def with_current_sources(self, state):
+        if self.working_sources_current(state):
+            return state
+        if not state.parked_comparison:
+            return None
+        # An edit to the foreground task withdraws its notes. A named return
+        # can still independently validate the parked problem's own receipts.
+        return replace(state, status=ENDED, summary="", shared=False, shared_activity="",
+                       place_ref="", aiko_activity="", evidence_message_ids=(), working_set=None,
+                       working_source_revision=None, pragmatic_frame=None, repair_target=None)
+
+    @staticmethod
+    def _parse_parked(raw) -> ParkedComparison | None:
+        if not isinstance(raw, dict):
+            return None
+        ids = raw.get("evidence_message_ids")
+        if (not isinstance(ids, list) or not 1 <= len(ids) <= MAX_EVIDENCE_IDS
+                or not all(type(i) is int for i in ids)
+                or not isinstance(raw.get("working_source_revision"), str)
+                or not isinstance(raw.get("updated_at"), str)):
+            return None
+        notes = _parse_working_set(raw.get("working_set"), set(ids))
+        if not (notes and notes.causal_check and notes.check_result and notes.decision_check):
+            return None
+        return ParkedComparison(notes, tuple(ids), raw["working_source_revision"],
+                                raw["updated_at"])
+
+    def park_comparison(self, state: ConversationSituationState) -> ParkedComparison | None:
+        notes = state.working_set
+        if not (notes and notes.causal_check and notes.check_result
+                and state.working_source_revision):
+            return None
+        rows = self._evidence_rows(state)
+        if (len(rows) != len(state.evidence_message_ids)
+                or working_source_revision(rows) != state.working_source_revision):
+            return None
+        # Sign only this problem's receipts, from the same verified snapshot.
+        ids = working_set_message_ids(notes)
+        return ParkedComparison(notes, tuple(sorted(ids)), working_source_revision(
+            [row for row in rows if row[0] in ids]), state.updated_at)
 
     def working_sources_current(self, state: ConversationSituationState | None) -> bool:
         if state is None or state.working_source_revision is None:
@@ -849,14 +906,18 @@ class ConversationSituationStore:
         ids = state.evidence_message_ids
         if state.working_set is None or not 1 <= len(ids) <= MAX_EVIDENCE_IDS:
             return False
+        rows = self._evidence_rows(state)
+        return (len(rows) == len(ids)
+                and working_source_revision(rows) == state.working_source_revision)
+
+    def _evidence_rows(self, state):
+        ids = state.evidence_message_ids
         placeholders = ",".join("?" for _ in ids)
-        rows = self._db.execute_fetchall(
+        return self._db.execute_fetchall(
             f"SELECT id, role, content, created_at FROM messages "
             f"WHERE session_id = ? AND id IN ({placeholders})",
             (state.session_id, *ids),
         )
-        return (len(rows) == len(ids)
-                and working_source_revision(rows) == state.working_source_revision)
 
     def upsert(self, state: ConversationSituationState) -> None:
         state_json = json.dumps(
@@ -868,6 +929,9 @@ class ConversationSituationStore:
                 "aiko_activity": state.aiko_activity,
                 "working_set": asdict(state.working_set) if state.working_set else None,
                 "working_source_revision": state.working_source_revision,
+                "parked_comparison": asdict(state.parked_comparison)
+                if state.parked_comparison else None,
+                "focus_since_id": state.focus_since_id,
                 "pragmatic_frame": asdict(state.pragmatic_frame) if state.pragmatic_frame else None,
                 "repair_target": asdict(state.repair_target) if state.repair_target else None,
             },

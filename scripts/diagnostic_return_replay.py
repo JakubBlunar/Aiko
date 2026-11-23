@@ -144,6 +144,8 @@ def main():
                         help="inspect independent initial captures, including attribution controls")
     parser.add_argument("--ordinary", action="store_true",
                         help="generate every assistant reply and observe each completed turn")
+    parser.add_argument("--two-problems", action="store_true",
+                        help="switch between two tested problems after correcting the first")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
     scratch.mkdir(exist_ok=True)
@@ -161,7 +163,7 @@ def main():
         moment = timephrase.parse_iso("2026-11-22T12:00:00Z")
         with (patch("app.llm.ollama_client.requests.post", chat_post),
               timephrase.scoped_now(lambda: moment)):
-            if args.ordinary:
+            if args.ordinary or args.two_problems:
                 db = ChatDatabase(Path(tmp) / "ordinary.db")
                 with closing(db._get_conn()):
                     host = Host()
@@ -189,17 +191,50 @@ def main():
                                          "plates. The fresh plate actually prints clean. "
                                          "Which cause fits now?", "no"), (recap, "no"),
                     ]
+                    if args.two_problems:
+                        mic_recap = "Back to the desk microphone clicks. Which cause fits better?"
+                        correction = turns[-2]
+                        turns = [
+                            *turns[:3], correction,
+                            (QUESTION, None), (EXAMPLES["microphone"][2][1][1], None),
+                            (RESULT["yes"], "yes"), (mic_recap, "yes"), (recap, "no"),
+                            (mic_recap, "yes"),
+                        ]
                     failures = []
+                    result_sources = {}
                     for index, (message, expected) in enumerate(turns):
                         result = runner.run(session_key=host.session_key, user_text=message)
+                        if args.two_problems and index in (3, 6):
+                            row = db.get_messages(host.session_key, limit=2)[0]
+                            assert row.role == "user" and row.content == message
+                            result_sources["press" if index == 3 else "mic"] = (row.id,)
                         state = worker.run(host.session_key)
                         notes = state.working_set if state else None
                         observed = _extract_json_object(client.responses[-1][0]) or {}
                         decision = notes.decision_check if notes else None
                         answer = decision.answer if decision else None
-                        if answer != expected or (index > 0 and not (notes and notes.causal_check)):
+                        initial_goal = index == 0 or (args.two_problems and index == 4)
+                        if answer != expected or not (initial_goal or
+                                                      (notes and notes.causal_check)):
                             failures.append(index + 1)
-                        if message == recap:
+                        if args.two_problems and message in (mic_recap, recap):
+                            mic = message == mic_recap
+                            label = "input fault" if mic else "damaged plate"
+                            report = RESULT["yes"] if mic else "fresh plate actually prints clean"
+                            other = "plate" if mic else "microphone"
+                            reply = result.text.lower()
+                            if (not result.telemetry.decision_reply or label not in reply
+                                    or report.lower() not in reply or other in reply):
+                                failures.append(index + 1)
+                            active = "mic" if mic else "press"
+                            parked = state.parked_comparison if state else None
+                            if (not notes or not notes.check_result or not parked
+                                    or notes.check_result.evidence_message_ids !=
+                                    result_sources[active] or
+                                    parked.working_set.check_result.evidence_message_ids !=
+                                    result_sources["press" if mic else "mic"]):
+                                failures.append(index + 1)
+                        elif message == recap:
                             favored = "faulty roller" if expected == "yes" else "damaged plate"
                             if (not result.telemetry.decision_reply
                                     or favored not in result.text.lower()):
