@@ -167,6 +167,11 @@ def verify_completion(
         "A matching quote proves provenance, not that the source supports the claim; check "
         "meaning as well. Do not assume the planner's claimed success is correct. Be concise."
     )
+    if any(turn.get("role") == "assistant" for turn in state.get("guidance", [])):
+        prompt += (
+            " The user's clarification can select the target. Check that findings do not "
+            "attribute that selection to a source that left the choice open."
+        )
     if partial:
         prompt += (
             " This is a PARTIAL answer: supported means every factual claim in findings is "

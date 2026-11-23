@@ -156,12 +156,62 @@ the difference in that row cannot be credited to routing. Its report correctly
 quoted the missing reference but went on to say “in the entry,” which leaves
 the distinction between the note and a linked record less clear than it could be.
 
-**Next experiment.** Give the note an indirect reference (for example, a
-shipping document described entirely in everyday language) and give a different
-note two plausible registers with no indication which is current. Check whether
-discovery finds the first and whether the planner asks for clarification or
-reports the ambiguity in the second. Use the same identifier in both stores
-and score both dispatches and delivered claims. That would test the limits of
-lexical routing before adding aliases or another inference call. Ordinary-chat
-selection of the workflow and clause-specific follow-up after a document
-summary or schedule update remain separate open checks.
+### Indirect and ambiguous references
+
+The `references` group in the [same replay](../../scripts/workflow_switch_replay.py)
+keeps the pickup request and identifier fixed. In the indirect case the note
+describes the paper a carrier signed for freight. Only the waybill description
+covers that purpose. In two independent ambiguous cases the note lists both
+registers, each containing the same number, and leaves the selection blank.
+The replay answers a focused question on the same task, choosing the waybill in
+one run and the claimcheck in the other. It checks calls before the question,
+the resumed lookup, the delivered location and saved source quotations.
+A fourth control mentions both registers but explicitly assigns the claimcheck
+to the pickup. Its expected path is a single current claimcheck lookup after
+the note, without a question. A fifth, held-out note calls the waybill “the
+document accompanying the shipment.” None of those content words appears in
+the waybill tool name, group or description. It has the same expected lookup
+and location as the carrier-and-freight case.
+
+At `009e416b` the indirect case succeeded after five planner calls. The model
+inferred the right tool name from the carrier and freight wording, but the
+host first had to expose the missing schema. Both ambiguous runs reached their
+nine-turn limit after the note read and eight inspections. Neither asked the
+user or delivered a location. In an intermediate version the model saw both
+groups and reported both locations with the selection still unresolved. A
+successful evidence review of those locations did not establish user intent.
+
+The final selection step can extract a named target with a quotation, ask the
+user, or search for more evidence. Only the subsequent ordinary planning step
+can call a registered operation. On the explicit-selection control the model
+quoted “The signed instruction assigns the claimcheck to this pickup.” The
+next menu contained the three claimcheck editions. The runner checked the
+current lookup, the absence of a question and the saved quotes for both children.
+With the indirect carrier-and-freight wording, two distinctive description
+terms put the waybill editions directly into the second menu. Planner calls
+fell from five to three and total input tokens from 15,331 to 9,714. Total
+generated tokens rose from 11,015 to 12,605 across planning, verification and
+reporting in this pair.
+
+The held-out shipment wording left the initial follow-up menu unchanged. The
+model inferred the waybill name, the host exposed its schema, and the model
+supplied the correct identifier on its next decision. It delivered Copper
+Alcove with quotes from the note and waybill. This recovery took five planner
+calls, eight model calls overall and 15,197 input tokens.
+
+Both ambiguous runs paused after reading only the note. The first answer
+selected the waybill and the second selected the claimcheck. The same task
+then read only the chosen current record. Both delivered reports attributed
+the selection to the user and retained the note and register quotations. The
+waybill branch used five planner calls and 13,920 total input tokens. The
+claimcheck branch used eight planner calls and 22,071 total input tokens,
+including repeated inspections of the same lookup. One question used the
+third person (“does the user mean”) even though the choices were clear.
+
+Each of those two target-choice prompts used 586 input tokens. They generated
+4,384 and 2,605 tokens respectively. A next experiment can vary the reasoning
+allowance for this decision while measuring unnecessary questions, incorrect
+selections and time to a verified answer. The five fictional cases exercise
+workflow start through report delivery on the configured local 9B model at
+65,536 context, temperature zero and seed 71. Ordinary-chat workflow selection,
+an exact 8B checkpoint and follow-up after a document or schedule change remain open.

@@ -161,3 +161,37 @@ def test_only_an_owned_completed_read_since_guidance_supplies_routing_terms():
     for change in ({"effect": "write"}, {"effect": "unknown"}, {"status": "failed"},
                    {"child_id": None}):
         assert not latest_read_hint({"steps": [lookup, {**lookup, **change}]})
+
+
+def test_read_handoff_covers_indirect_descriptions_and_distinct_named_candidates():
+    from app.core.tasks.workflow.discovery import named_read_alternatives, route_followup_reads
+
+    def row(name, group, description, effect="read"):
+        return {"name": name, "group": group, "description": description, "effect": effect}
+
+    menu = [row(f"note_{i}", "notes", "Inspect a stored record") for i in range(6)]
+    lookups = [row(f"{group}_{edition}", group, f"Inspect a stored record. {purpose}")
+               for group, purpose in (("folio", "Holds maritime cargo details"),
+                                      ("ledger", "Holds musical instrument details"))
+               for edition in ("archive", "current", "preview")]
+    other = [row("edit", "admin", "Modify maritime cargo details", "write"),
+             row("search", "service", "Inspect a stored record for maritime research")]
+    ranked = menu + lookups + other
+
+    def additions(hint):
+        result = route_followup_reads(menu, ranked, "Find my note", hint, 6)
+        assert result[:3] == menu[:3] and len(result) <= 6
+        return [r["name"] for r in result if r not in menu]
+
+    assert additions("The maritime cargo was numbered 17") == [
+        "folio_archive", "folio_current", "folio_preview"]
+    assert not additions("Inspect a stored record for maritime 17")
+    assert not additions("An unrelated document 17")
+    names = additions("Number 17 appears in both folio and ledger.")
+    assert any(name.startswith("folio_") for name in names)
+    assert any(name.startswith("ledger_") for name in names)
+    assert set(named_read_alternatives(lookups, "Find my note", "Both folio and ledger")) == {
+        "folio", "ledger"}
+    assert not named_read_alternatives(lookups, "Find my note", "The folio is signed")
+    shared = [dict(entry, group=f"mcp:{entry['group']}") for entry in lookups]
+    assert not named_read_alternatives(shared, "", "The MCP service returned this")

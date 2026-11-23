@@ -98,7 +98,7 @@ def test_profile_evidence_inspection_and_independent_review(work):
                         "Review the answer",
                     ],
                 }
-            elif self.calls == 2:
+            elif self.calls in {2, 3}:
                 answer = {
                     "action": "inspect_result",
                     "args": {"task_id": child.id, "query": "TAIL_FACT"},
@@ -131,6 +131,8 @@ def test_profile_evidence_inspection_and_independent_review(work):
     assert row.state["profile"] == "reader"
     assert row.state["steps"][0]["child_id"] == store.list_children(task_id)[0].id
     assert client.inspected
+    assert len(row.state["inspections"]) == 1
+    assert "Already inspected result" in row.state["steps"][-1]["observation"]
     assert events.list_after(task_id, type="work_message")
     assert row.state["pending"] is None
 
@@ -246,7 +248,8 @@ def test_question_answer_continues_same_work_and_is_saved(work):
     assert orchestrator.answer(task_id, "orchard.txt")
     row = wait_status(store, task_id, {"done", "failed"})
     assert row.status == "done", row.error
-    assert row.state["guidance"][0]["content"] == "orchard.txt"
+    assert [(msg["role"], msg["content"]) for msg in row.state["guidance"]] == [
+        ("assistant", "Which source file?"), ("user", "orchard.txt")]
     assert any(
         (event.data or {}).get("content") == "orchard.txt"
         for event in events.latest_work_messages(task_id)

@@ -29,7 +29,7 @@ optional excerpts, plans, notes and older history. Menus contain up to six tools
 with up to six items per discovery page. Ranking uses the goal and latest
 guidance, or an explicit discovery query. In the automatic menu the router can
 use up to 1,200 characters of the latest successful read or its inspected passage
-to select follow-up reads by registered name or group. These suggestions occupy
+to select follow-up reads by name, group or a pair of distinctive description terms. They occupy
 at most half the page and share its existing schema budget. Capability groups, procedures and
 playbook titles also get bounded pages. The highest-ranked entries get first
 use of the remaining prompt space. Schemas and their
@@ -40,6 +40,10 @@ Large observations use marked, goal-relevant whole-line excerpts. Full results
 remain in the existing task store. `inspect_result` can read/search them, and
 `inspect_result {list:true,offset:0}` discovers owned result IDs when old history
 has been omitted. An excerpt never proves that an omitted item is absent.
+Inspecting the same saved page again keeps one copy in the inspection history.
+When a short source names competing read groups, the target-choice prompt omits
+tool schemas and uses the same input ceiling. Larger excerpts and marked partial
+pages stay with the ordinary planner so it can gather more evidence.
 
 Token counts are estimates, using the existing calibrated estimator plus a
 conservative character/Unicode floor. Provider-reported input usage adjusts a

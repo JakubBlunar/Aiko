@@ -291,6 +291,66 @@ def test_invalid_response_does_not_loop_indefinitely():
     assert len(calls) == 2
 
 
+def test_rejected_completion_cannot_escape_when_repair_does_not_fit():
+    def answer(*args, **kwargs):
+        return json.dumps({"action": "finish", "outcome": "success", "findings": "Done.",
+                           "report": "Done.", "evidence_ids": [999], "notes": "x" * 2000}), None
+
+    result = decide_next_action(SimpleNamespace(chat_json=answer), context(),
+                                valid_skill_names={"browser__click"}, context_window=4096)
+    assert not result.budget["repair_attempted"]
+    assert result.is_finish and result.outcome == "partial"
+    assert result.findings != "Done." and not result.report and not result.evidence_ids
+
+
+def test_reference_choice_can_ask_or_discover_but_cannot_dispatch_or_pin_hidden_operations():
+    ctx = context(reference_candidates=["maps", "surveys"],
+                  reference_excerpt="Both list S17. Use the maps copy.")
+    calls = []
+
+    def answer(messages, **kwargs):
+        calls.append(messages.copy())
+        assert "SKILLS:" not in messages[1]["content"] and "Both list S17" in messages[1]["content"]
+        decision = ({"action": "browser__click", "args": {"ref": "e1"}} if len(calls) == 1 else
+                    {"resolution": "selected", "target": "maps", "quote": "Use the maps copy.",
+                     "names": ["unrelated"],
+                     "report": "The map is correct", "evidence_ids": [999]})
+        return json.dumps(decision), None
+
+    result = decide_next_action(SimpleNamespace(chat_json=answer), ctx,
+                                valid_skill_names={"browser__click"},
+                                discoverable_skill_names={"browser__click"}, context_window=65536)
+    assert result.budget["reference_resolution"] and result.budget["selected_tools"] == 0
+    assert len(calls) == 2 and result.action == "discover" and result.args == {"query": "maps"}
+    assert not result.report and not result.evidence_ids
+
+
+@pytest.mark.parametrize("page", [{"source_partial": True}, {"offset": 80}, {"next_offset": 80}])
+def test_partial_reference_page_stays_available_for_inspection(page):
+    ctx = context(reference_candidates=["maps", "surveys"], reference_excerpt="Both list S17.",
+                  inspected_results=[{"task_id": 2, **page}])
+    ctx.steps.append(PlannerStep("read", {}, "done", "Source saved", child_id=2))
+
+    def inspect(messages, **kwargs):
+        assert "SKILLS:" in messages[1]["content"]
+        return '{"action":"inspect_result","args":{"task_id":2,"offset":80}}', None
+
+    result = decide_next_action(SimpleNamespace(chat_json=inspect), ctx,
+                                valid_skill_names={"browser__click"}, context_window=65536)
+    assert result.action == "inspect_result" and not result.budget.get("reference_resolution")
+
+
+def test_selected_reference_requires_a_known_candidate_and_a_real_quote():
+    from app.core.tasks.workflow.workflow_planner import _reference_decision
+
+    source = {"possible_targets": ["maps", "surveys"], "request": "Find the right copy",
+              "source_excerpt": "Both list S17. Use the maps copy."}
+    selection = {"resolution": "selected", "target": "maps", "quote": "Use the maps copy."}
+    assert _reference_decision(selection, source).args == {"query": "maps"}
+    assert _reference_decision({**selection, "quote": "Maps are authoritative."}, source) is None
+    assert _reference_decision({**selection, "target": "drafts"}, source) is None
+
+
 def test_task_thinking_headroom_is_local_to_call_scope():
     from app.llm.ollama_client import OllamaClient
 

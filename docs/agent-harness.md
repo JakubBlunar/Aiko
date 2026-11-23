@@ -76,11 +76,24 @@ description and parameter names against the goal and latest user guidance.
 For a large catalogue it sends matching tools. With no goal match it offers up to
 three starting tools. When a completed read introduces a term in another read
 operation's name or group, up to three of the six slots can expose those lookups.
+Two distinctive words in a read operation's description can also bring it into
+the menu. Equally supported references get a representative before extra
+editions of one lookup.
 Inspecting the same child keeps this handoff available, including terms in the
 inspected passage. The planner still chooses the operation and its arguments.
 Explicit discovery can browse the ranked catalogue in pages or pin a registered
 name. New user guidance resets the discovery query, page, pins and prior read
 hint. Ranking requires no model call.
+
+When a short read introduces distinct names for multiple available read groups,
+the planner first decides which target the user means. This decision uses the
+same model and consumes one planning turn. It sees the request, source excerpt,
+prior observations and user guidance. To select a named target it must return
+that candidate with a verbatim supporting quote. The host checks the name and
+quote and searches the catalogue for the next operation. The model can also
+request further discovery or ask the user. Its automatic search expires after
+the child operation returns. A question pauses the same task. The resumed
+planner and verifier see the question alongside the user's answer.
 Full JSON schemas, including nested fields and enums, are validated before
 dispatch; an undisclosed operation cannot be invoked. Legacy native operations
 with an empty v1 schema remain explicitly open object contracts.

@@ -17,7 +17,9 @@ from app.core.tasks.workflow.context_budget import TaskContextOverflow
 from app.core.infra import timephrase
 from app.core.tasks.task_handler import TaskCompleted, TaskFailed, TaskInputNeeded, TaskProgress
 from app.core.tasks.workflow.harness_results import inspect_result, result_text, verify_completion
-from app.core.tasks.workflow.discovery import latest_read_hint, routing_query
+from app.core.tasks.workflow.discovery import (
+    latest_read_hint, named_read_alternatives, routing_query,
+)
 from app.core.tasks.workflow.profiles import PROFILES, route_catalogue, supports
 from app.core.tasks.workflow.operation_contract import admit_step_once
 from app.core.tasks.workflow.skill_registry import SpawnContext
@@ -200,9 +202,13 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
         for event in self._orchestrator.work_messages(task_id, after=state["message_cursor"]):
             state["message_cursor"] = event.id
             data = event.data or {}
+            if data.get("role") == "assistant" and data.get("kind") == "question":
+                state["guidance"].append({"role": "assistant", "content": data["content"],
+                                          "created_at": event.created_at})
             if data.get("role") == "user" and data.get("kind") == "guidance":
                 changed = True
                 state.pop("query", None)
+                state.pop("reference_query", None)
                 state.pop("pinned_tools", None)
                 state.pop("catalogue_page", None)
                 state["routing_after_step"] = len(state.get("steps", []))
@@ -396,16 +402,21 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 if not self._save(task_id, state):
                     return
                 current_observation = self._current_context(state)
+                query = routing_query(state)
+                read_hint = ("" if state.get("reference_query")
+                             else latest_read_hint(state, current_observation))
                 skills, groups = route_catalogue(
                     self._skills,
                     state["profile"],
-                    query=routing_query(state),
-                    read_hint=latest_read_hint(state, current_observation),
+                    query=query,
+                    read_hint=read_hint,
                     browse="query" in state,
                     page=state.get("catalogue_page", 0),
                     page_size=6,
                     preferred=state.get("pinned_tools", []),
                 )
+                alternatives = (named_read_alternatives(skills, query, read_hint)
+                                if read_hint and "query" not in state else [])
                 emit(TaskProgress(message=f"Planning with {state['profile']}", phase="planning"))
                 with self._task_inference(task_id, state, emit, "planning"):
                     decision = decide_next_action(
@@ -442,6 +453,8 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                                 "reporting": state.get("reporting", "meaningful"),
                                 "failures": state["failures"] + state.get("admission_failures", 0),
                                 "current_observation": current_observation,
+                                "reference_candidates": alternatives,
+                                "reference_excerpt": read_hint[:1200],
                                 "profile_instructions": PROFILES[state["profile"]],
                                 "profiles": PROFILES,
                                 "capability_groups": groups,
@@ -696,6 +709,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 profile=pending["profile"],
                 effect=pending["effect"],
             )
+            state.pop("reference_query", None)
             live_skill = self._skills.get(pending["skill"])
             if live_skill is None or _signature(live_skill) != pending["schema_revision"]:
                 self._finish_work(
@@ -845,6 +859,11 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                     task_id, f"I’m switching to {profile} for this part.", profile=profile
                 )
         elif action == "discover":
+            if decision.budget.get("reference_resolution"):
+                # This search is for the next read. Keep later handoffs automatic.
+                state["reference_query"] = args["query"].strip()[:200]
+                return self._save(task_id, state)
+            state.pop("reference_query", None)
             names = args.get("names")
             if "query" in args and not isinstance(names, list):
                 state["pinned_tools"] = []
@@ -872,8 +891,18 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 state["notes"] = error
         elif action == "inspect_result":
             result = inspect_result(self._orchestrator, task_id, args)
-            state["inspections"] = [*state["inspections"], result][-4:]
-            self._record_observation(state, "inspect_result", "done", json.dumps(result)[:5000])
+            previous = state["inspections"]
+            if "content" in result and result in previous:
+                previous = [item for item in previous if item != result]
+                observation = (
+                    f"Already inspected result {result['task_id']} at offset {result['offset']}. "
+                    "This page is unchanged. Use another source or page for new evidence. "
+                    "If only the user can distinguish the intended target, ask_user now."
+                )
+            else:
+                observation = json.dumps(result)[:5000]
+            state["inspections"] = [*previous, result][-4:]
+            self._record_observation(state, "inspect_result", "done", observation)
         elif action == "reply":
             self._message(
                 task_id,

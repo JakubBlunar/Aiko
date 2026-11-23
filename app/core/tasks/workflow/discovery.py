@@ -68,24 +68,38 @@ def discovery_page(ranked, matches, page, size, *, browse, fallback=0):
     return ranked[page * size:(page + 1) * size]
 
 
+def _new_read_terms(query, observation):
+    words = {t for t in terms(observation[:1200]) if len(t) >= 3 and not t.isdigit()}
+    return words.difference(terms(query))
+
+
 def route_followup_reads(menu, ranked, query, observation, size):
     """Use new words in an observation to surface lookups, never to dispatch them."""
-    novel = {t for t in terms(observation[:1200]) if len(t) >= 3 and not t.isdigit()}
-    novel.difference_update(terms(query))
+    novel = _new_read_terms(query, observation)
     if not novel:
         return menu
-    # Match registered identifiers, not arbitrary examples in tool descriptions.
-    # Ties retain the goal ranking. Results can only nominate declared reads.
+    # Description-only matches need two terms that distinguish reads in this catalogue.
+    reads = [row for row in ranked if row.get("effect") == "read" and not row.get("terminal")]
+    descriptions = [novel.intersection(terms(row.get("description", ""))) for row in reads]
+    frequency = Counter(term for description in descriptions for term in description)
+    distinctive = {term for term, count in frequency.items()
+                   if len(term) >= 4 and count <= max(1, len(reads) // 2)}
     candidates = []
-    for row in ranked:
-        if row.get("effect") != "read" or row.get("terminal"):
-            continue
-        identifiers = terms(row["name"]) + terms(row.get("group", ""))
-        overlap = len(novel.intersection(identifiers))
-        if overlap:
-            candidates.append((overlap, row))
-    candidates.sort(key=lambda pair: -pair[0])
-    suggestions = [row for _, row in candidates[:min(3, size // 2)]]
+    for row, description in zip(reads, descriptions, strict=True):
+        named = novel.intersection(terms(row["name"]) + terms(row.get("group", "")))
+        described = distinctive.intersection(description)
+        if named or len(described) >= 2:
+            matches = named or described
+            candidates.append((bool(named), matches, row))
+    # Cover equally supported alternatives before filling the page with editions
+    # of one lookup. The goal's ordering settles any remaining ties.
+    covered = set()
+    suggestions = []
+    while candidates and len(suggestions) < min(3, size // 2):
+        best = max(candidates, key=lambda item: (item[0], len(item[1]), len(item[1] - covered)))
+        candidates.remove(best)
+        covered.update(best[1])
+        suggestions.append(best[2])
     suggested = {row["name"] for row in suggestions}
     visible = {row["name"] for row in menu}
     extra = [row for row in suggestions if row["name"] not in visible]
@@ -121,13 +135,29 @@ def latest_read_hint(state, current_observation=None):
     return ""
 
 
+def named_read_alternatives(menu, query, observation):
+    """Distinct group names introduced by a read and exposed in the current menu."""
+    novel = _new_read_terms(query, observation)
+    groups = {}
+    for row in menu:
+        group = row.get("group") or ""
+        matched = novel.intersection(terms(group))
+        if row.get("effect") == "read" and matched:
+            groups[group] = matched
+    # A shared server prefix alone is no indication of different referenced subjects.
+    return [g for g, hits in groups.items()
+            if any(hits - other and other - hits for other in groups.values())]
+
+
 def routing_query(state):
     if state.get("query"):
         return state["query"]
-    guidance = state.get("guidance") or []
+    if state.get("reference_query"):
+        return state["reference_query"]
     goal = state.get("goal", "")
-    if guidance:
-        return (goal + " " + guidance[-1].get("content", "")).strip()
+    for turn in reversed(state.get("guidance") or []):
+        if turn.get("role", "user") == "user":
+            return (goal + " " + turn.get("content", "")).strip()
     return goal
 
 

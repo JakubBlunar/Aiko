@@ -33,8 +33,10 @@ class ReplayWorker(LoopbackPolicyClient):
             trace["menu"] = re.findall(r"^- ([\w:-]+):", menu, re.M)
             try:
                 decision = json.loads(raw)
-                trace["action"] = decision.get("action")
-                if trace["action"] == "discover":
+                trace["action"] = decision.get("action") or decision.get("resolution")
+                if "resolution" in decision:
+                    trace["choice"] = decision
+                if trace["action"] in {"discover", "ask_user", "inspect_result"}:
                     trace["args"] = decision.get("args")
             except (ValueError, AttributeError):
                 trace["action"] = "malformed"

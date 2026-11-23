@@ -22,6 +22,10 @@ REQUEST = ("Read my latest pickup note for Juniper. Where do I collect it accord
 LOCATIONS = {"waybill": "Copper Alcove", "claimcheck": "Pearl Rotunda"}
 REFERENCE = "JN-4827"
 NOTE = "pickup_note_latest"
+REFERENCE_CASES = ("resolved", "ambiguous-waybill", "ambiguous-claimcheck",
+                   "indirect", "paraphrase")
+PURPOSE = {"waybill": "Tracks freight entrusted to a carrier.",
+           "claimcheck": "Tracks personal property left with an attendant."}
 
 
 def run(db, client, model, case):
@@ -58,8 +62,26 @@ def run(db, client, model, case):
         ))
 
     orch.register_handler(Lookup())
-    note = (f"Juniper pickup: the linked {case} entry is {REFERENCE}." if case in LOCATIONS
-            else "Juniper pickup: no register reference has been assigned.")
+    ambiguous = case.startswith("ambiguous-")
+    target = case.removeprefix("ambiguous-") if ambiguous else case
+    if ambiguous or case == "resolved":
+        note = f"Juniper pickup: {REFERENCE} appears in both the waybill and the claimcheck. "
+        if ambiguous:
+            note += "The box indicating which one applies to this pickup was left blank."
+        else:
+            note += "The signed instruction assigns the claimcheck to this pickup."
+            target = "claimcheck"
+    elif case == "indirect":
+        target = "waybill"
+        note = (f"Juniper pickup: use the paper the carrier signed when it took our freight. "
+                f"The number on it is {REFERENCE}.")
+    elif case == "paraphrase":
+        target = "waybill"
+        note = f"Juniper pickup: look under {REFERENCE} on the document accompanying the shipment."
+    elif case in LOCATIONS:
+        note = f"Juniper pickup: the linked {case} entry is {REFERENCE}."
+    else:
+        note = "Juniper pickup: no register reference has been assigned."
     register(NOTE, "Read the latest personal pickup note for a project.",
              "notebook", "project", "Juniper", note)
     for edition in ("archived", "template", "draft", "team", "sample"):
@@ -69,8 +91,10 @@ def run(db, client, model, case):
         for edition in ("current", "archive", "preview"):
             content = (f"{register_name.title()} {REFERENCE}: collect at {place}."
                        if edition == "current" else "Superseded location: Slate Annex.")
-            register(f"{register_name}_{edition}",
-                     f"Read the {edition} {register_name} entry by its identifier.",
+            description = f"Read the {edition} {register_name} entry by its identifier."
+            if case in REFERENCE_CASES:
+                description += " " + PURPOSE[register_name]
+            register(f"{register_name}_{edition}", description,
                      register_name, "identifier", REFERENCE, content)
 
     worker = GoalWorkflowHandler(
@@ -94,7 +118,23 @@ def run(db, client, model, case):
         tid = json.loads(start)["task_id"]
         deadline = time.monotonic() + 500
         row = orch.get(tid)
-        while row.status in {"running", "paused"} and time.monotonic() < deadline:
+        question = ""
+        clarified = False
+        while time.monotonic() < deadline:
+            if row.status == "awaiting_input":
+                if question:
+                    break
+                question = (row.input_request or {}).get("prompt", "")
+                print(json.dumps({"question": question, "calls_before_question": calls}),
+                      flush=True)
+                if (not ambiguous or calls != [[NOTE, "Juniper"]]
+                        or not all(name in question.lower() for name in LOCATIONS)):
+                    break
+                clarified = orch.answer(tid, f"Use the {target} for this pickup.")
+                if not clarified:
+                    break
+            elif row.status not in {"running", "paused"}:
+                break
             if row.phase == "budget_exhausted":
                 break
             time.sleep(0.2)
@@ -103,26 +143,30 @@ def run(db, client, model, case):
         delivered = bool(queued and reports.deliver(*queued[-1]))
         report = db.get_messages(session.session_key)[-1].content if delivered else ""
         proof = json.loads(CheckMyWorkTool(session).run({"view": "sources"}))
-        quotes = [s["quote"] for s in (proof.get("record") or {}).get("sources", [])]
+        sources = (proof.get("record") or {}).get("sources", [])
+        quotes = [s["quote"] for s in sources]
+        children = {child.title: child.id for child in orch.list_children(tid)}
         answer = (row.result or {}).get("content", "")
         expected_calls = [[NOTE, "Juniper"]]
-        if case in LOCATIONS:
-            expected_calls.append([f"{case}_current", REFERENCE])
-            expected = LOCATIONS[case]
+        if target in LOCATIONS:
+            expected_calls.append([f"{target}_current", REFERENCE])
+            expected = LOCATIONS[target]
             correct = (all(expected.casefold() in text.casefold() for text in (answer, report))
-                       and any(expected.casefold() in quote.casefold() for quote in quotes)
-                       and any(f"linked {case} entry" in quote.casefold() and REFERENCE in quote
-                               for quote in quotes))
+                       and any(s["task_id"] == children.get(f"{target}_current")
+                               and expected.casefold() in s["quote"].casefold() for s in sources)
+                       and any(s["task_id"] == children.get(NOTE) and REFERENCE in s["quote"]
+                               and s["quote"] in note for s in sources))
         else:
             correct = all(re.search(r"\b(?:no|without|missing|not|hasn't|hasn’t)\b.{0,40}reference"
                                     r"|reference.{0,30}\b(?:missing|not|absent)\b", text, re.I)
                           for text in (answer, report)) and any("no register reference" in quote
                                                                 for quote in quotes)
-        wrong_places = {"Slate Annex", *LOCATIONS.values()} - {LOCATIONS.get(case)}
+        wrong_places = {"Slate Annex", *LOCATIONS.values()} - {LOCATIONS.get(target)}
         correct = correct and not any(place.casefold() in text.casefold() for place in wrong_places
                                       for text in (answer, report))
         passed = bool(correct and delivered and task_outcome(row)["verified"]
-                      and calls == expected_calls)
+                      and calls == expected_calls and clarified == ambiguous
+                      and not row.state.get("reference_query"))
         print(json.dumps({"case": case, "calls": calls, "outcome": task_outcome(row),
                           "answer": answer, "report": report, "quotes": quotes,
                           "passed": passed}), flush=True)
@@ -136,8 +180,10 @@ def run(db, client, model, case):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--case", choices=[*LOCATIONS, "missing", "all"], default="all")
+    cases = [*LOCATIONS, "missing", *REFERENCE_CASES]
+    parser.add_argument("--case", choices=[*cases, "references", "all"], default="all")
     args = parser.parse_args()
-    cases = [*LOCATIONS, "missing"] if args.case == "all" else [args.case]
+    if args.case != "all":
+        cases = REFERENCE_CASES if args.case == "references" else [args.case]
     results = [run_isolated(run, args.model, "switch-", case) for case in cases]
     raise SystemExit(int(any(results)))
