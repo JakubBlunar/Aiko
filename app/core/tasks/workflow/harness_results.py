@@ -10,6 +10,35 @@ from app.core.infra import timephrase
 from app.core.tasks.work_evidence import result_text as result_text
 
 
+def clarified_lookup_findings(state, orchestrator, task_id, cited_ids=None):
+    """Propose short complete records for review when a clarification connects two reads."""
+    from app.core.tasks.work_evidence import owned_records
+    from app.core.services.response_text_service import strip_all_meta_tags
+
+    steps = state["steps"]
+    boundary = state.get("routing_after_step", 0)
+    before = [s["child_id"] for s in steps[:boundary] if s.get("child_id")]
+    after = [s["child_id"] for s in steps[boundary:] if s.get("child_id")]
+    if len(before) != 1 or len(after) != 1:
+        return None
+    source_ids = [after[0], before[0]]
+    if cited_ids is not None and (after[0] not in cited_ids
+                                  or not set(cited_ids).issubset(source_ids)):
+        return None
+    records = owned_records(orchestrator, task_id, steps, limit=600)
+    contents = {}
+    for record in records:
+        content = record["content"].strip()
+        if (record["effect"] != "read" or record["status"] != "done" or record["partial"]
+                or "search_coverage" in record or not content or content.startswith(("{", "["))):
+            return None
+        contents[record["task_id"]] = content
+    if contents.keys() != set(source_ids):
+        return None
+    text = "\n".join(contents[cid] for cid in source_ids)
+    return (text, source_ids) if strip_all_meta_tags(text) == text else None
+
+
 def inspect_result(orchestrator, parent_id: int, args: dict) -> dict:
     if args.get("list") is True:
         offset = args.get("offset", 0)
@@ -167,7 +196,15 @@ def verify_completion(
         "A matching quote proves provenance, not that the source supports the claim; check "
         "meaning as well. Do not assume the planner's claimed success is correct. Be concise."
     )
-    if any(turn.get("role") == "assistant" for turn in state.get("guidance", [])):
+    if state.get("source_clarification"):
+        prompt += (
+            " Evaluate the goal as clarified. The report separately attributes the source "
+            "choice to the user. The finding must identify the consulted record and what "
+            "it establishes. A record listing several possibilities cannot prove it designated "
+            "one. Return unsupported if the finding uses a child quotation to prove what the "
+            "user said. The user reply cannot establish any external fact."
+        )
+    elif any(turn.get("role") == "assistant" for turn in state.get("guidance", [])):
         prompt += (
             " The user's clarification can select the target. Check that findings do not "
             "attribute that selection to a source that left the choice open."
@@ -271,6 +308,8 @@ def verify_completion(
                 "criteria": result["criteria"], "claims": result["claims"],
                 "method": "search_extract" if from_search else "source_review",
             }
+            if state.get("source_clarification"):
+                check["certificate"]["source_clarification"] = state["source_clarification"]
         return check, usage
     except (LlmCallCancelled, LlmCallDeferred):
         raise

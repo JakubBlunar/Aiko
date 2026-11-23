@@ -312,6 +312,7 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
             "Verify facts about those items with tools; ask when their identities are unclear."
         )
         work = dict(ctx.work)
+        report_quotes_choice = work.pop("report_quotes_choice", False)
         if ctx.compact:
             contract = work.pop("contract", {})
             user_block = (
@@ -322,7 +323,14 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
             work,
             ensure_ascii=False,
         )
-        if work.get("user_guidance"):
+        if report_quotes_choice:
+            user_block += (
+                "\nThe report supplies the user's source choice separately. For findings, "
+                "give only what the records say. Use the complete relevant lines verbatim "
+                "when they answer directly. Identify which record returned the answer. "
+                "Omit the conversation and preserve any uncertainty in the original reference."
+            )
+        elif work.get("user_guidance"):
             user_block += (
                 "\nApply the user's answer. Attribute a choice they made to them. "
                 "Report what the selected source establishes."

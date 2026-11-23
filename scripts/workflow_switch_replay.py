@@ -64,6 +64,7 @@ def run(db, client, model, case):
     orch.register_handler(Lookup())
     ambiguous = case.startswith("ambiguous-")
     target = case.removeprefix("ambiguous-") if ambiguous else case
+    reply = f"Use the {target} for this pickup."
     if ambiguous or case == "resolved":
         note = f"Juniper pickup: {REFERENCE} appears in both the waybill and the claimcheck. "
         if ambiguous:
@@ -130,7 +131,7 @@ def run(db, client, model, case):
                 if (not ambiguous or calls != [[NOTE, "Juniper"]]
                         or not all(name in question.lower() for name in LOCATIONS)):
                     break
-                clarified = orch.answer(tid, f"Use the {target} for this pickup.")
+                clarified = orch.answer(tid, reply)
                 if not clarified:
                     break
             elif row.status not in {"running", "paused"}:
@@ -164,6 +165,18 @@ def run(db, client, model, case):
         wrong_places = {"Slate Annex", *LOCATIONS.values()} - {LOCATIONS.get(target)}
         correct = correct and not any(place.casefold() in text.casefold() for place in wrong_places
                                       for text in (answer, report))
+        if ambiguous:
+            # Check the delivered wording independently of the stored certificate.
+            # Merely mentioning both the register and location somewhere is insufficient.
+            credited = bool(re.search(r"\byou said\b.{0,8}" + re.escape(reply), report, re.I))
+            parts = re.split(r"""[.!?]["'”’]?\s+|\n+""", report.casefold())
+            finding = any(target in part and LOCATIONS[target].casefold() in part for part in parts)
+            wrong_authority = any("note" in part and target in part
+                                  and re.search(r"\b(references?|selects?|assigns?|specifies)\b",
+                                                part) and "both" not in part for part in parts)
+            correct = correct and credited and finding and not wrong_authority
+        elif case == "resolved":
+            correct = correct and "you said" not in report.casefold()
         passed = bool(correct and delivered and task_outcome(row)["verified"]
                       and calls == expected_calls and clarified == ambiguous
                       and not row.state.get("reference_query"))

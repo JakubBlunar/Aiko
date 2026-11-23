@@ -322,9 +322,10 @@ class WorkReports:
         if facts["kind"] == "final" and (
             not certified_sources(row, sources)
             or result["verification"]["certificate"].get("method") == "search_extract"
+            or result["verification"]["certificate"].get("source_clarification")
         ):
-            # A job with no successful evidence cannot suddenly acquire an answer
-            # in the narration model. A checked search excerpt also has its final wording.
+            # Search excerpts and attributed source choices have their final wording.
+            # Narration cannot supply missing evidence.
             self._save_draft(row, rid, basis, fallback(row, sources), "neutral")
             return
         system = (

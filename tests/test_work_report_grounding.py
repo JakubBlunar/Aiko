@@ -147,3 +147,41 @@ def test_certified_search_extract_is_delivered_without_narration_or_review(env):
     reports.tick()
     assert not calls and reports.deliver(*queued[0])
     assert shown[0][1].endswith(answer) and "search results" in shown[0][1]
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_source_choice_is_user_attribution_and_only_the_finding_has_a_child_source(env, stale):
+    reports, tid, calls, queued, shown, _ = make_reports(env)
+    result = env[1].get(tid).result
+    child = result["steps"][0]["child_id"]
+    answer = result["content"]
+    result["verification"]["certificate"].update(
+        source_clarification="Use the orchard log. [[reaction:calm]]",
+        claims=[{"part": 0, "task_id": child, "quote": answer}],
+    )
+    set_result(env, tid, result)
+    if stale:
+        set_result(env, child, {"content": "The orchard has changed."})
+    reports.tick()
+    assert not calls and reports.deliver(*queued[0])
+    if stale:
+        assert answer not in shown[0][1] and "orchard log" not in shown[0][1]
+        return
+    assert shown[0][1].splitlines() == [
+        "When I asked which source to use, you said “Use the orchard log.”", answer,
+    ]
+    assert reports.last_reply_sources("u:s", "u", "orchard log")["sources"] == []
+    source, = reports.last_reply_sources("u:s", "u", answer)["sources"]
+    assert source["task_id"] == child and source["supports"] == [answer]
+
+
+def test_long_clarification_does_not_crowd_out_the_finding_or_quote_a_partial_choice(env):
+    reports, tid, calls, queued, shown, _ = make_reports(env)
+    result = env[1].get(tid).result
+    result["verification"]["certificate"]["source_clarification"] = (
+        "My earlier choice was the field log. " * 200 + "Use the orchard log instead.")
+    set_result(env, tid, result)
+    reports.tick()
+    assert not calls and reports.deliver(*queued[0])
+    assert shown[0][1].startswith(result["content"]) and "full reply" in shown[0][1]
+    assert "field log" not in shown[0][1]

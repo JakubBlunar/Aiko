@@ -94,6 +94,20 @@ quote and searches the catalogue for the next operation. The model can also
 request further discovery or ask the user. Its automatic search expires after
 the child operation returns. A question pauses the same task. The resumed
 planner and verifier see the question alongside the user's answer.
+
+An answer to this source-choice question is saved as a typed work message.
+Once the finding passes completion review, its certificate carries the user's
+reply separately from the child-source claims. The final report quotes the
+reply, then gives the checked finding directly. Source follow-up traces the
+finding to the consulted records. For a simple lookup with one complete short
+read on each side of the clarification, Aiko can propose their actual text for
+completion review, with the chosen source first. If the contract needs more
+than the quotations, the saved planner answer can still receive its own review
+within the existing limit. Reopening an unchanged page after both short reads
+can also submit the two records to review once. If quoting a long reply would exceed the
+report limit, Aiko gives the finding and points to the reply in the work history.
+New user guidance supersedes the saved attribution before the next review.
+
 On the tested local 9B checkpoint the first choice runs with thinking disabled.
 A direct selection needs a complete quoted sentence or line naming just the
 selected candidate. A direct question must name every candidate. A direct

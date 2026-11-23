@@ -127,6 +127,8 @@ def pack_planner(ctx, budget):
     if source.get("review_feedback"):
         # Keep the reason for this repair even if optional planner notes do not fit.
         work["review_feedback"] = source["review_feedback"]
+    if source.get("report_quotes_choice"):
+        work["report_quotes_choice"] = True
     state = replace(
         ctx,
         skills=[],

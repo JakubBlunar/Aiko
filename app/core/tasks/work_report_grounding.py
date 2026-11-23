@@ -62,6 +62,16 @@ def fallback(row, sources=None):
             text = text[:5400] + "\nMore detail is in the saved work."
         if result.get("outcome") == "partial":
             text += "\nThis is a partial result; I haven't completed the whole request."
+        choice = result["verification"]["certificate"].get("source_clarification")
+        if isinstance(choice, str) and choice.strip():
+            from app.core.services.response_text_service import strip_all_meta_tags
+
+            reply = strip_all_meta_tags(choice).strip()
+            if reply:
+                attributed = f"When I asked which source to use, you said “{reply}”\n{text}"
+                # Preserve the report's length bound without cutting a qualification out of a quote.
+                text = (attributed if len(attributed) <= 6000 else
+                        text + "\nYour full reply to my source question is in the saved work.")
         return text
     return (
         "I couldn't complete that check, so I don't have a verified answer. "

@@ -272,3 +272,35 @@ Add `--holdout` for the survey cases or `--answer-tokens` to vary the shared
 answer allowance. The full workflow replay uses `scripts.workflow_switch_replay`
 with the same model and `--case resolved`, `--case ambiguous-waybill` or
 `--case ambiguous-claimcheck`.
+
+## Carrying the source choice into the delivered report
+
+The earlier replay checked location, lookup and saved quotations. The new
+checks also read the delivered chat message for the user's choice, a finding
+from that register, and any suggestion that the original note designated it.
+Simply quoting the user before a model-written finding still let one claimcheck
+report imply the note had selected it. Its independent review had accepted
+that wording even though the quoted note left the selection box blank.
+
+The final paired replay used the same installed local 9B model, 65,536 context,
+temperature zero and seed 71. Each branch asked after reading only the pickup
+note, then read only the current register the user specified.
+
+| User's clarification in the delivered report | Next line of the delivered report |
+| --- | --- |
+| “Use the claimcheck for this pickup.” | Claimcheck JN-4827: collect at Pearl Rotunda. |
+| “Use the waybill for this pickup.” | Waybill JN-4827: collect at Copper Alcove. |
+
+Both reports also reproduced the note's statement that the selection box was
+blank. The source inspector returned the register quotation and evidence from
+the note. In the first successful pair each branch used five planner calls
+and one completion review, with zero narration calls. A repeat claimcheck run
+read the correct record but exhausted its allowance reopening the note.
+The harness now sends eligible short records to review on an unchanged repeat
+inspection. A truncated record or additional lookup requires ordinary planning.
+The final rerun delivered the same wording for both choices, with four planner
+calls for the waybill and five for the claimcheck, followed by one completion
+review each. A scripted regression forced the repeated inspection and checked
+that only complete reads entered review. The signed-instruction control completed without
+asking a question or attributing the selection to the user. These are fictional
+workflow replays from tool entry through local chat delivery.

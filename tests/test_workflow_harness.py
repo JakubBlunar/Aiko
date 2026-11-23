@@ -859,6 +859,97 @@ def test_all_explicit_guidance_is_preserved_even_after_ten_messages(work):
     assert [row["content"] for row in state["guidance"]] == [f"Constraint {n}" for n in range(12)]
 
 
+def test_a_later_steer_supersedes_the_recorded_source_reply(work):
+    store, _, orch, registry = work
+    tid = store.create(user_id="u", handler_name="goal_workflow", title="Check a log")
+    handler = GoalWorkflowHandler(orchestrator=orch, skill_registry=registry,
+                                  worker_client_provider=lambda: None)
+    state = {"message_cursor": 0, "guidance": []}
+    orch.append_work_message(tid, role="user", kind="reference_answer", content="Use the log.")
+    assert handler._guidance(tid, state) and state["source_clarification"] == "Use the log."
+    orch.append_work_message(tid, role="user", kind="guidance", content="Actually, check both.")
+    assert handler._guidance(tid, state) and "source_clarification" not in state
+    assert [turn["content"] for turn in state["guidance"]] == [
+        "Use the log.", "Actually, check both.",
+    ]
+
+
+@pytest.mark.parametrize("truncated", [False, True])
+def test_clarified_lookup_proposes_only_complete_owned_reads_across_the_answer(work, truncated):
+    from app.core.tasks.workflow.harness_results import clarified_lookup_findings
+
+    store, _, orch, registry = work
+    tid = store.create(user_id="u", handler_name="goal_workflow", title="Check a log")
+    steps = []
+    state = {"steps": steps, "routing_after_step": 1, "epoch": 1, "profile": "reader",
+             "source_clarification": "Use the north log.", "review_attempts": 0, "inspections": []}
+
+    def add_read(text, *, partial=False):
+        cid = store.create(user_id="u", handler_name="test_reader", parent_task_id=tid,
+                           title="Read")
+        store.mark_done(cid, result={"content": text, "truncated": partial})
+        steps.append({"skill": "reader", "status": "done", "child_id": cid, "effect": "read"})
+        return cid
+
+    earlier = add_read("Two logs contain the entry. Neither is marked.")
+    later = add_read("North log. The colour is blue.", partial=truncated)
+    assert orch.checkpoint(tid, state)
+    handler = GoalWorkflowHandler(orchestrator=orch, skill_registry=registry,
+                                  worker_client_provider=lambda: None)
+    inspect = SimpleNamespace(action="inspect_result", args={"task_id": earlier})
+    assert handler._native_action(tid, state, inspect, None)
+    assert "review_request" not in state
+    assert handler._native_action(tid, state, inspect, None)
+    if truncated:
+        assert "review_request" not in state
+        return
+    assert state["review_request"]["evidence_ids"] == [later, earlier]
+    assert clarified_lookup_findings(state, orch, tid, [later]) == (
+        "North log. The colour is blue.\nTwo logs contain the entry. Neither is marked.",
+        [later, earlier],
+    )
+    assert clarified_lookup_findings(state, orch, tid, [earlier]) is None
+    steps[1]["effect"] = "write"
+    assert clarified_lookup_findings(state, orch, tid, [later]) is None
+    steps[1]["effect"] = "read"
+    extra = add_read("A third lookup needs synthesis.")
+    assert clarified_lookup_findings(state, orch, tid, [earlier, later, extra]) is None
+
+
+def test_clarified_lookup_reviews_saved_synthesis_if_quotations_do_not_answer_the_goal(work):
+    store, _, orch, registry = work
+    reviews = []
+
+    def review(messages, **kwargs):
+        assert kwargs["surface"] == "workflow_verify"
+        reviews.append(json.loads(messages[1]["content"])["answer_parts"])
+        if len(reviews) == 1:
+            return '{"supported":false,"reason":"The requested difference is missing."}', None
+        return supported_review(messages), None
+
+    handler = GoalWorkflowHandler(orchestrator=orch, skill_registry=registry,
+                                  worker_client_provider=lambda: SimpleNamespace(chat_json=review))
+    tid = store.create(user_id="u", handler_name=handler.name, title="Find the difference")
+    steps = []
+    for text in ["The old reading was 2.", "The selected reading is 5."]:
+        cid = store.create(user_id="u", handler_name="test_reader", parent_task_id=tid, title="Log")
+        store.mark_done(cid, result={"content": text})
+        steps.append({"child_id": cid, "skill": "reader", "effect": "read", "status": "done"})
+    finding = "The readings differ by 3."
+    state = {"epoch": 1, "steps": steps, "guidance": [], "message_cursor": 0,
+             "profile": "reader", "plan": [], "review_attempts": 0, "active_seconds": 0,
+             "tokens": 0, "limits": {"active_seconds": 120}, "routing_after_step": 1,
+             "source_clarification": "Use the newer log.", "contract": {"criteria": ["Compare."]},
+             "review_request": {"findings": finding, "outcome": "success",
+                                "evidence_ids": [step["child_id"] for step in steps]}}
+    assert orch.checkpoint(tid, state)
+    events = []
+    assert handler._review_work(tid, state, events.append)
+    assert not handler._review_work(tid, state, events.append)
+    assert reviews == [["The selected reading is 5.", "The old reading was 2."], [finding]]
+    assert events[-1].result["content"] == finding and state["review_attempts"] == 1
+
+
 def test_work_discussion_uses_saved_evidence_without_dispatching_operations(work):
     store, events, orchestrator, _ = work
 

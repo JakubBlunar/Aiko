@@ -16,7 +16,9 @@ from app.llm.call_scope import CallScope, call_scope, LlmCallCancelled, LlmCallD
 from app.core.tasks.workflow.context_budget import TaskContextOverflow
 from app.core.infra import timephrase
 from app.core.tasks.task_handler import TaskCompleted, TaskFailed, TaskInputNeeded, TaskProgress
-from app.core.tasks.workflow.harness_results import inspect_result, result_text, verify_completion
+from app.core.tasks.workflow.harness_results import (
+    clarified_lookup_findings, inspect_result, result_text, verify_completion,
+)
 from app.core.tasks.workflow.discovery import (
     latest_read_hint, named_read_alternatives, routing_query,
 )
@@ -205,8 +207,11 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
             if data.get("role") == "assistant" and data.get("kind") == "question":
                 state["guidance"].append({"role": "assistant", "content": data["content"],
                                           "created_at": event.created_at})
-            if data.get("role") == "user" and data.get("kind") == "guidance":
+            if data.get("role") == "user" and data.get("kind") in {"guidance", "reference_answer"}:
                 changed = True
+                state.pop("source_clarification", None)
+                if data["kind"] == "reference_answer":
+                    state["source_clarification"] = data["content"]
                 state.pop("query", None)
                 state.pop("reference_query", None)
                 state.pop("pinned_tools", None)
@@ -315,6 +320,13 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
         if remaining < 1:
             self._orchestrator.suspend_work(task_id, phase="budget_exhausted")
             return False
+        findings, evidence_ids = request["findings"], request["evidence_ids"]
+        if (state.get("source_clarification") and not request.get("source_excerpts")
+                and not state["review_attempts"]
+                and request["outcome"] == "success"):
+            proposed = clarified_lookup_findings(state, self._orchestrator, task_id, evidence_ids)
+            if proposed:
+                findings, evidence_ids = proposed
         with self._task_inference(task_id, state, emit, "reviewing"):
             check, usage = verify_completion(
                 self._worker_client_provider(),
@@ -322,8 +334,8 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 state,
                 self._orchestrator,
                 task_id,
-                request["findings"],
-                request["evidence_ids"],
+                findings,
+                evidence_ids,
                 min(120, remaining),
                 partial=request["outcome"] == "partial",
                 **self._context_options(state),
@@ -345,18 +357,24 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 "reason": "User guidance changed during review.",
             }
             return self._save(task_id, state)
-        state.pop("review_request", None)
-        if check["status"] != "supported":
-            state["review_attempts"] += 1
-            state["notes"] = "Completion review needs: " + check["reason"]
-            self._message(task_id, state["notes"], kind="review", profile="reviewer")
-            if state["review_attempts"] < 3:
-                state["review_feedback"] = state["notes"]
-                self._save(task_id, state)
-                return True
-            self._finish_work(task_id, state, emit, "partial", state["notes"])
+        if check["status"] == "supported":
+            state.pop("review_request", None)
+            self._finish_work(task_id, state, emit, request["outcome"], findings)
             return False
-        self._finish_work(task_id, state, emit, request["outcome"], request["findings"])
+        state["review_attempts"] += 1
+        if (check["status"] == "unsupported" and findings != request["findings"]
+                and state["review_attempts"] < 3):
+            # The contract may require synthesis. Review the planner's saved
+            # answer next, within the same limit and without repeating any read.
+            return self._save(task_id, state)
+        state.pop("review_request", None)
+        state["notes"] = "Completion review needs: " + check["reason"]
+        self._message(task_id, state["notes"], kind="review", profile="reviewer")
+        if state["review_attempts"] < 3:
+            state["review_feedback"] = state["notes"]
+            self._save(task_id, state)
+            return True
+        self._finish_work(task_id, state, emit, "partial", state["notes"])
         return False
 
     def _harness_slice(self, task_id: int, state: dict, emit) -> None:
@@ -463,6 +481,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                                 "review_feedback": state.get("review_feedback"),
                                 "inspected_results": state["inspections"][-3:],
                                 "user_guidance": timephrase.format_transcript(state["guidance"]),
+                                "report_quotes_choice": bool(state.get("source_clarification")),
                                 "remaining_steps": state["limits"]["iterations"]
                                 - state["iteration"],
                             },
@@ -899,6 +918,14 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                     "This page is unchanged. Use another source or page for new evidence. "
                     "If only the user can distinguish the intended target, ask_user now."
                 )
+                if state.get("source_clarification") and not state["review_attempts"]:
+                    proposed = clarified_lookup_findings(state, self._orchestrator, task_id)
+                    if proposed:
+                        findings, ids = proposed
+                        state["review_request"] = {
+                            "findings": findings, "evidence_ids": ids, "outcome": "success",
+                            "source_excerpts": True,
+                        }
             else:
                 observation = json.dumps(result)[:5000]
             state["inspections"] = [*previous, result][-4:]
@@ -913,6 +940,8 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
         elif action == "ask_user":
             question = str(args.get("question") or "").strip()[:1500]
             if question:
+                state["awaiting_reference_answer"] = bool(
+                    decision.budget.get("reference_resolution"))
                 if self._save(task_id, state):
                     self._message(task_id, question, kind="question", profile=state["profile"])
                     emit(TaskInputNeeded(prompt=question))

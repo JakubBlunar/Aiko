@@ -318,7 +318,9 @@ class GoalWorkflowHandler(WorkflowHarnessMixin):
         if state.get("harness_version") == 1:
             task_id = _task_id_from_context()
             self._orchestrator.append_work_message(
-                task_id, role="user", content=answer, kind="guidance",
+                task_id, role="user", content=answer,
+                kind="reference_answer" if state.pop("awaiting_reference_answer", False)
+                else "guidance",
             )
             return self._start_harness(state["args"], emit, state=state)
         # The parent workflow doesn't ask the user for input directly in
