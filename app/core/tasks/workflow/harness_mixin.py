@@ -104,6 +104,8 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                     "created_at": row.created_at,
                     "conversation_request": (row.metadata or {}).get("origin_prompt"),
                     "conversation_session": (row.metadata or {}).get("source_session"),
+                    **({"conversation_references": contract["conversation_references"]}
+                       if contract.get("conversation_references") else {}),
                 },
                 "profile": args.get("profile") if args.get("profile") in PROFILES else "general",
                 "reporting": args.get("reporting", "meaningful"),

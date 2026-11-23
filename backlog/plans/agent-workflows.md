@@ -1,6 +1,6 @@
 # Agentic workflow follow-ups
 
-Source status checked 15 November 2026. The current behavior is documented in
+Source status checked 23 November 2026. The current behavior is documented in
 [the agent harness](../../docs/agent-harness.md); the older
 [7 November plan](agent-harness-next-steps-2026-11-07.md) and
 [Hermes comparison](../reviews/hermes-harness-review-2026-11-08.md) retain their
@@ -13,7 +13,7 @@ historical findings, not a second open implementation checklist.
 | Checkpointed job contract and bounded continuation | Saved root state, child adoption, epochs, cumulative allowance and restart recovery |
 | Durable result reporting | `WorkReports` outbox, stable milestone identity, source-bound drafts and atomic assistant-message/report commitment |
 | Main-chat steering | `control_work` supports `guide`; the existing task retains its identity, evidence and counters |
-| Original request retention | Full active request plus matched source-message ID; all saved guidance is available to context selection |
+| Original request retention | Full request, matched source-message ID and bounded, revision-bound earlier user passages selected at handoff |
 | Local task speech | Workflow-route composition and grounding review, learned speaking guide and persona fallback |
 | Recoverable source text | Owned SQLite artifacts, quotas, source/rendered/projection views and result inspection |
 | Compound plugin operations | Typed bounded procedures, pinned discovery schemas and optional playbooks |
@@ -33,9 +33,10 @@ The [23 November output-correctness review](../reviews/workflow-output-correctne
 records the fixes for search evidence, submission receipts and repeated reads.
 The configured 9B route passed six isolated completion checks at 64K, including
 an hours-only partial and two accurate quotations that missed the objective.
-The next acceptance target is a full comparison from a conversational reference,
-followed by “Where did you find that?” and a source-backed answer. Measure both
-unnecessary abstentions and false completions before adding the reminder action.
+A fictional workshop comparison now exercises referenced items and source lookup.
+Extend it to missing prices, different currencies, reversed subject/price pairs
+and ordinary chat delivery. Measure both unnecessary abstentions and false completions
+before adding the reminder action.
 
 The 15 November correctness review
 reproduced unsupported approvals through the production review functions with
@@ -58,14 +59,13 @@ negative cases, which is diagnostic evidence rather than a broad reliability
 measurement. Backend restart and frontend refresh are required to activate the
 source changes in an existing app process.
 
-1. **Evidence-aware work discussion.** Discussion is read-only and sees bounded
-   saved excerpts (root result prefix and recent children); it cannot retrieve
-   an omitted passage itself. Add bounded, owned result selection without
-   authorizing external operations from the discussion lane.
-2. **Referenced conversation context.** The start tool retains the active request
-   and its matched message ID. It does not assemble every earlier reference or
-   attachment into a revision-bound handoff packet. Preserve actor, source time
-   and ownership if extending this contract; avoid duplicating the whole chat.
+1. **Evidence-aware work discussion.** Source questions retrieve the saved
+   quotations behind a certified answer. General factual questions still rely
+   on the root result prefix and recent child excerpts. Test selection of the
+   relevant claim when a follow-up asks about just one item in a longer report.
+2. **Referenced conversation context.** The start tool can bind short passages
+   from earlier user messages. Test corrections across messages, attachment
+   identity and an ambiguous reference resolved after a worker has asked for help.
 3. **Platform extensions.** Job-specific resource grants and locks, provider
    idempotency/read-back reconciliation, cross-process leases, media adapters,
    SDK migrations and parallel children remain in the

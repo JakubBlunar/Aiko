@@ -307,6 +307,8 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
             " Interpret relative dates in the original request against contract.created_at, "
             "not the current day after a wait or restart. Preserve the original subjects, "
             "deliverable and constraints when changing profiles."
+            " Conversation references identify the items the user meant at handoff. "
+            "Verify facts about those items with tools; ask when their identities are unclear."
         )
         work = dict(ctx.work)
         if ctx.compact:

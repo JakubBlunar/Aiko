@@ -14,6 +14,24 @@ from app.mcp.client.manager import McpToolDescriptor
 from test_workflow_harness import PARTIAL, ScriptedClient, start_work, wait_status, work as work
 
 
+@pytest.mark.parametrize("second_quote,accepted", [(False, False), (True, True)])
+def test_workflow_comparison_needs_quotations_for_both_listed_prices(second_quote, accepted):
+    from app.core.tasks.workflow.review_contract import validate_review
+
+    facts = ["Alderwick costs EUR 25.", "Fernford costs EUR 40."]
+    sources = [{"task_id": i, "content": fact} for i, fact in enumerate(facts, 1)]
+    claims = [{"part": 0, "task_id": 1, "quote": facts[0]}]
+    if second_quote:
+        claims.append({"part": 0, "task_id": 2, "quote": facts[1]})
+    result = {"supported": True, "missing": [], "claims": claims,
+              "criteria": [{"index": 0, "supported": True}]}
+    supported, _ = validate_review(
+        result, None, "Alderwick costs €25 and Fernford €40, a difference of €15.",
+        {"objective": "Compare prices"}, [{}, {"content": json.dumps({"evidence": sources})}],
+    )
+    assert supported == accepted
+
+
 @pytest.mark.parametrize("handler", ["web_search", "fast_tool"])
 @pytest.mark.parametrize("quote,field,links,expected", [
     ("Directions only", "2.snippet", [0], True),

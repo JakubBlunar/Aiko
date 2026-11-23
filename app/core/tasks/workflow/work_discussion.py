@@ -59,6 +59,20 @@ class WorkDiscussion:
         question = next((event for event in messages if event.id == message_id), None)
         if question is None:
             return
+        from app.core.tasks.work_sources import answer_sources, is_source_question, source_reply
+
+        if (question.data or {}).get("kind") == "discussion" and is_source_question(
+            (question.data or {}).get("content", "")
+        ):
+            sources = answer_sources(orchestrator, row)
+            if not self.closed.is_set():
+                orchestrator.append_work_message(
+                    task_id, role="assistant", content=strip_all_meta_tags(source_reply(sources)),
+                    kind="discussion", evidence_ids=list(dict.fromkeys(
+                        source["task_id"] for source in sources["sources"]
+                    )),
+                )
+            return
         messages = [
             event
             for event in messages

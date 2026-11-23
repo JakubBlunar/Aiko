@@ -161,7 +161,9 @@ def verify_completion(
         "For search results, cite the returned field ID (such as 1.snippet) and quote its value. "
         "claims must cover EVERY zero-based answer_parts index. Do not rewrite the findings; "
         "reference their part indices. Each part needs a verbatim supporting quote from a "
-        "successful owned source. Check every clause inside a part; reject unsupported additions. "
+        "successful owned source. A comparison needs a quote for EACH listed price, from its "
+        "own source. Cite several claims for one part when it combines multiple sources. "
+        "Check every clause inside a part; reject unsupported additions. "
         "A matching quote proves provenance, not that the source supports the claim; check "
         "meaning as well. Do not assume the planner's claimed success is correct. Be concise."
     )

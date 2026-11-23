@@ -314,6 +314,8 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
         r"progress (?:updates?|reports?)", r"(?:quieter|more frequent) updates?",
         r"done yet", r"finished?", r"check (?:my|your|the|on)",
         r"work on", r"start(?:ed)? (?:the|a|that)",
+        r"where did you (?:find|get|read) (?:that|this|it)", r"(?:show me|what were) your sources",
+        r"compare\b[^\n]{0,100}\b(?:I mentioned|I listed|we discussed)",
     ]),
 }
 

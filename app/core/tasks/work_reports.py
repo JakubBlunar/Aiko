@@ -134,6 +134,21 @@ class WorkReports:
             and self._is_requested_completion(task)
         )
 
+    def last_reply_task(self, session):
+        """Resolve 'that' only when the latest assistant reply is this exact final report."""
+        record = self.db._get_conn().execute(
+            "SELECT r.task_id,r.event_key FROM work_reports r JOIN messages m "
+            "ON m.id=r.assistant_message_id AND m.session_id=r.session_id "
+            "WHERE r.session_id=? AND r.status='committed' AND r.draft=m.content "
+            "AND m.id=(SELECT MAX(id) FROM messages WHERE session_id=? AND role='assistant')",
+            (session, session),
+        ).fetchone()
+        if record:
+            row = self.orchestrator.get(record[0])
+            if row and record[1] == "final:" + digest([row.status, row.result, row.error]):
+                return row.id
+        return None
+
     def _basis(self, row):
         latest = (
             self.db._get_conn()

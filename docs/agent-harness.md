@@ -47,7 +47,13 @@ can dispatch or finish.
 
 The start tool retains the full active user request, source session and a
 source-message ID when it can match the request to a recent persisted user
-message. It does not automatically resolve all earlier references or attachments.
+message. For a request such as “compare the two workshops I mentioned,”
+`start_workflow.reference_quotes` binds up to four identifying passages to
+earlier user messages in this chat. Each passage must match uniquely in the 40
+messages before the request. The contract retains the selected text, message ID,
+revision, timestamp and up to 1,000 surrounding characters per reference.
+The planner sees what the user meant at handoff. Tool results must still supply
+the facts. Ambiguous matches require clarification. Attachments are outside this lookup.
 Explicit saved guidance is retained for later planning; it is not limited to the
 last ten amendments.
 
@@ -180,6 +186,9 @@ review inference. The planner can use the excerpt, consult an underlying
 source for a synthesis, or report what remains unresolved. A multi-criterion
 review links each supported criterion to its supporting claim indices.
 A correct quotation still requires review for relevance to the user's request.
+When a comparison repeats several currency amounts, the host checks that prices
+appearing in the reviewed evidence are present in the saved quotations. Subject
+assignment, currency conversion and derived arithmetic still need separate proof.
 
 The spoken reporter cannot supply missing evidence. Uncertified terminal runs
 get a deterministic incomplete-check or acknowledged-submission message.
@@ -216,12 +225,18 @@ dispatch. Already-dispatched operations may finish. Pending questions are answer
 through the actual input API, rather than being mistaken for discussion messages.
 Drafts survive job switches and close/reopen; accepted messages have retry ids.
 
-The work conversation is independent of the main chat. Its replies use saved
-job state and evidence and have no tools. It sees bounded saved excerpts: up to
-4,000 characters of the root result and 1,500 from each of the latest eight
-children, within its context
-budget. It cannot call `inspect_result` to retrieve omitted passages. A follow-up
-that launches new work belongs in ordinary conversation with Aiko.
+In the work drawer, “Where did you find that?” retrieves the certificate’s
+quotations directly from owned results. A search hit supplies its own title and
+URL. A saved page can supply its resource URL or an offset in its owned result
+artifact. Changed results and missing quotations are reported as unavailable
+or partial. This lookup makes no model or tool call. In main chat,
+`check_my_work(view="sources")` reads the same evidence. With no task ID it
+resolves only the latest assistant message if it is an exact committed final work
+report for the active chat. Otherwise Aiko needs the intended job.
+
+Other work discussion gets up to 4,000 characters of the root result and 1,500
+from each of the latest eight children within its context budget. It cannot page
+arbitrary results. Requests for new work belong in ordinary conversation.
 
 ## Aiko's speaking guide
 

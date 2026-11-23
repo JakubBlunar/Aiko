@@ -73,6 +73,14 @@ def test_handler_preserves_raw_tail_and_review_can_use_owned_excerpt(tmp_path, m
         context_window=8192,
     )
     assert verdict["status"] == "supported"
+    from app.core.tasks.work_sources import answer_sources
+
+    store.mark_done(parent, result={"content": "Blue orchard", "verification": verdict,
+                                    "steps": [{"child_id": child, "status": "done"}]})
+    source, = answer_sources(host, store.get(parent))["sources"]
+    assert source["view"] == "source" and source["offset"] == body.index("TAIL_FACT")
+    artifacts.save(child, body + " (later edit)")
+    assert not answer_sources(host, store.get(parent))["sources"]
     assert calls == [1]
     assert artifacts.read(parent + 999, child) is None
     assert "error" in inspect_result(host, parent + 999, {"task_id": child})

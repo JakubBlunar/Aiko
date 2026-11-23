@@ -98,13 +98,23 @@ class StartWorkflowTool:
                         "type": "array",
                         "items": {"type": "string"},
                         "maxItems": 12,
-                        "description": "What must be true for this request to be complete.",
+                        "description": "Only the completion conditions the user requested. "
+                        "Omit when the goal already expresses them. Do not add extra research "
+                        "questions or try to fill the array.",
+                    },
+                    "reference_quotes": {
+                        "type": "array", "maxItems": 4,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 600},
+                        "description": "When the request refers to earlier items, quote the "
+                        "identifying passage for each from the user's earlier messages in this "
+                        "chat. Preserve place names and other distinctions. If the items are "
+                        "unclear, ask which ones the user means.",
                     },
                     "constraints": {
                         "type": "array",
                         "items": {"type": "string"},
                         "maxItems": 12,
-                        "description": "Relevant limits and preferences from this request.",
+                        "description": "Explicit user limits or preferences. Omit when absent.",
                     },
                     "profile": {
                         "type": "string",
@@ -173,26 +183,40 @@ class StartWorkflowTool:
             )
         ):
             metadata["reply_when_done"] = True
+        user_id = _user_id(self._session)
+        session_key = getattr(self._session, "session_key", None)
         origin = (getattr(self._session, "_active_turn_user_text", "") or "").strip()
         if origin:
             metadata["origin_prompt"] = origin
-        metadata["source_session"] = getattr(self._session, "session_key", None)
+        metadata["source_session"] = session_key
         db = getattr(self._session, "_chat_db", None)
-        if db is not None and metadata["source_session"] and origin:
-            sources = [
-                row
-                for row in db.get_messages(metadata["source_session"], limit=6)
-                if row.role == "user" and row.content.strip() == origin
-            ]
-            if sources:
-                metadata["source_message_id"] = sources[-1].id
+        anchor = None
+        if (db is not None and session_key and origin
+                and getattr(self._session, "_remember_history", True)):
+            recent = db.get_messages(session_key, limit=6)
+            latest = next((row for row in reversed(recent) if row.role == "user"), None)
+            if latest and latest.content.strip() == origin:
+                anchor = latest
+                metadata["source_message_id"] = anchor.id
+        from app.core.tasks.workflow_references import bind_references
+
+        try:
+            references = bind_references(db, session_key, anchor, origin,
+                                         arguments.get("reference_quotes", []))
+        except ValueError as exc:
+            raise ToolError(str(exc)) from exc
+        if references:
+            contract["conversation_references"] = references
+        if (user_id != _user_id(self._session)
+                or session_key != getattr(self._session, "session_key", None)):
+            raise ToolError("The conversation changed before the work could start.")
         try:
             task_id = orch.start_task(
-                user_id=_user_id(self._session),
+                user_id=user_id,
                 handler_name=HANDLER_GOAL_WORKFLOW,
                 args={
                     "goal": goal,
-                    "user_id": _user_id(self._session),
+                    "user_id": user_id,
                     "contract": contract,
                     "profile": profile,
                     "reporting": reporting,
@@ -248,7 +272,10 @@ class CheckMyWorkTool:
                 "capability_gaps: [...]}. With status=ok, an empty active list means no active "
                 "work was found, not that earlier work succeeded. Use scope=recent to find "
                 "recent IDs, or task_id to inspect saved results/errors, including completed, "
-                "failed or cancelled tasks. This is read-only and starts nothing. Follow "
+                "failed or cancelled tasks. For 'where did you find that?', use view=sources "
+                "to return saved quotes and links. Omit task_id for the immediately preceding "
+                "work report in this chat, or give the ID of the requested job. "
+                "This is read-only and starts nothing. Follow "
                 "next_offset with content_offset and revision for long JSON result fragments. "
                 "Unavailable/partial reads do not establish absence. objective_outcome is "
                 "the authority for completion: status=done means execution finished, and "
@@ -258,6 +285,7 @@ class CheckMyWorkTool:
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "integer", "minimum": 1},
+                    "view": {"type": "string", "enum": ["sources"]},
                     "scope": {"type": "string", "enum": ["active", "recent"]},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                     "content_offset": {"type": "integer", "minimum": 0},
@@ -282,6 +310,38 @@ class CheckMyWorkTool:
             )
         user_id = _user_id(self._session)
         from app.core.tasks.work_inspection import brief, inspect_work
+
+        if "view" in arguments:
+            from app.core.infra.read_paging import json_page
+            from app.core.tasks.work_sources import answer_sources
+
+            if arguments["view"] != "sources":
+                raise ToolError("Unknown work inspection view.")
+            if set(arguments) - {"view", "task_id", "revision", "content_offset"}:
+                raise ToolError("Source inspection cannot be combined with list filters.")
+            offset = arguments.get("content_offset", 0)
+            if type(offset) is not int or offset < 0:
+                raise ToolError("Source inspection needs a nonnegative integer content_offset.")
+            tid = arguments.get("task_id")
+            if "task_id" in arguments and (type(tid) is not int or tid < 1):
+                raise ToolError("Source inspection needs a positive integer task_id.")
+            if tid is None:
+                reports = getattr(self._session, "_work_reports", None)
+                if reports and getattr(self._session, "_remember_history", True):
+                    tid = reports.last_reply_task(self._session.session_key)
+            if tid is None:
+                return json.dumps({"status": "needs_task", "note":
+                                   "Which work result? The preceding reply has no final report."})
+            row = orch.get(tid)
+            if not row or row.user_id != user_id or not row.visible_to_user:
+                return json.dumps({"status": "not_found", "read_only": True})
+            sources = answer_sources(orch, row)
+            try:
+                page = json_page(sources, content_offset=offset, revision=arguments.get("revision"))
+            except ValueError as exc:
+                raise ToolError(str(exc)) from exc
+            return json.dumps({"status": sources["status"], "read_only": True, **page},
+                              ensure_ascii=False)
 
         if "task_id" in arguments:
             if set(arguments) - {"task_id", "content_offset", "revision"}:

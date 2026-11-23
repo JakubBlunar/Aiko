@@ -34,6 +34,23 @@ SEARCH_PROOF_RULE = (
 )
 
 
+def _price_literals(text):
+    # Use only unambiguous written currency markers. Derived amounts can appear
+    # in findings without being present on any individual page.
+    number = r"\d+(?:[.,]\d+)*"
+    marker = r"EUR|GBP|USD|CAD|AUD|CHF|JPY|€|£|\$|¥"
+    matches = re.finditer(
+        rf"(?<!\w)({marker})\s*({number})(?!\w)|(?<!\w)({number})\s*({marker})(?!\w)",
+        text, re.I,
+    )
+    amounts = set()
+    for match in matches:
+        currency, value = (match[1], match[2]) if match[1] else (match[4], match[3])
+        currency = {"€": "EUR", "£": "GBP"}.get(currency, currency.upper())
+        amounts.add((currency, value))
+    return amounts
+
+
 def validate_review(result, usage, findings, contract, messages, *, partial=False):
     if getattr(usage, "done_reason", None) in {"length", "max_tokens"}:
         return False, "Completion review was truncated."
@@ -104,4 +121,12 @@ def validate_review(result, usage, findings, contract, messages, *, partial=Fals
         elif not any(quote in str(source.get("content", source.get("result", "")))
                      for source in owned):
             return False, "A completion quotation is absent from the reviewed owned source."
+    prices = _price_literals(findings)
+    if len(prices) >= 2:
+        observed = set().union(*(_price_literals(str(source.get("content", "")))
+                                 for source in sources if source.get("status", "done") == "done"))
+        quoted = set().union(*(_price_literals(claim["quote"]) for claim in claims))
+        if missing_prices := (prices & observed) - quoted:
+            absent = ", ".join(f"{currency} {value}" for currency, value in sorted(missing_prices))
+            return False, f"Include a source quotation for each listed price. Missing: {absent}."
     return True, ""

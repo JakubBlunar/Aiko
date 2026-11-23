@@ -62,6 +62,15 @@ _ALL_TOOLS = [
 _NO_CONTEXT = GateContext()
 
 
+@pytest.mark.parametrize("text,tool", [
+    ("Compare the prices of the two workshops I mentioned.", "start_workflow"),
+    ("Where did you find that price?", "check_my_work"),
+])
+def test_workflow_questions_expose_the_requested_tool(text, tool):
+    decision = should_run_tool_pass(text, _ALL_TOOLS, context=_NO_CONTEXT)
+    assert tool in select_active_tool_names(decision, _ALL_TOOLS, router_enabled=True)
+
+
 @pytest.mark.parametrize("text", ["What's in our box?", "Put this moment in the box."])
 def test_keepsake_box_requests_expose_both_tools(text):
     names = ["read_keepsake_notes", "leave_keepsake_note"]

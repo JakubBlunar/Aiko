@@ -65,3 +65,48 @@ An intermediate 9B run exposed a failure that field IDs alone missed. The model 
 The [replay](../../scripts/workflow_review_replay.py) uses the production verifier, in-memory tools' results, seed 71, temperature zero and 65,536 context tokens. Run it with `python -m scripts.workflow_review_replay --model <installed-local-model>`. These are six controlled review decisions. Tests separately exercised search discovery and repair, repeat reads, write receipts and report delivery. Ordinary conversation, an exact 8B checkpoint and full-request latency remain unmeasured.
 
 **Next experiment.** Start from “Compare the two workshops I mentioned” with fictional messages, source pages and an independent expected comparison. Include same-name workshops in different cities, conflicting dates, a missing price and a precise follow-up about an early source. Carry the resolved message and source IDs from chat to the planner, and let work discussion retrieve cited passages from owned results. Measure wrong-subject answers, correct partials, unnecessary abstention, number of planning calls and tokens to delivered answer. The held-out relevance checks still consumed roughly 5,100 generated tokens each. This is where to compare a smaller structured review or deterministic ID, amount and timezone checks before tuning a global reasoning cap.
+
+## Referenced workshop comparison
+
+The fictional catalogue has three workshops with the same name. The user mentioned
+Alderwick (EUR 25) and Fernford (EUR 40). Birch Quay (EUR 90) is a distractor.
+The handoff model selects exact passages, and the host binds them to their
+messages. The local workflow model can discover or read the fixture pages and
+the saved work supports a source follow-up. Reproduce with
+`python -m scripts.workshop_workflow_replay --model baytout3/qwen3.5-uncensored:9b`.
+The replay uses disposable storage, loopback Ollama, a 65,536-token window,
+temperature zero and seed 71. The handoff is a structured call using the start
+tool schema. Ordinary chat tool choice and browser navigation need separate trials.
+
+One run returned the correct prices and difference while the reviewer cited the
+Alderwick page for both answer parts. Both pages existed. A source follow-up
+could trace only one. The host now checks that written currency amounts repeated
+from evidence into a comparison have quotations, and the review prompt permits
+multiple claims for one sentence. The next run returned both source URLs and
+the correct EUR 15 difference. It took four planning calls and two verification
+calls. The latter generated 7,881 and 5,464 tokens from roughly 1,660 input
+tokens each. The drawer’s source lookup uses zero inference calls.
+
+In the delivery replay, the worker read both pages and finished in three planner
+calls. The verifier generated 6,297 tokens. Report composition and review
+generated another 1,426 and 5,592. The delivered text matched the saved finding,
+and both the implicit chat-tool lookup and the drawer returned both pages.
+The chat-tool invocation was explicit in the replay. The ordinary-chat gate
+was tested separately with the same question. This leaves real chat tool choice,
+final streamed wording and live-site reliability open.
+
+An inexpensive reporting experiment is to reuse the existing certificate when
+a final draft is byte-for-byte identical to the current certified finding.
+Measure how often this actually occurs before budgeting the saving. When a
+report paraphrases the finding, retain the report review’s own source pointers
+so a question about that exact wording can recover its supporting clause.
+
+**Next improvement.** Try a comparison skill that returns each item's identity,
+amount, currency and source pointer together. Let the host compute same-currency
+differences using decimal arithmetic. Use the model to resolve what the user
+means and interpret qualifications such as a deposit or a price valid only on a
+particular date. Load this skill on demand, following Hermes’s approach to skill
+discovery. Compare verification cost and final chat accuracy with this replay.
+Include swapped city/price pairs, equal prices, a deposit versus a full price,
+one missing price and different currencies. Score an honest partial as correct
+where the requested comparison cannot be made. [Hermes skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)
