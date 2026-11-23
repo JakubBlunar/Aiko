@@ -41,7 +41,7 @@ def matches_fixture_prices(text):
     return True
 
 
-def run(db, client, model):
+def run(db, client, model, large_catalogue=False):
     store = TaskStore(db)
     orch = TaskOrchestrator(store, event_store=TaskEventStore(db), heartbeat_enabled=False)
     places = {"Alderwick": 25, "Fernford": 40, "Birch Quay": 90}
@@ -50,6 +50,19 @@ def run(db, client, model):
                 for city, cost in places.items()]
     orch.register_handler(WebSearchHandler(provider=NS(search=lambda *args: listings)))
     registry = build_builtin_skill_registry()
+    unrelated_calls = []
+    if large_catalogue:
+        def unrelated(args, ctx):
+            unrelated_calls.append(ctx.parent_task_id)
+            return None
+
+        for number in range(512):
+            registry.register(WorkflowSkill(
+                name=f"star_chart_{number:03}", group=f"observatory_{number:03}", effect="read",
+                description="Look up stellar coordinates.", spawn=unrelated,
+                input_schema={"type": "object", "properties": {"constellation": {"type": "string"}},
+                              "required": ["constellation"]},
+            ))
 
     class Page:
         name = "fixture_page"
@@ -130,6 +143,7 @@ def run(db, client, model):
         refs = row.state.get("contract", {}).get("conversation_references", [])
         urls = {item.get("url") for item in sources}
         passed = (delivered and task_outcome(row)["verified"]
+                  and not unrelated_calls
                   and len({r["message_id"] for r in refs}) == 2
                   and urls == {listings[0].url, listings[1].url}
                   and all(item.url in source_reply for item in listings[:2])
@@ -138,7 +152,8 @@ def run(db, client, model):
         print(json.dumps({"task": task_outcome(row), "refs": refs, "answer": result.get("content"),
                           "report": report, "sources": sources, "drawer_reply": source_reply,
                           "iterations": row.state.get("iteration"),
-                          "passed": passed}), flush=True)
+                          "registered_skills": len(registry.names()),
+                          "unrelated_calls": len(unrelated_calls), "passed": passed}), flush=True)
         return passed
     finally:
         reports.shutdown()
@@ -152,7 +167,7 @@ def time_anchor_and_transcript(db, session_key):
     return timephrase.today_anchor() + "\n" + transcript
 
 
-def replay_process(tmp, model):
+def replay_process(tmp, model, large_catalogue):
     base = "http://127.0.0.1:11434"
     with requests.Session() as session:
         class LocalWorker(LoopbackPolicyClient):
@@ -169,19 +184,22 @@ def replay_process(tmp, model):
         require_local_model(session, base, model)
         db = ChatDatabase(Path(tmp) / "work.db")
         with closing(db._get_conn()):
-            raise SystemExit(0 if run(db, client, model) else 1)
+            raise SystemExit(0 if run(db, client, model, large_catalogue) else 1)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--large-catalogue", action="store_true",
+                        help="Register 512 unrelated fictional lookup skills.")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
     scratch.mkdir(exist_ok=True)
     with TemporaryDirectory(dir=scratch, prefix="workshops-") as tmp:
         # Worker threads own SQLite connections. Process exit closes them before cleanup.
         proc = multiprocessing.get_context("spawn").Process(target=replay_process,
-                                                            args=(tmp, args.model))
+                                                            args=(tmp, args.model,
+                                                                  args.large_catalogue))
         proc.start()
         try:
             proc.join()

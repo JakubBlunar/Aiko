@@ -30,23 +30,37 @@ def _public_link(value):
     return None
 
 
-def answer_sources(orch, row):
+def answer_sources(orch, row, *, passage=None, text=None, claims=None, delivered=None):
     """Return certificate quotations and the locator belonging to that exact result or hit."""
     response = {"task_id": row.id, "status": "unavailable", "sources": []}
     if not certified_answer(row.result):
         return response
     check = row.result["verification"]["certificate"]
-    claims = check.get("claims")
+    from app.core.tasks.workflow.review_contract import answer_parts
+
+    parts = answer_parts(row.result.get("content", "") if text is None else text)
+    if claims is None:
+        claims = check.get("claims")
     if not isinstance(claims, list) or not claims:
         return response
     steps = row.result.get("steps") or []
     if not certificate_current(check, owned_records(orch, row.id, steps)):
         return response
-    seen = set()
+    seen = {}
     missing = False
     for claim in claims:
         if not isinstance(claim, dict):
             missing = True
+            continue
+        index = claim.get("part")
+        statement = (parts[index] if type(index) is int and 0 <= index < len(parts)
+                     else claim.get("text"))
+        if not isinstance(statement, str):
+            statement = None
+        if delivered is not None and (not statement or statement not in delivered):
+            missing = True
+            continue
+        if passage and (not statement or passage.casefold() not in statement.casefold()):
             continue
         cid, quote = claim.get("task_id"), claim.get("quote")
         if type(cid) is not int or not isinstance(quote, str) or not quote.strip():
@@ -104,8 +118,11 @@ def answer_sources(orch, row):
                 item["url"] = _public_link(proof.get("resource"))
         identity = (cid, field, quote)
         if identity not in seen:
+            item["supports"] = []
             response["sources"].append(item)
-            seen.add(identity)
+            seen[identity] = item
+        if statement and statement not in seen[identity]["supports"]:
+            seen[identity]["supports"].append(statement)
     if response["sources"]:
         response["status"] = "partial" if missing else "ok"
     return response

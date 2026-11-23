@@ -26,7 +26,10 @@ discarding a constraint.
 
 Current observation, whole tool schemas and capability guidance come before
 optional excerpts, plans, notes and older history. Menus contain up to six tools
-with stable six-item discovery pages and goal-based ordering. Schemas and their
+with up to six items per discovery page. Ranking uses the goal and latest
+guidance, or an explicit discovery query. Capability groups, procedures and
+playbook titles also get bounded pages. The highest-ranked entries get first
+use of the remaining prompt space. Schemas and their
 descriptions remain whole; the compact renderer avoids repeating argument lists
 already present in the schema. Omitted tools cannot be selected for dispatch.
 

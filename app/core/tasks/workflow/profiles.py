@@ -27,7 +27,7 @@ def supports(skill, profile: str) -> bool:
     return False
 
 
-def catalogue(
+def route_catalogue(
     registry,
     profile: str,
     *,
@@ -36,25 +36,32 @@ def catalogue(
     budget: int = 18000,
     page_size: int = 12,
     preferred=(),
-) -> list[dict]:
+    browse=False,
+) -> tuple[list[dict], list[dict]]:
     import json
+    from app.core.tasks.workflow.discovery import discovery_page, manifest, rank_with_matches
 
     rows = [
         row
         for row in registry.describe_for_planner()
-        if supports(registry.get(row["name"]), profile)
+        if (skill := registry.get(row["name"])) and supports(skill, profile)
     ]
-    if query or preferred:
-        from app.core.tasks.workflow.discovery import rank
-
-        rows = rank(rows, query, preferred)
+    ranked, matches = rank_with_matches(rows, query, preferred)
+    matching_groups = None
+    if matches and not browse and not page and len(rows) > page_size:
+        matching_groups = {row.get("group") or "general" for row in ranked[:matches]}
+    groups = manifest(ranked, page=page, matching_groups=matching_groups)
     selected, used = [], 0
-    for row in rows[max(0, page) * page_size : (max(0, page) + 1) * page_size]:
+    for row in discovery_page(ranked, matches, max(0, page), page_size, browse=browse, fallback=3):
         cost = len(json.dumps(row, ensure_ascii=False))
         if cost > budget:
             continue  # A schema is omitted whole, never truncated into an invalid contract.
-        if used + cost > budget or len(selected) >= page_size:
-            break
+        if used + cost > budget:
+            continue
         selected.append(row)
         used += cost
-    return selected
+    return selected, groups
+
+
+def catalogue(registry, profile, **kwargs):
+    return route_catalogue(registry, profile, browse=True, **kwargs)[0]

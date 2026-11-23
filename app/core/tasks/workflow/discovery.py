@@ -16,7 +16,7 @@ def terms(text):
     ]
 
 
-def rank(rows, query, preferred=()):
+def rank_with_matches(rows, query, preferred=()):
     query_terms = set(terms(query))
     documents = []
     for row in rows:
@@ -39,9 +39,8 @@ def rank(rows, query, preferred=()):
     scores = {}
     for row, document in zip(rows, documents, strict=True):
         counts, score = Counter(document), 0.0
-        for term in query_terms:
-            count = counts[term]
-            if count:
+        for term, count in counts.items():
+            if term in query_terms:
                 inverse = math.log(
                     1 + (len(rows) - frequency[term] + 0.5) / (frequency[term] + 0.5)
                 )
@@ -52,20 +51,43 @@ def rank(rows, query, preferred=()):
                     / (count + 1.2 * (0.25 + 0.75 * len(document) / max(1, average)))
                 )
         scores[row["name"]] = score
-    pins = {name: index for index, name in enumerate(preferred)}
-    return sorted(
+    pins = {name: index for index, name in enumerate(dict.fromkeys(preferred))}
+    ranked = sorted(
         rows, key=lambda row: (pins.get(row["name"], len(pins)), -scores[row["name"]], row["name"])
     )
+    return ranked, sum(bool(scores[r["name"]] or r["name"] in pins) for r in ranked)
 
 
-def manifest(registry):
+def rank(rows, query, preferred=()):
+    return rank_with_matches(rows, query, preferred)[0]
+
+
+def discovery_page(ranked, matches, page, size, *, browse, fallback=0):
+    if not browse and not page and len(ranked) > size:
+        ranked = ranked[:matches or fallback]
+    return ranked[page * size:(page + 1) * size]
+
+
+def routing_query(state):
+    if state.get("query"):
+        return state["query"]
+    guidance = state.get("guidance") or []
+    goal = state.get("goal", "")
+    if guidance:
+        return (goal + " " + guidance[-1].get("content", "")).strip()
+    return goal
+
+
+def manifest(rows, *, page=0, limit=6, matching_groups=None):
     groups = {}
-    for row in registry.describe_for_planner():
+    for row in rows:
         if row.get("terminal"):
             continue
         group = row.get("group") or "general"
+        if matching_groups is not None and group not in matching_groups:
+            continue
         item = groups.setdefault(group, {"group": group, "count": 0, "examples": []})
         item["count"] += 1
-        if len(item["examples"]) < 4:
+        if len(item["examples"]) < 2:
             item["examples"].append(row["name"])
-    return [groups[name] for name in sorted(groups)][:40]
+    return list(groups.values())[page * limit:(page + 1) * limit]

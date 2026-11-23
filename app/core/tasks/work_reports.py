@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS work_reports (
     created_at TEXT NOT NULL, UNIQUE(task_id,event_key)
 );
 CREATE INDEX IF NOT EXISTS idx_work_reports_pending ON work_reports(session_id,status);
+CREATE TABLE IF NOT EXISTS work_report_sources (
+    report_id INTEGER PRIMARY KEY REFERENCES work_reports(id) ON DELETE CASCADE,
+    draft_digest TEXT NOT NULL, claims TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS work_report_attempts (
     id INTEGER PRIMARY KEY,
     report_id INTEGER NOT NULL REFERENCES work_reports(id) ON DELETE CASCADE,
@@ -134,20 +138,35 @@ class WorkReports:
             and self._is_requested_completion(task)
         )
 
-    def last_reply_task(self, session):
-        """Resolve 'that' only when the latest assistant reply is this exact final report."""
+    def last_reply_sources(self, session, user_id, passage=None):
+        """Resolve source questions against the exact delivered wording in this chat."""
+        from app.core.tasks.work_sources import answer_sources
+
         record = self.db._get_conn().execute(
-            "SELECT r.task_id,r.event_key FROM work_reports r JOIN messages m "
+            "SELECT r.task_id,r.event_key,r.draft,s.draft_digest,s.claims "
+            "FROM work_reports r JOIN messages m "
             "ON m.id=r.assistant_message_id AND m.session_id=r.session_id "
+            "LEFT JOIN work_report_sources s ON s.report_id=r.id "
             "WHERE r.session_id=? AND r.status='committed' AND r.draft=m.content "
             "AND m.id=(SELECT MAX(id) FROM messages WHERE session_id=? AND role='assistant')",
             (session, session),
         ).fetchone()
-        if record:
-            row = self.orchestrator.get(record[0])
-            if row and record[1] == "final:" + digest([row.status, row.result, row.error]):
-                return row.id
-        return None
+        if record is None:
+            return None
+        tid, event_key, draft, draft_digest, claims = record
+        row = self.orchestrator.get(tid)
+        if (not row or row.user_id != user_id or not row.visible_to_user
+                or event_key != "final:" + digest([row.status, row.result, row.error])):
+            return None
+        if draft_digest == digest(draft):
+            return answer_sources(self.orchestrator, row, passage=passage,
+                                  text=draft, claims=json.loads(claims))
+        if draft_digest is None and (
+            draft == (row.result or {}).get("content")
+            or draft == fallback(row, owned_evidence(row, self.orchestrator, {}))
+        ):
+            return answer_sources(self.orchestrator, row, passage=passage, delivered=draft)
+        return {"task_id": row.id, "status": "unavailable", "sources": []}
 
     def _basis(self, row):
         latest = (
@@ -354,6 +373,7 @@ class WorkReports:
             on_acquired=route.acquired,
         )
         deferred = False
+        claims = None
         try:
             with call_scope(scope):
                 raw, usage = route.client.chat_json(
@@ -372,11 +392,15 @@ class WorkReports:
                     raise ValueError("Invalid local work report")
                 # Final drafts reach this path only after the answer and its sources
                 # have passed certified_sources. _save_draft and deliver recheck the basis.
+                text = strip_all_meta_tags(text).strip()
+                if not text:
+                    raise ValueError("Empty visible work report")
                 same_finding = (facts["kind"] == "final" and facts["objective_outcome"]["verified"]
                                 and text == result.get("content"))
-                if not same_finding and not review_report(
-                    route, text, facts, sources, timeout=max(1, 180 - scope.active_seconds)
-                ):
+                if not same_finding:
+                    claims = review_report(route, text, facts, sources,
+                                           timeout=max(1, 180 - scope.active_seconds))
+                if not same_finding and not claims:
                     log.warning("Ungrounded work report rejected: task=%s report=%s", row.id, rid)
                     raw = json.dumps({"text": fallback(row, sources), "reaction": "neutral"})
         except (LlmCallDeferred, LlmCallCancelled):
@@ -416,17 +440,22 @@ class WorkReports:
         cleaned = strip_all_meta_tags(text).strip()
         if not cleaned or scope.cancelled():
             return
-        self._save_draft(row, rid, basis, cleaned, reaction or "neutral")
+        self._save_draft(row, rid, basis, cleaned, reaction or "neutral",
+                         claims=claims if facts["kind"] == "final" else None)
 
-    def _save_draft(self, row, rid, basis, text, reaction):
+    def _save_draft(self, row, rid, basis, text, reaction, claims=None):
         current = self.orchestrator.get(row.id)
         if current is None or self._basis(current) != basis:
             return
-        self.db.execute_commit(
-            "UPDATE work_reports SET draft=?,reaction=? "
-            "WHERE id=? AND status='pending' AND basis=?",
-            (text, reaction, rid, basis),
-        )
+        conn = self.db._get_conn()
+        with conn:
+            if conn.execute("UPDATE work_reports SET draft=?,reaction=? "
+                            "WHERE id=? AND status='pending' AND basis=?",
+                            (text, reaction, rid, basis)).rowcount:
+                conn.execute("DELETE FROM work_report_sources WHERE report_id=?", (rid,))
+                if claims:
+                    conn.execute("INSERT INTO work_report_sources VALUES (?,?,?)",
+                                 (rid, digest(text), json.dumps(claims)))
 
     def deliver(self, session, report_id, *, can_deliver=None):
         def open_for_report():

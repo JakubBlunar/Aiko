@@ -231,12 +231,16 @@ def pack_planner(ctx, budget):
             continue
         if isinstance(value, list):
             kept = []
-            for item in reversed(value):
-                if add(key, [item, *kept]):
-                    kept.insert(0, item)
+            ranked = key in {"procedures", "playbook_index", "capability_groups"}
+            for item in value if ranked else reversed(value):
+                trial = [*kept, item] if ranked else [item, *kept]
+                if add(key, trial):
+                    kept = trial
                 else:
                     if kept:
                         work[key] = kept
+                    if ranked:
+                        continue
                     break
         else:
             add(key, value)

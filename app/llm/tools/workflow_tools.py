@@ -274,7 +274,8 @@ class CheckMyWorkTool:
                 "recent IDs, or task_id to inspect saved results/errors, including completed, "
                 "failed or cancelled tasks. For 'where did you find that?', use view=sources "
                 "to return saved quotes and links. Omit task_id for the immediately preceding "
-                "work report in this chat, or give the ID of the requested job. "
+                "work report in this chat, or give a task ID for the original saved finding. "
+                "Use passage with exact words from the answer to trace a particular statement. "
                 "This is read-only and starts nothing. Follow "
                 "next_offset with content_offset and revision for long JSON result fragments. "
                 "Unavailable/partial reads do not establish absence. objective_outcome is "
@@ -286,6 +287,7 @@ class CheckMyWorkTool:
                 "properties": {
                     "task_id": {"type": "integer", "minimum": 1},
                     "view": {"type": "string", "enum": ["sources"]},
+                    "passage": {"type": "string", "minLength": 1, "maxLength": 1000},
                     "scope": {"type": "string", "enum": ["active", "recent"]},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                     "content_offset": {"type": "integer", "minimum": 0},
@@ -317,25 +319,34 @@ class CheckMyWorkTool:
 
             if arguments["view"] != "sources":
                 raise ToolError("Unknown work inspection view.")
-            if set(arguments) - {"view", "task_id", "revision", "content_offset"}:
+            if set(arguments) - {"view", "task_id", "revision", "content_offset", "passage"}:
                 raise ToolError("Source inspection cannot be combined with list filters.")
             offset = arguments.get("content_offset", 0)
             if type(offset) is not int or offset < 0:
                 raise ToolError("Source inspection needs a nonnegative integer content_offset.")
             tid = arguments.get("task_id")
+            passage = arguments.get("passage")
+            if "passage" in arguments and (not isinstance(passage, str)
+                                           or not 1 <= len(passage.strip()) <= 1000):
+                raise ToolError("Use a short identifying passage from the answer.")
+            passage = passage.strip() if passage else None
             if "task_id" in arguments and (type(tid) is not int or tid < 1):
                 raise ToolError("Source inspection needs a positive integer task_id.")
             if tid is None:
                 reports = getattr(self._session, "_work_reports", None)
+                sources = None
                 if reports and getattr(self._session, "_remember_history", True):
-                    tid = reports.last_reply_task(self._session.session_key)
-            if tid is None:
-                return json.dumps({"status": "needs_task", "note":
-                                   "Which work result? The preceding reply has no final report."})
-            row = orch.get(tid)
-            if not row or row.user_id != user_id or not row.visible_to_user:
-                return json.dumps({"status": "not_found", "read_only": True})
-            sources = answer_sources(orch, row)
+                    sources = reports.last_reply_sources(
+                        self._session.session_key, user_id, passage,
+                    )
+                if sources is None:
+                    return json.dumps({"status": "needs_task", "note":
+                                       "Which work result? The last reply has no final report."})
+            else:
+                row = orch.get(tid)
+                if not row or row.user_id != user_id or not row.visible_to_user:
+                    return json.dumps({"status": "not_found", "read_only": True})
+                sources = answer_sources(orch, row, passage=passage)
             try:
                 page = json_page(sources, content_offset=offset, revision=arguments.get("revision"))
             except ValueError as exc:
@@ -343,6 +354,8 @@ class CheckMyWorkTool:
             return json.dumps({"status": sources["status"], "read_only": True, **page},
                               ensure_ascii=False)
 
+        if "passage" in arguments:
+            raise ToolError("passage requires view=sources.")
         if "task_id" in arguments:
             if set(arguments) - {"task_id", "content_offset", "revision"}:
                 raise ToolError("check_my_work: task_id cannot be combined with list filters")

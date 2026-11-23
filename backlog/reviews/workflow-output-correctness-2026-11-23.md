@@ -101,10 +101,26 @@ often the narrator actually returns an identical draft before estimating savings
 Seeing identical delivered text alone cannot distinguish a matching draft from
 a rejected rewrite that fell back to the original finding.
 
-**Next experiment.** Trace a reworded report back to the evidence used to approve
-that wording. The report reviewer checks quotations, but returns a boolean. A
-later source question retrieves the original finding's quotations. Test whether
-a follow-up about one specific clause can recover the passage that justified
-the delivered wording. Use the same check for a document summary, a schedule
-update and the two-workshop example. This will show which evidence needs to
-survive delivery across capabilities.
+The report outbox now saves a rewrite's checked quotations with the draft in
+one transaction. A fictional two-source test recovered the source of a sentence
+added in narration after reopening the database. Changing that source made the
+lookup unavailable. The test uses scripted inference to exercise the storage
+and retrieval contract.
+
+Two isolated runs of the workshop replay used the same local 9B model at 64K.
+The three-skill catalogue used 2,330 input tokens on the first planning call.
+With `--large-catalogue` the fixture registered 512 extra stellar-coordinate
+tools and the first planning call used 2,227 tokens. The larger catalogue
+activates relevance filtering. Both runs delivered the correct comparison and
+both sources. The larger run dispatched zero distractors. The small run
+reworded the report and retrieved both page quotations behind the new wording.
+The large run repeated the certified finding and skipped the narration review.
+These trials exercise catalogue growth with lexically distinct distractors.
+Routing accuracy across overlapping tool descriptions remains open.
+
+**Next experiment.** Evaluate automatic tool choice on multi-step requests that
+change capability midway. Include user wording that shares few terms with the
+registered description. Measure first-turn selection, recovery via discovery,
+wrong dispatches, total calls and prompt tokens per correct delivered answer.
+Repeat a clause-specific source question in ordinary chat after a document
+summary and a schedule update.

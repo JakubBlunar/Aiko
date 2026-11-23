@@ -70,8 +70,13 @@ reviewer. They change role instructions and available operations, using the
 configured `workflow` model route and host worker gate. They are sequential work
 roles, not concurrent autonomous agents. No user profile setup is necessary.
 
-Each planning call sees up to six complete operation contracts within a dynamic
-context budget. Aiko can discover another page or search the catalogue.
+Each planning call sees up to six complete operation contracts within its
+context budget. The router ranks the current profile's skills by name, group,
+description and parameter names against the goal and latest user guidance.
+For a large catalogue it sends matching tools. With no match it offers up to
+three starting tools. Explicit discovery can browse the ranked catalogue in
+pages or pin a registered name. New user guidance resets the discovery query,
+page and pins. Ranking requires no model call.
 Full JSON schemas, including nested fields and enums, are validated before
 dispatch; an undisclosed operation cannot be invoked. Legacy native operations
 with an empty v1 schema remain explicitly open object contracts.
@@ -226,13 +231,17 @@ through the actual input API, rather than being mistaken for discussion messages
 Drafts survive job switches and close/reopen; accepted messages have retry ids.
 
 In the work drawer, “Where did you find that?” retrieves the certificate’s
-quotations directly from owned results. A search hit supplies its own title and
+quotations directly from owned results. A source question quoting a passage
+selects statements in the saved finding containing that passage. A search hit supplies its title and
 URL. A saved page can supply its resource URL or an offset in its owned result
 artifact. Changed results and missing quotations are reported as unavailable
 or partial. This lookup makes no model or tool call. In main chat,
-`check_my_work(view="sources")` reads the same evidence. With no task ID it
-resolves only the latest assistant message if it is an exact committed final work
-report for the active chat. Otherwise Aiko needs the intended job.
+`check_my_work(view="sources")` resolves the latest assistant message when
+it matches the committed final report in the active chat. A reworded report
+uses the claims accepted in its own review. Each quote lists the statement
+it supports. The optional `passage` argument selects statements containing
+those words. An explicit task ID looks up the original finding. For an older
+rewrite without saved claims, the report lookup returns unavailable.
 
 Other work discussion gets up to 4,000 characters of the root result and 1,500
 from each of the latest eight children within its context budget. It cannot page
@@ -366,7 +375,10 @@ of creating another. New guidance or reconfiguration stops unstarted calls.
 An uncertain external effect is not repeated. `requires_observation` can require
 a current owned observation before starting, including after a manual resume.
 
-`discover {query,page}` ranks bounded complete schemas. `discover {names:[...]}`
+`discover {query,page}` ranks complete schemas, procedures and playbook titles.
+Each page offers at most six tool contracts, six group hints with two example
+names each, four procedures and six playbook titles. The context budget can
+reduce those counts. Playbook bodies load on request. `discover {names:[...]}`
 pins up to six exact schemas across steps; a new search clears old pins. The
 group manifest keeps omitted capabilities discoverable. `read_playbook {name}`
 loads optional instructions by current plugin generation; no-op repeat loads

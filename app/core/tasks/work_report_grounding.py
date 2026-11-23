@@ -114,10 +114,13 @@ def review_report(route, text, facts, evidence, *, timeout):
         )
     record_call_usage(usage)
     if getattr(usage, "done_reason", None) in {"length", "max_tokens"}:
-        return False
+        return None
     try:
         result = json.loads(raw)
         from app.core.tasks.workflow.review_contract import validate_review
-        return validate_review(result, usage, text, contract, messages)[0]
+        if validate_review(result, usage, text, contract, messages)[0]:
+            return [{k: claim[k] for k in ("part", "text", "task_id", "quote", "field")
+                     if k in claim} for claim in result["claims"]]
+        return None
     except (TypeError, ValueError):
-        return False
+        return None

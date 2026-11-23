@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import re
 import threading
 
 from app.core.infra import timephrase
@@ -61,10 +62,11 @@ class WorkDiscussion:
             return
         from app.core.tasks.work_sources import answer_sources, is_source_question, source_reply
 
-        if (question.data or {}).get("kind") == "discussion" and is_source_question(
-            (question.data or {}).get("content", "")
-        ):
-            sources = answer_sources(orchestrator, row)
+        asked = (question.data or {}).get("content", "")
+        if (question.data or {}).get("kind") == "discussion" and is_source_question(asked):
+            passage = re.search(r'"([^"\n]+)"|“([^”\n]+)”', asked)
+            selected = (passage[1] or passage[2]) if passage else None
+            sources = answer_sources(orchestrator, row, passage=selected)
             if not self.closed.is_set():
                 orchestrator.append_work_message(
                     task_id, role="assistant", content=strip_all_meta_tags(source_reply(sources)),

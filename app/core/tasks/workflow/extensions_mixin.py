@@ -3,19 +3,23 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
+from app.core.tasks.workflow.discovery import discovery_page, rank_with_matches, routing_query
 from app.core.tasks.workflow.operation_contract import admit_step_once, validate_arguments
 from app.core.tasks.workflow.profiles import supports
 
 
 class WorkflowExtensionsMixin:
-    def _capability_manifest(self):
-        from app.core.tasks.workflow.discovery import manifest
-
-        return manifest(self._skills)
-
     def _extension_context(self, state):
         extensions = self._extensions_provider()
         playbooks = extensions.get("playbooks", {})
+        query = routing_query(state)
+        page = state.get("catalogue_page", 0)
+        browse = "query" in state
+
+        def select(rows, size):
+            ranked, matches = rank_with_matches(rows, query)
+            return discovery_page(ranked, matches, page, size, browse=browse)
+
         loaded = []
         for name, generation in state.get("loaded_playbooks", {}).items():
             row = playbooks.get(name)
@@ -23,7 +27,9 @@ class WorkflowExtensionsMixin:
                 loaded.append({"name": name, "body": row["body"]})
         procedures = []
         for row in extensions.get("procedures", {}).values():
-            if all(self._skills.get(f"{row['owner']}__{step['tool']}") for step in row["steps"]):
+            if all((skill := self._skills.get(f"{row['owner']}__{step['tool']}"))
+                   and skill.generation == row["generation"]
+                   and supports(skill, state.get("profile", "general")) for step in row["steps"]):
                 procedures.append(
                     {k: row[k] for k in ("name", "description", "input_schema", "steps")}
                 )
@@ -38,9 +44,10 @@ class WorkflowExtensionsMixin:
                 if methods
                 else []
             ),
-            "procedures": procedures[:4],
+            "procedures": select(procedures, 4),
             "playbook_index": [
-                {k: row[k] for k in ("name", "description")} for row in playbooks.values()
+                {k: row[k] for k in ("name", "description")}
+                for row in select(list(playbooks.values()), 6)
             ],
             "playbooks": loaded,
         }

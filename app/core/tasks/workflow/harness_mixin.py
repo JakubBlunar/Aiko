@@ -17,7 +17,8 @@ from app.core.tasks.workflow.context_budget import TaskContextOverflow
 from app.core.infra import timephrase
 from app.core.tasks.task_handler import TaskCompleted, TaskFailed, TaskInputNeeded, TaskProgress
 from app.core.tasks.workflow.harness_results import inspect_result, result_text, verify_completion
-from app.core.tasks.workflow.profiles import PROFILES, catalogue, supports
+from app.core.tasks.workflow.discovery import routing_query
+from app.core.tasks.workflow.profiles import PROFILES, route_catalogue, supports
 from app.core.tasks.workflow.operation_contract import admit_step_once
 from app.core.tasks.workflow.skill_registry import SpawnContext
 from app.core.tasks.workflow.workflow_planner import PlannerInput, PlannerStep, decide_next_action
@@ -201,6 +202,9 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
             data = event.data or {}
             if data.get("role") == "user" and data.get("kind") == "guidance":
                 changed = True
+                state.pop("query", None)
+                state.pop("pinned_tools", None)
+                state.pop("catalogue_page", None)
                 state["guidance"].append(
                     {
                         "role": "user",
@@ -390,10 +394,11 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 state["active_reserved"] = 0
                 if not self._save(task_id, state):
                     return
-                skills = catalogue(
+                skills, groups = route_catalogue(
                     self._skills,
                     state["profile"],
-                    query=state.get("query") or state["goal"],
+                    query=routing_query(state),
+                    browse="query" in state,
                     page=state.get("catalogue_page", 0),
                     page_size=6,
                     preferred=state.get("pinned_tools", []),
@@ -436,7 +441,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                                 "current_observation": self._current_context(state),
                                 "profile_instructions": PROFILES[state["profile"]],
                                 "profiles": PROFILES,
-                                "capability_groups": self._capability_manifest(),
+                                "capability_groups": groups,
                                 "plan": state["plan"],
                                 "notes": state["notes"] if not state.get("review_feedback") else "",
                                 "review_feedback": state.get("review_feedback"),
@@ -844,9 +849,12 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 state["pinned_tools"] = [
                     name for name in names[:6] if isinstance(name, str) and self._skills.get(name)
                 ]
-            state["query"] = str(args.get("query") or "")[:200]
+            if "query" in args or "page" not in args:
+                state["query"] = str(args.get("query") or "")[:200]
+            else:
+                state.setdefault("query", "")
             page = args.get("page", 0)
-            state["catalogue_page"] = max(0, min(100, page)) if type(page) is int else 0
+            state["catalogue_page"] = max(0, page) if type(page) is int else 0
         elif action == "read_playbook":
             if not self._load_playbook(state, args):
                 state["notes"] = "That playbook is unavailable; discover the current capabilities."

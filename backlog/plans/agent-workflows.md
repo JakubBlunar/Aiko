@@ -68,10 +68,10 @@ negative cases, which is diagnostic evidence rather than a broad reliability
 measurement. Backend restart and frontend refresh are required to activate the
 source changes in an existing app process.
 
-1. **Evidence-aware work discussion.** Source questions retrieve the saved
-   quotations behind a certified answer. General factual questions still rely
-   on the root result prefix and recent child excerpts. Test selection of the
-   relevant claim when a follow-up asks about just one item in a longer report.
+1. **Evidence-aware work discussion.** A source question can select a passage
+   from a delivered report and recover the quotations used to approve its wording.
+   Test whether ordinary chat reliably selects the right passage from an indirect
+   follow-up. General factual questions still rely on bounded saved excerpts.
 2. **Referenced conversation context.** The start tool can bind short passages
    from earlier user messages. Test corrections across messages, attachment
    identity and an ambiguous reference resolved after a worker has asked for help.
