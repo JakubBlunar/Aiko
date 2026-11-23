@@ -372,6 +372,12 @@ An unanswered check therefore has a direction before any outcome arrives.
 On the proposal turn, Aiko can ask the user to try the check and report what
 they observe. The predicted outcomes stay conditional. When the user reports
 what happened, Aiko can explain which prediction fits under those conditions.
+For a short report tied to a current, source-verified comparison, the chat
+model matches the observation to the original pair of predicted outcomes.
+Chat and voice receive the observation and a tentative conclusion naming both
+causes. A changed setup can leave the test inconclusive. On a named correction
+the comparison uses the replacement observation. A separate request for help
+or an unrecognized model answer goes through ordinary chat.
 Other forms continue through the general situation extractor.
 
 A later user report is assessed against those frozen predictions. A corrected

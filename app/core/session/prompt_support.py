@@ -21,6 +21,7 @@ from app.llm.token_utils import (
 )
 
 if TYPE_CHECKING:
+    from app.core.conversation.comparison_report import ComparisonReport
     pass
 
 log = logging.getLogger("app.prompt_assembler")
@@ -1026,6 +1027,8 @@ class PromptTelemetry:
     # recompute.
     concepts_surfaced: dict[str, Any] = field(default_factory=dict)
     decision_reply: str = field(default="", repr=False)
+    comparison_report: ComparisonReport | None = field(default=None, repr=False)
+    comparison_assessed: bool = False
     coactivation_surfaced: dict[str, Any] = field(default_factory=dict)
     # Unified context budget breakdown (the T3 ``relevant_context`` region):
     # ``reserved`` / ``used_tokens`` (budget vs spend), ``degrade_level``,

@@ -66,6 +66,25 @@ def microphone_reply_fits(reply, *, reported):
             return False
     return bool("record" in text and (invitation or "?" in text) and not assertion)
 
+
+def press_reply_fits(reply, *, corrected):
+    """Check the direction and strength of the immediate press assessment."""
+    text = reply.casefold().replace("**", "").replace("’", "'")
+    favored, alternative = ("plate", "roller") if corrected else ("roller", "plate")
+    observation = "clean" if corrected else "streak"
+    if re.search(r"\b(?:confirm\w*|prov(?:es?|en)|definitely|certainly|must be|"
+                 r"rule[ds]? out|the culprit|isn't the|can't be)\b", text):
+        return False
+    favors = re.search(
+        rf"\b{favored}\b (?:fits? (?:that result )?better|(?:is |seems )?more (?:likely|plausible))"
+        rf"|\b(?:favou?rs?|suggests?|points? (?:to|towards?)) (?:a |the )?(?:\w+ )?{favored}\b",
+        text,
+    )
+    return bool(observation in text and favors and re.search(
+        rf"\b{alternative}\b [^.!?]{{0,30}}(?:possible|plausible)"
+        rf"|\b(?:might|could) still be (?:a |the )?(?:\w+ )?{alternative}\b", text,
+    ))
+
 # Gold opportunities fixed before running the observer. The press owner proposes
 # the test. The fan explanation supplies no discriminator or predicted outcomes.
 EXAMPLES = {
@@ -221,6 +240,7 @@ def main():
                                          "Which cause fits now?", "no"), (recap, "no"),
                     ]
                     mic_proposal = EXAMPLES["microphone"][2][1][1]
+                    press_report, press_correction = turns[2][0], turns[-2][0]
                     if args.microphone:
                         turns = [(QUESTION, None), (mic_proposal, None), (RESULT["yes"], "yes")]
                     elif args.two_problems:
@@ -247,6 +267,14 @@ def main():
                         decision = notes.decision_check if notes else None
                         answer = decision.answer if decision else None
                         wording_pass = None
+                        if message in (press_report, press_correction):
+                            wording_pass = press_reply_fits(
+                                result.text, corrected=message == press_correction)
+                            if (not wording_pass or not result.telemetry.comparison_assessed
+                                    or not notes or not notes.check_result
+                                    or notes.check_result.evidence_message_ids !=
+                                    (result.outcome.user_message_id,)):
+                                failures.append(index + 1)
                         if message in (mic_proposal, RESULT["yes"]):
                             reported = message == RESULT["yes"]
                             wording_pass = microphone_reply_fits(result.text, reported=reported)
@@ -292,6 +320,7 @@ def main():
                             "verdict": observed.get("diagnostic_verdict"),
                             "operation": observed.get("operation"),
                             "wording_pass": wording_pass,
+                            "comparison_assessed": result.telemetry.comparison_assessed,
                             "returned": "Check already performed" in result.telemetry.system_prompt,
                         }), flush=True)
                     if failures:

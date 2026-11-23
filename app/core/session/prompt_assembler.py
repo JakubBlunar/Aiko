@@ -1604,6 +1604,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         context_stage_ms: dict[str, float] = {}
         region_concept_trace: dict = {"surfaced": [], "reason": "no_provider"}
         decision_reply = ""
+        comparison_report = None
         rag_prefetch_event = "skip"
         rag_lookup_ms = 0.0
 
@@ -3967,21 +3968,17 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     "keep both explanations open. Briefly invite them to try the check and tell "
                     "you what they observe. Describe any possible finding conditionally."
                 )
-            elif conversation_situation_block.startswith(PENDING_COMPARISON_HEADER):
+            elif conversation_situation_block.startswith(
+                (PENDING_COMPARISON_HEADER, RETURNED_COMPARISON_HEADER)
+            ):
                 current_reply_guidance = (
-                    "If the user reports what they observed in the proposed test, answer in "
-                    "one sentence: Given [their observation], "
-                    "[one explanation] fits better, although [the alternative] is still "
-                    "possible. If the setup changed, explain why the result is inconclusive. "
-                    "If they are only planning the check or asking what would happen, keep "
-                    "both explanations open and ask what they observe when they try it."
-                )
-            elif conversation_situation_block.startswith(RETURNED_COMPARISON_HEADER):
-                current_reply_guidance = (
-                    "Answer with one sentence in this form: Given [the newest observation], "
-                    "[one explanation] fits better, although [the alternative] is still "
-                    "possible. If the test assumptions changed, explain in one sentence "
-                    "why the comparison is inconclusive instead."
+                    "If the user reports what they observed, use their newest observation "
+                    "and the matching conditional conclusion in the troubleshooting comparison. "
+                    "Name what happened and which explanation fits better. Explicitly keep the "
+                    "other named explanation possible. One test can shift the balance without "
+                    "establishing the cause. Stop there unless the user asks for next steps. "
+                    "For a changed or unclear setup, explain why both causes remain open. "
+                    "For a proposed test, keep the predictions conditional."
                 )
             elif (history_msgs and history_msgs[-1].role == "assistant"
                   and answered_copy_question(user_text, history_msgs[-1].content)):
@@ -4128,6 +4125,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             if region is not None:
                 relevant_context_block = getattr(region, "text", "") or ""
                 decision_reply = getattr(region, "decision_reply", "")
+                comparison_report = getattr(region, "comparison_report", None)
                 sel = getattr(region, "selection", None)
                 if sel is not None:
                     try:
@@ -4324,6 +4322,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 "aggressive": bool(aggressive),
             },
             decision_reply=decision_reply,
+            comparison_report=comparison_report,
             coactivation_surfaced={
                 **dict(slices.coactivation_trace or {}),
                 "slice_cache_event": slice_event,

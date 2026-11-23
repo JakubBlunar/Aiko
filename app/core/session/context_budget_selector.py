@@ -45,7 +45,10 @@ cheap to unit-test in isolation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.core.conversation.comparison_report import ComparisonReport
 
 
 # Sources the budget spans this pass. Order here is the stable render order
@@ -181,6 +184,7 @@ class RelevantContext:
     reply_guidance: str = ""
     episode_question_resolved: bool = False
     decision_reply: str = ""
+    comparison_report: ComparisonReport | None = None
 
 
 class ContextBudgetSelector:

@@ -2,7 +2,21 @@ import pytest
 
 from app.core.conversation.conversation_situation import ConversationSituationStore
 from app.core.infra.chat_database import ChatDatabase
-from scripts.diagnostic_return_replay import CASES, RESULT, seed
+from scripts.diagnostic_return_replay import CASES, RESULT, press_reply_fits, seed
+
+
+@pytest.mark.parametrize(("reply", "corrected", "passed"), [
+    ("With streaks on the fresh plate, a faulty roller fits better. "
+     "A damaged plate remains possible.", False, True),
+    ("The clean print suggests a damaged plate, though a faulty roller is still possible.",
+     True, True),
+    ("The streaks confirm a faulty roller. A damaged plate remains possible.", False, False),
+    ("With a clean print, a faulty roller fits better. A damaged plate remains possible.",
+     True, False),
+    ("Given the streaks, a faulty roller fits better. Replace it.", False, False),
+])
+def test_press_replay_requires_the_matching_tentative_conclusion(reply, corrected, passed):
+    assert press_reply_fits(reply, corrected=corrected) is passed
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -24,11 +38,17 @@ def test_checked_diagnosis_after_two_observed_detour_turns(tmp_path, case):
     elif case == "other_device":
         assert "no test result" in block and RESULT[answer] not in block
     else:
-        assert f"Earlier user report [messages {report}]: {RESULT[answer]}" in block
+        if case != "correction":
+            assert f"Earlier user report [messages {report}]: {RESULT[answer]}" in block
         if case == "wrong_input":
             assert "inconclusive between" in block and "Earlier assessment" not in block
         elif case == "correction":
             assert "new report" in block and "Earlier assessment" not in block
+            assert RESULT[answer] not in block
+            assert ("An input-side fault fits better. A call transport fault remains possible."
+                    in block)
+            assert ("A call transport fault fits better. An input-side fault remains possible."
+                    in block)
         else:
             favored = "An input-side fault" if answer == "yes" else "A call transport fault"
             assert "Earlier assessment: " + favored in block

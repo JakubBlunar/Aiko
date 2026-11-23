@@ -2676,8 +2676,10 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
             self._last_surfaced_items = []
 
         record_stage("render_and_account")
+        report_provider = getattr(self, "reported_comparison", None)
         return RelevantContext(
             text=text,
+            comparison_report=report_provider(user_text) if callable(report_provider) else None,
             reply_guidance=reply_guidance,
             episode_question_resolved=bool(episode_question and reply_guidance),
             selection=selection,

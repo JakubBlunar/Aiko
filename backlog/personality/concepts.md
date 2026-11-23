@@ -1034,6 +1034,14 @@ After the user reported hearing clicks, Aiko favored an input fault, kept a
 call transport issue possible, and the observer cited that user message.
 Reproduce the pair with `python -m scripts.diagnostic_return_replay --microphone --seed 83`.
 
+The ten-turn `--two-problems --seed 83` replay also scores both immediate
+press assessments. Before the follow-up, the first reply called the streaks
+confirmation, and the correction could favor the roller even after a clean
+print. With outcome matching, the local 9B model selected streaks and then
+clean. Each reply quoted the new observation, favored the corresponding cause
+and left the alternative possible. The later press recap used the corrected
+plate result, and the microphone recaps retained their own evidence.
+
 ## L54. Choose evidence by how much it can change a decision
 
 **Status: Partial.**

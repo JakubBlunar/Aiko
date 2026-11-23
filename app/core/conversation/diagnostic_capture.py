@@ -79,6 +79,13 @@ def _label(text):
     return re.sub(r"^(?:the|an?)\s+", "", text.strip().casefold())
 
 
+def changed_test_condition(question, observation):
+    required = re.findall(r"\b(?:the )?same ([a-z]+)\b", question, re.I)
+    return any(re.search(rf"\b(?:used|using|from|on|with) (?:a |the )?"
+                         rf"(?:different|wrong|other) {re.escape(noun)}[.!]?\s*$",
+                         observation, re.I) for noun in required)
+
+
 @dataclass
 class ProposedTest:
     hypotheses: list[str]
@@ -140,11 +147,7 @@ class DiagnosticCapture:
                 return raw
             # An explicit change to a required test condition takes priority
             # over a model that matches only the surface outcome ("clean").
-            check_text = self.notes["next_check"]["text"]
-            required = re.findall(r"\b(?:the )?same ([a-z]+)\b", check_text, re.I)
-            if any(re.search(rf"\b(?:used|using|from|on|with) (?:a |the )?"
-                             rf"(?:different|wrong|other) {re.escape(noun)}[.!]?\s*$",
-                             self.report["text"], re.I) for noun in required):
+            if changed_test_condition(self.notes["next_check"]["text"], self.report["text"]):
                 selected = None
             self.notes["check_result"] = self.report
             self.notes["suspended"] = False

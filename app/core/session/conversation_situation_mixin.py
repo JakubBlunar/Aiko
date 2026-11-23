@@ -59,6 +59,18 @@ def _working_goal_matches(user_text: str, question: str) -> bool:
     return bool(terms.intersection(re.findall(r"[a-z]{4,}", user_text.casefold())))
 
 
+def _comparison_branches(notes: ConversationWorkingSet) -> str:
+    """Keep each conditional conclusion paired with its original prediction."""
+    yes = notes.causal_check.expects_yes
+    lines = []
+    for answer, index in (("yes", yes), ("no", 1 - yes)):
+        label = notes.hypotheses[index].text
+        other = notes.hypotheses[1 - index].text
+        lines.append(f"If the answer is {answer} ({notes.causal_check.assumptions[index]}): "
+                     f"{label} fits better. {other} remains possible.")
+    return "\n".join(lines)
+
+
 def _resumed_comparison(notes: ConversationWorkingSet, user_text: str) -> str:
     """On the first returning turn, recover only the named problem and its evidence."""
     subject, matches = return_subject(notes, user_text)
@@ -77,17 +89,15 @@ def _resumed_comparison(notes: ConversationWorkingSet, user_text: str) -> str:
     source = ", ".join(str(mid) for mid in notes.check_result.evidence_message_ids)
     lines = [RETURNED_COMPARISON_HEADER, f"The user identified the earlier problem: {subject}.",
              f"Earlier question: {notes.question.text}",
-             f"Check already performed: {notes.next_check.text}",
-             f"Earlier user report [messages {source}]: {notes.check_result.text}"]
-    for i, hypothesis in enumerate(notes.hypotheses):
-        answer = "yes" if i == check.expects_yes else "no"
-        lines.append(f"{hypothesis.text} predicted {answer} assuming {check.assumptions[i]}.")
+             f"Check already performed: {notes.next_check.text}", _comparison_branches(notes)]
     correction = re.search(r"\b(?:correction|actually|wrong (?:file|test|input))\b",
                            user_text, re.I)
     if correction:
-        lines.append("The user is revising the earlier observation. Base the comparison on the "
-                     "new report. A single test shifts which cause is more plausible.")
-    elif check.result_applies:
+        lines.append("The user has superseded the earlier observation. Compare only their "
+                     "new report with the original predictions above.")
+        return "\n".join(lines)
+    lines.append(f"Earlier user report [messages {source}]: {notes.check_result.text}")
+    if check.result_applies:
         supported = (check.expects_yes if notes.decision_check.answer == "yes"
                      else 1 - check.expects_yes)
         lines.append(f"Earlier assessment: {notes.hypotheses[supported].text} fits the recorded "
@@ -157,6 +167,46 @@ class ConversationSituationMixin:
         favored = yes if notes.decision_check.answer == "yes" else 1 - yes
         label = notes.hypotheses[favored].text.rstrip(".!?")
         return f"{report} {label} fits that result better. The cause is still tentative."
+
+    def reported_comparison(self, user_text: str):
+        from app.core.conversation.comparison_report import ComparisonReport
+        from app.core.conversation.diagnostic_capture import diagnostic_capture
+        from app.core.conversation.exchange_recall import _safe_quote
+
+        if not getattr(self._settings.agent, "conversation_situation_enabled", True):
+            return None
+        snapshot = self.conversation_situation_snapshot(user_text=user_text)
+        state = self._problem_for_turn(snapshot.inferred, user_text)
+        notes = state.working_set if state else None
+        if (snapshot.inferred_stale or not notes or not state.working_source_revision
+                or not notes.causal_check or not notes.next_check):
+            return None
+        if RETURN_TO.match(user_text.strip()):
+            if not return_subject(notes, user_text)[1]:
+                return None
+        elif (state.status != ACTIVE or notes.suspended
+              or not _working_goal_matches(user_text, notes.next_check.text)):
+            return None
+        rows = self._chat_db.get_messages_after(state.session_id, after_id=state.source_message_id,
+                                                limit=2)
+        if len(rows) != 1 or rows[0].role != "user" or rows[0].content != user_text:
+            return None
+        capture = diagnostic_capture(rows, state)
+        if not capture or not capture.report:
+            return None
+        observation = capture.report["text"]
+        if re.search(r"\b(?:please|can you|could you|tell me|show me|help me|I'd like)\b",
+                     observation, re.I):
+            return None
+        if not all(_safe_quote(s) for s in (observation, *(h.text for h in notes.hypotheses))):
+            return None
+        yes = notes.causal_check.expects_yes
+        return ComparisonReport(
+            notes.next_check.text,
+            tuple(notes.causal_check.assumptions[i] for i in (yes, 1 - yes)),
+            tuple(notes.hypotheses[i].text.rstrip(".!?") for i in (yes, 1 - yes)),
+            observation, rows[0].created_at,
+        )
 
     def conversation_situation_snapshot(
         self,
@@ -518,10 +568,8 @@ class ConversationSituationMixin:
                 and re.search(r"\b(?:I (?:tested|checked|tried|hear|heard|could try|plan to)|"
                               r"I['’]ll try|what if|the test showed)\b", user_text, re.I)
                 and _working_goal_matches(user_text, notes.next_check.text)):
-            yes = notes.causal_check.expects_yes
             return (f"{PENDING_COMPARISON_HEADER}\nEarlier test: {notes.next_check.text}\n"
-                    f"A yes result favors {notes.hypotheses[yes].text}. "
-                    f"A no result favors {notes.hypotheses[1 - yes].text}. "
+                    f"{_comparison_branches(notes)}\n"
                     "Compare the user's report with these predictions only if the same setup "
                     "was tested. A changed setup leaves the result inconclusive.")
         if notes is not None and (notes.suspended or (notes.check_result and

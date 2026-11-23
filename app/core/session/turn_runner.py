@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from app.core.memory.diary_journal import journal_metadata
 from app.core.infra import timephrase
+from app.core.conversation.comparison_report import ComparisonReport
 
 from app.llm.turn_outcome import TurnOutcome
 
@@ -852,22 +853,35 @@ class TurnRunner:
             )
 
         try:
-            stream = (decision_reply,) if decision_reply else self._ollama.chat_stream(
-                messages,
-                options={
-                    "temperature": self._temperature,
-                    "num_predict": self._max_tokens,
-                    "num_ctx": self._context_window,
-                    # Stable per-conversation caching hint. Ignored by
-                    # Ollama + chat-completions; used on the Responses
-                    # surface (OpenAI / xAI Grok) to pin the shared prefix
-                    # to one cache server. See OpenAICompatibleClient.
-                    "prompt_cache_key": session_key,
-                },
-                model=self._model,
-                stop_event=self._stop,
-                surface="turn_stream",
-            )
+            report = getattr(telemetry, "comparison_report", None)
+            assessment = ""
+            if not decision_reply and not tool_calls and isinstance(report, ComparisonReport):
+                assessment = report.assess(
+                    self._ollama, model=self._model, context_window=self._context_window,
+                    stop_event=self._stop,
+                )
+                aborted = self._stop.is_set() or self._is_stop_requested(stop_requested)
+                if assessment and not aborted:
+                    mood = "neutral"
+                    telemetry.comparison_assessed = True
+            if aborted:
+                stream = ()
+            elif decision_reply or assessment:
+                stream = (decision_reply or assessment,)
+            else:
+                stream = self._ollama.chat_stream(
+                    messages,
+                    options={
+                        "temperature": self._temperature,
+                        "num_predict": self._max_tokens,
+                        "num_ctx": self._context_window,
+                        # Stable per-conversation caching hint for the Responses surface.
+                        "prompt_cache_key": session_key,
+                    },
+                    model=self._model,
+                    stop_event=self._stop,
+                    surface="turn_stream",
+                )
             for delta in stream:
                 if not first_delta_seen:
                     first_delta_seen = True
