@@ -33,6 +33,7 @@ MAX_SUMMARY_CHARS = 360
 MAX_FIELD_CHARS = 120
 MAX_EVIDENCE_IDS = 8
 RETURNED_COMPARISON_HEADER = "[Earlier troubleshooting comparison]"
+PENDING_COMPARISON_HEADER = "[Pending troubleshooting check]"
 OTHER_COMPARISON_HEADER = "[Comparison concerns another problem]"
 IMPLICIT_CLEAR_MISSES = 2
 

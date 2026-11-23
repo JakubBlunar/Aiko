@@ -12,6 +12,7 @@ from app.core.conversation.conversation_situation import (
     ConversationSituationState,
     ConversationWorkingSet,
     OTHER_COMPARISON_HEADER,
+    PENDING_COMPARISON_HEADER,
     RETURNED_COMPARISON_HEADER,
     WorldSituation,
     decision_action,
@@ -514,11 +515,11 @@ class ConversationSituationMixin:
             return ""
         if (notes and not notes.suspended and notes.causal_check and notes.next_check
                 and not notes.check_result and state.status == ACTIVE
-                and re.search(r"\b(?:I (?:tested|checked|tried|hear|heard)|the test showed)\b",
-                              user_text, re.I)
+                and re.search(r"\b(?:I (?:tested|checked|tried|hear|heard|could try|plan to)|"
+                              r"I['’]ll try|what if|the test showed)\b", user_text, re.I)
                 and _working_goal_matches(user_text, notes.next_check.text)):
             yes = notes.causal_check.expects_yes
-            return (f"{RETURNED_COMPARISON_HEADER}\nEarlier test: {notes.next_check.text}\n"
+            return (f"{PENDING_COMPARISON_HEADER}\nEarlier test: {notes.next_check.text}\n"
                     f"A yes result favors {notes.hypotheses[yes].text}. "
                     f"A no result favors {notes.hypotheses[1 - yes].text}. "
                     "Compare the user's report with these predictions only if the same setup "

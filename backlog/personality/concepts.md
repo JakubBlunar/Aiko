@@ -1027,6 +1027,13 @@ the local 9B model. In this run the model prematurely described the microphone
 test as confirmed when it was proposed. The stored answer stayed open until
 the user supplied the result.
 
+The wording follow-up scores the immediate replies as well as the stored
+comparison. In the isolated microphone replay at seed 83, Aiko asked whether
+the clicks were audible in the local recording. The check had no result.
+After the user reported hearing clicks, Aiko favored an input fault, kept a
+call transport issue possible, and the observer cited that user message.
+Reproduce the pair with `python -m scripts.diagnostic_return_replay --microphone --seed 83`.
+
 ## L54. Choose evidence by how much it can change a decision
 
 **Status: Partial.**

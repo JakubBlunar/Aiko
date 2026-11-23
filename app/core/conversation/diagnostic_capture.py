@@ -80,6 +80,37 @@ def _label(text):
 
 
 @dataclass
+class ProposedTest:
+    hypotheses: list[str]
+    predictions: list[str]
+    steps: dict[str, str]
+
+
+def proposed_test(text: str) -> ProposedTest | None:
+    """Read an explicit two-way test before either the reply or the observer runs."""
+    if len(text) > 1000 or "if yes," not in text.lower() or "if no," not in text.lower():
+        return None
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    hypotheses, predictions, steps = [], [], {}
+    for sentence in sentences:
+        prediction = re.fullmatch(r"([A-Za-z][\w '-]{2,70}?) would (.{3,110})\.", sentence, re.I)
+        if prediction and len(sentence) - 1 <= 120:
+            hypotheses.append(prediction[1])
+            predictions.append(sentence[:-1])
+            continue
+        step = re.fullmatch(r"If (yes|no),\s*(.{3,110})\.", sentence, re.I)
+        if step and step[1].lower() not in steps:
+            steps[step[1].lower()] = step[2]
+            continue
+        if not re.fullmatch(r"(?:are|is|do|does|did|can|will)\b[^.!?]*\?", sentence, re.I):
+            # A mixed turn may already report the outcome.
+            return None
+    if len(predictions) == 2 and steps.keys() == {"yes", "no"}:
+        return ProposedTest(hypotheses, predictions, steps)
+    return None
+
+
+@dataclass
 class DiagnosticCapture:
     notes: dict
     ids: set[int]
@@ -194,21 +225,8 @@ def diagnostic_capture(rows, previous):
     last = rows[-1]
     if previous and last.id <= previous.source_message_id:
         return None
-    if last.role not in {"user", "assistant"} or len(last.content) > 1000:
-        return None
-    sentences = re.split(r"(?<=[.!?])\s+", last.content.strip())
-    predictions = [m for s in sentences if (m := re.fullmatch(
-        r"([A-Za-z][\w '-]{2,70}?) would (.{3,110})[.]", s, re.I))]
-    steps = {m[1].lower(): m[2] for s in sentences if (m := re.fullmatch(
-        r"If (yes|no),\s*(.{3,110})[.]", s, re.I))}
-    if len(predictions) != 2 or steps.keys() != {"yes", "no"}:
-        return None
-    premises = [m[0].rstrip(".") for m in predictions]
-    if any(len(premise) > 120 for premise in premises):
-        return None
-    if len(sentences) != 4 + sum(s.endswith("?") for s in sentences):
-        # A mixed turn may already report the outcome. Never manufacture a
-        # pre-test prediction from an explanation offered after the result.
+    proposal = proposed_test(last.content) if last.role in {"user", "assistant"} else None
+    if proposal is None:
         return None
     questions = []
     for row in reversed(rows[-4:]):
@@ -227,16 +245,18 @@ def diagnostic_capture(rows, previous):
                     return None
                 check = questions[0]
                 notes = {"question": _note(s, row), "next_check": check,
-                         "hypotheses": [_note(m[1], last) for m in predictions],
-                         "decision_check": {"if_yes": steps["yes"], "if_no": steps["no"]},
-                         "causal_check": {"assumptions": premises,
+                         "hypotheses": [_note(label, last) for label in proposal.hypotheses],
+                         "decision_check": {"if_yes": proposal.steps["yes"],
+                                            "if_no": proposal.steps["no"]},
+                         "causal_check": {"assumptions": proposal.predictions,
                                           "result_applies": False}}
                 return DiagnosticCapture(
                     notes, {row.id, last.id, *check["evidence_message_ids"]},
                     f"The user goal is in message {row.id}. The proposed test in message "
                     f"{check['evidence_message_ids'][0]} asks: {check['text']} Imagine the "
-                    f"answer is YES. The suggested yes step was: {steps['yes']}. Which cause "
-                    "specifically predicts that YES observation while the other predicts NO? "
+                    f"answer is YES. The suggested yes step was: {proposal.steps['yes']}. "
+                    "Which cause specifically predicts that YES observation while the other "
+                    "predicts NO? "
                     "Copy its name exactly into diagnostic_verdict. You are recording a "
                     "prediction made BEFORE the test. An unknown cause or an unanswered "
                     "question is expected. Use neither only if the stated predictions do "

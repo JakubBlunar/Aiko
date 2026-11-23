@@ -24,8 +24,9 @@ from typing import Any, TYPE_CHECKING
 
 from app.core.conversation import cue_register
 from app.core.conversation.conversation_situation import (
-    OTHER_COMPARISON_HEADER, RETURNED_COMPARISON_HEADER,
+    OTHER_COMPARISON_HEADER, PENDING_COMPARISON_HEADER, RETURNED_COMPARISON_HEADER,
 )
+from app.core.conversation.diagnostic_capture import proposed_test
 from app.core.conversation.clarification_reply import (
     CLARIFICATION_GUIDANCE, COPY_ANSWER_GUIDANCE, CURRENT_REPLY_GUIDANCE,
     answered_copy_question, choice_guidance, is_clarification_question,
@@ -3959,6 +3960,22 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                     "separate source about it, say you only have the symptom the user just "
                     "named. Give no additional observations or diagnoses without a source."
                 )
+            elif proposed_test(user_text):
+                current_reply_guidance = (
+                    "The user has proposed a test with two possible outcomes. Both are "
+                    "predictions. Unless the user has already reported this exact test's result, "
+                    "keep both explanations open. Briefly invite them to try the check and tell "
+                    "you what they observe. Describe any possible finding conditionally."
+                )
+            elif conversation_situation_block.startswith(PENDING_COMPARISON_HEADER):
+                current_reply_guidance = (
+                    "If the user reports what they observed in the proposed test, answer in "
+                    "one sentence: Given [their observation], "
+                    "[one explanation] fits better, although [the alternative] is still "
+                    "possible. If the setup changed, explain why the result is inconclusive. "
+                    "If they are only planning the check or asking what would happen, keep "
+                    "both explanations open and ask what they observe when they try it."
+                )
             elif conversation_situation_block.startswith(RETURNED_COMPARISON_HEADER):
                 current_reply_guidance = (
                     "Answer with one sentence in this form: Given [the newest observation], "
@@ -3980,7 +3997,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 current_reply_guidance = (
                     "Your previous reply asked for clarification. The latest user message may "
                     "supply the answer. Use any detail they supplied to complete their request "
-                    "directly and briefly. If the request is still blocked, acknowledge what "
+                    "directly and briefly. For a proposed test, wait for the user to report "
+                    "what happened before drawing a conclusion. If the request is still blocked, "
+                    "acknowledge what "
                     f"remains unknown without guessing.\nPrior clarification: {question}"
                 )
             system_parts.append(current_reply_guidance)

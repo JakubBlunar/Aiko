@@ -22,6 +22,31 @@ def _assembler(db, tmp_path):
     return PromptAssembler(db, persona_path=persona, recent_window=20)
 
 
+def test_proposed_check_after_clarification_and_later_user_observation(db, tmp_path):
+    from app.core.conversation.conversation_situation import PENDING_COMPARISON_HEADER
+    from scripts.diagnostic_return_replay import EXAMPLES, RESULT
+
+    question, _, dialogue = EXAMPLES["microphone"]
+    proposal = dialogue[-1][1]
+    db.add_message("chat", "user", question)
+    db.add_message("chat", "assistant", "Could you tell me a little more?")
+    assembler = _assembler(db, tmp_path)
+    messages, _ = assembler.assemble_with_budget("chat", proposal, context_window=8192,
+                                                 response_budget=300)
+    system = messages[0]["content"]
+    assert "Both are predictions" in system
+    assert "Use any detail they supplied" not in system
+    db.add_message("chat", "user", proposal)
+    db.add_message("chat", "assistant", "What do you hear in the local recording?")
+    assembler.set_inner_life_providers(conversation_situation=lambda _: PENDING_COMPARISON_HEADER)
+    hypothetical = "If I hear clicks in the local recording, what would that suggest?"
+    for text in (hypothetical, RESULT["yes"]):
+        messages, _ = assembler.assemble_with_budget("chat", text, context_window=8192,
+                                                     response_budget=300)
+        assert "If the user reports what they observed" in messages[0]["content"]
+        assert "Both are predictions" not in messages[0]["content"]
+
+
 @pytest.mark.parametrize("prepersisted", [False, True])
 @pytest.mark.parametrize("text", ["You are so lovely :3 I am melting now <3", "Sleep well aiko"])
 def test_runner_sends_current_message_once(db, tmp_path, prepersisted, text):

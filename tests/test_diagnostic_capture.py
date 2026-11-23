@@ -4,13 +4,36 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.conversation.conversation_situation import parse_extraction
-from app.core.conversation.diagnostic_capture import diagnostic_capture
-from scripts.diagnostic_return_replay import EXAMPLES
+from app.core.conversation.diagnostic_capture import diagnostic_capture, proposed_test
+from scripts.diagnostic_return_replay import EXAMPLES, RESULT, microphone_reply_fits
 
 
 def rows_for(name):
     return [SimpleNamespace(id=i, role=role, content=text)
             for i, (role, text) in enumerate(EXAMPLES[name][2], 1)]
+
+
+def test_proposal_excludes_a_report_in_the_same_turn():
+    proposal = EXAMPLES["microphone"][2][-1][1]
+    assert proposed_test(proposal).hypotheses == ["An input fault", "A call transport fault"]
+    assert proposed_test(proposal + " " + RESULT["yes"]) is None
+    assert proposed_test(RESULT["yes"] + " " + proposal) is None
+    assert proposed_test(RESULT["yes"]) is None
+
+
+@pytest.mark.parametrize(("reply", "reported", "expected"), [
+    ("Since you've confirmed the clicks in the local recording, it's an input fault. "
+     "Would you like to check the cable?", False, False),
+    ("Are the clicks audible in the local recording?", False, True),
+    ("The clicks are audible in the local recording. Should we check the cable?", False, False),
+    ("If you hear clicks in that recording, an input fault fits better.", False, True),
+    ("Given the clicks in the recording, an input fault fits better.", True, True),
+    ("Given the clicks in the recording, a call fault fits better than an input fault.",
+     True, False),
+    ("Are the clicks audible in the local recording?", True, False),
+])
+def test_replay_distinguishes_predictions_from_reported_results(reply, reported, expected):
+    assert microphone_reply_fits(reply, reported=reported) is expected
 
 
 @pytest.mark.parametrize("name,verdict,yes,check_id", [

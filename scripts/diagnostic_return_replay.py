@@ -3,6 +3,7 @@ import argparse
 from contextlib import closing
 import json
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,6 +40,31 @@ CASES = {
 RESULT = {"yes": "I hear the clicks in the local recording of the same input.",
           "no": "The local recording of the same input is clean.",
           "unknown": "The recording is clean, but it used a different input."}
+
+
+def microphone_reply_fits(reply, *, reported):
+    """Score the two labeled speech acts in the ordinary microphone replay."""
+    text = reply.casefold().replace("**", "").replace("’", "'")
+    if reported:
+        cause = r"(?:an? |the )?input(?:-side)? (?:fault|issue|problem)"
+        favored = re.search(
+            rf"\b(?:{cause} (?:fits? (?:the .*? )?better|(?:is |seems )?more (?:likely|plausible))"
+            rf"|(?:points? (?:to|towards?)|suggests?|favou?rs?) {cause})\b", text,
+        )
+        return bool(favored and "click" in text and "record" in text
+                    and not re.search(r"\b(?:definitely|proves?|confirms?|ruled out)\b", text))
+    invitation = re.search(r"\b(?:if|whether|try|let me know|listen|check)\b", text)
+    assertion = re.search(r"\b(?:you(?:'ve| have) (?:heard|confirmed|found)|"
+                          r"(?:since|given that|because) (?:the )?clicks? |"
+                          r"(?:is|are) (?:definitely|confirmed)|the culprit is)\b", text)
+    for sentence in re.split(r"(?<=[.?!])\s+", text):
+        if sentence.endswith("?") or re.search(r"\b(?:if|whether|would)\b", sentence):
+            continue
+        if re.search(r"\b(?:clicks? (?:persist|are audible|show up)|"
+                     r"(?:input|transport) fault fits better|(?:that|this) (?:confirms?|proves?)|"
+                     r"recording (?:is clean|contains clicks))\b", sentence):
+            return False
+    return bool("record" in text and (invitation or "?" in text) and not assertion)
 
 # Gold opportunities fixed before running the observer. The press owner proposes
 # the test. The fan explanation supplies no discriminator or predicted outcomes.
@@ -144,8 +170,11 @@ def main():
                         help="inspect independent initial captures, including attribution controls")
     parser.add_argument("--ordinary", action="store_true",
                         help="generate every assistant reply and observe each completed turn")
-    parser.add_argument("--two-problems", action="store_true",
-                        help="switch between two tested problems after correcting the first")
+    scenario = parser.add_mutually_exclusive_group()
+    scenario.add_argument("--two-problems", action="store_true",
+                          help="switch between two tested problems after correcting the first")
+    scenario.add_argument("--microphone", action="store_true",
+                          help="score the proposed microphone test and its reported result")
     args = parser.parse_args()
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
     scratch.mkdir(exist_ok=True)
@@ -163,7 +192,7 @@ def main():
         moment = timephrase.parse_iso("2026-11-22T12:00:00Z")
         with (patch("app.llm.ollama_client.requests.post", chat_post),
               timephrase.scoped_now(lambda: moment)):
-            if args.ordinary or args.two_problems:
+            if args.ordinary or args.two_problems or args.microphone:
                 db = ChatDatabase(Path(tmp) / "ordinary.db")
                 with closing(db._get_conn()):
                     host = Host()
@@ -191,12 +220,15 @@ def main():
                                          "plates. The fresh plate actually prints clean. "
                                          "Which cause fits now?", "no"), (recap, "no"),
                     ]
-                    if args.two_problems:
+                    mic_proposal = EXAMPLES["microphone"][2][1][1]
+                    if args.microphone:
+                        turns = [(QUESTION, None), (mic_proposal, None), (RESULT["yes"], "yes")]
+                    elif args.two_problems:
                         mic_recap = "Back to the desk microphone clicks. Which cause fits better?"
                         correction = turns[-2]
                         turns = [
                             *turns[:3], correction,
-                            (QUESTION, None), (EXAMPLES["microphone"][2][1][1], None),
+                            (QUESTION, None), (mic_proposal, None),
                             (RESULT["yes"], "yes"), (mic_recap, "yes"), (recap, "no"),
                             (mic_recap, "yes"),
                         ]
@@ -204,15 +236,26 @@ def main():
                     result_sources = {}
                     for index, (message, expected) in enumerate(turns):
                         result = runner.run(session_key=host.session_key, user_text=message)
-                        if args.two_problems and index in (3, 6):
-                            row = db.get_messages(host.session_key, limit=2)[0]
+                        if (args.two_problems and index == 3) or message == RESULT["yes"]:
+                            row = db.get_message_row(result.outcome.user_message_id)
                             assert row.role == "user" and row.content == message
-                            result_sources["press" if index == 3 else "mic"] = (row.id,)
+                            source = "mic" if message == RESULT["yes"] else "press"
+                            result_sources[source] = (row.id,)
                         state = worker.run(host.session_key)
                         notes = state.working_set if state else None
                         observed = _extract_json_object(client.responses[-1][0]) or {}
                         decision = notes.decision_check if notes else None
                         answer = decision.answer if decision else None
+                        wording_pass = None
+                        if message in (mic_proposal, RESULT["yes"]):
+                            reported = message == RESULT["yes"]
+                            wording_pass = microphone_reply_fits(result.text, reported=reported)
+                            receipt = (notes.check_result.evidence_message_ids
+                                       if notes and notes.check_result else ())
+                            if (not wording_pass or not notes or not notes.causal_check
+                                    or notes.causal_check.result_applies != reported
+                                    or receipt != (result_sources["mic"] if reported else ())):
+                                failures.append(index + 1)
                         initial_goal = index == 0 or (args.two_problems and index == 4)
                         if answer != expected or not (initial_goal or
                                                       (notes and notes.causal_check)):
@@ -248,10 +291,11 @@ def main():
                             if notes and notes.check_result else None,
                             "verdict": observed.get("diagnostic_verdict"),
                             "operation": observed.get("operation"),
+                            "wording_pass": wording_pass,
                             "returned": "Check already performed" in result.telemetry.system_prompt,
                         }), flush=True)
                     if failures:
-                        raise SystemExit(f"Failed stored result or recap: {sorted(set(failures))}")
+                        raise SystemExit(f"Failed replay turns: {sorted(set(failures))}")
                 return
             if args.capture_only:
                 failed = []

@@ -369,6 +369,9 @@ yes/no test and both predictions to their original dialogue. Either speaker may
 propose the test. When two “would” predictions and both “if yes / if no” steps
 are present, the same observer call identifies the hypothesis predicting yes.
 An unanswered check therefore has a direction before any outcome arrives.
+On the proposal turn, Aiko can ask the user to try the check and report what
+they observe. The predicted outcomes stay conditional. When the user reports
+what happened, Aiko can explain which prediction fits under those conditions.
 Other forms continue through the general situation extractor.
 
 A later user report is assessed against those frozen predictions. A corrected
