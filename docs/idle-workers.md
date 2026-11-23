@@ -100,29 +100,30 @@ was available. The review can use an explicit reviewer judgment for older
 records with missing fields. The existing room and journal context still shape
 the choice, and an observed selection gives no independent evidence of motive.
 Memory Story and the unfiltered `recall_self_history` timeline use these trace
-checks for a sketching pilot. A completed drawing can support an activity report.
-Repeated choices need at least two completed model selections with an alternative
-family available and recorded cue checks. A change needs at least two comparable
-choices in each half of the retained 14-day window, with reading and sketching
-both available. The accepted comparisons must consistently show reading earlier
-and sketching later. The finding cites run and event IDs. Missing cue receipts
-can support the activity report only. This read adds no belief, learning event,
-or input to a later idle choice.
+checks for sketching, reading, writing, tending plants, making tea and stretching.
+A completed activity can support a report of what happened. Repeated choices need
+at least two independent, completed model selections with another activity family
+available. A change needs at least two comparable choices in each half of the
+retained 14-day window. Both activities must have been available on each comparable
+occasion, with one consistently chosen earlier and the other later. Findings cite
+the original run and event IDs. Missing cue records support only a completion report.
 
-For a completed single-step sketch, the away worker also keeps the independent
-choice and completion event IDs and the available alternatives in its pursuit note. A delayed journal
-write carries the original receipt. Three distinct voluntary drawing episodes
-can propose the sketching pursuit. Subsequent eligible notes can reinforce it
-through the normal concept lifecycle. Prompted drawings, forced runs and older
-sketch notes without choice evidence still support an account of the activity.
+For each supported single-step activity, the away worker keeps the selected action,
+alternatives, and original choice and completion event IDs in its pursuit note.
+A delayed journal write carries the same evidence. Three independent episodes of
+the same activity can propose a pursuit through the existing concept lifecycle.
+Additional independent choices can reinforce it. Requested activities and choices
+cued by an existing pursuit do not count toward that threshold. Older sketch
+receipts remain readable. Older activity notes with no record of the choice do
+not become evidence of a voluntary pursuit after an upgrade.
 
-When asked what she has been into, Aiko can use the same choice history and a
-supported active pursuit. The recent comparison supplies a change from reading
-to sketching. For a question about why, the first English-language pass checks
-the current owner's last 400 messages within 30 days for Aiko's own explicit
-explanation, such as “I like sketching because I enjoy getting a face right.”
-Without an explanation she can say she is still figuring it out. The pursuit
-and its support use the existing concept and memory stores.
+When asked what she has been into, Aiko can describe a recent change or a
+supported active pursuit. A question about a named activity uses its own
+history. For a question about why, Aiko checks the current owner's last 400
+messages within 30 days for her own explicit English-language explanation about
+that activity. For example, “I enjoy reading because I get to meet unfamiliar
+characters” can explain reading. A later retraction withdraws that explanation.
+Without one she can say she is still figuring it out.
 
 To compare two recorded periods, run the review module against a SQLite backup.
 Each pair of bounds includes the start and excludes the end, with an explicit

@@ -2,15 +2,19 @@
 
 import re
 
+from app.core.world.pursuit_activities import ALIASES, activity_mentions
+
 
 _INTEREST = re.compile(
     r"(?:what(?: have you been|'ve you been| are you) (?:into|interested in)"
     r"(?: lately| recently)?|what have you been enjoying(?: lately| recently)?|"
     r"what (?:have you been choosing|do you keep coming back) to do(?: lately)?|"
-    r"have your interests changed(?: lately)?|are you still (?:sketching|drawing))\??", re.I,
+    r"have your interests changed(?: lately)?)\??", re.I,
 )
+_NAMED = re.compile(r"are you still (.+?)\??", re.I)
 _WHY = re.compile(r"(?:what do you (?:like|enjoy) about|why do you (?:like|enjoy)) "
-                  r"(?P<topic>sketching|drawing|it|that)\??", re.I)
+                  r"(.+?)\??", re.I)
+_ADDITIONAL = re.compile(r"\b(?:also|as well as|and \w+ing)\b", re.I)
 
 
 def pursuit_reply(text, history, provider):
@@ -18,37 +22,63 @@ def pursuit_reply(text, history, provider):
         return ""
     text = (text or "").strip()
     why = _WHY.fullmatch(text)
-    if not why and not _INTEREST.fullmatch(text):
-        return ""
-    if why and why["topic"].lower() in {"it", "that"} and not (
-        len(history) >= 2 and history[-1].role == "assistant" and history[-2].role == "user"
-        and _INTEREST.fullmatch(history[-2].content.strip())
-        and re.search(r"\b(?:sketch\w*|drawing)\b", history[-1].content, re.I)
-        and not re.search(r"\b(?:also|as well as|and (?:doing|playing|reading|writing|painting))\b",
-                          history[-1].content, re.I)
-    ):
-        return ""
-    facts = provider("aiko").get("choice_history", {})
-    finding = facts.get("finding") or {}
-    pursuit = facts.get("pursuit") or {}
-    if not (finding or pursuit):
-        return ""
-    if why:
-        reason = facts.get("expressed_reason")
-        if reason:
-            # Attribute the old statement. A recalled answer cannot become a
-            # new independent source for the explicit-reason parser.
-            answer = "I remember saying " + reason["statement"].rstrip(".!") + "."
+    named = why or _NAMED.fullmatch(text)
+    topic = None
+    prior_reply = ""
+    if named:
+        referent = named[1].lower()
+        if why and referent in {"it", "that"}:
+            if len(history) < 2 or history[-1].role != "assistant" or history[-2].role != "user":
+                return ""
+            previous = history[-2].content.strip()
+            previous_named = _NAMED.fullmatch(previous)
+            if not (_INTEREST.fullmatch(previous) or
+                    previous_named and previous_named[1].lower() in ALIASES):
+                return ""
+            prior_reply = history[-1].content.strip().strip('"“”')
+            mentions = activity_mentions(prior_reply)
+            if len(mentions) == 1:
+                topic, = mentions
+                if (_ADDITIONAL.search(prior_reply)
+                        or previous_named and ALIASES[previous_named[1].lower()] != topic):
+                    return ""
+            elif len(mentions) != 2 or "Lately I've been choosing " not in prior_reply:
+                return ""
         else:
-            answer = "I haven't pinned down what I like about sketching yet."
+            topic = ALIASES.get(referent)
+            if topic is None:
+                return ""
+    elif not _INTEREST.fullmatch(text):
+        return ""
+
+    facts = provider("aiko").get("choice_history", {})
+    activities = facts.get("activities", {})
+    if prior_reply and not topic:
+        # A change mentions two subjects. Only resolve "it" when the previous
+        # answer describes the recorded change and names its current activity.
+        topic = next((name for name, row in activities.items()
+                      if row.get("finding", {}).get("statement") == prior_reply), None)
+        if not topic:
+            return ""
+    topic = topic or facts.get("activity")
+    record = activities.get(topic)
+    if not record and not (facts and named and topic):
+        return ""
+    record = record or {}
+    finding = record.get("finding") or {}
+    pursuit = record.get("pursuit") or {}
+    if why:
+        reason = record.get("expressed_reason")
+        answer = ("I remember saying " + reason["statement"].rstrip(".!") + "." if reason else
+                  f"I haven't pinned down what I like about {topic} yet.")
     elif finding.get("kind") == "changed_choice_pattern":
-        answer = "I used to reach for a book more often. Lately I keep picking up my sketchbook."
+        answer = finding["statement"]
     elif pursuit:
         answer = pursuit["statement"] + "."
-    elif finding.get("kind") == "repeated_choice":
-        answer = "I've picked up my sketchbook a few times when I could have done something else."
+    elif finding:
+        answer = finding["statement"]
     else:
-        answer = "I've spent some time sketching."
+        answer = f"I don't have enough to say how often I've been {topic} lately."
     return ("The user asked for a fact about your own experience. Reply with exactly the text "
             "inside the quotation marks. This is the whole reply, including its final period. "
             "Output no continuation or question.\n" + f'"{answer}"')

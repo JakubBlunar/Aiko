@@ -21,12 +21,14 @@ to spot.
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any
 
 from app.core.concepts.pursuit_choices import (
-    SKETCH_PURSUIT, independent_run, mentions_sketch, sketch_note,
+    independent_run, is_choice_note, mentions_sketch, note_activity,
 )
+from app.core.world.pursuit_activities import LABEL_ACTIVITIES, pursuit_label
 from app.core.concepts.proposers.base import (
     CandidateProposal,
     ExistingConcept,
@@ -94,14 +96,14 @@ def propose_pursuit_aiko(
     existing: Sequence[ExistingConcept] = (),
     **_ignored: Any,
 ) -> list[CandidateProposal]:
-    # Sketches carry a planner receipt. An assigned or concept-cued drawing
-    # still belongs in the journal, but cannot independently justify a pursuit.
-    runs = {}
+    # Group by both activity and original occasion. A prompted activity
+    # remains in the journal but cannot independently establish recurrence.
+    runs = defaultdict(dict)
     other = []
     for memory in memories:
-        if sketch_note(memory):
+        if is_choice_note(memory):
             if run := independent_run(memory):
-                runs[run] = memory.id
+                runs[note_activity(memory)][run] = memory.id
         else:
             other.append(memory)
     proposals = propose_aiko_hybrid(
@@ -122,15 +124,21 @@ def propose_pursuit_aiko(
             "through several notes; ignore anything that happened once."
         ),
     )
-    sketch_ids = {row.id for row in existing if mentions_sketch(row.label)}
+    protected = {row.id for row in existing if row.label in LABEL_ACTIVITIES
+                 or mentions_sketch(row.label)}
     proposals = [p for p in proposals if not mentions_sketch(p.label)
-                 and p.reinforces_id not in sketch_ids]
-    known = next((row for row in existing if row.label == SKETCH_PURSUIT), None)
-    if runs and ((known and known.reinforce) or
-                 (known is None and len(runs) >= max(3, ctx.min_sources))):
+                 and p.label not in LABEL_ACTIVITIES and p.reinforces_id not in protected]
+    by_label = {row.label: row for row in existing}
+    for activity, occasions in runs.items():
+        label = pursuit_label(activity)
+        known = by_label.get(label)
+        if (known and not known.reinforce) or (
+            not known and len(occasions) < max(3, ctx.min_sources)
+        ):
+            continue
         proposals.append(CandidateProposal(
-            label=SKETCH_PURSUIT, rationale="Chose to sketch with other activities available.",
-            confidence=0.75, evidence=[("memory", str(mid)) for mid in runs.values()],
+            label=label, rationale=f"Chose {activity} with other activities available.",
+            confidence=0.75, evidence=[("memory", str(mid)) for mid in occasions.values()],
             kind="pursuit", subject="aiko", reinforces_id=known.id if known else None,
         ))
     return proposals

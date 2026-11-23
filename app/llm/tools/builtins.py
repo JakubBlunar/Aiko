@@ -381,7 +381,7 @@ class RecallSelfHistoryTool:
                 "recorded at the time. Synchronous and fast. IMPORTANT: if "
                 "'thin_record' is true, say the record of changing beliefs is sparse. "
                 "An unfiltered Aiko timeline can also include choice_history with a bounded "
-                "finding about recent sketching and the supporting trace IDs. Describe only "
+                "finding about recent activity choices and the supporting trace IDs. Describe only "
                 "the observed finding. A pursuit carries its active concept and supporting "
                 "memory IDs. Use expressed_reason only for a reason she actually voiced. "
                 "A missing finding leaves those choices unknown. Relationship is a distinct "

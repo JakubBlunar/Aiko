@@ -124,7 +124,7 @@ function ChoiceHistory({ history }: { history: RecordedChoiceHistory }) {
   return (
     <section className="space-y-1 rounded border border-white/10 p-2 text-[11px] text-ink-100/80">
       <h3 className="font-medium">Recorded choices</h3>
-      <p>{finding?.statement ?? "The retained history has no supported sketching finding yet."}</p>
+      <p>{finding?.statement ?? "There’s no activity to report from the retained history yet."}</p>
       <p className="text-[10px] text-ink-100/50">
         {formatDay(history.from)} – {formatDay(history.to)} · {coverage.reviewed_runs} runs reviewed
         {coverage.missing_cue_receipts > 0 &&

@@ -715,7 +715,7 @@ Asked "have you changed?", Aiko can look up her recorded history with `recall_se
 
 - `tools.recall_self_history` *(bool, `true`)* — the tool gate. It only registers when the concept and learning stores are both wired.
 
-`thin_record` means the recorded changes in beliefs are too sparse to narrate. `settled` beliefs supply continuity and do not count as changes. Story and the unfiltered Aiko timeline also share a read-only **Recorded choices** finding when idle-life traces are available. This sketching pilot can describe a completed drawing, repeated choices, or an earlier-to-later pattern change within the retained 14 days. Each finding names its supporting trace events. The evidence leaves motives and lasting preferences open. See [idle-life behavior review](idle-workers.md#reviewing-behavior-and-running-isolated-experiments).
+`thin_record` means the recorded changes in beliefs are too sparse to narrate. `settled` beliefs supply continuity and do not count as changes. Story and the unfiltered Aiko timeline share a read-only **Recorded choices** finding. It can describe a completed activity, repeated voluntary choices, or a change between activities within the retained 14 days. Each finding names its supporting trace events. A learned pursuit and an explanation Aiko previously gave are linked to their own activity. See [idle-life behavior review](idle-workers.md#reviewing-behavior-and-running-isolated-experiments).
 
 ### L17d — self-correction rules (learning from her own mistakes)
 

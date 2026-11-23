@@ -1,12 +1,13 @@
-"""Connect independently chosen sketches to the existing pursuit and its memory edges."""
+"""Connect independent activity choices to the existing pursuit and its memory edges."""
 
 import re
 from datetime import timedelta
 
 from app.core.infra import timephrase
+from app.core.world.pursuit_activities import (
+    ACTIVITY_BY_KEY, ACTIVITY_WORDS, ALIASES, LABEL_ACTIVITIES,
+)
 
-
-SKETCH_PURSUIT = "I keep coming back to sketching in my own time"
 _SKETCH = re.compile(r"\b(?:sketch(?:es|ing|ed|book)?|drawing(?:s)?|draw|drew)\b"
                      r"(?! (?:water|the curtains|a bath|a conclusion)\b)", re.I)
 _ACTION = "home_new_sketch"
@@ -16,19 +17,37 @@ def mentions_sketch(text):
     return bool(_SKETCH.search(text))
 
 
-def sketch_note(note):
+def is_choice_note(note):
     meta = getattr(note, "metadata", None) or {}
     if meta.get("keys"):
-        return any(key in {_ACTION, "home_revise_sketch"} for key in meta["keys"])
-    return mentions_sketch(str(meta.get("topic") or note.content))
+        return any(key in ACTIVITY_BY_KEY for key in meta["keys"])
+    return meta.get("topic") in ACTIVITY_BY_KEY or mentions_sketch(
+        str(meta.get("topic") or note.content)
+    )
+
+
+def note_activity(note):
+    keys = (getattr(note, "metadata", None) or {}).get("keys")
+    return ACTIVITY_BY_KEY.get(keys[0]) if isinstance(keys, list) and len(keys) == 1 else None
 
 
 def independent_run(note):
+    from app.core.world.idle_life_context import family
+
     meta = getattr(note, "metadata", None) or {}
-    receipt = meta.get("sketch_choice")
-    if (meta.get("source") == "away_beat" and meta.get("keys") == [_ACTION]
-            and isinstance(receipt, dict) and isinstance(receipt.get("run_id"), str)
-            and isinstance(receipt.get("alternatives"), list) and receipt["alternatives"]
+    if not note_activity(note) or meta.get("source") != "away_beat":
+        return None
+    key, = meta["keys"]
+    if "activity_choice" in meta:
+        receipt = meta["activity_choice"]
+        if not isinstance(receipt, dict) or receipt.get("key") != key:
+            return None
+    else:
+        receipt = meta.get("sketch_choice") if key == _ACTION else None
+    if (isinstance(receipt, dict) and isinstance(receipt.get("run_id"), str)
+            and isinstance(receipt.get("alternatives"), list)
+            and any(isinstance(opt, str) and opt and family(opt) != family(key)
+                    for opt in receipt["alternatives"])
             and all(type(receipt.get(k)) is int and receipt[k] > 0
                     for k in ("choice_event_id", "completion_event_id"))
             and receipt["completion_event_id"] > receipt["choice_event_id"]):
@@ -36,41 +55,50 @@ def independent_run(note):
     return None
 
 
-def supported_pursuit(concepts, memories, owner):
+def supported_pursuits(concepts, memories, owner):
     """Only expose the supported observation; older labels may also speculate about motives."""
     pursuits = [c for c in concepts.list_by(kind="pursuit", subject="aiko", status="active")
-                if c.user_id in (None, owner) and c.label == SKETCH_PURSUIT]
+                if c.user_id in (None, owner) and c.label in LABEL_ACTIVITIES]
     edges = concepts.evidence_for(c.concept_id for c in pursuits)
-    for concept in pursuits:
+    supported = {}
+    for concept in sorted(pursuits, key=lambda c: (c.last_reinforced_at or c.created_at,
+                                                  c.concept_id)):
+        activity = LABEL_ACTIVITIES[concept.label]
         support = {}
         for edge in edges.get(concept.concept_id, ()):
             if edge.src_type == "memory":
                 note = memories.get(int(edge.src_id))
-                if note and note.kind == "pursuit_note" and (run := independent_run(note)):
+                if (note and note.kind == "pursuit_note" and note_activity(note) == activity
+                        and (run := independent_run(note))):
                     support[run] = note.id
         if len(support) >= 3:
-            return {"concept_id": concept.concept_id, "statement": SKETCH_PURSUIT,
-                    "memory_ids": list(support.values())}
-    return None
+            supported[activity] = {"concept_id": concept.concept_id, "statement": concept.label,
+                                   "memory_ids": list(support.values())}
+    return supported
 
 
-_REASON = re.compile(
-    r"I (?:like|love|enjoy) (?:sketching|drawing) because ([^.!?\n]{3,140})[.!]?", re.I,
-)
+_REASON = re.compile(r"I (?:like|love|enjoy) (.+?) because ([^.!?\n]{3,140})[.!]?", re.I)
+_RETRACT = re.compile(r"I (?:no longer|don['’]t|do not) (?:like|love|enjoy) ("
+                      + ACTIVITY_WORDS.pattern + ")", re.I)
 
 
-def expressed_reason(db, owner):
+def expressed_reasons(db, owner, activities):
     now = timephrase.utcnow()
     rows = db.messages_in_range((now - timedelta(days=30)).isoformat(), now.isoformat(),
                                 user_id=owner, limit=400)
+    reasons, remaining = {}, set(activities)
     for row in rows:
         if row["role"] != "assistant":
             continue
         text = row["content"].strip()
-        if re.match(r"I (?:no longer|don't|do not) (?:like|love|enjoy) (?:sketching|drawing)\b",
-                    text, re.I):
-            return None
-        if _REASON.fullmatch(text):
-            return {"statement": text, "message_id": row["message_id"],
-                    "created_at": row["created_at"]}
-    return None
+        reason = _REASON.fullmatch(text)
+        match = reason or _RETRACT.match(text)
+        activity = ALIASES.get(match[1].lower()) if match else None
+        if activity in remaining:
+            remaining.remove(activity)
+            if reason:
+                reasons[activity] = {"statement": text, "message_id": row["message_id"],
+                                     "created_at": row["created_at"]}
+            if not remaining:
+                break
+    return reasons

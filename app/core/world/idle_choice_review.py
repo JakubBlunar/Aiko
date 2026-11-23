@@ -1,24 +1,15 @@
 """Read completed choices from idle planner traces."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 
 from app.core.world.idle_life_context import family
+from app.core.world.pursuit_activities import ACTIVITY_BY_KEY
 
 
 _FREEFORM_CHOICES = {"read_book", "tea", "wander", "nap", "stretching", "garden"}
 _CUE_FIELDS = ("optional_inspiration", "daily_intention", "ongoing_interest")
-_SKETCH = "home_new_sketch"
-_READ = "read_book"
-_FINDING_TEXT = {
-    "changed_choice_pattern": (
-        "Among the comparable choices we recorded, I chose reading earlier and sketching "
-        "later when both were available."
-    ),
-    "repeated_choice": "I chose to sketch more than once when other activities were available.",
-    "completed_activity": "I made a sketch during this period.",
-}
 
 
 @dataclass(frozen=True)
@@ -162,9 +153,9 @@ def _evidence(choice, step):
     }
 
 
-def sketch_choice_receipt(chain):
+def activity_choice_receipt(chain):
     """Snapshot the original choice while its trace still exists, including for delayed notes."""
-    if [beat.key for beat in chain] != [_SKETCH]:
+    if len(chain) != 1 or chain[0].key not in ACTIVITY_BY_KEY:
         return None
     from app.core.world.idle_life_trace import current_run
 
@@ -179,19 +170,19 @@ def sketch_choice_receipt(chain):
     if len(found) == 1:
         key, options, choice, step = found[0]
         alternatives = sorted(option for option in options if family(option) != family(key))
-        if key == _SKETCH and alternatives:
-            return {**_evidence(choice, step), "alternatives": alternatives}
+        if key == chain[0].key and alternatives:
+            return {**_evidence(choice, step), "key": key, "alternatives": alternatives}
     return None
 
 
 def build_recent_choice_history(decisions, *, now, retention_days, truncated=False):
-    """Project one bounded drawing example from complete autonomous decisions."""
+    """Compare independent choices where the same two activities were available."""
     start = (now - timedelta(days=retention_days)).isoformat()
     split = (now - timedelta(days=retention_days / 2)).isoformat()
     end = now.isoformat()
     coverage = Counter()
     studies = {"earlier": [], "later": []}
-    sketches, returns = [], []
+    completed, returns = defaultdict(list), defaultdict(list)
     for decision in decisions:
         events = decision["events"]
         if (decision["truncated"] or not events or events[0]["kind"] != "run_started"
@@ -207,11 +198,13 @@ def build_recent_choice_history(decisions, *, now, retention_days, truncated=Fal
             coverage["boundary_runs"] += 1
             continue
         coverage["reviewed_runs"] += 1
-        completed = next((ev for ev in events if ev["kind"] == "step_completed"
-                          and ev["actor"] == "autonomous" and ev["payload"].get("key") == _SKETCH),
-                         None)
-        if completed:
-            sketches.append(_evidence(None, completed))
+        seen = set()
+        for ev in events:
+            activity = ACTIVITY_BY_KEY.get(ev["payload"].get("key"))
+            if (ev["kind"] == "step_completed" and ev["actor"] == "autonomous"
+                    and activity and activity not in seen):
+                completed[activity].append(_evidence(None, ev))
+                seen.add(activity)
         if any(ev["kind"] == "planning_fallback" for ev in events):
             continue
         found = list(_completed_choices(events, None, coverage))
@@ -219,38 +212,55 @@ def build_recent_choice_history(decisions, *, now, retention_days, truncated=Fal
             continue
         key, options, choice, step = found[0]
         source = _evidence(choice, step)
-        if key == _SKETCH:
-            if not any(family(option) != family(_SKETCH) for option in options):
-                coverage["without_alternative"] += 1
-                continue
-            returns.append(source)
-        if {_SKETCH, _READ} <= options:
-            studies["earlier" if last < split else "later"].append((key, source))
+        if not any(family(option) != family(key) for option in options):
+            coverage["without_alternative"] += 1
+            continue
+        activity = ACTIVITY_BY_KEY.get(key)
+        if activity:
+            returns[activity].append(source)
+        offered = {ACTIVITY_BY_KEY.get(option) for option in options}
+        studies["earlier" if last < split else "later"].append((activity, offered, source))
 
-    before, after = studies["earlier"], studies["later"]
-    finding = None
-    if (not truncated and len(before) >= 2 and len(after) >= 2
-            and all(key == _READ for key, _ in before)
-            and all(key == _SKETCH for key, _ in after)):
-        finding = {
-            "kind": "changed_choice_pattern",
-            "earlier_count": len(before), "later_count": len(after),
-            "earlier": [source for _, source in before[-3:]],
-            "later": [source for _, source in after[-3:]],
-        }
-    elif len(returns) >= 2:
-        finding = {"kind": "repeated_choice", "count": len(returns), "later": returns[-3:]}
-    elif sketches:
-        finding = {"kind": "completed_activity", "count": len(sketches), "later": sketches[-3:]}
-    if finding:
-        finding["statement"] = _FINDING_TEXT[finding["kind"]]
-        if finding["kind"] == "completed_activity" and len(sketches) > 1:
-            finding["statement"] = f"I made sketches on {len(sketches)} recorded occasions."
+    findings = {}
+    for activity, occasions in completed.items():
+        choices = returns[activity]
+        finding = {"kind": "completed_activity", "count": len(occasions), "later": occasions[-3:],
+                   "statement": f"I've spent some time {activity}."}
+        if len(choices) >= 2:
+            finding = {"kind": "repeated_choice", "count": len(choices), "later": choices[-3:],
+                       "statement": f"I've chosen {activity} more than once."}
+        for earlier in sorted(returns) if len(choices) >= 2 and not truncated else ():
+            if activity == earlier:
+                continue
+            pair = {earlier, activity}
+            before, after = [
+                [(picked, src) for picked, offered, src in rows if pair <= offered]
+                for rows in studies.values()
+            ]
+            if (len(before) >= 2 and len(after) >= 2 and all(k == earlier for k, _ in before)
+                    and all(k == activity for k, _ in after)):
+                finding = {"kind": "changed_choice_pattern", "previous_activity": earlier,
+                           "earlier_count": len(before), "later_count": len(after),
+                           "earlier": [src for _, src in before[-3:]],
+                           "later": [src for _, src in after[-3:]],
+                           "statement": f"I was choosing {earlier} before. "
+                                        f"Lately I've been choosing {activity}."}
+                break
+        findings[activity] = {**finding, "activity": activity}
+
+    def relevance(activity):
+        item = findings[activity]
+        return (completed[activity][-1]["recorded_at"] >= split,
+                item["kind"] == "changed_choice_pattern", item["kind"] == "repeated_choice",
+                sum(src["recorded_at"] >= split for src in returns[activity]),
+                completed[activity][-1]["completion_event_id"])
+
+    primary = max(findings, key=relevance, default=None)
     return {
         "from": start, "to": end, "split": split, "truncated": truncated,
         "coverage": {key: coverage[key] for key in (
             "reviewed_runs", "missing_cue_receipts", "prompted_choices", "without_alternative",
             "unverified_choices", "incomplete_runs", "boundary_runs",
         )},
-        "finding": finding,
+        "findings": findings, "finding": findings.get(primary),
     }

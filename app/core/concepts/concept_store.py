@@ -801,6 +801,11 @@ class ConceptStore:
             or canonical.kind != absorbed.kind
         ):
             return False
+        if canonical.kind == "pursuit":
+            from app.core.world.pursuit_activities import LABEL_ACTIVITIES
+
+            if LABEL_ACTIVITIES.get(canonical.label) != LABEL_ACTIVITIES.get(absorbed.label):
+                return False
         if canonical.kind == "communication_style":
             from app.core.concepts.concept_applicability import scope_key
 

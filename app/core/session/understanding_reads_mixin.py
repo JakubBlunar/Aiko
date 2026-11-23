@@ -88,18 +88,27 @@ class UnderstandingReadsMixin:
         if subject != "aiko":
             return {}
         try:
-            from app.core.concepts.pursuit_choices import expressed_reason, supported_pursuit
+            from app.core.concepts.pursuit_choices import expressed_reasons, supported_pursuits
 
             history = trace.recent_choice_history() if trace is not None else {}
             memories = getattr(self, "_memory_store", None)
-            if memories is not None and (pursuit := supported_pursuit(
-                self._concept_store, memories, self._user_id,
-            )):
-                history["pursuit"] = pursuit
+            activities = {name: {"finding": finding}
+                          for name, finding in history.pop("findings", {}).items()}
+            if memories is not None:
+                for name, pursuit in supported_pursuits(
+                    self._concept_store, memories, self._user_id,
+                ).items():
+                    activities.setdefault(name, {})["pursuit"] = pursuit
             db = getattr(self, "_chat_db", None)
-            if db is not None and (history.get("finding") or history.get("pursuit")):
-                if reason := expressed_reason(db, self._user_id):
-                    history["expressed_reason"] = reason
+            if db is not None and activities:
+                for name, reason in expressed_reasons(db, self._user_id, activities).items():
+                    activities[name]["expressed_reason"] = reason
+            if activities:
+                history["activities"] = activities
+                primary = ((history.get("finding") or {}).get("activity")
+                           or next(reversed(activities)))
+                history.update(activities[primary])
+                history["activity"] = primary
             return {"choice_history": history} if history else {}
         except Exception:
             log.debug("Choice history unavailable", exc_info=True)
@@ -139,7 +148,7 @@ class UnderstandingReadsMixin:
                     "note": "A change in Aiko's understanding does not prove a change in the "
                             "user or relationship. Thin/omitted history is incomplete. "
                             "Choice history describes recorded actions in a recent window. "
-                            "Leave motives and lasting preferences open."}
+                            "Use the matching pursuit or expressed reason when present."}
         if mode == "learning_event":
             event = learning.get(event_id)
             ids = [i for i in (event.concept_id, event.prior_concept_id) if i] if event else []

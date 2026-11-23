@@ -65,7 +65,7 @@ from app.core.world import (
     in_progress_beat,
 )
 from app.core.world.activity_selection import weighted_pick
-from app.core.world.idle_choice_review import sketch_choice_receipt
+from app.core.world.idle_choice_review import activity_choice_receipt
 from app.core.world.idle_activity_composition_mixin import ActivityCompositionMixin
 from app.core.world.idle_activity_candidates_mixin import (
     ActivityCandidatesMixin,
@@ -458,9 +458,9 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             last_held = last.move_item_id
         self._restore_moved_items(chain, keep_id=last_held)
         try:
-            choice_receipt = sketch_choice_receipt(chain)
+            choice_receipt = activity_choice_receipt(chain)
         except Exception:
-            log.debug("Sketch choice trace unavailable", exc_info=True)
+            log.debug("Activity choice trace unavailable", exc_info=True)
             choice_receipt = None
         if leave_open:
             open_beat = in_progress_beat.build(
@@ -707,8 +707,13 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
         """
         if self._pursuit_notes is None:
             return None
-        if not (effects or closed_intention or len(chain) > 1):
+        if not (choice_receipt or effects or closed_intention or len(chain) > 1):
             return None
+        choice_meta = {}
+        if choice_receipt:
+            # A delayed journal write can resume with a pre-upgrade sketch receipt.
+            field = "activity_choice" if choice_receipt.get("key") else "sketch_choice"
+            choice_meta[field] = choice_receipt
         return self._pursuit_notes.write(
             summary,
             source="away_beat",
@@ -716,7 +721,7 @@ class IdleAwayActivityWorker(ActivityCandidatesMixin, ActivityCompositionMixin):
             at=now,
             extra={
                 "keys": [b.key for b in chain],
-                **({"sketch_choice": choice_receipt} if choice_receipt else {}),
+                **choice_meta,
                 "changed": [str(e.get("effect") or "") for e in effects],
                 "closed_intention": bool(closed_intention),
                 "clauses": [{"activity": beat.key, "text": beat.summary,

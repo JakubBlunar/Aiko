@@ -447,13 +447,14 @@ class ConceptConsolidationWorker:
             stats["pairs_considered"] = 0
             return []
         row_of = {cid: i for i, cid in enumerate(ids)}
-        by_block: dict[tuple[str, str], list["Concept"]] = {}
+        from app.core.world.pursuit_activities import LABEL_ACTIVITIES
+
+        by_block: dict[tuple[str, str, str | None], list["Concept"]] = {}
         for concept in actives:
             if concept.concept_id not in row_of:
                 continue
-            by_block.setdefault(
-                (concept.subject, concept.kind), []
-            ).append(concept)
+            activity = LABEL_ACTIVITIES.get(concept.label) if concept.kind == "pursuit" else None
+            by_block.setdefault((concept.subject, concept.kind, activity), []).append(concept)
 
         top_n = max(0, self._i("concept_consolidation_block_top_n", 3))
         floor = min(
@@ -492,7 +493,7 @@ class ConceptConsolidationWorker:
             self._block_answered[key] = self._block_answered.get(key, 0) + 1
             return True
 
-        for (subject, kind), members in by_block.items():
+        for (subject, kind, _), members in by_block.items():
             if len(members) < 2:
                 continue
             if len(members) > _MAX_BLOCK:

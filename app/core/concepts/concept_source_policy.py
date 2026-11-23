@@ -21,20 +21,24 @@ class ConceptSourcePolicyMixin:
 
     def _claim_source_refusal(self, proposal):
         if proposal.kind == "pursuit":
-            from app.core.concepts.pursuit_choices import SKETCH_PURSUIT, independent_run
+            from app.core.concepts.pursuit_choices import independent_run, note_activity
+            from app.core.world.pursuit_activities import LABEL_ACTIVITIES
 
             target = (self._concept_store.get(proposal.reinforces_id)
                       if proposal.reinforces_id else None)
-            if proposal.label == SKETCH_PURSUIT or (target and target.label == SKETCH_PURSUIT):
+            activity = LABEL_ACTIVITIES.get(proposal.label)
+            if target and LABEL_ACTIVITIES.get(target.label) != activity:
+                return "mismatched_pursuit_activity"
+            if activity:
                 runs = set()
                 for kind, ident in proposal.evidence:
                     note = self._memory_store.get(int(ident)) if kind == "memory" else None
                     run = independent_run(note) if note and note.kind == "pursuit_note" else None
-                    if not run or run in runs:
-                        return "missing_independent_sketch_choice"
+                    if not run or run in runs or note_activity(note) != activity:
+                        return "missing_independent_activity_choice"
                     runs.add(run)
                 if not target and len(runs) < 3:
-                    return "missing_independent_sketch_choice"
+                    return "missing_independent_activity_choice"
         if proposal.applicability:
             from app.core.concepts.concept_applicability import scope_sources_valid
 

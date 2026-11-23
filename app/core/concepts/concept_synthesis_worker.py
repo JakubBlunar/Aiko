@@ -51,6 +51,7 @@ from app.core.concepts.proposers import (
     TensionBase,
 )
 from app.core.concepts.concept_dedupe import DEDUPE_COS, find_duplicate, vector_cosine
+from app.core.world.pursuit_activities import LABEL_ACTIVITIES
 from app.core.concepts.concept_drift import is_material_relabel
 from app.core.concepts.concept_evidence_admission import (
     ADMISSION_COS,
@@ -1743,7 +1744,7 @@ class ConceptSynthesisWorker(
         prev = self._load_sigs(sig_key)
         memory_batch = select_memory_batch(
             pop, prev, excluded_ids=set(), limit=self._max_pursuit_memories, force=force,
-            metadata_keys=("sketch_choice", "keys", "source", "topic"),
+            metadata_keys=("activity_choice", "sketch_choice", "keys", "source", "topic"),
         )
         stats["memory_dirty_remaining"] = (
             int(stats.get("memory_dirty_remaining", 0)) + memory_batch.remaining
@@ -1757,20 +1758,27 @@ class ConceptSynthesisWorker(
             memory_batch.rows, key=lambda memory: str(getattr(memory, "created_at", "") or ""),
         )
 
-        # A new sketch may be the only new note this tick. Include enough
-        # earlier independent occasions to check recurrence even in a busy pool.
-        from app.core.concepts.pursuit_choices import independent_run
+        from app.core.concepts.pursuit_choices import independent_run, note_activity
 
-        runs = {run for note in batch if (run := independent_run(note))}
+        runs = {}
+        for note in batch:
+            if run := independent_run(note):
+                runs.setdefault(note_activity(note), set()).add(run)
         required = max(3, getattr(ctx, "min_sources", 3))
-        if 0 < len(runs) < required:
+        sparse = {activity: ids for activity, ids in runs.items() if len(ids) < required}
+        if sparse:
             for note in reversed(pop):
+                activity = note_activity(note)
+                if activity not in sparse:
+                    continue
                 run = independent_run(note)
-                if run and run not in runs:
-                    runs.add(run)
+                if run and run not in sparse[activity]:
+                    sparse[activity].add(run)
                     batch.append(note)
-                    if len(runs) >= required:
-                        break
+                    if len(sparse[activity]) >= required:
+                        del sparse[activity]
+                        if not sparse:
+                            break
 
         proposals = spec.propose(
             ctx,
@@ -3435,7 +3443,9 @@ class ConceptSynthesisWorker(
             if proposal.compared_to is not None else None
         )
         comparison_cosine = vector_cosine(vec, comparison.embedding) if comparison else None
-        if top_sim >= DISTINCTION_COS and (
+        # The executed activity already distinguishes these canonical claims.
+        recorded_pursuit = proposal.kind == "pursuit" and proposal.label in LABEL_ACTIVITIES
+        if not recorded_pursuit and top_sim >= DISTINCTION_COS and (
             len(proposal.distinction) < 12
             or comparison is None
             or comparison.subject != proposal.subject
@@ -3532,14 +3542,12 @@ class ConceptSynthesisWorker(
         """
         exclude: set[int] = set()
         if proposal.kind == "pursuit":
-            from app.core.concepts.pursuit_choices import SKETCH_PURSUIT
-
             # Exact choice evidence establishes recurrence. Cosine similarity
             # cannot establish the motive in a more specific, older belief.
-            observed_choice = proposal.label == SKETCH_PURSUIT
+            activity = LABEL_ACTIVITIES.get(proposal.label)
             exclude.update(c.concept_id for c in self._concept_store.list_by(
                 subject=proposal.subject, kind=proposal.kind,
-            ) if (c.label == SKETCH_PURSUIT) != observed_choice)
+            ) if LABEL_ACTIVITIES.get(c.label) != activity)
         if proposal.kind == "communication_style" or proposal.applicability:
             from app.core.concepts.concept_applicability import scope_key
 

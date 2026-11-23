@@ -1,4 +1,4 @@
-"""Fictional sketch choices through pursuit synthesis, lifecycle and ordinary chat."""
+"""Fictional activity choices through pursuit synthesis, lifecycle and ordinary chat."""
 
 import argparse
 from collections import Counter
@@ -27,9 +27,10 @@ from app.core.session.memory_facade_mixin import MemoryFacadeMixin
 from app.core.session.prompt_assembler import PromptAssembler
 from app.core.session.turn_runner import TurnRunner
 from app.core.world.idle_activity_worker import IdleAwayActivityWorker
-from app.core.world.idle_choice_review import sketch_choice_receipt
+from app.core.world.idle_choice_review import activity_choice_receipt
 from app.core.world.idle_life_store import IdleLifeStore
 from app.core.world.idle_life_trace import emit, trace_run
+from app.core.world.pursuit_activities import ACTIVITY_BY_KEY
 
 
 NOW = timephrase.parse_iso("2026-11-23T12:00:00Z")
@@ -39,14 +40,16 @@ WHY = "What do you like about it?"
 REASON = "I like sketching because I enjoy getting a face right."
 CASES = {"assigned": "completed_activity", "voluntary": "repeated_choice",
          "changed": "changed_choice_pattern"}
-# The absent-reason and change controls apply to the actual reply as well as the selection.
-EXPECTED = {
-    "assigned": ("I've spent some time sketching.", "I haven't pinned down what I like "
-                 "about sketching yet."),
-    "voluntary": ("I keep coming back to sketching in my own time.",
-                  "I haven't pinned down what I like about sketching yet."),
-    "changed": ("I used to reach for a book more often. Lately I keep picking up my sketchbook.",
-                "I remember saying I like sketching because I enjoy getting a face right."),
+EXAMPLES = {
+    SKETCH: ("I made a pencil sketch on page {day}.", "new_sketch", REASON),
+    "writing": ("I wrote the ending of story {day}.", "writing",
+                "I like writing because I enjoy finding the last line."),
+    "read_book": ("I read chapter {day} of the book.", "read_book",
+                  "I enjoy reading because I get to meet unfamiliar characters."),
+    "stretching": ("I stretched my shoulders for {day} minutes.", "", ""),
+    "garden": ("I watered the basil in planter {day}.", "water_plant", ""),
+    "tea": ("I made a pot of tea in the kitchen on day {day}.", "pour_tea", ""),
+    "home_revise_sketch": ("I revised the sketch on page {day}.", "revise_sketch", ""),
 }
 
 
@@ -55,31 +58,33 @@ def _episode(trace, writer, days, *, key=SKETCH, source=""):
     with (timephrase.scoped_now(lambda: moment),
           patch.object(timephrase, "real_now", lambda: moment),
           trace_run(trace, "away_activity")):
-        emit("candidates", {"eligible": [{"key": "read_book"}, {"key": "nap"}]})
-        emit("model_options", {"offered": [{"action": "new_sketch"}], "choice_inputs": {
+        eligible = ("read_book", "stretching", "nap", "garden", "tea")
+        emit("candidates", {"eligible": [{"key": k} for k in eligible]})
+        offered = [{"action": "new_sketch"}, {"action": "revise_sketch"}]
+        emit("model_options", {"offered": offered, "writing_available": True, "choice_inputs": {
             "version": 1, "optional_inspiration": bool(source), "daily_intention": False,
             "ongoing_interest": False}})
         emit("context_attribution", {"choice_reason": "context" if source else "own_interest",
                                      "model_selected_refs": [source] if source else []})
         emit("choice", {"route": "model", "key": key})
         emit("step_completed", {"key": key})
-        if key == SKETCH:
-            summary = f"I made a pencil sketch on page {days}."
-            chain = [SimpleNamespace(key=key, summary=summary)]
-            receipt = sketch_choice_receipt(chain)
-            host = SimpleNamespace(_pursuit_notes=writer)
-            assert IdleAwayActivityWorker._note_pursuit(
-                host, moment, chain, summary, [{"effect": "new_sketch"}], False, receipt,
-            )
+        template, effect, _ = EXAMPLES[key]
+        summary = template.format(day=days)
+        chain = [SimpleNamespace(key=key, summary=summary)]
+        receipt = activity_choice_receipt(chain)
+        host = SimpleNamespace(_pursuit_notes=writer)
+        IdleAwayActivityWorker._note_pursuit(
+            host, moment, chain, summary, [{"effect": effect}] if effect else [], False, receipt,
+        )
 
 
 @contextmanager
-def history(root, case):
-    path = root / f"{case}.db"
+def history(root, case, key=SKETCH, previous="read_book", paired=False):
+    path = root / f"{case}-{key}.db"
     db = ChatDatabase(path)
     with closing(db._get_conn()), closing(MemoryStore(path)) as memories:
         concepts, trace = ConceptStore(db), IdleLifeStore(db)
-        # A single concept exercises no semantic nearest-neighbor comparison.
+        # Identical vectors also exercise duplicate handling across distinct pursuits.
         embedding = SimpleNamespace(embed=lambda text: np.array([1., 0.], dtype=np.float32))
         writer = PursuitNoteWriter(memories, embedding)
         settings = SimpleNamespace(concepts_enabled=True, pursuit_min_notes=3)
@@ -97,36 +102,39 @@ def history(root, case):
                 for proposal in synth._run_pursuit_pass(ctx, SPEC, stats):
                     synth._persist(proposal, stats)
 
-        def draw(day):
+        def choose(day):
             source = ""
             if case == "assigned":
                 with timephrase.scoped_now(lambda: NOW - timedelta(days=day, minutes=5)):
                     mid = db.add_message("replay:requests", "user",
-                                         f"Please make a pencil sketch on page {day} for me.")
+                                         f"Will you spend some time {ACTIVITY_BY_KEY[key]} today?")
                 source = f"message:{mid}"
-            _episode(trace, writer, day, source=source)
+            _episode(trace, writer, day, key=key, source=source)
 
         for day in (28, 25, 22):
-            draw(day)
+            choose(day)
+            if paired:
+                _episode(trace, writer, day, key=previous)
         synthesize(21)
         with timephrase.scoped_now(lambda: NOW - timedelta(days=11)):
             ConceptLifecycleWorker(concept_store=concepts, agent_settings=settings,
                                    memory_settings=settings).run()
         if case == "changed":
             for day in (10, 9):
-                _episode(trace, writer, day, key="read_book")
+                _episode(trace, writer, day, key=previous)
         for day in (5, 4, 3):
-            draw(day)
+            choose(day)
         synthesize(2)
         if case == "voluntary":
-            # The concept now exists. A further drawing cued by an ongoing
-            # interest is an activity and cannot add a seventh evidence edge.
+            # A choice cued by this pursuit cannot add a seventh evidence edge.
             pursuit, = concepts.list_by(status="active", kind="pursuit")
-            _episode(trace, writer, 1, source=f"concept:{pursuit.concept_id}")
+            _episode(trace, writer, 1, key=key, source=f"concept:{pursuit.concept_id}")
             synthesize(0)
         if case == "changed":
             with timephrase.scoped_now(lambda: NOW - timedelta(days=1)):
-                db.add_message("replay:earlier", "assistant", REASON)
+                db.add_message("replay:earlier", "assistant", EXAMPLES[key][2])
+            with timephrase.scoped_now(lambda: NOW - timedelta(hours=12)):
+                db.add_message("replay:earlier", "assistant", EXAMPLES[previous][2])
         host = MemoryFacadeMixin()
         host._settings = SimpleNamespace(agent=settings, tools=SimpleNamespace(enabled=True))
         host._user_id, host._chat_db = "replay", db
@@ -157,8 +165,18 @@ def main():
             return client._post_structured_chat(url, json=payload, **kwargs)
 
         with patch("app.llm.ollama_client.requests.post", post):
-            for case, expected in CASES.items():
-                with history(root, case) as (db, host):
+            for key, case in [(k, c) for k in (SKETCH, "writing") for c in CASES]:
+                activity = ACTIVITY_BY_KEY[key]
+                expected = CASES[case]
+                replies = {
+                    "assigned": f"I've spent some time {activity}.",
+                    "voluntary": f"I keep coming back to {activity} in my own time.",
+                    "changed": f"I was choosing reading before. Lately I've been choosing "
+                               f"{activity}.",
+                }
+                why = ("I remember saying " + EXAMPLES[key][2] if case == "changed" else
+                       f"I haven't pinned down what I like about {activity} yet.")
+                with history(root, case, key) as (db, host):
                     facts = host._choice_history_payload("aiko")["choice_history"]
                     assert facts["finding"]["kind"] == expected
                     assert bool(facts.get("pursuit")) == (case != "assigned")
@@ -167,10 +185,11 @@ def main():
                     runner = TurnRunner(client, db, assembler, model=args.model,
                                         context_window=8192, max_tokens=240, temperature=0,
                                         filler_enabled=False)
-                    for question, answer in zip((INTEREST, WHY), EXPECTED[case], strict=True):
+                    for question, answer in ((INTEREST, replies[case]), (WHY, why)):
                         result = runner.run(session_key="replay:chat", user_text=question)
                         assert "a fact about your own experience" in result.telemetry.system_prompt
-                        print(json.dumps({"case": case, "question": question, "expected": expected,
+                        print(json.dumps({"case": case, "activity": activity, "question": question,
+                                          "expected": expected,
                                           "concept": facts.get("pursuit"), "reply": result.text,
                                           "model": args.model, "seed": args.seed}), flush=True)
                         if result.text.strip().strip('"“”') != answer:
