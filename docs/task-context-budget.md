@@ -50,6 +50,9 @@ accounting and preserves the latest user question; it cannot dispatch tools.
 Review also retains a compact host-selected outcome index, including uncited
 failures and subsequent observations. Whole-answer claim coverage and exact
 source quotations are validated before a completion certificate is issued.
+The next planning call retains a bounded completion-review correction even
+when the normal pack drops optional notes. Search-only claims that cannot
+be extracted from the packed hit fields return for repair before inference.
 
 ## Plugin-owned current observations
 

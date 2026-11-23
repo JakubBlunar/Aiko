@@ -1,0 +1,67 @@
+# Output correctness for Aiko's local agentic framework
+
+Reviewed the checkpointed workflow at `2a6fb0c0` on 23 November 2026. The design target is a companion that can research, compare, prepare and carry out requests with one small local model. The saved workflow route points to `baytout3/qwen3.5-uncensored:9b` with 65,536 tokens. An exact 8B checkpoint would need its own measurements.
+
+## Where the current contract breaks
+
+| Priority | Observed behavior | Proposed change and acceptance case |
+| --- | --- | --- |
+| 1. Evidence can come from the request itself | Native web search saves the query, hits and generated summary together. The reviewer can quote any substring of the serialized result. In an isolated production review, a scripted approval cited the query and obtained a certificate for opening time and accessibility. The only returned snippet said “See map.” Criterion records require a boolean and index. One quote for a whole sentence can cover several factual clauses. | Give each usable observation an ID and a field of origin. For native search, expose each hit's title, URL and snippet individually. Keep the query and execution summary available for diagnostics. Require a source field for each factual criterion and each independent material claim. In the fixture above, both criteria should stay unresolved. A source with only the hours should produce a useful partial answer. |
+| 2. A read receipt can establish submission | Successful MCP operations, including reads, receive an acknowledged receipt. The planner's submitted branch accepts any acknowledged, completed child of the task. An isolated workflow with only a read of a blank form finished as submitted. | Bind a submission receipt to the intended effect, resource and operation. A read of a booking form can establish its contents. A provider acknowledgement for the requested booking can establish submission. A matching confirmation can establish the booking. Check all three labels against the same request. |
+| 3. A verification read can be blocked | The standalone skill loop fingerprints the operation name, arguments and configuration generation for the entire job. A scripted read A, read B, read A ended as blocked with two completed children. A read of the same resource after editing it, or a fresh snapshot after interacting with a page, has the same fingerprint. Plugin procedures use a separate step path. | Track why another read is needed. Allow a bounded fresh observation after a relevant state change, scheduled wait or stale target. Count identical observations without progress toward a loop limit. Keep the existing handling for an interrupted mutation with an unknown outcome. Exercise both standalone and procedure paths. |
+| 4. Work discussion can contradict a verified report | The main reporter checks sources. Work discussion sees a 4,000-character root result and up to eight recent children with 1,500 characters each. Saved model notes share the frame. A nonempty discussion reply can be persisted without a source check. Planner-authored milestone and reply text also enters the work log before spoken-report review. | Let discussion retrieve bounded passages from owned saved results. Render execution status directly and answer factual follow-ups from source fields under the same rules used for final answers. Test a fact on page two of the ninth most recent child, with a plausible wrong answer in the planner notes. |
+
+The first three rows were exercised with scripted inference and fictional data. The fourth follows from the current output paths. [Completion review](../../app/core/tasks/workflow/harness_results.py), [review validation](../../app/core/tasks/workflow/review_contract.py), [native search](../../app/core/tasks/handlers/web_search.py), [MCP receipts](../../app/core/tasks/handlers/mcp_tool.py), [workflow actions](../../app/core/tasks/workflow/harness_mixin.py), [work discussion](../../app/core/tasks/workflow/work_discussion.py).
+
+## What the installed worker actually did
+
+Ran the production completion reviewer in a standalone process using fictional in-memory child results and the installed 9B workflow model on loopback. Each request used a 65,536-token context, reasoning enabled, seed 71 and temperature zero. The proposed answer and search query both said that Orchid Hall opens at ten and has step-free access. Only the returned snippet changed.
+
+| Returned snippet | Expected verdict | Actual verdict | Prompt tokens | Generated tokens |
+| --- | --- | --- | ---: | ---: |
+| Both facts about Orchid Hall | Support | Supported | 749 | 4,642 |
+| Directions to a venue map | Reject | Unsupported | 745 | 4,694 |
+| Both facts about Iris Hall | Reject | Unsupported | 740 | 3,967 |
+
+The 9B reviewer distinguished these three cases. The scripted reviewer showed that the host would admit the query-only claim if the model made the wrong judgment. These observations answer different questions. Across three calls, provider usage counted 13,303 generated tokens. This single fixture and seed exercises completion review only. The planner, spoken report, ordinary conversation and an exact 8B model still need end-to-end evaluation. Separately, 55 existing correctness and report-grounding checks and three temporary diagnostic checks passed with the managed test runner.
+
+## How new capabilities should fit
+
+Start with one end-to-end companion request. For example, “Compare the two workshops I mentioned, then remind me the evening before the cheaper one.” The workflow needs the two referenced items from chat, comparable prices and currencies, the date and timezone, and an acknowledgement for the user's requested reminder. Each can fail independently. Aiko should still return the comparison if the reminder needs clarification.
+
+1. **Bind the request.** Save the referenced messages or attachments with ownership, revision and the user's exact constraints. When Aiko asks a clarifying question, carry the question and answer together on resume. The current handoff retains the active utterance, and the question and subsequent guidance are stored as separate events. A bare “the second one” is an expensive ambiguity to pass to the worker. [Workflow start](../../app/llm/tools/workflow_tools.py), [input resumption](../../app/core/tasks/workflow/goal_workflow_handler.py).
+2. **Make the result of each capability explicit.** Extend the existing plugin evidence contract so a capability can return observed fields, source, subject, observation time and coverage. Use host checks for IDs, amounts, units, timezones and persisted values. Keep semantic review for interpretation. Retain proposals or drafts as authored deliverables with checkable constraints. “Suggested schedule”, “saved reminder” and “notification delivered” need distinct evidence. [Plugin contract](../../app/plugins/sdk.py), [existing text-note adapter](../../plugins/filesystem/aiko_files/evidence.py).
+3. **Reuse the companion's services.** A first multi-step action adapter could call the existing user-scoped reminder service and verify the saved reminder ID and due time. Reuse its settings and existing action policy. The workflow fast-tool bridge currently shares reads. The service already has separately observable scheduling and delivery. [Fast-tool bridge](../../app/core/tasks/workflow/fast_tools.py), [reminder behavior](../../docs/tools.md#local-reminders-d1).
+
+## Spending the 64K window
+
+Aiko already has whole-schema discovery, recoverable result pages, typed plugin procedures, sequential profiles and a shared inference gate. Keep those. The planner normally targets up to 12,288 input tokens, with reasoning headroom up to 8,192 per call at this window. Reservations describe capacity. Measure actual prompt and generated tokens per completed task. [Task budgeting](../../docs/task-context-budget.md).
+
+- **Constrain the next decision.** The transport supports JSON Schema. The planner and verifier currently request generic JSON. Pilot a small schema per phase with the disclosed actions and eligible evidence IDs. Return a plan or notes only when they change. Include a discovery path for capabilities outside the current menu. Benchmark format repairs separately from wrong decisions in valid JSON. [Planner](../../app/core/tasks/workflow/workflow_planner.py), [Ollama transport](../../app/llm/ollama_client.py).
+- **Make simple answers cheaper.** For an exact saved value or effect, render the checked fact once with Aiko's existing wording conventions. For comparisons, let the model explain already validated rows. Reserve longer reasoning for conflicting sources, ambiguous intent and synthesis. A/B test this against today's reasoning-enabled calls, including conversation wait time on the shared model. [Local reporting](../../app/core/tasks/work_reports.py).
+- **Use Hermes selectively.** Its on-demand skills and recoverable long tool results already have Aiko counterparts. A useful next transfer is retaining a precise recovery pointer when an excerpt is evicted, including in follow-up discussion. Pair each selected action with its verification operation in discovery so a small model can see how to finish. Prefer the existing plugin procedures for predictable call sequences. [Hermes skills](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills), [Hermes context management](https://hermes-agent.nousresearch.com/docs/developer-guide/context-compression-and-caching), [earlier local comparison](hermes-harness-review-2026-11-08.md).
+
+## Acceptance
+
+Use paired fictional requests with the same wording, model, context and decoding settings. Change only which evidence exists. Include a full answer and a partial one, similar venue names, different currencies or dates, a search miss, an acknowledged submission, a changed page and an ambiguous reference resolved mid-task. Score the final chat message and a factual follow-up as well as the saved objective outcome. Count false success, correct completion, unnecessary abstention, wrong-subject facts and repeated effects separately. Record inference calls, prompt/output tokens and elapsed time. A system that always declines will pass the false-success check and fail the positive controls.
+
+Start implementation with the field-level evidence boundary, submission receipts and legitimate re-reads. Evaluate that baseline before changing reasoning budgets or adding a second domain adapter. Ordinary-use acceptance remains in the [workflow backlog](../plans/agent-workflows.md).
+
+## Implementation and next experiment
+
+The first pass addressed the three reproduced gaps. The shared review validator now checks the hit field and the supporting claims for each satisfied criterion. Submission requires the receipt of a concrete declared write. Verification reads can run again under the ordinary allowance and no-progress limits. Corrected decisions keep the review feedback even in the 4K fallback pack. Source-current search excerpts go straight to the report outbox with attribution.
+
+An intermediate 9B run exposed a failure that field IDs alone missed. The model approved the hours and accessibility claim by citing “See our venue map for directions.” The host now checks that search-backed answer parts reproduce complete returned fields. This preserves qualifying sentences. A synthesized answer can use a separately inspected underlying source. This deliberately raises the cost of paraphrasing from snippets alone.
+
+| Fictional case | Final decision | Reported input / generated tokens |
+| --- | --- | ---: |
+| Matching venue, hours and access | Supported both criteria | 824 / 3,955 |
+| The proposed claim appeared only in the search query | Rejected before inference | 0 / 0 |
+| Iris Hall source offered as proof of the same facts about Orchid Hall | Rejected before inference | 0 / 0 |
+| Hours established, access unknown | Certified the hours-only partial answer | 878 / 6,307 |
+| Accurate quotation about Iris Hall offered in answer to the Orchid Hall request | Rejected in review | 814 / 5,129 |
+| Accurate directions excerpt offered instead of hours and accessibility | Rejected in review | 814 / 5,190 |
+
+The [replay](../../scripts/workflow_review_replay.py) uses the production verifier, in-memory tools' results, seed 71, temperature zero and 65,536 context tokens. Run it with `python -m scripts.workflow_review_replay --model <installed-local-model>`. These are six controlled review decisions. Tests separately exercised search discovery and repair, repeat reads, write receipts and report delivery. Ordinary conversation, an exact 8B checkpoint and full-request latency remain unmeasured.
+
+**Next experiment.** Start from “Compare the two workshops I mentioned” with fictional messages, source pages and an independent expected comparison. Include same-name workshops in different cities, conflicting dates, a missing price and a precise follow-up about an early source. Carry the resolved message and source IDs from chat to the planner, and let work discussion retrieve cited passages from owned results. Measure wrong-subject answers, correct partials, unnecessary abstention, number of planning calls and tokens to delivered answer. The held-out relevance checks still consumed roughly 5,100 generated tokens each. This is where to compare a smaller structured review or deterministic ID, amount and timezone checks before tuning a global reasoning cap.

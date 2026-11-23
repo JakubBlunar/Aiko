@@ -227,7 +227,8 @@ _SYSTEM_PROMPT = (
     "something none of the skills can do; name the missing capability "
     'plainly (e.g. "open and interact with a web page"). Do NOT use it '
     "just because a step failed.\n"
-    "- Do NOT repeat an action that already ran with the same args.\n"
+    "- Re-read for a fresh observation after a change or wait. Inspect saved results for "
+    "unchanged facts. Do not repeat an effectful operation with the same arguments.\n"
     "- Success requires nonempty evidence_ids from successful owned results, never invented IDs.\n"
     "- Use submitted when a mutation was acknowledged but its final effect is unverified; "
     "include the acknowledged result IDs. This does not mean the goal was completed.\n"
@@ -297,6 +298,8 @@ def render_planner_messages(ctx: PlannerInput) -> list[dict[str, str]]:
             "If a needed tool is named there but absent from SKILLS, first use "
             "discover {names:[exact_tool_name]}; do not call it or give up yet. "
             "The goal and conversation can contain assumptions; verify them against sources. "
+            "When only search hits support a finding, use the whole relevant snippet, title "
+            "or URL verbatim on its own line. Open the source for a paraphrase or synthesis. "
             "Finish success requires owned successful "
             "result IDs in evidence_ids and an independent completion review. Read back mutations "
             "when the goal requires exact saved contents. If blocked, ask a specific question. "

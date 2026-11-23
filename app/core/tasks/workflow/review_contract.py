@@ -2,6 +2,8 @@
 import json
 import re
 
+from app.core.tasks.search_evidence import packed_fields
+
 
 def normalized(text):
     return " ".join(str(text).split())
@@ -10,6 +12,26 @@ def normalized(text):
 def answer_parts(text):
     """Index complete visible sentences/lines so the reviewer need not rewrite them."""
     return [part.strip() for part in re.split(r"(?<=[.!?;])\s+|\n+", text) if part.strip()]
+
+
+def extractive_parts(parts, value):
+    """Indices covered by the complete field, including qualifications in later sentences."""
+    sentences = [normalized(part) for part in answer_parts(value)]
+    count = len(sentences)
+    if not count:
+        return set()
+    covered = set()
+    for start in range(len(parts) - count + 1):
+        if parts[start:start + count] == sentences:
+            covered.update(range(start, start + count))
+    return covered
+
+
+SEARCH_PROOF_RULE = (
+    "For a search hit, reproduce the complete relevant title, snippet or URL verbatim as "
+    "a standalone answer line. For synthesis or paraphrase, inspect an underlying source. "
+    "If the hits do not answer the question, report the gap."
+)
 
 
 def validate_review(result, usage, findings, contract, messages, *, partial=False):
@@ -31,6 +53,16 @@ def validate_review(result, usage, findings, contract, messages, *, partial=Fals
     if (not isinstance(claims, list) or not claims or len(claims) > 48
             or any(not isinstance(claim, dict) for claim in claims)):
         return False, "Completion review must cover every clause of the proposed answer."
+    for check in checks:
+        if not check["supported"]:
+            continue
+        indices = check.get("claim_indices")
+        if indices is None and len(criteria) == 1:
+            # With a single criterion all accepted claims already belong to it.
+            continue
+        if (not isinstance(indices, list) or not indices
+                or any(type(i) is not int or not 0 <= i < len(claims) for i in indices)):
+            return False, "Each supported criterion needs references to its supporting claims."
     if all(type(claim.get("part")) is int for claim in claims):
         if {claim["part"] for claim in claims} != set(range(len(answer_parts(findings)))):
             return False, "Completion review must cover every indexed answer part."
@@ -40,6 +72,7 @@ def validate_review(result, usage, findings, contract, messages, *, partial=Fals
         # Older in-flight reviewers may still return exact text coverage.
         return False, "Completion review must cover every clause of the proposed answer."
     sources = json.loads(messages[1]["content"])["evidence"]
+    parts = [normalized(part) for part in answer_parts(findings)]
     for claim in claims:
         cid, quote = claim.get("task_id"), claim.get("quote")
         if type(cid) is not int or not isinstance(quote, str) or not quote.strip():
@@ -52,8 +85,23 @@ def validate_review(result, usage, findings, contract, messages, *, partial=Fals
             if (source.get("task_id") == cid and proof.get("requested_resource")
                     and proof["requested_resource"] != proof.get("resource")):
                 return False, "A cited result belongs to a different resource than requested."
-        if not any(source.get("task_id") == cid and source.get("status", "done") == "done"
-                   and quote in str(source.get("content", source.get("result", "")))
-                   for source in sources):
+        owned = [source for source in sources
+                 if source.get("task_id") == cid and source.get("status", "done") == "done"]
+        if any("search_coverage" in source for source in owned):
+            part = claim.get("part")
+            if type(part) is not int:
+                return False, "A search quotation needs its answer part index."
+            fields = set()
+            for source in owned:
+                for field_id, value in packed_fields(source.get("content", "")):
+                    if quote in value and part in extractive_parts(parts, value):
+                        fields.add(field_id)
+            field = claim.get("field")
+            if field is None and len(fields) == 1:
+                claim["field"] = fields.pop()
+            elif not isinstance(field, str) or field not in fields:
+                return False, SEARCH_PROOF_RULE
+        elif not any(quote in str(source.get("content", source.get("result", "")))
+                     for source in owned):
             return False, "A completion quotation is absent from the reviewed owned source."
     return True, ""

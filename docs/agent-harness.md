@@ -117,6 +117,12 @@ effect operation interrupted after dispatch, including a timeout with unknown re
 outcome, stops with an **uncertain** result. It is never blindly repeated.
 Cancellation stops future steps; it cannot undo an external effect already sent.
 
+A read may use the same arguments again to observe a changed page or read back a
+saved value. Unchanged results count toward the rolling no-progress limit, and
+each invocation consumes the ordinary operation allowance. Standalone and
+procedure steps share the checkpointed duplicate guard for write and unknown
+effects.
+
 ## Evidence and completion
 
 Results are retained on the child task. The planner receives a compact
@@ -141,7 +147,11 @@ a typed postcondition and a matching later owned read of the same resource and
 configuration generation. The read must start after the mutation completed;
 an old read finishing later is insufficient. Unknown effects cannot become
 successful reads by omission. Unsupported mutation adapters can report
-acknowledged submission, without claiming a verified final effect.
+acknowledged submission for a declared write. Submission identifies the exact
+owned operation and child result. The host matches the server, tool and argument
+digest against its dispatch receipt. Reads, unknown effects and legacy submitted
+outcomes lacking bound receipts cannot establish submission. The intended
+real-world outcome still requires separate evidence.
 Declared requested/observed resource mismatches are rejected. Empty native and
 fast web searches establish missing search hits, never a global absence of facts;
 they receive a specific incomplete-check report instead of a factual certificate.
@@ -160,6 +170,16 @@ revisions. Sources and guidance are checked again before finishing. Source
 quotation establishes provenance; semantic entailment still depends on model
 judgment where there is no typed postcondition. Unsupported claims receive
 bounded repair opportunities, then become partial.
+
+Native and fast web search expose the returned title, snippet and URL as
+separate citable fields for each hit. An inspection keeps the same field IDs.
+The query and generated execution summary remain available for inspection.
+Search findings quote a complete field, preserving qualifications. A failed
+search-only extraction check returns the correction to the planner before
+review inference. The planner can use the excerpt, consult an underlying
+source for a synthesis, or report what remains unresolved. A multi-criterion
+review links each supported criterion to its supporting claim indices.
+A correct quotation still requires review for relevance to the user's request.
 
 The spoken reporter cannot supply missing evidence. Uncertified terminal runs
 get a deterministic incomplete-check or acknowledged-submission message.
@@ -246,7 +266,9 @@ in the same attempt record. Pending drafts bind current source revisions;
 already committed reports are not replayed. Planning, review, reporting and work
 discussion enable bounded reasoning without increasing the configured context.
 Pending input questions and certified partial finals use their saved wording
-directly; progress notes without owned successful results are not announced.
+directly. Certified search excerpts also use direct delivery with search
+attribution and source-revision checks. Progress notes without owned
+successful results are not announced.
 These paths avoid narration/review calls that would add no new authority.
 
 The original session/user owns each report. The durable outbox stores its

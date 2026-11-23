@@ -16,7 +16,8 @@ def supported_review(messages):
     criteria = (frame.get("contract") or {}).get("criteria") or [""]
     return json.dumps({
         "supported": True, "reason": "The owned source supports this scripted answer.",
-        "missing": [], "criteria": [{"index": n, "supported": True} for n in range(len(criteria))],
+        "missing": [], "criteria": [{"index": n, "supported": True, "claim_indices": [0]}
+                                   for n in range(len(criteria))],
         "claims": [{"text": text, "task_id": source["task_id"], "quote": quote}],
     })
 

@@ -18,6 +18,7 @@ from app.core.infra import timephrase
 from app.core.tasks.task_handler import TaskCompleted, TaskFailed, TaskInputNeeded, TaskProgress
 from app.core.tasks.workflow.harness_results import inspect_result, result_text, verify_completion
 from app.core.tasks.workflow.profiles import PROFILES, catalogue, supports
+from app.core.tasks.workflow.operation_contract import admit_step_once
 from app.core.tasks.workflow.skill_registry import SpawnContext
 from app.core.tasks.workflow.workflow_planner import PlannerInput, PlannerStep, decide_next_action
 from app.core.tasks.workflow.extensions_mixin import WorkflowExtensionsMixin
@@ -337,6 +338,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
             state["notes"] = "Completion review needs: " + check["reason"]
             self._message(task_id, state["notes"], kind="review", profile="reviewer")
             if state["review_attempts"] < 3:
+                state["review_feedback"] = state["notes"]
                 self._save(task_id, state)
                 return True
             self._finish_work(task_id, state, emit, "partial", state["notes"])
@@ -434,7 +436,8 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                                 "profiles": PROFILES,
                                 "capability_groups": self._capability_manifest(),
                                 "plan": state["plan"],
-                                "notes": state["notes"],
+                                "notes": state["notes"] if not state.get("review_feedback") else "",
+                                "review_feedback": state.get("review_feedback"),
                                 "inspected_results": state["inspections"][-3:],
                                 "user_guidance": timephrase.format_transcript(state["guidance"]),
                                 "remaining_steps": state["limits"]["iterations"]
@@ -456,6 +459,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 if self._guidance(task_id, state):
                     self._save(task_id, state)
                     continue  # Fresh user guidance supersedes an action planned without it.
+                state.pop("review_feedback", None)
                 if decision.report and decision.evidence_ids:
                     evidence = [self._orchestrator.get(cid) for cid in decision.evidence_ids]
                     if all(
@@ -480,22 +484,17 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                     from app.core.services.response_text_service import strip_all_meta_tags
 
                     if decision.outcome == "submitted":
-                        rows = [self._orchestrator.get(cid) for cid in decision.evidence_ids]
-                        accepted = bool(rows) and all(
-                            row and row.parent_task_id == task_id and row.status == "done"
-                            and (row.result or {}).get("receipt", {}).get("status")
-                            == "acknowledged"
-                            for row in rows
+                        from app.core.tasks.work_evidence import submission_receipts
+                        from app.core.tasks.work_outcome import submission_message
+
+                        receipts = submission_receipts(
+                            self._orchestrator, task_id, state, decision.evidence_ids,
                         )
-                        state["verification"] = {"status": "unverified", "reason": (
-                            "Submission acknowledged; the final effect is unverified."
-                            if accepted else "No owned acknowledgement establishes submission."
-                        )}
-                        self._finish_work(task_id, state, emit,
-                                          "submitted" if accepted else "partial",
-                                          "The operation was accepted, but its final outcome "
-                                          "has not been verified." if accepted else
-                                          "I could not verify that the operation was submitted.")
+                        finding = submission_message(receipts)
+                        state["verification"] = {"status": "unverified", "reason": finding,
+                                                 "submissions": receipts}
+                        self._finish_work(task_id, state, emit, "submitted" if receipts else
+                                          "partial", finding)
                         return
                     if decision.outcome in {"success", "nothing_found"} or (
                         decision.outcome == "partial" and decision.evidence_ids
@@ -562,14 +561,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                     self._save(task_id, state)
                     continue
                 state["admission_failures"] = 0
-                canonical = hashlib.sha256(
-                    json.dumps(
-                        [decision.skill, decision.args]
-                        + ([skill.generation] if skill.generation else []),
-                        sort_keys=True,
-                    ).encode()
-                ).hexdigest()
-                if canonical in state["seen"]:
+                if not admit_step_once(state, skill, decision.args):
                     self._finish_work(
                         task_id,
                         state,
@@ -578,7 +570,6 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                         "I stopped a repeated operation without new progress.",
                     )
                     return
-                state["seen"].append(canonical)
                 state["pending"] = {
                     "step_id": f"{task_id}:{state['iteration']}:0",
                     "skill": decision.skill,
@@ -673,6 +664,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                     "instruction": "Resource changed. Obtain a new observation before acting.",
                 }
             projection = (child.result or {}).get("planner_context") if child else None
+            observed_text = text or ""
             if status == "done" and isinstance(projection, dict):
                 state["current_observation"] = {
                     **projection,
@@ -683,6 +675,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                     "generation": (child.args or {}).get("_config_generation", ""),
                 }
                 text = str((child.result or {}).get("summary") or "Observation saved")
+                observed_text = str(projection.get("content") or observed_text)
             self._record_observation(
                 state,
                 pending["skill"],
@@ -734,7 +727,7 @@ class WorkflowHarnessMixin(WorkflowExtensionsMixin):
                 *state.get("recent_observations", []),
                 # A shared file header is not evidence of no progress. Use the
                 # saved body, rather than its short planner preview, for reads.
-                (status + ":" + hashlib.sha256((text or "").encode()).hexdigest())
+                (status + ":" + hashlib.sha256(observed_text.encode()).hexdigest())
                 if status == "done"
                 else _observation_signature(status, text or ""),
             ][-self._loop_window :]

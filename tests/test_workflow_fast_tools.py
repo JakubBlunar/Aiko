@@ -170,15 +170,25 @@ def test_hidden_search_recovers_to_owned_evidence_and_supported_finish(work):
         def chat_json(self, messages, **kwargs):
             if kwargs.get("surface") != "workflow_planner":
                 assert "ten episodes" in messages[1]["content"]
-                from work_review_helpers import supported_review
-                return supported_review(messages), None
+                parts = json.loads(messages[1]["content"])["answer_parts"]
+                cid = store.list_children(tid)[0].id
+                return json.dumps({"supported": True, "missing": [],
+                                   "criteria": [{"index": 0, "supported": True}],
+                                   "claims": [{"part": index, "task_id": cid,
+                                               "field": "1.snippet", "quote": part}
+                                              for index, part in enumerate(parts)]}), None
             self.planning += 1
             if self.planning <= 2:
                 answer = {"action": "web_search", "args": {"query": "Episode titles"}}
             else:
                 child = store.list_children(tid)[0]
-                answer = {"action": "finish", "outcome": "success",
-                          "findings": "Ten episodes; titles have not been announced.",
+                finding = "Ten episodes; titles have not been announced."
+                if self.planning > 3:
+                    assert "complete relevant title" in messages[1]["content"], (
+                        store.get(tid).state["verification"]
+                    )
+                    finding = "The series has ten episodes. Episode titles have not been announced."
+                answer = {"action": "finish", "outcome": "success", "findings": finding,
                           "evidence_ids": [child.id]}
             return json.dumps(answer), None
 
@@ -197,4 +207,4 @@ def test_hidden_search_recovers_to_owned_evidence_and_supported_finish(work):
     child = store.list_children(tid)[0]
     assert child.handler_name == "fast_tool" and child.parent_task_id == tid
     assert "Official episode list" in child.result["content"]
-    assert client.planning == 3
+    assert client.planning == 4  # One evidence repair without reissuing the search.

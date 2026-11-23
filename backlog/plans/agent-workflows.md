@@ -29,6 +29,14 @@ These are implementation facts. They do not close the ordinary-use checks below.
 
 ## Remaining product and platform work
 
+The [23 November output-correctness review](../reviews/workflow-output-correctness-2026-11-23.md)
+records the fixes for search evidence, submission receipts and repeated reads.
+The configured 9B route passed six isolated completion checks at 64K, including
+an hours-only partial and two accurate quotations that missed the objective.
+The next acceptance target is a full comparison from a conversational reference,
+followed by “Where did you find that?” and a source-backed answer. Measure both
+unnecessary abstentions and false completions before adding the reminder action.
+
 The 15 November correctness review
 reproduced unsupported approvals through the production review functions with
 the configured local 9B model. Three isolated full-harness trials did not falsely

@@ -3,30 +3,40 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import json
 from typing import Any
 
 from jsonschema import Draft202012Validator
 
 
+def admit_step_once(state, skill, args):
+    """Reads use the observation loop limit. Effects keep the checkpointed duplicate guard."""
+    if skill.effect == "read":
+        return True
+    parts = [skill.name, args]
+    if skill.generation:
+        parts.append(skill.generation)
+    key = hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
+    seen = state.setdefault("seen", [])
+    if key in seen:
+        return False
+    seen.append(key)
+    return True
+
+
 def mcp_effect(descriptor: Any) -> str:
     if descriptor.server_id == "filesystem":
-        return (
-            "read"
-            if descriptor.name
-            in {
-                "read_file",
-                "read_text_file",
-                "read_media_file",
-                "read_multiple_files",
-                "list_directory",
-                "list_directory_with_sizes",
-                "directory_tree",
-                "search_files",
-                "get_file_info",
-                "list_allowed_directories",
-            }
-            else "write"
-        )
+        if descriptor.name in {
+            "read_file", "read_text_file", "read_media_file", "read_multiple_files",
+            "list_directory", "list_directory_with_sizes", "directory_tree", "search_files",
+            "get_file_info", "list_allowed_directories",
+        }:
+            return "read"
+        if descriptor.name in {"write_file", "move_file", "create_directory"}:
+            return "write"
+        # Unrecognized or conditional operations still take the ordinary approval
+        # path. Their acknowledgements cannot establish that a write was submitted.
     return getattr(descriptor, "effect", "unknown")
 
 

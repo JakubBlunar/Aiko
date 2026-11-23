@@ -285,9 +285,12 @@ class WorkReports:
             # their wording. Another generation cannot improve their authority.
             self._save_draft(row, rid, basis, fallback(row, sources), "neutral")
             return
-        if facts["kind"] == "final" and not certified_sources(row, sources):
+        if facts["kind"] == "final" and (
+            not certified_sources(row, sources)
+            or result["verification"]["certificate"].get("method") == "search_extract"
+        ):
             # A job with no successful evidence cannot suddenly acquire an answer
-            # in the narration model. No generative call is needed for this case.
+            # in the narration model. A checked search excerpt also has its final wording.
             self._save_draft(row, rid, basis, fallback(row, sources), "neutral")
             return
         system = (

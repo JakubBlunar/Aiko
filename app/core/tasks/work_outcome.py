@@ -46,6 +46,25 @@ def certified_result(result) -> bool:
     return all(item["supported"] for item in result["verification"]["certificate"]["criteria"])
 
 
+def saved_submissions(result):
+    check = result.get("verification")
+    receipts = check.get("submissions") if isinstance(check, dict) else None
+    if (not isinstance(receipts, list) or not receipts
+            or any(not isinstance(item, dict) or type(item.get("task_id")) is not int
+                   or not isinstance(item.get("operation"), str) or not item["operation"]
+                   or not isinstance(item.get("revision"), str) or not item["revision"]
+                   for item in receipts)):
+        return []
+    return receipts
+
+
+def submission_message(receipts):
+    if not receipts:
+        return "I could not verify that the operation was submitted."
+    operations = ", ".join(f"{item['operation']} (#{item['task_id']})" for item in receipts)
+    return f"I received acknowledgement for {operations}. I haven't verified the final outcome."
+
+
 def outcome_for(status, result=None, *, workflow=False) -> dict:
     result = result if isinstance(result, dict) else {}
     state = status
@@ -53,7 +72,9 @@ def outcome_for(status, result=None, *, workflow=False) -> dict:
     if status == "done":
         value = result.get("outcome")
         value = value if isinstance(value, str) else None
-        if value in {"partial", "blocked", "uncertain", "missing_capability", "submitted"}:
+        if value == "submitted":
+            state = "submitted" if saved_submissions(result) else "unverified"
+        elif value in {"partial", "blocked", "uncertain", "missing_capability"}:
             state = value
         elif value in {"success", "nothing_found"}:
             verified = certified_result(result)

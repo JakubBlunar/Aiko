@@ -121,7 +121,7 @@ def test_envelope_keeps_receipt_partiality_and_resource():
     assert record["revision"]
 
 
-@pytest.mark.parametrize("outcome", ["blocked", "partial", "uncertain", "submitted",
+@pytest.mark.parametrize("outcome", ["blocked", "partial", "uncertain",
                                      "missing_capability"])
 def test_execution_done_does_not_promote_objective_outcome(outcome):
     item = row()
@@ -130,6 +130,11 @@ def test_execution_done_does_not_promote_objective_outcome(outcome):
     observed = task_outcome(item)
     assert observed["state"] == outcome and not observed["verified"]
     assert observed["label"] != "Completed"
+
+
+def test_legacy_submission_without_a_bound_receipt_is_unverified():
+    item = row(outcome="submitted")
+    assert task_outcome(item)["state"] == "unverified"
 
 
 def test_old_supported_boolean_is_unverified_and_changed_answer_invalidates_certificate():

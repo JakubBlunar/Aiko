@@ -5,7 +5,7 @@ import json
 from app.core.infra import timephrase
 from app.core.tasks.workflow.context_budget import TaskBudget, pack_review, tokens
 from app.core.tasks.work_evidence import owned_records, certificate_current
-from app.core.tasks.work_outcome import certified_answer
+from app.core.tasks.work_outcome import certified_answer, saved_submissions, submission_message
 from app.llm.call_scope import record_call_usage
 
 
@@ -42,7 +42,11 @@ def fallback(row, sources=None):
     if row.status == "running":
         return "I have partial results, but no verified answer yet. The saved work has the details."
     if result.get("outcome") == "submitted":
-        return "The operation was accepted, but I haven't verified its final outcome."
+        receipts = saved_submissions(result)
+        current = {source["task_id"]: source["revision"] for source in sources or []}
+        if not all(current.get(item["task_id"]) == item["revision"] for item in receipts):
+            receipts = []
+        return submission_message(receipts)
     if sources and all(source.get("search_coverage", {}).get("returned") == 0
                        for source in sources):
         return "I didn't find matching sources in this search, so I couldn't verify the answer."
@@ -51,7 +55,11 @@ def fallback(row, sources=None):
     ):
         text = str(result.get("content") or result.get("summary") or
                    "The saved work contains the result.")
-        text = text if len(text) <= 5600 else text[:5400] + "\nMore detail is in the saved work."
+        if result["verification"]["certificate"].get("method") == "search_extract":
+            text = ("Here’s what the search results reported.\n" + text if len(text) <= 5600 else
+                    "I saved the complete search excerpts in the work details.")
+        elif len(text) > 5600:
+            text = text[:5400] + "\nMore detail is in the saved work."
         if result.get("outcome") == "partial":
             text += "\nThis is a partial result; I haven't completed the whole request."
         return text
@@ -74,7 +82,8 @@ def review_report(route, text, facts, evidence, *, timeout):
         "result must stay partial/unverified in speech. "
         "Return JSON {supported:boolean,missing:string[],criteria:[{index:0,supported:boolean}],"
         "claims:[{part:integer,task_id:integer,quote:string}]}. Claims must cover EVERY "
-        "zero-based answer_parts index. Reference indices instead of rewriting the report. "
+        "zero-based answer_parts index. For search quotes include the hit field ID as field. "
+        "Reference indices instead of rewriting the report. "
         "Each quote must be verbatim from a successful owned child source and support its "
         "claim. Reject any added unsupported clause.\n"
         + timephrase.STORED_TEXT_TIME_RULE

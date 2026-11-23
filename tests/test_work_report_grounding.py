@@ -102,3 +102,25 @@ def test_certified_partial_facts_are_delivered_with_outcome_without_extra_model_
     assert reports.deliver(*queued[0])
     assert "The orchard is blue." in shown[0][1]
     assert "haven't completed the whole request" in shown[0][1]
+
+
+def test_certified_search_extract_is_delivered_without_narration_or_review(env):
+    from app.core.tasks.work_evidence import owned_records
+    from work_review_helpers import certificate
+
+    reports, tid, calls, queued, shown, _ = make_reports(env)
+    store = env[1]
+    answer = "The orchard opens at ten."
+    child = store.create(user_id="u", handler_name="web_search", parent_task_id=tid,
+                         title="Opening hours")
+    store.mark_done(child, result={"results": [{"snippet": answer}]})
+    steps = [{"child_id": child, "status": "done"}]
+    check = certificate(answer, owned_records(env[2], tid, steps))
+    check["certificate"].update(method="search_extract", claims=[
+        {"part": 0, "field": "1.snippet", "task_id": child, "quote": answer},
+    ])
+    set_result(env, tid, {"outcome": "success", "content": answer,
+                          "steps": steps, "verification": check})
+    reports.tick()
+    assert not calls and reports.deliver(*queued[0])
+    assert shown[0][1].endswith(answer) and "search results" in shown[0][1]

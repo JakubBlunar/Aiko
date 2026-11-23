@@ -19,11 +19,10 @@ are surfaced to the background-worker lane only), so ``on_input`` /
 from __future__ import annotations
 
 import logging
-import hashlib
-import json
 from typing import TYPE_CHECKING, Any, Sequence
 
 from app.core.tasks.handler_names import HANDLER_MCP_TOOL
+from app.core.tasks.work_evidence import receipt_args_digest
 from app.core.tasks.task_handler import (
     TaskCompleted,
     TaskEmitFn,
@@ -139,8 +138,7 @@ class McpToolHandler:
         uncertain = prepared is not None and prepared["effect"] != "read"
         receipt = {"effect": prepared["effect"] if prepared else "unknown",
                    "server_id": server_id, "tool_name": tool_name,
-                   "args_sha256": hashlib.sha256(
-                       json.dumps(tool_args, sort_keys=True).encode()).hexdigest(),
+                   "args_sha256": receipt_args_digest(tool_args),
                    "status": "acknowledged"}
         from app.core.infra import timephrase
         receipt["dispatched_at"] = timephrase.utcnow().isoformat()

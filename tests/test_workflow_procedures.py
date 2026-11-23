@@ -78,6 +78,25 @@ def test_compound_calls_need_only_one_planning_turn_and_retain_children(procedur
     assert done.state["children"] == 2 and not done.state.get("procedure")
 
 
+def test_procedure_cannot_repeat_a_write_already_dispatched_by_the_planner(procedure_work):
+    from dataclasses import replace
+
+    work, extensions = procedure_work
+    store, _, _, registry = work
+    registry.register(replace(registry.get("files__one"), effect="write"))
+    client = ScriptedClient(
+        {"action": "files__one", "args": {"path": "first"}},
+        {"action": "run_procedure", "args": {"name": "files:read_pair",
+                                             "inputs": {"path": "first"}}},
+        PARTIAL,
+    )
+    task_id, _ = start_work(work, client, extensions_provider=lambda: extensions)
+    row = wait_status(store, task_id, {"done"})
+    assert row.result["outcome"] == "partial"
+    assert len(store.list_children(task_id)) == 1
+    assert "before repeating" in row.state["notes"]
+
+
 def test_new_guidance_stops_remaining_procedure_calls(procedure_work):
     from app.core.tasks.task_handler import TaskCompleted
 

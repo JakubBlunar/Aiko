@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from app.core.tasks.work_outcome import digest
+from app.core.tasks.search_evidence import render_fields, returned_hits
 from app.core.tasks.handler_names import (
-    HANDLER_FAST_TOOL, HANDLER_WEB_SEARCH, HANDLER_VISION_DESCRIBE,
+    HANDLER_FAST_TOOL, HANDLER_MCP_TOOL, HANDLER_WEB_SEARCH, HANDLER_VISION_DESCRIBE,
 )
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
+import hashlib
 import json
 
 
@@ -50,13 +52,46 @@ def result_text(row):
     return json.dumps(result, ensure_ascii=False)
 
 
+def receipt_args_digest(arguments):
+    # Keep the encoding used by existing MCP dispatch receipts.
+    return hashlib.sha256(json.dumps(arguments, sort_keys=True).encode()).hexdigest()
+
+
+def submission_receipts(orchestrator, task_id, state, evidence_ids):
+    """Bind each submission to the owned write step and its exact dispatched arguments."""
+    steps = {step.get("child_id"): step for step in state["steps"]
+             if step.get("status") == "done" and step.get("effect") == "write"}
+    bound = []
+    for cid in dict.fromkeys(evidence_ids):
+        step = steps.get(cid)
+        row = orchestrator.get(cid) if step else None
+        if (not row or row.status != "done" or row.handler_name != HANDLER_MCP_TOOL
+                or row.parent_task_id != task_id
+                or row.user_id != state["contract"]["requested_by"]):
+            return []
+        record = evidence_record(row, operation=step["skill"])
+        receipt = record["receipt"]
+        args = row.args or {}
+        server, tool = args.get("server_id"), args.get("tool_name")
+        proof = record["postcondition"] or {}
+        if (not server or not tool or step["skill"] != f"{server}__{tool}"
+                or receipt.get("status") != "acknowledged" or receipt.get("effect") != "write"
+                or receipt.get("server_id") != server or receipt.get("tool_name") != tool
+                or receipt.get("args_sha256") != receipt_args_digest(args.get("tool_args") or {})
+                or proof.get("requested_resource") not in (None, proof.get("resource"))):
+            return []
+        bound.append({"task_id": cid, "operation": step["skill"], "revision": record["revision"]})
+    return bound
+
+
 def evidence_record(row, *, operation="", effect="", limit=6000):
     result, args = row.result or {}, getattr(row, "args", None) or {}
     receipt = result.get("receipt")
     receipt = receipt if isinstance(receipt, dict) else {}
     artifact = result.get("source_artifact")
     artifact = artifact if isinstance(artifact, dict) else {}
-    text = result_text(row)
+    hits = returned_hits(row)
+    text = result_text(row) if hits is None else render_fields(hits)
     handler = getattr(row, "handler_name", "")
     declared_effect = receipt.get("effect") or effect
     if not declared_effect and handler in {
@@ -82,14 +117,8 @@ def evidence_record(row, *, operation="", effect="", limit=6000):
         "partial": bool(source_partial or result.get("truncated") or len(text) > limit),
         "content": text[:limit], "error": getattr(row, "error", None),
     }
-    search = result if handler == "web_search" else None
-    if handler == "fast_tool" and args.get("tool_name") == "web_search":
-        try:
-            search = json.loads(text)
-        except (TypeError, ValueError):
-            pass
-    if isinstance(search, dict) and isinstance(search.get("results"), list):
-        record["search_coverage"] = {"returned": len(search["results"]), "exhaustive": False}
+    if hits is not None:
+        record["search_coverage"] = {"returned": len(hits), "exhaustive": False}
     return record
 
 

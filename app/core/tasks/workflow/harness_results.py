@@ -109,6 +109,8 @@ def verify_completion(
         evidence = [record for record in evidence if record["effect"] == "read"]
     for excerpt in state.get("inspections", [])[-4:]:
         cid = excerpt.get("task_id")
+        if cid not in by_id or (partial and missing and by_id[cid]["effect"] != "read"):
+            continue
         row = orchestrator.get(cid) if type(cid) is int else None
         artifact_store = getattr(orchestrator, "result_artifacts", None)
         artifact = (
@@ -131,7 +133,15 @@ def verify_completion(
         ):
             # Keep the source's effect, coverage and identity when adding a page.
             # Paging cannot promote an empty search or wrong resource into evidence.
-            evidence.append({**by_id.get(cid, {}), **excerpt, "inspected": True})
+            page = {**by_id[cid], **excerpt, "inspected": True}
+            if "search_coverage" in page:
+                from app.core.tasks.search_evidence import render_fields, returned_hits
+
+                page["content"] = render_fields(returned_hits(row),
+                                                inspected_text=excerpt.get("content", ""))
+                if not page["content"]:
+                    continue
+            evidence.append(page)
     evidence.sort(key=lambda item: not item.get("inspected", False))
     prompt = (
         timephrase.STORED_TEXT_TIME_RULE + "\n"
@@ -144,9 +154,11 @@ def verify_completion(
         "added details. Zero search hits do not establish a universal negative. "
         "Preserve exact resource/subject and time; an earlier read cannot prove a later change. "
         "Return JSON {supported:boolean,reason:string,missing:string[],"
-        "criteria:[{index:integer,supported:boolean}],"
-        "claims:[{part:integer,task_id:integer,quote:string}]}. "
+        "criteria:[{index:integer,supported:boolean,claim_indices:[integer]}],"
+        "claims:[{part:integer,task_id:integer,quote:string,field?:string}]}. "
         "criteria must cover every zero-based contract.criteria index. "
+        "For each supported criterion, list the zero-based claims that prove it. "
+        "For search results, cite the returned field ID (such as 1.snippet) and quote its value. "
         "claims must cover EVERY zero-based answer_parts index. Do not rewrite the findings; "
         "reference their part indices. Each part needs a verbatim supporting quote from a "
         "successful owned source. Check every clause inside a part; reject unsupported additions. "
@@ -157,10 +169,15 @@ def verify_completion(
         prompt += (
             " This is a PARTIAL answer: supported means every factual claim in findings is "
             "proven, NOT that the entire goal is complete. Mark unmet criteria supported=false. "
+            "When all provided answer parts are supported, return missing:[] even if a "
+            "criterion is unmet. The criteria array records unfinished work. "
             "Do not turn an acknowledged mutation into a completed effect."
         )
     from app.core.tasks.workflow.context_budget import TaskBudget, pack_review, tokens
-    from app.core.tasks.workflow.review_contract import answer_parts
+    from app.core.tasks.workflow.review_contract import (
+        SEARCH_PROOF_RULE, answer_parts, extractive_parts, normalized,
+    )
+    from app.core.tasks.search_evidence import packed_fields
     from app.llm.call_scope import (
         current_call_scope,
         record_call_usage,
@@ -172,7 +189,7 @@ def verify_completion(
     budget = TaskBudget.resolve(context_window, answer=answer, answer_limit=3072,
                                 scale=estimate_scale, reasoning=True)
     messages, report = pack_review(
-        prompt,
+        prompt + "\n" + SEARCH_PROOF_RULE,
         {
             "contract": state["contract"],
             "current_time": timephrase.today_anchor(),
@@ -193,6 +210,16 @@ def verify_completion(
             "reason": "Choose fewer relevant result IDs for a focused review.",
             "budget": report,
         }, None
+    packed = json.loads(messages[1]["content"])["evidence"]
+    successful = [source for source in packed if source["status"] == "done"]
+    if successful and all("search_coverage" in source for source in successful):
+        parts = [normalized(part) for part in answer_parts(findings)]
+        covered = set()
+        for source in successful:
+            for _, value in packed_fields(source["content"]):
+                covered.update(extractive_parts(parts, value))
+        if not parts or covered != set(range(len(parts))):
+            return {"status": "unsupported", "reason": SEARCH_PROOF_RULE, "budget": report}, None
     scope = current_call_scope()
     if scope:
         scope.reasoning_tokens = budget.reasoning
@@ -228,12 +255,14 @@ def verify_completion(
             "missing": [str(x)[:300] for x in result.get("missing", [])[:8]],
         }
         if supported:
+            search_ids = {record["task_id"] for record in records if "search_coverage" in record}
+            from_search = all(claim["task_id"] in search_ids for claim in result["claims"])
             check["certificate"] = {
                 "version": 1, "answer_digest": digest(findings),
                 "contract_digest": digest(state["contract"]),
                 "sources": {str(record["task_id"]): record["revision"] for record in records},
                 "criteria": result["criteria"], "claims": result["claims"],
-                "method": "source_review",
+                "method": "search_extract" if from_search else "source_review",
             }
         return check, usage
     except (LlmCallCancelled, LlmCallDeferred):

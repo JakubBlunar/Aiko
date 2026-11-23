@@ -3,7 +3,7 @@
 from copy import deepcopy
 from types import SimpleNamespace
 
-from app.core.tasks.workflow.operation_contract import validate_arguments
+from app.core.tasks.workflow.operation_contract import admit_step_once, validate_arguments
 from app.core.tasks.workflow.profiles import supports
 
 
@@ -144,6 +144,10 @@ class WorkflowExtensionsMixin:
         if skill is None or _signature(skill) != step["schema_revision"]:
             state.pop("procedure", None)
             state["notes"] = "Procedure operation changed; plan from the saved results."
+            return self._save(task_id, state)
+        if not admit_step_once(state, skill, step["args"]):
+            state.pop("procedure", None)
+            state["notes"] = "The procedure stopped before repeating an effectful operation."
             return self._save(task_id, state)
         state["pending"] = {
             **step,
