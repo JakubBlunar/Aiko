@@ -463,13 +463,28 @@ relevance/privacy gates and do not ship from synthetic findings alone.
 
 ## L43. How she thinks he sees her -- the second-order self-model
 
-**Status: Open implementation.**
+**Status: First scope implemented. Broader contextual appraisal remains open.**
 
-**Implemented / available:** Aiko/user concepts, relationship axes and correction/surfacing evidence exist.
+Explicit user reports now guide humor or quiet company during pre-event nerves.
+The response-mode provider rereads retained user-owned dialogue, so corrections,
+withdrawals and source edits affect the next matching turn. See the
+[support guide](../../docs/shared-moments-and-relationship.md) and
+[isolated chat replay](../../scripts/response_feedback_replay.py).
 
-**Remaining:** Design a revisable contextual model of received behavior, resolve overlap with axes
-and guard negative spirals/reassurance fishing. Silence/latency alone cannot establish another
-person's appraisal.
+The fictional replay starts with feedback about an interview, tests transfer
+to an audition, then delivers a correction after Aiko's actual reply. A fresh
+chat repeats the same audition message. Post-audition disappointment and a
+fresh history without feedback serve as controls. With the local
+`baytout3/qwen3.5-uncensored:9b` model and seeds 71 and 83, both runs joked
+about the user's stomach rehearsing, acknowledged that company mattered, and
+offered quiet company on the next audition. Neither control selected feedback.
+The post-audition reply acknowledged the missed entrance and included an
+incomplete phrase. These runs cover the fictional exchange.
+
+**Remaining:** Review ordinary-use examples before expanding the situations
+or responses covered. Broader self-appraisals and their relationship to the
+existing axes remain open. Silence and response latency cannot establish
+the user's appraisal.
 
 **Source check:** [concept_kinds.py](../../app/core/concepts/concept_kinds.py),
 [engagement_tracker.py](../../app/core/affect/engagement_tracker.py),

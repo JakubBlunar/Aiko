@@ -4309,8 +4309,10 @@ class InnerLifePart2Mixin(DebugOverridesHostMixin):
         if support is not None:
             self._last_implicit_need = {
                 "mode": support.mode, "confidence": 0.0, "scores": {},
-                "reasons": ["support_history"], "forced": False,
+                "reasons": [support.reason], "forced": False,
             }
+            if support.source_message_ids:
+                self._last_implicit_need["source_message_ids"] = list(support.source_message_ids)
             return support.prompt
 
         # Arc (weak prior) -- best-effort, lags by one turn.

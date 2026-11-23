@@ -1,10 +1,12 @@
 """Cross-session support replays with the normal response-mode prompt provider."""
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from app.core.conversation.support_preferences import support_context
+from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.session.inner_life_part2 import InnerLifePart2Mixin
 from app.core.session.prompt_assembler import PromptAssembler
@@ -203,3 +205,120 @@ def test_ordinary_turns_and_direct_requests_need_no_archive_lookup():
         _PERSONAL_VENT + " Could you just listen?",
     ):
         assert support_context(db, "replay:new", text) is None
+
+
+_PRAISE = "I liked that you joked with me before the interview. I was getting in my head."
+_COMPANY = "Actually, what helped was that you stayed with me."
+_AUDITION = "My audition starts in ten minutes and my stomach is in knots."
+
+
+@pytest.mark.parametrize("ack", [
+    "I'm glad you told me.", "I hear you. It was the joke that mattered.",
+])
+def test_report_transfers_across_events_then_correction_changes_same_prompt(replay, ack):
+    db, host = replay
+    initial, = _append(db, ("user", _PRAISE))
+    prompt = host.prompt(_AUDITION)
+    assert "gentle joke" in prompt and _PRAISE not in prompt
+    assert host._last_implicit_need["source_message_ids"] == [initial]
+    _, revision = _append(db, ("assistant", ack), ("user", _COMPANY))
+    revised = host.prompt(_AUDITION)
+    assert "Offer quiet company" in revised and "gentle joke" not in revised
+    assert host._last_implicit_need["source_message_ids"] == [initial, revision]
+    assert db.update_message_content(initial, "I enjoyed the interview.")
+    assert support_context(db, host.session_key, _AUDITION) is None
+
+
+@pytest.mark.parametrize("message", [
+    "My audition is over. I missed my entrance and I'm upset about how it went.",
+    "My audition starts tomorrow. I finished picking out my outfit.",
+    "My audition starts tomorrow. I'm nervous about my dentist appointment.",
+    "My audition starts tomorrow and I have butterflies about my date.",
+    "My presentation is in a drawer and I'm anxious.",
+    "My sister's audition starts tomorrow and my stomach is in knots.",
+    "My exam starts tomorrow and I'm not nervous.",
+    'My sister wrote, "My audition starts in ten minutes and my stomach is in knots."',
+    "Imagine my audition starts in ten minutes and my stomach is in knots.",
+    _AUDITION + " Please be serious.",
+    _AUDITION + " Can you help me plan?",
+])
+def test_different_moment_and_direct_requests_skip_lookup(message):
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("An unrelated or explicitly directed turn looked up earlier feedback")
+    assert support_context(SimpleNamespace(messages_in_range=unexpected_read), "replay:new",
+                           message) is None
+
+
+@pytest.mark.parametrize(("role", "text", "session"), [
+    ("assistant", _PRAISE, "replay:prior"),
+    ("user", _PRAISE, "someone-else:prior"),
+    ("user", "I liked that she joked with me before the interview.", "replay:prior"),
+    ("user", "Your joke before my interview helped my sister.", "replay:prior"),
+    ("user", "I liked that you joked with me after the interview.", "replay:prior"),
+    ("user", "Your joke before my interview helped, but only that once.", "replay:prior"),
+    ("user", "I feel much better now!", "replay:prior"),
+    ("user", f'She said, "{_PRAISE}"', "replay:prior"),
+])
+def test_response_feedback_requires_owner_and_explicit_attribution(replay, role, text, session):
+    db, host = replay
+    _append(db, (role, text), session=session)
+    assert support_context(db, host.session_key, _AUDITION) is None
+
+
+def test_bare_feedback_can_appraise_the_actual_later_reply(replay):
+    db, host = replay
+    _append(db, ("user", _PRAISE))
+    evening = timephrase.utcnow() + timedelta(days=4)
+    with timephrase.scoped_now(lambda: evening):
+        assert "gentle joke" in host.prompt(_AUDITION)
+        reply, correction = _append(db, ("assistant", "Butterflies again? I'm right here."),
+                                    ("user", _COMPANY), session=host.session_key)
+        guidance = support_context(db, "replay:concert", "I'm nervous about my recital tomorrow.")
+        assert "Offer quiet company" in guidance.prompt
+        assert guidance.source_message_ids[-2:] == (reply, correction)
+        assert db.delete_message_rows(host.session_key, [reply]) == [reply]
+        assert "gentle joke" in support_context(db, "replay:concert", _AUDITION).prompt
+
+
+def test_unlinked_corrections_stay_local_and_explicit_withdrawal_retires_guidance(replay):
+    db, host = replay
+    now = timephrase.utcnow()
+    initial, = _append(db, ("user", "Your joke before my interview really helped."))
+    _append(db, ("user", _COMPANY), session="replay:unrelated")
+    with timephrase.scoped_now(lambda: now + timedelta(days=40)):
+        assert support_context(db, host.session_key, _AUDITION) is None
+    with timephrase.scoped_now(lambda: now + timedelta(hours=2)):
+        _append(db, ("user", _COMPANY))
+        assert support_context(db, host.session_key, _AUDITION).source_message_ids == (initial,)
+        _append(db, ("user", "I didn't like your joke before my presentation."),
+                session="replay:later")
+        assert support_context(db, host.session_key, _AUDITION) is None
+
+
+def test_changed_subject_and_feedback_about_another_response(replay):
+    db, host = replay
+    initial, _, _ = _append(db, ("user", _PRAISE), ("assistant", "How was the drive?"),
+                            ("user", _COMPANY))
+    assert support_context(db, host.session_key, _AUDITION).source_message_ids == (initial,)
+    _append(db, ("user", "Your quiet company helped before my exam."),
+            ("user", "I didn't like your joke before my interview."))
+    assert "Offer quiet company" in support_context(db, host.session_key, _AUDITION).prompt
+
+
+def test_direct_acknowledgment_does_not_turn_unbound_feedback_into_a_preference(replay):
+    db, host = replay
+    assert "having me there that mattered" in host.prompt(_COMPANY)
+    assert host._last_implicit_need["reasons"] == ["direct_response_feedback"]
+    assert support_context(db, host.session_key, _AUDITION) is None
+
+
+@pytest.mark.parametrize("withdrawal", [
+    "Actually, that didn't help.",
+    "Actually, what helped was that you reminded me of the address.",
+])
+def test_withdrawn_feedback_stops_guidance_and_source_deletion_restores_it(replay, withdrawal):
+    db, host = replay
+    initial, withdrawn = _append(db, ("user", _PRAISE), ("user", withdrawal))
+    assert support_context(db, host.session_key, _AUDITION) is None
+    assert db.delete_message_rows("replay:prior", [withdrawn]) == [withdrawn]
+    assert support_context(db, host.session_key, _AUDITION).source_message_ids == (initial,)

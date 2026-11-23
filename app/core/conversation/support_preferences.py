@@ -1,4 +1,4 @@
-"""J14 pilot for explicitly stated or agreed responses to venting."""
+"""Select support guidance from the user's retained requests and response feedback."""
 
 from __future__ import annotations
 
@@ -7,9 +7,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 
+from app.core.conversation import response_feedback
 from app.core.conversation.implicit_need import (
     MODE_NEUTRAL,
     MODE_PROBLEM_SOLVE,
+    MODE_REASSURE,
     MODE_WITNESS,
     explicit_reply_mode,
     unquoted_text,
@@ -70,6 +72,8 @@ _MAX_ROWS = 400
 class SupportContext:
     mode: str
     prompt: str
+    source_message_ids: tuple[int, ...] = ()
+    reason: str = "support_history"
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,14 +205,28 @@ def support_context(db, session_key: str, user_text: str) -> SupportContext | No
     text = unquoted_text(user_text)
     if _PAST_FRAME.search(text):
         return None
+    if acknowledgment := response_feedback.acknowledgment(user_text):
+        return SupportContext(MODE_WITNESS, acknowledgment, reason="direct_response_feedback")
     history = _HISTORY_QUESTION.search(text) if _SUPPORT_TOPIC.search(text) else None
     opening = _VENT_OPENING.match(text)
-    if not history and (opening is None or explicit_reply_mode(text)):
+    pre_event = opening is None and not history and response_feedback.pre_event_nerves(text)
+    if not history and ((opening is None and not pre_event) or explicit_reply_mode(text)):
         return None
     now = timephrase.utcnow()
     rows = db.messages_in_range(
         (now - _LOOKBACK).isoformat(), now.isoformat(), limit=_MAX_ROWS, user_id=user_id,
     )
+    if pre_event:
+        feedback = response_feedback.received_response(rows)
+        if feedback is None:
+            return None
+        act, sources = feedback
+        return SupportContext(
+            MODE_WITNESS if act == "company" else MODE_REASSURE,
+            response_feedback.GUIDANCE[act] + " Respond to the present moment. "
+            "Keep the earlier feedback implicit and leave the user free to respond.",
+            sources, reason="response_feedback",
+        )
     preferences, outcomes = _read_candidates(rows)
     if history:
         scope = "work" if _WORK_TOPIC.search(text) else "all"

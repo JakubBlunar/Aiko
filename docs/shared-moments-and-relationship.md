@@ -165,6 +165,20 @@ The archive keeps the request, offer and endorsement distinguishable. An
 outcome requires a separate user report. A cheerful turn or an affect-based
 repair moment supplies no evidence of agreement or success.
 
+Aiko also uses explicit feedback about her own response before an interview,
+audition, presentation, exam, recital or performance. For example, “Your joke
+before my interview helped” can guide a gentle joke when the user is nervous
+before an audition. Disappointment after the audition gets the ordinary
+response. A later “Actually, what helped was that you stayed with me” switches
+the guidance to quiet company. Aiko acknowledges direct feedback briefly and
+lets the user leave it there. The user can also withdraw the earlier feedback.
+
+A report can name its own occasion. A short follow-up can refer back to the
+feedback or to Aiko's reply to pre-event nerves in the same exchange, within
+ten minutes. The response-mode diagnostic includes the supporting message IDs.
+Only the guidance reaches the reply prompt. Feedback stays scoped to these
+pre-event situations and leaves the relationship axes untouched.
+
 The [support-preference lookup](../app/core/conversation/support_preferences.py)
 reads at most 400 original messages from the preceding 30 days for the
 current owner. The first pass recognizes short English statements and offers,
