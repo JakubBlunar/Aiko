@@ -4,6 +4,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,9 +15,11 @@ from app.core.conversation.conversation_situation import (
 )
 from app.core.conversation.conversation_situation_worker import ConversationSituationWorker
 from app.core.conversation.social_understanding import current_repair_block, social_context_block
+from app.core.conversation.story_reply import supported_reply
 from app.core.infra.chat_database import ChatDatabase
 from app.core.session.conversation_situation_mixin import ConversationSituationMixin
 from app.core.session.prompt_assembler import PromptAssembler, _BLOCK_TIER_OF
+from app.core.session.turn_runner import TurnRunner
 from app.llm.chat_client import ChatUsage
 from scripts.evaluate_social_reasoning import CORPUS, probe, score_response
 
@@ -274,6 +277,99 @@ def test_stale_and_ended_frames_are_not_projected(tmp_path):
         host._conversation_situation_store.upsert(changed)
         host._conversation_situation_snapshot_cache = None
         assert host._render_conversation_situation_block("Birch?") == ""
+
+
+def test_reported_story_projects_only_the_narrators_current_source_words(tmp_path):
+    db = ChatDatabase(tmp_path / "story.db")
+    source = "Nell saw the key on the hook. Only Ari watched it move to the shelf."
+    mid = db.add_message("synthetic", "user", source)
+    aid = db.add_message("synthetic", "assistant", "Maybe Nell saw it too.")
+    payload = {
+        "operation": "replace", "summary": "Unverified observer summary.",
+        "evidence_message_ids": [mid, aid], "pragmatic_frame": {
+            "story_sources": [mid],
+        },
+    }
+    host = Host(db)
+    seen = parse_extraction(json.dumps(payload), valid_message_ids={mid, aid},
+                            valid_user_message_ids={mid})
+    host._conversation_situation_store.upsert(reduce_situation(
+        None, seen, session_id="synthetic", source_message_id=aid,
+    ))
+    block = host._render_conversation_situation_block("Where will Nell look?")
+    assert source in block
+    assert "A guess" not in block and "Unverified observer summary" not in block
+    assert "Maybe Nell saw it too" not in block
+    db.execute_commit("UPDATE messages SET content = ? WHERE id = ?", ("Ari stayed home.", mid))
+    block = host._render_conversation_situation_block("What did Ari know?")
+    assert "Ari stayed home." in block and source not in block
+    db.execute_commit("DELETE FROM messages WHERE id = ?", (mid,))
+    assert not host._render_conversation_situation_block("Where will Nell look?")
+    payload["pragmatic_frame"]["story_sources"] = [aid]
+    rejected = parse_extraction(json.dumps(payload), valid_message_ids={mid, aid},
+                                valid_user_message_ids={mid})
+    assert rejected.pragmatic_frame is None
+
+
+@pytest.mark.parametrize(("quote", "finish", "accepted"), [
+    ("Only Ari saw it move", "stop", True),
+    ("Nell acknowledged the move", "stop", False),
+    ("Only Ari saw it move", "length", False),
+])
+def test_story_answer_or_fallback_reaches_the_public_turn(tmp_path, quote, finish, accepted):
+    db = ChatDatabase(tmp_path / "story.db")
+    host = Host(db)
+    persona = tmp_path / "persona.txt"
+    persona.write_text("Answer briefly.", encoding="utf-8")
+    assembler = PromptAssembler(db, persona_path=persona)
+    assembler.set_inner_life_providers(
+        conversation_situation=host._render_conversation_situation_block)
+    db.add_message("synthetic", "user", "Nell saw the map in the box. Only Ari saw it move.")
+    db.add_message("synthetic", "assistant", "Go on.")
+    client, calls = MagicMock(), []
+
+    def stream(messages, *, surface, **kwargs):
+        calls.append(surface)
+        if surface == "story_perspective":
+            assert kwargs["format_json"] and messages[-1]["content"] == "Where would Nell look?"
+            client.last_usage = ChatUsage(done_reason=finish)
+            return iter([json.dumps({"evidence": quote, "viewpoint": "private reading",
+                                     "reply": "In the box, where she saw the map."})])
+        client.last_usage = ChatUsage(done_reason="stop")
+        return iter(["Ordinary reply."])
+
+    client.chat_stream.side_effect = stream
+    runner = TurnRunner(client, db, assembler, model="fixture", context_window=8192,
+                        max_tokens=200, temperature=0, filler_enabled=False)
+    visible = []
+    result = runner.run("synthetic", "Where would Nell look?", on_token=visible.append)
+    assert result.text == ("In the box, where she saw the map." if accepted else "Ordinary reply.")
+    assert "".join(visible) == result.text
+    assert db.get_message_row(result.assistant_message_id).content == result.text
+    assert calls == (["story_perspective"] if accepted else ["story_perspective", "turn_stream"])
+
+
+def test_story_citations_bind_each_quote_and_each_speaker():
+    turns = [{"role": "user", "content": "Mina left early."},
+             {"role": "assistant", "content": "Maybe Mina saw the note."},
+             {"role": "user", "content": "Only Sora saw the note. Where would Mina look?"}]
+    answer = {"reply": "Mina would use the earlier plan.", "viewpoint": "Mina missed the note."}
+    def check(quote):
+        return supported_reply(json.dumps({**answer, "evidence": quote}), turns)
+    assert check('"Mina left early." and "Only Sora saw the note."') == answer["reply"]
+    assert check('"Mina left early." and "Maybe Mina saw the note."') == ""
+    assert check("Maybe Mina saw the note.") == ""
+
+
+def test_story_actor_acknowledgment_requires_the_named_source():
+    text = "June later called and repeated the indoor plan back to me. Was she ignoring me?"
+    reading = {"person": "June", "status": "missed",
+               "evidence": "She later called and repeated the indoor plan back to me.",
+               "reply": "Maybe she missed it."}
+    assert "June got the update" in supported_reply(json.dumps(reading),
+                                                    [{"role": "user", "content": text}])
+    assert not supported_reply(json.dumps({**reading, "person": "Rina"}),
+                               [{"role": "user", "content": text}])
 
 
 def test_evaluation_prepare_uses_isolated_real_assembler_without_model_calls(tmp_path):

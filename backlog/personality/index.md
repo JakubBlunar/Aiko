@@ -41,6 +41,8 @@ entries. Of those, 62 are open, 89 partial, 14 awaiting validation, nine
 deferred, two in pilot and one in replay. This counts each domain entry once.
 Checklists inside an entry and the separate workflow plan have their own scope.
 
+On 24 November, three open reasoning proposals were added after that count.
+
 ## Where to start
 
 - Source-to-answer reliability: H7/H44, K100/K107, L49-L52 and RS1/RS2/RS5.
@@ -276,6 +278,13 @@ tracks startup and embedding measurements.
 - [L57](concepts.md#l57-ground-aikos-changing-interests-in-her-own-choices) — **pilot**.
   Review activity, voluntary returns and changes in choice patterns before surfacing them in
   Memory Story.
+- [L58](concepts.md#l58-find-the-smallest-change-that-makes-a-plan-possible) — **open**.
+  Check whether advice respects fixed constraints and identify the smallest permitted change.
+- [L59](concepts.md#l59-reason-from-what-each-person-was-told) — **pilot**.
+  Ordinary chat can answer from the information available to a named person.
+  Check speaker attribution, corrections and natural use across longer stories.
+- [L60](concepts.md#l60-compare-outcomes-on-the-basis-the-user-asked-for) — **open**.
+  Distinguish totals, rates and missing observations in everyday comparisons.
 
 ### Companion patterns
 

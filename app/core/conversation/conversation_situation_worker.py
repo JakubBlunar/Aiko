@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from app.llm.chat_client import ChatClient
 
 
+from app.core.conversation.story_reply import UNEQUAL_ACCESS
+
 log = logging.getLogger("app.conversation_situation")
 
 _SYSTEM_PROMPT = """\
@@ -63,7 +65,7 @@ Return ONE compact JSON object without indentation or commentary:
         "subject": "specific interest, 2-6 words",
         "change": {"text": "what the answer changed", "evidence_message_ids": [id]}
     },
-    "pragmatic_frame": null or {
+    "pragmatic_frame": null or {"story_sources": [user message ids]} or {
         "referents": {"text": "speakers and local referents", "evidence_message_ids": [id]},
         "scope": {"text": "literal, quoted or pretend spans", "evidence_message_ids": [id]},
         "reading": {"text": "tentative communicative meaning", "evidence_message_ids": [id]},
@@ -156,8 +158,15 @@ check under those conditions. Keep it false for an ambiguous, hypothetical,
 unrelated or out-of-scope result. A matching prediction leaves its explanation
 plausible. Keep the situation summary factual and the cause tentative.
 
-Use pragmatic_frame only when context-supported indirect meaning, attributed
-speech, a local pretend span or a corrected referent matters to continuity.
+Use pragmatic_frame when context-supported indirect meaning, attributed speech,
+a difference in what story participants know, a local pretend span or a
+corrected referent matters to continuity. For a narrated scene where different
+people have different information, use the short form {"story_sources":[ids]}.
+Choose 1-4 USER reports that together establish what happened and who heard or
+witnessed each update. Include corrections. An intention to pass news differs
+from acknowledgment. A mix-up between characters is not a repair_target.
+The narrated location is not the companion's room. For a story with no open
+request use working_set=null. Discard the frame when the conversation moves on.
 Ordinary literal chat needs no frame. Sarcasm needs contextual support; keep an
 alternative when unresolved. A mixed serious/playful message has local spans,
 not a conversation-wide joke label. Preserve the quoted speaker. Leaving a
@@ -391,6 +400,14 @@ class ConversationSituationWorker:
             target = None
             diagnostic = diagnostic_capture(recent_rows, previous)
             system_prompt = _SYSTEM_PROMPT
+            if new_users and UNEQUAL_ACCESS.search(new_users[-1].content):
+                prompt += (
+                    "\nThe latest user report may describe different people receiving "
+                    "different information. If so, use replace and the compact pragmatic_frame "
+                    '{"story_sources":[the relevant USER IDs from EVIDENCE SCOPE]}. '
+                    "Use shared=false for a narrated scene. An acknowledgment from Aiko "
+                    "adds no story evidence. With no open user question, working_set is null."
+                )
             if diagnostic and diagnostic.instruction:
                 prompt += "\n\n" + diagnostic.instruction
                 choices = json.dumps("|".join(diagnostic.options))

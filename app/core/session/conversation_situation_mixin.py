@@ -14,6 +14,7 @@ from app.core.conversation.conversation_situation import (
     OTHER_COMPARISON_HEADER,
     PENDING_COMPARISON_HEADER,
     RETURNED_COMPARISON_HEADER,
+    StoryFrame,
     WorldSituation,
     decision_action,
     decision_answer_source,
@@ -22,6 +23,7 @@ from app.core.conversation.conversation_situation import (
     state_age_seconds,
 )
 from app.core.infra import timephrase
+from app.core.conversation.story_reply import immediate_story_block
 from app.core.conversation.diagnostic_capture import (
     RETURN_TO, comparison_recap, named_problem, return_subject, starts_separate_task,
 )
@@ -546,6 +548,9 @@ class ConversationSituationMixin:
                 user_text, getattr(self, "_chat_db", None), self.session_key,
             )
         prior = self._render_prior_conversation_situation_block(user_text)
+        if user_text and not prior and not immediate and not starts_detour(user_text):
+            return immediate_story_block(user_text, getattr(self, "_chat_db", None),
+                                         self.session_key)
         return "\n\n".join(part for part in (prior, immediate) if part)
 
     def _render_prior_conversation_situation_block(self, user_text: str) -> str:
@@ -580,7 +585,14 @@ class ConversationSituationMixin:
             return _resumed_comparison(notes, user_text)
         if state.status == "ended":
             return ""
-        if not snapshot.world_compatible and not (
+        # A narrated scene is evidence about the participants in the story.
+        # Keep the observer's paraphrase out of claims about their knowledge.
+        story_frame = isinstance(state.pragmatic_frame, StoryFrame)
+        if story_frame and not state.working_set:
+            if state.status != ACTIVE:
+                return ""
+            return social_context_block(state, user_text, getattr(self, "_chat_db", None)).strip()
+        if not story_frame and not snapshot.world_compatible and not (
             (state.working_set is not None or state.pragmatic_frame is not None
              or state.repair_target is not None) and not state.shared
             and snapshot.conflict_reason == "no_world_anchor"
@@ -661,7 +673,10 @@ class ConversationSituationMixin:
                 + "\n".join(lines)
             )
         if state.status == ACTIVE:
-            working += social_context_block(state, user_text, getattr(self, "_chat_db", None))
+            social = social_context_block(state, user_text, getattr(self, "_chat_db", None))
+            if story_frame:
+                return (social + working).strip()
+            working += social
         return (
             "[Conversation situation]\n"
             f"The conversation currently establishes: {state.summary}{shared}{aiko_now} "

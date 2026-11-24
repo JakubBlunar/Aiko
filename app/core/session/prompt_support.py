@@ -1029,6 +1029,7 @@ class PromptTelemetry:
     decision_reply: str = field(default="", repr=False)
     comparison_report: ComparisonReport | None = field(default=None, repr=False)
     comparison_assessed: bool = False
+    story_read: bool = False
     coactivation_surfaced: dict[str, Any] = field(default_factory=dict)
     # Unified context budget breakdown (the T3 ``relevant_context`` region):
     # ``reserved`` / ``used_tokens`` (budget vs spend), ``degrade_level``,

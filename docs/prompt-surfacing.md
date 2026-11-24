@@ -217,6 +217,23 @@ joins that state with authoritative world information and suppresses stale or
 incompatible claims. An unresolved premise is context today, not a structured
 request to the tool gate.
 
+For a story about people who received different information, the situation
+observer can keep up to four user-message IDs in its existing social frame.
+On a relevant follow-up the provider reads those messages in order. A telling
+with an explicit difference in access and the immediately following question
+can also qualify before the next observer run. This uses the existing
+conversation-situation setting and T6 block.
+
+On a qualifying turn the main chat model gets the assembled conversation and
+a short request for a quoted source and a spoken answer. The runner checks
+the quote against recent user messages before releasing the answer. A tool
+result or a more specific reply takes priority. A truncated or unsupported
+reading falls back to ordinary generation. The private reading creates no
+memory or relationship record. A matching quote establishes provenance only.
+The interpretation and the speaker attribution still depend on the model.
+See the [story reader](../app/core/conversation/story_reply.py) and the
+[fictional comparison](../scripts/story_perspective_replay.py).
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption

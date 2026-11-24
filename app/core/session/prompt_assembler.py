@@ -27,6 +27,7 @@ from app.core.conversation.conversation_situation import (
     OTHER_COMPARISON_HEADER, PENDING_COMPARISON_HEADER, RETURNED_COMPARISON_HEADER,
 )
 from app.core.conversation.diagnostic_capture import proposed_test
+from app.core.conversation.story_reply import STORY_HEADER, story_contract, story_question
 from app.core.conversation.pursuit_reply import pursuit_reply
 from app.core.conversation.clarification_reply import (
     CLARIFICATION_GUIDANCE, COPY_ANSWER_GUIDANCE, CURRENT_REPLY_GUIDANCE,
@@ -4335,6 +4336,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             },
             decision_reply=decision_reply,
             comparison_report=comparison_report,
+            story_read=(conversation_situation_block.startswith(STORY_HEADER + "\n")
+                        and story_question(user_text)
+                        and prompt_tokens_estimate + estimate_tokens(story_contract(user_text)) + 2
+                        <= budget_tokens
+                        and current_reply_guidance == CURRENT_REPLY_GUIDANCE),
             coactivation_surfaced={
                 **dict(slices.coactivation_trace or {}),
                 "slice_cache_event": slice_event,

@@ -110,6 +110,13 @@ class PragmaticFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class StoryFrame:
+    """User reports in a narrated scene. Beliefs are inferred on the answering turn."""
+
+    story_sources: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RepairTarget:
     """One unresolved misunderstanding, distinct from relationship recovery."""
 
@@ -118,13 +125,17 @@ class RepairTarget:
     replacement: EvidenceNote
 
 
-def social_message_ids(frame: PragmaticFrame | None, repair: RepairTarget | None) -> set[int]:
+def social_message_ids(frame: PragmaticFrame | StoryFrame | None,
+                       repair: RepairTarget | None) -> set[int]:
     notes = []
-    if frame:
+    if isinstance(frame, PragmaticFrame):
         notes.extend((frame.referents, frame.scope, frame.reading, frame.alternative))
     if repair:
         notes.extend((repair.target, repair.correction, repair.replacement))
-    return {message_id for note in notes if note for message_id in note.evidence_message_ids}
+    ids = {message_id for note in notes if note for message_id in note.evidence_message_ids}
+    if isinstance(frame, StoryFrame):
+        ids.update(frame.story_sources)
+    return ids
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,21 +282,21 @@ def _parse_evidence_note(value: Any, valid_ids: set[int]) -> EvidenceNote:
 
 def _parse_social_context_strict(
     payload: dict[str, Any], valid_ids: set[int], user_ids: set[int] | None = None,
-) -> tuple[PragmaticFrame | None, RepairTarget | None]:
+) -> tuple[PragmaticFrame | StoryFrame | None, RepairTarget | None]:
     frame = repair = None
     proposed = payload.get("pragmatic_frame")
     if proposed is not None:
         if not isinstance(proposed, dict):
             raise ValueError("pragmatic_frame.shape")
-        try:
-            frame = PragmaticFrame(
-                *(_parse_evidence_note(proposed.get(name), valid_ids)
-                  for name in ("referents", "scope", "reading")),
-                alternative=(_parse_evidence_note(proposed["alternative"], valid_ids)
-                             if proposed.get("alternative") is not None else None),
-            )
-        except ValueError as exc:
-            raise ValueError("pragmatic_frame." + str(exc)) from exc
+        if "story_sources" in proposed:
+            ids = proposed["story_sources"]
+            if (not isinstance(ids, list) or not 1 <= len(ids) <= 4
+                    or any(type(mid) is not int or mid not in valid_ids for mid in ids)
+                    or (user_ids is not None and not set(ids) <= user_ids)):
+                raise ValueError("pragmatic_frame.story_sources")
+            frame = StoryFrame(tuple(sorted(set(ids))))
+        else:
+            frame = _parse_pragmatic_frame(proposed, valid_ids)
     proposed = payload.get("repair_target")
     if proposed is not None:
         if not isinstance(proposed, dict):
@@ -306,10 +317,22 @@ def _parse_social_context_strict(
     return frame, repair
 
 
+def _parse_pragmatic_frame(proposed, valid_ids):
+    try:
+        return PragmaticFrame(
+            *(_parse_evidence_note(proposed.get(name), valid_ids)
+              for name in ("referents", "scope", "reading")),
+            alternative=(_parse_evidence_note(proposed["alternative"], valid_ids)
+                         if proposed.get("alternative") is not None else None),
+        )
+    except ValueError as exc:
+        raise ValueError("pragmatic_frame." + str(exc)) from exc
+
+
 def _parse_social_context(
     payload: dict[str, Any], valid_ids: set[int], user_ids: set[int] | None = None,
     rejection_reasons: list[str] | None = None,
-) -> tuple[PragmaticFrame | None, RepairTarget | None]:
+) -> tuple[PragmaticFrame | StoryFrame | None, RepairTarget | None]:
     # Optional social notes must never displace an otherwise valid question or
     # constraint set. Reject each unsupported field independently, without
     # trying to manufacture citations or keeping the previous social reading.
@@ -462,7 +485,7 @@ class SituationExtraction:
     explicit_end: bool = False
     working_set: ConversationWorkingSet | None = None
     successor: InterestSuccessor | None = None
-    pragmatic_frame: PragmaticFrame | None = None
+    pragmatic_frame: PragmaticFrame | StoryFrame | None = None
     repair_target: RepairTarget | None = None
 
 
@@ -491,7 +514,7 @@ class ConversationSituationState:
     miss_count: int
     updated_at: str
     working_set: ConversationWorkingSet | None = None
-    pragmatic_frame: PragmaticFrame | None = None
+    pragmatic_frame: PragmaticFrame | StoryFrame | None = None
     repair_target: RepairTarget | None = None
     working_source_revision: str | None = None
     parked_comparison: ParkedComparison | None = None

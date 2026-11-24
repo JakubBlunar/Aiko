@@ -19,6 +19,7 @@ from __future__ import annotations
 from app.core.memory.diary_journal import journal_metadata
 from app.core.infra import timephrase
 from app.core.conversation.comparison_report import ComparisonReport
+from app.core.conversation.story_reply import read_story
 
 from app.llm.turn_outcome import TurnOutcome
 
@@ -864,6 +865,16 @@ class TurnRunner:
                 if assessment and not aborted:
                     mood = "neutral"
                     telemetry.comparison_assessed = True
+            elif (not decision_reply and not tool_calls
+                  and getattr(telemetry, "story_read", False) is True):
+                assessment = read_story(
+                    self._ollama, messages, model=self._model, stop_event=self._stop,
+                    options={"temperature": self._temperature, "num_ctx": self._context_window,
+                             "num_predict": min(self._max_tokens, 240)
+                             if self._max_tokens > 0 else 240,
+                             "prompt_cache_key": session_key},
+                )
+                aborted = self._stop.is_set() or self._is_stop_requested(stop_requested)
             if aborted:
                 stream = ()
             elif decision_reply or assessment:

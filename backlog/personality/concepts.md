@@ -1270,6 +1270,99 @@ the old pursuit and an unknown current frequency. The replay checks both the
 recorded answers and a subsequent ordinary model turn. See the
 [current behavior](../../docs/idle-workers.md#reviewing-behavior-and-running-isolated-experiments).
 
+## L58. Find the smallest change that makes a plan possible
+
+**Open.** "I can get there at 6. The last bus leaves at 6:45. Can I see the
+whole hour-long show?" Even with a stop at the door, the user is fifteen
+minutes short. Aiko can explain that in one sentence. If arrival can move,
+5:45 works for a show the user can start on arrival. If the performance starts
+at six sharp, arriving early buys nothing. Whether the user can move a time
+matters as much as the arithmetic.
+
+The [conversation working set](../../app/core/conversation/conversation_situation.py)
+already carries user-cited constraints. L56's fictional deck and mural cases
+showed that even after a bad analogy was withheld, the final reply could still
+suggest an explicitly blocked action. This experiment starts with all facts in
+the current exchange and scores the advice itself. It needs no retrieval.
+
+**First check.** Pair fixed-start and on-demand shows. Give each a version
+with a flexible arrival, a flexible ride home, or both times fixed. Include a
+show that already fits exactly. Score whether the plan works end to end,
+which condition the reply changes, and whether the user allowed that change.
+Count invented later buses and unnecessary concessions as failures. Compare
+the ordinary reply with a same-model reply given a short list of the user's
+stated constraints, at the same output budget. Try held-out examples involving
+materials or equipment before proposing any change to ordinary chat.
+
+## L59. Reason from what each person was told
+
+**Implemented in ordinary chat. Fictional replay tested, ordinary-use validation open.**
+"I told Mara to meet me at the café. After she left, I changed the
+plan to the library and told Ivo. Where will Mara probably go?" Aiko has grounds
+to suggest the café and a practical reason to message Mara. Add "Ivo called
+Mara and she confirmed the library" and the answer should change. Add only
+"Ivo meant to call" and the café is still the last plan we know reached Mara.
+
+[K99](shipped/cognitive-continuity.md#k99-recent-delivery-provenance) covers what
+Aiko presented to her user. This question concerns two people *inside the
+user's account*. The proposed check needs only the narrated events. Keep any
+inference about Mara local to that scene.
+
+**First check.** Hold the final venue constant and vary who received the
+update, whether receipt was acknowledged, and when the question is asked.
+Ask separately where the meeting is and where Mara would expect it to be.
+Include an unclear handoff where either answer is plausible. Score the place,
+the person, and the certainty of the reply. Swap names and mention order in
+held-out scenes to catch a model that always picks the last person or place.
+
+**24 November implementation.** The [story reader](../../app/core/conversation/story_reply.py)
+uses the narrator's recent messages and the current question. A short-lived
+observer frame can retain source IDs across turns. The same-turn path covers
+explicit reports before the observer runs. Only the public answer reaches the
+transcript and speech. See the [current guide](../../docs/prompt-surfacing.md).
+
+The [isolated replay](../../scripts/story_perspective_replay.py) uses a fictional
+persona and disposable SQLite database. Run it with `--baseline --seed 59`
+for ordinary history, or `--observer --seed 59` for the observer and reply
+path. On the installed `baytout3/qwen3.5-uncensored:9b`, ordinary history
+already answered the actual venue. It asked for clarification on the promised
+call and unconfirmed message. In the final 16-case replay the story reader
+supplied 13 answers on 14 qualifying turns. It distinguished the witness from
+the person who had left, the intended relay from the acknowledged update,
+and a missed instruction from deliberate disregard. An anagram pivot and a
+genuinely ambiguous pronoun stayed on the ordinary reply path.
+
+The correction case fell back when the model combined both reports with its
+own commentary inside the evidence field. Some accepted answers got the
+destination right and still mixed up who called whom. The laugh-at-a-shared-joke
+case kept knowledge of the backstory open even after the observer rejected its
+own extraction. Seed 61 on an earlier revision also exposed overconfidence
+about unread messages. Live conversation quality, longer stories and time
+to first useful audio remain open.
+
+## L60. Compare outcomes on the basis the user asked for
+
+**Open.** "I finished six drawings in ten morning sessions and four in five
+evening sessions. When did I finish more? When was I more likely to finish
+one?" If each session produced at most one drawing, mornings contributed more
+finished work, while evenings had the higher observed completion rate (4/5
+versus 6/10). Either fact could help the user plan. Neither establishes that
+time of day caused the difference.
+
+L57 already considers which activities were available when interpreting Aiko's
+own choices. Here the user supplies the counts and chooses the comparison.
+The first experiment can use ordinary replies to a fictional week of activity.
+
+**First check.** Keep completions fixed and change only the number of sessions
+until the rate reverses or ties. In another version, omit the evening session
+count. Aiko can still answer the totals question immediately and name the one
+missing count for the rate question. Include a version where several drawings
+can be finished in one session. Drawings per session is then computable, but
+the fraction of sessions with a finish needs another fact. Score the requested
+quantity, units, direction of the comparison, and any unsupported causal claim.
+Use the ordinary reply as the baseline for all three proposals. If it already
+handles unseen variants reliably, retain the cases as evaluation coverage.
+
 ## Moved out of the active queue
 
 - **L2** — shipped: [record](shipped/audit-2026-10-24.md#concepts-l2).
@@ -1286,4 +1379,4 @@ recorded answers and a subsequent ordinary model turn. See the
 
 <a id="reasoning-follow-up-from-associations-to-revisable-explanations"></a>
 
-L49-L55 above and RS1-RS9 own the remaining reasoning experiments.
+L49-L60 above and RS1-RS9 cover the reasoning experiments.
