@@ -183,6 +183,15 @@ Only the speaker can establish how much an experience meant to them. The scan
 uses up to 1,500 recent messages in the requested window, or the last 30 days
 for an unspecified recent period. The answer is assembled on request.
 
+## Tracing a shared idea
+
+Questions about how a shared activity started, who suggested an idea or who
+tried it can retrieve the original, speaker-labelled exchange and later
+reports of uptake. The lookup searches up to 1,500 recent messages over
+180 days for the current owner. A short follow-up can use the activity named
+in the preceding user turn. The answer can credit each contribution separately
+and leave uptake open where the conversation only records a proposal.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

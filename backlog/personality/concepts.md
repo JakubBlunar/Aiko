@@ -1563,7 +1563,11 @@ keeps choosing. This question can be tested against the [work she saves and revi
 
 ## L69. Remember what each of us brought to something shared
 
-**Open.** “How did our postcard thing start?” The user first brings in an
+**Pilot.** Requested attribution follows speaker-labelled original exchanges.
+The fictional comparisons cover reversed roles, prior use and one-sided
+influence. Ordinary-use evidence is still open.
+
+“How did our postcard thing start?” The user first brings in an
 old postcard. Aiko suggests writing one line on the back about an ordinary
 moment. A week later the user shows her a new card and says, “I tried your
 one-line idea.” Later still, Aiko uses the user's way of dating the cards

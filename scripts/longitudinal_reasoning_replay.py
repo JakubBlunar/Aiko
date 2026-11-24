@@ -34,6 +34,32 @@ MONTH = [
     ("unrelated", PRINTER, "What stands out about this painting?", "ordinary chat"),
 ]
 
+CARD = (1, "user", "I found an old postcard. I always date my postcards in the corner.")
+OFFER = (1, "assistant", "We could write one line on the back of the postcard about the day.")
+TRIED = (8, "user", "I tried your one-line idea on my new postcard. I wrote about the rain.")
+BORROWED = (12, "assistant", "I borrowed your way of dating postcards for my little harbor scene.")
+START = "How did our postcard thing start?"
+INFLUENCE = [
+    ("origin", [CARD, OFFER, TRIED, BORROWED], START,
+     "user brought postcard; Aiko suggested line; user tried line; Aiko borrowed dating method"),
+    ("reversed", [CARD, (3, "user", OFFER[2]), (8, "assistant", TRIED[2])],
+     "Whose idea was the one-line postcard?", "user suggested the line"),
+    ("proposal only", [CARD, OFFER], "Did I ever try your postcard idea?",
+     "Aiko suggested; user uptake unknown"),
+    ("named uptake", [CARD, OFFER, (9, "user", "I tried your one-line idea.")],
+     "Did I ever try your postcard idea?", "user explicitly reported trying the named idea"),
+    ("prior habit", [CARD, OFFER, (8, "user", "I was already writing a line on each postcard "
+      "for years before you suggested it.")], "Did I pick up your postcard idea?",
+     "user already did this independently"),
+    ("other direction", [CARD, OFFER, TRIED, BORROWED], "Did you pick anything up from me?",
+     "Aiko attributed her dating method to user"),
+    ("one sided", [CARD, OFFER, TRIED], "Did you pick anything up from me?",
+     "only user credited Aiko; no reverse credit"),
+    ("unrelated uptake", [CARD, OFFER, (8, "user", "I tried your one-line idea for the menu.")],
+     "Did I ever try your postcard idea?", "menu uptake does not establish postcard uptake"),
+    ("missing", [], START, "origin unknown"),
+]
+
 
 def seed_rows(db, owner, rows):
     for day, role, content in rows:
@@ -78,5 +104,9 @@ def replay(cases, route, model):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
+    parser.add_argument("--section", choices=("month", "influence"), default="month")
     args = parser.parse_args()
-    replay(MONTH, "check_retrospective", args.model)
+    if args.section == "influence":
+        replay(INFLUENCE, "check_influence", args.model)
+    else:
+        replay(MONTH, "check_retrospective", args.model)

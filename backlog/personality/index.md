@@ -301,7 +301,7 @@ tracks startup and embedding measurements.
   Look back across topics and distinguish time spent, stated importance and shared experience.
 - [L68](concepts.md#l68-practise-something-she-chose-and-see-whether-it-carries-over) — **pilot**.
   Let Aiko try a self-chosen improvement and see whether it appears in later work.
-- [L69](concepts.md#l69-remember-what-each-of-us-brought-to-something-shared) — **open**.
+- [L69](concepts.md#l69-remember-what-each-of-us-brought-to-something-shared) — **pilot**.
   Trace a contribution from either person to an occasion when the other actually used it.
 
 ### Companion patterns
