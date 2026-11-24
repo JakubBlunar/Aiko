@@ -63,6 +63,16 @@ future proactive offers must use the cue pool and its consumption tracking.
 This is a completed-text creation slice of IM4. It is not a general artifact
 job system, gift delivery, a drawing engine or unrestricted world authoring.
 
+### An optional writing exercise
+
+While saving an original, Aiko can choose to practise ending on an image.
+The worker can revisit this aim with a revision or a separate new work. It
+records the source revision and the exact passage the writer picked. Asked
+about practice, Aiko can quote the original and later endings and distinguish
+an image left at the end from one followed by explanation. The comparison
+requires matching saved text and Aiko's authorship. Ordinary requests for
+a new scene can use the aim too. The user's requested ending takes priority.
+
 ### A life with continuity and room to wander
 
 Wandering is independent of the user. Tidying requires actual displaced items.

@@ -11,6 +11,8 @@ import hashlib
 from typing import Any
 from uuid import uuid4
 
+from app.core.world import writing_practice
+
 MAX_REVISIONS = 8
 DAILY_WRITES = 3
 TEXT_LIMIT = 1400
@@ -25,6 +27,9 @@ class CreationDraft:
     item_id: int | None = None
     base_revision: int = 0
     expected_updated_at: str | None = None
+    practice_aim: str = ""
+    practice_ref: str = ""
+    image_passage: str = ""
 
 
 def revisions(item: Any) -> list[dict[str, Any]]:
@@ -60,23 +65,33 @@ def parse_draft(raw: Any, visible_items: list[Any]) -> CreationDraft | None:
             or "[[" in title + text or "<|" in title + text):
         return None
     item_id, base = raw.get("item_id"), raw.get("base_revision", 0)
+    aim = writing_practice.latest_aim(visible_items)
+    ref = writing_practice.reference(*aim) if aim else ""
+    passage = raw.get("image_passage")
+    attempted = (ref and raw.get("practice_ref") == ref and isinstance(passage, str)
+                 and 3 <= len(passage) <= 150 and passage in text)
+    practice = dict(practice_aim=(writing_practice.AIM if raw.get("practice_aim")
+                                  == writing_practice.AIM else ""),
+                    practice_ref=ref if attempted else "", image_passage=passage if attempted
+                    else "")
     if item_id is None:
         if type(base) is not int or base != 0:
             return None
-        return CreationDraft(title, form, text)
+        return CreationDraft(title, form, text, **practice)
     if type(item_id) is not int or type(base) is not int:
         return None
     item = next((i for i in visible_items if i.id == item_id), None)
     rows = revisions(item)
     if not rows or len(rows) >= MAX_REVISIONS or base != len(rows):
         return None
-    return CreationDraft(title, form, text, item_id, base, item.updated_at)
+    return CreationDraft(title, form, text, item_id, base, item.updated_at, **practice)
 
 
 def save_draft(store: Any, draft: CreationDraft, *, location_id: int | None,
                now: datetime) -> dict[str, Any] | None:
     items = store.list_items()
-    if parse_draft(asdict(draft), items) is None:
+    checked = parse_draft(asdict(draft), items)
+    if checked is None:
         return None
     if draft.item_id is not None and draft.expected_updated_at is None:
         return None
@@ -99,6 +114,10 @@ def save_draft(store: Any, draft: CreationDraft, *, location_id: int | None,
            "title": draft.title, "form": draft.form, "text": draft.text,
            "text_sha256": hashlib.sha256(draft.text.encode()).hexdigest(),
            "mode": "creative_fiction", "author": "aiko"}
+    if checked.practice_aim:
+        row["practice_aim"] = checked.practice_aim
+    if checked.practice_ref:
+        row.update(practice_ref=checked.practice_ref, image_passage=checked.image_passage)
     if draft.item_id is None:
         result = store.add_item(
             name=draft.title, slug="aiko_writing_" + uuid4().hex,
@@ -138,6 +157,8 @@ def prompt_context(items: list[Any]) -> str:
             f"revision={len(rows)}/{MAX_REVISIONS}; saved_at={latest.get('at')}; "
             f"creative text (not life evidence): {str(latest.get('text') or '')[:800]}"
         )
+    if aim := writing_practice.available_aim(items):
+        lines.append(aim)
     return "\n".join(lines) or "No saved original writings here yet."
 
 

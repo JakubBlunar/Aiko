@@ -299,7 +299,7 @@ tracks startup and embedding measurements.
   Check each proposed option against the people who actually need to take part.
 - [L67](concepts.md#l67-see-what-mattered-across-a-stretch-of-life-together) — **pilot**.
   Look back across topics and distinguish time spent, stated importance and shared experience.
-- [L68](concepts.md#l68-practise-something-she-chose-and-see-whether-it-carries-over) — **open**.
+- [L68](concepts.md#l68-practise-something-she-chose-and-see-whether-it-carries-over) — **pilot**.
   Let Aiko try a self-chosen improvement and see whether it appears in later work.
 - [L69](concepts.md#l69-remember-what-each-of-us-brought-to-something-shared) — **open**.
   Trace a contribution from either person to an occasion when the other actually used it.

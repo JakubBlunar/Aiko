@@ -240,6 +240,9 @@ class ActivityCompositionMixin:
             '"item_id": null, "base_revision": 0}. '
             "For a revision, use the existing work's item_id and latest revision as "
             "base_revision; you may retitle or reshape your work. For a new work use null and 0. "
+            "Optionally choose a craft aim for a future piece by adding practice_aim="
+            "end_on_an_image. To try a previously chosen aim, copy its source into practice_ref "
+            "and quote the exact image from your new text in image_passage. Both are optional. "
             "Keep creation null for every activity except writing. For a quiet rest choose idle, "
             "thinking or stretching with changed_item empty. The sleep system owns sleep."
         )

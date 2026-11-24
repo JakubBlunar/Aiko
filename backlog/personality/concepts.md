@@ -1540,7 +1540,11 @@ are places to look for supporting exchanges.
 
 ## L68. Practise something she chose and see whether it carries over
 
-**Open.** Aiko rereads a little story she wrote and decides, “Next time I
+**Pilot.** The first optional exercise is ending on an image. Aiko can point
+to the actual endings of saved originals, revisions and later attempts.
+Ordinary-use carry-over is still open.
+
+Aiko rereads a little story she wrote and decides, “Next time I
 want to let the last image carry the ending.” She revises one piece. Later,
 given a fresh story about a different subject, does she leave the two cups
 on the table as the final image, or add a sentence explaining the loneliness?

@@ -30,6 +30,7 @@ from app.core.conversation.conversation_situation import (
 from app.core.conversation.diagnostic_capture import proposed_test
 from app.core.conversation.feasibility import check_feasibility
 from app.core.conversation.shared_retrospective import check_retrospective
+from app.core.world.writing_practice import practice_answer
 from app.core.conversation.contingency import check_contingency
 from app.core.conversation.narrative_reasoning import check_timeline
 from app.core.conversation.meaning_disagreement import check_meanings
@@ -956,6 +957,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         # under aggressive mode (sibling of misattunement).
         self._implicit_need_provider: Callable[[str], str] | None = None
         self._pursuit_history_provider = None
+        self._writing_items_provider = None
         # K29 — opinion injection detector. Per-turn provider that
         # fires a one-line cue when {user_name}'s latest message
         # contradicts one of Aiko's stored ``kind="self"`` stance
@@ -3980,6 +3982,9 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             practical = check_retrospective(
                 user_text, self._db, self._continuity_owner, session_key, current_user_message_id)
             practical_kind = "shared_retrospective"
+        if not practical.guidance:
+            practical = practice_answer(user_text, self._writing_items_provider)
+            practical_kind = "writing_practice"
         if not practical.guidance and not conversation_situation_block.startswith(STORY_HEADER):
             for kind, check, context in (
                 ("conditional_agreement", check_contingency, recent_users),
