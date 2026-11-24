@@ -3,6 +3,8 @@ export type Source = 'local' | 'example' | 'folder'
 export interface Inspection {
   source: Source; clip: string; time: number; overrides: Values; playing: boolean
   skeleton: boolean; follow: boolean; gaze: Values; layer: string; reference: boolean
+  mix?: boolean; idleOffset?: number; idleWeights?: {index:number; clip:string; weight:number}[]
+  finishingTurns?: {clip:string; elapsed:number}[]
 }
 
 export function takeInspection(): Inspection | undefined {

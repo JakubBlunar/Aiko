@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512">
+  <defs><linearGradient id="fold"><stop stop-color="#193e4b"/><stop offset=".14" stop-color="#32656a"/><stop offset=".24" stop-color="#28555f"/><stop offset=".43" stop-color="#49807b"/><stop offset=".55" stop-color="#3a6d6d"/><stop offset=".72" stop-color="#29585f"/><stop offset=".85" stop-color="#3b7274"/><stop offset="1" stop-color="#1c414f"/></linearGradient></defs>
+  <path fill="url(#fold)" d="M0 0h512v512H0z"/><path fill="#224552" d="M0 0h512v24Q246 48 0 23z"/>
+  <g stroke="#d5bf8f" fill="none"><path d="M0 479q133-10 256 0t256 0" stroke-width="5"/><path d="M0 491q133-10 256 0t256 0" stroke-width="2"/></g>
+</svg>

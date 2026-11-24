@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="512" viewBox="0 0 256 512">
+  <defs>
+    <linearGradient id="skin"><stop stop-color="#e5c5bb"/><stop offset=".24" stop-color="#fff0e5"/><stop offset=".65" stop-color="#fff2e8"/><stop offset="1" stop-color="#e3c1b7"/></linearGradient>
+    <linearGradient id="cotton"><stop stop-color="#575663"/><stop offset=".24" stop-color="#8a8591"/><stop offset=".56" stop-color="#a4a0ab"/><stop offset=".84" stop-color="#928c98"/><stop offset="1" stop-color="#706b78"/></linearGradient>
+    <filter id="soft"><feGaussianBlur stdDeviation="5"/></filter>
+    <mask id="abdomen"><rect width="256" height="512" fill="white"/><rect x="15" y="249" width="226" height="102" rx="10" fill="black" filter="url(#soft)"/></mask>
+  </defs>
+  <path d="M0 0h256v512H0z" fill="url(#skin)" mask="url(#abdomen)"/>
+  <path d="M0 0h36q83 159 184 0h36v254q-116 28-256 0z" fill="url(#cotton)"/>
+  <path d="M0 247q136 29 256 0v9q-132 30-256 0z" fill="#706b79"/>
+  <path d="M0 336q122 21 256 0v176H0z" fill="url(#cotton)"/>
+  <path d="M0 336q123 21 256 0v13q-126 17-256 0z" fill="#676371"/>
+</svg>

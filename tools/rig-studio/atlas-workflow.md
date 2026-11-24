@@ -1,6 +1,6 @@
 # Atlas character workflow
 
-The local Aiko study has 213 textured meshes, 21 skeletal joints and 43 public controls. Nine of the 222 source drawable entries have no triangles. Each retained mesh has its own editable PNG. A local inventory records its source atlas, crop rectangle, original drawable ID and part hierarchy. Both atlas pages contribute artwork.
+The local Aiko study has 213 textured meshes, 21 skeletal joints and 51 public controls. Nine of the 222 source drawable entries have no triangles. Each retained mesh has its own editable PNG. A local inventory records its source atlas, crop rectangle, original drawable ID and part hierarchy. Both atlas pages contribute artwork.
 
 ## Open and edit
 
@@ -49,11 +49,17 @@ The report lists maximum vertex travel in 2048-height artwork pixels, opacity di
 | Gaze and bow | The eye direction and head controls deform separate geometry. Pointer tracking drives both with smaller head travel. The bow combines head pitch and torso pitch using the installed motion's timing and the model's pitch limit. |
 | Clothes and arms | Param16 selects pajamas. Param17 raises the hood-off control. The three exported wardrobes each have their own measured base. Param61 selects crossed arms in casual clothing. |
 | Face | Param54 has authored endpoints at 0 and 30. Between them the teeth fade in, the underlying mouth fades out and nearby facial geometry changes. At full grin Param50 moves the joined teeth about 6.4 pixels vertically. Separate jaw drop, brow lift and brow shape controls use measured source geometry. Star eyes retain their discrete setting. |
-| Tail | The production ambient channel staggers the five rotations by 0.7 radians. The studio uses its 10-degree mid-arousal amplitude, offsets the phase-zero pose to match neutral, and samples 33 poses around a two-second loop. Both ends of the phase slider are the same pose. The clip advances continuously through the loop. |
+| Tail | The production ambient channel staggers the five rotations by 0.7 radians. The studio samples 33 poses at its 10-degree mid-arousal amplitude and offsets phase zero to match neutral. Both ends of the phase slider draw the same pose. Solo playback traces the circle in two seconds. Layered playback adds one six-second turn to the moving idle phase, easing its speed at entry and release. |
 | Limbs | Elbow and wrist weights share the continuous arm and sleeve artwork. The pelvis carries the legs. Knee influence blends through pants, and ankle influence blends through socks and shoes. Foot tap is a small front-view gesture. |
 | Hair and clothing | The ponytail and hanging waist ribbons have separate weighted pivots. The knot stays on the pelvis. Face overlays follow the head, the raised hood lining follows the head, and the lowered lining follows the torso. |
 
-Every exported layer now has an anatomical attachment below the scene root. Several movements still use sampled shape changes, including the tail wave, brow shape and lip-sync mouth. The five source tail outputs can be compared as a combined path through **Tail swing phase**. Independent per-segment posing and time-driven strand physics are possible follow-ups. Separate fingers or a deep out-of-plane knee bend need additional artwork or deformation studies.
+Every exported layer has an anatomical attachment below the scene root. Several movements use sampled shape changes, including the tail wave, brow shape and lip-sync mouth. The five source tail outputs can be compared as a combined path through **Tail swing phase**.
+
+### Hand poses
+
+**Finger curl and release** bends four fingers on each hand in succession. **Beckon** bends the right index twice while the other fingers stay curled. The **Fingers** inspector controls also work independently of wrist and elbow rotation. **Wrist greeting** opens and curls the waving fingers. **Breathing** adds a smaller, asynchronous settling movement to both hands. Neutral sliders restore the painted open pose.
+
+The custom bends in [the hand profile](src/alexia-hands.ts) act on the registered bare and fingerless-glove meshes. Their offsets start past the knuckles, before wrist skinning. The thumb shares painted pixels with another finger and stays with the palm. A closed fist, thumb opposition or another palm angle would need additional artwork. The crossed-arm pose has its own baked hands and disables the open-hand controls.
 
 ### Overlays and gestures
 
@@ -89,4 +95,4 @@ node tools/rig-studio/sample-atlas.mjs data/personas/active/Alexia/Alexia.model3
 
 The paired check captures the custom pane on the left and the installed reference on the right. It compares silhouette overlap and foreground color error across outfits and poses. With `--output` it also saves a two-second `tail-swing.gif`. The motion check measures the maximum tail vertex error between sampled poses, checks the loop endpoints for identical geometry, and measures grin geometry and opacity with the jaw open. Browser checks exercise the weighted limbs, ponytail, ribbons, pointer gaze and backward stepping. The reload check uses a disposable fictional character and exercises a failed compile, its recovery, a file-backed rig edit and restoration of a picked folder.
 
-The output is an editable reconstruction of sampled shapes. Combined extremes such as simultaneous full yaw, pitch and blink can need additional joint shape keys. Hair inertia, automatic physics, hand articulation beyond wrist bending, and integration into Aiko's production avatar remain further work.
+The output is an editable reconstruction of sampled shapes. Combined extremes such as simultaneous full yaw, pitch and blink can need additional joint shape keys. Hair inertia and integration into Aiko's production avatar remain further work.

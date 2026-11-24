@@ -1,4 +1,4 @@
-import type { Clip, Parameter } from './model.js'
+import type { Clip, Parameter, Rig } from './model.js'
 
 // Each source array specifies raw values at the public parameter's knots.
 // This table is shared by the offline sampler and the optional comparison pane.
@@ -76,7 +76,24 @@ export const clips: Clip[] = [
   {id:'look',label:'Look around',duration:4,tracks:{
     'eyes.look.x':[[0,0],[1,-1],[3,1],[4,0]],'head.yaw':[[0,0],[1,-8],[3,8],[4,0]],
     'eyes.look.y':[[0,0],[1,.4],[3,-.4],[4,0]]}},
-  {id:'tail',label:'Tail swing',duration:2,tracks:{'tail.curl':[[0,-1],[2,1]]}},
+  {id:'tail',label:'Tail swing',duration:2,tracks:{'tail.curl':[[0,-1],[2,1]]},
+    phaseGesture:{parameter:'tail.curl',duration:6}},
   {id:'grin',label:'Toothy grin',duration:2,tracks:{
     'face.grin':[[0,0],[.4,1],[1.45,1],[2,0]],'jaw.drop':[[0,0],[.4,0],[.85,.8],[1.45,0],[2,0]]}},
 ]
+
+// Keep the circular phase sweep in the full tail clip. A small oscillation
+// around neutral returns along the same arc without a phase jump.
+export const restingClips: Clip[] = [
+  {id:'quiet-breath',label:'Quiet breath',duration:4,tracks:{
+    'body.breath':[[0,0],[.35,.04],[.9,.36],[1.5,.85],[1.85,1],[2.16,.93],
+      [2.75,.54],[3.36,.14],[3.75,.015],[4,0]]}},
+  {id:'tail-sway',label:'Light tail sway',duration:6,tracks:{
+    'tail.curl':[[0,0],[.75,.12],[1.5,.17],[2.25,.12],[3,0],
+      [3.75,-.12],[4.5,-.17],[5.25,-.12],[6,0]]}}
+]
+export const restingMotion: NonNullable<Rig['idleMotion']> = {duration:12,layers:[
+  {clip:'quiet-breath',weight:.72},
+  {clip:'tail-sway',offset:.75},
+  {clip:'fingers',weight:.21,offset:1.1}
+]}

@@ -15,7 +15,8 @@
       <label class="check" hidden id="followLabel"><input id="follow" type="checkbox"> Follow pointer</label>
       <label class="check"><input id="bones" type="checkbox"> Show skeleton</label></div>
     <div class="views">
-      <article><div class="caption"><strong>Custom rig</strong><span id="layerCount"></span></div>
+      <article><div class="caption"><strong>Custom rig</strong><span id="layerCount"></span>
+        <button hidden id="exportPose">Export pose PNG</button></div>
         <div class="surface"><canvas id="custom" aria-label="Custom rig preview"></canvas>
           <canvas hidden id="atlas" aria-label="Deformed character preview"></canvas></div></article>
       <article><div class="caption"><strong>Live2D reference</strong><span id="referenceName">Optional</span>
@@ -24,13 +25,15 @@
           <div id="refPrompt"><p id="refStatus" role="status">Checking reference…</p><button hidden id="loadRef">Load reference</button></div>
         </div></article>
     </div>
-    <section class="transport"><div class="row"><label>Motion <select id="motion"></select></label><output id="time"></output></div>
+    <section class="transport"><div class="row motion-row"><label>Motion <select id="motion"></select></label>
+      <label class="check" id="mixLabel" hidden><input id="mix" type="checkbox" checked> Layer with idle</label><output id="time"></output></div>
       <input aria-label="Timeline in seconds" id="seek" type="range" min="0" step="any" value="0">
       <div class="buttons"><button id="prev" aria-label="Previous frame">−1 frame</button><button id="play">Play</button>
       <button id="next" aria-label="Next frame">+1 frame</button><span>30 fps</span></div>
     </section>
   </section>
   <aside aria-labelledby="inspector-title" tabindex="0"><div class="panel-head"><h2 id="inspector-title">Pose inspector</h2><button id="reset">Reset overrides</button></div>
+    <details id="idleInspector" hidden><summary>Idle layers</summary><div id="idleWeights"></div></details>
     <div id="parameters"></div>
     <label hidden id="isolateLabel">Isolate artwork <select id="isolate"></select></label>
     <details id="joints"><summary>Edit joint pivot</summary><label>Joint <select id="joint"></select></label>

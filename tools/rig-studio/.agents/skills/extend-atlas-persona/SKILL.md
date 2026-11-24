@@ -15,6 +15,8 @@ Find Rig Studio three directories above this skill. Start with [the atlas workfl
 
 ## Author the control
 
+For interchangeable clothing, follow [Wardrobe authoring](../../../wardrobe.md). Start from the transparent fitting pose. Identify which skin is present in the atlas and which joints need reconstructed coverage. Author the garment in its own costume file. Check a fitted piece against the body at the elbow and chest, and check loose pieces at a held frame and on return from motion.
+
 - For reference-derived shapes, add one public control and its raw knots to `src/alexia.ts`. Rebuild to a fresh private folder. Inspect the resulting piece, mask IDs and local UVs in its inventory. The exporter measures each wardrobe state relative to its own neutral shape. Keep stable public names and place source IDs in the adapter or import tooling.
 - For original movement, decide what must bend. Use a bone for a rigid piece. Use a partial second-joint weight across a continuous wrist, or sampled vertex offsets for a changing silhouette. Paint a registered replacement PNG if the requested movement exposes missing ink or fabric. Keep the image dimensions and UV mapping together. A new character with different landmarks needs its own calibration and anatomy profile.
 - Put compatibility conditions in the rig. Give hard swaps named choices. In Aiko's case, compare arms crossed in casual clothing and relaxed in pajamas. Check mouth opening with the toothy grin selected. Document which behaviors are custom-only.

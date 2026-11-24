@@ -5,6 +5,7 @@
   "scripts": {
     "build": "node build.mjs",
     "start": "node build.mjs && node server.mjs",
+    "wardrobe": "node build.mjs && node server.mjs --rig private/aiko-wardrobe --port 5177",
     "test": "node build.mjs && node --test test/*.test.mjs"
   },
   "devDependencies": { "typescript": "^5.7.2" }

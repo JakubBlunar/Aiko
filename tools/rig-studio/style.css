@@ -10,6 +10,8 @@ main{max-width:1580px;margin:auto;padding:32px clamp(18px,4vw,68px);display:grid
 .transport,aside{padding:18px}.transport{margin-top:14px}.row label,details label{font-size:13px}.row select{margin-left:6px}.buttons{justify-content:center}.buttons span{font:12px monospace}#play{min-width:86px;background:#934630;color:white;border-color:#934630}#time,output{font:13px monospace}input[type=range]{display:block;width:100%;margin:9px 0 10px}#seek{margin:17px 0}
 aside{align-self:start}.panel-head{flex-wrap:wrap;padding-bottom:12px}.panel-head button{font-size:12px}.parameter{padding:9px 0 3px;border-top:1px solid #e4ddd3}.parameter .row{gap:4px}.parameter label{font-weight:600;font-size:14px}.note{font-size:11px;display:block}.parameter output{color:#78482e}.coords{margin:8px 0}.coords input{width:85px}details{margin-top:13px;border-top:1px solid #d7cfc3;padding-top:12px}summary{margin-bottom:12px;font-weight:600}#status:empty{display:none}
 #parameters fieldset { min-width: 0; margin: 14px 0; padding: 0; border: 0; }
+.motion-row { flex-wrap: wrap; gap: 4px 12px; }
+.motion-row #time { margin-left: auto; white-space: nowrap; }
 #parameters legend { padding: 0 0 6px; font: 500 20px Georgia, serif; }
 aside {
   min-height: 0;

@@ -33,7 +33,7 @@ declare global { interface Window { PIXI: Pixi } }
 
 export interface Reference {
   mapped(id: string): boolean
-  render(rig: Rig, values: Values): void
+  render(rig: Rig, values: Values): string | undefined
   captureNeutral(): Promise<Blob>
 }
 
@@ -114,7 +114,8 @@ export async function loadReference(canvas: HTMLCanvasElement, alexia: boolean):
         for (const index of reset) core.setParameterValueByIndex(index, core.getParameterDefaultValue(index))
         if (useCalibration) {
           for (const b of measured) if (Object.hasOwn(values,b.id)) {
-            core.setParameterValueByIndex(b.index,interpolate(b.keys,values[b.id]))
+            const value = b.id === wardrobe && values[wardrobe] > 2 ? 0 : values[b.id]
+            core.setParameterValueByIndex(b.index,interpolate(b.keys,value))
           }
         } else for (const b of mapped) {
           const p = rig.parameters.find(p => p.id === b.id)
@@ -124,6 +125,7 @@ export async function loadReference(canvas: HTMLCanvasElement, alexia: boolean):
         }
         core.update()
         app.render()
+        return useCalibration && values[wardrobe] > 2 ? 'Casual black' : undefined
       }
     }
   } catch (error) {

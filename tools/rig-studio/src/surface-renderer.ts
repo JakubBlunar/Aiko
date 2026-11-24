@@ -157,8 +157,15 @@ export function createSurfaceRenderer(canvas: HTMLCanvasElement, rig: Rig, image
       gl.clear(gl.COLOR_BUFFER_BIT)
       const bones = pose(rig,values)
       const bind = pose(rig,neutral)
-      for (const e of entries) {
-        e.frame = deform(e.surface,values,rig.variantParameter ? values[rig.variantParameter] : undefined)
+      const outfit = rig.variantParameter ? values[rig.variantParameter] : undefined
+      const visible = outfit === undefined ? entries : entries.filter(e =>
+        !e.layer.visibleIn || e.layer.visibleIn.includes(outfit))
+      // A covered layer can still clip a garment. Its vertices and alpha texture
+      // must be available to the mask pass even when it draws no color.
+      const geometry = new Set(visible)
+      for (const e of visible) for (const id of e.surface.masks) geometry.add(byId.get(id)!)
+      for (const e of geometry) {
+        e.frame = deform(e.surface,values,outfit)
         const joint = bones.get(e.layer.bone)!
         const [a,b,c,d,tx,ty] = joint.matrix
         const skin = e.surface.skin
@@ -185,7 +192,7 @@ export function createSurfaceRenderer(canvas: HTMLCanvasElement, rig: Rig, image
         gl.bufferSubData(gl.ARRAY_BUFFER,0,xy)
       }
       let active = ''
-      for (const e of [...entries].sort((a,b) => a.frame.order-b.frame.order)) {
+      for (const e of [...visible].sort((a,b) => a.frame.order-b.frame.order)) {
         if (!e.frame.opacity || (solo && e.layer.id !== solo)) continue
         const masks = e.surface.masks
         const key = masks.join('|')

@@ -2,10 +2,41 @@ import assert from 'node:assert/strict'
 import {deform} from '../dist/surface.js'
 import {sample,validateRig} from '../dist/runtime.js'
 
+function checkFingerMesh(rig) {
+  for (const id of ['artmesh194','artmesh189','artmesh278']) {
+    const surface = rig.layers.find(layer => layer.id === id).surface
+    const digits = Object.keys(surface.base.shapes).filter(k => k.startsWith('finger.'))
+    assert.equal(digits.length,4)
+    for (const outfit of [0,1,2]) {
+      const neutral = sample(rig,undefined,0,{'outfit.style':outfit})
+      const rest = deform(surface,neutral,outfit).xy
+      for (const digit of digits) {
+        const xy = deform(surface,{...neutral,[digit]:1},outfit).xy
+        assert.ok(xy.some((v,i) => Math.abs(v-rest[i])>9),digit)
+        assert.ok(xy.every((v,i) => rest[i-i%2+1]>960 || v===rest[i]),'Palm moved: '+digit)
+      }
+      // Check all four fingers at open, half and full curl, including single
+      // digit extremes. The original mesh bridges several transparent gaps.
+      for (let pose=0; pose<81; pose++) {
+        const values = {...neutral}
+        digits.forEach((digit,i) => { values[digit] = Math.floor(pose/3**i)%3 / 2 })
+        const xy = deform(surface,values,outfit).xy
+        for (let i=0; i<surface.indices.length; i+=3) {
+          const a=surface.indices[i]*2, b=surface.indices[i+1]*2, c=surface.indices[i+2]*2
+          if (Math.max(rest[a+1],rest[b+1],rest[c+1])<960) continue
+          const area = p => (p[b]-p[a])*(p[c+1]-p[a+1]) - (p[c]-p[a])*(p[b+1]-p[a+1])
+          assert.ok(area(xy)/area(rest)>.15,'Collapsed finger triangle: '+id)
+        }
+      }
+    }
+  }
+}
+
 // Opt-in integration check against the locally installed mesh. Evaluate between
 // baked keys: comparing only the captured endpoints misses a collapsing tail.
 export function checkMotion(model, rig, profile) {
   validateRig(rig)
+  checkFingerMesh(rig)
   const {parameters:p,drawables:d,canvasinfo:canvas} = model
   const px = rig.height*canvas.PixelsPerUnit/canvas.CanvasHeight
   const peak = {tail:0,grin:0,grinOpacity:0}

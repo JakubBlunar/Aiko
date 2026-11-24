@@ -190,6 +190,7 @@ def run(browser_path, output=None):
             page.get_by_label("Jaw drop").fill("0.7")
             assert ImageChops.difference(grin, compare_pose("grin-jaw")).getbbox()
             page.locator("#motion").select_option("tail")
+            page.get_by_label("Layer with idle").uncheck()
             first = compare_pose("tail-start")
             assert page.get_by_label("Tail swing phase", exact=True).input_value() == "-1"
             for name, seconds in [("outbound", "0.37"), ("return", "1.41")]:

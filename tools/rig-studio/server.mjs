@@ -4,6 +4,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import { Worker } from 'node:worker_threads'
 import { watchStudio } from './dev-watch.mjs'
 
 const studio = fileURLToPath(new URL('.', import.meta.url))
@@ -16,9 +17,25 @@ const defaultModel = path.join(project, 'data/personas/active/Alexia/Alexia.mode
 const source = path.resolve(values.reference ?? defaultModel)
 const rigDir = path.resolve(values.rig ?? path.join(studio,'private/aiko'))
 let localFiles = new Set()
+// The compiler and its TypeScript dependencies can be rebuilt while the studio
+// is open. A fresh worker reads the current build without restarting the server.
+let compiling
+function readWardrobe() {
+  if (!compiling) compiling = new Promise((resolve,reject) => {
+    const worker = new Worker(new URL('./wardrobe.mjs',import.meta.url),{workerData:{dir:rigDir}})
+    worker.once('message',resolve)
+    worker.once('error',reject)
+    worker.once('exit',code => { if (code) reject(Error('Wardrobe compiler exited with code '+code)) })
+  }).finally(() => { compiling = undefined })
+  return compiling
+}
 async function localManifest() {
-  const file = await within(rigDir,'rig.json')
-  const bytes = await readFile(file)
+  let hasWardrobe = true
+  try { await within(rigDir,'wardrobe.json') } catch (e) {
+    if (e.code !== 'ENOENT') throw e
+    hasWardrobe = false
+  }
+  const bytes = hasWardrobe ? await readWardrobe() : await readFile(await within(rigDir,'rig.json'))
   const rig = JSON.parse(bytes)
   localFiles = new Set(rig.layers.map(layer => layer.src))
   return bytes

@@ -36,6 +36,17 @@ test('a pinned tint returns when a compatible eye style is selected again', () =
   rig.parameters.at(-1).enabledWhen.equals = []
   assert.throws(() => validateRig(rig),/Invalid parameter condition/)
 })
+test('open-hand controls follow the effective arm pose after the outfit gate', () => {
+  const rig = character()
+  rig.parameters.push({id:'crossed',min:0,max:1,default:0,enabledWhen:{id:'outfit',equals:0}},
+    {id:'bend',min:0,max:1,default:0,enabledWhen:{id:'crossed',equals:0}})
+  validateRig(rig)
+  for (const outfit of [0,1,0]) {
+    assert.equal(sample(rig,undefined,0,{outfit,crossed:1,bend:.8}).bend,outfit ? .8 : 0)
+  }
+  rig.parameters.at(-2).enabledWhen.id = 'bend'
+  assert.throws(() => validateRig(rig),/Invalid parameter condition/)
+})
 test('invalid triangle, skin weight, missing mask and incomplete shape keys fail on import', () => {
   for (const breakSurface of [s => s.masks.push('missing'),s => s.indices.push(999),
     s => {s.skin = {bone:'root',weights:[0,2,0]}},

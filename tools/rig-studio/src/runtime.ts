@@ -29,18 +29,20 @@ export function validateRig(rig: Rig): Rig {
   check(typeof rig.name === 'string' && rig.name.trim(), 'Missing rig name')
   check([rig.width, rig.height].every(v => finite(v) && v > 0), 'Invalid canvas size')
   const parameters = unique(rig.parameters, 'parameter')
-  for (const p of rig.parameters) {
+  for (const [index,p] of rig.parameters.entries()) {
     if (p.enabledWhen) {
       const condition = p.enabledWhen
       const allowed = Array.isArray(condition.equals) ? condition.equals : [condition.equals]
-      check(allowed.length && allowed.every(finite) && rig.parameters.some(other =>
-        other.id === condition.id && !other.enabledWhen && other.id !== p.id),
+      // sample() resolves gated values in declaration order. A conditional
+      // parent must already be resolved, e.g. outfit -> arm pose -> fingers.
+      check(allowed.length && allowed.every(finite) && rig.parameters.some((other,i) =>
+        other.id === condition.id && (!other.enabledWhen || i<index) && other.id !== p.id),
       'Invalid parameter condition: ' + p.id)
     }
     if (p.options) check(p.options.length && p.options.every(o => finite(o.value) && o.value >= p.min
       && o.value <= p.max && typeof o.label === 'string') && p.options.some(o => o.value === p.default)
       && new Set(p.options.map(o => o.value)).size === p.options.length, 'Invalid options: ' + p.id)
-    check([p.min, p.default, p.max].every(finite) && p.min < p.max
+    check([p.min, p.default, p.max].every(finite) && (p.min < p.max || (p.options?.length === 1 && p.min === p.max))
       && p.min <= p.default && p.default <= p.max, 'Invalid range: ' + p.id)
   }
   unique(rig.bones, 'bone')
@@ -55,8 +57,26 @@ export function validateRig(rig: Rig): Rig {
     }
     bones.add(b.id)
   }
-  unique(rig.layers, 'layer')
+  const layerIds = unique(rig.layers, 'layer')
+  for (const [name,id] of Object.entries(rig.attachments ?? {})) {
+    check(layerIds.has(id) && (!layerIds.has(name) || name === id),'Invalid garment attachment: ' + name)
+  }
+  const outfits = rig.parameters.find(p => p.id === rig.variantParameter)?.options ?? []
+  for (const [key,settings] of Object.entries(rig.costumeSettings ?? {})) {
+    check(outfits.some(o => String(o.value) === key),'Unknown costume settings: ' + key)
+    for (const [id,value] of Object.entries(settings.defaults ?? {})) {
+      const p = rig.parameters.find(p => p.id === id)
+      check(p && id !== rig.variantParameter && finite(value) && value >= p.min && value <= p.max,'Invalid costume default: ' + id)
+    }
+    for (const s of settings.springs ?? []) {
+      check(parameters.has(s.input) && parameters.has(s.output) && s.input !== s.output
+        && [s.frequency,s.damping,s.gain].every(finite) && s.frequency > 0 && s.damping > 0 && s.damping < 1,
+      'Invalid costume spring: ' + s.output)
+    }
+  }
   for (const l of rig.layers) {
+    if (l.visibleIn) check(l.surface && l.visibleIn.every(v => outfits.some(o => o.value === v)),
+      'Invalid costume visibility: ' + l.id)
     check(bones.has(l.bone) && finite(l.x) && finite(l.y) && typeof l.src === 'string'
       && /\.(png|webp|jpe?g|svg)$/i.test(l.src)
       && l.src.split('/').every(part => part && !['.','..'].includes(part) && !/[:\\?#%]/.test(part)),
@@ -77,12 +97,32 @@ export function validateRig(rig: Rig): Rig {
       }
     }
   }
-  unique(rig.clips, 'clip')
+  const clipIds = unique(rig.clips, 'clip')
   for (const clip of rig.clips) {
     check(finite(clip.duration) && clip.duration > 0, 'Invalid clip duration: ' + clip.id)
     for (const [id, keys] of Object.entries(clip.tracks)) {
       check(parameters.has(id) && keysValid(keys) && keys[0][0] >= 0
         && keys[keys.length - 1][0] <= clip.duration, 'Invalid track: ' + id)
+    }
+    if (clip.phaseGesture) {
+      const {parameter,duration} = clip.phaseGesture
+      const p = rig.parameters.find(p => p.id === parameter)
+      const keys = clip.tracks[parameter]
+      const ends = keys?.length ? [keys[0][1],keys[keys.length-1][1]] : []
+      check(p && !p.options && finite(duration) && duration > 0
+        && ends.includes(p.min) && ends.includes(p.max),
+        'Phase gesture needs a full turn and a positive duration: ' + clip.id)
+    }
+  }
+  if (rig.idleMotion) {
+    const {duration,layers} = rig.idleMotion
+    check(finite(duration) && duration > 0 && Array.isArray(layers) && layers.length, 'Invalid idle motion')
+    for (const {clip,weight=1,offset=0} of layers) {
+      check(clipIds.has(clip) && finite(weight) && weight >= 0 && weight <= 1 && finite(offset),
+        'Invalid idle layer: ' + clip)
+      const cycles = duration / rig.clips.find(c => c.id === clip)!.duration
+      check(Math.round(cycles) >= 1 && Math.abs(cycles-Math.round(cycles)) < 1e-7,
+        'Idle preview must contain whole cycles of ' + clip)
     }
   }
   if (rig.layers.some(l => l.mesh)) {
@@ -111,17 +151,97 @@ export function parameterEnabled(condition: Parameter['enabledWhen'], values: Va
   return Array.isArray(condition.equals) ? condition.equals.includes(value) : condition.equals === value
 }
 
-export function sample(rig: Rig, clip: Clip | undefined, seconds: number, overrides: Values = {}): Values {
+export interface MotionLayer { clip: Clip; seconds: number; weight?: number; relativePhase?: string }
+
+/** Low to high priority. Each layer owns its local clock and only its keyed channels. */
+export function sampleLayers(rig: Rig, layers: readonly MotionLayer[], overrides: Values = {}): Values {
   const values: Values = Object.create(null)
-  for (const p of rig.parameters) {
-    const track = clip && Object.hasOwn(clip.tracks, p.id) ? clip.tracks[p.id] : undefined
-    const value = Object.hasOwn(overrides, p.id) ? overrides[p.id] : track ? interpolate(track, seconds) : p.default
-    values[p.id] = optionValue(p, clamp(value, p.min, p.max))
+  function channel(p: Parameter, base: number) {
+    let value = base
+    if (Object.hasOwn(overrides,p.id)) value = overrides[p.id]
+    else for (const {clip,seconds,weight=1,relativePhase} of layers) {
+      if (!Object.hasOwn(clip.tracks,p.id) || weight <= 0) continue
+      const next = interpolate(clip.tracks[p.id],seconds)
+      if (relativePhase === p.id) {
+        // The ends of this track depict the same pose. Advance around the circle
+        // from the moving lower layer, wrapping only for the renderer.
+        const width = p.max-p.min
+        const travel = next-clip.tracks[p.id][0][1]
+        const wrapped = (value-p.min+travel) % width
+        value = p.min + (wrapped < 0 ? wrapped+width : wrapped)
+      } else if (p.options) { if (weight >= .5) value = next } // Select discrete states as a unit.
+      else value = weight >= 1 ? next : value + (next-value)*weight
+    }
+    return optionValue(p, clamp(value, p.min, p.max))
+  }
+  const variant = rig.variantParameter && rig.parameters.find(p => p.id === rig.variantParameter)
+  const settings = variant ? rig.costumeSettings?.[channel(variant,variant.default)] : undefined
+  for (const p of rig.parameters) values[p.id] = channel(p,settings?.defaults?.[p.id] ?? p.default)
+  if (settings) {
+    for (const spring of settings.springs ?? []) {
+      if (Object.hasOwn(overrides,spring.input) || Object.hasOwn(overrides,spring.output)) continue
+      let lag = 0
+      for (const {clip,seconds,weight=1} of layers) {
+        const keys = clip.tracks[spring.input]
+        if (!keys || weight <= 0) continue
+        const next = springLag(keys,seconds,spring.frequency,spring.damping)
+        lag += (next-lag)*Math.min(1,weight)
+      }
+      const target = rig.parameters.find(p => p.id === spring.output)!
+      values[target.id] = clamp(values[target.id] + spring.gain*lag,target.min,target.max)
+    }
   }
   for (const p of rig.parameters) {
     if (!parameterEnabled(p.enabledWhen, values)) values[p.id] = p.default
   }
   return values
+}
+
+export function sample(rig: Rig, clip: Clip | undefined, seconds: number, overrides: Values = {}): Values {
+  return sampleLayers(rig,clip ? [{clip,seconds}] : [],overrides)
+}
+
+/** Supply elapsed idle time independently of the time since the foreground gesture started. */
+export function idleLayers(rig: Rig, seconds: number): MotionLayer[] {
+  return (rig.idleMotion?.layers ?? []).map(({clip:id,weight,offset=0}) => {
+    const clip = rig.clips.find(c => c.id === id)!
+    const phase = (seconds % clip.duration + offset) % clip.duration
+    return {clip,seconds:phase < 0 ? phase + clip.duration : phase,weight}
+  })
+}
+
+/** A one-shot gesture eases in and releases its keyed channels back to the idle. */
+export function gestureLayer(clip: Clip, seconds: number, fade = .18): MotionLayer {
+  const duration = clip.phaseGesture?.duration ?? clip.duration
+  const edge = Math.min(seconds,duration-seconds)
+  const u = edge < 0 ? 0 : fade > 0 ? Math.min(1,edge/fade) : 1
+  const weight = u*u*(3-2*u)
+  if (clip.phaseGesture) {
+    if (edge <= 0) return {clip,seconds,weight:0}
+    // Integrate a cosine speed profile. Extra phase speed and acceleration
+    // reach zero at both ends, so the idle keeps its own position and velocity.
+    const fraction = seconds/duration
+    const progress = fraction - Math.sin(2*Math.PI*fraction)/(2*Math.PI)
+    return {clip,seconds:clip.duration*progress,relativePhase:clip.phaseGesture.parameter,weight}
+  }
+  return {clip,seconds,weight}
+}
+
+// Closed-form response of an underdamped spring to the slope changes in a linear
+// track. Holding a pose lets the cloth settle, and direct seeks match playback.
+function springLag(keys: Key[], time: number, frequency: number, damping: number) {
+  const w = 2*Math.PI*frequency, a = damping*w, b = w*Math.sqrt(1-damping*damping)
+  let lag = 0, previousSlope = 0
+  for (let i=0; i<keys.length && keys[i][0]<time; i++) {
+    const [t,v] = keys[i], next = keys[i+1]
+    const slope = next ? (next[1]-v)/(next[0]-t) : 0
+    const dt = time-t, offset = 2*a/(w*w)
+    const response = -offset + Math.exp(-a*dt) *
+      (offset*Math.cos(b*dt) + (a*offset-1)*Math.sin(b*dt)/b)
+    lag += (slope-previousSlope)*response
+    previousSlope = slope
+  }
+  return lag
 }
 
 // Canvas affine matrices [a, b, c, d, tx, ty], composed parent first.

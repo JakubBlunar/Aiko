@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="768" viewBox="0 0 256 768">
+  <defs>
+    <linearGradient id="skin"><stop stop-color="#e6c4b9"/><stop offset=".20" stop-color="#f8e1d5"/><stop offset=".47" stop-color="#fff0e4"/><stop offset=".76" stop-color="#fff0e6"/><stop offset="1" stop-color="#edcfc4"/></linearGradient>
+    <radialGradient id="knee"><stop stop-color="#e8beb2" stop-opacity=".48"/><stop offset="1" stop-color="#f0d7cc" stop-opacity="0"/></radialGradient>
+    <linearGradient id="cotton"><stop stop-color="#6e6977"/><stop offset=".45" stop-color="#a09ba8"/><stop offset=".78" stop-color="#9993a0"/><stop offset="1" stop-color="#78727f"/></linearGradient>
+  </defs>
+  <path fill="url(#skin)" d="M0 0h256v768H0z"/>
+  <ellipse cx="125" cy="407" rx="104" ry="31" fill="url(#knee)"/>
+  <path d="M0 0h256v159q-117 10-256-2z" fill="url(#cotton)"/>
+  <path d="M0 154q141 13 256 2" fill="none" stroke="#77717e" stroke-width="3"/>
+</svg>

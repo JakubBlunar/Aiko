@@ -1,5 +1,6 @@
 import type { Bone, Rig } from './model.js'
 import type { Surface } from './surface.js'
+import { articulateHands } from './alexia-hands.js'
 
 // A continuous strip can straddle a joint (pant leg, sock, hair, wrist).
 // Keep its registered top fixed and transfer the lower vertices to the child.
@@ -109,4 +110,5 @@ export function articulateAlexia(rig: Rig, inventory: {id:string; group:string}[
     'leg.left.shift':[[0,0],[.45,2],[.95,2],[1.4,0]],
     'knee.left.bend':[[0,0],[.45,5],[.95,5],[1.4,0]],
     'foot.left.tilt':[[0,0],[.45,8],[.68,-3],[.95,6],[1.4,0]]}})
+  articulateHands(rig)
 }
