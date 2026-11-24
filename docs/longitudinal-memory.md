@@ -219,6 +219,13 @@ things, and a pick by itself leaves plans open. When there is no recorded
 reason from Aiko, the reply can explore one documented activity as a present
 possibility. It favors an activity named in the question, then a recent one.
 
+## Changing parts in a shared activity
+
+For puzzles and creative writing, Aiko can act on the part requested in the
+current exchange or clarify a bare introduction. On an explicit question
+about how her part changed, she can compare original user invitations from
+remembered conversations over the past 180 days.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

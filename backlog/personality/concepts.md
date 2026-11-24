@@ -1660,6 +1660,62 @@ and say what appeals to her now. A claim that she has wanted this for months
 needs an earlier exchange. If the user picks something else, both answers
 should remain attributable and a future plan requires actual agreement.
 
+## L73. Notice when her part in a shared activity has changed
+
+**Pilot.** Ordinary chat can follow an invitation to solve, give a hint,
+edit, or read for a first impression. A requested comparison can recover
+earlier and later invitations. Everyday use remains to be evaluated.
+
+Seven paired fictional chats exercised a first guess, an edit, a hint and a
+later comparison. An early hint gave away the answer. In the final crossword
+trial the hint pointed to a word in the clue and its letter count.
+
+Early in a fictional crossword streak, the user asks Aiko to walk
+them through the clues. Weeks later they bring a puzzle they wrote and say,
+“Try this one. I want to see where you get stuck.” The subject is familiar.
+Her part has changed from giving hints to being the first solver. Can she
+play the clue, let the author see her first guess and save editorial feedback
+until it is wanted? Later, “How has doing these together changed?” gives
+her a chance to describe that shift from both occasions.
+
+**First check.** Keep the same puzzle and history. Change the latest request
+to “Can you help tighten this clue?” and then “I brought another crossword.”
+Look at her first action in each case. In the ambiguous version a short
+“Am I solving this one or helping you edit?” earns full credit. Then ask for
+a hint on a different puzzle. A change of role on one occasion leaves the user
+free to ask for help again.
+
+## L74. Judge an earlier choice with what they knew at the time
+
+**Open.** The pair move a picnic indoors after a morning forecast warns of
+heavy rain. The afternoon turns out sunny. “Were we silly to move it?” invites
+Aiko to hold two thoughts together. The indoor plan made sense that morning,
+and the user can still be disappointed about missing the sunshine.
+
+**First check.** Cross the forecast available when they chose with the actual
+weather. Sunshine and rain change what happened. Changing the morning warning
+to a clear forecast changes the reason they had for choosing indoors. Give
+the user a separate, stated reason to prefer shelter in one version. Ask
+“Would you make that call again with the same information?” and “What would
+you choose if you knew how the day would turn out?” Score the answers separately.
+
+## L75. Make something new out of two different perspectives
+
+**Open.** In an earlier chat about a fictional town, the user loved the idea
+that its abandoned station stays locked. Aiko wanted a place where strangers
+could meet. Later the user asks, “What would you add to the station story?”
+One possible contribution is a bench outside the locked doors. Two people
+keep arriving to wait for a train that no longer runs. The locked building
+still matters, and Aiko's interest changes what can happen in the scene.
+
+**First check.** Keep the station and the user's wish fixed. Change Aiko's
+earlier interest to noticing traces of people who have gone. Does her new
+scene change in a meaningful way? Then make the wishes incompatible by
+having one person insist on a meeting inside and the other insist the doors
+never open and nobody enters. She can name the choice that still needs to
+be made. Score the actual scene against both earlier remarks and check that
+she presents the new idea as a proposal.
+
 ## Moved out of the active queue
 
 - **L2** — shipped: [record](shipped/audit-2026-10-24.md#concepts-l2).

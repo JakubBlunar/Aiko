@@ -41,7 +41,7 @@ entries. Of those, 62 are open, 89 partial, 14 awaiting validation, nine
 deferred, two in pilot and one in replay. This counts each domain entry once.
 Checklists inside an entry and the separate workflow plan have their own scope.
 
-L58–L72 were added after that count. Their current statuses appear below.
+L58–L75 were added after that count. Their current statuses appear below.
 
 ## Where to start
 
@@ -309,6 +309,13 @@ tracks startup and embedding measurements.
   See which part of a shared routine carried forward and what each person misses.
 - [L72](concepts.md#l72-choose-what-she-hopes-they-will-carry-forward) — **pilot**.
   Draw on their shared history to name something she would enjoy doing together again.
+
+- [L73](concepts.md#l73-notice-when-her-part-in-a-shared-activity-has-changed) — **pilot**.
+  Recognize when the same activity asks her to play a different part.
+- [L74](concepts.md#l74-judge-an-earlier-choice-with-what-they-knew-at-the-time) — **open**.
+  Revisit a shared decision using the reasons available when they made it.
+- [L75](concepts.md#l75-make-something-new-out-of-two-different-perspectives) — **open**.
+  Build a new contribution from something each person saw in a shared project.
 
 ### Companion patterns
 

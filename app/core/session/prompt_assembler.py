@@ -33,6 +33,7 @@ from app.core.conversation.shared_retrospective import check_retrospective
 from app.core.conversation.taste_development import check_taste
 from app.core.conversation.routine_continuity import check_routine
 from app.core.conversation.shared_future import check_shared_future
+from app.core.conversation.activity_role import check_activity_role
 from app.core.conversation.shared_influence import check_influence
 from app.core.world.writing_practice import practice_answer
 from app.core.conversation.contingency import check_contingency
@@ -3982,6 +3983,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if not practical.guidance:
             practical = check_outcomes(user_text, previous_user)
             practical_kind = "outcome_comparison"
+        if not practical.guidance:
+            practical = check_activity_role(user_text, previous_user, self._db,
+                                            self._continuity_owner, session_key,
+                                            current_user_message_id)
+            practical_kind = "activity_role"
         if not practical.guidance:
             practical = check_shared_future(user_text, history_msgs, self._db,
                                             self._continuity_owner, session_key,
