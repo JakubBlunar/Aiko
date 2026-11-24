@@ -29,6 +29,7 @@ from app.core.conversation.conversation_situation import (
 from app.core.conversation.diagnostic_capture import proposed_test
 from app.core.conversation.feasibility import check_feasibility
 from app.core.conversation.narrative_reasoning import check_timeline
+from app.core.conversation.story_stakes import check_stakes
 from app.core.conversation.outcome_comparison import check_outcomes
 from app.core.conversation.story_reply import STORY_HEADER, story_contract, story_question
 from app.core.conversation.pursuit_reply import pursuit_reply
@@ -3970,6 +3971,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if not practical.guidance and not conversation_situation_block.startswith(STORY_HEADER):
             practical = check_timeline(user_text, previous_user)
             practical_kind = "story_timeline"
+        if not practical.guidance and not conversation_situation_block.startswith(STORY_HEADER):
+            practical = check_stakes(user_text, (m.content for m in reversed(history_msgs)
+                                                 if m.role == "user"))
+            practical_kind = "story_stake"
         current_reply_guidance = ((pursuit_guidance
                                    or practical.guidance
                                    or choice_guidance(user_text, (m.content for m in history_msgs))

@@ -1381,7 +1381,7 @@ and ordinary conversation still need evidence.
 
 ## L61. Hear why this part of the story mattered
 
-**Open.** “I finally tried making Dad's soup myself. I really wanted him to
+**Ordinary-chat pilot.** “I finally tried making Dad's soup myself. I really wanted him to
 like it.” A few turns later comes the payoff. “Dad went back for seconds and
 finished the pot.” Aiko could say, “Sounds like you got your answer about
 the soup.” Change the setup to “I promised my sister the last bowl for after
@@ -1394,6 +1394,13 @@ before the ending. Read the first reply for whether it picks up the user's
 stated stake, leaves room for mixed feelings, and avoids inventing anyone's
 reaction. A warm one-liner can earn full credit. Try a different story about
 a song making it onto a set list to see whether the skill transfers.
+
+In the eleven-case fictional 9B replay, ordinary chat sometimes assumed that
+the sister had received the bowl or that a selection had already led to a
+performance. The pilot uses recent user-stated hopes and promises. Eight
+recognized endings received short grounded responses, including a released
+promise and a sketch selected for a programme. Three controls used ordinary
+chat. Indirect stakes and the naturalness of repeated responses remain open.
 
 ## L62. Follow a story told out of order
 

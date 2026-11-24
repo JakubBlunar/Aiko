@@ -263,6 +263,13 @@ the object. Other timelines stay with ordinary chat. The existing viewpoint
 reader takes precedence for questions about what another person knew.
 See the [timeline check](../app/core/conversation/narrative_reasoning.py).
 
+When a user reports a story's outcome, Aiko can relate it to an explicit
+hope or promise in the same message or five recent user turns. A small set
+of responses covers shared food and getting selected for a programme or
+set list. These can acknowledge two stakes or a released promise. Other
+related endings use current-reply guidance. The [story stakes check](../app/core/conversation/story_stakes.py)
+uses the current conversation and writes no long-term record.
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption

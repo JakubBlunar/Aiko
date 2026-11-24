@@ -285,7 +285,7 @@ tracks startup and embedding measurements.
   Check speaker attribution, corrections and natural use across longer stories.
 - [L60](concepts.md#l60-compare-outcomes-on-the-basis-the-user-asked-for) — **pilot**.
   Distinguish totals, rates and missing observations in everyday comparisons.
-- [L61](concepts.md#l61-hear-why-this-part-of-the-story-mattered) — **open**.
+- [L61](concepts.md#l61-hear-why-this-part-of-the-story-mattered) — **pilot**.
   Respond to a story's ending in light of what the user hoped for or cared about.
 - [L62](concepts.md#l62-follow-a-story-told-out-of-order) — **pilot**.
   Follow flashbacks and answer about the moment the user asked about.
