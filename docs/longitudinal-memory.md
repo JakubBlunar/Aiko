@@ -226,6 +226,14 @@ current exchange or clarify a bare introduction. On an explicit question
 about how her part changed, she can compare original user invitations from
 remembered conversations over the past 180 days.
 
+## Judging a past choice
+
+When asked to judge an earlier decision, Aiko can look for original remarks
+about what was expected, the choice itself and the reported result. A later
+retelling of an expectation keeps its timing qualified. The answer can use
+the information available at the time or reconsider the choice with the
+outcome known, depending on which question the user asked.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

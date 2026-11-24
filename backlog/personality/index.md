@@ -312,7 +312,7 @@ tracks startup and embedding measurements.
 
 - [L73](concepts.md#l73-notice-when-her-part-in-a-shared-activity-has-changed) — **pilot**.
   Recognize when the same activity asks her to play a different part.
-- [L74](concepts.md#l74-judge-an-earlier-choice-with-what-they-knew-at-the-time) — **open**.
+- [L74](concepts.md#l74-judge-an-earlier-choice-with-what-they-knew-at-the-time) — **pilot**.
   Revisit a shared decision using the reasons available when they made it.
 - [L75](concepts.md#l75-make-something-new-out-of-two-different-perspectives) — **open**.
   Build a new contribution from something each person saw in a shared project.

@@ -1687,7 +1687,15 @@ free to ask for help again.
 
 ## L74. Judge an earlier choice with what they knew at the time
 
-**Open.** The pair move a picnic indoors after a morning forecast warns of
+**Pilot.** A requested review separates the earlier information, the decision
+and the eventual outcome. Everyday use remains to be evaluated.
+
+In nine paired fictional chats an early answer endorsed the move even with
+a clear forecast and an outdoor preference. The final comparison switched
+with the morning forecast and kept the indoor slideshow requirement in view
+when asked to choose with hindsight.
+
+The pair move a picnic indoors after a morning forecast warns of
 heavy rain. The afternoon turns out sunny. “Were we silly to move it?” invites
 Aiko to hold two thoughts together. The indoor plan made sense that morning,
 and the user can still be disappointed about missing the sunshine.
