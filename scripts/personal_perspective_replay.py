@@ -3,6 +3,7 @@ import argparse
 
 from scripts.longitudinal_reasoning_replay import replay
 from scripts.eye_for_detail_cases import EYE
+from scripts.project_purpose_cases import PROJECTS
 
 
 GOAL = "I'd love to make a phone call in Italian without writing out every sentence first."
@@ -29,9 +30,11 @@ MILESTONES = [
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
-    parser.add_argument("--section", choices=("milestone", "eye"), default="milestone")
+    parser.add_argument("--section", choices=("milestone", "eye", "project"), default="milestone")
     args = parser.parse_args()
-    if args.section == "eye":
+    if args.section == "project":
+        replay(PROJECTS, "check_project_purpose", args.model)
+    elif args.section == "eye":
         replay(EYE, "check_eye_for_detail", args.model)
     else:
         replay(MILESTONES, "check_milestone", args.model)

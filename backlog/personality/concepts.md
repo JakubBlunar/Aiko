@@ -1787,7 +1787,17 @@ staying within what the user described.
 
 ## L78. Recognize when a shared project has served its purpose
 
-**Open.** Two people start a family recipe book “so that Gran can teach us
+**Pilot.** A retrospective on a named shared project can compare its
+original purposes with the artifact and what the participants actually
+accomplished. Everyday use remains to be evaluated.
+
+Eight fictional pairs exercised a learning goal, a recipient goal and both
+together. An early reply dropped the cousins' goal in the mixed case. The
+checked reply accounts for the kitchen sessions and the fold, and leaves the
+cousins' use open until the user reports it. A plan to send the book left
+that answer open too.
+
+Two people start a family recipe book “so that Gran can teach us
 her dumplings while we're all in one kitchen.” Months later the book has
 three pages. The user says, “We made them together twice. I can do the fold
 myself now. Funny that we never finished the book.” If they ask “Did we

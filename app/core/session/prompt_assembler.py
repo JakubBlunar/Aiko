@@ -38,6 +38,7 @@ from app.core.conversation.decision_hindsight import check_hindsight
 from app.core.conversation.shared_creation import check_shared_creation
 from app.core.conversation.personal_milestone import check_milestone
 from app.core.conversation.eye_for_detail import check_eye_for_detail
+from app.core.conversation.project_purpose import check_project_purpose
 from app.core.conversation.shared_influence import check_influence
 from app.core.world.writing_practice import practice_answer
 from app.core.conversation.contingency import check_contingency
@@ -4019,6 +4020,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             practical = check_routine(user_text, previous_user, self._db, self._continuity_owner,
                                       session_key, current_user_message_id)
             practical_kind = "routine_continuity"
+        if not practical.guidance:
+            practical = check_project_purpose(user_text, previous_user, self._db,
+                                              self._continuity_owner, session_key,
+                                              current_user_message_id)
+            practical_kind = "project_purpose"
         if not practical.guidance:
             practical = check_influence(user_text, history_msgs, self._db, self._continuity_owner,
                                         session_key, current_user_message_id)

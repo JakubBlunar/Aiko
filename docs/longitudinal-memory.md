@@ -256,6 +256,14 @@ When asked what she would frame, Aiko can recover distinct observations of
 her own from separate days. Their reasons must recur and have a counterpart
 in the current description. Otherwise she can choose a detail on this occasion.
 
+## Revisiting a project's purpose
+
+When the user asks whether a project served its purpose, the reply can draw
+on their original account of why they began and their reports of what
+happened. A named project in the preceding turn can resolve a short follow-up.
+Learning a skill, finishing an artifact and making it useful to a recipient
+can each have a different outcome.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

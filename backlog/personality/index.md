@@ -321,7 +321,7 @@ tracks startup and embedding measurements.
   Recognize a concrete step toward a goal the user actually set.
 - [L77](concepts.md#l77-develop-an-eye-for-what-she-notices) — **pilot**.
   Let Aiko's earlier observations inform which detail she notices in a new scene.
-- [L78](concepts.md#l78-recognize-when-a-shared-project-has-served-its-purpose) — **open**.
+- [L78](concepts.md#l78-recognize-when-a-shared-project-has-served-its-purpose) — **pilot**.
   Judge an unfinished shared project against the reasons it began.
 
 ### Companion patterns
