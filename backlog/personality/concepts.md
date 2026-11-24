@@ -1420,8 +1420,10 @@ allow uncertainty where the story leaves a gap.
 The nine-case fictional 9B replay exposed replies that correctly described a
 return while naming the previous holder. Ordinary chat now checks simple
 transfers against their narrated occasion and leaves a planned handoff
-unconfirmed. Broader timelines use the chat model. Its wording on unordered
-events and incidental scene details still needs ordinary-use evidence.
+unconfirmed. When two handoffs are reported and the narrator explicitly
+forgets their order, the checked reply names both possible last holders.
+Broader timelines use the chat model. Incidental scene details and
+ordinary conversation still need validation.
 
 ## L63. Keep track of which backup plan applies
 

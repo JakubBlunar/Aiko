@@ -43,3 +43,14 @@ def test_transfer_needs_a_matching_object_and_confirmed_returner():
                      "After dance class Kim gave it back. Who has the pass now?",
                      "After dance class Kim almost gave it back. Who has the folder now?"):
         assert not check_timeline(mismatch, previous).reply
+
+
+def test_forgotten_order_explained_only_for_matching_handoffs():
+    account = ("I lent the folder to Nia at one lesson and to Kai at another lesson. "
+               "I can't remember which lesson came first.")
+    answer = check_timeline("Who last had the folder?", account)
+    assert "Either Nia or Kai" in answer.reply and "?" not in answer.reply
+    assert not check_timeline("Who last had the notebook?", account).reply
+    assert not check_timeline("Who last had the folder?", account.replace("which lesson",
+                                                                          "which concert")).reply
+    assert not check_timeline(account + " Later I took it home. Who has the folder now?").reply

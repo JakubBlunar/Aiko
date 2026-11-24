@@ -56,6 +56,12 @@ _STAMP = re.compile(r"(before leaving for|before|at|after) ([\w -]+?) (I |[A-Z][
 _ACTION = re.compile(r"(?:(?:planned|intended|meant) to (?:hand|give|lend)|handed|gave|lent) "
                      r"([A-Z][\w'-]*) (?:the|my) ([\w -]+)")
 _STOW = re.compile(r"(?:put|tucked|placed) (?:the|my) ([\w -]+?) (in(?:side)?|on) (my [\w -]+)")
+_TWO_TRANSFERS = re.compile(
+    r"(?:The (?P<item>[\w-]+(?: [\w-]+)?) went|I (?:lent|gave|handed) the "
+    r"(?P<lent>[\w-]+(?: [\w-]+)?)) to (?P<a>[A-Z][\w'-]*) at one (?P<occasion>[\w-]+) "
+    r"and to (?P<b>[A-Z][\w'-]*) at another(?: (?P=occasion))?\.")
+_ORDER_GAP = re.compile(r"I (?:forget|forgot|can't remember|don't know) which ([\w-]+) "
+                        r"(?:came|was) (?:first|last)\.")
 
 
 def _possession(text, previous):
@@ -68,6 +74,12 @@ def _possession(text, previous):
         return ""
     if previous and (not parts or re.search(r"\b(?:it|back)\b", " ".join(parts), re.I)):
         parts = re.split(r"(?<=[.!?])\s+|\n+", previous.strip()) + parts
+    if holder and len(parts) == 2:
+        pair, gap = _TWO_TRANSFERS.fullmatch(parts[0]), _ORDER_GAP.fullmatch(parts[1])
+        if (pair and gap and gap[1] == pair["occasion"] and pair["a"] != pair["b"]
+                and holder[1].lower() in ("it", pair["item"] or pair["lent"])):
+            return (f"Either {pair['a']} or {pair['b']} could have had it last. "
+                    "That depends on which handoff happened later.")
     events = {}
     occasion = item = ""
     for part in parts:
