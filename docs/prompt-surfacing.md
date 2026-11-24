@@ -243,6 +243,17 @@ Additional conditions such as a transfer keep the whole question with the
 chat model. A related follow-up can use the immediately preceding user turn.
 See the [feasibility checks](../app/core/conversation/feasibility.py).
 
+For a comparison of two groups, Aiko can use the counts in the user's report
+or a directly related follow-up. She compares total output, output per
+session, or the share of sessions with a finish according to the question.
+Several finishes can occur in one session, so that last measure needs the
+number of successful sessions unless each session could produce at most one.
+A missing count leaves the other group's known result available. A group
+with zero opportunities has no observed rate. Reports with additional
+conditions go through ordinary chat with guidance on the requested measure.
+See the [outcome comparison](../app/core/conversation/outcome_comparison.py)
+and [paired replay](../scripts/practical_reasoning_replay.py).
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption

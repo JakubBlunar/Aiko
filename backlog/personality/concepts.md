@@ -1349,7 +1349,7 @@ to first useful audio remain open.
 
 ## L60. Compare outcomes on the basis the user asked for
 
-**Open.** "I finished six drawings in ten morning sessions and four in five
+**Ordinary-chat pilot.** "I finished six drawings in ten morning sessions and four in five
 evening sessions. When did I finish more? When was I more likely to finish
 one?" If each session produced at most one drawing, mornings contributed more
 finished work, while evenings had the higher observed completion rate (4/5
@@ -1369,6 +1369,15 @@ the fraction of sessions with a finish needs another fact. Score the requested
 quantity, units, direction of the comparison, and any unsupported causal claim.
 Use the ordinary reply as the baseline for all three proposals. If it already
 handles unseen variants reliably, retain the cases as evaluation coverage.
+
+The paired fictional 9B replay exposed invented denominators, reversed
+comparisons and confusion between output and successful sessions. Supplying
+the model with the fractions still allowed it to name the wrong winner.
+For a recognized two-group report the checked answer now compares exact
+fractions, honors an explicit successful-session count, and identifies
+missing observations. The replay includes a tie, zero opportunities, indoor
+and outdoor runs, a follow-up and two unrelated controls. Broader phrasing
+and ordinary conversation still need evidence.
 
 ## Moved out of the active queue
 

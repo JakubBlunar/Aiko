@@ -1,7 +1,8 @@
 """Turn-local feasibility guidance and arithmetic for two stated boundaries."""
-from dataclasses import dataclass
 from decimal import Decimal
 import re
+
+from app.core.conversation.practical_answer import PracticalAnswer
 
 
 _ASK = re.compile(
@@ -34,12 +35,6 @@ _GUIDANCE = (
     "If flexibility is unstated, label any alternative conditional. Never invent a replacement "
     "ride, spare material or permission. Answer briefly in your own words."
 )
-
-
-@dataclass(frozen=True)
-class PracticalAnswer:
-    guidance: str = ""
-    reply: str = ""
 
 
 # The direct answer covers a small, closed set of relations. An unmatched

@@ -283,7 +283,7 @@ tracks startup and embedding measurements.
 - [L59](concepts.md#l59-reason-from-what-each-person-was-told) — **pilot**.
   Ordinary chat can answer from the information available to a named person.
   Check speaker attribution, corrections and natural use across longer stories.
-- [L60](concepts.md#l60-compare-outcomes-on-the-basis-the-user-asked-for) — **open**.
+- [L60](concepts.md#l60-compare-outcomes-on-the-basis-the-user-asked-for) — **pilot**.
   Distinguish totals, rates and missing observations in everyday comparisons.
 
 ### Companion patterns

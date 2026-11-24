@@ -28,6 +28,7 @@ from app.core.conversation.conversation_situation import (
 )
 from app.core.conversation.diagnostic_capture import proposed_test
 from app.core.conversation.feasibility import check_feasibility
+from app.core.conversation.outcome_comparison import check_outcomes
 from app.core.conversation.story_reply import STORY_HEADER, story_contract, story_question
 from app.core.conversation.pursuit_reply import pursuit_reply
 from app.core.conversation.clarification_reply import (
@@ -3959,8 +3960,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         ) if self._pursuit_history_provider is not None else ""
         pursuit_guidance = (f"Recorded answer to the user's question:\n{pursuit_answer}"
                             if pursuit_answer else "")
-        practical = check_feasibility(user_text, (m.content for m in reversed(history_msgs)
-                                                   if m.role == "user"))
+        previous_user = next((m.content for m in reversed(history_msgs) if m.role == "user"), "")
+        practical = check_feasibility(user_text, (previous_user,))
+        practical_kind = "plan_feasibility"
+        if not practical.guidance:
+            practical = check_outcomes(user_text, previous_user)
+            practical_kind = "outcome_comparison"
         current_reply_guidance = ((pursuit_guidance
                                    or practical.guidance
                                    or choice_guidance(user_text, (m.content for m in history_msgs))
@@ -4170,7 +4175,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if (practical.reply and current_reply_guidance == practical.guidance
                 and not decision_reply and comparison_report is None):
             decision_reply = practical.reply
-            practical_reply_kind = "plan_feasibility"
+            practical_reply_kind = practical_kind
         if relevant_context_block:
             system_parts.insert(t3_insert_index, relevant_context_block)
 
