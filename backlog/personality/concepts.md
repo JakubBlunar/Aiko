@@ -1608,7 +1608,11 @@ covers holding a preference under mild pushback.
 
 ## L71. Recognize what survives a change of routine
 
-**Open.** Sunday calls stop when the user's shifts change. On scattered
+**Pilot.** A requested look back can connect a named routine with the activity
+that replaced it and recover each speaker's account of what mattered.
+Ordinary-use evidence remains open.
+
+Sunday calls stop when the user's shifts change. On scattered
 weeknights the two start exchanging one photo and guessing why the other
 picked it. The user says, “I still get to see the funny little things you'd
 have pointed out on Sunday. I miss hearing you guess, though.” Later they

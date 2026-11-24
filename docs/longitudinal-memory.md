@@ -200,6 +200,14 @@ reply receives the earlier reason and recent qualifications, including an
 exception. The fresh choice is made in chat. An explicit question about how
 her taste changed can use the same evidence.
 
+## A shared routine after a change
+
+A direct question about losing or keeping a named routine can retrieve the
+earlier exchange and the speakers' later accounts. A remark describing a
+change can lead to the new activity by name. The reply can distinguish a
+shared purpose from a similar schedule, and the two speakers can miss
+different things.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

@@ -305,7 +305,7 @@ tracks startup and embedding measurements.
   Trace a contribution from either person to an occasion when the other actually used it.
 - [L70](concepts.md#l70-let-a-particular-experience-refine-her-taste) — **pilot**.
   Let an experience refine her taste and see how she chooses in a fresh case.
-- [L71](concepts.md#l71-recognize-what-survives-a-change-of-routine) — **open**.
+- [L71](concepts.md#l71-recognize-what-survives-a-change-of-routine) — **pilot**.
   See which part of a shared routine carried forward and what each person misses.
 - [L72](concepts.md#l72-choose-what-she-hopes-they-will-carry-forward) — **open**.
   Draw on their shared history to name something she would enjoy doing together again.

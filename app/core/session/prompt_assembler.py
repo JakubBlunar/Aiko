@@ -31,6 +31,7 @@ from app.core.conversation.diagnostic_capture import proposed_test
 from app.core.conversation.feasibility import check_feasibility
 from app.core.conversation.shared_retrospective import check_retrospective
 from app.core.conversation.taste_development import check_taste
+from app.core.conversation.routine_continuity import check_routine
 from app.core.conversation.shared_influence import check_influence
 from app.core.world.writing_practice import practice_answer
 from app.core.conversation.contingency import check_contingency
@@ -3984,6 +3985,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             practical = check_retrospective(
                 user_text, self._db, self._continuity_owner, session_key, current_user_message_id)
             practical_kind = "shared_retrospective"
+        if not practical.guidance:
+            practical = check_routine(user_text, previous_user, self._db, self._continuity_owner,
+                                      session_key, current_user_message_id)
+            practical_kind = "routine_continuity"
         if not practical.guidance:
             practical = check_influence(user_text, history_msgs, self._db, self._continuity_owner,
                                         session_key, current_user_message_id)
