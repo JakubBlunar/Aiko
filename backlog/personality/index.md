@@ -289,7 +289,7 @@ tracks startup and embedding measurements.
   Respond to a story's ending in light of what the user hoped for or cared about.
 - [L62](concepts.md#l62-follow-a-story-told-out-of-order) — **pilot**.
   Follow flashbacks and answer about the moment the user asked about.
-- [L63](concepts.md#l63-keep-track-of-which-backup-plan-applies) — **open**.
+- [L63](concepts.md#l63-keep-track-of-which-backup-plan-applies) — **pilot**.
   Work out which plan applies and whether anyone has actually carried it out.
 
 ### Companion patterns

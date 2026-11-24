@@ -1425,7 +1425,7 @@ events and incidental scene details still needs ordinary-use evidence.
 
 ## L63. Keep track of which backup plan applies
 
-**Open.** “If the bakery confirms by noon, I'll pick up the cake. Otherwise
+**Ordinary-chat pilot.** “If the bakery confirms by noon, I'll pick up the cake. Otherwise
 Sam will bake one.” The bakery's first confirmation arrives at 12:20.
 Under the plan they agreed, it's Sam's turn. Whether Sam has started baking
 is a separate question. If the user adds “Sam and I agreed to take the
@@ -1437,10 +1437,12 @@ late message with either a proposed exception or an accepted one. Check
 which person is responsible, whether an outcome is still pending, and
 whether Aiko asks about the time only when it would change her answer.
 
-Start these proposals with fictional conversations on the ordinary chat
-route. Where it handles the variants consistently, keep the cases as
-evaluation coverage. A recurring failure in the actual reply gives a
-specific target for implementation.
+In the fourteen-case fictional 9B replay, ordinary chat sometimes treated
+12:20 as meeting a noon cutoff and inferred that the cake was ready. The
+checked path answered thirteen questions about two-branch agreements.
+These included a projector with a strict deadline, a proposed change, an
+accepted change, and a reported delivery. The birthday-card control stayed
+in ordinary chat. Broader agreements and natural-use validation remain open.
 
 ## Moved out of the active queue
 

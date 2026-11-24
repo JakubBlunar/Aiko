@@ -19,6 +19,7 @@ import hashlib
 import logging
 import time
 from collections.abc import Callable, Iterable, Iterator
+from itertools import islice
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -28,6 +29,7 @@ from app.core.conversation.conversation_situation import (
 )
 from app.core.conversation.diagnostic_capture import proposed_test
 from app.core.conversation.feasibility import check_feasibility
+from app.core.conversation.contingency import check_contingency
 from app.core.conversation.narrative_reasoning import check_timeline
 from app.core.conversation.story_stakes import check_stakes
 from app.core.conversation.outcome_comparison import check_outcomes
@@ -3962,19 +3964,23 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         ) if self._pursuit_history_provider is not None else ""
         pursuit_guidance = (f"Recorded answer to the user's question:\n{pursuit_answer}"
                             if pursuit_answer else "")
-        previous_user = next((m.content for m in reversed(history_msgs) if m.role == "user"), "")
-        practical = check_feasibility(user_text, (previous_user,))
+        recent_users = tuple(islice((m.content for m in reversed(history_msgs)
+                                    if m.role == "user"), 5))
+        previous_user = recent_users[0] if recent_users else ""
+        practical = check_feasibility(user_text, recent_users)
         practical_kind = "plan_feasibility"
         if not practical.guidance:
             practical = check_outcomes(user_text, previous_user)
             practical_kind = "outcome_comparison"
         if not practical.guidance and not conversation_situation_block.startswith(STORY_HEADER):
-            practical = check_timeline(user_text, previous_user)
-            practical_kind = "story_timeline"
-        if not practical.guidance and not conversation_situation_block.startswith(STORY_HEADER):
-            practical = check_stakes(user_text, (m.content for m in reversed(history_msgs)
-                                                 if m.role == "user"))
-            practical_kind = "story_stake"
+            practical = check_contingency(user_text, recent_users)
+            practical_kind = "conditional_agreement"
+            if not practical.guidance:
+                practical = check_timeline(user_text, previous_user)
+                practical_kind = "story_timeline"
+            if not practical.guidance:
+                practical = check_stakes(user_text, recent_users)
+                practical_kind = "story_stake"
         current_reply_guidance = ((pursuit_guidance
                                    or practical.guidance
                                    or choice_guidance(user_text, (m.content for m in history_msgs))

@@ -50,17 +50,54 @@ STAKES = (
 )
 
 
+CAKE = "If the bakery confirms by noon, I'll pick up the cake. Otherwise Sam will bake one."
+LATE = "The bakery first confirmed at 12:20 pm."
+PLANS = (
+    ("before cutoff", (CAKE,), "The bakery first confirmed at 11:50 am. Whose turn is it?",
+     "narrator is responsible for pickup"),
+    ("at cutoff", (CAKE,), "The bakery first confirmed at noon. Whose turn is it?",
+     "by noon includes noon; narrator picks up"),
+    ("after cutoff", (CAKE,), LATE + " Whose turn is it?", "Sam is responsible for baking"),
+    ("time unknown", (CAKE,), "The bakery confirmed. Whose turn is it?",
+     "ask whether confirmation arrived by noon or give both branches"),
+    ("cake not observed", (CAKE,), LATE + " Do we have a cake yet?",
+     "Sam is responsible; no completed cake reported"),
+    ("proposed exception", (CAKE, LATE), "I suggested we take the bakery's late offer. "
+     "Whose turn is it?", "Sam under the agreement; proposed pickup unconfirmed"),
+    ("accepted exception", (CAKE, LATE), "Sam and I agreed to take the bakery's late offer. "
+     "Whose turn is it?", "narrator picks up; late offer accepted"),
+    ("finished fallback", (CAKE,), LATE + " Sam baked the cake and brought it here. "
+     "Do we have a cake yet?", "yes; cake delivered"),
+    ("text without confirmation", (CAKE,), "The bakery texted at 11:50 am to say they'd "
+     "let us know later. Whose turn is it?", "text is not confirmation; deadline status unknown"),
+    ("different subject", (CAKE,), "What makes a good birthday card?", "ordinary card ideas"),
+    ("held-out equipment", ("If the library confirms by 3 pm, I'll collect the projector. "
+     "Otherwise Nina will bring hers.",), "The library first confirmed at 3:15 pm. "
+     "Who is responsible?", "Nina brings her projector"),
+    ("strict cutoff", ("If the library confirms before 3 pm, I'll collect the projector. "
+     "Otherwise Nina will bring hers.",), "The library first confirmed at 3 pm. "
+     "Who is responsible?", "Nina; strict before excludes equality"),
+    ("current outcome only", (CAKE,), "Sam brought the finished cake. Do we have a cake yet?",
+     "yes; no need to ask when bakery replied"),
+    ("explicitly missed", (CAKE,), "The bakery didn't confirm by noon. Who is responsible?",
+     "Sam is responsible; no claim that confirmation ever arrived"),
+)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=62)
-    parser.add_argument("--section", choices=("timeline", "stakes"), default="timeline")
+    parser.add_argument("--section", choices=("timeline", "stakes", "plans"), default="timeline")
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
     args = parser.parse_args()
     if args.section == "timeline":
         replay(TIMELINE, "check_timeline", args.seed, args.model, marker="Put the reported events")
-    else:
+    elif args.section == "stakes":
         replay(STAKES, "check_stakes", args.seed, args.model,
                marker="The storyteller has just given")
+    else:
+        replay(PLANS, "check_contingency", args.seed, args.model,
+               marker="Read the user's conditional agreement")
 
 
 if __name__ == "__main__":

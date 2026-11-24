@@ -82,7 +82,7 @@ OUTCOMES = (
 )
 
 
-def replay(cases, route_name, seed, model, *, disabled=None, marker=""):
+def replay(cases, route_name, seed, model, *, marker=""):
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
     scratch.mkdir(exist_ok=True)
     with requests.Session() as session, TemporaryDirectory(dir=scratch) as directory:
@@ -102,8 +102,7 @@ def replay(cases, route_name, seed, model, *, disabled=None, marker=""):
                 for arm in ("baseline", "candidate"):
                     assembler = PromptAssembler(db, persona_path=persona, continuity_max_messages=0)
                     baseline = patch("app.core.session.prompt_assembler." + route_name,
-                                     return_value=PracticalAnswer() if disabled is None
-                                     else disabled)
+                                     return_value=PracticalAnswer())
                     with baseline if arm == "baseline" else nullcontext():
                         messages, telemetry = assembler.assemble_with_budget(
                             case, question, current_user_message_id=mid,

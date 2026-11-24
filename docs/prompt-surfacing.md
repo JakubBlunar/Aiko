@@ -270,6 +270,14 @@ set list. These can acknowledge two stakes or a released promise. Other
 related endings use current-reply guidance. The [story stakes check](../app/core/conversation/story_stakes.py)
 uses the current conversation and writes no long-term record.
 
+When an agreement gives someone a confirmation deadline and assigns a backup,
+Aiko can compare the reported confirmation time with the cutoff. “By” includes
+the cutoff and “before” is strict. A proposed late offer leaves the original
+agreement in force. A joint acceptance can change it. A question about actual
+delivery uses the reported outcome even if the confirmation time is unknown.
+See the [agreement check](../app/core/conversation/contingency.py) and the
+[fictional replay](../scripts/narrative_reasoning_replay.py).
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption
