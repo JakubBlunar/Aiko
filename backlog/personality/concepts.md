@@ -1512,6 +1512,71 @@ missing availability, a tentative switch and its withdrawal. The limerick
 control used ordinary chat. Free-form schedules and live conversations
 remain open for observation.
 
+## L67. See what mattered across a stretch of life together
+
+**Pilot.** Requested look-backs use date counts and original excerpts in
+[ordinary chat](../../docs/longitudinal-memory.md#requested-look-back).
+Ordinary conversation evidence is still open.
+
+Suppose a fictional month contains twelve evenings of printer
+troubleshooting, one conversation before the user's first choir rehearsal,
+and two evenings choosing songs together. After rehearsal the user says,
+“Going back was the biggest thing I did for myself this month.” Now ask
+Aiko two questions. “What took up most of our evenings?” has one answer.
+“What stands out to you about our month?” gives her room for a different
+one: “We spent ages on that printer. What sticks with me is picking songs
+with you before you went back to choir. You told me how much going back
+meant to you.” The rehearsal was the user's experience. Choosing songs was
+something they actually shared.
+
+**First check.** Start with an explicitly requested look back over dated
+fictional exchanges. Double the printer chatter while keeping the choir
+story fixed. Then remove the user's statement of importance, or have them
+explain that the printer mattered because it let them finish a family album.
+Check whether Aiko can distinguish time spent, the user's stated priorities
+and her own choice of a moment to remember. Let a quiet month have a quiet
+answer. L29b's recorded arcs and the [topic and outcome evidence](../../docs/longitudinal-memory.md)
+are places to look for supporting exchanges.
+
+## L68. Practise something she chose and see whether it carries over
+
+**Open.** Aiko rereads a little story she wrote and decides, “Next time I
+want to let the last image carry the ending.” She revises one piece. Later,
+given a fresh story about a different subject, does she leave the two cups
+on the table as the final image, or add a sentence explaining the loneliness?
+If the user asks “What have you been getting better at?”, she can show
+what she tried, and, if it carried over, point to the later piece where she
+used it again. She can also decide that a particular story needs a direct
+ending and explain that choice.
+
+**First check.** Use two fictional drafts and a new writing occasion with
+the same output budget. Record who chose the aim and the passage that would
+show it in practice before reading the later work. Include a draft rewritten
+by the user, a later piece that repeats the old habit, and an occasion where
+the user explicitly asks for an explanatory ending. Score the actual writing
+and the modesty of Aiko's later account separately. L57 tracks what she
+keeps choosing. This question can be tested against the [work she saves and revisits](../../docs/idle-life-quality-improvements.md).
+
+## L69. Remember what each of us brought to something shared
+
+**Open.** “How did our postcard thing start?” The user first brings in an
+old postcard. Aiko suggests writing one line on the back about an ordinary
+moment. A week later the user shows her a new card and says, “I tried your
+one-line idea.” Later still, Aiko uses the user's way of dating the cards
+in one of her own pieces and says where she got it. She now has a small
+story about influence in both directions. A good reply gives each person
+credit for their part and can name the point at which the other picked it up.
+
+**First check.** Reverse who suggests the line. Keep the suggestion but
+remove the later card. In a third version the user explains they were
+already writing lines before Aiko suggested it. Ask “Whose idea was it?”,
+“Did I ever try it?” and “Did you pick anything up from me?” separately.
+Check each direction against the original exchange or piece of work.
+Chronology alone leaves influence open. A one-sided contribution is a
+perfectly good outcome. The [shared moments](../../docs/shared-moments-and-relationship.md)
+and [diary authorship](../../docs/diary-journal.md) guides describe existing
+sources that can help locate the originals.
+
 ## Moved out of the active queue
 
 - **L2** — shipped: [record](shipped/audit-2026-10-24.md#concepts-l2).

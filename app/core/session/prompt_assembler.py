@@ -29,6 +29,7 @@ from app.core.conversation.conversation_situation import (
 )
 from app.core.conversation.diagnostic_capture import proposed_test
 from app.core.conversation.feasibility import check_feasibility
+from app.core.conversation.shared_retrospective import check_retrospective
 from app.core.conversation.contingency import check_contingency
 from app.core.conversation.narrative_reasoning import check_timeline
 from app.core.conversation.meaning_disagreement import check_meanings
@@ -3975,6 +3976,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if not practical.guidance:
             practical = check_outcomes(user_text, previous_user)
             practical_kind = "outcome_comparison"
+        if not practical.guidance:
+            practical = check_retrospective(
+                user_text, self._db, self._continuity_owner, session_key, current_user_message_id)
+            practical_kind = "shared_retrospective"
         if not practical.guidance and not conversation_situation_block.startswith(STORY_HEADER):
             for kind, check, context in (
                 ("conditional_agreement", check_contingency, recent_users),

@@ -173,6 +173,16 @@ Episode recall reuses the existing retrieval candidates and context budget.
 Source checks exclude virtual, transient and other users' episodes. Restricted
 wording, missing retrieval candidates and unavailable sources can limit recall.
 
+## Requested look back
+
+A question about what mattered or stood out across a week or month can draw on
+dated user messages across that owner's remembered conversations. The lookup
+counts separate chat dates mentioning a word and includes excerpts about shared
+activities and personal significance. These counts describe conversations.
+Only the speaker can establish how much an experience meant to them. The scan
+uses up to 1,500 recent messages in the requested window, or the last 30 days
+for an unspecified recent period. The answer is assembled on request.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,
