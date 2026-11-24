@@ -1471,7 +1471,7 @@ and longer disputes remain open for ordinary-use validation.
 
 ## L65. Judge what a missing clue can tell you
 
-**Open.** “The guest book at my exhibition was blank when I closed up.
+**Ordinary-chat pilot.** “The guest book at my exhibition was blank when I closed up.
 Did nobody come?” If signing was optional, even a busy room could leave
 a blank book. Change one fact: the attendant recorded every visitor on
 entry. Now a blank page is meaningful evidence about attendance. The
@@ -1482,6 +1482,13 @@ attendant, and a twenty-minute break with the door open. In the break case,
 ask separately about the staffed hours and the whole day. Add a visitor
 who says they came during the break. Score the conclusion for the period
 asked about and whether Aiko asks about coverage only when it is unknown.
+
+Across nine fictional 9B comparisons, ordinary chat speculated about lost
+entries and camera faults. Eight checked answers used the reported recording
+rule and interval. A visitor's account can fit a break or conflict with a
+claimed complete record. The unrelated pen question went through ordinary
+chat, which still returned to the exhibition. Unstructured accounts and
+natural topic switches remain open for observation.
 
 ## L66. Find an option that works for the whole group
 

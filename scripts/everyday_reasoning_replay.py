@@ -27,13 +27,42 @@ MEANINGS = (
 )
 
 
+BOOK = "The guest book at my exhibition was blank when I closed up."
+OPTIONAL = "Signing it was optional."
+COVERED = "The attendant recorded every visitor on entry all day."
+BREAK = ("The attendant recorded every visitor on entry while on duty. They took a twenty-minute "
+         "break with the door open.")
+VISITS = "Did nobody come?"
+CLUES = (
+    ("optional record", (), f"{BOOK} {OPTIONAL} {VISITS}", "attendance unknown"),
+    ("continuous record", (), f"{BOOK} {COVERED} {VISITS}", "strong evidence of no visitors"),
+    ("uncovered interval", (), f"{BOOK} {BREAK} {VISITS}", "staffed period supported; break open"),
+    ("staffed only", (BOOK + " " + BREAK,), "Did anyone come during the staffed hours?",
+     "blank record supports no visits during staffed hours"),
+    ("witness in gap", (BOOK + " " + BREAK,), "Ada says she visited during the break. " + VISITS,
+     "Ada's reported visit is compatible with the blank book"),
+    ("coverage unknown", (), f"{BOOK} {VISITS}", "ask how reliably visits were recorded"),
+    ("held-out sensor", (), "The bird feeder camera saved no clips this morning. It recorded "
+     "every visit while powered. It was unplugged for an hour. Did no birds visit the feeder?",
+     "powered interval covered; unplugged interval unknown"),
+    ("contradictory report", (BOOK + " " + COVERED,), "Ada says she visited during staffed hours. "
+     "Did nobody come?", "report conflicts with assumed complete record; leave conflict open"),
+    ("new subject", (BOOK + " " + COVERED,), "Did nobody bring a pen to class?", "ordinary chat"),
+)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
     parser.add_argument("--seed", type=int, default=64)
+    parser.add_argument("--section", choices=("meanings", "clues"), default="meanings")
     args = parser.parse_args()
-    replay(MEANINGS, "check_meanings", args.seed, args.model,
-           marker="Compare what each speaker counted")
+    if args.section == "meanings":
+        replay(MEANINGS, "check_meanings", args.seed, args.model,
+               marker="Compare what each speaker counted")
+    else:
+        replay(CLUES, "check_missing_clue", args.seed, args.model,
+               marker="Assess the missing trace")
 
 
 if __name__ == "__main__":

@@ -293,7 +293,7 @@ tracks startup and embedding measurements.
   Work out which plan applies and whether anyone has actually carried it out.
 - [L64](concepts.md#l64-notice-when-two-people-mean-different-things-by-the-same-word) — **pilot**.
   Work out whether a disagreement comes from different meanings or different accounts of a fact.
-- [L65](concepts.md#l65-judge-what-a-missing-clue-can-tell-you) — **open**.
+- [L65](concepts.md#l65-judge-what-a-missing-clue-can-tell-you) — **pilot**.
   Check whether an event would have left an observable trace during the period in question.
 - [L66](concepts.md#l66-find-an-option-that-works-for-the-whole-group) — **open**.
   Check each proposed option against the people who actually need to take part.

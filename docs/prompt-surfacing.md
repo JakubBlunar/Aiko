@@ -284,6 +284,12 @@ can prompt a focused question. The checked reply uses complete, recognized
 accounts from the current message or the previous user turn. Broader
 wording uses ordinary chat. See the [meaning comparison](../app/core/conversation/meaning_disagreement.py).
 
+An empty record can support a conclusion about the period it covered.
+For a recognized visitor log or feeder camera, Aiko checks whether recording
+was optional, continuous or interrupted. A reported visit during a gap can
+coexist with an empty record. Broader questions about a missing trace can use
+ordinary reply guidance. See the [coverage check](../app/core/conversation/missing_clue.py).
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption
