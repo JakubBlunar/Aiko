@@ -254,6 +254,15 @@ conditions go through ordinary chat with guidance on the requested measure.
 See the [outcome comparison](../app/core/conversation/outcome_comparison.py)
 and [paired replay](../scripts/practical_reasoning_replay.py).
 
+For a question about a story told out of order, the current-reply guidance
+can focus on the moment the user asked about. A small check can answer
+possession questions when all the reported actions refer to one object and
+one occasion. It orders the events, carries the last known holder through
+a proposed handoff, and recognizes a return by the person who received
+the object. Other timelines stay with ordinary chat. The existing viewpoint
+reader takes precedence for questions about what another person knew.
+See the [timeline check](../app/core/conversation/narrative_reasoning.py).
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption

@@ -41,7 +41,7 @@ entries. Of those, 62 are open, 89 partial, 14 awaiting validation, nine
 deferred, two in pilot and one in replay. This counts each domain entry once.
 Checklists inside an entry and the separate workflow plan have their own scope.
 
-On 24 November, three open reasoning proposals were added after that count.
+L58–L63 were added after that count. Their current statuses appear below.
 
 ## Where to start
 
@@ -285,6 +285,12 @@ tracks startup and embedding measurements.
   Check speaker attribution, corrections and natural use across longer stories.
 - [L60](concepts.md#l60-compare-outcomes-on-the-basis-the-user-asked-for) — **pilot**.
   Distinguish totals, rates and missing observations in everyday comparisons.
+- [L61](concepts.md#l61-hear-why-this-part-of-the-story-mattered) — **open**.
+  Respond to a story's ending in light of what the user hoped for or cared about.
+- [L62](concepts.md#l62-follow-a-story-told-out-of-order) — **pilot**.
+  Follow flashbacks and answer about the moment the user asked about.
+- [L63](concepts.md#l63-keep-track-of-which-backup-plan-applies) — **open**.
+  Work out which plan applies and whether anyone has actually carried it out.
 
 ### Companion patterns
 

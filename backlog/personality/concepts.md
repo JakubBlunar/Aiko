@@ -1379,6 +1379,62 @@ missing observations. The replay includes a tie, zero opportunities, indoor
 and outdoor runs, a follow-up and two unrelated controls. Broader phrasing
 and ordinary conversation still need evidence.
 
+## L61. Hear why this part of the story mattered
+
+**Open.** “I finally tried making Dad's soup myself. I really wanted him to
+like it.” A few turns later comes the payoff. “Dad went back for seconds and
+finished the pot.” Aiko could say, “Sounds like you got your answer about
+the soup.” Change the setup to “I promised my sister the last bowl for after
+her shift” and that same ending lands differently. A natural reply might
+be, “Oh, there goes the bowl you were saving for your sister.”
+
+**First check.** Give ordinary chat the same ending with each setup, with
+both hopes in play, and with neither setup. Include a short digression
+before the ending. Read the first reply for whether it picks up the user's
+stated stake, leaves room for mixed feelings, and avoids inventing anyone's
+reaction. A warm one-liner can earn full credit. Try a different story about
+a song making it onto a set list to see whether the skill transfers.
+
+## L62. Follow a story told out of order
+
+**Ordinary-chat pilot.** “I handed Jo the spare key at rehearsal. Oh, I should back up.
+Before rehearsal I'd tucked it into my coat so I wouldn't forget it.” If
+the user then asks who has the key, Jo is the last known holder. The coat
+still matters if the user asks where the key was on the way to rehearsal.
+One story supports both answers.
+
+**First check.** Tell the same events in chronological order and with the
+flashback last. Ask about both points in time. Then change a single event
+to “After rehearsal Jo handed it back” and check that the final holder
+changes. Include “I meant to hand it to Jo” and a version that leaves two
+handoffs unordered. Score the answer against what actually happened and
+allow uncertainty where the story leaves a gap.
+
+The nine-case fictional 9B replay exposed replies that correctly described a
+return while naming the previous holder. Ordinary chat now checks simple
+transfers against their narrated occasion and leaves a planned handoff
+unconfirmed. Broader timelines use the chat model. Its wording on unordered
+events and incidental scene details still needs ordinary-use evidence.
+
+## L63. Keep track of which backup plan applies
+
+**Open.** “If the bakery confirms by noon, I'll pick up the cake. Otherwise
+Sam will bake one.” The bakery's first confirmation arrives at 12:20.
+Under the plan they agreed, it's Sam's turn. Whether Sam has started baking
+is a separate question. If the user adds “Sam and I agreed to take the
+bakery's late offer,” pickup becomes the current plan.
+
+**First check.** Vary only the confirmation time across 11:50, 12:20 and
+unknown. Ask “Whose turn is it?” and “Do we have a cake yet?” Follow the
+late message with either a proposed exception or an accepted one. Check
+which person is responsible, whether an outcome is still pending, and
+whether Aiko asks about the time only when it would change her answer.
+
+Start these proposals with fictional conversations on the ordinary chat
+route. Where it handles the variants consistently, keep the cases as
+evaluation coverage. A recurring failure in the actual reply gives a
+specific target for implementation.
+
 ## Moved out of the active queue
 
 - **L2** — shipped: [record](shipped/audit-2026-10-24.md#concepts-l2).
