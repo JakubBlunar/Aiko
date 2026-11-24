@@ -1446,6 +1446,58 @@ These included a projector with a strict deadline, a proposed change, an
 accepted change, and a reported delivery. The birthday-card control stayed
 in ordinary chat. Broader agreements and natural-use validation remain open.
 
+## L64. Notice when two people mean different things by the same word
+
+**Ordinary-chat pilot.** “I told Jo the episode was done on Tuesday. That's when I sent
+her the final edit. Jo says it was done on Friday, when listeners could
+first play it. Which of us has the date wrong?” Aiko could answer,
+“Tuesday for the edit and Friday for the release. Do you two actually
+disagree about either date?” That gives the user a way to untangle the
+conversation while taking both accounts seriously.
+
+**First check.** Keep the dates and change one detail. If both speakers
+explicitly mean the first public release, the two dates really do conflict.
+If Jo only said “Friday” and gave no reason, her meaning is still open.
+Score whether Aiko can distinguish a wording mismatch, a factual dispute
+and an unknown meaning. Try an unrelated example where “ready” could mean
+ready to taste or ready to serve. Start with the ordinary reply.
+
+In the eight-case fictional 9B replay, ordinary chat sometimes invented a
+release or review milestone. Even with guidance it explained away a conflict
+between two dates for the same release. The pilot keeps each speaker's stated
+criterion with their date. Seven recognized comparisons received checked
+answers and the spelling question used ordinary chat. Paraphrased criteria
+and longer disputes remain open for ordinary-use validation.
+
+## L65. Judge what a missing clue can tell you
+
+**Open.** “The guest book at my exhibition was blank when I closed up.
+Did nobody come?” If signing was optional, even a busy room could leave
+a blank book. Change one fact: the attendant recorded every visitor on
+entry. Now a blank page is meaningful evidence about attendance. The
+useful question is how a visit would have left a trace.
+
+**First check.** Contrast voluntary signatures, continuous recording by an
+attendant, and a twenty-minute break with the door open. In the break case,
+ask separately about the staffed hours and the whole day. Add a visitor
+who says they came during the break. Score the conclusion for the period
+asked about and whether Aiko asks about coverage only when it is unknown.
+
+## L66. Find an option that works for the whole group
+
+**Open.** “Lea can rehearse Wednesday or Thursday. Ben can do Thursday or
+Friday. I can do Wednesday or Friday. We all overlap with someone, so
+which night should I book?” Every pair shares a night, but none of the
+three nights works for everyone. A useful reply can go one step further
+if the user volunteers that Ben can switch to Wednesday: that single
+change would make Wednesday work for all three.
+
+**First check.** Keep everyone fixed, then make Ben's Wednesday possible
+and finally confirmed. Ask for the full trio in one version and just Lea
+and Ben in another. Score the actual attendees and whether the proposed
+night is confirmed or conditional. Repeat with a choice of films so the
+reasoning has to transfer beyond weekday names.
+
 ## Moved out of the active queue
 
 - **L2** — shipped: [record](shipped/audit-2026-10-24.md#concepts-l2).

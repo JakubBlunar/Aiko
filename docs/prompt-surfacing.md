@@ -278,6 +278,12 @@ delivery uses the reported outcome even if the confirmation time is unknown.
 See the [agreement check](../app/core/conversation/contingency.py) and the
 [fictional replay](../scripts/narrative_reasoning_replay.py).
 
+For questions about an apparent disagreement, Aiko can compare each
+speaker's stated milestone with their date or time. A missing definition
+can prompt a focused question. The checked reply uses complete, recognized
+accounts from the current message or the previous user turn. Broader
+wording uses ordinary chat. See the [meaning comparison](../app/core/conversation/meaning_disagreement.py).
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption

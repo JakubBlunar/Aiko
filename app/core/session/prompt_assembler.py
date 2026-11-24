@@ -31,6 +31,7 @@ from app.core.conversation.diagnostic_capture import proposed_test
 from app.core.conversation.feasibility import check_feasibility
 from app.core.conversation.contingency import check_contingency
 from app.core.conversation.narrative_reasoning import check_timeline
+from app.core.conversation.meaning_disagreement import check_meanings
 from app.core.conversation.story_stakes import check_stakes
 from app.core.conversation.outcome_comparison import check_outcomes
 from app.core.conversation.story_reply import STORY_HEADER, story_contract, story_question
@@ -3973,14 +3974,16 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             practical = check_outcomes(user_text, previous_user)
             practical_kind = "outcome_comparison"
         if not practical.guidance and not conversation_situation_block.startswith(STORY_HEADER):
-            practical = check_contingency(user_text, recent_users)
-            practical_kind = "conditional_agreement"
-            if not practical.guidance:
-                practical = check_timeline(user_text, previous_user)
-                practical_kind = "story_timeline"
-            if not practical.guidance:
-                practical = check_stakes(user_text, recent_users)
-                practical_kind = "story_stake"
+            for kind, check, context in (
+                ("conditional_agreement", check_contingency, recent_users),
+                ("story_timeline", check_timeline, previous_user),
+                ("meaning_disagreement", check_meanings, previous_user),
+                ("story_stake", check_stakes, recent_users),
+            ):
+                practical = check(user_text, context)
+                if practical.guidance:
+                    practical_kind = kind
+                    break
         current_reply_guidance = ((pursuit_guidance
                                    or practical.guidance
                                    or choice_guidance(user_text, (m.content for m in history_msgs))

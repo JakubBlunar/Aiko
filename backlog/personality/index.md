@@ -41,7 +41,7 @@ entries. Of those, 62 are open, 89 partial, 14 awaiting validation, nine
 deferred, two in pilot and one in replay. This counts each domain entry once.
 Checklists inside an entry and the separate workflow plan have their own scope.
 
-L58–L63 were added after that count. Their current statuses appear below.
+L58–L66 were added after that count. Their current statuses appear below.
 
 ## Where to start
 
@@ -291,6 +291,12 @@ tracks startup and embedding measurements.
   Follow flashbacks and answer about the moment the user asked about.
 - [L63](concepts.md#l63-keep-track-of-which-backup-plan-applies) — **pilot**.
   Work out which plan applies and whether anyone has actually carried it out.
+- [L64](concepts.md#l64-notice-when-two-people-mean-different-things-by-the-same-word) — **pilot**.
+  Work out whether a disagreement comes from different meanings or different accounts of a fact.
+- [L65](concepts.md#l65-judge-what-a-missing-clue-can-tell-you) — **open**.
+  Check whether an event would have left an observable trace during the period in question.
+- [L66](concepts.md#l66-find-an-option-that-works-for-the-whole-group) — **open**.
+  Check each proposed option against the people who actually need to take part.
 
 ### Companion patterns
 
