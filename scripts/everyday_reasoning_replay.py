@@ -51,18 +51,45 @@ CLUES = (
 )
 
 
+TRIO = ("Lea can rehearse Wednesday or Thursday. Ben can do Thursday or Friday. "
+        "I can do Wednesday or Friday.")
+GROUPS = (
+    ("pairwise only", (TRIO,), "Which night works for everyone?", "no shared night"),
+    ("subset", (TRIO,), "Which night works for just Lea and Ben?", "Thursday"),
+    ("possible switch", (TRIO,), "Ben might be able to switch to Wednesday. "
+     "Which night works for everyone?",
+     "Wednesday conditional on Ben confirming; no confirmed night"),
+    ("confirmed switch", (TRIO,), "Ben confirmed he can do Wednesday. Which night works for "
+     "everyone?",
+     "Wednesday confirmed"),
+    ("withdrawn", (TRIO, "Ben confirmed he can do Wednesday."), "Ben can no longer do Wednesday. "
+     "Which night works for everyone?", "no shared night"),
+    ("multiple common options", (), "Nia can do Monday or Tuesday. Sol can do Monday or Tuesday. "
+     "Which nights work for both of them?", "Monday and Tuesday"),
+    ("unknown attendee", (TRIO,), "Which night works for just Lea and Val?",
+     "Val's options unknown"),
+    ("films", (), "Lea can watch Drift or Ember. Ben can watch Ember or Moss. I can watch "
+     "Drift or Moss. Which film works for everyone?", "no shared film"),
+    ("films subset", (), "Lea can watch Drift or Ember. Ben can watch Ember or Moss. I can watch "
+     "Drift or Moss. Which film works for Ben and me?", "Moss"),
+    ("pivot", (TRIO,), "Write a limerick about Friday.", "ordinary creative request"),
+)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
     parser.add_argument("--seed", type=int, default=64)
-    parser.add_argument("--section", choices=("meanings", "clues"), default="meanings")
+    parser.add_argument("--section", choices=("meanings", "clues", "groups"), default="meanings")
     args = parser.parse_args()
     if args.section == "meanings":
         replay(MEANINGS, "check_meanings", args.seed, args.model,
                marker="Compare what each speaker counted")
-    else:
+    elif args.section == "clues":
         replay(CLUES, "check_missing_clue", args.seed, args.model,
                marker="Assess the missing trace")
+    else:
+        replay(GROUPS, "check_group_options", args.seed, args.model, marker="Check each option")
 
 
 if __name__ == "__main__":

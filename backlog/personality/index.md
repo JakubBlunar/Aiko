@@ -295,7 +295,7 @@ tracks startup and embedding measurements.
   Work out whether a disagreement comes from different meanings or different accounts of a fact.
 - [L65](concepts.md#l65-judge-what-a-missing-clue-can-tell-you) — **pilot**.
   Check whether an event would have left an observable trace during the period in question.
-- [L66](concepts.md#l66-find-an-option-that-works-for-the-whole-group) — **open**.
+- [L66](concepts.md#l66-find-an-option-that-works-for-the-whole-group) — **pilot**.
   Check each proposed option against the people who actually need to take part.
 
 ### Companion patterns

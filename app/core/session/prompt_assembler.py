@@ -33,6 +33,7 @@ from app.core.conversation.contingency import check_contingency
 from app.core.conversation.narrative_reasoning import check_timeline
 from app.core.conversation.meaning_disagreement import check_meanings
 from app.core.conversation.missing_clue import check_missing_clue
+from app.core.conversation.group_options import check_group_options
 from app.core.conversation.story_stakes import check_stakes
 from app.core.conversation.outcome_comparison import check_outcomes
 from app.core.conversation.story_reply import STORY_HEADER, story_contract, story_question
@@ -3980,6 +3981,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 ("story_timeline", check_timeline, previous_user),
                 ("meaning_disagreement", check_meanings, previous_user),
                 ("missing_clue", check_missing_clue, recent_users),
+                ("group_options", check_group_options, recent_users),
                 ("story_stake", check_stakes, recent_users),
             ):
                 practical = check(user_text, context)

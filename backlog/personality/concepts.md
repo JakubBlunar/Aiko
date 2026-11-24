@@ -1492,7 +1492,7 @@ natural topic switches remain open for observation.
 
 ## L66. Find an option that works for the whole group
 
-**Open.** “Lea can rehearse Wednesday or Thursday. Ben can do Thursday or
+**Ordinary-chat pilot.** “Lea can rehearse Wednesday or Thursday. Ben can do Thursday or
 Friday. I can do Wednesday or Friday. We all overlap with someone, so
 which night should I book?” Every pair shares a night, but none of the
 three nights works for everyone. A useful reply can go one step further
@@ -1504,6 +1504,13 @@ and finally confirmed. Ask for the full trio in one version and just Lea
 and Ben in another. Score the actual attendees and whether the proposed
 night is confirmed or conditional. Repeat with a choice of films so the
 reasoning has to transfer beyond weekday names.
+
+In the ten-case fictional 9B replay, ordinary chat suggested Thursday for
+the trio even though the narrator was unavailable. Nine checked replies
+compared the choices of the requested people, including film choices,
+missing availability, a tentative switch and its withdrawal. The limerick
+control used ordinary chat. Free-form schedules and live conversations
+remain open for observation.
 
 ## Moved out of the active queue
 

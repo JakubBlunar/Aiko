@@ -290,6 +290,13 @@ was optional, continuous or interrupted. A reported visit during a gap can
 coexist with an empty record. Broader questions about a missing trace can use
 ordinary reply guidance. See the [coverage check](../app/core/conversation/missing_clue.py).
 
+For a group choice, Aiko can intersect explicit weekday or film lists for
+everyone mentioned or a requested subset. She keeps tentative changes
+separate from confirmed availability, applies stated withdrawals, and
+identifies a missing participant's list. Unsupported constraints stay with
+ordinary chat. See the [group comparison](../app/core/conversation/group_options.py)
+and the [fictional comparisons](../scripts/everyday_reasoning_replay.py).
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption
