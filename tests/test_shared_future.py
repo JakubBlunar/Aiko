@@ -18,7 +18,8 @@ def test_own_pick_requires_scoped_joint_history_and_own_reason(tmp_path):
         seed_rows(db, "else", [MAP_REASON])
         result = answer()
         assert MAP_REASON[2] not in result.guidance and PUZZLE_REASON[2] not in result.guidance
-        assert not result.reply and FAVORITE[2] not in result.guidance
+        assert "our town map" in result.reply and FAVORITE[2] not in result.guidance
+        assert "I'm curious" in result.reply and "always" not in result.reply
         assert MAP[2] in result.guidance and PUZZLE[2] not in result.guidance
         seed_rows(db, "sam", [MAP_REASON])
         assert "pick inventing shopkeepers" in answer().reply

@@ -1638,8 +1638,10 @@ a reason she expressed, or make a choice in the present. Ordinary-use
 evidence remains open.
 
 Among seven fictional paired cases, one comparison held completion and the
-user's favorite fixed while changing Aiko's reason. Her pick switched between inventing map
-residents and solving puzzle clues. The three sections of
+user's favorite fixed while changing Aiko's reason. Her pick switched between
+inventing map residents and solving puzzle clues. In the user-only version an
+early reply invented a longstanding wish. The present-choice fallback now
+names a documented activity and gives a prospective reason. The three sections of
 `python -m scripts.perspective_replay` use the loopback 9B model and seed 67.
 
 Ask, “If we kept one thing from this winter for spring, what would
