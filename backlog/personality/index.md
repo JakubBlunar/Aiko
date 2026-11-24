@@ -307,7 +307,7 @@ tracks startup and embedding measurements.
   Let an experience refine her taste and see how she chooses in a fresh case.
 - [L71](concepts.md#l71-recognize-what-survives-a-change-of-routine) — **pilot**.
   See which part of a shared routine carried forward and what each person misses.
-- [L72](concepts.md#l72-choose-what-she-hopes-they-will-carry-forward) — **open**.
+- [L72](concepts.md#l72-choose-what-she-hopes-they-will-carry-forward) — **pilot**.
   Draw on their shared history to name something she would enjoy doing together again.
 
 ### Companion patterns

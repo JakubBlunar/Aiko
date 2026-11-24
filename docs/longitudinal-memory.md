@@ -208,6 +208,17 @@ change can lead to the new activity by name. The reply can distinguish a
 shared purpose from a similar schedule, and the two speakers can miss
 different things.
 
+## Choosing something to carry forward
+
+An explicit invitation to pick a shared activity for the future can use
+dated descriptions of time together and Aiko's own reasons for enjoying
+it. Calendar windows constrain the search. A season name uses the speakers'
+own references to that season and related activity. If only the user gave a
+reason, Aiko can make a present-day choice. Both people can prefer different
+things, and a pick by itself leaves plans open. When there is no recorded
+reason from Aiko, the reply can explore one documented activity as a present
+possibility. It favors an activity named in the question, then a recent one.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

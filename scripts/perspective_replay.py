@@ -3,6 +3,7 @@ import argparse
 
 from scripts.longitudinal_reasoning_replay import replay
 from scripts.routine_continuity_cases import ROUTINE
+from scripts.shared_future_cases import FUTURE
 
 
 TIDY = (2, "assistant", "I prefer tidy endings because I want to know where everyone ended up.")
@@ -32,9 +33,11 @@ TASTE = [
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
-    parser.add_argument("--section", choices=("taste", "routine"), default="taste")
+    parser.add_argument("--section", choices=("taste", "routine", "future"), default="taste")
     args = parser.parse_args()
-    if args.section == "routine":
+    if args.section == "future":
+        replay(FUTURE, "check_shared_future", args.model)
+    elif args.section == "routine":
         replay(ROUTINE, "check_routine", args.model)
     else:
         replay(TASTE, "check_taste", args.model)

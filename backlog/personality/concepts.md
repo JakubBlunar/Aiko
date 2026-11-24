@@ -1589,7 +1589,9 @@ sources that can help locate the originals.
 
 **Pilot.** Explicit taste questions and fresh choices can recover Aiko's
 earlier reasons and later qualifications from speaker-labelled dialogue.
-Ordinary-use evidence remains open.
+In six fictional paired cases the fresh ending choice changed with Aiko's
+own refinement and stayed tidy for the user-only preference and the explicit
+exception. Ordinary-use evidence remains open.
 
 Aiko once said she preferred tidy endings because she liked finding
 out what became of the characters. Later, reading a particular story together,
@@ -1610,7 +1612,10 @@ covers holding a preference under mild pushback.
 
 **Pilot.** A requested look back can connect a named routine with the activity
 that replaced it and recover each speaker's account of what mattered.
-Ordinary-use evidence remains open.
+Six fictional paired cases included a logistics-only replacement. An early
+reply gave the rota photos a shared meaning after the user said the game had
+stopped. The corrected reply uses the user's actual explanation. Ordinary-use
+evidence remains open.
 
 Sunday calls stop when the user's shifts change. On scattered
 weeknights the two start exchanging one photo and guessing why the other
@@ -1628,7 +1633,16 @@ changes with the purpose and preserves each person's view of what they miss.
 
 ## L72. Choose what she hopes they will carry forward
 
-**Open.** Ask, “If we kept one thing from this winter for spring, what would
+**Pilot.** When invited to choose, Aiko can return to a shared activity for
+a reason she expressed, or make a choice in the present. Ordinary-use
+evidence remains open.
+
+Among seven fictional paired cases, one comparison held completion and the
+user's favorite fixed while changing Aiko's reason. Her pick switched between inventing map
+residents and solving puzzle clues. The three sections of
+`python -m scripts.perspective_replay` use the loopback 9B model and seed 67.
+
+Ask, “If we kept one thing from this winter for spring, what would
 you pick?” Across several chats the pair finished a long puzzle and left a
 hand-drawn town map unfinished. Aiko kept returning to the map to invent
 shopkeepers and said she liked discovering who lived there with the user.
