@@ -41,7 +41,7 @@ entries. Of those, 62 are open, 89 partial, 14 awaiting validation, nine
 deferred, two in pilot and one in replay. This counts each domain entry once.
 Checklists inside an entry and the separate workflow plan have their own scope.
 
-L58–L69 were added after that count. Their current statuses appear below.
+L58–L72 were added after that count. Their current statuses appear below.
 
 ## Where to start
 
@@ -303,6 +303,12 @@ tracks startup and embedding measurements.
   Let Aiko try a self-chosen improvement and see whether it appears in later work.
 - [L69](concepts.md#l69-remember-what-each-of-us-brought-to-something-shared) — **pilot**.
   Trace a contribution from either person to an occasion when the other actually used it.
+- [L70](concepts.md#l70-let-a-particular-experience-refine-her-taste) — **pilot**.
+  Let an experience refine her taste and see how she chooses in a fresh case.
+- [L71](concepts.md#l71-recognize-what-survives-a-change-of-routine) — **open**.
+  See which part of a shared routine carried forward and what each person misses.
+- [L72](concepts.md#l72-choose-what-she-hopes-they-will-carry-forward) — **open**.
+  Draw on their shared history to name something she would enjoy doing together again.
 
 ### Companion patterns
 

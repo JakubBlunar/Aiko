@@ -192,6 +192,14 @@ reports of uptake. The lookup searches up to 1,500 recent messages over
 in the preceding user turn. The answer can credit each contribution separately
 and leave uptake open where the conversation only records a proposal.
 
+## Applying a past taste to a fresh choice
+
+When asked which alternative she prefers, Aiko can retrieve her own relevant
+remarks from remembered dialogue over the preceding 180 days. The current
+reply receives the earlier reason and recent qualifications, including an
+exception. The fresh choice is made in chat. An explicit question about how
+her taste changed can use the same evidence.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

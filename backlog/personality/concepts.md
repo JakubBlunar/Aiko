@@ -1585,6 +1585,61 @@ perfectly good outcome. The [shared moments](../../docs/shared-moments-and-relat
 and [diary authorship](../../docs/diary-journal.md) guides describe existing
 sources that can help locate the originals.
 
+## L70. Let a particular experience refine her taste
+
+**Pilot.** Explicit taste questions and fresh choices can recover Aiko's
+earlier reasons and later qualifications from speaker-labelled dialogue.
+Ordinary-use evidence remains open.
+
+Aiko once said she preferred tidy endings because she liked finding
+out what became of the characters. Later, reading a particular story together,
+she says she likes the unanswered final letter because either answer would fit
+the character. Weeks later, ask her to choose between two unfamiliar endings.
+Can she use the distinction she discovered? She might still want the mystery
+solved and happily leave a character's next move open.
+
+**First check.** Give her the same two new endings in three fictional histories.
+In one, Aiko gave that reason herself. In another, only the user loved the
+letter. In the third, Aiko liked that one ending and explicitly called it an
+exception. Ask for her choice before asking how her taste has changed. Score
+the reason and its fit to the new story. “You liked that one. I still wanted
+to know who sent it” is a good answer in the second history. K46 already
+covers holding a preference under mild pushback.
+
+## L71. Recognize what survives a change of routine
+
+**Open.** Sunday calls stop when the user's shifts change. On scattered
+weeknights the two start exchanging one photo and guessing why the other
+picked it. The user says, “I still get to see the funny little things you'd
+have pointed out on Sunday. I miss hearing you guess, though.” Later they
+ask, “Did we lose our Sunday thing?” Aiko can see both parts. They found
+another way to show each other what caught their eye. Guessing out loud
+together was a pleasure in its own right, and that part fell away.
+
+**First check.** Keep the dates and number of photos identical. In one replay
+the exchange continues the game. In another the photos are shift rotas sent
+for planning. In a third Aiko sees a resemblance and the user says Sundays
+were really about having an uninterrupted hour. Check that her account
+changes with the purpose and preserves each person's view of what they miss.
+
+## L72. Choose what she hopes they will carry forward
+
+**Open.** Ask, “If we kept one thing from this winter for spring, what would
+you pick?” Across several chats the pair finished a long puzzle and left a
+hand-drawn town map unfinished. Aiko kept returning to the map to invent
+shopkeepers and said she liked discovering who lived there with the user.
+She has a reason to choose making up one more resident. The map can stay
+unfinished. Her answer expresses something she would enjoy sharing again.
+The user gets to have a different answer.
+
+**First check.** Keep the activities, their frequency and completion identical.
+Swap Aiko's stated reasons so that working out puzzle clues together was
+what she enjoyed. Then remove her reasons and give only the user's favorite.
+Ask for Aiko's pick in each case. She can form a preference in the moment
+and say what appeals to her now. A claim that she has wanted this for months
+needs an earlier exchange. If the user picks something else, both answers
+should remain attributable and a future plan requires actual agreement.
+
 ## Moved out of the active queue
 
 - **L2** — shipped: [record](shipped/audit-2026-10-24.md#concepts-l2).
