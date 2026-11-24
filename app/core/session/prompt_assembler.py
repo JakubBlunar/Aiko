@@ -35,6 +35,7 @@ from app.core.conversation.routine_continuity import check_routine
 from app.core.conversation.shared_future import check_shared_future
 from app.core.conversation.activity_role import check_activity_role
 from app.core.conversation.decision_hindsight import check_hindsight
+from app.core.conversation.shared_creation import check_shared_creation
 from app.core.conversation.shared_influence import check_influence
 from app.core.world.writing_practice import practice_answer
 from app.core.conversation.contingency import check_contingency
@@ -3993,6 +3994,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             practical = check_hindsight(user_text, previous_user, self._db, self._continuity_owner,
                                         session_key, current_user_message_id)
             practical_kind = "decision_hindsight"
+        if not practical.guidance:
+            practical = check_shared_creation(user_text, previous_user, self._db,
+                                              self._continuity_owner, session_key,
+                                              current_user_message_id)
+            practical_kind = "shared_creation"
         if not practical.guidance:
             practical = check_shared_future(user_text, history_msgs, self._db,
                                             self._continuity_owner, session_key,

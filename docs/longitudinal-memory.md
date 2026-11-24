@@ -234,6 +234,15 @@ retelling of an expectation keeps its timing qualified. The answer can use
 the information available at the time or reconsider the choice with the
 outcome known, depending on which question the user asked.
 
+## A new contribution to a shared story
+
+On a request to contribute to a named fictional work, Aiko can use earlier
+creative wishes from both speakers. The reply receives up to three original
+remarks per speaker, and an explicit change of mind can replace the speaker's
+earlier direction. A proposed scene stays open for the user to accept or
+change. A clear conflict about entry to a permanently closed place can prompt
+a choice between the two conditions.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

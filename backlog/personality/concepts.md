@@ -1709,7 +1709,17 @@ you choose if you knew how the day would turn out?” Score the answers separate
 
 ## L75. Make something new out of two different perspectives
 
-**Open.** In an earlier chat about a fictional town, the user loved the idea
+**Pilot.** An invitation to continue a named story can recover the user's
+creative wishes and Aiko's earlier interests in that project. Everyday use
+remains to be evaluated.
+
+Seven paired fictional chats used the same loopback 9B model and seed 67 as
+the role and decision checks. An early scene opened the sealed doors. In the
+exterior staging replay, strangers exchanged a glowing seed outside. Changing
+Aiko's interest produced a weathered coin etched with a vanished city instead.
+The incompatible indoor meeting prompted a choice between the conditions.
+
+In an earlier chat about a fictional town, the user loved the idea
 that its abandoned station stays locked. Aiko wanted a place where strangers
 could meet. Later the user asks, “What would you add to the station story?”
 One possible contribution is a bench outside the locked doors. Two people

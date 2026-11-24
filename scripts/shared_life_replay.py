@@ -3,6 +3,7 @@ import argparse
 
 from scripts.longitudinal_reasoning_replay import replay
 from scripts.hindsight_cases import HINDSIGHT
+from scripts.shared_creation_cases import CREATION
 
 
 HELP = (2, "user", "Can you give me a hint for my crossword clue?")
@@ -26,9 +27,11 @@ ROLES = [
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
-    parser.add_argument("--section", choices=("roles", "hindsight"), default="roles")
+    parser.add_argument("--section", choices=("roles", "hindsight", "creation"), default="roles")
     args = parser.parse_args()
-    if args.section == "hindsight":
+    if args.section == "creation":
+        replay(CREATION, "check_shared_creation", args.model)
+    elif args.section == "hindsight":
         replay(HINDSIGHT, "check_hindsight", args.model)
     else:
         replay(ROLES, "check_activity_role", args.model)
