@@ -79,4 +79,9 @@ def check_routine(text, previous, db, owner, key, current_id):
     if user and transitions and re.search(r"\bi (?:still|miss)\b", user["content"], re.I):
         return PracticalAnswer(guidance, 'What sticks with me is how you described the change: '
                                f'“{user["content"]}”')
+    if (user and transitions
+            and re.search(r"\b(?:only|just|purely|solely)\b", user["content"], re.I)
+            and re.search(r"\b(?:we stopped|no longer|we quit|gave up)\b", user["content"], re.I)):
+        return PracticalAnswer(guidance, 'You explained what the new activity was for: '
+                               f'“{user["content"]}”')
     return PracticalAnswer(guidance)

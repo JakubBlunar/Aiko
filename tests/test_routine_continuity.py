@@ -4,7 +4,9 @@ from app.core.conversation.routine_continuity import check_routine
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from scripts.longitudinal_reasoning_replay import NOW, seed_rows
-from scripts.routine_continuity_cases import ASK, CONTINUED, CORRECTION, OLD, READING, SHIFT
+from scripts.routine_continuity_cases import (
+    ASK, CONTINUED, CORRECTION, LOGISTICS, OLD, READING, SHIFT,
+)
 
 
 def test_follow_the_changed_activity_and_both_accounts(tmp_path):
@@ -23,3 +25,5 @@ def test_follow_the_changed_activity_and_both_accounts(tmp_path):
         seed_rows(db, "solo", [OLD])
         assert "don't have a later account" in check_routine(
             "What became of our Sunday calls?", "", db, "solo", "solo:now", None).reply
+        seed_rows(db, "logistics", [OLD, SHIFT, LOGISTICS])
+        assert LOGISTICS[2] in check_routine(ASK, "", db, "logistics", "logistics:now", None).reply
