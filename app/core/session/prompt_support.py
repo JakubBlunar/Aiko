@@ -1027,6 +1027,7 @@ class PromptTelemetry:
     # recompute.
     concepts_surfaced: dict[str, Any] = field(default_factory=dict)
     decision_reply: str = field(default="", repr=False)
+    practical_reply_kind: str = ""
     comparison_report: ComparisonReport | None = field(default=None, repr=False)
     comparison_assessed: bool = False
     story_read: bool = False

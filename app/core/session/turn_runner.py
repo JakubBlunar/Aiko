@@ -989,7 +989,7 @@ class TurnRunner:
                       "occasion_frequency": "occasion_frequency"}.get(
                 telemetry.concepts_surfaced.get("reason"), "decision_clarification",
             )
-            stream_usage = OllamaUsage(done_reason=reason)
+            stream_usage = OllamaUsage(done_reason=telemetry.practical_reply_kind or reason)
         else:
             stream_usage = self._ollama.last_usage
         outcome.finish(
@@ -1027,7 +1027,7 @@ class TurnRunner:
         # tag-presence summary is greppable ("llm tags:") so the common
         # "is reaction missing again?" question takes seconds to answer.
         if decision_reply:
-            log.info("archive decision response: %r", full_raw)
+            log.info("grounded response: %r", full_raw)
         else:
             log.info("llm raw response: %r", full_raw)
         log.info(

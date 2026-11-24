@@ -234,6 +234,15 @@ The interpretation and the speaker attribution still depend on the model.
 See the [story reader](../app/core/conversation/story_reply.py) and the
 [fictional comparison](../scripts/story_perspective_replay.py).
 
+When the user asks whether a whole plan fits, the existing current-reply
+guidance can include differences between the stated times or quantities.
+For fully recognized schedules, continuous lengths and equipment widths,
+Aiko can give the checked answer directly. She offers an earlier arrival
+when the activity starts on demand and the user can move their arrival.
+Additional conditions such as a transfer keep the whole question with the
+chat model. A related follow-up can use the immediately preceding user turn.
+See the [feasibility checks](../app/core/conversation/feasibility.py).
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption

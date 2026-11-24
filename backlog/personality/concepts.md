@@ -1272,7 +1272,7 @@ recorded answers and a subsequent ordinary model turn. See the
 
 ## L58. Find the smallest change that makes a plan possible
 
-**Open.** "I can get there at 6. The last bus leaves at 6:45. Can I see the
+**Ordinary-chat pilot.** "I can get there at 6. The last bus leaves at 6:45. Can I see the
 whole hour-long show?" Even with a stop at the door, the user is fifteen
 minutes short. Aiko can explain that in one sentence. If arrival can move,
 5:45 works for a show the user can start on arrival. If the performance starts
@@ -1293,6 +1293,13 @@ Count invented later buses and unnecessary concessions as failures. Compare
 the ordinary reply with a same-model reply given a short list of the user's
 stated constraints, at the same output budget. Try held-out examples involving
 materials or equipment before proposing any change to ordinary chat.
+
+The fictional 9B baseline endorsed arriving earlier for a fixed screening.
+Adding the arithmetic to the prompt still allowed a reply to contradict its own
+calculation. Ordinary chat now answers directly when it recognizes every
+constraint. The paired replay covers eight plan questions and a poem control.
+Travel buffers, mixed units and other unrecognized conditions remain with the
+chat model. Natural-use evidence is still open.
 
 ## L59. Reason from what each person was told
 

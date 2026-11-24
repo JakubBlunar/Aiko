@@ -278,7 +278,7 @@ tracks startup and embedding measurements.
 - [L57](concepts.md#l57-ground-aikos-changing-interests-in-her-own-choices) — **pilot**.
   Review activity, voluntary returns and changes in choice patterns before surfacing them in
   Memory Story.
-- [L58](concepts.md#l58-find-the-smallest-change-that-makes-a-plan-possible) — **open**.
+- [L58](concepts.md#l58-find-the-smallest-change-that-makes-a-plan-possible) — **pilot**.
   Check whether advice respects fixed constraints and identify the smallest permitted change.
 - [L59](concepts.md#l59-reason-from-what-each-person-was-told) — **pilot**.
   Ordinary chat can answer from the information available to a named person.

@@ -27,6 +27,7 @@ from app.core.conversation.conversation_situation import (
     OTHER_COMPARISON_HEADER, PENDING_COMPARISON_HEADER, RETURNED_COMPARISON_HEADER,
 )
 from app.core.conversation.diagnostic_capture import proposed_test
+from app.core.conversation.feasibility import check_feasibility
 from app.core.conversation.story_reply import STORY_HEADER, story_contract, story_question
 from app.core.conversation.pursuit_reply import pursuit_reply
 from app.core.conversation.clarification_reply import (
@@ -3958,7 +3959,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         ) if self._pursuit_history_provider is not None else ""
         pursuit_guidance = (f"Recorded answer to the user's question:\n{pursuit_answer}"
                             if pursuit_answer else "")
+        practical = check_feasibility(user_text, (m.content for m in reversed(history_msgs)
+                                                   if m.role == "user"))
         current_reply_guidance = ((pursuit_guidance
+                                   or practical.guidance
                                    or choice_guidance(user_text, (m.content for m in history_msgs))
                                    or CURRENT_REPLY_GUIDANCE)
                                   if (user_text or "").strip() else "")
@@ -4162,6 +4166,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if (pursuit_answer and current_reply_guidance == pursuit_guidance
                 and not decision_reply and comparison_report is None):
             decision_reply = pursuit_answer
+        practical_reply_kind = ""
+        if (practical.reply and current_reply_guidance == practical.guidance
+                and not decision_reply and comparison_report is None):
+            decision_reply = practical.reply
+            practical_reply_kind = "plan_feasibility"
         if relevant_context_block:
             system_parts.insert(t3_insert_index, relevant_context_block)
 
@@ -4335,6 +4344,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 "aggressive": bool(aggressive),
             },
             decision_reply=decision_reply,
+            practical_reply_kind=practical_reply_kind,
             comparison_report=comparison_report,
             story_read=(conversation_situation_block.startswith(STORY_HEADER + "\n")
                         and story_question(user_text)
