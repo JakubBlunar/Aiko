@@ -243,6 +243,13 @@ earlier direction. A proposed scene stays open for the user to accept or
 change. A clear conflict about entry to a permanently closed place can prompt
 a choice between the two conditions.
 
+## A milestone in an ordinary update
+
+A first-person update about a concrete action can recall the user's original
+goal from remembered dialogue. The pilot checks the action, its subject and
+expressed conditions such as doing it without notes. It handles the connection
+in the current reply and leaves the practical news in focus.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

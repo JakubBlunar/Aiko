@@ -41,7 +41,7 @@ entries. Of those, 62 are open, 89 partial, 14 awaiting validation, nine
 deferred, two in pilot and one in replay. This counts each domain entry once.
 Checklists inside an entry and the separate workflow plan have their own scope.
 
-L58–L75 were added after that count. Their current statuses appear below.
+L58–L78 were added after that count. Their current statuses appear below.
 
 ## Where to start
 
@@ -316,6 +316,13 @@ tracks startup and embedding measurements.
   Revisit a shared decision using the reasons available when they made it.
 - [L75](concepts.md#l75-make-something-new-out-of-two-different-perspectives) — **pilot**.
   Build a new contribution from something each person saw in a shared project.
+
+- [L76](concepts.md#l76-notice-a-milestone-hidden-in-an-ordinary-update) — **pilot**.
+  Recognize a concrete step toward a goal the user actually set.
+- [L77](concepts.md#l77-develop-an-eye-for-what-she-notices) — **open**.
+  Let Aiko's earlier observations inform which detail she notices in a new scene.
+- [L78](concepts.md#l78-recognize-when-a-shared-project-has-served-its-purpose) — **open**.
+  Judge an unfinished shared project against the reasons it began.
 
 ### Companion patterns
 

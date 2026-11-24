@@ -36,6 +36,7 @@ from app.core.conversation.shared_future import check_shared_future
 from app.core.conversation.activity_role import check_activity_role
 from app.core.conversation.decision_hindsight import check_hindsight
 from app.core.conversation.shared_creation import check_shared_creation
+from app.core.conversation.personal_milestone import check_milestone
 from app.core.conversation.shared_influence import check_influence
 from app.core.world.writing_practice import practice_answer
 from app.core.conversation.contingency import check_contingency
@@ -4036,6 +4037,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                 if practical.guidance:
                     practical_kind = kind
                     break
+        if not practical.guidance and not pursuit_guidance:
+            practical = check_milestone(user_text, self._db, self._continuity_owner,
+                                        session_key, current_user_message_id)
+            practical_kind = "personal_milestone"
         current_reply_guidance = ((pursuit_guidance
                                    or practical.guidance
                                    or choice_guidance(user_text, (m.content for m in history_msgs))

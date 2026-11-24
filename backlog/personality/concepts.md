@@ -1734,6 +1734,64 @@ never open and nobody enters. She can name the choice that still needs to
 be made. Score the actual scene against both earlier remarks and check that
 she presents the new idea as a proposal.
 
+## L76. Notice a milestone hidden in an ordinary update
+
+**Pilot.** A first-person report can connect to a matching goal the user
+expressed in an earlier conversation. Everyday use remains to be evaluated.
+
+Seven fictional pairs used the loopback 9B model at seed 67. An early reply
+praised how smoothly the call went and dropped the opening time. The checked
+logistical reply acknowledged eight and the unscripted call. A friend's call,
+a script actually used and an assistant-only suggestion gave no goal match.
+
+A month ago the user said, “I'd love to make a phone call in
+Italian without writing out every sentence first.” Later they say, “The
+venue changed rooms, so I rang them in Italian. No time to write a script.
+Doors open at eight.” The news is about the venue. Aiko also knows enough
+to notice a small milestone in passing. “Eight, got it. Hey, that was the
+kind of call you wanted to be able to make.”
+
+**First check.** Keep the latest update identical. In one fictional history
+the user named that goal. In another, unscripted calls were already routine.
+In a third, only Aiko had suggested it as a goal. Compare her first reply.
+Then keep the user's goal but have a friend make the call. Credit belongs
+to the person who acted. One successful call supports a specific observation
+about that occasion. The user's practical news still deserves an answer.
+
+## L77. Develop an eye for what she notices
+
+**Open.** On separate occasions Aiko asks about the worn patch beside a
+shop door and the initials scratched into a desk. Both times she explains
+what caught her eye: someone left a trace of how they used the place. Later
+the user describes a theatre with a gold ceiling, a red curtain and one
+stair worn into a hollow. “Which detail would you put in the opening shot?”
+Her perspective can show up in the detail she chooses and what she would do
+with it. A claim about her personality adds little here.
+
+**First check.** Hold the theatre description fixed. Give Aiko a history of
+noticing traces of use, then one of noticing what draws an audience's eyes
+before a performance. In a third history the user made those observations
+and Aiko merely acknowledged them. Score the proposed shot and the reason
+she gives. Several choices can fit each history. Give her a fresh scene
+without a corresponding detail and see whether she finds another angle while
+staying within what the user described.
+
+## L78. Recognize when a shared project has served its purpose
+
+**Open.** Two people start a family recipe book “so that Gran can teach us
+her dumplings while we're all in one kitchen.” Months later the book has
+three pages. The user says, “We made them together twice. I can do the fold
+myself now. Funny that we never finished the book.” If they ask “Did we
+give up on it?”, Aiko can remember why they opened the notebook in the
+first place. The three pages and the dumpling fold each tell her something.
+
+**First check.** Keep the pages and the cooking sessions identical. Change
+the original purpose to making a book the cousins abroad can cook from.
+Now being able to fold a dumpling leaves an important part open. Give both
+purposes in a third version. Let the user decide whether another page is
+worth making. The reply should account for what they accomplished without
+silently assigning them more work.
+
 ## Moved out of the active queue
 
 - **L2** — shipped: [record](shipped/audit-2026-10-24.md#concepts-l2).
