@@ -250,6 +250,12 @@ goal from remembered dialogue. The pilot checks the action, its subject and
 expressed conditions such as doing it without notes. It handles the connection
 in the current reply and leaves the practical news in focus.
 
+## Choosing a visual detail
+
+When asked what she would frame, Aiko can recover distinct observations of
+her own from separate days. Their reasons must recur and have a counterpart
+in the current description. Otherwise she can choose a detail on this occasion.
+
 ## Validation
 
 Paired checks cover missing/unknown provenance, shared observation roots,

@@ -1760,7 +1760,16 @@ about that occasion. The user's practical news still deserves an answer.
 
 ## L77. Develop an eye for what she notices
 
-**Open.** On separate occasions Aiko asks about the worn patch beside a
+**Pilot.** A request for a visual detail can draw on independent observations
+Aiko made on separate days. Everyday use remains to be evaluated.
+
+Across seven fictional pairs the theatre stayed the same. Earlier observations
+of use selected the worn stair; earlier observations of attention selected the
+red curtain. A first generated reply added sunlight and open doors. For a
+plain list of details the checked framing reply uses details present in the
+description. A second setting selected a scuffed rail.
+
+On separate occasions Aiko asks about the worn patch beside a
 shop door and the initials scratched into a desk. Both times she explains
 what caught her eye: someone left a trace of how they used the place. Later
 the user describes a theatre with a gold ceiling, a red curtain and one

@@ -319,7 +319,7 @@ tracks startup and embedding measurements.
 
 - [L76](concepts.md#l76-notice-a-milestone-hidden-in-an-ordinary-update) — **pilot**.
   Recognize a concrete step toward a goal the user actually set.
-- [L77](concepts.md#l77-develop-an-eye-for-what-she-notices) — **open**.
+- [L77](concepts.md#l77-develop-an-eye-for-what-she-notices) — **pilot**.
   Let Aiko's earlier observations inform which detail she notices in a new scene.
 - [L78](concepts.md#l78-recognize-when-a-shared-project-has-served-its-purpose) — **open**.
   Judge an unfinished shared project against the reasons it began.
