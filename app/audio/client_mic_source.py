@@ -37,6 +37,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
+import os
 import queue
 import tempfile
 import threading
@@ -143,6 +144,8 @@ class ClientMicSource:
         # drain on idle.
         self._open_streams: int = 0
         self._last_level: float = 0.0
+        self._level_frames = 0
+        self._recent_levels: deque[tuple[int, int, float]] = deque(maxlen=self._IDLE_RING_CHUNKS)
 
     # ── Hub-facing ingress ─────────────────────────────────────────
 
@@ -166,6 +169,10 @@ class ClientMicSource:
             self._sample_buffer = []
             self._sample_buffer_len = 0
             self._draining = False
+            # A discontinuity prevents joining loud blocks from different mic owners.
+            self._level_frames += 1
+            self._recent_levels.clear()
+            self._last_level = 0.0
             # Drain anything pending without blocking the WS thread.
             try:
                 while True:
@@ -356,6 +363,8 @@ class ClientMicSource:
             flat = chunk.reshape(-1) if getattr(chunk, "ndim", 1) > 1 else chunk
             if flat.size:
                 self._last_level = float(np.sqrt(np.mean(np.square(flat))))
+                self._level_frames += len(chunk)
+                self._recent_levels.append((self._level_frames, len(chunk), self._last_level))
         except Exception:
             pass
         try:
@@ -391,6 +400,11 @@ class ClientMicSource:
     @property
     def last_level(self) -> float:
         return float(self._last_level)
+
+    def recent_level_chunks(self) -> tuple[tuple[int, int, float], ...]:
+        """Snapshot of (end frame, length, RMS) for buffered overlap detection."""
+        with self._lock:
+            return tuple(self._recent_levels)
 
     # ── MicrophoneCapture-compatible surface ───────────────────────
 
@@ -433,7 +447,9 @@ class ClientMicSource:
 
     @staticmethod
     def create_temp_wav_path(prefix: str = "assistant_audio_") -> Path:
-        return Path(tempfile.mkstemp(suffix=".wav", prefix=prefix)[1])
+        descriptor, name = tempfile.mkstemp(suffix=".wav", prefix=prefix)
+        os.close(descriptor)
+        return Path(name)
 
     def write_wav(self, samples: np.ndarray, target_path: Path) -> None:
         pcm = np.clip(samples, -1.0, 1.0)
@@ -510,6 +526,7 @@ class ClientMicSource:
         max_seconds_after_speech_start: float | None = None,
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
+        on_speech_progress: Callable[[float], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
         on_silence_level: Callable[[float], None] | None = None,
         on_chunk: Callable[[np.ndarray], None] | None = None,
@@ -546,6 +563,7 @@ class ClientMicSource:
         silence_chunks = 0
         spoken_chunks = 0
         speech_candidate_chunks = 0
+        voiced_frames = 0
 
         started_at = time.monotonic()
 
@@ -599,6 +617,9 @@ class ClientMicSource:
                     required_start_chunks = 1 if vad_speech else 2
                     if speech_candidate_chunks >= required_start_chunks:
                         speech_started = True
+                        voiced_frames = speech_candidate_chunks * chunk_frames
+                        if on_speech_progress:
+                            on_speech_progress(1000.0 * voiced_frames / sample_rate)
                         speech_started_at = time.monotonic()
                         spoken_chunks = 0
                         if on_speech_start:
@@ -633,6 +654,9 @@ class ClientMicSource:
                         silence_chunks += 1
                     else:
                         silence_chunks = 0
+                        if on_speech_progress and level >= silence_level_threshold:
+                            voiced_frames += len(chunk)
+                            on_speech_progress(1000.0 * voiced_frames / sample_rate)
                     if spoken_chunks < speech_start_grace_chunks:
                         continue
                     if (
@@ -712,6 +736,7 @@ class ClientMicSource:
         max_seconds_after_speech_start: float | None = None,
         stop_requested: Callable[[], bool] | None = None,
         on_speech_start: Callable[[], None] | None = None,
+        on_speech_progress: Callable[[float], None] | None = None,
         on_audio_level: Callable[[float], None] | None = None,
         on_silence_level: Callable[[float], None] | None = None,
         on_chunk: Callable[[np.ndarray], None] | None = None,
@@ -729,6 +754,7 @@ class ClientMicSource:
             max_seconds_after_speech_start=max_seconds_after_speech_start,
             stop_requested=stop_requested,
             on_speech_start=on_speech_start,
+            on_speech_progress=on_speech_progress,
             on_audio_level=on_audio_level,
             on_silence_level=on_silence_level,
             on_chunk=on_chunk,

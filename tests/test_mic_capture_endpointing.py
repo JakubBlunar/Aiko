@@ -170,6 +170,15 @@ class CaptureLoopTests(unittest.TestCase):
         # Exit was via the silence cap, not the max_seconds deadline.
         self.assertGreater(len(samples), 0)
 
+    def test_voiced_duration_excludes_wait_preroll_and_endpoint_silence(self) -> None:
+        progress = []
+        chunks = (
+            [_silence_chunk()] * 15 + [_speech_chunk()] * 2 + [_silence_chunk()] * 8
+        )
+        samples, _, _ = self._run(chunks, on_speech_progress=progress.append)
+        self.assertIsNotNone(samples)
+        self.assertEqual(progress, [200.0])
+
     def test_on_chunk_replays_pre_roll_then_streams_speech(self) -> None:
         chunks = (
             [_silence_chunk()] * 3

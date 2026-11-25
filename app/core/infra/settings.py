@@ -196,9 +196,9 @@ class LlmRoute:
     # provider-level value, then the client default.
     reasoning_effort: str = ""
     # Optional lane identity for models that cannot coexist in VRAM.
-    # Empty = identity is ``(kind, endpoint, model)``. Set the same
-    # non-empty group on two routes to force them onto one priority
-    # gate even when the tags differ.
+    # With an empty group Ollama shares capacity per endpoint. Other
+    # providers use the model id. Matching groups share capacity within
+    # the same provider kind and endpoint even when the model tags differ.
     contention_group: str = ""
 
 

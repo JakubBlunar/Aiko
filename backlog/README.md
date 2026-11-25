@@ -28,7 +28,8 @@ describes its dated baseline; it is not a specification of the latest code.
   [concept grounding evaluation](reviews/concept-grounding-evaluation.md),
   [strategy/lifecycle review](reviews/strategy-lifecycle-review.md).
 
-- Voice: [engine research and audition notebook](reviews/tts-engine-options.md).
+- Voice: [voice and worker architecture review](reviews/voice-and-worker-architecture-2026-11-25.md),
+  [engine research and audition notebook](reviews/tts-engine-options.md).
 
 ## Historical plans and rollouts
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -381,7 +383,7 @@ class GateTopologyTests(unittest.TestCase):
         self.assertLess(CONVERSATION_WORKER, LIVE_POLICY)
         self.assertLess(LIVE_POLICY, MAINTENANCE_WORKER)
 
-    def test_distinct_models_are_different_keys(self) -> None:
+    def test_distinct_ollama_models_share_an_endpoint_key(self) -> None:
         four = llm_resource_key(
             kind="ollama",
             base_url="http://127.0.0.1:11434/",
@@ -392,7 +394,7 @@ class GateTopologyTests(unittest.TestCase):
             base_url="http://127.0.0.1:11434",
             model="qwen3.5:9b",
         )
-        self.assertNotEqual(four, nine)
+        self.assertEqual(four, nine)
 
     def test_contention_group_collides_across_models(self) -> None:
         four = llm_resource_key(
@@ -461,12 +463,30 @@ class _GateHost(LlmClientsMixin):
 
 
 class LivePolicyClientInstallTests(unittest.TestCase):
-    def test_distinct_model_is_passthrough(self) -> None:
+    def test_distinct_ollama_model_joins_worker_gate(self) -> None:
         host = _GateHost(live_model="qwen3.5:4b", worker_model="qwen3.5:9b")
         host._install_live_policy_client()
         client = host._live_policy_client
         assert isinstance(client, GatedChatClient)
-        self.assertIsNone(client._gate)
+        self.assertIs(client._gate, host._worker_llm_gate)
+
+        worker_transport = MagicMock()
+        worker_transport.chat_stream.return_value = iter(["first", "last"])
+        worker = GatedChatClient(worker_transport, host._worker_llm_gate, MAINTENANCE_WORKER)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            stream = worker.chat_stream([])
+            try:
+                self.assertEqual(next(stream), "first")
+                waiting = pool.submit(client.chat_json, [])
+                deadline = time.monotonic() + 2
+                while not host._worker_llm_gate.stats()["queued"] and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertEqual(host._worker_llm_gate.stats()["queued"], 1)
+                self.assertFalse(waiting.done())
+                self.assertEqual(list(stream), ["last"])
+            finally:
+                stream.close()
+            waiting.result(timeout=2)
 
     def test_same_model_joins_worker_gate(self) -> None:
         host = _GateHost(live_model="qwen3.5:9b", worker_model="qwen3.5:9b")

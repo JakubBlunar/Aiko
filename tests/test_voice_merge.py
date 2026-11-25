@@ -311,7 +311,7 @@ class FeedSttPartialEarlyAbortTests(_TempDbCase):
         assert buf is not None
         self.assertTrue(buf.awaiting_phrase_b)
 
-    def test_short_partial_does_not_abort(self) -> None:
+    def test_short_or_disabled_partial_does_not_abort(self) -> None:
         controller, runner = self._fresh_controller()
         with controller._merge_lock:
             controller._merge_buffer[controller.session_key] = _MergeBuffer(
@@ -320,12 +320,13 @@ class FeedSttPartialEarlyAbortTests(_TempDbCase):
                 user_text="Hey aiko how",
                 user_message_id=42,
             )
-        # < 12 chars: ASR twitch, must not pre-emptively kill phrase A.
-        controller.feed_stt_partial("uh")
-        self.assertFalse(runner.stop_event.is_set())
-        buf = controller._merge_buffer.get(controller.session_key)
-        assert buf is not None
-        self.assertFalse(buf.awaiting_phrase_b)
+        for enabled, partial in ((True, "uh"), (False, "are you doing today")):
+            with self.subTest(enabled=enabled):
+                controller._settings.audio.barge_in_enabled = enabled
+                controller.feed_stt_partial(partial)
+                self.assertFalse(runner.stop_event.is_set())
+                buf = controller._merge_buffer[controller.session_key]
+                self.assertFalse(buf.awaiting_phrase_b)
 
     def test_tts_started_locks_window(self) -> None:
         controller, runner = self._fresh_controller()

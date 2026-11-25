@@ -419,9 +419,8 @@ class LlmClientsMixin:
     def _install_live_policy_client(self) -> None:
         """Wrap the Live-policy client: share the worker gate only on collision.
 
-        Distinct model (the shipped 4B vs worker 9B) => ``gate=None``.
-        Same resource key as ``worker_default`` => ``LIVE_POLICY`` tier
-        on the existing worker gate. User turns still outrank Live.
+        The shipped 4B policy and 9B worker share an Ollama endpoint.
+        Live requests queue at the ``LIVE_POLICY`` tier on its worker gate.
         """
         raw = self._build_live_policy_raw_client()
         if raw is None:

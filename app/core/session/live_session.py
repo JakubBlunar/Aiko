@@ -23,6 +23,7 @@ import logging
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
@@ -39,6 +40,13 @@ EventCallback = Callable[[str, dict[str, Any]], None]
 # Audio-level events arrive ~50 Hz from the capture thread; throttle to
 # avoid flooding the WebSocket. 20 Hz is plenty for a UI meter.
 _AUDIO_LEVEL_MIN_INTERVAL_S = 0.05
+
+
+@dataclass(frozen=True)
+class _PendingPhrase:
+    path: Path
+    capture_ms: float
+    speech_ms: float
 
 
 class LiveSession:
@@ -62,14 +70,18 @@ class LiveSession:
         self._main_thread: threading.Thread | None = None
         self._capture_thread: threading.Thread | None = None
         self._pending_lock = threading.Lock()
-        self._pending: deque[tuple[Path, float]] = deque()
+        self._pending: deque[_PendingPhrase] = deque()
+        self._capturing_speech_ms = 0.0
         self._max_pending = 2
         self._processing = threading.Event()
+        # A capture-thread interrupt must finish before the next turn can start.
+        self._turn_lock = threading.Lock()
         self._last_audio_emit = 0.0
         # Activity / silence tracking for proactive nudges.
         self._last_activity_monotonic = 0.0
         self._overlap_barge = threading.Event()
         self._overlap_speech_ms = 0.0
+        self._last_overlap_frame = 0
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -122,8 +134,10 @@ class LiveSession:
     def _run(self) -> None:
         self._emit("voice_state", {"state": "listening"})
         self._last_activity_monotonic = time.monotonic()
+        capture_stop = threading.Event()
         capture_thread = threading.Thread(
             target=self._capture_loop,
+            args=(capture_stop,),
             daemon=True,
             name="live-session-capture",
         )
@@ -131,16 +145,13 @@ class LiveSession:
         capture_thread.start()
         try:
             while not self._stop_requested:
-                item: tuple[Path, float] | None = None
                 with self._pending_lock:
-                    if self._pending:
-                        item = self._pending.popleft()
+                    item = self._pending.popleft() if self._pending else None
                 if item is None:
                     self._maybe_proactive()
                     time.sleep(0.05)
                     continue
 
-                wav_path, capture_ms = item
                 # Real user activity -- reset the silence clock so we don't
                 # immediately nudge after a turn finishes.
                 self._last_activity_monotonic = time.monotonic()
@@ -153,35 +164,40 @@ class LiveSession:
                     self._session.barge_in_enabled()
                     and self._session.is_tts_playing()
                 ):
-                    if self._capture_meets_barge_in_threshold(capture_ms):
+                    if self._capture_meets_barge_in_threshold(item.speech_ms):
                         try:
                             self._session.stop_tts()
                         except Exception:
                             log.debug("barge-in stop_tts failed", exc_info=True)
                     else:
                         log.debug(
-                            "barge-in suppressed: capture_ms=%.0f < min_speech_ms=%.0f",
-                            capture_ms,
+                            "barge-in suppressed: speech_ms=%.0f < min_speech_ms=%.0f",
+                            item.speech_ms,
                             self._barge_in_min_speech_ms(),
                         )
 
-                self._processing.set()
-                self._overlap_barge.clear()
-                self._overlap_speech_ms = 0.0
+                with self._turn_lock:
+                    self._overlap_barge.clear()
+                    self._overlap_speech_ms = 0.0
+                    levels = self._session.mic_source.recent_level_chunks()
+                    self._last_overlap_frame = levels[-1][0] if levels else 0
+                    self._processing.set()
                 try:
                     turn = self._session.process_live_capture(
-                        wav_path=wav_path,
-                        capture_ms=capture_ms,
+                        wav_path=item.path,
+                        capture_ms=item.capture_ms,
                         stop_requested=self._is_turn_aborted,
                         on_token=self._on_token,
                         on_generation_status=self._on_generation_status,
+                        on_transcript=self._on_transcript,
                     )
                 except Exception as exc:
                     log.exception("process_live_capture failed")
                     self._emit("error", {"message": str(exc)})
                     turn = None
                 finally:
-                    self._processing.clear()
+                    with self._turn_lock:
+                        self._processing.clear()
 
                 if self._stop_requested:
                     break
@@ -189,10 +205,6 @@ class LiveSession:
                 if turn is None:
                     self._emit("voice_state", {"state": "listening"})
                     continue
-
-                user_text, _reply = turn
-                if user_text:
-                    self._emit("stt_final", {"text": user_text})
 
                 # Surface the same metrics shape the typed-chat path uses,
                 # so the React UI can update its perf panel uniformly.
@@ -221,11 +233,18 @@ class LiveSession:
             log.exception("live session main loop crashed")
         finally:
             self._stop_requested = True
+            capture_stop.set()
             self._processing.clear()
             try:
                 capture_thread.join(timeout=2.0)
             except Exception:
                 pass
+            with self._pending_lock:
+                abandoned = list(self._pending)
+                self._pending.clear()
+                self._capturing_speech_ms = 0.0
+            for phrase in abandoned:
+                self._discard_capture(phrase.path)
             try:
                 self._session.set_live_voice_session_active(False)
             except Exception:
@@ -237,14 +256,34 @@ class LiveSession:
             self._emit("voice_state", {"state": "off"})
             log.info("live session stopped")
 
-    def _capture_loop(self) -> None:
+    @staticmethod
+    def _discard_capture(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            log.warning("Could not remove unused voice capture %s", path, exc_info=True)
+
+    def _capture_loop(self, capture_stop: threading.Event) -> None:
         # Backoff so a missing/broken microphone doesn't spam the log every
         # 500ms; we keep retrying in case the device is plugged in mid-session.
         consecutive_errors = 0
         last_error_message = ""
-        while not self._stop_requested:
+
+        def stopping() -> bool:
+            return capture_stop.is_set() or self._stop_requested
+
+        def speech_progress(speech_ms: float) -> None:
+            with self._pending_lock:
+                if stopping():
+                    return
+                self._capturing_speech_ms = speech_ms
+            with self._turn_lock:
+                self._interrupt_generation(speech_ms)
+
+        while not stopping():
             if self._processing.is_set():
-                self._tick_overlap_watch()
+                with self._turn_lock:
+                    self._tick_overlap_watch()
                 time.sleep(0.05)
                 continue
             with self._pending_lock:
@@ -254,11 +293,16 @@ class LiveSession:
                 continue
             try:
                 captured = self._session.capture_live_phrase(
-                    stop_requested=lambda: self._stop_requested,
+                    stop_requested=stopping,
                     on_audio_level=self._on_audio_level,
+                    on_speech_progress=speech_progress,
                     on_generation_status=None,
                 )
             except Exception as exc:
+                with self._pending_lock:
+                    if stopping():
+                        return
+                    self._capturing_speech_ms = 0.0
                 consecutive_errors += 1
                 msg = str(exc) or exc.__class__.__name__
                 if consecutive_errors == 1:
@@ -269,23 +313,22 @@ class LiveSession:
                 last_error_message = msg
                 # 0.5s, 1s, 2s, 4s ... capped at 5s.
                 backoff = min(0.5 * (2 ** min(consecutive_errors - 1, 4)), 5.0)
-                time.sleep(backoff)
+                capture_stop.wait(backoff)
                 continue
             if consecutive_errors:
                 log.info("capture_live_phrase recovered after %d errors", consecutive_errors)
                 consecutive_errors = 0
                 last_error_message = ""
-            if self._stop_requested or captured is None:
-                continue
-            wav_path, capture_ms = captured
             with self._pending_lock:
-                if len(self._pending) < self._max_pending:
-                    self._pending.append((wav_path, capture_ms))
-                else:
-                    try:
-                        wav_path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+                if not capture_stop.is_set():
+                    speech_ms = self._capturing_speech_ms
+                    self._capturing_speech_ms = 0.0
+                    if captured is not None and not stopping():
+                        wav_path, capture_ms = captured
+                        self._pending.append(_PendingPhrase(wav_path, capture_ms, speech_ms))
+                        continue
+            if captured is not None:
+                self._discard_capture(captured[0])
 
     def _maybe_proactive(self) -> None:
         """Nudge the proactive director if the user has been silent.
@@ -318,23 +361,18 @@ class LiveSession:
         self._last_activity_monotonic = time.monotonic()
 
     def _wait_for_tts_drain(self) -> None:
-        # Wait until the *client* says the speaker is quiet, not until
-        # the server finished sending PCM. Cap at ~30s; bail early on stop.
-        try:
-            if self._session.is_tts_playing():
-                mark = getattr(self._session, "mark_playback_pending", None)
-                if callable(mark):
-                    mark()
-        except Exception:
-            pass
+        # TTS start already marked playback pending. Re-arming here can
+        # erase an acknowledgement received before the turn finished.
         for _ in range(600):  # 600 * 0.05s = 30s
-            if self._stop_requested:
+            if self._stop_requested or self._overlap_barge.is_set():
                 return
             try:
-                drained = getattr(self._session, "is_playback_drained", None)
-                if callable(drained) and drained():
+                if not self._session.is_tts_playing() and self._session.is_playback_drained():
                     return
-                if not callable(drained) and not self._session.is_tts_playing():
+                if self._has_interrupting_phrase():
+                    # Even after server synthesis ends the browser can still
+                    # have scheduled PCM. stop_tts sends its audio_cancel.
+                    self._session.stop_tts()
                     return
             except Exception:
                 return
@@ -342,30 +380,30 @@ class LiveSession:
 
     def _tick_overlap_watch(self) -> None:
         """PCM-only barge-in while transcribe/LLM holds the capture loop."""
-        try:
-            if not self._session.barge_in_enabled():
-                self._overlap_speech_ms = 0.0
-                return
-        except Exception:
+        if not self._processing.is_set() or self._overlap_barge.is_set():
             return
-        try:
-            level_fn = getattr(self._session, "mic_last_level", None)
-            level = float(level_fn()) if callable(level_fn) else 0.0
-        except Exception:
-            level = 0.0
-        threshold = 0.02
-        try:
-            threshold = max(
-                0.004,
-                float(self._session.vad_level_threshold) * 0.4,
-            )
-        except Exception:
-            pass
-        if level >= threshold:
-            self._overlap_speech_ms += 50.0
-        else:
-            self._overlap_speech_ms = 0.0
-        if self._overlap_speech_ms < self._barge_in_min_speech_ms():
+        enabled = self._session.barge_in_enabled()
+        threshold = max(0.004, float(self._session.vad_level_threshold) * 0.4)
+        for end, frames, level in self._session.mic_source.recent_level_chunks():
+            if end <= self._last_overlap_frame:
+                continue
+            if end - frames != self._last_overlap_frame or level < threshold or not enabled:
+                self._overlap_speech_ms = 0.0
+            self._last_overlap_frame = end
+            if enabled and level >= threshold:
+                rate = self._session.settings.audio.sample_rate
+                self._overlap_speech_ms += 1000.0 * frames / rate
+                self._interrupt_generation(self._overlap_speech_ms)
+                if self._overlap_barge.is_set():
+                    break
+
+    def _interrupt_generation(self, speech_ms: float) -> None:
+        if (
+            not self._processing.is_set()
+            or self._overlap_barge.is_set()
+            or not self._session.barge_in_enabled()
+            or not self._capture_meets_barge_in_threshold(speech_ms)
+        ):
             return
         self._overlap_barge.set()
         self._overlap_speech_ms = 0.0
@@ -389,13 +427,15 @@ class LiveSession:
         # abort the current stream so we can react to the new input.
         # Same sustained-speech gate as the main loop applies — short
         # captures (cough, "yeah", throat-clear) don't abort the turn.
-        if self._session.barge_in_enabled():
-            with self._pending_lock:
-                pending_items = list(self._pending)
-            for _, capture_ms in pending_items:
-                if self._capture_meets_barge_in_threshold(capture_ms):
-                    return True
-        return False
+        return self._has_interrupting_phrase()
+
+    def _has_interrupting_phrase(self) -> bool:
+        if not self._session.barge_in_enabled():
+            return False
+        with self._pending_lock:
+            return self._capture_meets_barge_in_threshold(self._capturing_speech_ms) or any(
+                self._capture_meets_barge_in_threshold(phrase.speech_ms) for phrase in self._pending
+            )
 
     def _barge_in_min_speech_ms(self) -> float:
         try:
@@ -405,8 +445,8 @@ class LiveSession:
         except Exception:
             return 700.0
 
-    def _capture_meets_barge_in_threshold(self, capture_ms: float) -> bool:
-        return float(capture_ms) >= self._barge_in_min_speech_ms()
+    def _capture_meets_barge_in_threshold(self, speech_ms: float) -> bool:
+        return speech_ms > 0.0 and speech_ms >= self._barge_in_min_speech_ms()
 
     def _on_audio_level(self, level: float) -> None:
         now = time.monotonic()
@@ -425,6 +465,10 @@ class LiveSession:
         except (TypeError, ValueError):
             return
         self._emit("audio_level", {"level": value})
+
+    def _on_transcript(self, text: str) -> None:
+        if not self._stop_requested:
+            self._emit("stt_final", {"text": text})
 
     def _on_token(self, chunk: str) -> None:
         if not chunk:

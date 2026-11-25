@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import unittest
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app.audio.client_mic_source import ClientMicSource
 from app.core.infra.settings import AudioSettings
-from app.core.session.live_session import LiveSession
+from app.core.session.live_session import LiveSession, _PendingPhrase
 from app.core.session.voice_mixin import VoiceMixin
 from tests.test_client_mic_source import _sine_pcm
 from tests.test_live_mode_pass1 import LiveModeMixinHost
@@ -48,12 +50,12 @@ class PlaybackDrainTests(unittest.TestCase):
 
     def test_wait_returns_when_client_acks(self) -> None:
         session = MagicMock()
-        session.is_tts_playing.return_value = True
+        session.is_tts_playing.return_value = False
         session.is_playback_drained.side_effect = [False, False, True]
         live = LiveSession(session, on_event=lambda *_a, **_k: None)
         with patch("app.core.session.live_session.time.sleep"):
             live._wait_for_tts_drain()
-        session.mark_playback_pending.assert_called_once()
+        session.mark_playback_pending.assert_not_called()
         self.assertEqual(session.is_playback_drained.call_count, 3)
 
     def test_wait_skips_when_tts_never_started(self) -> None:
@@ -66,18 +68,46 @@ class PlaybackDrainTests(unittest.TestCase):
         slept.assert_not_called()
         session.mark_playback_pending.assert_not_called()
 
+    def test_only_qualifying_speech_can_cut_client_tail(self) -> None:
+        for enabled, voiced_ms, interrupts in (
+            (True, 700, True), (True, 100, False), (False, 1200, False),
+        ):
+            with self.subTest(enabled=enabled, voiced_ms=voiced_ms):
+                session = MagicMock()
+                session._settings.endpointing.barge_in_min_speech_seconds = 0.7
+                session.is_tts_playing.return_value = False
+                session.is_playback_drained.side_effect = [False, True]
+                session.barge_in_enabled.return_value = enabled
+                live = LiveSession(session, on_event=lambda *_: None)
+                phrase = _PendingPhrase(Path("capture.wav"), 8000, voiced_ms)
+                live._pending.append(phrase)
+                with patch("app.core.session.live_session.time.sleep") as wait:
+                    live._wait_for_tts_drain()
+                self.assertEqual(session.stop_tts.call_count, int(interrupts))
+                self.assertEqual(wait.call_count, int(not interrupts))
+                self.assertEqual(list(live._pending), [phrase])
+                self.assertEqual(live._is_turn_aborted(), interrupts)
+
 
 class OverlapWatchTests(unittest.TestCase):
     def test_sustained_energy_aborts_turn(self) -> None:
         session = MagicMock()
         session.barge_in_enabled.return_value = True
-        session.mic_last_level.return_value = 0.2
+        session.settings.audio.sample_rate = 16000
         session.vad_level_threshold = 0.02
-        session._settings.endpointing.barge_in_min_speech_seconds = 0.1
+        session._settings.endpointing.barge_in_min_speech_seconds = 0.3
+        mic = ClientMicSource(session.settings.audio)
+        mic.feed_start(16000, 1, 0)
+        session.mic_source = mic
         live = LiveSession(session, on_event=lambda *_a, **_k: None)
+        live._processing.set()
+        mic.feed_pcm(16000, 1, _sine_pcm(16000, 0.1))
         live._tick_overlap_watch()
+        live._tick_overlap_watch()  # Same loud block while the microphone is stalled.
         session.stop_tts.assert_not_called()
+        mic.feed_pcm(16000, 1, _sine_pcm(16000, 0.2))  # Two blocks in one packet.
         live._tick_overlap_watch()
+        live._tick_overlap_watch()  # The interrupted turn is still unwinding.
         session.stop_tts.assert_called_once()
         session.request_turn_stop.assert_called_once()
         self.assertTrue(live._is_turn_aborted())
@@ -107,6 +137,24 @@ class CaptureAvailableTests(unittest.TestCase):
         self.assertFalse(host.live_capture_available())
         host._live_voice_session_active = True
         self.assertTrue(host.live_capture_available())
+
+
+def test_capture_returning_after_stop_is_discarded(tmp_path):
+    path = tmp_path / "abandoned.wav"
+    path.touch()
+    stopped = threading.Event()
+    session = MagicMock()
+
+    def finish_capture(**kwargs):
+        kwargs["on_speech_progress"](800.0)
+        stopped.set()
+        return path, 1500.0
+
+    session.capture_live_phrase.side_effect = finish_capture
+    live = LiveSession(session, on_event=lambda *_: None)
+    live._capture_loop(stopped)
+    assert not path.exists()
+    assert not live._pending
 
 
 class BargeInPersistTests(unittest.TestCase):

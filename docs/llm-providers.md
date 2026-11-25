@@ -309,7 +309,11 @@ uses an environment-backed token so it does not put a credential in JSON; using
 the Settings drawer stores a write-only credential through Aiko's normal secret
 path instead.
 
-Use the same `contention_group` on both Mac routes. Aiko otherwise treats two
+Ollama workers, workflows and Live policy on the worker's endpoint share its
+priority gate by default, including when they use different model tags. The
+default gate capacity is one generating request and covers an entire stream.
+
+Use the same `contention_group` on both Mac LM Studio routes. Aiko otherwise treats two
 model ids as independent resources and may ask them to infer concurrently. They
 share one Mac and its unified memory bandwidth, so serial admission is the safe
 starting point even when both sets of weights remain loaded. `live_policy` keeps

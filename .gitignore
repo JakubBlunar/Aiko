@@ -56,6 +56,9 @@ data/browser-profile/
 # anyone else's to license.
 !voices/reference/aiko_reference.wav
 !voices/reference/manifest.json
+# Fixed, synthesized English microphone inputs for the voice integration test.
+!tests/fixtures/voice/fox-and-dog.wav
+!tests/fixtures/voice/fox-follow-up.wav
 # Reference sets built in the studio (tools/tts_lab/refset.py). Their wavs
 # are already covered above, but the manifest beside them is not -- and a
 # manifest whose audio is ignored is a list of somebody else's filenames

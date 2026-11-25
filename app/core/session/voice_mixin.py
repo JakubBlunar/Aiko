@@ -803,6 +803,7 @@ class VoiceMixin:
                 buf = self._merge_buffer.get(self.session_key)
                 if (
                     buf is not None
+                    and self.barge_in_enabled()
                     and not buf.tts_started
                     and not buf.awaiting_phrase_b
                     and len(text) >= 12

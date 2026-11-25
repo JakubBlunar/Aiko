@@ -29,9 +29,8 @@ Four tiers plus Live policy (lower int wins, matching ``BrainEventQueue``):
   Nothing that merely *feeds* a later reply belongs here.
 * ``CONVERSATION_WORKER`` (10) — per-turn / speaking-window workers
   that feed the next reply (memory extraction, dialogue-act, …).
-* ``LIVE_POLICY`` (30) — Live presence policy inference. Only used when
-  ``live_policy`` resolves to the **same** resource as the worker
-  model; a distinct 4B on the same Ollama host is ``gate=None``.
+* ``LIVE_POLICY`` (30) — Live presence policy inference on the same
+  resource as the worker model, including other models on its Ollama endpoint.
 * ``MAINTENANCE_WORKER`` (50) — idle-scheduler workers (decay,
   promotion, conflict, schedule-learner, day-color, dream, …).
 * ``TASK`` (100) — nested-workflow planner + skills.
@@ -93,15 +92,15 @@ def llm_resource_key(
 ) -> tuple[str, str, str]:
     """Identity of a contended LLM resource.
 
-    Keyed by provider kind + normalised endpoint + (contention group or
-    model). Two routes with the same key share one :class:`LlmPriorityGate`.
-    Distinct models on the same host are different keys unless they
-    share a ``contention_group``.
+    Ollama workers share the endpoint's capacity across model switches.
+    Other providers default to per-model capacity. An explicit contention
+    group identifies a resource within the endpoint for either provider.
     """
     endpoint = (base_url or "").strip().rstrip("/").lower()
     group = (contention_group or "").strip()
-    identity = group or (model or "").strip()
-    return ((kind or "").strip().lower(), endpoint, identity)
+    provider = (kind or "").strip().lower()
+    identity = group if provider == "ollama" else group or (model or "").strip()
+    return (provider, endpoint, identity)
 
 
 def tier_from_name(name: str, default: int = MAINTENANCE_WORKER) -> int:

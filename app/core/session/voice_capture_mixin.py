@@ -92,6 +92,7 @@ class VoiceCaptureMixin:
         stop_requested: Callable[[], bool] | None = None,
         max_listen_seconds: float = 18.0,
         on_audio_level: Callable[[float], None] | None = None,
+        on_speech_progress: Callable[[float], None] | None = None,
         on_generation_status: Callable[[str], None] | None = None,
     ) -> tuple[Path, float] | None:
         if not self._state.mic_enabled:
@@ -289,6 +290,7 @@ class VoiceCaptureMixin:
                 max_seconds_after_speech_start=18.0,
                 stop_requested=stop_requested,
                 on_speech_start=_on_speech_start,
+                on_speech_progress=on_speech_progress,
                 on_audio_level=on_audio_level,
                 on_silence_level=self._on_mic_silence_level,
                 on_chunk=_on_chunk if wants_partial else None,
@@ -356,6 +358,7 @@ class VoiceCaptureMixin:
         stop_requested: Callable[[], bool] | None = None,
         on_token: Callable[[str], None] | None = None,
         on_generation_status: Callable[[str], None] | None = None,
+        on_transcript: Callable[[str], None] | None = None,
     ) -> tuple[str, str] | None:
         if not self._realtime_stt.is_available:
             return None
@@ -468,6 +471,8 @@ class VoiceCaptureMixin:
         # the task subsystem is off / not wired, the helper degrades
         # to a direct ``chat_once_streaming`` call so the legacy
         # behaviour is byte-identical.
+        if on_transcript is not None:
+            on_transcript(merge_text or text)
         if merge_text is not None and merge_user_message_id is not None:
             log.info(
                 "voice merge: restarting turn with combined text "

@@ -288,6 +288,21 @@ own avatar behavior.
 The posture uses the existing gaze and body channels. Playback retains the
 speaking gaze, and voice capture and speech admission use their usual rules.
 
+## Interrupting a spoken reply
+
+With barge-in enabled, the live session can yield during generation or while
+the browser is playing buffered audio. The default minimum is 0.7 seconds
+of detected speech (`endpointing.barge_in_min_speech_seconds`). Listening
+before speech starts and quiet frames at the end of a phrase add no time.
+During generation, when the recognizer is busy, the overlap detector measures
+consecutive above-threshold microphone blocks. A stalled microphone contributes
+no additional speech.
+
+Once speech qualifies, Aiko can cancel playback while the user is still
+finishing the question. The capture stays available for the next turn. With
+barge-in disabled, a follow-up captured over the playback tail waits for the
+audio owner’s `playback_drained` acknowledgement or the 30-second fallback.
+
 ## Testing
 
 - Backend: `tests/test_audio_frame_protocol.py`,
@@ -298,7 +313,20 @@ speaking gaze, and voice capture and speech admission use their usual rules.
   `web/src/audio/DeviceManager.test.ts`,
   `web/src/audio/AudioOutputManager.test.ts`.
 
-Run with `python -m pytest tests/` and `npm test --prefix web`.
+The live loop publishes the final transcript after recognition and any phrase
+merge, before queuing the reply. The browser can append the user bubble before
+the first assistant token even when generation takes a long time.
+
+`python scripts/run_tests.py -q tests/test_voice_roundtrip.py` exercises two
+spoken turns on one WebSocket using scripted speech and a mocked chat model.
+The replay also holds the first playback acknowledgement while sending a
+follow-up. It checks that enabled barge-in cancels the old audio during the
+question and disabled barge-in waits for the acknowledgement.
+Set `AIKO_TEST_REAL_SPEECH=1` to also run the ordinary and interrupted exchanges
+with installed Pocket-TTS weights, a local voice and the cached default Whisper
+model (large-v1). Both stream fixed synthetic microphone recordings, check the
+prompt and saved conversation, and transcribe the returned audio.
+Browser audio scheduling has separate coverage in `npm --prefix web test -- src/audio`.
 
 ## Removed surfaces
 
