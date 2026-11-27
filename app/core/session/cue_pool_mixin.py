@@ -162,6 +162,10 @@ class CuePoolMixin:
         the strength of it.
         """
         store = self._cue_pool_store()
+        from app.core.session.surfacing_attempt import current_attempt
+
+        attempt = current_attempt.get()
+        seed_turn = user_text or (attempt.user_text if attempt is not None else "")
         if cue_type == "interest_continuation" and store is not None:
             from app.core.conversation.conversation_situation import declines_interest
             from app.core.proactive.topic_match import topical
@@ -283,6 +287,12 @@ class CuePoolMixin:
             # Relevance only chooses among admissible moves. A cosine (or debug
             # force) must not override source validity or conversational eligibility.
             nonlocal eligibility_filtered
+            if cue_type == "curiosity_seed" and seed_turn:
+                from app.core.proactive.curiosity_answer import hold_seed_for_turn
+
+                if hold_seed_for_turn(row, seed_turn):
+                    eligibility_filtered += 1
+                    return False
             if (not hypothesis_source_valid(row)
                     or (eligible is not None and not eligible(row.payload))
                     or (still_valid is not None and not still_valid(row.payload))):
@@ -334,8 +344,6 @@ class CuePoolMixin:
                 blocked,
             )
             return None
-        from app.core.session.surfacing_attempt import current_attempt
-
         def commit_claim():
             if store.available(row.id) is None:
                 raise ValueError("cue_unavailable")
@@ -349,7 +357,6 @@ class CuePoolMixin:
                 raise RuntimeError("cue_claim_failed")
             self._register_surfaced_cue(row)
 
-        attempt = current_attempt.get()
         if attempt is not None:
             policy = self._policy_for(cue_type)
             attempt.stage(
@@ -584,8 +591,11 @@ class CuePoolMixin:
                             row.subject, question, assistant_text, verdict,
                         )
                     if not answered:
+                        # A want can still offer a passively expired source.
+                        # For an ordinary unsurfaced seed, require the exact ask.
                         asked_text = (specific_ask(question, assistant_text, subject=row.subject)
-                                      if was_surfaced else "")
+                                      if was_surfaced or row.state == "expired"
+                                      or question.casefold() in assistant_text.casefold() else "")
                         if not asked_text:
                             if was_surfaced:
                                 self._retire_or_retry(store, row, policy, evidence="question_open")
@@ -725,6 +735,15 @@ class CuePoolMixin:
                 )
                 continue
             out.extend(row for row in rows if row.id not in seen)
+        chat_db = getattr(self, "_chat_db", None)
+        if chat_db is not None and hasattr(chat_db, "kv_get"):
+            from app.core.conversation.cue_wants import expired_seed_questions
+
+            try:
+                out.extend(row for row in expired_seed_questions(chat_db, store)
+                           if row.id not in seen)
+            except Exception:
+                log.debug("seed want read failed", exc_info=True)
         return out
 
     def _policy_for(self, cue_type: str) -> CuePolicy | None:
@@ -850,6 +869,7 @@ class CuePoolMixin:
                 row, policy, tokens=user_tokens, text_vec=user_vec,
             )
             matched = verdict.echoed
+            miss = "unrelated_answer"
             if row.cue_type == "curiosity_seed":
                 from app.core.proactive.curiosity_answer import short_answer, volunteered_answer
 
@@ -857,8 +877,9 @@ class CuePoolMixin:
                 matched = volunteered_answer(row.subject, question, user_text, verdict) or (
                     row.payload.get("ask_verified") and short_answer(question, user_text)
                 )
+                miss = "answer_unconfirmed"
             store.record_feedback(
-                row.id, "answer_matched" if matched else "unrelated_answer",
+                row.id, "answer_matched" if matched else miss,
                 user_message_id=user_message_id, observed_at=now.isoformat(),
             )
             if matched:
@@ -869,11 +890,10 @@ class CuePoolMixin:
                               else "answered/direct"),
                 )
                 continue
-            # The question went by. That is a real signal rather than only
-            # a failure: a cue type whose asks keep going unanswered is one
-            # the user does not want to be asked about.
             if row.ask_count >= policy.max_asks:
-                store.expire(row.id, evidence="max_asks")
+                # Closing this one question makes no claim about the user's interests.
+                evidence = "curiosity_let_go" if row.cue_type == "curiosity_seed" else "max_asks"
+                store.expire(row.id, evidence=evidence)
                 log.info(
                     "cue expired unanswered: type=%s subject=%r asks=%d",
                     row.cue_type, row.subject[:60], row.ask_count,

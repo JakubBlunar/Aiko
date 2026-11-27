@@ -45,6 +45,10 @@ from typing import Any
 
 # The K4 dialogue-act label meaning "he asked something".
 _QUESTION_ACT = "question"
+_ANSWER_FORMAT_AFTER_QUESTION = re.compile(
+    r"\?\s*(?:just|only) (?:the (?:answer|name|number|time|date|amount)|yes or no)"
+    r"(?:,? please)?[.!]?\s*$", re.IGNORECASE,
+)
 
 
 def is_direct_question(
@@ -68,7 +72,8 @@ def is_direct_question(
     """
     if str(dialogue_act or "").strip().lower() == _QUESTION_ACT:
         return True
-    return (user_text or "").rstrip().endswith("?")
+    text = (user_text or "").rstrip()
+    return text.endswith("?") or bool(_ANSWER_FORMAT_AFTER_QUESTION.search(text))
 
 
 _COMPLETION = re.compile(

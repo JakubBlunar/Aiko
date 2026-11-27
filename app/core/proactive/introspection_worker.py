@@ -117,7 +117,7 @@ class IntrospectionWorker(HypothesisProposerWorker):
     def is_ready(self, *, now: datetime, last_run_at: datetime | None) -> bool:
         return self.demand(now=now, last_run_at=last_run_at).pressure > 0
 
-    def run(self) -> dict[str, Any]:
+    def _run_once(self) -> dict[str, Any]:
         if not self._enabled() or self._store() is None or self._concept_store() is None:
             return {"skipped": True, "reason": "disabled_or_no_store"}
         if self._cancel_event.is_set():
@@ -148,7 +148,7 @@ class IntrospectionWorker(HypothesisProposerWorker):
             if self._state.get("calls", 0) >= 2:
                 return self._save({"skipped": True, "reason": "daily_budget"})
             self._event = row
-            result = super().run()
+            result = super()._run_once()
             terminal = (
                 result.get("wrote", 0) > 0 or result.get("reason") == "no_candidates"
                 or result.get("rejected_duplicate", 0) > 0
@@ -167,7 +167,7 @@ class IntrospectionWorker(HypothesisProposerWorker):
             return self._save({**result, "outcome_id": row["id"], "excluded": skipped})
         return self._save({"checked": len(rows), "wrote": 0, "excluded": skipped})
 
-    def _call_llm(self, store) -> list[dict[str, Any]]:
+    def _call_llm(self, store) -> tuple[list[dict[str, Any]], str]:
         self._state["calls"] = self._state.get("calls", 0) + 1
         self._save({"reason": "in_flight", "outcome_id": self._event["id"]})
         claim = self._event["claim"]
@@ -218,7 +218,7 @@ class IntrospectionWorker(HypothesisProposerWorker):
         if not isinstance(parsed, dict):
             raise ValueError("expected reflection object")
         if parsed.get("decision") == "abstain":
-            return []
+            return [], "no_candidates"
         if parsed.get("decision") != "hypothesis":
             raise ValueError("unknown reflection decision")
         for field in ("statement", "rationale", "alternative", "disconfirming_observation"):
@@ -233,7 +233,7 @@ class IntrospectionWorker(HypothesisProposerWorker):
             "identity", "value", "boundary", "affective", "communication_style",
         }:
             raise ValueError("invalid reflection kind")
-        return [parsed]
+        return [parsed], "proposed"
 
     def _retire_unreviewed(self, store):
         # An outcome review never evicts or reclassifies inventory to buy room.

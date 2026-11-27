@@ -428,7 +428,7 @@ two master switches; full prose for each is in
 | `concept_hypothesis_gap_min_importance` | `0.55` | importance floor for the gap path only — for an invented cue this is a kind whitelist, not a dial (H7; see [`configuration.md`](configuration.md)) |
 | `concept_hypothesis_answer_threshold` | `0.45` | echo-gate cosine |
 | `concept_hypothesis_deny_penalty` | `0.25` | confidence penalty on a denied *concept* |
-| `hypothesis_invention_interval_seconds` | `5400` | proposer cadence (one LLM call) |
+| `hypothesis_invention_interval_seconds` | `5400` | proposer cadence. A recent explicit abstention on unchanged material can skip inference. |
 | `hypothesis_invention_max_per_run` | `2` | rows written per proposal batch |
 | `hypothesis_max_open` | `12` | hard ceiling on live rows |
 | `hypothesis_min_novelty` | `0.88` | reject a re-invented guess (high: over-rejecting sterilises the layer) |

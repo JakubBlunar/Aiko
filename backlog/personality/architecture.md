@@ -126,3 +126,18 @@ not reopen the six resolved wiring bugs.
 ## A8. Scope the conversation bridge to the current owner
 
 Closed 22 November. [Implementation and verification](shipped.md#22-november-2026-backlog-closures).
+
+## A9. Share the turn completion event across text and voice
+
+**Open.** The [WebSocket server](../../app/web/server.py) builds `turn_done`
+separately for typed and voice turns. Both lift the saved assistant message ID
+out of metrics and offer a delivery receipt. The typed path also supplies a
+session field. The [browser](../../web/src/hooks/useAssistantSocket.ts) uses
+these fields to finish the bubble, attach reactions and acknowledge presentation.
+Give the two server paths one event builder with explicit optional fields.
+
+**First check.** Feed representative output from both paths to the browser
+handler. A saved reply should accept a reaction immediately. A completion
+without a saved ID should still finish the bubble and produce no delivery
+receipt. Keep clients that omit optional fields in the fixture. Start with
+this single event before considering a wider protocol change.

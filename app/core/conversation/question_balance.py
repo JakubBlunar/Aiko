@@ -17,6 +17,7 @@ these functions.
 from __future__ import annotations
 
 from collections.abc import Iterable
+import re
 
 
 CURIOSITY_CUE_TYPES = frozenset({
@@ -77,14 +78,64 @@ def render_share_first_cue(user_name: str | None = None) -> str:
     return SHARE_FIRST_CUE.format(name=name)
 
 
-def render_curiosity_pacing_cue() -> str:
+_CLOSE = re.compile(
+    r"^\s*(?:i(?:['’]ve| have)? already (?:answered(?: (?:that|this|it|your question))?|"
+    r"told you)|i(?:['’]d| would) rather not(?: (?:say|talk about it|discuss it))?|"
+    r"(?:(?:please|can we|let['’]s)\s+)?(?:drop (?:it|that)(?!\s+off\b)|"
+    r"leave (?:it|that) (?:there|alone)|move on|change the subject|talk about something else))"
+    r"\b(?:,? please)?", re.I,
+)
+_PIVOT = re.compile(
+    r"(?:^|[.!?;,])\s*(anyway|on (?:another|a different) note|changing (?:the )?subject|"
+    r"speaking of something else)\b", re.I,
+)
+
+
+def yields_curiosity(text: str) -> bool:
+    return bool(_CLOSE.match(text or "") or _PIVOT.search(text or ""))
+
+
+def closes_curiosity(text: str) -> bool:
+    """A bare correction or refusal, with no new request to answer."""
+    match = _CLOSE.match(text or "")
+    return bool(match and not text[match.end():].strip(" .!?\t\r\n"))
+
+
+def render_curiosity_pacing_cue(
+    user_text: str = "", *, answered: bool = False, opens_on_question: bool = False,
+) -> str:
+    if closes_curiosity(user_text):
+        return (
+            "The user has closed your last question. Reply with just a brief acknowledgment "
+            "in your own voice, such as 'Got it.' End the message immediately after that."
+        )
+    pivot = _PIVOT.search(user_text)
+    if pivot:
+        settled = "Your own question is settled. " if answered else ""
+        return (
+            f"Notice the handoff after '{pivot.group(1).lower()}'. {settled}"
+            "The interesting thing here may be what just happened to somebody. "
+            "Respond to that moment on its own if that's where their excitement is. "
+            "Let them tell you the parts you don't know yet."
+        )
+    if opens_on_question and "?" not in user_text:
+        return (
+            "Listen to the turn as a whole. The thing they spend a second sentence on, "
+            "especially why it matters to them, is often what they came to share. You "
+            "can go straight there. Let your own judgment decide whether the first "
+            "detail belongs in that moment."
+        )
+    if answered and "?" not in user_text:
+        return (
+            "The user just answered your question. Your whole reply is one brief "
+            "statement acknowledging their answer. Finish on that statement."
+        )
     return (
-        "Curiosity pacing: you asked a question in your last reply. Stay with "
-        "the answer or the subject the user chooses now; let it land before "
-        "opening another topic. A genuinely relevant follow-up is fine, but "
-        "do not append a different question from your backlog or announce "
-        "that you have been curious again. Pending curiosity is not a debt "
-        "to collect. An observation or simply listening is enough."
+        "Curiosity pacing: you asked a question in your last reply. Stay with the answer "
+        "or the subject they choose. If they answer in passing and then tell you news, "
+        "which part would you care about if you were there with them? You can go straight "
+        "to it. Let the earlier detail matter as much as it matters to their story. "
+        "If they invite you to hear more, take them up on it."
     )
 
 

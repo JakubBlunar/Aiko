@@ -69,10 +69,19 @@ class _Embedder:
 class _Ollama:
     def __init__(self, payload: str) -> None:
         self.payload = payload
+        self.last_usage = SimpleNamespace(done_reason="stop")
         self.calls = 0
+        self.evidence_calls = 0
+        self.evidence = {"observation": "The desk was cleared before the change.",
+                         "reason_given": None, "status": "open",
+                         "hunch": "Perhaps clearing the desk helps with the transition."}
         self.kwargs: dict[str, Any] = {}
 
     def chat_stream(self, messages, **kwargs: Any):
+        if kwargs.get("surface") == "hypothesis_evidence":
+            self.evidence_calls += 1
+            yield json.dumps(self.evidence)
+            return
         self.calls += 1
         self.kwargs = kwargs
         self.messages = messages
@@ -205,6 +214,96 @@ class _Fixture(unittest.TestCase):
 
 
 # ── the happy path ────────────────────────────────────────────────────
+
+
+class AbstentionTests(_Fixture):
+    def test_only_complete_evidence_decisions_can_skip_the_proposal_call(self):
+        note = SimpleNamespace(id=1, kind="fact", metadata={}, content="Ren caught a bus.")
+        worker = self._build(memory_store_provider=lambda: SimpleNamespace(
+            list_recent=lambda **_: [note]))
+        self.ollama.evidence = {"status": "ordinary"}
+        self.assertEqual(worker.run()["reason"], "invalid_response")
+        self.ollama.evidence.update(observation=note.content, reason_given=None, hunch=None)
+        self.assertEqual(worker.run()["reason"], "abstained")
+        self.assertEqual(worker.run()["reason"], "unchanged_abstention")
+        self.assertEqual((self.ollama.evidence_calls, self.ollama.calls), (2, 0))
+        note.content = "Ren changed buses because the first bus broke down."
+        self.ollama.evidence.update(status="settled")
+        self.assertEqual(worker.run()["reason"], "invalid_response")
+        self.ollama.evidence.update(observation=note.content, reason_given="The next bus was free.")
+        self.assertEqual(worker.run()["reason"], "unoffered_explanation")
+        self.ollama.evidence.update(reason_given="the first bus broke down")
+        self.assertEqual(worker.run()["reason"], "abstained")
+        self.assertEqual((self.ollama.evidence_calls, self.ollama.calls), (5, 0))
+
+    def test_only_matching_offered_material_shares_a_bounded_abstention(self):
+        now = timephrase.utcnow()
+        note = SimpleNamespace(id=1, kind="fact", metadata={}, created_at=now.isoformat(),
+                               content="The user hung a draft sign across the room.")
+        worker = self._build(payload=_payload(), clock=lambda: now, memory_store_provider=lambda:
+                             SimpleNamespace(list_recent=lambda **_: [note]))
+        self.assertEqual(worker.run()["reason"], "abstained")
+        now += timedelta(hours=1)
+        self.assertEqual(worker.run()["reason"], "unchanged_abstention")
+        self.assertEqual(self.ollama.calls, 1)
+        note.content = "The user hung two different signs across the room."
+        self.assertEqual(worker.run()["reason"], "abstained")
+        self._concept()
+        self.assertEqual(worker.run()["reason"], "abstained")
+        self._existing()
+        self.assertEqual(worker.run()["reason"], "abstained")
+        self.ollama.routing_revision = 2
+        self.assertEqual(worker.run()["reason"], "abstained")
+        now += timedelta(hours=6)
+        self.assertEqual(worker.run()["reason"], "abstained")
+        self.assertEqual(self.ollama.calls, 6)
+
+    def test_invalid_incomplete_and_failed_calls_can_retry_with_identical_input(self):
+        worker = self._build(payload='{"hypotheses": [null]}')
+        self.assertEqual(worker.run()["reason"], "invalid_response")
+        self.ollama.payload = _payload()
+        self.ollama.last_usage.done_reason = "length"
+        self.assertEqual(worker.run()["reason"], "incomplete_response")
+        with patch.object(self.ollama, "chat_stream", side_effect=RuntimeError("offline")):
+            self.assertEqual(worker.run()["reason"], "llm_call")
+        self.ollama.last_usage.done_reason = "stop"
+
+        def interrupted(*args, **kwargs):
+            yield self.ollama.payload
+            self.cancel.set()
+
+        with patch.object(self.ollama, "chat_stream", side_effect=interrupted):
+            self.assertTrue(worker.run()["cancelled"])
+        self.cancel.clear()
+        self.ollama.payload = _payload(_STATEMENT)
+        self.assertEqual(worker.run()["wrote"], 1)
+
+    def test_small_context_can_fit_the_proposal_even_with_large_thinking_headroom(self):
+        worker = self._build(payload=_payload(), context_window=lambda: 8192)
+        self.ollama._think_headroom = 8192
+        self.assertEqual(worker.run()["reason"], "abstained")
+        self.assertFalse(self.ollama.kwargs["think"])
+
+    def test_mixed_evidence_reaches_drafting_only_for_the_open_source(self):
+        notes = [SimpleNamespace(id=1, kind="fact", metadata={}, content="Ren caught a bus."),
+                 SimpleNamespace(id=2, kind="fact", metadata={}, content="Ren replayed a song.")]
+        worker = self._build(memory_store_provider=lambda: SimpleNamespace(
+            list_recent=lambda **_: notes))
+        self.ollama.evidence["reviewed"] = {"memory:1": "ordinary"}
+        self.assertEqual(worker.run()["reason"], "incomplete_evidence_review")
+        self.ollama.evidence["reviewed"]["memory:2"] = "open"
+        self.assertEqual(worker.run()["quality_faults"], {"unoffered_inspiration": 1})
+        self.assertNotIn("Ren caught a bus", self.ollama.messages[-1]["content"])
+        self.assertIn("Ren replayed a song", self.ollama.messages[-1]["content"])
+
+    def test_an_inspiration_and_a_competing_idea_have_different_jobs(self):
+        copied = "The user described organising a desk before a project"
+        worker = self._build(payload=_payload(copied))
+        self.assertEqual(worker.run()["quality_faults"], {"restated_source": 1})
+        payload = json.loads(_payload(_STATEMENT))
+        payload["hypotheses"][0]["alternative"] = _STATEMENT.upper() + "."
+        self.ollama.payload = json.dumps(payload)
+        self.assertEqual(worker.run()["quality_faults"], {"repeated_alternative": 1})
 
 
 class WriteTests(_Fixture):
@@ -836,7 +935,7 @@ class DurabilityTests(_Fixture):
         result = self._build(payload="I would rather not.").run()
 
         self.assertEqual(result["wrote"], 0)
-        self.assertEqual(result["reason"], "no_candidates")
+        self.assertEqual(result["reason"], "invalid_response")
 
     def test_a_raising_llm_is_absorbed(self) -> None:
         worker = self._build()
@@ -925,7 +1024,7 @@ class ContextPackTests(_Fixture):
 
 class ParseTests(unittest.TestCase):
     def _parse(self, raw: str):
-        return HypothesisProposerWorker._parse(raw)
+        return HypothesisProposerWorker._parse(raw)[0]
 
     def test_it_digs_the_object_out_of_a_preamble(self) -> None:
         raw = "Let me think...\n" + _payload(_STATEMENT)

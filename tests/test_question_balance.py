@@ -165,6 +165,32 @@ class _ProviderHost(InnerLifeProvidersMixin):
 
 
 class ProviderTests(unittest.TestCase):
+    def test_handoff_cue_reflects_the_transition_without_assuming_an_answer(self):
+        from app.core.conversation.question_balance import render_curiosity_pacing_cue
+
+        text = "Velvet. On another note, my sister got the solo!"
+        self.assertIn("'on another note'", render_curiosity_pacing_cue(text, answered=True))
+        self.assertIn("question is settled", render_curiosity_pacing_cue(text, answered=True))
+        self.assertNotIn("question is settled", render_curiosity_pacing_cue("Anyway, big news!"))
+
+    def test_unmarked_story_after_an_answer_can_surface_while_share_first_is_active(self):
+        from app.core.conversation.question_balance import render_curiosity_pacing_cue
+        from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
+
+        host = _ProviderHost(suppress_remaining=2)
+        host.session_key = "lining"
+        history = [SimpleNamespace(role="assistant", content="What is the case lining made of?")]
+        host._chat_db = SimpleNamespace(get_messages=lambda session, limit: history)
+        for user, has_opening in (("Velvet. My sister got the solo!", True),
+                                  ("My sister got the solo! She rang from the hall.", False)):
+            token = current_attempt.set(SurfaceAttempt(user_text=user))
+            try:
+                cue = host._render_question_balance_block()
+                self.assertEqual(cue == render_curiosity_pacing_cue(user, opens_on_question=True),
+                                 has_opening)
+            finally:
+                current_attempt.reset(token)
+
     def test_pacing_starts_after_one_question_without_ratio_suppression(self) -> None:
         host = _ProviderHost()
         host._question_turn_flags = deque([True], maxlen=10)
@@ -172,10 +198,25 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(host._curiosity_pacing_active())
         cue = host._render_question_balance_block()
         self.assertIn("Stay with the answer", cue)
-        self.assertIn("relevant follow-up is fine", cue)
+        self.assertIn("invite you to hear more", cue)
         host._question_turn_flags.append(False)
         self.assertFalse(host._curiosity_pacing_active())
         self.assertEqual(host._render_question_balance_block(), "")
+
+    def test_bare_closure_gets_an_acknowledgment_even_during_share_first(self):
+        from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
+
+        host = _ProviderHost(suppress_remaining=2)
+        host._question_turn_flags = deque([True], maxlen=10)
+        for text, closed in (("I already answered that.", True), ("Can we drop it?", True),
+                             ("I already answered that. Can you find the score?", False),
+                             ("Can we drop it off at noon?", False)):
+            token = current_attempt.set(SurfaceAttempt(user_text=text))
+            try:
+                cue = host._render_question_balance_block()
+            finally:
+                current_attempt.reset(token)
+            self.assertEqual("brief acknowledgment" in cue, closed)
 
     def test_pacing_reads_saved_history_after_restart_and_session_switch(self) -> None:
         host = _ProviderHost()
@@ -197,6 +238,21 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(host._curiosity_pacing_active())
         host.session_key = "second"
         self.assertFalse(host._curiosity_pacing_active())
+
+    def test_short_answer_uses_the_actual_previous_question(self):
+        from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
+
+        host = _ProviderHost(suppress_remaining=2)
+        host.session_key = "case"
+        history = [SimpleNamespace(role="assistant", content="What is the case lining made of?")]
+        host._chat_db = SimpleNamespace(get_messages=lambda session, limit: history)
+        token = current_attempt.set(SurfaceAttempt(user_text="Velvet."))
+        try:
+            self.assertIn("one brief statement", host._render_question_balance_block())
+            history[0].content = "When is the rehearsal?"
+            self.assertNotIn("one brief statement", host._render_question_balance_block())
+        finally:
+            current_attempt.reset(token)
 
     def test_pacing_respects_existing_disable_switches(self) -> None:
         for overrides in (

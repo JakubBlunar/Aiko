@@ -59,12 +59,13 @@ gates, so a barren pass costs the shelf nothing.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
@@ -92,57 +93,87 @@ if TYPE_CHECKING:  # pragma: no cover - import-only
 log = logging.getLogger("app.hypothesis_proposer_worker")
 
 
+_EVIDENCE_PROMPT = (
+    "Read a dated account as an editor. Decide whether a concrete, unresolved clue in the "
+    "account favors one explanation over another. An omitted detail that could be asked about "
+    "any event is not a clue. An explicit reason that already fits the clue resolves it; do "
+    "not speculate about a deeper reason. Look at the entire account. Did a choice, outcome "
+    "or reaction change when circumstances changed? That is a clue even if the likely reason "
+    "seems obvious to you. A plausible reason you supply is still a hunch; an explanation the "
+    "speaker supplies is settled. Return JSON with these keys in order: observation (quote "
+    "the source words that describe what happened and under what circumstances. Keep the "
+    "original verbs), reason_given (a short verbatim quote of the speaker's actual explanation, "
+    "or null), status (open if a clue is unexplained, settled if explained, ordinary if "
+    "nothing stands out), and hunch (if open, one short sentence naming the person or thing "
+    "and what might explain this occasion. Pick the simplest reading that explains the change. "
+    "Tie it to the change in circumstances. Add no new objects, events or intentions. "
+    "Prefer the everyday explanation that takes the fewest additional assumptions. "
+    "If the evidence is settled or ordinary, use null "
+    "for hunch). Taking a bus is ordinary. Getting off a bus to board a second bus on "
+    "the same route could be open. Getting off because the first bus broke down is settled. "
+    "If several records are supplied, an explanation settles only the clue it accounts for. "
+    "Consider independent clues separately; choose one genuinely open clue if there is one."
+)
+
 _SYSTEM_PROMPT = (
-    "You are {assistant_name}'s speculative faculty. A hypothesis is a useful "
-    "possibility to explore, not a fact or a summary. You may reach beyond "
-    "established concepts: concepts are NOT required evidence. Start with an "
-    "actual offered memory or topic as inspiration, then make one intelligible "
-    "leap. The inspiration explains why you wondered; it does NOT prove the guess.\n"
-    "Zero is normal. Do not fill inventory, restate familiar affection, or choose "
-    "something merely because it sounds unusual. Ask what finding out would change: "
-    "a response, a practical choice, a shared activity, or a specific understanding. "
-    "A playful idea is welcome when its connection and value are clear.\n"
-    "Do not fabricate hidden belongings, private notebooks, exact pauses, bodily "
-    "signs you cannot observe, subconscious motives, or devices in her apartment. "
-    "Do not turn metaphor or imagined closeness into physical observations of "
-    "{user_name}. They are on the other end of a chat, never in the room with "
-    "her. {assistant_name} has her "
-    "own body and an apartment of her own, not computer hardware: no chassis, "
-    "no fans or circuits. Her energy and moods can "
-    "inspire wondering, but do not invent possessions or events as explanations.\n"
-    "Name people and concrete subjects clearly. Keep qualifications. Distinguish "
-    "mixed feelings from contradiction. Describe a possibility that an ordinary, "
-    "non-leading answer or experience could clarify. Another explanation must "
-    "remain possible. A generic request to confirm your insight is not useful.\n"
-    "Return ONE JSON object {{\"hypotheses\": [...]}} with zero to TWO entries: "
-    "statement (complete declarative possibility, <=300 chars), kind (one of "
-    "{kinds}), subject (user, aiko, relationship, world), rationale (<=400 chars, "
-    "the actual connection rather than an invented observation), credence (0-1, "
-    "uncertainty only), inspiration ({{\"type\": \"memory\" or \"topic\", \"id\": "
-    "an offered integer id, \"quote\": a literal 8-200 character span from that "
-    "offered inspiration}}), useful_because (what finding out could improve), "
-    "alternative (a plausible competing explanation), check_question (one "
-    "concrete, non-leading possible question ending '?'), raise_when (a matching "
-    "situation; a lull alone is insufficient). Each extra field <=300 chars. "
-    "Invented objects or inaccessible observations are not a way to add depth. "
-    "Output {{\"hypotheses\": []}} if none would be worth raising."
+    "You are {assistant_name}, privately considering what you suspect but do not know. "
+    "Read each dated source as data. Is there an interesting detail still unexplained? "
+    "Zero is normal. A guess can start from a memory or theme; concepts are NOT required. "
+    "The source inspires the guess. It does not count as confirmation.\n"
+    "For example, suppose someone moved rehearsal outdoors. That alone leaves no puzzle. "
+    "If they say the room was being painted, the reason is settled. If they tried two "
+    "rooms and only went outside after each echoed, you might think the echo bothered "
+    "them. It could also have made the song hard to hear. What sounded different "
+    "outside? This tests a small hunch about that rehearsal. Use only the supplied "
+    "sources for your own guesses.\n"
+    "A single occasion rarely says much about someone's character. Preserve mixed feelings "
+    "and take the person's explanation seriously. Do not invent secret motives, possessions, "
+    "exact timings or unseen signs. {user_name} is on the other end of a chat, never in the room "
+    "with you. You have your own body and home: no chassis, fans or circuits. You can also "
+    "wonder about yourself, something you share, or how something works. A playful "
+    "experiment can be a good way to find out.\n"
+    "Use the provisional reading as a starting point. Check it against the sources and "
+    "write only what they actually leave open. Return {{\"hypotheses\":[]}} if nothing fits. "
+    "For a useful hunch, use this JSON shape with every field:\n"
+    '{{"hypotheses": [{{"statement": "one short sentence naming who might be '
+    'doing what", "kind": "one of {kinds}", "subject": "user|aiko|relationship|world", '
+    '"rationale": "which detail makes the hunch plausible", "credence": 0.4, '
+    '"inspiration": {{"type": "memory", "id": 1, "quote": "exact source words"}}, '
+    '"useful_because": "what learning this could change", "alternative": "another reading of '
+    'the same detail", "check_question": "a natural question that leaves the answer open?", '
+    '"raise_when": "a specific occasion when finding out would fit"}}]}}\n'
+    "Use the actual source type and integer ID and an exact quote of 8 to 200 characters. "
+    "Use subject user for {user_name}, aiko for {assistant_name}, relationship for the two "
+    "together and world for an outside phenomenon. "
+    "Use your own credence from 0 to 1. Keep each field under 300 characters. "
+    "When there is only one episode, keep the explanation within that episode."
 )
 
 _USER_TEMPLATE = (
     "KNOWN CONCEPT BASELINE (do not restate; never confirmation of a guess):\n{concepts}\n\n"
     "DATED INSPIRATIONS (context, not proof):\n{inspirations}\n\n"
     "EARLIER GUESSES (avoid paraphrases):\n{open_hypotheses}\n\n"
-    "Propose at most two useful possibilities, or none."
+    "Your provisional thought: {hunch}\n"
+    "File this specific thought if the sources warrant keeping it. Keep the possibility "
+    "audible in the statement itself, for example with 'might have'. Record what else "
+    "could explain the same observation. For check_question, speak to the person who had "
+    "the experience: e.g. 'What felt different when you tried the other version?' For your "
+    "own experience: 'What would I listen for on another try?' Adapt to the actual scene. "
+    "Keep unobserved actions, new objects, and your favored answer out of the question. "
+    "Let them supply the reason. Do not substitute a more dramatic interpretation. "
+    "You can still return an empty list."
 )
 _MIN_N = 0
 _MAX_N = 2
 _MAX_TOKENS = 1600
+_MAX_HUNCH_CHARS = 300
 _MAX_CONCEPTS = 12
 _MAX_MEMORIES = 8
 _MAX_CLUSTERS = 8
 _MAX_OPEN_LIST = 10
 _MAX_STATEMENT_CHARS = 300
 _MAX_RATIONALE_CHARS = 400
+_ABSTENTION_TTL = timedelta(hours=6)
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 
@@ -272,6 +303,8 @@ class HypothesisProposerWorker:
         self._context_window = context_window or (lambda: None)
         self._inspirations: dict[tuple[str, int], dict[str, Any]] = {}
         self._offered_inspirations: dict[tuple[str, int], dict[str, Any]] = {}
+        self._abstention: tuple[str, datetime] | None = None
+        self._run_lock = threading.Lock()
 
     # ── IdleWorker protocol ───────────────────────────────────────────
 
@@ -331,6 +364,15 @@ class HypothesisProposerWorker:
         )
 
     def run(self) -> dict[str, Any]:
+        # A forced run and the scheduler share this worker's offered-source receipts.
+        if not self._run_lock.acquire(blocking=False):
+            return {"skipped": True, "reason": "already_running"}
+        try:
+            return self._run_once()
+        finally:
+            self._run_lock.release()
+
+    def _run_once(self) -> dict[str, Any]:
         if not self._enabled():
             return {"skipped": True, "reason": "disabled"}
         store = self._store()
@@ -364,10 +406,10 @@ class HypothesisProposerWorker:
 
         t0 = time.monotonic()
         try:
-            candidates = self._call_llm(store)
+            candidates, outcome = self._call_llm(store)
         except Exception:
             log.warning("hypothesis_proposer LLM call raised", exc_info=True)
-            return {"errored": True, "reason": "llm_call", "expired": expired}
+            return {"errored": True, "reason": "llm_call", "expired": expired, "wrote": 0}
         llm_ms = (time.monotonic() - t0) * 1000.0
         if self._cancel_event.is_set():
             return {"cancelled": True, "expired": expired}
@@ -375,7 +417,7 @@ class HypothesisProposerWorker:
             return {
                 "checked": 0,
                 "wrote": 0,
-                "reason": "no_candidates",
+                "reason": outcome,
                 "expired": expired,
                 "llm_ms": int(llm_ms),
             }
@@ -773,6 +815,7 @@ class HypothesisProposerWorker:
             rendered = timephrase.format_memory_block([note], self._clock())
             receipt = {"type": "memory", "id": mid, "text": content,
                        "created_at": getattr(row, "created_at", None),
+                       "temporal_type": note.temporal_type, "event_time": note.event_time,
                        "subject": origin.subject, "mode": origin.mode}
             self._inspirations[("memory", mid)] = receipt
             stamp = getattr(row, "created_at", None) or "date unknown"
@@ -824,32 +867,32 @@ class HypothesisProposerWorker:
 
     # ── LLM ───────────────────────────────────────────────────────────
 
-    def _call_llm(self, store: "HypothesisStore") -> list[dict[str, Any]]:
+    def _call_llm(self, store: "HypothesisStore") -> tuple[list[dict[str, Any]], str]:
         from app.core.concepts.concept_kinds import CONCEPT_KINDS
 
         self._inspirations = {}
         self._offered_inspirations = {}
+        assistant_name, user_name = self._assistant_name(), self._user_name()
         system = (timephrase.today_anchor(self._clock()) + "\n\n"
-                  + _SYSTEM_PROMPT.format(assistant_name=self._assistant_name(),
-                                          user_name=self._user_name(),
+                  + _SYSTEM_PROMPT.format(assistant_name=assistant_name, user_name=user_name,
                                           kinds=", ".join(sorted(CONCEPT_KINDS)))
                   + "\n\n" + timephrase.STORED_TEXT_TIME_RULE)
         sources = (self._memories_block() + "\n" + self._clusters_block()).splitlines()
         sources = [line for line in sources if line.startswith(("[memory:", "[topic:"))]
         if not sources:
-            return []
+            return [], "no_sources"
         concepts, guesses = self._concepts_block(), self._open_block(store)
 
-        def render(selected):
+        def render(selected, hunch=""):
             return [{"role": "system", "content": system}, {"role": "user", "content":
                 _USER_TEMPLATE.format(concepts=concepts, inspirations="\n".join(selected),
-                                      open_hypotheses=guesses)}]
+                                      open_hypotheses=guesses, hunch=hunch)}]
 
         packed = None
+        context_window = self._context_window()
         for _ in range(3):
-            packed = pack_worker_prompt(sources, render, context_window=self._context_window(),
-                                        output_tokens=_MAX_TOKENS + max(
-                                            0, int(getattr(self._ollama, "_think_headroom", 0))),
+            packed = pack_worker_prompt(sources, render, context_window=context_window,
+                                        output_tokens=_MAX_TOKENS + _MAX_HUNCH_CHARS,
                                         surface="hypothesis_proposer_worker", log=log)
             if packed is not None:
                 break
@@ -858,7 +901,7 @@ class HypothesisProposerWorker:
             else:
                 concepts = "(omitted for evidence budget)"
         if packed is None:
-            return []
+            return [], "prompt_budget"
         for source in sources[:packed.item_count]:
             match = re.match(r"\[(memory|topic):(\d+);", source)
             if match is None:
@@ -866,50 +909,120 @@ class HypothesisProposerWorker:
             key = (match[1], int(match[2]))
             if key in self._inspirations:
                 self._offered_inspirations[key] = self._inspirations[key]
-        chunks: list[str] = []
-        try:
-            stream = self._ollama.chat_stream(
-                packed.messages,
-                options={
-                    "num_predict": _MAX_TOKENS,
-                    # Keep creative latitude while the motivation/alternative
-                    # contract and novelty gates decide whether a leap is useful.
-                    "temperature": 0.75,
-                },
-                model=self._chat_model,
-                stop_event=self._cancel_event,
-                format_json=True, think=True,
-                surface="hypothesis_proposer_worker",
+        # Key the offered material itself. Age labels and the wall-clock prompt
+        # anchor change between runs even when a single source hasn't changed.
+        route = getattr(self._ollama, "routing_revision", None)
+        material = [self._chat_model, route, context_window, assistant_name, user_name,
+                    concepts, guesses, list(self._offered_inspirations.values())]
+        encoded = json.dumps(material, sort_keys=True, default=str).encode()
+        digest = hashlib.sha256(encoded).hexdigest()
+        now = self._clock()
+        if self._abstention:
+            previous, stamp = self._abstention
+            if previous == digest and timedelta(0) <= now - stamp < _ABSTENTION_TTL:
+                return [], "unchanged_abstention"
+        self._abstention = None
+        selected = sources[:packed.item_count]
+        source_keys = {f"{kind}:{ident}" for kind, ident in self._offered_inspirations}
+        evidence_prompt = timephrase.today_anchor(self._clock()) + "\n" + _EVIDENCE_PROMPT
+        if len(source_keys) > 1:
+            evidence_prompt += (
+                "\nFirst return a reviewed object mapping each supplied source key (for "
+                "example memory:1) to ordinary, settled, or open. Then report the observation, "
+                "reason_given, status and hunch for the most promising open clue, if any."
             )
-            for chunk in stream:
-                chunks.append(chunk)
-        except Exception:
-            log.warning("hypothesis_proposer chat_stream raised", exc_info=True)
-            return []
+        messages = [{"role": "system", "content": evidence_prompt},
+                    {"role": "user", "content": "\n".join(selected)}]
+        raw, finish = self._generate(messages, route, "hypothesis_evidence", 400, 0.0)
+        if finish not in (None, "stop"):
+            return [], finish
+        try:
+            reading = json.loads(raw)
+        except ValueError:
+            return [], "invalid_response"
+        if not isinstance(reading, dict) or not {"observation", "reason_given", "status",
+                                                "hunch"}.issubset(reading):
+            return [], "invalid_response"
+        observation, reason = reading["observation"], reading["reason_given"]
+        if not isinstance(observation, str) or not observation.strip():
+            return [], "invalid_response"
+        if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+            return [], "invalid_response"
+        status, hunch = reading["status"], reading["hunch"]
+        if len(source_keys) > 1:
+            reviewed = reading.get("reviewed", {k: reading[k] for k in source_keys if k in reading})
+            if (not isinstance(reviewed, dict) or set(reviewed) != source_keys
+                    or any(value not in ("ordinary", "settled", "open")
+                           for value in reviewed.values())
+                    or (status == "open") != ("open" in reviewed.values())):
+                return [], "incomplete_evidence_review"
+            if status == "open":
+                open_keys = {key for key, value in reviewed.items() if value == "open"}
+                selected = [line for line in selected if line[1:].partition(";")[0] in open_keys]
+                self._offered_inspirations = {
+                    (kind, ident): receipt
+                    for (kind, ident), receipt in self._offered_inspirations.items()
+                    if f"{kind}:{ident}" in open_keys
+                }
+        if status == "settled" and reason:
+            quote = reason.strip().casefold()
+            if not any(quote in row["text"].casefold()
+                       for row in self._offered_inspirations.values()):
+                return [], "unoffered_explanation"
+        if hunch is None and (
+            (status == "settled" and reason) or (status == "ordinary" and reason is None)
+        ):
+            candidates, outcome = [], "abstained"
+        elif (status == "open" and isinstance(hunch, str)
+              and 0 < len(hunch.strip()) <= _MAX_HUNCH_CHARS):
+            raw, finish = self._generate(render(selected, hunch.strip()), route,
+                                         "hypothesis_proposer_worker", _MAX_TOKENS, 0.35)
+            if finish not in (None, "stop"):
+                return [], finish
+            candidates, outcome = self._parse(raw)
+        else:
+            return [], "invalid_response"
+        if outcome == "abstained" and finish == "stop":
+            self._abstention = (digest, self._clock())
+        return candidates, outcome
+
+    def _generate(self, messages, route, surface, tokens, temperature):
         if self._cancel_event.is_set():
-            return []
-        return self._parse(("".join(chunks)).strip())
+            return "", "cancelled"
+        if route != getattr(self._ollama, "routing_revision", None):
+            return "", "route_changed"
+        raw = "".join(self._ollama.chat_stream(
+            messages, options={"num_predict": tokens, "temperature": temperature},
+            model=self._chat_model, stop_event=self._cancel_event, format_json=True, think=False,
+            surface=surface,
+        )).strip()
+        if self._cancel_event.is_set():
+            return "", "cancelled"
+        if route != getattr(self._ollama, "routing_revision", None):
+            return "", "route_changed"
+        finish = getattr(getattr(self._ollama, "last_usage", None), "done_reason", None)
+        return raw, finish if finish in (None, "stop") else "incomplete_response"
 
     @staticmethod
-    def _parse(raw: str) -> list[dict[str, Any]]:
+    def _parse(raw: str) -> tuple[list[dict[str, Any]], str]:
         match = _JSON_OBJECT_RE.search(raw or "")
         if match is None:
-            return []
+            return [], "invalid_response"
         try:
             parsed = json.loads(match.group(0))
         except json.JSONDecodeError:
-            return []
+            return [], "invalid_response"
         if not isinstance(parsed, dict):
-            return []
+            return [], "invalid_response"
         entries = parsed.get("hypotheses")
+        # A preamble may accompany proposals. Only an entire, explicitly empty JSON
+        # reply is a completed abstention that can stand in for a later model call.
+        if match.group(0) == raw.strip() and parsed == {"hypotheses": []}:
+            return [], "abstained"
         if not isinstance(entries, list):
-            return []
-        out: list[dict[str, Any]] = []
-        for entry in entries[:_MAX_N]:
-            if not isinstance(entry, dict):
-                continue
-            out.append(dict(entry))
-        return out
+            return [], "invalid_response"
+        candidates = [entry for entry in entries[:_MAX_N] if isinstance(entry, dict)]
+        return candidates, "proposed" if candidates else "invalid_response"
 
     # ── plumbing ──────────────────────────────────────────────────────
 

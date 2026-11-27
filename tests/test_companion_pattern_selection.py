@@ -41,6 +41,8 @@ def test_preference_is_scoped_and_deduplicated_across_lanes():
     ("The cello carrier arrived and my coat has a velvet lining.", False),
     ("The cello carrier has a dirty lining.", False),
     ("I hope the cello carrier is made of carbon fiber.", False),
+    ("The cello carrier is made of canvas. Actually, I'm not sure.", False),
+    ("The cello carrier is made of canvas. I wonder who made it.", True),
 ])
 def test_property_answer_requires_a_statement_about_the_referent(text, answered):
     assert volunteered_answer("material of the cello carrier", "What is the cello carrier made of?",
@@ -58,6 +60,10 @@ def test_time_question_requires_a_time_and_specific_ask():
     assert specific_ask(question, question)
     assert short_answer(question, "Noon.")
     assert not short_answer(question, "Perhaps.")
+    assert short_answer(question, "Noon. Anyway, I got the tickets!")
+    assert not short_answer(question, "Noon. Actually, I'm not sure.")
+    assert short_answer("Why did you move the capo?", "Because the singer strained on the chorus.")
+    assert not short_answer("Why did you move the capo?", "Because I don't know.")
 
 
 def test_different_property_of_the_same_object_cannot_close_the_question():

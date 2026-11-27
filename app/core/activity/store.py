@@ -89,20 +89,18 @@ class ActivityStore:
         return out
 
     def latest_session_id(self) -> int:
-        """Cheap demand probe for Level-1 aggregation. Never raises."""
+        return self.latest_session_progress()[0]
+
+    def latest_session_progress(self) -> tuple[int, int]:
+        """Indexed probe, including growth that does not allocate a new row."""
         try:
             row = self._db.execute_fetchone(
-                "SELECT id FROM activity_sessions ORDER BY id DESC LIMIT 1",
+                "SELECT id, duration_seconds FROM activity_sessions ORDER BY id DESC LIMIT 1",
             )
+            return (int(row[0]), int(row[1] or 0)) if row else (0, 0)
         except Exception:
-            log.debug("activity latest session id failed", exc_info=True)
-            return 0
-        if row is None:
-            return 0
-        try:
-            return int(row[0] or 0)
-        except (TypeError, ValueError):
-            return 0
+            log.debug("activity latest session probe failed", exc_info=True)
+            return 0, 0
 
     def last_event(self) -> dict[str, Any] | None:
         try:

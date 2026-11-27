@@ -95,9 +95,11 @@ _SYSTEM_PROMPT = (
     "a useful new angle is welcome, repeating an answered question is not.\n"
     "Reply with ONE JSON object {{\"seeds\": [...]}}. Each entry has topic "
     "(<=80 chars), prompt_text (one specific possible line in her voice, <=200 "
-    "chars), why (the actual connection to offered context, 8-240 chars), "
-    "useful_because (what this could add, 8-240 chars), inspiration (conversation, "
-    "interest or persona), about (user or subject), and optional new_angle "
+    "chars), why (for conversation, copy the exact short phrase from the summary that "
+    "sparked it; for persona or interest, give the actual connection, 8-240 chars), "
+    "useful_because (what this could add, 8-240 chars), inspiration (copy exactly one "
+    "label: \"conversation\", \"interest\", \"persona\"), about (user or subject), "
+    "and optional new_angle "
     "(what remains open within a familiar topic, <=240 chars). Empty output is "
     "better than an unmotivated, generic or already answered curiosity."
 )
@@ -108,7 +110,15 @@ _USER_TEMPLATE = (
     "CONVERSATION SUMMARY (historical context; age not supplied, not live state):\n{summary}\n\n"
     "FAMILIAR TOPICS (avoid repetition, allow a concrete new angle):\n{clusters}\n\n"
     "ACTIVE QUIET CURIOSITIES (avoid duplicating these):\n{active_seeds}\n\n"
-    "Propose new seeds now."
+    "What caught her attention, specifically? An exception needs both a pattern and a "
+    "detail that breaks it. A practiced choice needs a decision whose cue is still open. "
+    "Someone describing an object need not be its maker. Someone following directions "
+    "has already explained the choice. Skip those angles when their premise is missing. "
+    "If the only follow-up would be 'what stood out?' or 'what else did it mean?', "
+    "return {{\"seeds\":[]}}. Other genuine interests are welcome.\n"
+    "For inspiration=conversation, start with why: copy a short continuous phrase "
+    "(around 3-8 words) verbatim from the summary. Use a short topic label and one "
+    "brief open question or observation. Leave the answer to the conversation."
 )
 
 
@@ -310,7 +320,10 @@ class CuriositySeedWorker:
                 from app.core.proactive.cue_quality import seed_usable
 
                 if not seed_usable(old.payload):
-                    store.expire(old.id, evidence="unreviewed_seed_motivation")
+                    reason = "already_asked" if old.payload.get("ask_verified") else (
+                        "unreviewed_seed_motivation"
+                    )
+                    store.expire(old.id, evidence=reason)
         active_seeds = self._active_seeds()
         if len(active_seeds) >= max_active:
             return {
@@ -437,7 +450,7 @@ class CuriositySeedWorker:
             cue_id = self._write_seed(
                 topic=topic,
                 prompt_text=prompt_text,
-                why=str(candidate.get("why") or "")[:200],
+                why=candidate["why"],
                 candidate_score=max(0.0, 1.0 - best_sim),
                 embedding=embedding,
                 now=now,
@@ -633,21 +646,16 @@ class CuriositySeedWorker:
             {"role": "system", "content": system},
             {"role": "user", "content": user_payload},
         ]
-        chunks: list[str] = []
         try:
             stream = self._ollama.chat_stream(
                 messages,
-                options={
-                    "num_predict": _MAX_TOKENS,
-                    "temperature": 0.85,
-                },
+                options={"num_predict": _MAX_TOKENS, "temperature": 0.85},
                 model=self._chat_model,
                 stop_event=self._cancel_event,
                 format_json=True,
                 surface="curiosity_seed_worker",
             )
-            for chunk in stream:
-                chunks.append(chunk)
+            raw = "".join(stream).strip()
         except Exception:
             log.warning(
                 "curiosity_seed chat_stream raised", exc_info=True,
@@ -655,10 +663,11 @@ class CuriositySeedWorker:
             return []
         if self._cancel_event.is_set():
             return []
-        raw = "".join(chunks).strip()
-        if not raw:
-            return []
-        return [seed for seed in self._parse_seeds(raw) if seed["inspiration"] in available]
+        return [
+            seed for seed in self._parse_seeds(raw)
+            if seed["inspiration"] in available
+            and (seed["inspiration"] != "conversation" or seed["why"] in summary_text)
+        ]
 
     @staticmethod
     def _parse_seeds(raw: str) -> list[dict[str, Any]]:

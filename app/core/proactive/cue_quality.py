@@ -3,6 +3,10 @@ from __future__ import annotations
 
 
 def seed_usable(payload: dict) -> bool:
+    # After an actual ask, only answer settlement still needs the row.
+    # This also prevents a derived want reviving an expired question.
+    if payload.get("ask_verified"):
+        return False
     # The seed worker has always stamped source=llm. Manually queued topics
     # remain curated inputs; they need not impersonate a generated record.
     if payload.get("source") != "llm":

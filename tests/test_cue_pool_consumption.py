@@ -92,6 +92,58 @@ class _Fixture(unittest.TestCase):
 
 
 class SurfacingTests(_Fixture):
+    def test_asked_seed_retires_after_pivot_without_reviving_a_derived_want(self):
+        from app.core.conversation import wants_ledger as ledger
+        from app.core.conversation.cue_wants import claim_forward_wants, refresh_forward_wants
+
+        question = "What is the cello carrier made of?"
+        ident = self._surface("curiosity_seed", "material of the cello carrier", question)
+        wants, _ = ledger.add_want(ledger.LedgerState(), text=question, kind="ask",
+                                   source="curiosity_seed", source_ref=f"cue:{ident}",
+                                   now=timephrase.utcnow())
+        self.host._settle_pool_cues(user_text="The carrier arrived.", assistant_text=question)
+        self.host._settle_awaiting_cues(user_text="My brother got the audition!")
+        row = self._row(ident)
+        self.assertEqual((row.state, row.used_evidence, row.ask_count),
+                         (STATE_EXPIRED, "curiosity_let_go", 1))
+        self.assertFalse(refresh_forward_wants(wants, self.store).wants)
+        self.assertFalse(claim_forward_wants(self.host, wants.wants, block="initiative_block"))
+
+    def test_current_turn_holds_a_pivot_and_settles_a_later_volunteered_answer(self):
+        from app.core.session.surfacing_attempt import SurfaceAttempt, current_attempt
+
+        question = "What is the cello carrier made of?"
+        ident = self.store.add("curiosity_seed", "material of the cello carrier", question)
+        for user in ("Anyway, rehearsal was lovely.",
+                     "The cello carrier is made of canvas. I wonder who made it."):
+            token = current_attempt.set(SurfaceAttempt(user_text=user))
+            try:
+                self.assertIsNone(self.host.take_pool_cue("curiosity_seed", force=True))
+            finally:
+                current_attempt.reset(token)
+            self.assertEqual(self._state(ident), STATE_PENDING)
+            self.host._settle_pool_cues(user_text=user, assistant_text="That makes sense.")
+        row = self._row(ident)
+        self.assertEqual((row.state, row.surfaced_count, row.ask_count), (STATE_USED, 0, 0))
+
+    def test_expired_unasked_seed_with_a_want_can_still_hear_the_answer(self):
+        from app.core.conversation import wants_ledger as ledger
+        from app.core.conversation.cue_wants import refresh_forward_wants
+
+        question = "What is the cello carrier made of?"
+        ident = self.store.add("curiosity_seed", "material of the cello carrier", question)
+        self.store.expire(ident, evidence="ttl")
+        wants, _ = ledger.add_want(ledger.LedgerState(), text=question, kind="ask",
+                                   source="curiosity_seed", source_ref=f"cue:{ident}",
+                                   now=timephrase.utcnow())
+        self.host._chat_db = self.store._db
+        self.host._chat_db.kv_set(ledger.KV_WANTS_LEDGER, ledger.serialize(wants))
+        self.assertTrue(refresh_forward_wants(wants, self.store).wants)
+        self.host._settle_pool_cues(user_text="The cello carrier is made of canvas.",
+                                    assistant_text="Easy to carry.")
+        self.assertEqual(self._state(ident), STATE_USED)
+        self.assertFalse(refresh_forward_wants(wants, self.store).wants)
+
     def test_specific_question_waits_for_an_answer_after_verified_ask(self):
         question = "What is the cello carrier made of?"
         ident = self._surface("curiosity_seed", "material of the cello carrier", question)

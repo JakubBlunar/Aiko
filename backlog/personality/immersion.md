@@ -296,6 +296,58 @@ the TTS engines or Live2D.
 
 </details>
 
+## IM9. Teach Aiko how to say a name
+
+**Open.** Aiko spells a friend's name correctly in chat but says it wrong every time.
+Let the user select the name in a reply, enter a spoken spelling and hear the whole
+sentence with the current voice. Save the spelling for that user only if they like the
+preview. Start with exact whole names and an editable list. A full name lets the user
+narrow a correction when the same spelling has two pronunciations.
+
+**First check.** Teach “Saoirse” using a sentence that also mentions “Saoirseville.”
+Listen to both the preview and the next ordinary reply. Only the whole name should
+sound different. Reopen the chat and copy the reply to check the original spelling.
+Remove the entry and listen again. The shared speech preparation path is the place
+to apply the correction. [Speech text preparation](../../app/core/session/session_text_utils.py)
+
+## IM10. Keep my place while my hands are busy
+
+**Open.** “Walk me through this recipe while I cook.” Start with a numbered list the
+user pastes. Aiko reads one step and waits. “Again” repeats it, “back” revisits the
+previous step and “next” advances. Show the current line and its number so the user
+can also take over by tapping. A question like “Was that one teaspoon or two?” should
+get an answer from the list while the user's place stays put.
+
+**First check.** Use a four-step recipe with different amounts of the same ingredient.
+At step two, ask about its quantity, repeat the line, then disconnect. On return the
+card should still show step two and wait for input. Deliver the same “next” event
+twice and check that Aiko reads step three once. [Voice ownership and playback](../../docs/voice-mode.md)
+
+## IM11. Pick separately and reveal together
+
+**Open.** “Which title would you put on our story? I have a favorite. You go first,
+but hide it.” Give Aiko the same two or three titles the user sees. Have her commit
+one choice and one concrete reason before the user picks, then reveal both side by
+side. A disagreement gives them something to talk about. Agreement can be just as
+interesting when the reasons differ.
+
+**First check.** Offer “Last Tram” and “Night Window.” Once Aiko has picked, branch
+the same round and choose a different title on each branch. Both reveals must show
+her original title and reason verbatim. Editing a title starts a fresh round.
+
+## IM12. Take a noticing walk together
+
+**Open.** Before a walk, ask Aiko for one small thing to look for, such as “Find
+something that makes a sound you usually tune out.” When the user returns, invite
+one field note in their own words. Aiko can ask about the particular detail that
+caught them. A paper map rattling behind glass gives them a different conversation
+from a bicycle ticking as it coasts. A text exchange is enough for the first version.
+
+**First check.** Try the same invitation with each of those two reports and with
+“I stayed in.” In the first two, Aiko should respond to the sound the user described
+and attribute the observation to them. In the third, let the outing end there.
+Leaving the invitation unanswered should produce no check-in or completed walk.
+
 ## Moved out of the active queue
 
 - **H6** — shipped: [record](shipped/audit-2026-10-24.md#immersion-h6).
@@ -307,5 +359,4 @@ the TTS engines or Live2D.
 
 <a id="30-sep-2026-immersion-without-a-new-rig-or-model"></a>
 
-IM1-IM8 above are the current no-new-model activity queue; IM4 now has an implemented research-note
-foundation.
+IM1-IM8 were the original no-new-model activity proposals. IM9-IM12 were added on 26 November 2026.

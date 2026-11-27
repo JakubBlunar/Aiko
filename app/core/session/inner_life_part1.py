@@ -4001,31 +4001,46 @@ class InnerLifePart1Mixin(DebugOverridesHostMixin):
         from app.core.conversation.question_balance import (
             render_curiosity_pacing_cue,
             render_share_first_cue,
+            yields_curiosity,
         )
 
-        if self._question_balance_suppressed():
+        from app.core.session.surfacing_attempt import current_attempt
+        from app.core.proactive.curiosity_answer import opens_on_question, short_answer
+
+        attempt = current_attempt.get()
+        user_text = attempt.user_text if attempt is not None else ""
+        question = self._last_curiosity_question()
+        answered = bool(question and user_text and short_answer(question, user_text))
+        opening = opens_on_question(question, user_text)
+        if (self._question_balance_suppressed()
+                and not (question and (answered or opening or yields_curiosity(user_text)))):
             return render_share_first_cue(self.user_display_name)
-        if self._curiosity_pacing_active():
-            return render_curiosity_pacing_cue()
+        if question:
+            return render_curiosity_pacing_cue(
+                user_text, answered=answered, opens_on_question=opening,
+            )
         return ""
 
     def _curiosity_pacing_active(self) -> bool:
+        return bool(self._last_curiosity_question())
+
+    def _last_curiosity_question(self) -> str:
         """Give the answer to her last question room before a new subject."""
         agent = self._settings.agent
         if not bool(getattr(agent, "question_balance_enabled", True)):
-            return False
+            return ""
         if int(getattr(agent, "question_balance_suppress_turns", 2)) <= 0:
-            return False
+            return ""
         db = getattr(self, "_chat_db", None)
         if db is not None and hasattr(db, "get_messages"):
             from app.core.conversation.question_balance import is_question_turn
 
             for row in reversed(self._inner_life_recent_messages(2)):
                 if row.role == "assistant":
-                    return is_question_turn(row.content)
-            return False
+                    return row.content if is_question_turn(row.content) else ""
+            return ""
         flags = getattr(self, "_question_turn_flags", ())
-        return bool(flags and flags[-1])
+        return "?" if flags and flags[-1] else ""
 
     def _render_tease_rhythm_block(self) -> str:
         """K48: surface the pending banter-rhythm cue (ease off / one

@@ -1052,6 +1052,7 @@ CUE_POLICIES: dict[str, CuePolicy] = {
         CuePolicy(
             "curiosity_seed",
             fulfilment=FULFILMENT_EITHER,
+            max_asks=1,
             match_mode=MATCH_LEXICAL_OR_COSINE,
             match_scope=MATCH_SCOPE_TURN,
             # The threshold K9 has been resolving seeds at since it

@@ -353,10 +353,25 @@ Pending curiosity seeds can settle before Aiko sees them. A seed with an
 explicit question checks a speaker's statement for an answer about the
 referent and the requested property. A volunteered answer can settle it on
 the same turn. A subject-directed seed can also settle from Aiko's answer.
-A surfaced question that Aiko actually asks enters `awaiting`, where a short
-reply such as “velvet” can answer the verified material question. A mention
-of the object, an unanswered question or an expression of uncertainty keeps
-the question open. Topic-only seeds retain whole-turn topical matching.
+A clear current-turn answer or an explicit change of subject holds the seed
+out of the prompt. A preview spends nothing. After a completed turn, a known
+answer settles the question. An unasked question held for a pivot can wait
+for another opening. Mentioning the object alone leaves the question open.
+
+Once Aiko actually asks a seed's question, she gives it one conversational
+turn. A short answer such as “velvet” can settle a verified material question,
+even before “anyway” introduces a new story. If the user changes the subject,
+declines, or gives a reply the matcher cannot substantiate, the cue expires
+unanswered. A want derived from the same seed also stops offering it. A want
+that outlives the passive expiry of an *unasked* seed can still hear an answer.
+Topic-only seeds retain whole-turn topical matching. Question pacing guides
+Aiko to follow what the user shares next and to accept an invitation to
+continue. If the user answers in passing and shares news, Aiko can take the
+answer in silently and react to the news. She can also pick up the earlier
+detail when it explains why the story matters. Even without a phrase like
+“anyway,” an answer followed by more of the story can reach the pacing cue.
+It asks her to notice what the user spends time explaining and why it matters
+to them. The queue settles the individual question independently.
 
 Embeddings are shared, not recomputed: post-turn already embeds the
 reply for K22 and the combined turn for the gap resolver, and

@@ -251,6 +251,7 @@ class DesireTests(unittest.TestCase):
         self.assertTrue(admits_offer(StanceInputs(user_text="hi"), "curiosity_seeds_block"))
         for blocks, text in (
             (frozenset(), "what did you think of it?"),
+            (frozenset(), "Which hall? Just the name."),
             (frozenset({"initiative_block"}), "hi"),
             (frozenset({"knowledge_gap_notice_block"}), "hi"),
         ):

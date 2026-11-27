@@ -35,6 +35,28 @@ The ordinary proposer can abstain and proposes at most two entries. Each needs:
 - A plausible competing explanation, a concrete non-leading question, and a
   fitting situation in which to explore it.
 
+The worker first reads the dated sources and identifies what changed, under what
+circumstances, and any reason the speaker gave. This short model call can mark
+the observation as ordinary or settled. An unexplained clue can instead yield a
+tentative reading. Only then does the worker make a second model call to decide
+whether to keep it, what else could explain it, and what would distinguish the
+two readings. With several sources, the evidence check accounts for each one
+before drafting from those it found open. A settled reading needs a source
+quote for the explanation. Both calls use the existing worker model with
+thinking disabled.
+A single choice can inspire a guess about that occasion. A broader preference
+needs more evidence.
+Admission rejects a statement copied from its source and an alternative that
+repeats the statement after punctuation and case are normalized.
+
+After a completed ordinary or settled reading, or an explicitly empty proposal,
+the worker can skip
+repeat inference for six hours. It compares the sources actually offered,
+their contents and dates, the included concepts and earlier guesses, and
+the model route and context budget. Changed inputs can be reconsidered on
+the next pass. The last abstention lives in memory. Invalid, interrupted and
+truncated replies and provider failures remain eligible for retry.
+
 Schema 48 adds a JSON `hypotheses.quality` receipt. Only sources retained in the
 packed prompt are eligible. Memory sources retain their date, subject and mode;
 drafts, questions, summaries, unknown-origin and superseded rows are excluded.
@@ -67,6 +89,16 @@ retain a specific direction, connection and possible value. Familiar interests
 can support a new angle; there is no mandatory subject quota or demand to find
 an unrelated topic. Associations require an explicit accepted connection and a
 concrete implication, rather than a generic similarity.
+
+For new conversation-inspired seeds the worker copies a short phrase from the
+supplied rolling summary into the existing connection field. Admission checks
+the phrase against that summary. The worker can use a difference across
+examples or a choice whose basis is still open. The phrase identifies the
+source detail. The proposed explanation remains a guess. The chat handling
+asks Aiko to leave the question unspoken when the user answers it or moves on.
+The stance gate also recognizes explicit answer-format requests after a
+question, such as “Which hall? Just the name.” It defers the curiosity before
+claiming the cue. [Fictional replay and open checks](../backlog/personality/concepts.md#l87-wonder-about-the-exception-in-a-familiar-pattern)
 
 Research gaps and density gradients use a conservative role/label filter.
 Collections of scenes, promises and personal reflections do not become research

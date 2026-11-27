@@ -29,6 +29,7 @@ class SurfaceAttempt:
     declines: dict[str, str] = field(default_factory=dict)
     decision: dict[str, str] = field(default_factory=dict)
     optional_choice: dict = field(default_factory=dict)
+    user_text: str = field(default="", repr=False)
 
     def stage(self, owner: object, row, commit: Callable[[], None], *, block: str = "") -> None:
         claim = self.claims.setdefault(
@@ -110,6 +111,7 @@ def trace_assembly(assemble):
         preview = bool(kwargs.pop("preview", False))
         user_text = kwargs.get("user_text", args[1] if len(args) > 1 else "")
         attempt = SurfaceAttempt(
+            user_text=user_text or "",
             completed_exchange=brief_reply_kind(user_text) == "completion",
         )
         token = current_attempt.set(attempt)

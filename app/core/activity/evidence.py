@@ -77,31 +77,25 @@ def compute_activity_rollup(
     """Level-1 rollup. App names and durations only — never titles."""
     clock = now if now is not None else timephrase.utcnow()
     last_session_id = 0
+    last_session_seconds = 0
     session_count = 0
     idle_span = 0
     lock_span = 0
     app = ""
-    if not sessions:
-        return {
-            "last_session_id": 0,
-            "app": "",
-            "session_count": 0,
-            "idle_span_seconds": 0,
-            "lock_span_seconds": 0,
-            "computed_at": clock.isoformat(timespec="seconds"),
-        }
-    for row in sessions:
+    for row in sessions or ():
         if not isinstance(row, Mapping):
             continue
         try:
-            last_session_id = max(last_session_id, int(row.get("id") or 0))
+            session_id = int(row.get("id") or 0)
         except (TypeError, ValueError):
-            pass
+            session_id = 0
         source = str(row.get("source") or "").strip().lower()
         try:
             duration = max(0, int(float(row.get("duration_seconds") or 0)))
         except (TypeError, ValueError):
             duration = 0
+        if session_id > last_session_id:
+            last_session_id, last_session_seconds = session_id, duration
         session_count += 1
         if source == "idle":
             idle_span += duration
@@ -111,6 +105,7 @@ def compute_activity_rollup(
             app = str(row.get("app") or "").strip()
     return {
         "last_session_id": last_session_id,
+        "last_session_seconds": last_session_seconds,
         "app": app,
         "session_count": session_count,
         "idle_span_seconds": idle_span,

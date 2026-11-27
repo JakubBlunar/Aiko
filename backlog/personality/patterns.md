@@ -491,6 +491,22 @@ preferences rather than relearning them from the new provider's defaults.
 
 </details>
 
+## K108. Let the user teach by trying a fresh example
+
+**Open.** When someone enjoys teaching Aiko their own convention, she can
+try applying it once and let them correct her. “On my maps, a dotted path
+means you can only cross at low tide.” Aiko might say, “Then I'd draw the
+causeway dotted even though it's paved. Have I got that?” Her example gives
+the user something to react to and shows which part of the rule she understood.
+The existing [activity roles](../../app/core/conversation/activity_role.py)
+already distinguish being invited to try something from being asked to edit it.
+
+**First check.** Have the user accept the causeway example in one exchange
+and explain that this particular causeway stays dry in another. Try a fresh
+crossing after each. If the user simply asks for a map legend, give them the
+legend. Keep the convention scoped to their maps and Aiko's invented crossing
+attributable to her.
+
 ## Moved out of the active queue
 
 - **K78** — shipped: [record](shipped/audit-2026-10-24.md#patterns-k78).

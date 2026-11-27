@@ -147,6 +147,13 @@ watermark, and a title-free Level-2 interpretation when one exists.
 MCP `get_companion_activity_state` dumps the Level-3 cue (pending
 rows, last signature, title-free interpretation).
 
+While a single desktop session continues, aggregation tracks its elapsed
+duration and can refresh the summary once a minute. A new session is eligible
+immediately. For an uninterrupted session, the interpretation worker gets
+another opportunity when the summary first reaches five minutes and again
+at thirty minutes. If it misses both thresholds, it reads the latest summary
+once. The reading can still be empty.
+
 ## Return glance in Live mode
 
 In Live mode, a fresh desktop foreground sample after observed idle or

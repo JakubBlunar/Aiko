@@ -83,6 +83,14 @@ def validate_proposal(candidate: dict[str, Any], offered: dict) -> tuple[dict, s
     quote = seed.get("quote")
     if not isinstance(quote, str) or not 8 <= len(quote) <= 200 or quote not in receipt["text"]:
         return {}, "inspiration_quote"
+    # A verbatim observation is already known. A competing explanation needs
+    # to say something different even after punctuation and case are removed.
+    statement_words = re.findall(r"\w+", candidate["statement"].casefold())
+    source_words = re.findall(r"\w+", receipt["text"].casefold())
+    if f" {' '.join(statement_words)} " in f" {' '.join(source_words)} ":
+        return {}, "restated_source"
+    if statement_words == re.findall(r"\w+", candidate["alternative"].casefold()):
+        return {}, "repeated_alternative"
     for match in _PRECISION.finditer(candidate["statement"]):
         if match.group().lower() not in receipt["text"].lower():
             return {}, "invented_precision"

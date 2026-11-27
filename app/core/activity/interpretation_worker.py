@@ -15,9 +15,10 @@ import json
 import logging
 import re
 from datetime import datetime
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
-from app.core.activity.aggregation_worker import KV_ROLLUP, KV_SESSION_ID
+from app.core.activity.aggregation_worker import KV_ROLLUP
 from app.core.infra import timephrase
 from app.core.proactive.idle_worker import WorkSignal
 
@@ -33,6 +34,7 @@ _MIN_CONFIDENCE = 0.6
 _MAX_READING_CHARS = 200
 _MAX_SESSIONS = 12
 _MAX_TOKENS = 160
+_DURATION_THRESHOLDS = (5 * 60, 30 * 60)
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", flags=re.DOTALL)
 
 KV_INTERP_SESSION_ID = "activity.interpretation.last_session_id"
@@ -231,6 +233,7 @@ class ActivityInterpretationWorker:
         self._model = str(model or "").strip()
         self._interval = max(30.0, float(interval_seconds))
         self._min_confidence = float(min_confidence)
+        self._run_lock = Lock()
 
     @property
     def interval_seconds(self) -> float:
@@ -248,20 +251,38 @@ class ActivityInterpretationWorker:
             return WorkSignal(pressure=0.0, reason="no activity store")
         if self._ollama is None or not self._model:
             return WorkSignal(pressure=0.0, reason="no worker model")
-        rollup_id = self._int_kv(KV_SESSION_ID)
-        if rollup_id <= 0:
+        rollup = self._load_rollup()
+        if not rollup:
             return WorkSignal(pressure=0.0, reason="no activity rollup")
-        watermark = self._int_kv(KV_INTERP_SESSION_ID)
-        if rollup_id <= watermark:
+        delta = self._pending_delta(rollup)
+        if delta <= 0:
             return WorkSignal(pressure=0.0, reason="no new activity rollup")
-        delta = rollup_id - watermark
         return WorkSignal(
             pressure=min(1.0, delta / float(_SATURATION_SESSIONS)),
-            reason="%d new rolled-up sessions" % delta,
+            reason="activity evidence changed",
             needs_llm=True,
         )
 
+    def _pending_delta(self, rollup: Mapping[str, Any]) -> int:
+        """A new session, or the same stretch becoming sustained or prolonged."""
+        try:
+            current = int(rollup.get("last_session_id") or 0)
+            after = int(rollup.get("last_session_seconds") or 0)
+            delta = current - self._int_kv(KV_INTERP_SESSION_ID)
+            if delta or current <= 0:
+                return max(0, delta)
+            prior = load_activity_interpretation(self._kv_get) or {}
+            before = int(prior.get("last_session_seconds") or 0)
+            return int(any(before < boundary <= after for boundary in _DURATION_THRESHOLDS))
+        except (TypeError, ValueError):
+            return 0
+
     def run(self) -> dict[str, Any] | None:
+        # Recheck the watermark under the lock if another runner was interpreting it.
+        with self._run_lock:
+            return self._run_once()
+
+    def _run_once(self) -> dict[str, Any] | None:
         if self._store is None:
             return None
         if self._ollama is None or not self._model:
@@ -269,12 +290,9 @@ class ActivityInterpretationWorker:
         rollup = self._load_rollup()
         if rollup is None:
             return None
-        try:
-            rollup_id = int(rollup.get("last_session_id") or 0)
-        except (TypeError, ValueError):
-            rollup_id = 0
-        if rollup_id <= self._int_kv(KV_INTERP_SESSION_ID):
+        if not self._pending_delta(rollup):
             return None
+        rollup_id = int(rollup["last_session_id"])
         try:
             sessions = self._store.recent_sessions(limit=_MAX_SESSIONS)
         except Exception:
@@ -305,6 +323,7 @@ class ActivityInterpretationWorker:
         )
         payload = {
             "last_session_id": rollup_id,
+            "last_session_seconds": int(rollup.get("last_session_seconds") or 0),
             "app": str(rollup.get("app") or "").strip(),
             "reading": decided["reading"] if not decided["nothing"] else "",
             "kind": decided["kind"] if not decided["nothing"] else "",

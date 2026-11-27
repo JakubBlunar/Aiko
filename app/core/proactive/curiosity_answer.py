@@ -1,7 +1,8 @@
 """Evidence for settling an explicit curiosity question from a volunteered answer."""
 import re
 
-from app.core.memory.echo_detector import tokens
+from app.core.memory.echo_detector import detect, tokens
+from app.core.conversation.question_balance import yields_curiosity
 
 
 _UNRESOLVED = re.compile(
@@ -63,15 +64,26 @@ def specific_ask(question, reply, *, subject=""):
 
 def volunteered_answer(subject, question, text, verdict):
     """Evaluate one speaker at a time so an object's name cannot certify another's answer."""
-    if not verdict.echoed or not text or _UNRESOLVED.search(text):
+    if not verdict.echoed or not text:
         return False
-    clauses = re.split(r"[,;]|\band (?=(?:my|our|the|their)\b)", text, flags=re.I)
-    sentences = [s.strip() for clause in clauses for s in re.findall(r"[^.!?]+[.!?]?", clause)
-                 if s.strip()]
+    # Scope uncertainty to its sentence. "Maybe, it's lined with silk" is
+    # uncertain throughout; a later "I wonder who made it" is independent.
+    sentences = []
+    for part in re.findall(r"[^.!?]+[.!?]?", text):
+        if _UNRESOLVED.search(part) or part.endswith("?"):
+            # A bare qualification retracts the preceding assertion.
+            if re.fullmatch(r"\s*(?:(?:actually|well)[, ]+)?(?:i['’]m |i am )?"
+                            r"(?:not (?:really )?sure|unsure|maybe)(?: though)?[.!]?\s*",
+                            part, re.I):
+                sentences.clear()
+            sentences.append("")  # Prevent anaphora across an unresolved statement.
+        else:
+            clauses = re.split(r"[,;]|\band (?=(?:my|our|the|their)\b)", part, flags=re.I)
+            sentences.extend(clause.strip() for clause in clauses if clause.strip())
     entity = tokens(subject.split(" of ")[-1]) - _GENERIC
     requested = _property(question)
     for index, sentence in enumerate(sentences):
-        if sentence.endswith("?"):
+        if not sentence:
             continue
         words = tokens(sentence)
         prior = sentences[index - 1] if index and re.match(
@@ -130,10 +142,20 @@ def volunteered_answer(subject, question, text, verdict):
 
 def short_answer(question, text):
     """Allow short elliptical replies only after a verified ask of the same question."""
-    if _UNRESOLVED.search(text) or not re.fullmatch(r"[\w :'’-]{2,32}[.!]?", text.strip()):
+    # A compact answer can precede an explicit change of subject in the same turn.
+    parts = re.split(r"[.!]\s+|[,;]\s*", text.strip(), maxsplit=1)
+    if len(parts) == 2 and (yields_curiosity(parts[1]) or re.match(
+        r"(?:do you )?want to (?:hear|know|see)\b", parts[1], re.I,
+    )):
+        text = parts[0]
+    if _UNRESOLVED.search(text) or "?" in text:
+        return False
+    requested = _property(question)
+    if requested == "reason":
+        return bool(re.fullmatch(r"\s*because\s+[\w'’ -]+[.!]?\s*", text, re.I))
+    if not re.fullmatch(r"[\w :'’-]{2,32}[.!]?", text.strip()):
         return False
     value = text.strip().rstrip(".!")
-    requested = _property(question)
     if requested == "time":
         without_at = re.sub("^at ", "", value, flags=re.I)
         return bool(_TIME.fullmatch(value) or _TIME.fullmatch(without_at))
@@ -148,3 +170,29 @@ def short_answer(question, text):
             text.strip(), re.I,
         ))
     return False
+
+
+def opens_on_question(question, text):
+    """The opening addresses the last question and there is more to hear.
+
+    This only selects a listening cue. Overlap cannot settle a question.
+    """
+    parts = re.split(r"[.!]\s+|\n+", text.strip(), maxsplit=1)
+    if not question or len(parts) < 2 or not parts[1].strip():
+        return False
+    opening = parts[0]
+    overlap = (tokens(question) & tokens(opening)) - _GENERIC
+    return short_answer(question, opening) or bool(overlap)
+
+
+def hold_seed_for_turn(row, text):
+    """Read-only admission shared with the ledger's expired-but-unasked copies."""
+    if not text:
+        return False
+    if yields_curiosity(text):
+        return True
+    question = str(row.payload.get("prompt_text") or row.text)
+    if "?" not in question:
+        return False
+    verdict = detect(reply_tokens=tokens(text), item_text=row.subject, min_overlap=1)
+    return volunteered_answer(row.subject, question, text, verdict)

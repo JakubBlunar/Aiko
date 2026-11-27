@@ -58,6 +58,36 @@ worker-owned reduction rules. The helper and summary cursor repair are already i
 [thread_resummary_worker.py](../../app/core/proactive/thread_resummary_worker.py),
 [test_summary_worker.py](../../tests/test_summary_worker.py).
 
+## G8. Refresh activity summaries when an existing session grows
+
+**Implemented, ordinary-use check open.** The activity workers now notice
+duration changes within the same session. A disposable SQLite regression fed
+five-second samples for six minutes. The summary advanced from zero to 360
+seconds in one-minute steps. Interpretation called the model twice, at the
+start and at five minutes. A subsequent activity switch made both workers
+eligible immediately. Check the timing during ordinary desktop collection
+under scheduler load. [Activity guide](../../docs/presence-and-activity.md)
+
+## G9. Let a worker remember a well-founded abstention
+
+**Implemented, ordinary-use check open.** The proposer can remember an explicit
+empty answer for six hours and reconsider when the offered material changes.
+It asks what detail gave Aiko a hunch, what else could explain that detail, and
+what answer would change her reading. A copied observation or an alternative
+identical to the guess fails admission.
+[Hypothesis admission](../../docs/hypothesis-cue-quality.md#hypothesis-admission)
+
+The [local replay](../../scripts/hypothesis_proposal_replay.py) used fictional
+records and the installed 9B model. The original worker turned a parcel pickup
+into a theory about emotional connection. The revised worker left that errand
+alone. It kept a guess about sign visibility when the choice was unexplained,
+then abstained when the designer gave her reason. Both abstentions skipped the
+next identical model request. Aiko replaying the pause before a chorus produced
+a hunch about how the pause affected anticipation, including when the settled
+sign story appeared alongside it. The proposed question about the sign still
+assumed the designer had held the letters. Check that questions in ordinary
+conversation preserve the user's actual observations.
+
 ## Memory/time quality: ordinary-use follow-up
 
 The [17 November memory-capture follow-up](../reviews/memory-capture-review-2026-11-17.md)

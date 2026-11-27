@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from threading import Lock
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -26,7 +27,7 @@ KV_ROLLUP = "activity.rollup.json"
 
 
 class ActivityAggregationWorker:
-    """IdleWorker whose ``demand()`` is new activity sessions since last rollup."""
+    """Refresh immediately for a new session and periodically for a growing one."""
 
     name = "activity_aggregation"
 
@@ -42,6 +43,7 @@ class ActivityAggregationWorker:
         self._kv_get = kv_get
         self._kv_set = kv_set
         self._interval = max(15.0, float(interval_seconds))
+        self._run_lock = Lock()
 
     @property
     def interval_seconds(self) -> float:
@@ -54,16 +56,24 @@ class ActivityAggregationWorker:
     def demand(
         self, *, now: datetime, last_run_at: datetime | None,
     ) -> WorkSignal | None:
-        del now, last_run_at
         if self._store is None:
             return WorkSignal(pressure=0.0, reason="no activity store")
-        latest = 0
         try:
-            latest = int(self._store.latest_session_id() or 0)
+            latest, seconds = self._store.latest_session_progress()
+            raw = self._kv_get(KV_ROLLUP)
         except Exception:
             log.debug("activity rollup demand id failed", exc_info=True)
             return WorkSignal(pressure=0.0, reason="activity store unread")
-        watermark = self._watermark()
+        try:
+            saved = json.loads(raw or "{}")
+            watermark = int(saved.get("last_session_id") or 0)
+        except (ValueError, AttributeError, TypeError):
+            saved, watermark = {}, 0
+        if latest and latest == watermark and seconds != saved.get("last_session_seconds"):
+            stamp = timephrase.parse_iso(saved.get("computed_at"))
+            if stamp is None or (now - stamp).total_seconds() >= self.interval_seconds:
+                return WorkSignal(pressure=1 / _SATURATION_SESSIONS, reason="activity session grew",
+                                  needs_llm=False)
         if latest <= watermark:
             return WorkSignal(pressure=0.0, reason="no new activity sessions")
         delta = latest - watermark
@@ -74,6 +84,11 @@ class ActivityAggregationWorker:
         )
 
     def run(self) -> dict[str, Any] | None:
+        # A manual refresh can overlap the scheduler. Publish snapshots in read order.
+        with self._run_lock:
+            return self._run_once()
+
+    def _run_once(self) -> dict[str, Any] | None:
         if self._store is None:
             return None
         try:
@@ -81,12 +96,14 @@ class ActivityAggregationWorker:
         except Exception:
             log.debug("activity rollup sessions failed", exc_info=True)
             return None
+        if not sessions:
+            return None
         rollup = compute_activity_rollup(sessions, now=timephrase.utcnow())
         rollup.pop("title", None)
         payload = json.dumps(rollup, ensure_ascii=False)
         try:
-            self._kv_set(KV_ROLLUP, payload)
             self._kv_set(KV_SESSION_ID, str(int(rollup.get("last_session_id") or 0)))
+            self._kv_set(KV_ROLLUP, payload)
         except Exception:
             log.debug("activity rollup persist failed", exc_info=True)
             return None
@@ -98,13 +115,3 @@ class ActivityAggregationWorker:
             str(rollup.get("app") or "-"),
         )
         return rollup
-
-    def _watermark(self) -> int:
-        try:
-            raw = self._kv_get(KV_SESSION_ID)
-        except Exception:
-            return 0
-        try:
-            return int(raw or 0)
-        except (TypeError, ValueError):
-            return 0

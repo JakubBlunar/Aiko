@@ -41,7 +41,7 @@ entries. Of those, 62 are open, 89 partial, 14 awaiting validation, nine
 deferred, two in pilot and one in replay. This counts each domain entry once.
 Checklists inside an entry and the separate workflow plan have their own scope.
 
-L58–L78 were added after that count. Their current statuses appear below.
+L58–L90 and IM9–IM12 were added after that count. Their current statuses appear below.
 
 ## Where to start
 
@@ -115,6 +115,9 @@ tracks startup and embedding measurements.
 - [A7](architecture.md#a7-general-settings-use-regression-guard) — **partial**: Add a general
   settings-use guard with explicit reserved/compatibility exemptions. Do not reopen the six resolved
   wiring bugs.
+
+- [A9](architecture.md#a9-share-the-turn-completion-event-across-text-and-voice) — **open**.
+  Keep the saved reply ID and delivery fields consistent across text and voice.
 
 ### Avatar and expressiveness
 
@@ -191,6 +194,10 @@ tracks startup and embedding measurements.
 - [G7](workers.md#g7-worker-prompt-budget-rollout) — **partial**:
   Roll out to other worker builders with their actual route/output limits and worker-owned reduction
   rules. The helper and summary cursor repair are already implemented.
+- [G8](workers.md#g8-refresh-activity-summaries-when-an-existing-session-grows) — **partial**.
+  Duration refresh and interpretation thresholds are implemented. Check ordinary scheduler timing.
+- [G9](workers.md#g9-let-a-worker-remember-a-well-founded-abstention) — **partial**.
+  Grounded hunch guidance and abstention reuse are implemented. Check ordinary proposal quality.
 -
   [G-CLEANUP](workers.md#g-cleanup-consolidator_statelast_cluster_index-is-not-dead-weight--do-not-drop-it)
   — **open**: Move pulse state to a dedicated key or migrate both users to a correctly named field;
@@ -323,6 +330,30 @@ tracks startup and embedding measurements.
   Let Aiko's earlier observations inform which detail she notices in a new scene.
 - [L78](concepts.md#l78-recognize-when-a-shared-project-has-served-its-purpose) — **pilot**.
   Judge an unfinished shared project against the reasons it began.
+- [L79](concepts.md#l79-try-an-idea-on-one-revealing-example) — **open**.
+  Offer a concrete case that helps the two of them think through a claim.
+- [L80](concepts.md#l80-notice-the-work-behind-an-uneventful-day) — **open**.
+  Give someone credit for the preparation they actually did when things went smoothly.
+- [L81](concepts.md#l81-figure-out-what-a-shortcut-would-cost) — **open**.
+  Notice when removing a chore would also remove something the user values.
+- [L82](concepts.md#l82-follow-the-logic-of-a-joke-for-one-more-turn) — **open**.
+  Build on the particular premise of a fresh joke and follow the user when they move on.
+- [L83](concepts.md#l83-form-a-first-impression-from-the-thing-itself) — **open**.
+  Discover a preference by attending to concrete details in something new.
+- [L84](concepts.md#l84-let-a-good-argument-change-what-she-values-in-a-choice) — **open**.
+  Weigh a reason someone offers and decide how much it matters to her.
+- [L85](concepts.md#l85-loosen-an-opinion-when-its-supporting-example-falls-apart) — **open**.
+  Reconsider how much one example can tell her while the answer is still open.
+- [L86](concepts.md#l86-remember-whose-observation-changed-her-reading) — **open**.
+  Recall what brought her around and who first pointed it out.
+- [L87](concepts.md#l87-wonder-about-the-exception-in-a-familiar-pattern) — **pilot**.
+  Let an unusual detail spark a question and bring it up when the conversation has room.
+- [L88](concepts.md#l88-let-making-something-give-her-a-question) — **open**.
+  Discover something to wonder about through a choice she tried in her own work.
+- [L89](concepts.md#l89-get-curious-about-the-judgment-inside-a-familiar-skill) — **pilot**.
+  Notice a choice someone made by feel and ask about it when they welcome the subject.
+- [L90](concepts.md#l90-recognize-a-clue-to-an-older-question-in-a-new-subject) — **open**.
+  Recognize when an unrelated story offers a possible answer to something she wondered earlier.
 
 ### Companion patterns
 
@@ -394,6 +425,9 @@ tracks startup and embedding measurements.
   origin for ordinary text-only refusal, audit downstream promotion and evaluate route swaps/partial
   audio/cancellation/tool effects; streamed audio cannot be retracted and tool replay is not
   authorized.
+
+- [K108](patterns.md#k108-let-the-user-teach-by-trying-a-fresh-example) — **open**.
+  Let Aiko try a user's convention on a new case and learn from the correction.
 
 ### Performance and observability
 
@@ -614,6 +648,15 @@ tracks startup and embedding measurements.
 - [IM8](immersion.md#im8-a-quiet-acoustic-setting) — **open**: Add an explicitly selected
   local/licensed loop with independent gain/mute/fades/ducking, single-owner playback and STT echo
   checks. No inference is needed.
+
+- [IM9](immersion.md#im9-teach-aiko-how-to-say-a-name) — **open**.
+  Preview and save how Aiko says a name while preserving its written spelling.
+- [IM10](immersion.md#im10-keep-my-place-while-my-hands-are-busy) — **open**.
+  Follow a supplied list by voice and keep the current step through questions and interruptions.
+- [IM11](immersion.md#im11-pick-separately-and-reveal-together) — **open**.
+  Commit Aiko's favorite and her reason before revealing both participants' picks.
+- [IM12](immersion.md#im12-take-a-noticing-walk-together) — **open**.
+  Take one observation prompt on a walk and bring back a detail to talk about.
 
 ### Live mode: remaining runtime work
 

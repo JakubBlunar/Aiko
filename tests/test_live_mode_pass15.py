@@ -4,12 +4,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from app.core.activity.aggregation_worker import ActivityAggregationWorker
+from app.core.activity.aggregation_worker import ActivityAggregationWorker, KV_ROLLUP
 from app.core.activity.evidence import ActivityEvidence
 from app.core.activity.ingest import ingest_envelope
 from app.core.activity.interpretation_worker import (
@@ -27,6 +27,7 @@ from app.core.conversation.conversation_situation import (
     WorldSituation,
 )
 from app.core.infra.chat_database import ChatDatabase
+from app.core.infra import timephrase
 from app.core.live.assembler import LiveAssembleInput, assemble_live_situation
 from app.core.proactive.idle_worker import SLEEP_CONTINUE_WORKER_NAMES
 from app.core.session.session_controller import SessionController
@@ -200,6 +201,63 @@ class PromptTests(unittest.TestCase):
 
 
 class InterpretationWorkerTests(unittest.TestCase):
+    def test_older_rollup_refreshes_and_missed_thresholds_need_one_reading(self):
+        with _TempDB() as db:
+            store = ActivityStore(db)
+            ingest_envelope(_env(at=_NOW.isoformat()), settings=_Settings(), store=store)
+            agg = ActivityAggregationWorker(store, kv_get=db.kv_get, kv_set=db.kv_set)
+            rollup = agg.run()
+            session_id = rollup["last_session_id"]
+            rollup.pop("last_session_seconds")
+            rollup["computed_at"] = _NOW.isoformat()
+            db.kv_set(KV_ROLLUP, json.dumps(rollup))
+            db.kv_set(KV_INTERP_SESSION_ID, str(session_id))
+            db.kv_set(KV_INTERP, json.dumps({"last_session_id": session_id}))
+            later = _NOW + timedelta(minutes=1)
+            self.assertEqual(agg.demand(now=_NOW, last_run_at=None).pressure, 0)
+            self.assertGreater(agg.demand(now=later, last_run_at=None).pressure, 0)
+            agg.run()
+            self.assertEqual(agg.demand(now=later, last_run_at=None).pressure, 0)
+
+            client = _FakeOllama({"reading": "", "confidence": 0})
+            interp = ActivityInterpretationWorker(store, kv_get=db.kv_get, kv_set=db.kv_set,
+                                                  ollama=client, model="worker")
+            self.assertIsNone(interp.run())
+            for seconds in (29 * 60, 30 * 60, 31 * 60):
+                rollup["last_session_seconds"] = seconds
+                db.kv_set(KV_ROLLUP, json.dumps(rollup))
+                interp.run()
+            self.assertEqual(len(client.calls), 2)
+            db.kv_set(KV_INTERP, json.dumps({"last_session_id": session_id}))
+            self.assertIsNotNone(interp.run())
+            self.assertIsNone(interp.run())
+            self.assertEqual(len(client.calls), 3)
+
+    def test_extending_one_session_refreshes_spans_with_bounded_inference(self):
+        with _TempDB() as db:
+            store = ActivityStore(db)
+            agg = ActivityAggregationWorker(store, kv_get=db.kv_get, kv_set=db.kv_set)
+            client = _FakeOllama({"reading": "", "confidence": 0.0})
+            interp = ActivityInterpretationWorker(store, kv_get=db.kv_get, kv_set=db.kv_set,
+                                                  ollama=client, model="worker")
+            observed = []
+            for seconds in range(0, 366, 5):
+                moment = _NOW + timedelta(seconds=seconds)
+                with timephrase.scoped_now(lambda at=moment: at):
+                    ingest_envelope(_env(source="idle", app=None, title=None, kind="idle",
+                                         at=moment.isoformat()), settings=_Settings(), store=store)
+                    if agg.demand(now=moment, last_run_at=None).pressure:
+                        observed.append(agg.run()["idle_span_seconds"])
+                    if interp.demand(now=moment, last_run_at=None).pressure:
+                        self.assertIsNotNone(interp.run())
+                        self.assertIsNone(interp.run())
+            self.assertEqual(observed, list(range(0, 361, 60)))
+            self.assertEqual(len(client.calls), 2)
+            ingest_envelope(_env(at=moment.isoformat()), settings=_Settings(), store=store)
+            self.assertGreater(agg.demand(now=moment, last_run_at=None).pressure, 0)
+            agg.run()
+            self.assertGreater(interp.demand(now=moment, last_run_at=None).pressure, 0)
+
     def test_demand_waits_for_rollup_then_needs_llm(self) -> None:
         with _TempDB() as db:
             store = ActivityStore(db)

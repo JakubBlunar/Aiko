@@ -200,6 +200,9 @@ class CueReplay(CuePoolMixin):
 
 
 def cue_replay(root, embeddings, client):
+    from app.core.conversation.question_balance import render_curiosity_pacing_cue
+    from app.core.proactive.curiosity_answer import opens_on_question, short_answer
+
     results = {}
     subject_vec = embeddings.embed(CUE_SUBJECT)
     for case, (user, reply, expected) in CUE_CASES.items():
@@ -224,6 +227,57 @@ def cue_replay(root, embeddings, client):
             results[case] = {"expected": expected, "actual": row.state,
                              "evidence": row.used_evidence, "surfaced": row.surfaced_count,
                              "reviewed": reviewed, "review_quote": quote}
+    for case, (user, expected) in {
+        "answered_then_pivot": ("Velvet. Anyway, my sister got the solo!", "used"),
+        # Listen for the film news without a pivot word. In the paired family
+        # story, what the lining is made from is part of the news itself.
+        "unmarked_news": ("The violin case has a velvet lining. My short film got into "
+                          "the festival! I get to see it on the big screen!", "used"),
+        # Same acceptance, but the earlier answer now explains the final shot.
+        "unmarked_connected_news": ("The violin case has a velvet lining. My short film "
+                                    "got into the festival! That velvet is the night sky "
+                                    "in the final shot. I get to see it on the big screen!",
+                                    "used"),
+        "answer_is_the_news": ("The violin case has a velvet lining! Gran wove it for me "
+                               "on her old loom. I slipped the festival timetable in the pocket.",
+                               "used"),
+        "connected_news": ("Velvet. Anyway, Mum recognized the lining immediately. "
+                           "It's from her wedding dress! She showed me the photo!", "used"),
+        "quiet_news": ("The violin case has a velvet lining. I read my own poem out loud "
+                       "for the first time. The whole room went quiet.", "used"),
+        "implicit_pivot": ("My sister got the solo! She called me from the hall.", "expired"),
+        "already_answered": ("I already answered that.", "expired"),
+        "declined": ("Can we drop it?", "expired"),
+        "plain_answer": ("Velvet.", "used"),
+        "invited": ("Velvet. Want to hear how I fitted it?", "used"),
+    }.items():
+        db = ChatDatabase(root / f"cue-{case}.db")
+        with closing(db._get_conn()):
+            store = CueStore(db)
+            host = CueReplay(store)
+            ident = store.add("curiosity_seed", CUE_SUBJECT, CUE_QUESTION, embedding=subject_vec)
+            host.take_pool_cue("curiosity_seed")
+            host._settle_pool_cues(user_text="My violin case arrived.", assistant_text=CUE_QUESTION)
+            assert store.get(ident).state == "awaiting"
+            pacing = render_curiosity_pacing_cue(
+                user, answered=short_answer(CUE_QUESTION, user),
+                opens_on_question=opens_on_question(CUE_QUESTION, user),
+            )
+            raw, _ = client.chat_json([
+                {"role": "system", "content": "You are Aiko, chatting casually with a friend. "
+                 + pacing},
+                {"role": "user", "content": "My violin case arrived."},
+                {"role": "assistant", "content": CUE_QUESTION},
+                {"role": "user", "content": user},
+            ], think=False, json_schema={"type": "object", "properties": {
+                "reply": {"type": "string"}}, "required": ["reply"]},
+                options={"temperature": 0, "num_predict": 160})
+            reply = json.loads(raw)["reply"]
+            host._settle_awaiting_cues(user_text=user)
+            host._settle_pool_cues(user_text=user, assistant_text=reply)
+            row = store.get(ident)
+            results[case] = {"expected": expected, "actual": row.state, "reply": reply,
+                             "evidence": row.used_evidence, "asks": row.ask_count}
     return results
 
 

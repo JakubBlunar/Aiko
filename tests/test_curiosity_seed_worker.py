@@ -398,6 +398,16 @@ class MotivationTests(_Fixture):
         row = self.store.pending("curiosity_seed")[0]
         self.assertIn("water temperature", row.payload["quality"]["new_angle"])
 
+    def test_conversation_seed_keeps_only_grounded_connections(self):
+        data = json.loads(_motivated_payload(_GOOD_PAYLOAD))
+        supported, unsupported = data["seeds"]
+        supported.update(inspiration="conversation", why="about coffee")
+        unsupported.update(inspiration="conversation", why="the user roasted coffee")
+        result = self._build(payload=json.dumps(data)).run()
+        self.assertEqual(result["wrote"], 1)
+        row, = self._pending()
+        self.assertEqual(row.payload["why"], "about coffee")
+
     def test_old_generated_seeds_are_retained_but_no_longer_fill_the_shelf(self):
         old = self.store.add("curiosity_seed", "An unrelated old invented topic", "Old topic",
                              payload={"source": "llm"})

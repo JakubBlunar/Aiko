@@ -18,6 +18,25 @@ def seed_text(row):
             + (f"\nWhat it could add: {value}" if isinstance(value, str) and value else ""))
 
 
+def expired_seed_questions(chat_db, store):
+    """Only questions still carried by a want need listening after pool expiry."""
+    from app.core.conversation import wants_ledger
+    from app.core.proactive.cue_quality import seed_usable
+
+    state = wants_ledger.deserialize(chat_db.kv_get(wants_ledger.KV_WANTS_LEDGER))
+    for want in state.wants:
+        if want.source != "curiosity_seed":
+            continue
+        prefix, _, ident = want.source_ref.partition(":")
+        if prefix != "cue" or not ident.isdecimal():
+            continue
+        row = store.get(int(ident), with_embedding=True)
+        if (row is not None and row.cue_type == "curiosity_seed" and row.state == "expired"
+                and seed_usable(row.payload)
+                and "?" in (row.payload.get("prompt_text") or row.text)):
+            yield row
+
+
 def refresh_forward_wants(state, store):
     """Project availability, including old fc: references, without changing the pool.
 
@@ -70,7 +89,14 @@ def claim_forward_wants(session, wants, *, block):
             if (seed is None or not seed_usable(seed.payload)
                     or seed.state in {"used", "superseded"}):
                 continue
-            if seed.state != "expired" and session.take_pool_cue(
+            if seed.state == "expired":
+                from app.core.proactive.curiosity_answer import hold_seed_for_turn
+                from app.core.session.surfacing_attempt import current_attempt
+
+                attempt = current_attempt.get()
+                if attempt is not None and hold_seed_for_turn(seed, attempt.user_text):
+                    continue
+            elif session.take_pool_cue(
                 "curiosity_seed", cue_id=seed.id, claim_block=block,
             ) is None:
                 continue
