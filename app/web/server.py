@@ -48,7 +48,7 @@ from app.web.ws_live_commands import (
     client_owns_live_impulses,
     handle_live_ws_command,
     live_impulse_owner_id,
-    offer_text_delivery,
+    turn_done_event,
 )
 
 
@@ -991,18 +991,7 @@ def create_web_app(session: "SessionController") -> FastAPI:
             if chunk:
                 hub.broadcast({"type": "token", "chunk": chunk})
         elif name == "turn_done":
-            _metrics = payload.get("metrics", {}) or {}
-            hub.broadcast({
-                "type": "turn_done",
-                "metrics": _metrics,
-                # K32: lift the persisted assistant row id to the top
-                # level so the client can stamp the live bubble's
-                # backendId and enable reactions immediately.
-                "assistant_message_id": _metrics.get("assistant_message_id"),
-                "delivery_id": offer_text_delivery(
-                    session, hub, _metrics.get("assistant_message_id"),
-                ),
-            })
+            hub.broadcast(turn_done_event(session, hub, payload.get("metrics")))
         elif name == "error":
             hub.broadcast({
                 "type": "error",
@@ -1715,19 +1704,8 @@ def _spawn_chat_turn(
                 **retry_kwargs,
             )
             session.notify_user_message("Assistant", reply or "")
-            _metrics = session.get_last_metrics() or {}
-            hub.broadcast({
-                "type": "turn_done",
-                "session": turn_session,
-                "metrics": _metrics,
-                # K32: lift the persisted assistant row id so the client
-                # can stamp the live bubble's backendId and enable the
-                # reaction tray without a history reload.
-                "assistant_message_id": _metrics.get("assistant_message_id"),
-                "delivery_id": offer_text_delivery(
-                    session, hub, _metrics.get("assistant_message_id"),
-                ),
-            })
+            hub.broadcast(turn_done_event(session, hub, session.get_last_metrics(),
+                                          session_key=turn_session))
         except Exception as exc:
             log.exception("chat turn failed")
             hub.broadcast({"type": "error", "message": str(exc), "session": turn_session})

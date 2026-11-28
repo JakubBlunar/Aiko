@@ -3,9 +3,41 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { useAssistantStore } from "../store";
+import { finishTurnBubble } from "./finishTurnBubble";
+import type { WsServerEvent } from "../types";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(resolve(here, "useAssistantSocket.ts"), "utf-8");
+
+describe("turn completion", () => {
+  type TurnDone = Extract<WsServerEvent, { type: "turn_done" }>;
+  const saved = { type: "turn_done", metrics: { user_message_id: 7 },
+    assistant_message_id: 8, delivery_id: "receipt-8" } as const;
+  const cases: TurnDone[] = [
+    { ...saved, session: "typed" }, saved,
+    { type: "turn_done", metrics: {}, assistant_message_id: null, delivery_id: "" },
+    { type: "turn_done", metrics: {}, delivery_id: "receipt-without-row" },
+    { type: "turn_done", metrics: {} },
+    { type: "turn_done", metrics: {}, assistant_message_id: 8 },
+  ];
+  it.each(cases)("finishes the bubble for %#", (evt) => {
+    const store = useAssistantStore.getState();
+    store.clearMessages();
+    store.appendUserMessage("The ferry is here.");
+    store.appendAssistantBubble();
+    store.appendAssistantToken("Let's board.");
+    const presentation = finishTurnBubble(store, evt);
+    const { messages, streamingDraft } = useAssistantStore.getState();
+    expect(streamingDraft).toBeNull();
+    expect(messages[0].backendId ?? null).toEqual(evt.metrics.user_message_id ?? null);
+    expect(messages[1]).toMatchObject({ role: "assistant", content: "Let's board.", streaming: false });
+    expect(messages[1].backendId ?? null).toEqual(evt.assistant_message_id ?? null);
+    expect(presentation).toEqual(evt.delivery_id === "receipt-8"
+      ? { messageId: 8, deliveryId: "receipt-8" }
+      : undefined);
+  });
+});
 
 describe("sleep socket hydration", () => {
   it("routes scoped recovery events without making a second user bubble", () => {

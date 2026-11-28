@@ -269,6 +269,28 @@ def test_retry_runs_normal_turn_without_duplicate_user_or_lost_attachments(db, q
     assert any(e["type"] == "user_message_saved" and e["session"] == "u:s" for e in events)
 
 
+@pytest.mark.parametrize("session_key", ["u:typed", None])
+def test_turn_done_offers_delivery_only_for_a_saved_reply(session_key):
+    from app.web.ws_live_commands import turn_done_event
+
+    session = MagicMock()
+    ledger = session.delivery_ledger.return_value
+    ledger.offer_text.return_value = "receipt-8"
+    hub = SimpleNamespace(audio_owner_id="listening-window")
+    scope = {} if session_key is None else {"session": session_key}
+    assert turn_done_event(session, hub, None, session_key=session_key) == {
+        "type": "turn_done", "metrics": {}, "assistant_message_id": None,
+        "delivery_id": "", **scope,
+    }
+    ledger.offer_text.assert_not_called()
+    metrics = {"assistant_message_id": 8, "user_message_id": 7}
+    assert turn_done_event(session, hub, metrics, session_key=session_key) == {
+        "type": "turn_done", "metrics": metrics, "assistant_message_id": 8,
+        "delivery_id": "receipt-8", **scope,
+    }
+    ledger.offer_text.assert_called_once_with(8, "listening-window")
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_spawn_retry_uses_queue_without_user_echo_and_releases_reservation(db, fail):
     host = chat_host(db, queued=True)
@@ -280,7 +302,7 @@ def test_spawn_retry_uses_queue_without_user_echo_and_releases_reservation(db, f
         host._turn_runner.run.return_value = TurnResult(text="replacement", reaction="neutral")
     hub = MagicMock()
     done = threading.Event()
-    with patch("app.web.server.offer_text_delivery", return_value=None):
+    with patch("app.web.ws_live_commands.offer_text_delivery", return_value=""):
         _spawn_chat_turn(host, hub, "Try this again", done, retry_message_id=user)
         assert done.wait(5)
     assert host.__dict__["_pending_chat_retry"] is None

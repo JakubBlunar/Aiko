@@ -20,6 +20,7 @@ import { useTogetherStore } from "../stores/useTogetherStore";
 import { useWorldStore } from "../stores/useWorldStore";
 import { useWeatherStore } from "../stores/useWeatherStore";
 import type { WsClientCommand, WsServerEvent } from "../types";
+import { finishTurnBubble } from "./finishTurnBubble";
 
 /**
  * High-frequency WS event types whose full payload would drown the
@@ -299,18 +300,11 @@ export function useAssistantSocket(): {
         store.appendAssistantToken(evt.chunk);
         break;
 
-      case "turn_done":
-        store.finishAssistantBubble();
-        if (typeof evt.metrics?.user_message_id === "number") {
-          store.stampUserBackendId(evt.metrics.user_message_id);
-        }
-        // K32: stamp the just-finished bubble with its persisted id so
-        // the reaction tray + "mark as moment" enable without a reload.
-        store.stampAssistantBackendId(evt.assistant_message_id);
-        if (evt.delivery_id && Number.isInteger(evt.assistant_message_id)) {
+      case "turn_done": {
+        const presentation = finishTurnBubble(store, evt);
+        if (presentation) {
           const receivedOn = socketRef.current;
-          const deliveryId = evt.delivery_id;
-          const messageId = evt.assistant_message_id;
+          const { deliveryId, messageId } = presentation;
           requestAnimationFrame(() => requestAnimationFrame(() => {
             if (typeof IntersectionObserver === "undefined") return;
             const element = document.querySelector(`[data-delivery-message="${messageId}"]`);
@@ -352,6 +346,7 @@ export function useAssistantSocket(): {
           useAssistantStore.getState().clearToolActivity();
         }, TOOL_ACTIVITY_LINGER_MS);
         break;
+      }
 
       case "metrics_update":
         store.mergeMetrics(evt.metrics || {});

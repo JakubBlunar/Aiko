@@ -129,3 +129,20 @@ def offer_text_delivery(session: Any, hub: Any, message_id: Any) -> str:
         return ""
     token = getter().offer_text(int(message_id), str(getattr(hub, "audio_owner_id", None) or "*"))
     return token if isinstance(token, str) else ""
+
+
+def turn_done_event(
+    session: Any, hub: Any, metrics: dict | None, *, session_key: str | None = None,
+) -> dict:
+    """Finish a typed or voice reply and offer presentation of its saved row."""
+    metrics = metrics or {}
+    message_id = metrics.get("assistant_message_id")
+    event = {
+        "type": "turn_done",
+        "metrics": metrics,
+        "assistant_message_id": message_id,
+        "delivery_id": offer_text_delivery(session, hub, message_id),
+    }
+    if session_key is not None:
+        event["session"] = session_key
+    return event

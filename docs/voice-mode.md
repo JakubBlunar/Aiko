@@ -97,7 +97,10 @@ client, session and mode generation. Duplicates cannot promote interrupted
 audio to completed. The old `playback_drained` event remains a floor signal,
 is audio-owner gated, and never constitutes common-ground evidence.
 
-`turn_done.delivery_id` identifies the persisted assistant message. The
+Typed and voice turns finish with the same `turn_done` event. Typed turns
+include their session key. When a reply is saved, `assistant_message_id`
+enables reactions on its finished bubble and `delivery_id` identifies the
+presentation offer. An unsaved reply still finishes its bubble. The
 browser may report `state:"text_presented"` when its completed bubble is
 fully in the visible viewport, on the original connection. The observation
 window is one second; hidden/off-screen/long bubbles stay unknown. The
