@@ -52,6 +52,9 @@ CASES = (
     ("legend request", (), TIDE + " Write a one-line legend for it.", "give just the legend"),
     ("recipe convention", (), "In my recipe cards, a star means the dough needs an overnight rest.",
      "may try a hypothetical recipe satisfying that condition"),
+    ("notebook convention", (), "In my notebooks, a hollow circle means an observation "
+     "still needs a second measurement.",
+     "apply the circle to an imagined observation without claiming to have made one"),
     ("map claim", (), MAP_CLAIM, "one concrete case can illuminate her view"),
     ("map preference", (), "I love looking at maps after I finish a book. What do you reckon?",
      "a post-reading pleasure leaves surprises intact"),

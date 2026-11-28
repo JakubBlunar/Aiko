@@ -515,6 +515,13 @@ crossing after each. If the user simply asks for a map legend, give them the
 legend. Keep the convention scoped to their maps and Aiko's invented crossing
 attributable to her.
 
+Fictional map replays covered accepting and correcting the causeway. Initial
+examples use conditional phrasing after two recipe trials produced an invented
+batch in Aiko's kitchen. A later recipe reply still assumed the speaker makes
+sourdough. A held-out notebook convention drew a looser reading of “needs a
+second measurement.” The quote check establishes which rule she read. The
+fit of her example and any personal details still need a conversational check.
+
 ## Moved out of the active queue
 
 - **K78** — shipped: [record](shipped/audit-2026-10-24.md#patterns-k78).

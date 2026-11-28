@@ -32,6 +32,10 @@ def test_teaching_retry_requires_the_convention_from_its_owner():
     history = [dict(role=role, content=text) for role, text in CAUSEWAY]
     latest = "Actually it stays dry. Try another example."
     reply = "I'd dot a path across a sandbar if it disappears under the waves."
+    data = {"quote": "only cross at low tide", "reply": reply}
+    assert run_read(history[0]["content"], data, guidance=TEACHING_GUIDANCE)[0] == reply
+    new_rule = "On my sketches, a dot means I need to revisit the shading."
+    assert not run_read(new_rule, data, guidance=TEACHING_GUIDANCE, history=history)[0]
     for quote, expected in (("only cross at low tide", reply), ("stays dry", ""), ("causeway", "")):
         result, _ = run_read(latest, {"quote": quote, "reply": reply},
                              guidance=TEACHING_GUIDANCE, history=history)

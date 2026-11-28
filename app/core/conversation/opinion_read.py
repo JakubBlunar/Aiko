@@ -43,6 +43,12 @@ _ROUTINE_UPDATE = (
     'nicer. No tags.'
 )
 _TEACHING = (
+    'Return {"quote":"exact words of their rule","reply":"one sentence in your voice"}. '
+    'Keep their symbol and meaning fixed. If an example fits, imagine ONE new case '
+    'that meets their condition. Say "I would" or "you could" apply their mark to it and why. '
+    'Honor their correction. Stop after that case. No tags.'
+)
+_TEACHING_RETRY = (
     'Return {"quote":"exact condition from their convention","reply":"one sentence in your '
     'voice"}. Keep their symbol and its meaning fixed. If you try it, pick ONE fresh case '
     'where the quoted condition is exactly true. Apply their existing mark to that case and '
@@ -79,6 +85,9 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
     if not isinstance(latest, str) or turns[-1].get("images"):
         return ""
     contract = OPINION_CONTRACTS[guidance]
+    teaching_retry = guidance == TEACHING_GUIDANCE and not teaching_guidance(latest, ())
+    if teaching_retry:
+        contract = _TEACHING_RETRY
     condition = _ONLY_CONDITION.search(latest.partition("?")[0])
     if guidance == REVISION_GUIDANCE and condition:
         predicate = json.dumps(condition[1].strip(), ensure_ascii=False)
@@ -152,7 +161,7 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
     if guidance == TEACHING_GUIDANCE:
         # The router admits either the convention itself or an immediate retry.
         # Stored history can carry an age prefix, so keep its original wording here.
-        sources = sources[-1:] if teaching_guidance(latest, ()) else sources[-2:-1]
+        sources = sources[-2:-1] if teaching_retry else sources[-1:]
     if guidance == REVISION_GUIDANCE:
         if isinstance(quote, str) and quote.rstrip().endswith("?"):
             return ""
