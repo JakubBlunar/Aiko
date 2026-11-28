@@ -92,6 +92,33 @@ class _Fixture(unittest.TestCase):
 
 
 class SurfacingTests(_Fixture):
+    def test_a_clue_to_a_reason_does_not_settle_the_earlier_event(self):
+        from app.core.proactive.curiosity_answer import short_answer
+        from scripts.companion_contribution_replay import BANNER, FADED, SIGN, TRIM
+
+        self.assertFalse(short_answer(SIGN, "Because the maker may have trimmed the edge."))
+        self.assertTrue(short_answer(SIGN, "Because the maker trimmed the edge."))
+
+        def add(question):
+            return self.store.add("curiosity_seed", "cafe sign", question,
+                                  payload={"about": "subject", "prompt_text": question})
+
+        layout = add(SIGN)
+        self.host.take_pool_cue("curiosity_seed")
+        self.host._settle_pool_cues(user_text=BANNER, assistant_text=(
+            "Perhaps the cafe sign was cramped because its maker worked from the left."))
+        self.assertEqual(self._state(layout), STATE_PENDING)
+        self.assertEqual(self._row(layout).ask_count, 0)
+        self.host._settle_pool_cues(
+            user_text="My banner was cramped because I copied the cafe sign.",
+            assistant_text="I see.")
+        self.assertEqual(self._state(layout), STATE_PENDING)
+        self.host._settle_pool_cues(user_text=TRIM, assistant_text="Ah, that explains it.")
+        self.assertEqual(self._state(layout), STATE_USED)
+        ink = add(FADED)
+        self.host._settle_pool_cues(user_text=TRIM, assistant_text="Ah, that explains it.")
+        self.assertEqual(self._state(ink), STATE_PENDING)
+
     def test_asked_seed_retires_after_pivot_without_reviving_a_derived_want(self):
         from app.core.conversation import wants_ledger as ledger
         from app.core.conversation.cue_wants import claim_forward_wants, refresh_forward_wants

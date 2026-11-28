@@ -303,6 +303,18 @@ For a direct format question about one source reading, the existing practical
 answer path can compute its 12-hour equivalent. If the source omits the event's time
 or leaves a necessary AM/PM distinction open, she can say which detail is missing.
 
+When someone downplays their part in a quiet outcome, the milestone path can
+bring a dated remark about their own earlier preparation into current-reply
+guidance. The current or immediately preceding update needs enough context to
+identify the occasion. A plan, someone else's preparation, or a later correction
+can withhold the offer. Aiko decides whether to credit the work, and the
+outcome's cause stays open unless the speaker supplies it.
+
+The companion persona treats a newly invented joke as an invitation to play
+out one consequence. The speaker can change the premise or turn to a practical
+question on the next line. An established shared joke still follows its usual
+inside-joke path.
+
 For a direct request for Aiko's impression of creative work, or a comparative
 prediction revisited in light of a new detail, current-reply guidance can ask the
 chat model for a short reply grounded in source wording. On a plain choice between

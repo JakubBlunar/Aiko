@@ -11,6 +11,10 @@ _UNRESOLVED = re.compile(
     r"wonder(?:ing)?|maybe|might|probably|haven['’]?t checked|not (?:made|lined|padded)|"
     r"not (?:yet )?(?:known|sure)|no clue|if|suppose|imagine|i hope|would be)\b", re.I,
 )
+_POSSIBLE_CAUSE = re.compile(
+    r"\b(?:perhaps|possibly|presumably|my guess|i (?:suspect|wonder)|"
+    r"(?:could|may) (?:be|have|explain)|(?:suggests?|reminds me) that)\b", re.I,
+)
 _MATERIAL = re.compile(r"\b(material|made (?:of|from)|fabric|lining)\b", re.I)
 _MATERIAL_WORD = (
     r"cotton|linen|silk|satin|velvet|wool|steel|aluminum|aluminium|plastic|wood|"
@@ -35,11 +39,11 @@ _COLOR = re.compile(r"\b(?:black|white|red|orange|yellow|green|blue|violet|purpl
                     r"brown|grey|gray|pink|teal|navy|maroon|turquoise|magenta|beige)\b", re.I)
 _COUNT = re.compile(r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|none)\b", re.I)
 _REQUESTS = (
+    ("reason", re.compile(r"\bwhy\b", re.I)),
     ("color", re.compile(r"\b(?:colou?r|hue)\b", re.I)),
     ("count", re.compile(r"\b(?:how many|number of)\b", re.I)),
     ("time", _TIME_QUESTION),
     ("place", re.compile(r"\bwhere\b", re.I)),
-    ("reason", re.compile(r"\bwhy\b", re.I)),
     ("material", _MATERIAL),
 )
 
@@ -69,8 +73,10 @@ def volunteered_answer(subject, question, text, verdict):
     # Scope uncertainty to its sentence. "Maybe, it's lined with silk" is
     # uncertain throughout; a later "I wonder who made it" is independent.
     sentences = []
+    requested = _property(question)
     for part in re.findall(r"[^.!?]+[.!?]?", text):
-        if _UNRESOLVED.search(part) or part.endswith("?"):
+        if (_UNRESOLVED.search(part) or part.endswith("?")
+                or (requested == "reason" and _POSSIBLE_CAUSE.search(part))):
             # A bare qualification retracts the preceding assertion.
             if re.fullmatch(r"\s*(?:(?:actually|well)[, ]+)?(?:i['’]m |i am )?"
                             r"(?:not (?:really )?sure|unsure|maybe)(?: though)?[.!]?\s*",
@@ -81,7 +87,6 @@ def volunteered_answer(subject, question, text, verdict):
             clauses = re.split(r"[,;]|\band (?=(?:my|our|the|their)\b)", part, flags=re.I)
             sentences.extend(clause.strip() for clause in clauses if clause.strip())
     entity = tokens(subject.split(" of ")[-1]) - _GENERIC
-    requested = _property(question)
     for index, sentence in enumerate(sentences):
         if not sentence:
             continue
@@ -117,8 +122,18 @@ def volunteered_answer(subject, question, text, verdict):
                         return True
                 continue
             if requested == "reason":
-                if re.search(r"\b(?:because|since|so that|reason)\b", sentence, re.I):
-                    return True
+                cause = re.search(r"\b(?:because|since|so that)\s+\w", sentence, re.I)
+                if not cause and re.match(r"^(?:the )?reason\b", sentence, re.I):
+                    cause = re.search(r"\b(?:is|was) (?:that|due to)\s+\w", sentence, re.I)
+                # Answer the actual puzzle about the original subject. One object can
+                # have different features with quite different explanations.
+                _, _, detail = question.casefold().partition(subject.split(" of ")[-1].casefold())
+                filler = _GENERIC | {"look", "looks", "seems"}
+                focus = (tokens(detail) - filler) or (tokens(question) - entity - filler)
+                if cause:
+                    explained = tokens(sentence[:cause.start()]) | tokens(prior)
+                    if entity <= explained and (not focus or focus & explained):
+                        return True
                 continue
             if requested == "time":
                 if _TIME.search(sentence):
@@ -152,7 +167,8 @@ def short_answer(question, text):
         return False
     requested = _property(question)
     if requested == "reason":
-        return bool(re.fullmatch(r"\s*because\s+[\w'’ -]+[.!]?\s*", text, re.I))
+        return not _POSSIBLE_CAUSE.search(text) and bool(re.fullmatch(
+            r"\s*because\s+[\w'’ -]+[.!]?\s*", text, re.I))
     if not re.fullmatch(r"[\w :'’-]{2,32}[.!]?", text.strip()):
         return False
     value = text.strip().rstrip(".!")

@@ -358,6 +358,10 @@ Pending curiosity seeds can settle before Aiko sees them. A seed with an
 explicit question checks a speaker's statement for an answer about the
 referent and the requested property. A volunteered answer can settle it on
 the same turn. A subject-directed seed can also settle from Aiko's answer.
+When a different story offers a possible reason for an earlier observation, the
+quiet-curiosity guidance lets Aiko mention the connection if it adds to the
+current story. A tentative explanation keeps the question open. A volunteered
+reason must address the particular detail on the original subject to settle it.
 A clear current-turn answer or an explicit change of subject holds the seed
 out of the prompt. A preview spends nothing. After a completed turn, a known
 answer settles the question. An unasked question held for a pivot can wait

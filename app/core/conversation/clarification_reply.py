@@ -30,6 +30,18 @@ CURRENT_REPLY_GUIDANCE = (
     "what happened, give the remembered action and observed result without diagnosis or advice."
 )
 
+
+def ordinary_reply_guidance(text):
+    """Honor an explicit switch to practical help even if the preceding turn was playful."""
+    if re.match(r"\s*(?:but |ok(?:ay)?[, ]+)?(?:seriously|jok(?:es|ing) aside|"
+                r"on a serious note)[, .:!-]+(?:how (?:do|can|should)|"
+                r"can you help|what should)\b", text, re.I):
+        return ("They've closed the bit and asked for practical help. Use earlier turns only "
+                "to identify what they mean. Treat the earlier invented details as fiction. "
+                "Open with the first useful step, and finish when the steps are clear.")
+    return CURRENT_REPLY_GUIDANCE
+
+
 _ADVICE = re.compile(r"\b(?:should I|what (?:would|do) you (?:suggest|recommend)|"
                      r"what should I do|which (?:one|option) (?:would|should))\b", re.I)
 _PERSONAL_PICK = re.compile(r"\bwhich (?:one )?(?:(?:do|would) you (?:personally )?"

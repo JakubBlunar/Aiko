@@ -3,8 +3,8 @@ from contextlib import closing
 import pytest
 
 from app.core.conversation.clarification_reply import (
-    COPY_QUESTION, answered_copy_question, choice_guidance, clarification_question,
-    is_clarification_question,
+    COPY_QUESTION, CURRENT_REPLY_GUIDANCE, answered_copy_question, choice_guidance,
+    clarification_question, is_clarification_question, ordinary_reply_guidance,
 )
 from app.core.conversation.clock_reading import LOOKUP_GUIDANCE, check_clock
 from app.core.infra.chat_database import ChatDatabase
@@ -24,6 +24,11 @@ def test_general_choices_and_unrelated_turns():
     assert choice_guidance("The original canvas was red.") == ""
     assert choice_guidance("I backed up a different file yesterday.") == ""
     assert "different item" in choice_guidance("Correction: the backup was for another model.")
+
+
+def test_serious_request_can_end_a_bit_without_classifying_the_topic():
+    assert "first useful step" in ordinary_reply_guidance("Jokes aside, how can I mend the bag?")
+    assert ordinary_reply_guidance("Seriously, that bag charges rent.") == CURRENT_REPLY_GUIDANCE
 
 
 def test_recovery_answer_refers_to_the_preceding_question():

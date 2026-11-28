@@ -1,4 +1,5 @@
 """Connect a concrete first-person report with an earlier goal in the user's own words."""
+import json
 import re
 
 from app.core.conversation.perspective_sources import evidence, remarks, terms
@@ -30,6 +31,65 @@ _DROP = re.compile(r"\b(?:no longer|gave up|dropped|every week|all the time|alre
                    r"routine|don't want|don’t want)\b", re.I)
 _GENERIC = {"every", "everybody", "sentence", "word", "first", "phone", "them", "script",
             "writing", "without", "help", "own", "myself", "note", "out", "from", "memory"}
+
+_DOWNPLAY = re.compile(r"\bi (?:barely did anything|hardly (?:did|had to do) anything|"
+                       r"did(?:n['’]t| not) (?:have to )?do (?:much|anything)|"
+                       r"had (?:almost )?nothing to do)\b", re.I)
+_PREPARATION = re.compile(r"\b(?:in (?:case|advance)|ahead of|beforehand|so (?:that |"
+                          r"\w+ (?:could|would|wouldn['’]t))|because|to (?:avoid|prevent|"
+                          r"help|make sure))\b", re.I)
+# A previous intention or somebody else's work cannot support personal credit.
+_DID_WORK = re.compile(r"^i(?:['’]ve| have| had)? (?:already )?(?:put (?!off\b)|set up|"
+                       r"made|wrote|left|sent|bought|brought|built|laid|packed|checked|"
+                       r"prepared|arranged|booked|labelled|labeled|marked|printed|"
+                       r"tested|installed|cleared|cleaned|organised|organized|moved)\b", re.I)
+_REVISION = re.compile(r"\b(?:actually|turns out|instead|never|didn['’]t|did not|but|"
+                       r"except|although|ended up|after all)\b", re.I)
+_BACKGROUND = {"barely", "hardly", "almost", "anything", "nothing", "everyone", "everybody",
+               "people", "tonight", "yesterday", "today", "much", "evening", "work", "found",
+               "room", "went", "smoothly", "community", "last", "night"}
+
+
+def check_preparation(text, previous_user, db, owner, key, current_id):
+    """Offer original context when someone discounts their work after a quiet outcome."""
+    if "?" in text:
+        return PracticalAnswer()
+    if not _DOWNPLAY.search(text):
+        if _DOWNPLAY.search(previous_user) and re.match(
+                r"\s*(?:actually|turns out|it turns out|in fact)\b", text, re.I):
+            return PracticalAnswer(
+                "Their latest observation can replace any earlier guess. They reported what "
+                "happened. Reporting it gives them no special role in making it happen. A "
+                "brief reaction to their discovery is enough. Stick to the people and actions "
+                "in their latest message.")
+        return PracticalAnswer()
+
+    subjects = terms(_DOWNPLAY.sub("", text)) - _BACKGROUND
+    if not subjects and re.search(r"\b(?:back from|finished|wrapped up)\b", previous_user, re.I):
+        subjects = terms(previous_user) - _BACKGROUND - {"finished", "wrapped"}
+    # Across sessions a generic quiet outcome is not enough to identify the occasion.
+    # The ordinary chat history remains available even without a named archival match.
+    if subjects:
+        for row in reversed(remarks(db, owner, key, current_id)):
+            if row["role"] != "user" or not subjects & terms(row["content"]):
+                continue
+            source = row["content"].strip()
+            if _REVISION.search(source):
+                break
+            purpose = _PREPARATION.search(source)
+            if purpose and _DID_WORK.match(source):
+                # Quote the action on its own. Its intended effect is especially easy
+                # to misread as an observed result when placed beside a later update.
+                action = source[:purpose.start()].rstrip(" ,")
+                return PracticalAnswer(
+                    "This excerpt is something they already did before the occasion. If you "
+                    "bring it up, recognize the effort they put in then. How it turned out "
+                    "for other people is unknown. One warm sentence is plenty.\n"
+                    "Their words from the earlier conversation: " + json.dumps(
+                        action, ensure_ascii=False))
+            if purpose:
+                break
+    return PracticalAnswer()
 
 
 def _subject(text):

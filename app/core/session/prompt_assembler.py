@@ -36,7 +36,7 @@ from app.core.conversation.shared_future import check_shared_future
 from app.core.conversation.activity_role import check_activity_role
 from app.core.conversation.decision_hindsight import check_hindsight
 from app.core.conversation.shared_creation import check_shared_creation
-from app.core.conversation.personal_milestone import check_milestone
+from app.core.conversation.personal_milestone import check_milestone, check_preparation
 from app.core.conversation.eye_for_detail import check_eye_for_detail
 from app.core.conversation.project_purpose import check_project_purpose
 from app.core.conversation.shared_influence import check_influence
@@ -55,6 +55,7 @@ from app.core.conversation.clarification_reply import (
     CLARIFICATION_GUIDANCE, COPY_ANSWER_GUIDANCE, CURRENT_REPLY_GUIDANCE,
     ARGUMENT_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
     answered_copy_question, argument_guidance, choice_guidance, is_clarification_question,
+    ordinary_reply_guidance,
 )
 from app.core.conversation.stance import POOLED_CHOICE_BLOCKS
 from app.core.infra import timephrase
@@ -4055,6 +4056,11 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             practical = check_milestone(user_text, self._db, self._continuity_owner,
                                         session_key, current_user_message_id)
             practical_kind = "personal_milestone"
+        if not practical.guidance and not pursuit_guidance:
+            practical = check_preparation(user_text, previous_user, self._db,
+                                          self._continuity_owner, session_key,
+                                          current_user_message_id)
+            practical_kind = "earlier_preparation"
         prior_assistant = (history_msgs[-1].content if history_msgs and
                            history_msgs[-1].role == "assistant" else "")
         current_reply_guidance = ((pursuit_guidance
@@ -4065,7 +4071,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if (user_text or "").strip() and not current_reply_guidance:
             practical = check_clock(user_text, (previous_user, prior_assistant))
             practical_kind = "clock_reading"
-            current_reply_guidance = practical.guidance or CURRENT_REPLY_GUIDANCE
+            current_reply_guidance = practical.guidance or ordinary_reply_guidance(user_text)
         reply_guidance_slot = len(system_parts)
         prompt_history = history_msgs
         if current_reply_guidance:
