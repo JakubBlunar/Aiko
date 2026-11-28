@@ -321,7 +321,10 @@ from this lookup.
 A standalone explanation of a personal convention can invite Aiko to try it.
 The opinion reader grounds her example in the speaker's wording. If they accept
 or correct her example and ask for another, the original convention still
-applies. A direct request for a deliverable takes its usual chat path.
+applies. Aiko can invent an object to try the rule on. If she draws on a
+personal detail about the speaker, the reader asks for their own words and
+checks the quotation. On a new rule her earlier guesses are left out of that
+reading. A direct request for a deliverable takes its usual chat path.
 
 The companion persona treats a newly invented joke as an invitation to play
 out one consequence. The speaker can change the premise or turn to a practical

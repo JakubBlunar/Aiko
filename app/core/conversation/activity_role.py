@@ -28,21 +28,28 @@ _NAMES = {"try": "try it myself", "edit": "help edit it", "hint": "give you a hi
 
 _LOCAL_RULE = re.compile(
     r"\s*(?:on|in|for) (?:my|our) [^.!?\n]{1,100}?[, :]\s*[^.!?\n]{1,90}? "
-    r"(?:means?|stands? for|indicates?|marks?)\s+[^.!?\n]{2,180}[.!]?\s*", re.I)
+    r"(?:means?|stands? for|indicates?|marks?)\s+(?P<condition>[^.!?\n]{2,180})[.!]?\s*", re.I)
 _TRY_EXAMPLE = re.compile(r"\b(?:try|give me|show me) (?:a |one )?"
                           r"(?:fresh|different|another|new)(?: example| one)?[.!?]*\s*$", re.I)
 TEACHING_GUIDANCE = (
     "They are sharing a convention they use. Think through the condition in their own words. "
     "If an example would be fun, imagine one new case and show how you'd apply their convention. "
+    "They supplied the rule. An object you invent to illustrate it belongs to the example. "
+    "Only connect it to something they own, do or like if they actually told you that. "
     "Keep your example hypothetical and local to their work. If they corrected your previous "
     "example, keep the rule and change the part they corrected. They get to judge your reading."
 )
 
 
+def taught_condition(text):
+    match = _LOCAL_RULE.fullmatch(text)
+    return match["condition"].strip() if match else ""
+
+
 def teaching_guidance(text, recent_users):
-    if _LOCAL_RULE.fullmatch(text):
+    if taught_condition(text):
         return TEACHING_GUIDANCE
-    if (_TRY_EXAMPLE.search(text) and recent_users and _LOCAL_RULE.fullmatch(recent_users[0])
+    if (_TRY_EXAMPLE.search(text) and recent_users and taught_condition(recent_users[0])
             and not re.search(r"\b(?:unrelated|change of subject|switching topics)\b", text, re.I)):
         return TEACHING_GUIDANCE
     return ""

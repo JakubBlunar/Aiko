@@ -3,11 +3,12 @@ import json
 import logging
 import re
 
-from app.core.conversation.activity_role import TEACHING_GUIDANCE, teaching_guidance
+from app.core.conversation.activity_role import TEACHING_GUIDANCE, taught_condition
 from app.core.conversation.clarification_reply import (
     ARGUMENT_GUIDANCE, EXAMPLE_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
 )
 from app.core.conversation.routine_continuity import ROUTINE_UPDATE_GUIDANCE
+from app.core.services.history_metadata import strip_history_age_prefix
 
 
 log = logging.getLogger(__name__)
@@ -43,16 +44,9 @@ _ROUTINE_UPDATE = (
     'nicer. No tags.'
 )
 _TEACHING = (
-    'Return {"quote":"exact words of their rule","reply":"one sentence in your voice"}. '
-    'Keep their symbol and meaning fixed. If an example fits, imagine ONE new case '
-    'that meets their condition. Say "I would" or "you could" apply their mark to it and why. '
-    'Honor their correction. Stop after that case. No tags.'
-)
-_TEACHING_RETRY = (
-    'Return {"quote":"exact condition from their convention","reply":"one sentence in your '
-    'voice"}. Keep their symbol and its meaning fixed. If you try it, pick ONE fresh case '
-    'where the quoted condition is exactly true. Apply their existing mark to that case and '
-    'stop there. Honor any correction about the old example. No tags.'
+    'Return {"quote":"exact words of their rule","personal":null,"reply":"one sentence"}. '
+    'If useful, apply their mark to a fresh imagined case. Invented details belong to the '
+    'case. Only use a fact about their life if personal quotes them saying it. No tags.'
 )
 OPINION_CONTRACTS = {ARGUMENT_GUIDANCE: _ARGUMENT, EXAMPLE_GUIDANCE: _EXAMPLE,
                      IMPRESSION_GUIDANCE: _IMPRESSION, REVISION_GUIDANCE: _REVISION,
@@ -85,9 +79,20 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
     if not isinstance(latest, str) or turns[-1].get("images"):
         return ""
     contract = OPINION_CONTRACTS[guidance]
-    teaching_retry = guidance == TEACHING_GUIDANCE and not teaching_guidance(latest, ())
-    if teaching_retry:
-        contract = _TEACHING_RETRY
+    sources = [m["content"] for m in turns if m["role"] == "user"]
+    teaching_retry = False
+    if guidance == TEACHING_GUIDANCE:
+        rule = taught_condition(latest)
+        teaching_retry = not rule
+        if teaching_retry and len(sources) >= 2 and isinstance(sources[-2], str):
+            rule = taught_condition(strip_history_age_prefix(sources[-2]))
+        if teaching_retry:
+            contract += " Use a DIFFERENT example that qualifies after their feedback."
+        if rule:
+            anchor = " Show how the case meets their condition: " + json.dumps(
+                rule, ensure_ascii=False) + "."
+            if len(contract) + len(anchor) + 2 <= len(found):
+                contract += anchor
     condition = _ONLY_CONDITION.search(latest.partition("?")[0])
     if guidance == REVISION_GUIDANCE and condition:
         predicate = json.dumps(condition[1].strip(), ensure_ascii=False)
@@ -116,6 +121,10 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
             # remains an option, and her new answer can still change her earlier view.
             latest = f'The alternative claim is "{pressure[1]}". What do you think?'
     context_turns = turns[:-1]
+    if guidance == TEACHING_GUIDANCE and not teaching_retry:
+        # On a new convention her own earlier suggestions are not evidence about
+        # the speaker. On a retry she still needs to see which example they corrected.
+        context_turns = [m for m in context_turns if m["role"] == "user"]
     if guidance == ROUTINE_UPDATE_GUIDANCE:
         # Their new arrangement answers the last conversational turn. Repeating
         # the original proposal here repeatedly lent its schedule to the replacement.
@@ -157,8 +166,15 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
                 and re.search(r"\b(?:drafts?|openings?)\b", latest, re.I)):
             return "Can I read both before I pick?"
         return ""
-    sources = [m["content"] for m in turns if m["role"] == "user"]
     if guidance == TEACHING_GUIDANCE:
+        if "personal" not in result:
+            return ""
+        personal = result["personal"]
+        if personal is not None and (
+            not isinstance(personal, str) or not 3 <= len(personal.strip()) <= 300
+            or not any(isinstance(s, str) and personal.strip() in s for s in sources)
+        ):
+            return ""
         # The router admits either the convention itself or an immediate retry.
         # Stored history can carry an age prefix, so keep its original wording here.
         sources = sources[-2:-1] if teaching_retry else sources[-1:]

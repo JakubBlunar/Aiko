@@ -522,6 +522,12 @@ sourdough. A held-out notebook convention drew a looser reading of “needs a
 second measurement.” The quote check establishes which rule she read. The
 fit of her example and any personal details still need a conversational check.
 
+The teaching reader now checks a cited personal detail against speaker turns
+and leaves earlier assistant guesses out of a first example. In paired recipe
+replays the speaker could supply a baking habit, while a question from Aiko
+about the same habit supplied no evidence. The model can still embellish a
+fictional scene or loosely paraphrase a convention.
+
 ## Moved out of the active queue
 
 - **K78** — shipped: [record](shipped/audit-2026-10-24.md#patterns-k78).

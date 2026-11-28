@@ -32,14 +32,44 @@ def test_teaching_retry_requires_the_convention_from_its_owner():
     history = [dict(role=role, content=text) for role, text in CAUSEWAY]
     latest = "Actually it stays dry. Try another example."
     reply = "I'd dot a path across a sandbar if it disappears under the waves."
-    data = {"quote": "only cross at low tide", "reply": reply}
+    data = {"quote": "only cross at low tide", "personal": None, "reply": reply}
     assert run_read(history[0]["content"], data, guidance=TEACHING_GUIDANCE)[0] == reply
     new_rule = "On my sketches, a dot means I need to revisit the shading."
     assert not run_read(new_rule, data, guidance=TEACHING_GUIDANCE, history=history)[0]
     for quote, expected in (("only cross at low tide", reply), ("stays dry", ""), ("causeway", "")):
-        result, _ = run_read(latest, {"quote": quote, "reply": reply},
+        result, _ = run_read(latest, {**data, "quote": quote},
                              guidance=TEACHING_GUIDANCE, history=history)
         assert result == expected
+
+
+def test_teaching_personal_detail_needs_the_speakers_own_words():
+    from app.core.conversation.activity_role import TEACHING_GUIDANCE
+    from scripts.opinion_replay import RECIPE
+
+    claim = "I bake rye rolls."
+    data = {"quote": "overnight rest", "personal": claim,
+            "reply": "I'd star a rye roll recipe if it needed an overnight rest."}
+    for role, expected in (("user", data["reply"]), ("assistant", "")):
+        reply, _ = run_read(RECIPE, data, guidance=TEACHING_GUIDANCE,
+                            history=[{"role": role, "content": claim}])
+        assert reply == expected
+    assert not run_read(RECIPE, data, guidance=TEACHING_GUIDANCE)[0]
+
+
+def test_new_rule_does_not_let_aikos_prior_guess_supply_a_personal_detail():
+    from app.core.conversation.activity_role import TEACHING_GUIDANCE
+    from scripts.opinion_replay import RECIPE
+
+    data = {"quote": "overnight rest", "personal": None, "reply": "I'd star an overnight dough."}
+    client = Client(data, "stop")
+    history = [{"role": "system", "content": TEACHING_GUIDANCE},
+               {"role": "user", "content": "I keep recipe cards."},
+               {"role": "assistant", "content": "Do you bake rye rolls on weekends?"},
+               {"role": "user", "content": RECIPE}]
+    assert read_opinion(client, history, TEACHING_GUIDANCE, model="fake", options={},
+                        stop_event=Event()) == data["reply"]
+    assert history[1] in client.messages and history[2] not in client.messages
+    assert "the dough needs an overnight rest" in client.messages[-1]["content"].split("\n\n")[-1]
 
 
 def test_replacement_routine_uses_the_latest_account():

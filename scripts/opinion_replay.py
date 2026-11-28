@@ -40,6 +40,7 @@ MAP_CLAIM = "I think every book with a journey in it should have a map. What do 
 MAP_HISTORY = (("user", MAP_CLAIM), ("assistant", "I'd want one for a six-city chase. "
                "If the twist is that she's walked in a circle, the map could give it away."))
 TIDE = "On my maps, a dotted path means you can only cross at low tide."
+RECIPE = "In my recipe cards, a star means the dough needs an overnight rest."
 CAUSEWAY = (("user", TIDE), ("assistant", "I'd draw the old causeway dotted. Have I got that?"))
 
 
@@ -50,8 +51,12 @@ CASES = (
     ("accepted causeway", CAUSEWAY, "Yes, exactly. Try another example.",
      "apply the same convention to a fresh example"),
     ("legend request", (), TIDE + " Write a one-line legend for it.", "give just the legend"),
-    ("recipe convention", (), "In my recipe cards, a star means the dough needs an overnight rest.",
-     "may try a hypothetical recipe satisfying that condition"),
+    ("recipe convention", (), RECIPE, "may imagine a recipe without attributing it to the speaker"),
+    ("known baker", (("user", "I bake rye rolls every Saturday."),
+                     ("assistant", "That's quite a ritual.")), RECIPE,
+     "may use their stated baking habit or choose an impersonal example"),
+    ("guessed baker", (("assistant", "Maybe you bake rye rolls every Saturday?"),), RECIPE,
+     "Aiko's own guess does not establish the speaker bakes rolls"),
     ("notebook convention", (), "In my notebooks, a hollow circle means an observation "
      "still needs a second measurement.",
      "apply the circle to an imagined observation without claiming to have made one"),
