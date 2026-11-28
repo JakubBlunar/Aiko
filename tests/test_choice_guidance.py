@@ -30,3 +30,19 @@ def test_choice_preserves_the_users_cutoff_and_unit():
     guidance = choice_guidance("Should I print invitations? I print for 12 guests or fewer.")
     assert "12 guests or fewer" in guidance
     assert "How many guests" in guidance
+
+
+def test_personal_pick_yields_to_a_concrete_recovery_question():
+    assert "actual alternatives" in choice_guidance("Two poster designs. Which do you prefer?")
+    question = ("I have two drafts. Which one would you keep if I permanently replace the "
+                "original but want a way back?")
+    assert "restore_copy" in choice_guidance(question)
+
+
+def test_reconsideration_uses_history_and_leaves_unrelated_chat_alone():
+    history = ("More people stayed for the second act.",)
+    question = "Do you still think the new cast drew a bigger crowd?"
+    assert "earlier explanation" in choice_guidance(question, iter(history))
+    assert not choice_guidance(question)
+    assert not choice_guidance("Do you still think about that evening?", history)
+    assert not choice_guidance("I forgot to mention the cast party. Are you coming?", history)

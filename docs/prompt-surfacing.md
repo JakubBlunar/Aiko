@@ -297,6 +297,18 @@ identifies a missing participant's list. Unsupported constraints stay with
 ordinary chat. See the [group comparison](../app/core/conversation/group_options.py)
 and the [fictional comparisons](../scripts/everyday_reasoning_replay.py).
 
+For a direct request for Aiko's impression of creative work, or a comparative
+prediction revisited in light of a new detail, current-reply guidance can ask the
+chat model for a short reply grounded in source wording. On a plain choice between
+two quoted works, the reading sets aside a standalone “I like the first/second”
+vote. The saved message keeps the vote, and a reason or constraint stays in the
+reading. For a revised prediction, the model sees both the earlier exchange and
+the new detail. When the model judges that an explicitly unequal condition
+weakens its explanation, the reply names that condition in the speaker's own
+words and leaves the cause open. A completed reading can supply the spoken reply. An unusable
+reading falls back to ordinary generation, and a tool result takes precedence.
+See the [opinion reader](../app/core/conversation/opinion_read.py).
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption

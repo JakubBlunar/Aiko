@@ -30,6 +30,28 @@ CURRENT_REPLY_GUIDANCE = (
 
 _ADVICE = re.compile(r"\b(?:should I|what (?:would|do) you (?:suggest|recommend)|"
                      r"what should I do|which (?:one|option) (?:would|should))\b", re.I)
+_PERSONAL_PICK = re.compile(r"\bwhich (?:one )?(?:(?:do|would) you (?:personally )?"
+                            r"(?:keep|prefer|like|pick)|is your favou?rite)\b", re.I)
+_CREATIVE_MATERIAL = re.compile(r"\b(?:openings?|lines?|drafts?|titles?|names?|designs?|"
+                                r"sketch(?:es)?|endings?)\b", re.I)
+_REVISIT = re.compile(r"\bdo you still (?:think|believe|expect)\b(?!\s+(?:about|of)\b)", re.I)
+_ADDED_DETAIL = re.compile(r"\b(?:forgot to mention|left out one detail)\b", re.I)
+_COMPARATIVE_ASK = re.compile(r"\bwhich\b[^?!.]*\b(?:more|less|better|worse)\b[^?!.]*\?", re.I)
+_COMPARISON = re.compile(r"\b(?:more|less|fewer|higher|lower|better|worse|bigger|smaller|"
+                         r"faster|slower|cause[ds]?|because)\b", re.I)
+IMPRESSION_GUIDANCE = (
+    "Read the actual alternatives to yourself with the other person's vote set aside. "
+    "Start with the particular word, sound or image you responded to, then say which one "
+    "you'd keep. Either choice is fine. If you can't point to anything they actually shared, "
+    "the whole reply can be 'Can I read them both?' One pick tells you about this piece."
+)
+REVISION_GUIDANCE = (
+    "Test your earlier explanation against the latest detail. A busier stall that alone "
+    "gave a discount leaves you unsure whether the product or the discount drew people. "
+    "Both stalls giving the same discount leaves the original comparison intact. One "
+    "person's favorite tells you about that person. Give the observed result and how sure "
+    "you are about its cause. Leave unreported audience motives open."
+)
 COPY_QUESTION = "Do you have a verified copy you can restore this version from?"
 COPY_ANSWER_GUIDANCE = (
     "The user has answered the recovery question. Answer their original choice in one sentence. "
@@ -55,9 +77,9 @@ def choice_guidance(user_text: str, recent_turns=()) -> str:
         return ("Reconsider the earlier recommendation using the corrected facts. A copy of a "
                 "different item cannot restore this one. If the user wants a way back, advise "
                 "preserving this version before an irreversible change.")
-    if not _ADVICE.search(user_text):
-        return ""
-    if (re.search(r"\b(?:overwrit\w*|replac\w*|permanent\w*|irreversib\w*)\b", user_text, re.I)
+    advice = _ADVICE.search(user_text)
+    if (advice and re.search(r"\b(?:overwrit\w*|replac\w*|permanent\w*|irreversib\w*)\b",
+                             user_text, re.I)
             and re.search(r"\b(?:way back|undo|revers\w*|restor\w*|original)\b", user_text, re.I)):
         recovery = re.compile(r"\b(?:cop(?:y|ies)|backup|backed up|duplicat\w*|archive\w*|"
                               r"snapshot|only|preview\w*|version history|saved|undo)\b", re.I)
@@ -78,10 +100,20 @@ def choice_guidance(user_text: str, recent_turns=()) -> str:
         )
     threshold = re.search(r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
                           r"twenty|fifty|a hundred) ([a-z]+s) or (?:fewer|more)\b", user_text, re.I)
-    if threshold:
+    if advice and threshold:
         return (f"The user's exact cutoff is '{threshold[0]}'. Check whether the actual count "
                 f"is already known. If it is missing, ask only: How many {threshold[1]} are there? "
                 "Then wait for the answer. If it is known, apply the user's exact cutoff.")
+    single_question = user_text.count("?") == 1 and user_text.rstrip().endswith("?")
+    if (single_question and _PERSONAL_PICK.search(user_text)
+            and _CREATIVE_MATERIAL.search(user_text)):
+        return IMPRESSION_GUIDANCE
+    new_comparison = _ADDED_DETAIL.search(user_text) and _COMPARATIVE_ASK.search(user_text)
+    revisit = _REVISIT.search(user_text) and _COMPARISON.search(user_text)
+    if single_question and not advice and (revisit or new_comparison) and any(recent_turns):
+        return REVISION_GUIDANCE
+    if not advice:
+        return ""
     return (
         "For a choice, use facts the user has already supplied. If one unknown fact changes "
         "which option you recommend, your whole reply should be one direct question asking "

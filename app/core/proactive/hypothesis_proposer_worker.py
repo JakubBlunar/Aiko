@@ -135,12 +135,13 @@ _SYSTEM_PROMPT = (
     "Use the provisional reading as a starting point. Check it against the sources and "
     "write only what they actually leave open. Return {{\"hypotheses\":[]}} if nothing fits. "
     "For a useful hunch, use this JSON shape with every field:\n"
-    '{{"hypotheses": [{{"statement": "one short sentence naming who might be '
+    '{{"hypotheses": [{{"inspiration": {{"type": "memory", "id": 1, '
+    '"quote": "exact source words"}}, "check_question": "what are you curious about in '
+    'that quote?", "statement": "one short sentence naming who might be '
     'doing what", "kind": "one of {kinds}", "subject": "user|aiko|relationship|world", '
     '"rationale": "which detail makes the hunch plausible", "credence": 0.4, '
-    '"inspiration": {{"type": "memory", "id": 1, "quote": "exact source words"}}, '
     '"useful_because": "what learning this could change", "alternative": "another reading of '
-    'the same detail", "check_question": "a natural question that leaves the answer open?", '
+    'the same detail", '
     '"raise_when": "a specific occasion when finding out would fit"}}]}}\n'
     "Use the actual source type and integer ID and an exact quote of 8 to 200 characters. "
     "Use subject user for {user_name}, aiko for {assistant_name}, relationship for the two "
@@ -156,11 +157,12 @@ _USER_TEMPLATE = (
     "Your provisional thought: {hunch}\n"
     "File this specific thought if the sources warrant keeping it. Keep the possibility "
     "audible in the statement itself, for example with 'might have'. Record what else "
-    "could explain the same observation. For check_question, speak to the person who had "
-    "the experience: e.g. 'What felt different when you tried the other version?' For your "
-    "own experience: 'What would I listen for on another try?' Adapt to the actual scene. "
-    "Keep unobserved actions, new objects, and your favored answer out of the question. "
-    "Let them supply the reason. Do not substitute a more dramatic interpretation. "
+    "could explain the same observation. Write check_question from the quoted observation "
+    "alone. Could the person answer even if your hunch were completely wrong? If you know "
+    "what they chose, ask what drew them to it. Leave how they tested it, what they noticed "
+    "and what they intended for them to tell you. For your own experience, wonder in the "
+    "first person about what you might notice next time. Keep the rationale grounded in "
+    "the same quote; a detail invented by the provisional thought is still a guess. "
     "You can still return an empty list."
 )
 _MIN_N = 0

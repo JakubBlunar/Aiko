@@ -40,7 +40,10 @@ circumstances, and any reason the speaker gave. This short model call can mark
 the observation as ordinary or settled. An unexplained clue can instead yield a
 tentative reading. Only then does the worker make a second model call to decide
 whether to keep it, what else could explain it, and what would distinguish the
-two readings. With several sources, the evidence check accounts for each one
+two readings. In the proposal, Aiko drafts the source quote and an open question
+before writing out the explanation. If the source reports a choice, the question
+can ask what drew the person to it. Their method and motive stay open until the
+person supplies them. With several sources, the evidence check accounts for each one
 before drafting from those it found open. A settled reading needs a source
 quote for the explanation. Both calls use the existing worker model with
 thinking disabled.

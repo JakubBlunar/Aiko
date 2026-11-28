@@ -20,6 +20,7 @@ from app.core.memory.diary_journal import journal_metadata
 from app.core.infra import timephrase
 from app.core.conversation.comparison_report import ComparisonReport
 from app.core.conversation.story_reply import read_story
+from app.core.conversation.opinion_read import read_opinion
 
 from app.llm.turn_outcome import TurnOutcome
 
@@ -874,6 +875,16 @@ class TurnRunner:
                              if self._max_tokens > 0 else 240,
                              "prompt_cache_key": session_key},
                 )
+                aborted = self._stop.is_set() or self._is_stop_requested(stop_requested)
+            elif (not aborted and not decision_reply and not tool_calls
+                  and isinstance(getattr(telemetry, "opinion_guidance", None), str)
+                  and telemetry.opinion_guidance):
+                assessment = read_opinion(
+                    self._ollama, messages, telemetry.opinion_guidance, model=self._model,
+                    options={"temperature": self._temperature, "num_ctx": self._context_window,
+                             "num_predict": min(self._max_tokens, 320)
+                             if self._max_tokens > 0 else 320,
+                             "prompt_cache_key": session_key}, stop_event=self._stop)
                 aborted = self._stop.is_set() or self._is_stop_requested(stop_requested)
             if aborted:
                 stream = ()

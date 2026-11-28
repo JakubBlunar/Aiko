@@ -1,5 +1,6 @@
 """Replay grounded hunches and abstentions with fictional inputs on numeric loopback."""
 from contextlib import closing
+import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -19,22 +20,26 @@ from scripts.live_scenarios import LoopbackPolicyClient, require_local_model
 
 
 class LocalProposerClient(LoopbackPolicyClient):
-    def __init__(self, session, model):
+    def __init__(self, session, model, seed):
         settings = OllamaSettings(BASE, chat_model=model, context_window=8192,
                                   think_num_predict_headroom=2048)
         super().__init__(settings, BASE, session)
         self.responses = []
+        self.seed = seed
 
     def chat_stream(self, messages, *, stop_event, options, **kwargs):
         # Buffer the local response to capture its own completion status and raw proposal.
         if not stop_event.is_set():
-            raw, usage = self.chat_json(messages, options={**options, "seed": 71}, **kwargs)
+            raw, usage = self.chat_json(messages, options={**options, "seed": self.seed}, **kwargs)
             self.last_usage = usage  # Match the production streaming client's final chunk.
             self.responses.append((raw, usage.done_reason))
             yield raw
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--seed", type=int, default=71)
+    args = parser.parse_args()
     # Positive: a choice between drafts changes with viewing distance. What the
     # distance reveals is open. Control: the maker has already explained the choice.
     observation = ("Mira liked the thin letters at her desk. From the doorway she "
@@ -49,6 +54,9 @@ def main():
         "thin": [("fact", "Mira collected a parcel from the post office.")],
         "self": [song],
         "mixed": [("fact", explained), song],
+        # A pair of observed choices; the maker's method and motive are both open.
+        "sound": [("fact", "Mira chose the bell for the courtyard scene on the first listen. "
+                           "For the same scene with the dialogue playing, she chose the chime.")],
     }
     moment = datetime(2026, 11, 27, 12, tzinfo=timezone.utc)
     model = "baytout3/qwen3.5-uncensored:9b"
@@ -56,7 +64,7 @@ def main():
     scratch = Path(__file__).resolve().parents[1] / ".tmp-tests"
     scratch.mkdir(exist_ok=True)
     with requests.Session() as session, TemporaryDirectory(dir=scratch) as tmp:
-        client = LocalProposerClient(session, model)
+        client = LocalProposerClient(session, model, args.seed)
         for name in (model, embedding):
             require_local_model(session, BASE, name)
         with timephrase.scoped_now(lambda: moment):

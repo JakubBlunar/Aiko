@@ -88,6 +88,14 @@ sign story appeared alongside it. The proposed question about the sign still
 assumed the designer had held the letters. Check that questions in ordinary
 conversation preserve the user's actual observations.
 
+In a follow-up, the worker drafted the source quote and check question before
+writing out its explanation. Across six fictional inputs at each of seeds 71
+and 79 on the same 9B model, the sign and sound-design questions asked what
+drew Mira to her choice. Neither assumed a test or a motive. Both runs left the
+explained choice and routine errand alone and kept Aiko's listening question
+in the mixed case. The questions were sometimes in third person. These were
+stored proposals; their eventual spoken phrasing still needs an ordinary-use check.
+
 ## Memory/time quality: ordinary-use follow-up
 
 The [17 November memory-capture follow-up](../reviews/memory-capture-review-2026-11-17.md)

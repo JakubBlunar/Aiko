@@ -52,6 +52,7 @@ from app.core.conversation.story_reply import STORY_HEADER, story_contract, stor
 from app.core.conversation.pursuit_reply import pursuit_reply
 from app.core.conversation.clarification_reply import (
     CLARIFICATION_GUIDANCE, COPY_ANSWER_GUIDANCE, CURRENT_REPLY_GUIDANCE,
+    IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
     answered_copy_question, choice_guidance, is_clarification_question,
 )
 from app.core.conversation.stance import POOLED_CHOICE_BLOCKS
@@ -4437,6 +4438,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             },
             decision_reply=decision_reply,
             practical_reply_kind=practical_reply_kind,
+            opinion_guidance=(current_reply_guidance if current_reply_guidance in
+                              (IMPRESSION_GUIDANCE, REVISION_GUIDANCE) else ""),
             comparison_report=comparison_report,
             story_read=(conversation_situation_block.startswith(STORY_HEADER + "\n")
                         and story_question(user_text)
