@@ -7,6 +7,17 @@ from scripts.longitudinal_reasoning_replay import NOW, seed_rows
 from scripts.shared_life_replay import HELP, PLAYER
 
 
+def test_personal_convention_and_immediate_retry_leave_other_requests_alone():
+    from app.core.conversation.activity_role import teaching_guidance
+    from scripts.opinion_replay import TIDE
+
+    assert teaching_guidance(TIDE, ())
+    assert teaching_guidance("Actually that one stays dry. Try another example.", (TIDE,))
+    assert not teaching_guidance("Try another example.", ("How do I fold it?", TIDE))
+    assert not teaching_guidance(TIDE + " Write a legend.", ())
+    assert not teaching_guidance("A red light means stop.", ())
+
+
 def test_current_invitation_and_named_retrospective(tmp_path):
     db = ChatDatabase(tmp_path / "fiction.db")
     with closing(db._get_conn()), timephrase.scoped_now(lambda: NOW):

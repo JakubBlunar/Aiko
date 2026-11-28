@@ -39,9 +39,19 @@ TURNOUT = "I prefer voting because our reluctant readers come when a book they v
 MAP_CLAIM = "I think every book with a journey in it should have a map. What do you reckon?"
 MAP_HISTORY = (("user", MAP_CLAIM), ("assistant", "I'd want one for a six-city chase. "
                "If the twist is that she's walked in a circle, the map could give it away."))
+TIDE = "On my maps, a dotted path means you can only cross at low tide."
+CAUSEWAY = (("user", TIDE), ("assistant", "I'd draw the old causeway dotted. Have I got that?"))
 
 
 CASES = (
+    ("local convention", (), TIDE, "may try a hypothetical crossing on this person's maps"),
+    ("dry causeway", CAUSEWAY, "Actually that causeway stays dry. Try a different example.",
+     "use a different crossing and retain the low-tide condition"),
+    ("accepted causeway", CAUSEWAY, "Yes, exactly. Try another example.",
+     "apply the same convention to a fresh example"),
+    ("legend request", (), TIDE + " Write a one-line legend for it.", "give just the legend"),
+    ("recipe convention", (), "In my recipe cards, a star means the dough needs an overnight rest.",
+     "may try a hypothetical recipe satisfying that condition"),
     ("map claim", (), MAP_CLAIM, "one concrete case can illuminate her view"),
     ("map preference", (), "I love looking at maps after I finish a book. What do you reckon?",
      "a post-reading pleasure leaves surprises intact"),

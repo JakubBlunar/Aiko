@@ -26,6 +26,27 @@ _INTRO = re.compile(r"\b(?:i (?:brought|wrote|made)|here['’]s|here is) "
                     r"story|draft|chapter|scene|poem)[.!]?\s*$", re.I)
 _NAMES = {"try": "try it myself", "edit": "help edit it", "hint": "give you a hint"}
 
+_LOCAL_RULE = re.compile(
+    r"\s*(?:on|in|for) (?:my|our) [^.!?\n]{1,100}?[, :]\s*[^.!?\n]{1,90}? "
+    r"(?:means?|stands? for|indicates?|marks?)\s+[^.!?\n]{2,180}[.!]?\s*", re.I)
+_TRY_EXAMPLE = re.compile(r"\b(?:try|give me|show me) (?:a |one )?"
+                          r"(?:fresh|different|another|new)(?: example| one)?[.!?]*\s*$", re.I)
+TEACHING_GUIDANCE = (
+    "They are sharing a convention they use. Think through the condition in their own words. "
+    "If an example would be fun, imagine one new case and show how you'd apply their convention. "
+    "Keep your example hypothetical and local to their work. If they corrected your previous "
+    "example, keep the rule and change the part they corrected. They get to judge your reading."
+)
+
+
+def teaching_guidance(text, recent_users):
+    if _LOCAL_RULE.fullmatch(text):
+        return TEACHING_GUIDANCE
+    if (_TRY_EXAMPLE.search(text) and recent_users and _LOCAL_RULE.fullmatch(recent_users[0])
+            and not re.search(r"\b(?:unrelated|change of subject|switching topics)\b", text, re.I)):
+        return TEACHING_GUIDANCE
+    return ""
+
 
 def _activity(text):
     found = [key for key, pattern in _ACTIVITIES.items() if pattern.search(text)]

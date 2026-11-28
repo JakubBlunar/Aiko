@@ -3,6 +3,7 @@ import json
 import logging
 import re
 
+from app.core.conversation.activity_role import TEACHING_GUIDANCE, teaching_guidance
 from app.core.conversation.clarification_reply import (
     ARGUMENT_GUIDANCE, EXAMPLE_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
 )
@@ -41,9 +42,16 @@ _ROUTINE_UPDATE = (
     'using their actual words. Skip scene-setting and comparisons about which activity is '
     'nicer. No tags.'
 )
+_TEACHING = (
+    'Return {"quote":"exact condition from their convention","reply":"one sentence in your '
+    'voice"}. Keep their symbol and its meaning fixed. If you try it, pick ONE fresh case '
+    'where the quoted condition is exactly true. Apply their existing mark to that case and '
+    'stop there. Honor any correction about the old example. No tags.'
+)
 OPINION_CONTRACTS = {ARGUMENT_GUIDANCE: _ARGUMENT, EXAMPLE_GUIDANCE: _EXAMPLE,
                      IMPRESSION_GUIDANCE: _IMPRESSION, REVISION_GUIDANCE: _REVISION,
-                     ROUTINE_UPDATE_GUIDANCE: _ROUTINE_UPDATE}
+                     ROUTINE_UPDATE_GUIDANCE: _ROUTINE_UPDATE,
+                     TEACHING_GUIDANCE: _TEACHING}
 _ONLY_CONDITION = re.compile(r"\bonly (?:the|one)\b[^.!?]{1,65}?\b"
                              r"((?:had|was|were|got|offered|received)\s+[^.!?]{1,80})[.!?]", re.I)
 _QUOTED_WORK = re.compile(r'“([^”\n]+)”|"([^"\n]+)"')
@@ -141,6 +149,10 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
             return "Can I read both before I pick?"
         return ""
     sources = [m["content"] for m in turns if m["role"] == "user"]
+    if guidance == TEACHING_GUIDANCE:
+        # The router admits either the convention itself or an immediate retry.
+        # Stored history can carry an age prefix, so keep its original wording here.
+        sources = sources[-1:] if teaching_guidance(latest, ()) else sources[-2:-1]
     if guidance == REVISION_GUIDANCE:
         if isinstance(quote, str) and quote.rstrip().endswith("?"):
             return ""

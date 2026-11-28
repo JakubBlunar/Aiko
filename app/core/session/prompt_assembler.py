@@ -33,7 +33,7 @@ from app.core.conversation.shared_retrospective import check_retrospective
 from app.core.conversation.taste_development import check_taste
 from app.core.conversation.routine_continuity import check_routine, check_shortcut
 from app.core.conversation.shared_future import check_shared_future
-from app.core.conversation.activity_role import check_activity_role
+from app.core.conversation.activity_role import check_activity_role, teaching_guidance
 from app.core.conversation.decision_hindsight import check_hindsight
 from app.core.conversation.shared_creation import check_shared_creation
 from app.core.conversation.personal_milestone import check_milestone, check_preparation
@@ -4069,6 +4069,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                            history_msgs[-1].role == "assistant" else "")
         current_reply_guidance = ((pursuit_guidance
                                    or practical.guidance
+                                   or teaching_guidance(user_text, recent_users)
                                    or choice_guidance(user_text, (m.content for m in history_msgs))
                                    or argument_guidance(user_text, previous_user, prior_assistant))
                                   if (user_text or "").strip() else "")

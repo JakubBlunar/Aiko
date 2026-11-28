@@ -493,7 +493,9 @@ preferences rather than relearning them from the new provider's defaults.
 
 ## K108. Let the user teach by trying a fresh example
 
-**Open.** When someone enjoys teaching Aiko their own convention, she can
+**Implemented pilot.** The current-turn activity guidance and opinion reader
+cover a standalone convention and an immediate request to try again. Ordinary
+conversation remains the quality check. When someone enjoys teaching Aiko their own convention, she can
 try applying it once and let them correct her. “On my maps, a dotted path
 means you can only cross at low tide.” Aiko might say, “Then I'd draw the
 causeway dotted even though it's paved. Have I got that?” Her example gives

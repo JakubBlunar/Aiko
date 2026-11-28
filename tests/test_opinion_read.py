@@ -25,6 +25,19 @@ class Client:
         yield json.dumps(self.data)
 
 
+def test_teaching_retry_requires_the_convention_from_its_owner():
+    from app.core.conversation.activity_role import TEACHING_GUIDANCE
+    from scripts.opinion_replay import CAUSEWAY
+
+    history = [dict(role=role, content=text) for role, text in CAUSEWAY]
+    latest = "Actually it stays dry. Try another example."
+    reply = "I'd dot a path across a sandbar if it disappears under the waves."
+    for quote, expected in (("only cross at low tide", reply), ("stays dry", ""), ("causeway", "")):
+        result, _ = run_read(latest, {"quote": quote, "reply": reply},
+                             guidance=TEACHING_GUIDANCE, history=history)
+        assert result == expected
+
+
 def test_replacement_routine_uses_the_latest_account():
     from app.core.conversation.routine_continuity import ROUTINE_UPDATE_GUIDANCE
 
