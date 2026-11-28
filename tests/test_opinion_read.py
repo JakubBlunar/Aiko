@@ -25,6 +25,17 @@ class Client:
         yield json.dumps(self.data)
 
 
+def test_replacement_routine_uses_the_latest_account():
+    from app.core.conversation.routine_continuity import ROUTINE_UPDATE_GUIDANCE
+
+    history = [{"role": "user", "content": "Saturday is when we used to go shopping."}]
+    latest = "We do Sunday breakfast now."
+    data = {"quote": "Sunday breakfast", "reply": "Sunday breakfast sounds lovely."}
+    assert run_read(latest, data, guidance=ROUTINE_UPDATE_GUIDANCE, history=history)[0]
+    assert not run_read(latest, {**data, "quote": "Saturday"}, guidance=ROUTINE_UPDATE_GUIDANCE,
+                        history=history)[0]
+
+
 def run_read(text, data, *, guidance=IMPRESSION_GUIDANCE, finish="stop", history=()):
     client = Client(data, finish)
     messages = [{"role": "system", "content": "Character and context.\n" + guidance},

@@ -19,6 +19,94 @@ _MEANING = re.compile(r"\b(?:miss|meant|about|purpose|why|matter\w*|only|just|st
 _GENERIC = {"lose", "lost", "routine", "ritual", "tradition", "habit", "because", "each", "used",
             "instead", "stopped", "call", "weekly", "really", "every", "exchange", "started"}
 
+_CONSIDERING = re.compile(r"\b(?:(?:i|we) (?:could|might|am considering|"
+                          r"are considering)|(?:i['’]m|we['’]re) (?:considering|thinking of|"
+                          r"thinking about)|should (?:i|we))\b", re.I)
+_SAVING = re.compile(r"\b(?:sav(?:e|es|ing) (?:me |us )?(?:some |a lot of |an? |\d+ |"
+                     r"[a-z]+ )?(?:time|hours?|minutes?|effort|money)|quicker|faster|easier|"
+                     r"cheaper)\b", re.I)
+_VALUE = re.compile(r"\b(?:only (?:time|chance)|(?:is|are|was) (?:usually |often )?"
+                    r"(?:when|how)|gives? (?:me|us) (?:time|a chance)|"
+                    r"means? (?:i|we) (?:get to|can))\b", re.I)
+_DAY = re.compile(r"\b(mon|tues|wednes|thurs|fri|satur|sun)days?\b", re.I)
+_CHANGED = re.compile(r"\b(?:instead|no longer|anymore|used to|we (?:now|switched)|"
+                      r"we['’]ve started|we have started)\b", re.I)
+_INCIDENTAL = {"hour", "minute", "time", "save", "saving", "effort", "money", "might",
+               "would", "easier", "faster", "quicker", "cheaper", "considering", "thinking",
+               "usually", "week", "next", "just", "chance", "only", "delivered", "online", "home"}
+
+SHORTCUT_GUIDANCE = (
+    "They are considering a shortcut. Their earlier words describe something they value about "
+    "the activity. Would the shortcut affect that part? Whether it continues is unknown. "
+    "If you're curious, ask one short question and give them room to answer. You can also "
+    "simply acknowledge the saving. Let them decide which part matters to them."
+)
+ROUTINE_UPDATE_GUIDANCE = (
+    "They described a new arrangement. If it preserves what mattered about the old routine, "
+    "let the old concern go. Respond to how they spend that time now in your own words. "
+    "The earlier activity's schedule belongs to that activity. Leave the new arrangement's "
+    "day, frequency, and their decision about the shortcut open unless they supplied them."
+)
+
+
+def _activity_words(text):
+    # Bring the errand and its place into the same vocabulary at retrieval time.
+    text = re.sub(r"\b(?:groceries|grocery(?: (?:store|shop))?|supermarket|"
+                  r"(?:the|our) (?:local )?shop)\b", "groceries", text, flags=re.I)
+    return terms(_DAY.sub("", text)) - _INCIDENTAL
+
+
+def check_shortcut(text, previous, db, owner, key, current_id):
+    """Offer a remembered benefit only when the proposed shortcut touches its activity."""
+    if "?" in text and not re.search(r"\bshould (?:i|we)\b", text, re.I):
+        return PracticalAnswer()
+    proposal = _CONSIDERING.search(text)
+    if (not proposal and _CONSIDERING.search(previous) and _SAVING.search(previous)
+            and _CHANGED.search(text) and re.search(r"\b(?:we|i|my|our)\b", text, re.I)):
+        return PracticalAnswer(ROUTINE_UPDATE_GUIDANCE)
+    if not proposal or not _SAVING.search(text):
+        return PracticalAnswer()
+    if _CHANGED.search(text) and re.search(r"\b(?:already|started|switched|no longer)\b",
+                                           text, re.I):
+        return PracticalAnswer()
+    # A separate practical question or a decision they've already made takes precedence.
+    if re.search(r"\b(?:how (?:do|can)|what time|already (?:did|ordered|decided))\b", text, re.I):
+        return PracticalAnswer()
+    activity = _activity_words(re.split(r"[.!?;]", text[proposal.end():], maxsplit=1)[0])
+    if not activity:
+        return PracticalAnswer()
+    days = set(_DAY.findall(text.casefold()))
+    changed_activities = set()
+    rows = remarks(db, owner, key, current_id)
+    for i in range(len(rows) - 1, -1, -1):
+        row = rows[i]
+        if row["role"] != "user":
+            continue
+        content = row["content"]
+        if _CHANGED.search(content):
+            change = _activity_words(content)
+            # An elliptical replacement can answer a question naming the routine.
+            if (i and rows[i - 1]["role"] == "assistant" and near(rows[i - 1], row)
+                    and rows[i - 1]["content"].rstrip().endswith("?")):
+                change |= _activity_words(rows[i - 1]["content"])
+            changed_activities.update(change)
+            continue
+        for clause in re.split(r"[.!?;](?!\s*(?:that['’]s|it['’]s|that is|it is)\b)|"
+                               r"\bbut\b|,\s*and\s+", content, flags=re.I):
+            value = _VALUE.search(clause)
+            if not value or not re.search(r"\b(?:i|my|our|we|me|us)\b", clause, re.I):
+                continue
+            routine = _activity_words(clause[:value.start()])
+            if not activity & routine:
+                continue
+            occasion = set(_DAY.findall(clause.casefold()))
+            if days and occasion - days:
+                continue
+            if changed_activities & routine:
+                return PracticalAnswer()
+            return PracticalAnswer(SHORTCUT_GUIDANCE + "\n" + evidence([row]))
+    return PracticalAnswer()
+
 
 def check_routine(text, previous, db, owner, key, current_id):
     match = _QUESTION.search(text)

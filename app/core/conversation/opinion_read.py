@@ -6,6 +6,7 @@ import re
 from app.core.conversation.clarification_reply import (
     ARGUMENT_GUIDANCE, EXAMPLE_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
 )
+from app.core.conversation.routine_continuity import ROUTINE_UPDATE_GUIDANCE
 
 
 log = logging.getLogger(__name__)
@@ -34,8 +35,15 @@ _EXAMPLE = (
     "applies. A preference can stand on its own. For a variation, check whether your earlier "
     "reason still applies. Say what you think now. No tags."
 )
+_ROUTINE_UPDATE = (
+    'Return {"quote":"exact words of their latest update","reply":"one sentence in your own '
+    'voice"}. What does this settle about the part they valued? Respond to that connection '
+    'using their actual words. Skip scene-setting and comparisons about which activity is '
+    'nicer. No tags.'
+)
 OPINION_CONTRACTS = {ARGUMENT_GUIDANCE: _ARGUMENT, EXAMPLE_GUIDANCE: _EXAMPLE,
-                     IMPRESSION_GUIDANCE: _IMPRESSION, REVISION_GUIDANCE: _REVISION}
+                     IMPRESSION_GUIDANCE: _IMPRESSION, REVISION_GUIDANCE: _REVISION,
+                     ROUTINE_UPDATE_GUIDANCE: _ROUTINE_UPDATE}
 _ONLY_CONDITION = re.compile(r"\bonly (?:the|one)\b[^.!?]{1,65}?\b"
                              r"((?:had|was|were|got|offered|received)\s+[^.!?]{1,80})[.!?]", re.I)
 _QUOTED_WORK = re.compile(r'“([^”\n]+)”|"([^"\n]+)"')
@@ -90,7 +98,12 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
             # Remove only the demand for agreement in this private reading. The claim
             # remains an option, and her new answer can still change her earlier view.
             latest = f'The alternative claim is "{pressure[1]}". What do you think?'
-    prompt = [{**head, "content": before + after}, *turns[:-1],
+    context_turns = turns[:-1]
+    if guidance == ROUTINE_UPDATE_GUIDANCE:
+        # Their new arrangement answers the last conversational turn. Repeating
+        # the original proposal here repeatedly lent its schedule to the replacement.
+        context_turns = [m for m in turns[-2:-1] if m["role"] == "assistant"]
+    prompt = [{**head, "content": before + after}, *context_turns,
               {**turns[-1], "content": latest + "\n\n" + contract}]
     try:
         raw = "".join(client.chat_stream(prompt, model=model, options=options,
@@ -132,7 +145,7 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
         if isinstance(quote, str) and quote.rstrip().endswith("?"):
             return ""
         sources = [latest]
-    elif guidance in (ARGUMENT_GUIDANCE, EXAMPLE_GUIDANCE):
+    elif guidance in (ARGUMENT_GUIDANCE, EXAMPLE_GUIDANCE, ROUTINE_UPDATE_GUIDANCE):
         sources = [turns[-1]["content"]]
     elif len(works) == 2:
         sources = [m[1] or m[2] for m in works]

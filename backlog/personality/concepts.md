@@ -1865,7 +1865,8 @@ still embellish who was present.
 
 ## L81. Figure out what a shortcut would cost
 
-**Open.** “I could get my Saturday groceries delivered. That would save an hour.”
+**Implemented pilot. Ordinary-use check open.** “I could get my Saturday
+groceries delivered. That would save an hour.”
 Earlier the user mentioned that walking home from the shop with their brother is
 usually the only time the two of them get to talk. Aiko could bring one overlooked
 consequence into the decision. “Would you still get the walk home with your
@@ -1877,6 +1878,15 @@ happens independently of the shopping. The delivery decision now leaves it intac
 In the Saturday version, let the user reply “We've started doing breakfast instead.”
 Can Aiko update her take in the next sentence? Score whether she traces the actual
 connection between the activity and what the user values.
+
+Six fictional cases compared the ordinary chat prompt before and after the
+change on local Qwen 9B, seed 67. The Saturday errand and online choir
+practice surfaced the speaker's earlier words. An independent Sunday walk
+and a Sunday shopping trip stayed out. The two breakfast updates checked
+whether Aiko could release the concern with and without a specified weekday.
+Some replies embellished the circumstances of the walk. The offer is optional,
+and the speaker decides what the saved time is worth. Reproduce the comparison
+with `python -m scripts.companion_contribution_replay --section shortcut --baseline 3b79be69`.
 
 ## L82. Follow the logic of a joke for one more turn
 

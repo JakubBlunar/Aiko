@@ -31,7 +31,7 @@ from app.core.conversation.diagnostic_capture import proposed_test
 from app.core.conversation.feasibility import check_feasibility
 from app.core.conversation.shared_retrospective import check_retrospective
 from app.core.conversation.taste_development import check_taste
-from app.core.conversation.routine_continuity import check_routine
+from app.core.conversation.routine_continuity import check_routine, check_shortcut
 from app.core.conversation.shared_future import check_shared_future
 from app.core.conversation.activity_role import check_activity_role
 from app.core.conversation.decision_hindsight import check_hindsight
@@ -4061,6 +4061,10 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
                                           self._continuity_owner, session_key,
                                           current_user_message_id)
             practical_kind = "earlier_preparation"
+        if not practical.guidance and not pursuit_guidance:
+            practical = check_shortcut(user_text, previous_user, self._db, self._continuity_owner,
+                                       session_key, current_user_message_id)
+            practical_kind = "routine_shortcut"
         prior_assistant = (history_msgs[-1].content if history_msgs and
                            history_msgs[-1].role == "assistant" else "")
         current_reply_guidance = ((pursuit_guidance

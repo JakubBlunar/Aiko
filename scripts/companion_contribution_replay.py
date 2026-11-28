@@ -5,12 +5,14 @@ import json
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import requests
 
 from app.core.conversation.practical_answer import PracticalAnswer
+from app.core.conversation.opinion_read import read_opinion
 from app.core.conversation.clarification_reply import CURRENT_REPLY_GUIDANCE
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
@@ -34,9 +36,27 @@ PLAN = "I thought about labelling the side door before the community supper to h
 OTHER = "My neighbour labelled the side door for the community supper so people could find it."
 SILENCE = "The printer has elected to observe a minute of silence for every page."
 TOLL = "The printer charges a toll of one blank page per document."
+DELIVERY = "I could get my Saturday groceries delivered. That would save an hour."
+ERRAND = "Walking home from the shop with my brother on Saturdays is the only time we get to talk."
+WEEKEND = "Sunday's walk with my brother is the only time we get to talk."
+BREAKFAST = "We've started doing breakfast instead."
+WALK_ASK = "Would you still get that walk home with your brother?"
 
 # Each arm gets an independent database. Earlier-day records are outside the current session.
 CASES = {
+    "shortcut": [
+        ("shared errand", "", [ERRAND], [], DELIVERY, "optional question about the walk"),
+        ("independent walk", "", [WEEKEND], [], DELIVERY, "leave the separate walk alone"),
+        ("other errand", "", [ERRAND.replace("Saturdays", "Sundays")], [], DELIVERY,
+         "a different day's shopping trip is separate"),
+        ("breakfast", "", [ERRAND], [("user", DELIVERY), ("assistant", WALK_ASK)], BREAKFAST,
+         "take breakfast as the current way they meet; release the concern"),
+        ("named breakfast", "", [ERRAND], [("user", DELIVERY), ("assistant", WALK_ASK)],
+         "We've started doing Sunday breakfast instead.", "respect the new weekday"),
+        ("practice", "", ["Going to choir practice is when my sister and I get to catch up."],
+         [], "I might do choir practice online. That would save some time.",
+         "may wonder whether online practice changes the catch-up"),
+    ],
     "clue": [
         ("layout", SIGN, [], [], BANNER, "banner first; optional tentative layout connection"),
         ("invited", SIGN, [], [], BANNER + " Does that remind you of anything we've seen?",
@@ -95,7 +115,10 @@ def run_case(db, persona, case, group, arm, client, model):
     if question:
         assembler.set_inner_life_providers(curiosity_seeds=host.render)
     with ExitStack() as changes:
-        if arm == "baseline":
+        if arm == "baseline" and group == "shortcut":
+            changes.enter_context(patch("app.core.session.prompt_assembler.check_shortcut",
+                                        return_value=PracticalAnswer()))
+        elif arm == "baseline":
             changes.enter_context(patch("app.core.session.prompt_assembler.check_preparation",
                                         return_value=PracticalAnswer()))
             changes.enter_context(patch("app.core.session.prompt_assembler.ordinary_reply_guidance",
@@ -110,12 +133,20 @@ def run_case(db, persona, case, group, arm, client, model):
     preparation_offered = "This excerpt is something they already did" in prompt
     if group == "preparation":
         assert preparation_offered == (arm == "candidate" and name == "done")
-    reply = "".join(client.chat_stream(messages, model=model, options={
-        "num_ctx": 24576, "num_predict": 280, "temperature": 0.2}))
+    if group == "shortcut":
+        assert ("Their earlier words describe" in prompt) == (
+            arm == "candidate" and name in {"shared errand", "practice"})
+        assert ("let the old concern go" in prompt) == (
+            arm == "candidate" and name in {"breakfast", "named breakfast"})
+    options = {"num_ctx": 24576, "num_predict": 280, "temperature": 0.2}
+    reading = read_opinion(client, messages, tel.opinion_guidance, model=model, options=options,
+                           stop_event=Event()) if tel.opinion_guidance else ""
+    reply = reading or "".join(client.chat_stream(messages, model=model, options=options))
     if question:
         host._settle_pool_cues(user_text=text, assistant_text=reply)
     return dict(group=group, case=name, arm=arm, expected=expected, reply=reply,
-                finish=client.last_usage.done_reason, curiosity_offered=offered,
+                finish=client.last_usage.done_reason, opinion_read=bool(reading),
+                curiosity_offered=offered,
                 preparation_offered=preparation_offered,
                 cue_state=host._cue_store.list_for_user()[0].state if question else None)
 

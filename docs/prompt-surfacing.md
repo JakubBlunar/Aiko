@@ -310,6 +310,14 @@ identify the occasion. A plan, someone else's preparation, or a later correction
 can withhold the offer. Aiko decides whether to credit the work, and the
 outcome's cause stays open unless the speaker supplies it.
 
+When someone considers changing a routine to save time, effort or money, the
+routine path can offer their own earlier account of what they valued about the
+activity. It checks the named activity and any explicit weekdays. Aiko can ask
+whether the valued part would survive or simply acknowledge the saving. If the
+speaker describes a replacement, the opinion reader can respond to the update
+in their latest words. A linked later correction also retires the older concern
+from this lookup.
+
 The companion persona treats a newly invented joke as an invitation to play
 out one consequence. The speaker can change the premise or turn to a practical
 question on the next line. An established shared joke still follows its usual
