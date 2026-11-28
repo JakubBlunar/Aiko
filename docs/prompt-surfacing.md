@@ -350,6 +350,12 @@ looks for a matching original exchange, including who said what. Competing
 exchanges can prompt clarification, and a final preference alone leaves the
 origin open. See the [opinion reader](../app/core/conversation/opinion_read.py).
 
+When someone names an album and says how far they listened, the shared media
+context can carry that progress into a later conversation about the same title.
+“I listened through track 3” establishes the first three tracks in order.
+Playing one track on shuffle establishes no such boundary. The listener can
+correct their progress or ask Aiko to stop tracking the album.
+
 ## Gates, arbitration and assembly effects
 
 ### Cue admission and consumption

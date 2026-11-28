@@ -131,10 +131,16 @@ metadata; test responsiveness without forced delay on urgent practical replies.
 
 **Status: Partial.**
 
-**Implemented / available:** Explicit per-user show/book progress and cited discussion persist
-across sessions/restarts with correction/stop/source validation.
+**Implemented / available:** Explicit per-user show, book and album progress and cited
+discussion persist across sessions. “I listened through track 3 of Night Ferries” sets
+the album boundary. Starting or sampling another track leaves it in place. A correction
+can lower the boundary and retire later discussion.
 
-**Remaining:** Canonical prefix-limited retrieval, albums, concurrent titles, implicit progress, UI
+A fictional cross-session replay recovered the confirmed track. With only a
+single sampled track in the prior session, Aiko left the listening boundary
+open but supplied an unsupported artist. Artist attribution remains unverified.
+
+**Remaining:** Canonical prefix-limited retrieval, concurrent titles, implicit progress, UI
 and real-model spoiler tests remain; IM3 owns the shared reader.
 
 [Implemented slice](shipped/audit-2026-10-24.md#patterns-k62).

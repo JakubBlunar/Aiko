@@ -13,21 +13,23 @@ _WRITE_LOCK = threading.RLock()
 
 _PROGRESS = re.compile(
     r"^(?:actually[, ]+)?i(?:'ve| have)? (?:only |just )?"
-    r"(?P<verb>finished|completed|watched|read|started|am watching|am reading)\s+"
+    r"(?P<verb>listened through|finished|completed|watched|read|started|am watching|am reading)\s+"
     r"(?P<body>[^\n.!?]{1,160})(?:[.!?]|$)", re.IGNORECASE,
 )
 _UNIT_FIRST = re.compile(
-    r"^(?P<unit>episode|ep\.?|chapter)\s*(?P<number>\d+)"
+    r"^(?P<unit>episode|ep\.?|chapter|track)\s*(?P<number>\d+)"
     r"(?:\s+of\s+(?P<title>.{1,80}))?$", re.IGNORECASE,
 )
 _TITLE_FIRST = re.compile(
-    r"^(?P<title>.{1,80}?)\s+(?P<unit>episode|ep\.?|chapter)\s*(?P<number>\d+)$",
+    r"^(?P<title>.{1,80}?)\s+(?P<unit>episode|ep\.?|chapter|track)\s*(?P<number>\d+)$",
     re.IGNORECASE,
 )
 _STOP = re.compile(
     r"^(?:please )?stop (?:tracking|following|discussing) "
-    r"(?:this|that|the) (?:book|show|media thread)[.!]*$", re.IGNORECASE,
+    r"(?:this|that|the) (?P<medium>book|show|album|media thread)[.!]*$", re.IGNORECASE,
 )
+_MEDIUM = {"chapter": "book", "episode": "show", "track": "album"}
+_TRACK_NUMBER = re.compile(r"\btrack\s+(\d{1,5})\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -56,7 +58,10 @@ def project_thread(
     text = (user_text or "").replace("\u2019", "'").strip()
     if previous is not None and source_message_id < previous.source_message_id:
         return previous
-    if previous is not None and _STOP.fullmatch(text):
+    stop = _STOP.fullmatch(text)
+    if previous is not None and stop and stop["medium"].lower() in (
+        "media thread", _MEDIUM[previous.unit],
+    ):
         return replace(previous, active=False, exchanges=(), source_message_id=source_message_id)
     match = _PROGRESS.match(text)
     if match is None:
@@ -67,7 +72,13 @@ def project_thread(
     progress = _UNIT_FIRST.fullmatch(body) or _TITLE_FIRST.fullmatch(body)
     if progress is None:
         return previous
-    unit = "chapter" if progress["unit"].lower() == "chapter" else "episode"
+    unit = progress["unit"].lower()
+    if unit.startswith("ep"):
+        unit = "episode"
+    verb = match["verb"].lower()
+    # Only an explicit listening boundary establishes a contiguous run of tracks.
+    if (unit == "track") != (verb == "listened through"):
+        return previous
     title = (progress["title"] or "").strip(' "\'')
     if not title:
         if not allow_implicit or previous is None or not previous.active or previous.unit != unit:
@@ -78,7 +89,7 @@ def project_thread(
     number = int(progress["number"])
     if not 1 <= number <= 10000:
         return previous
-    complete = match["verb"].lower() in {"finished", "completed", "watched", "read"}
+    complete = verb in {"finished", "completed", "watched", "read", "listened through"}
     ceiling = number if complete else number - 1
     same = previous is not None and previous.title.casefold() == title.casefold()
     exchanges = (
@@ -117,7 +128,7 @@ class MediaThreadStore:
             thread = MediaThread(**payload, exchanges=exchanges)
             if (
                 not isinstance(thread.title, str) or not 2 <= len(thread.title) <= 80
-                or thread.unit not in {"episode", "chapter"}
+                or thread.unit not in _MEDIUM
                 or type(thread.completed_through) is not int
                 or not 0 <= thread.completed_through < 10001
                 or type(thread.source_message_id) is not int
@@ -177,9 +188,15 @@ class MediaThreadStore:
             exchange = MediaExchange(
                 user_message_id, assistant_id, thread.completed_through, self.session_id,
             )
+            exchanges = (*thread.exchanges, exchange)[-4:]
+            if thread.unit == "track" and any(
+                int(n) > thread.completed_through for content in
+                (user.content, assistant.content if assistant_id else "")
+                for n in _TRACK_NUMBER.findall(content)
+            ):
+                exchanges = thread.exchanges
             thread = replace(
-                thread, source_message_id=user_message_id,
-                exchanges=(*thread.exchanges, exchange)[-4:],
+                thread, source_message_id=user_message_id, exchanges=exchanges,
             )
         thread = replace(thread, source_session_id=self.session_id)
         self.db.kv_set(self.key, json.dumps(asdict(thread)))
@@ -210,10 +227,17 @@ class MediaThreadStore:
         transcript = timephrase.format_transcript(
             rows, role_labels={"user": "User said", "assistant": "Aiko previously proposed"},
         )
+        boundary = (
+            ". Sampling a later track says nothing about the tracks in between. "
+            "Use musical details the listener has actually described. For a question about "
+            "where they left off, the confirmed track can be the whole answer. Let the listener "
+            "bring up a later track when they reach it."
+            if thread.unit == "track" else "; nothing beyond that is established as experienced."
+        )
         return (
             "[Shared media context]\n" + timephrase.today_anchor() + "\n"
             f"Title: {thread.title}. Confirmed completed through {thread.unit} "
-            f"{thread.completed_through}; nothing beyond that is established as experienced. "
+            f"{thread.completed_through}{boundary} "
             "Starting a part is not finishing it. Discuss only details the user has supplied "
             "within this boundary; do not introduce later plot facts, hints or outside summaries. "
             "If progress or a detail is uncertain, stay nonspecific. Earlier assistant opinions "

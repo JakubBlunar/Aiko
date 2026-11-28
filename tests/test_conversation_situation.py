@@ -67,6 +67,41 @@ def test_media_thread_progress_correction_and_start_are_bounded() -> None:
     assert switched.title == "North Station" and switched.exchanges == ()
 
 
+def test_album_progress_tracks_only_confirmed_contiguous_listening(tmp_path) -> None:
+    from app.core.conversation.media_thread import MediaThreadStore
+
+    db = ChatDatabase(tmp_path / "album.db")
+    first = MediaThreadStore(db, "first", user_id="listener")
+
+    def record(store, text, reply=None):
+        uid = db.add_message(store.session_id, "user", text)
+        aid = db.add_message(store.session_id, "assistant", reply) if reply else None
+        store.record(uid, aid)
+
+    record(first, "I listened to track 8 of Night Ferries.")
+    assert first.load() is None
+    record(first, "I listened through track 3 of Night Ferries.",
+           "You mentioned the brushed drums.")
+    second = MediaThreadStore(db, "later", user_id="listener")
+    block = second.render("Back to Night Ferries?")
+    assert "through track 3" in block and "brushed drums" in block
+    assert second.render("How was lunch?") == ""
+    assert MediaThreadStore(db, "later", user_id="other").load() is None
+    record(second, "I listened through track 6.")
+    assert second.load().completed_through == 3
+    record(second, "I started track 7 of Night Ferries.")
+    record(second, "Night Ferries has a wild solo on track 9.")
+    assert second.load().completed_through == 3
+    assert "wild solo" not in second.render("Night Ferries")
+    record(second, "Actually, I only listened through Night Ferries track 2.")
+    block = second.render("Night Ferries")
+    assert "through track 2" in block and "brushed drums" not in block
+    record(second, "Please stop tracking this book.")
+    assert second.load().active
+    record(second, "Please stop tracking this album.")
+    assert first.render("Night Ferries") == ""
+
+
 def test_media_store_is_read_only_during_render_and_survives_restart(tmp_path) -> None:
     from app.core.conversation.media_thread import MediaThreadStore
 
