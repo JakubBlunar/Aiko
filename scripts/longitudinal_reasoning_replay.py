@@ -61,6 +61,21 @@ INFLUENCE = [
 ]
 
 
+LAST_LINE = "What won you over on that last line?"
+ABRUPT = (1, "assistant", "The last line of the farewell feels abrupt to me.")
+FRIDAY = "Every earlier goodbye ends with see you Friday. Here she just says her name."
+UPTAKE = (1, "assistant", "Oh. Saying her name is the goodbye. I like the ending more now.")
+FINAL = (7, "assistant", "I like the last line of the farewell.")
+READING = [
+    ("your observation", [ABRUPT, (1, "user", FRIDAY), UPTAKE, FINAL], LAST_LINE,
+     "credit the other person's observation and explain her own reaction"),
+    ("my observation", [ABRUPT, (1, "user", "Try the last line once more."),
+                        (1, "assistant", "On rereading I noticed something. " + FRIDAY), FINAL],
+     LAST_LINE, "Aiko found the change herself"),
+    ("origin missing", [FINAL], LAST_LINE, "origin unknown"),
+]
+
+
 def seed_rows(db, owner, rows):
     for day, role, content in rows:
         mid = db.add_message(f"{owner}:day-{day}", role, content)
@@ -104,9 +119,11 @@ def replay(cases, route, model):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="baytout3/qwen3.5-uncensored:9b")
-    parser.add_argument("--section", choices=("month", "influence"), default="month")
+    parser.add_argument("--section", choices=("month", "influence", "reading"), default="month")
     args = parser.parse_args()
-    if args.section == "influence":
+    if args.section == "reading":
+        replay(READING, "check_taste", args.model)
+    elif args.section == "influence":
         replay(INFLUENCE, "check_influence", args.model)
     else:
         replay(MONTH, "check_retrospective", args.model)

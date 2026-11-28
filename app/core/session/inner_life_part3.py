@@ -1399,10 +1399,19 @@ class InnerLifePart3Mixin(DebugOverridesHostMixin):
             question = row.payload.get("prompt_text")
             why = row.payload.get("why")
             value = row.payload.get("quality", {}).get("useful_because")
-            if isinstance(question, str) and question:
-                line += f"\n  Possible direction: {question}"
-            if isinstance(why, str) and why:
-                line += f"\n  Connection: {why}"
+            drafts = row.payload.get("quality", {}).get("drafts")
+            match drafts:
+                case {"title": str(title), "before": {"quote": str(before)},
+                      "after": {"quote": str(after)}}:
+                    # The two excerpts are alternate versions. Let Aiko make her own
+                    # connection instead of suggesting that both happened in the story.
+                    line += (f"\n  Your two versions of the same passage in {title!r}: "
+                             f"first {before!r}, instead {after!r}.")
+                case _:
+                    if isinstance(question, str) and question:
+                        line += f"\n  Possible direction: {question}"
+                    if isinstance(why, str) and why:
+                        line += f"\n  Connection: {why}"
             if isinstance(value, str) and value:
                 line += f"\n  What it could add: {value}"
             rendered.append(line)

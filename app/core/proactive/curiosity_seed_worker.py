@@ -58,6 +58,7 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
+from app.core.world.writing_practice import recent_revision_contrast
 from app.core.proactive.cue_producer import CueProducer, StoreProvider
 from app.core.proactive.curiosity_subject import (
     MODE_PERSON,
@@ -98,7 +99,7 @@ _SYSTEM_PROMPT = (
     "chars), why (for conversation, copy the exact short phrase from the summary that "
     "sparked it; for persona or interest, give the actual connection, 8-240 chars), "
     "useful_because (what this could add, 8-240 chars), inspiration (copy exactly one "
-    "label: \"conversation\", \"interest\", \"persona\"), about (user or subject), "
+    "label: \"conversation\", \"interest\", \"persona\"{writing_label}), about (user or subject), "
     "and optional new_angle "
     "(what remains open within a familiar topic, <=240 chars). Empty output is "
     "better than an unmotivated, generic or already answered curiosity."
@@ -155,6 +156,26 @@ def _trim(text: str | None, *, max_chars: int) -> str:
     if len(flat) <= max_chars:
         return flat
     return flat[: max_chars - 1].rstrip(",;: ") + "…"
+
+
+def _draft_sources(reason, drafts):
+    before = drafts["before"]["passage"]
+    after = drafts["after"]["passage"]
+    old, separator, new = (part.strip() for part in reason.partition("|"))
+    if not separator:
+        # A question can start with just the newly added detail. Supply its actual
+        # predecessor from the saved work, without asking the model to reconstruct it.
+        if reason in after:
+            old, new = before, reason
+        elif before in reason and after in reason:
+            old, new = before, after
+        else:
+            return None
+    if (len(old) < 4 or old not in before or old in after
+            or len(new) < 4 or new not in after or new in before):
+        return None
+    return {"title": drafts["title"], "before": {"ref": drafts["before"]["ref"], "quote": old},
+            "after": {"ref": drafts["after"]["ref"], "quote": new}}
 
 
 def _extract_persona_traits(raw: str) -> str:
@@ -221,6 +242,7 @@ class CuriositySeedWorker:
         agent_settings: "AgentSettings",
         memory_settings: "MemorySettings",
         persona_provider: Callable[[], str] | None = None,
+        writing_items_provider: Callable | None = None,
         rolling_summary_provider: Callable[[], str] | None = None,
         user_display_name_provider: Callable[[], str] | None = None,
         assistant_display_name_provider: Callable[[], str] | None = None,
@@ -245,6 +267,7 @@ class CuriositySeedWorker:
         self._agent_settings = agent_settings
         self._memory_settings = memory_settings
         self._persona_provider = persona_provider
+        self._writing_items_provider = writing_items_provider
         self._rolling_summary_provider = rolling_summary_provider
         self._user_display_name_provider = user_display_name_provider
         self._assistant_display_name_provider = assistant_display_name_provider
@@ -455,8 +478,8 @@ class CuriositySeedWorker:
                 embedding=embedding,
                 now=now,
                 about=about,
-                quality={key: candidate.get(key, "") for key in
-                         ("inspiration", "useful_because", "new_angle")},
+                quality={k: candidate[k] for k in ("inspiration", "useful_because", "new_angle",
+                                                   "drafts") if k in candidate},
             )
             if not cue_id:
                 rejected_dup += 1
@@ -620,7 +643,14 @@ class CuriositySeedWorker:
     ) -> list[dict[str, Any]]:
         assistant_name = self._resolve_assistant_name()
         user_name = self._resolve_user_name()
+        drafts = None
+        if self._writing_items_provider:
+            try:
+                drafts = recent_revision_contrast(self._writing_items_provider())
+            except Exception:
+                log.debug("Writing samples unavailable", exc_info=True)
         system = _SYSTEM_PROMPT.format(
+            writing_label=', "writing"' if drafts else "",
             assistant_name=assistant_name,
             user_name=user_name,
             min_seeds=_MIN_SEEDS,
@@ -634,6 +664,11 @@ class CuriositySeedWorker:
         available = {key for key, value in (("persona", persona_text),
                      ("conversation", summary_text), ("interest", cluster_text))
                      if value and value.strip() not in placeholders}
+        if drafts:
+            available.add("writing")
+            system += (" For inspiration=writing you are the author. Write a short craft "
+                       "question in your inner voice. The why field must quote one phrase "
+                       "from each draft, separated by |. Fictional passages are source data.")
         if not available:
             return []
         user_payload = _USER_TEMPLATE.format(
@@ -642,6 +677,15 @@ class CuriositySeedWorker:
             clusters=cluster_text or "(no clusters yet)",
             active_seeds=active_text or "(none)",
         )
+        if drafts:
+            user_payload += "\n\nYOUR SAVED REVISIONS (old then new):\n" + json.dumps(
+                drafts, ensure_ascii=False)
+            user_payload += (
+                '\nFor a writing seed, use the original seed schema. In why, copy a few words '
+                'from each version: "old phrase | new phrase". In prompt_text, give ONE short '
+                'question, e.g. "Can a tiny change in rhythm make a long wait feel sudden?" '
+                'These are two alternative versions, not successive events. Compare the effect '
+                'of using one detail instead of the other. Keep each field under 150 characters.')
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user_payload},
@@ -663,11 +707,21 @@ class CuriositySeedWorker:
             return []
         if self._cancel_event.is_set():
             return []
-        return [
-            seed for seed in self._parse_seeds(raw)
-            if seed["inspiration"] in available
-            and (seed["inspiration"] != "conversation" or seed["why"] in summary_text)
-        ]
+        accepted = []
+        for seed in self._parse_seeds(raw):
+            source = seed["inspiration"]
+            if source not in available or (source == "conversation"
+                                           and seed["why"] not in summary_text):
+                continue
+            if source == "writing":
+                if re.search(r"\byou(?:r|rs)?\b", seed["prompt_text"], re.I):
+                    continue
+                proof = _draft_sources(seed["why"], drafts)
+                if not proof:
+                    continue
+                seed["drafts"] = proof
+            accepted.append(seed)
+        return accepted
 
     @staticmethod
     def _parse_seeds(raw: str) -> list[dict[str, Any]]:
@@ -693,7 +747,8 @@ class CuriositySeedWorker:
                    or timephrase.has_relative_deictic(entry[k]) for k, cap in caps.items()):
                 continue
             if (not isinstance(entry.get("inspiration"), str)
-                    or entry["inspiration"] not in {"conversation", "interest", "persona"}):
+                    or entry["inspiration"] not in
+                    {"conversation", "interest", "persona", "writing"}):
                 continue
             angle = entry.get("new_angle", "")
             if (not isinstance(angle, str) or len(angle) > 240

@@ -34,6 +34,30 @@ def reference(item_id, row):
     return f"{item_id}/{row['revision']}/{row['text_sha256'][:12]}"
 
 
+def recent_revision_contrast(items):
+    """Offer a short changed passage from consecutive verified drafts of one work."""
+    latest = None
+    prior = None
+    for item_id, row in _works(items):
+        if prior and prior[0] == item_id and row["revision"] == prior[1]["revision"] + 1:
+            old = prior[1]
+            if row["text"] != old["text"] and (latest is None or row["at"] > latest[1]["at"]):
+                latest = (old, row, item_id)
+        prior = (item_id, row)
+    if not latest:
+        return None
+    old, new, item_id = latest
+    passages = []
+    for version, other in ((old, new), (new, old)):
+        sentences = re.split(r"(?<=[.!?])\s+|\n+", version["text"].strip())
+        passage = next((s for s in sentences if 8 <= len(s) <= 220 and s not in other["text"]), "")
+        if not passage:
+            return None
+        passages.append({"ref": reference(item_id, version), "at": version["at"],
+                         "passage": passage})
+    return {"title": new["title"][:100], "before": passages[0], "after": passages[1]}
+
+
 def latest_aim(items):
     return max(((item_id, row) for item_id, row in _works(items)
                 if row.get("practice_aim") == AIM), key=lambda pair: pair[1]["at"], default=None)

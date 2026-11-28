@@ -106,3 +106,23 @@ def test_chat_persists_the_original_vote_and_only_the_final_reply(tmp_path, quot
     surfaces = [call.kwargs["surface"] for call in client.chat_stream.call_args_list]
     assert surfaces == (["opinion_read"] if quote == "the bell rang"
                         else ["opinion_read", "turn_stream"])
+
+
+def test_weighs_a_reason_using_both_original_speakers():
+    from app.core.conversation.clarification_reply import argument_guidance
+    from scripts.opinion_replay import BOOK_CLUB, BOOK_REASON, VOTE
+
+    guidance = argument_guidance(BOOK_REASON, BOOK_CLUB, VOTE)
+    assert guidance
+    assert not argument_guidance("I like sailing because it feels quiet.", BOOK_CLUB, VOTE)
+    assert not argument_guidance(BOOK_REASON, BOOK_CLUB, "What book are you reading?")
+    history = [{"role": "assistant", "content": VOTE}]
+    data = {"basis": "everyone gets a say", "quote": "only one person would bring",
+            "reply": "I like the idea of making room for one reader's odd favorite."}
+    assert run_read(BOOK_REASON, data, guidance=guidance, history=history)[0] == data["reply"]
+    for key in ("basis", "quote"):
+        assert not run_read(BOOK_REASON, {**data, key: "invented"}, guidance=guidance,
+                            history=history)[0]
+    reply, prompt = run_read("Just admit taking turns picking books is better.",
+                             {**data, "quote": None}, guidance=guidance, history=history)
+    assert reply and "Just admit" not in prompt and "taking turns picking books is better" in prompt

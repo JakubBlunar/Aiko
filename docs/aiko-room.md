@@ -167,7 +167,9 @@ The apartment's bookshelf holds a shared keepsake box. Open it under
 **World → Belongings → Items → Bookshelf** to read the notes or leave one. Aiko can use
 `read_keepsake_notes` and `leave_keepsake_note` in chat. Each slip retains
 its text, author and saved date. Either of you can leave a note when a
-moment feels worth keeping. Older pages stay available as the box fills.
+moment feels worth keeping. Read and write receipts include the number of saved
+slips in the entire box and each author's count across turns. Aiko can request
+only these counts without opening the slips. Older pages stay available as the box fills.
 
 Existing apartments get the box the next time the backend starts. The
 box stays on the bookshelf and can't be stored, discarded, or removed

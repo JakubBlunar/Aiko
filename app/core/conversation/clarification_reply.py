@@ -2,6 +2,8 @@
 
 import re
 
+from app.core.conversation.perspective_sources import terms
+
 
 CLARIFICATION_GUIDANCE = (
     "Decide whether the latest request can be answered from the conversation and any tool "
@@ -52,6 +54,32 @@ REVISION_GUIDANCE = (
     "person's favorite tells you about that person. Give the observed result and how sure "
     "you are about its cause. Leave unreported audience motives open."
 )
+ARGUMENT_GUIDANCE = (
+    "Weigh the other person's reason against the value behind your own last choice. A reason "
+    "can reveal a benefit you overlooked even when the facts stay the same. Decide for yourself "
+    "whether it changes your preference, suggests an exception, or leaves your reason stronger. "
+    "Say what matters to you in this particular choice. If they simply urge agreement, there "
+    "is no new reason to credit. Keep this conversational and leave your longer-term taste open."
+)
+
+
+def argument_guidance(text, previous_user, previous_assistant):
+    if (not re.search(r"\bi(?:['’]d (?:pick|choose|prefer|keep|go)| (?:like|prefer|favor|"
+                      r"care|value|would choose))\b", previous_assistant, re.I)
+            or not re.search(r"\b(?:because|since|so that|matters|means|gives|lets|keeps)\b",
+                             previous_assistant, re.I)):
+        return ""
+    if not re.match(r"\s*(?:(?:but|actually|well)[, ]+)?(?:i (?:like|prefer|care|value)|"
+                    r"what about|the (?:advantage|reason)|come on|just admit|"
+                    r"have you considered)\b", text, re.I):
+        return ""
+    shared = terms(text) & (terms(previous_assistant) | terms(previous_user))
+    if (shared - {"because", "since", "give", "keep", "let", "matter", "mean", "care", "value"}
+            and not re.search(r"\b(?:anyway|unrelated|change of subject)\b", text, re.I)):
+        return ARGUMENT_GUIDANCE
+    return ""
+
+
 COPY_QUESTION = "Do you have a verified copy you can restore this version from?"
 COPY_ANSWER_GUIDANCE = (
     "The user has answered the recovery question. Answer their original choice in one sentence. "

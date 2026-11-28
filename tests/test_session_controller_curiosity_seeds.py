@@ -95,6 +95,16 @@ class RenderBlockTests(_Base):
         self.assertIn("second", out)
         self.assertNotIn("first", out)
 
+    def test_writing_offer_keeps_the_two_passages_as_alternatives(self):
+        self._seed("An empty station", payload={
+            "prompt_text": "Did the footsteps stop after the cup appeared?",
+            "quality": {"drafts": {"title": "Station", "before": {"quote": "footsteps echoed"},
+                                   "after": {"quote": "a second cup"}},
+                        "useful_because": "Sound and objects can both suggest company."}})
+        block = self._render(_Fixture(self.store))
+        assert "footsteps echoed" in block and "a second cup" in block
+        assert "Sound and objects" in block and "after the cup appeared" not in block
+
     def test_an_ignored_seed_yields_to_one_she_has_not_seen(self) -> None:
         """Fairness comes from surfaced_count, not from age."""
         stale = self._seed("stale")

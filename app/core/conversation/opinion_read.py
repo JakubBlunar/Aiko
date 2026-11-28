@@ -3,7 +3,9 @@ import json
 import logging
 import re
 
-from app.core.conversation.clarification_reply import IMPRESSION_GUIDANCE, REVISION_GUIDANCE
+from app.core.conversation.clarification_reply import (
+    ARGUMENT_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
+)
 
 
 log = logging.getLogger(__name__)
@@ -19,6 +21,13 @@ _REVISION = (
     "favorite only tells you about that person. Keep observed results; never invent "
     "audience motives. No tags."
 )
+_ARGUMENT = (
+    'Return {"basis":"short exact quote of your earlier reason","quote":"short exact quote '
+    'of their new reason, or null for pressure alone","reply":"your own conversational '
+    'response in one or two sentences"}. Explain what your quoted basis still protects and how '
+    'their reason affects that. Skip planning new rules. You may keep, '
+    'qualify or change your view. A request to agree supplies no reason. No tags.'
+)
 _ONLY_CONDITION = re.compile(r"\bonly (?:the|one)\b[^.!?]{1,65}?\b"
                              r"((?:had|was|were|got|offered|received)\s+[^.!?]{1,80})[.!?]", re.I)
 _QUOTED_WORK = re.compile(r'“([^”\n]+)”|"([^"\n]+)"')
@@ -32,7 +41,8 @@ _BARE_PICK = re.compile(r"which (?:one )?(?:do|would) you (?:personally )?"
 
 def read_opinion(client, messages, guidance, *, model, options, stop_event):
     """Use the ordinary persona and roles. Fall back to normal chat on an incomplete reading."""
-    if stop_event.is_set() or guidance not in (IMPRESSION_GUIDANCE, REVISION_GUIDANCE):
+    if stop_event.is_set() or guidance not in (
+            ARGUMENT_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE):
         return ""
     if not messages:
         return ""
@@ -45,7 +55,8 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
     latest = turns[-1]["content"]
     if not isinstance(latest, str) or turns[-1].get("images"):
         return ""
-    contract = _IMPRESSION if guidance == IMPRESSION_GUIDANCE else _REVISION
+    contract = {ARGUMENT_GUIDANCE: _ARGUMENT, IMPRESSION_GUIDANCE: _IMPRESSION,
+                REVISION_GUIDANCE: _REVISION}[guidance]
     condition = _ONLY_CONDITION.search(latest.partition("?")[0])
     if guidance == REVISION_GUIDANCE and condition:
         predicate = json.dumps(condition[1].strip(), ensure_ascii=False)
@@ -66,6 +77,13 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
         vote = _ORDINAL_VOTE.match(latest, end)
         if vote and _BARE_PICK.fullmatch(latest[vote.end():].strip()):
             latest = latest[:end] + " " + latest[vote.end():]
+    if guidance == ARGUMENT_GUIDANCE:
+        pressure = re.fullmatch(r"(?:come on[, ]+)?just admit (.{3,100}? is better)[.!?]*",
+                                latest.strip(), re.I)
+        if pressure:
+            # Remove only the demand for agreement in this private reading. The claim
+            # remains an option, and her new answer can still change her earlier view.
+            latest = f'The alternative claim is "{pressure[1]}". What do you think?'
     prompt = [{**head, "content": before + after}, *turns[:-1],
               {**turns[-1], "content": latest + "\n\n" + contract}]
     try:
@@ -83,6 +101,14 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
     quote, reply = result.get("quote"), result.get("reply")
     if not isinstance(reply, str) or not 1 <= len(reply.strip()) <= 700 or "[[" in reply:
         return ""
+    if guidance == ARGUMENT_GUIDANCE:
+        basis = result.get("basis")
+        prior = next((m["content"] for m in reversed(turns[:-1]) if m["role"] == "assistant"), "")
+        if (not isinstance(prior, str) or not isinstance(basis, str)
+                or len(basis.strip()) < 3 or basis.strip() not in prior):
+            return ""
+        if quote is None and "quote" in result:
+            return reply.strip()
     if quote is None:
         if (guidance == IMPRESSION_GUIDANCE and not works and "quote" in result
                 and reply.strip().endswith("?")
@@ -100,6 +126,8 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
         if isinstance(quote, str) and quote.rstrip().endswith("?"):
             return ""
         sources = [latest]
+    elif guidance == ARGUMENT_GUIDANCE:
+        sources = [turns[-1]["content"]]
     elif len(works) == 2:
         sources = [m[1] or m[2] for m in works]
     if not isinstance(quote, str) or not 3 <= len(quote.strip()) <= 300 or not any(

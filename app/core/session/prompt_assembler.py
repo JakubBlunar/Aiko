@@ -52,8 +52,8 @@ from app.core.conversation.story_reply import STORY_HEADER, story_contract, stor
 from app.core.conversation.pursuit_reply import pursuit_reply
 from app.core.conversation.clarification_reply import (
     CLARIFICATION_GUIDANCE, COPY_ANSWER_GUIDANCE, CURRENT_REPLY_GUIDANCE,
-    IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
-    answered_copy_question, choice_guidance, is_clarification_question,
+    ARGUMENT_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
+    answered_copy_question, argument_guidance, choice_guidance, is_clarification_question,
 )
 from app.core.conversation.stance import POOLED_CHOICE_BLOCKS
 from app.core.infra import timephrase
@@ -4054,9 +4054,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             practical = check_milestone(user_text, self._db, self._continuity_owner,
                                         session_key, current_user_message_id)
             practical_kind = "personal_milestone"
+        prior_assistant = (history_msgs[-1].content if history_msgs and
+                           history_msgs[-1].role == "assistant" else "")
         current_reply_guidance = ((pursuit_guidance
                                    or practical.guidance
                                    or choice_guidance(user_text, (m.content for m in history_msgs))
+                                   or argument_guidance(user_text, previous_user, prior_assistant)
                                    or CURRENT_REPLY_GUIDANCE)
                                   if (user_text or "").strip() else "")
         reply_guidance_slot = len(system_parts)
@@ -4439,7 +4442,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             decision_reply=decision_reply,
             practical_reply_kind=practical_reply_kind,
             opinion_guidance=(current_reply_guidance if current_reply_guidance in
-                              (IMPRESSION_GUIDANCE, REVISION_GUIDANCE) else ""),
+                              (ARGUMENT_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE) else ""),
             comparison_report=comparison_report,
             story_read=(conversation_situation_block.startswith(STORY_HEADER + "\n")
                         and story_question(user_text)

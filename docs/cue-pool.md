@@ -349,6 +349,11 @@ the user's message — the same two-clock shape
 exists in the next message. No answer → released under
 `reask_cooldown_hours`, or expired at `max_asks`.
 
+The curiosity worker can also compare passages from consecutive, verified
+revisions of Aiko's own fiction. A writing seed carries a short matching quote
+and a revision reference from each draft. Plans alone supply no comparison.
+The ordinary quiet-curiosity handling leaves the choice to mention it to Aiko.
+
 Pending curiosity seeds can settle before Aiko sees them. A seed with an
 explicit question checks a speaker's statement for an answer about the
 referent and the requested property. A volunteered answer can settle it on

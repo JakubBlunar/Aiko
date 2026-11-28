@@ -148,3 +148,23 @@ def test_parallel_writes_remain_available_through_older_pages(room):
     )
     assert len(latest["notes"]) == 10
     assert older["next_before_id"] is None
+
+
+def test_followup_receipts_count_both_turns_without_opening_slips(room):
+    store, _ = room
+    session = MagicMock(_world_store=store)
+    write = LeaveKeepsakeNoteTool(session)
+    read = ReadKeepsakeNotesTool(session)
+    for turn, slips in (("first", ["Harbor"]), ("second", ["Railway", "Lantern", "Lantern"])):
+        token = set_turn_id(turn)
+        try:
+            for text in slips:
+                receipt = json.loads(write.run({"text": text}))
+        finally:
+            reset_turn_id(token)
+    assert receipt["box_counts"] == {"total": 3, "aiko": 3, "user": 0}
+    store.add_keepsake_note("Another perspective", author="user")
+    expected = {"total": 4, "aiko": 3, "user": 1}
+    assert json.loads(read.run({"counts_only": True})) == {"box_counts": expected}
+    older = json.loads(read.run({"before_id": receipt["note_id"]}))
+    assert len(older["notes"]) == 2 and older["box_counts"] == expected

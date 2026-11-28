@@ -93,6 +93,16 @@ class KeepsakeBoxMixin:
             "next_before_id": rows[_PAGE_SIZE - 1][0] if len(rows) > _PAGE_SIZE else None,
         }
 
+    def keepsake_note_counts(self) -> dict[str, int]:
+        """Count signed slips across the whole box, independently of the page or chat turn."""
+        counts = {"aiko": 0, "user": 0}
+        conn = self._get_conn()
+        self._keepsake_box_id(conn, None)
+        counts.update(conn.execute(
+            "SELECT author, count(*) FROM world_keepsake_notes GROUP BY author"
+        ).fetchall())
+        return {"total": sum(counts.values()), **counts}
+
     def add_keepsake_note(self, text: str, *, author: str, request_key: str | None = None,
                           item_id: int | None = None) -> dict[str, Any]:
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= NOTE_MAX_LENGTH:

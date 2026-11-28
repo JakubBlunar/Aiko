@@ -381,6 +381,45 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class WritingSeedTests(_Fixture):
+    def test_a_quote_of_the_new_detail_can_spark_a_question_on_its_own(self):
+        from app.core.proactive.curiosity_seed_worker import _draft_sources
+        from app.core.world.writing_practice import recent_revision_contrast
+        from scripts.writing_curiosity_replay import CUP, SOUND, station_item
+
+        drafts = recent_revision_contrast([station_item(CUP)])
+        proof = _draft_sources("second cup", drafts)
+        assert proof["before"]["quote"] == SOUND
+        assert proof["after"]["quote"] == "second cup"
+        assert not _draft_sources("footsteps echoed", drafts)
+        assert not _draft_sources("fictional dog | second cup", drafts)
+
+    def test_only_a_changed_pair_in_two_verified_saved_drafts_can_source_a_seed(self):
+        from scripts.writing_curiosity_replay import CUP, LOUD, station_item
+
+        seed = dict(topic="Company in an empty station", prompt_text="Can an object imply company?",
+                    inspiration="writing", about="subject", why="footsteps echoed | second cup",
+                    useful_because="A detail to bring to a conversation about empty spaces.")
+        worker = self._build(payload=json.dumps({"seeds": [seed]}), motivate=False)
+        item = station_item(CUP)
+        worker._writing_items_provider = lambda: [item]
+        for replacement in (None, LOUD):
+            item = station_item(replacement)
+            assert worker.run()["wrote"] == 0
+        item = station_item(CUP)
+        item.state["revisions"][1]["author"] = "user"
+        assert worker.run()["wrote"] == 0
+        item = station_item(CUP)
+        item.state["revisions"][1]["text_sha256"] = "wrong"
+        assert worker.run()["wrote"] == 0
+        item = station_item(CUP)
+        assert worker.run()["wrote"] == 1
+        drafts = self._pending()[0].payload["quality"]["drafts"]
+        assert drafts["before"]["quote"] == "footsteps echoed"
+        assert drafts["after"]["quote"] == "second cup"
+        assert drafts["after"]["ref"].startswith("17/2/")
+
+
 class MotivationTests(_Fixture):
     def test_missing_motivation_is_not_filled_in_by_production(self):
         result = self._build(motivate=False).run()

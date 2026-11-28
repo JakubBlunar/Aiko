@@ -307,7 +307,12 @@ the new detail. When the model judges that an explicitly unequal condition
 weakens its explanation, the reply names that condition in the speaker's own
 words and leaves the cause open. A completed reading can supply the spoken reply. An unusable
 reading falls back to ordinary generation, and a tool result takes precedence.
-See the [opinion reader](../app/core/conversation/opinion_read.py).
+When someone counters a reasoned preference, the same reader can weigh their
+reason against Aiko's preceding words. Aiko may hold, qualify or revise her
+view. When someone asks what changed her reading of a work, the taste path
+looks for a matching original exchange, including who said what. Competing
+exchanges can prompt clarification, and a final preference alone leaves the
+origin open. See the [opinion reader](../app/core/conversation/opinion_read.py).
 
 ## Gates, arbitration and assembly effects
 

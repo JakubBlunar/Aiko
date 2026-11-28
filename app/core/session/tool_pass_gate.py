@@ -287,7 +287,8 @@ _FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
     "world": _compile([
         r"room", r"move", r"couch", r"bed", r"desk", r"window",
         r"bookshelf", r"kitchenette", r"beanbag", r"mirror",
-        r"(?:our|keepsake|memory) box", r"keepsake notes?",
+        r"(?:our(?: shared)?|keepsake|memory) box", r"shared box (?:for|of) notes",
+        r"keepsake notes?",
         r"(?:put|save|leave|open|read)\b[^\n]{0,45}\bthe box",
         r"sit", r"lie down", r"lay down", r"posture", r"stand",
         r"eat", r"drink", r"cookies?", r"tea", r"snacks?",

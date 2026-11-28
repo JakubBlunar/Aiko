@@ -43,3 +43,29 @@ def test_attribution_changes_with_evidence_and_specific_contribution(tmp_path):
         assert "haven't found" in reply()
         seed_rows(db, "sam", [(10, "user", "I didn't try the one-line postcard idea.")])
         assert "didn't try" in reply()
+
+
+def test_reading_origin_preserves_roles_and_isolates_unrelated_histories(tmp_path):
+    from app.core.conversation.taste_development import check_taste
+    from scripts.longitudinal_reasoning_replay import LAST_LINE, READING
+
+    db = ChatDatabase(tmp_path / "chat.db")
+    with closing(db._get_conn()), timephrase.scoped_now(lambda: NOW):
+        for owner, rows, _, _ in READING:
+            seed_rows(db, owner, rows)
+            result = check_taste(LAST_LINE, "", db, owner, owner + ":current", None)
+            if owner == "origin missing":
+                assert "can't trace" in result.reply and "Friday" not in result.guidance
+            else:
+                assert ("You said" if owner == "your observation" else "I said") in result.reply
+                speaker = "user" if owner == "your observation" else "assistant"
+                assert any('"speaker": "' + speaker + '"' in line and "Friday" in line
+                           for line in result.guidance.splitlines() if '"sent"' in line)
+        owner = READING[0][0]
+        seed_rows(db, owner, [(14, "assistant", "On rereading the last line of the clock poem "
+                               "I noticed it rhymes with midnight.")])
+        def read(question):
+            return check_taste(question, "", db, owner, owner + ":current", None)
+        assert "Which scene" in read(LAST_LINE).reply
+        assert "midnight" in read("What won you over on the clock poem?").guidance
+        assert not read("Who noticed the lights were on?").guidance

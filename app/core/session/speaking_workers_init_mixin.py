@@ -2147,6 +2147,9 @@ class SpeakingWorkersInitMixin:
                             agent_settings=settings.agent,
                             memory_settings=self._memory_settings,
                             persona_provider=_persona_provider,
+                            writing_items_provider=(self._world_store.list_items
+                                                    if getattr(self, "_world_store", None)
+                                                    else None),
                             rolling_summary_provider=_summary_provider,
                             user_display_name_provider=(
                                 lambda: self.user_display_name
