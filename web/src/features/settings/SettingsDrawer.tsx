@@ -11,7 +11,6 @@ import { SettingsNavigation, type SettingsTabId } from "./SettingsNavigation";
 import { SettingsNavigationProvider, SettingsSections, useSettingsScrollRoot } from "./SettingsSections";
 import { useAssistantStore } from "@/store";
 import { useWeatherStore } from "@/stores/useWeatherStore";
-import { IdentitySection } from "./IdentitySection";
 import { LlmProvidersListSection } from "./LlmProvidersListSection";
 import { ProviderUsageSection } from "./ProviderUsageSection";
 import { LlmRoutesSection } from "./LlmRoutesSection";
@@ -68,7 +67,7 @@ function SettingsDrawerContent({ open, onClose }: SettingsDrawerProps) {
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<SettingsTabId>("chat");
+  const [activeTab, setActiveTab] = useState<SettingsTabId>("behavior");
   useLayoutEffect(() => {
     if (scrollRoot?.current) scrollRoot.current.scrollTop = 0;
   }, [activeTab, scrollRoot]);
@@ -454,7 +453,6 @@ function SettingsDrawerContent({ open, onClose }: SettingsDrawerProps) {
             <div className="text-xs text-ink-100/50">Loading...</div>
           ) : settings ? (
             <>
-              {activeTab === "chat" ? <IdentitySection /> : null}
               {activeTab === "models" ? <SettingsSections area="Models" sections={[
                 { id: "routes", label: "Routes", content: <LlmRoutesSection /> },
                 { id: "providers", label: "Providers", content: <LlmProvidersListSection /> },

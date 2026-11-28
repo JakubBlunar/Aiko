@@ -20,10 +20,6 @@ type OnboardingStep = "name" | "model" | "audio";
  * ``user_display_name``, so letting it be skipped would leak the
  * ``"friend"`` fallback into long-term memory rows. The model and audio
  * steps are skippable: both have a Settings equivalent.
- *
- * A re-opener for renames lives in the General tab of
- * :file:`SettingsDrawer.tsx`; this component only handles the empty-state
- * onboarding path.
  */
 export function FirstRunOnboarding() {
   const identity = useAssistantStore((s) => s.identity);
@@ -89,6 +85,7 @@ export function FirstRunOnboarding() {
   // just 404 with nothing on screen explaining why.
   const modelGate =
     step === "name" &&
+    !submitting &&
     missingChatModel !== "" &&
     identity != null &&
     !identity.needs_onboarding;
@@ -107,10 +104,7 @@ export function FirstRunOnboarding() {
     setStep(gateOnly ? "name" : "audio");
   };
 
-  if (
-    !identity ||
-    (!identity.needs_onboarding && step === "name" && !missingChatModel)
-  ) {
+  if (!identity || (step === "name" && !identity.needs_onboarding)) {
     return null;
   }
 

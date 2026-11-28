@@ -336,6 +336,30 @@ describe("GestureChannel — tail_wag boost", () => {
 });
 
 describe("GestureChannel — lifecycle", () => {
+  it("holds all flick joints after physics, crossfades a replacement and releases to physics", () => {
+    const adapter = new FakeAdapter();
+    const channel = new GestureChannel();
+    const ids = ["Tail1", "Tail2", "Tail3", "Tail4", "Tail5"];
+    const {deps, clock, engineState} = makeDeps({has_tail_wag:true}, {cat_tail_param_ids:ids});
+    channel.attach(adapter, deps);
+    const frame = (at: number, physics: number) => {
+      clock.set(at);
+      for (const id of ids) adapter.setParam(id, physics);
+      channel.tickPreModel();
+      return ids.map(id => adapter.getParam(id));
+    };
+    channel.onOverlay({name:"tail_flick", until:3000});
+    expect(frame(1000, 7)).toEqual(ids.map(() => 7));
+    const held = frame(1700, 5);
+    expect(new Set(held).size).toBe(5);
+    expect(frame(2200, -6)).toEqual(held);
+    channel.onOverlay({name:"tail_wag_fast", until:4200});
+    expect(frame(2200, 9)).toEqual(held);
+    expect(frame(2500, 9)).not.toEqual(held);
+    expect(frame(4200, 8)).toEqual(ids.map(() => 8));
+    expect(engineState.tailWagBoostUntil).toBe(0);
+    expect(adapter.params.has("ParamBreath")).toBe(false);
+  });
   it("detach() releases winks and zeros ear params", () => {
     const adapter = new FakeAdapter();
     const channel = new GestureChannel();

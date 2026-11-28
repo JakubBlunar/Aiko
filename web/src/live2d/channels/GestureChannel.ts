@@ -1,8 +1,7 @@
 /**
- * GestureChannel — handles the four "named" overlay gestures:
- * ``wink_left`` / ``wink_right`` / ``ear_wiggle`` / ``tail_wag``.
+ * GestureChannel handles winks, ear wiggles and tail gestures.
  *
- * These four are dispatched through the same ``[[overlay:X]]``
+ * These are dispatched through the same ``[[overlay:X]]``
  * grammar as param pulses + expression pulses, but instead of a
  * simple "param at on_value while alive" they need bespoke
  * per-frame drives:
@@ -47,6 +46,9 @@ import type {
   Live2DModelAdapter,
   ResolvedOverlayEvent,
 } from "../types";
+import { tailGestures, tailRotation } from "../../../../tools/rig-studio/src/tail-gestures";
+import { gestureLayer, interpolate } from "../../../../tools/rig-studio/src/runtime";
+import type { Clip } from "../../../../tools/rig-studio/src/model";
 
 const WINK_LEFT_PARAM = "ParamEyeLOpen";
 const WINK_RIGHT_PARAM = "ParamEyeROpen";
@@ -71,10 +73,14 @@ export class GestureChannel implements AvatarChannel {
   private _winkLeft: ActiveGesture | null = null;
   private _winkRight: ActiveGesture | null = null;
   private _earWiggle: ActiveGesture | null = null;
+  private _tail: { clip: Clip; start: number; until: number; entry: number[] } | null = null;
+  private _lastTail: number[] = [];
 
   attach(adapter: Live2DModelAdapter, deps: ChannelDeps): void {
     this._adapter = adapter;
     this._deps = deps;
+    this._tail = null;
+    this._lastTail = [];
     this._winkLeft = null;
     this._winkRight = null;
     this._earWiggle = null;
@@ -102,6 +108,8 @@ export class GestureChannel implements AvatarChannel {
     }
     this._adapter = null;
     this._deps = null;
+    this._tail = null;
+    this._lastTail = [];
     this._winkLeft = null;
     this._winkRight = null;
     this._earWiggle = null;
@@ -112,6 +120,16 @@ export class GestureChannel implements AvatarChannel {
       return;
     }
     const caps = this._deps.manifest.capabilities ?? {};
+    const tail = tailGestures.find(clip => clip.id === event.name);
+    if (tail) {
+      const now = this._deps.now();
+      if (caps.has_tail_wag && event.until > now) {
+        const entry = this._tail && now < this._tail.until ? this._lastTail.slice() : [];
+        this._tail = {clip: tail, start: now, until: event.until, entry};
+        this._deps.engineState.tailWagBoostUntil = 0;
+      }
+      return;
+    }
     switch (event.name) {
       case "wink_left":
         if (caps.has_wink) {
@@ -130,6 +148,7 @@ export class GestureChannel implements AvatarChannel {
         return;
       case "tail_wag":
         if (caps.has_tail_wag) {
+          this._tail = null;
           this._deps.engineState.tailWagBoostUntil = event.until;
         }
         return;
@@ -207,6 +226,7 @@ export class GestureChannel implements AvatarChannel {
       return;
     }
     const caps = deps.manifest.capabilities ?? {};
+    this._tickTail(adapter, deps);
     if (!(caps.has_ear_wiggle && this._earWiggle)) {
       return;
     }
@@ -230,6 +250,35 @@ export class GestureChannel implements AvatarChannel {
         adapter.setParam(id, 0);
       }
       this._earWiggle = null;
+    }
+  }
+
+  /** Blend the authored pose over the current physics output at the last writable hook. */
+  private _tickTail(adapter: Live2DModelAdapter, deps: ChannelDeps): void {
+    const tail = this._tail;
+    if (!tail) return;
+    const now = deps.now();
+    if (now >= tail.until) {
+      this._tail = null;
+      this._lastTail = [];
+      return;
+    }
+    const seconds = tail.clip.duration * (now - tail.start) / (tail.until - tail.start);
+    const phase = interpolate(tail.clip.tracks["tail.curl"], seconds);
+    const weight = gestureLayer(tail.clip, seconds).weight ?? 1;
+    const phaseId = adapter.tailPhaseParameter;
+    const ids = phaseId ? [phaseId] : deps.manifest.cat_tail_param_ids ?? [];
+    for (let i = 0; i < ids.length; i++) {
+      const target = phaseId ? phase : tailRotation(phase, i);
+      let value = target;
+      if (weight < 1) {
+        // A replacement starts at the pose the user saw on the preceding frame.
+        const entry = seconds < tail.clip.duration / 2 ? tail.entry[i] : undefined;
+        const base = entry ?? adapter.getParam(ids[i]) ?? 0;
+        value = base + (target - base) * weight;
+      }
+      adapter.setParam(ids[i], value);
+      this._lastTail[i] = value;
     }
   }
 

@@ -48,6 +48,12 @@ specific shared-context conflict. The final synthetic run retained all positive
 controls but still admitted three false tensions in 36 trials. L22 remains partial;
 fresh ordinary-use cohorts and independent paraphrases are the next quality gate.
 
+A fictional identity-synthesis pair checked display names against attribution
+(local Qwen 9B, seed 71). Three examples of Noor trying one sample before a
+batch produced one `user` concept naming Noor in its label and rationale. With
+the same three actions attributed to Noor's sister, the worker filed no concept.
+Before the ownership check it could file observing the sister as Noor's trait.
+
 The subsequent [memory-producer audit](../reviews/memory-producer-audit-2026-11-05.md)
 covers 32 direct write sites, indirect producers and rewrite paths. It reproduces
 drafts, Aiko goal reflections and public facts becoming user-event concepts.

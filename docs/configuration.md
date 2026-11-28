@@ -29,9 +29,8 @@ exists to keep them in lock-step.
 ## Settings navigation
 
 The Settings drawer uses a grouped sidebar on wide screens and a section
-picker on smaller screens. **Models** and **Behavior** are top-level sections;
-your display name is under **General**, and uploaded knowledge is under
-**Documents**.
+picker on smaller screens. It opens on **Behavior**. Model selection is under
+**Models**, and uploaded knowledge is under **Documents**.
 
 The longer sections have focused subtabs:
 
@@ -54,7 +53,7 @@ Saving and applying individual controls works as before.
 | Goal | Knob | Default |
 |---|---|---|
 | Make Aiko speak faster / slower (global) | `assistant.tts_length_scale` | `1.0` (0.65 fastest – 1.35 slowest) |
-| Set / change your name | `assistant.user_display_name` | `""` (forces first-run onboarding) |
+| Choose your name during onboarding | `assistant.user_display_name` | `""` (asks once during setup) |
 | Cap reply length (stop rambling) | `llm.routes.main_chat.max_tokens` | `512` |
 | Shrink the KV cache to fit VRAM | `llm.routes.<role>.context_window` | `65536` |
 | Keep an Ollama model warm in VRAM longer | `llm.providers[].keep_alive` | `"30m"` |
@@ -114,7 +113,7 @@ Personal identity + the one global TTS knob.
 - `assistant.name` *(string, `"Aiko"`)* — the assistant's name. Used in prompts and UI strings. Changing this does **not** rename the persona file; you'd also need to edit `data/persona/aiko_companion.txt`.
 - `assistant.remember_history` *(bool, `true`)* — keeps the SQLite chat history. Flip off to make every session ephemeral (history wiped at shutdown).
 - `assistant.user_id` *(string, `"default"`)* — scopes memory and beliefs per-user. Change this and Aiko effectively meets a new person (memories are not migrated).
-- `assistant.user_display_name` *(string, `""`)* — your name as Aiko addresses you. Empty triggers the first-run onboarding modal in the UI. Single source of truth — `resolve_user_display_name()` reads this everywhere (prompts, transcripts, world-seed, persona templating).
+- `assistant.user_display_name` *(string, `""`)* — your name as Aiko addresses you. An empty value opens the first-run name step. Existing profiles use their configured name. Single source of truth — `resolve_user_display_name()` reads this everywhere (prompts, transcripts, world-seed, persona templating).
 - `assistant.tts_length_scale` *(float, `1.0`)* — global TTS speed multiplier, clamped to `[0.65, 1.35]` here and to `[0.85, 1.15]` at the engine, which is the band that survives stacking with reaction speed and the cadence layer's per-sentence hint. **Higher → slower** speech (more "pacing"); lower → faster. Independent of any per-reaction speed jitter (`agent.tts_runtime_speed_enabled`) — it applies whether that gate is on or off, being a deliberate preference rather than affect drift. Until Aug 2026 it was implemented on pocket-tts only, and since the wiring reaches it through `getattr` it did **nothing at all** on Chatterbox; both engines now resolve it through `reactions.resolve_playback_speed()`. One caveat on tuning it: before `tts.speech_rate_match_limit` existed, a generative engine's own tempo varied ~24% per clip, so this slider was being tuned against a moving target — it was raised to 1.08 to tame sentences that happened to draw fast, which then made the slow draws worse. With tempo matched it means what it says, and `1.0` now lands on her measured incumbent pace, so re-tune from there rather than from an older value.
 
 ---

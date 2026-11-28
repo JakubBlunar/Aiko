@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from app.core.infra.chat_database import MessageRow, SummaryRow
+from app.core.persona.avatar_gestures import overlay_capability
 from app.llm.token_utils import (
     chars_per_token,
     estimate_tokens,
@@ -633,6 +634,9 @@ _OVERLAY_GESTURE_DESCRIPTIONS: dict[str, str] = {
     "wink_left": "[[overlay:wink_left]] — quick left-eye wink (~0.6 s)",
     "wink_right": "[[overlay:wink_right]] — quick right-eye wink (~0.6 s)",
     "tail_wag": "[[overlay:tail_wag]] — happy tail-wag burst (~2 s, additive on the natural wag)",
+    "tail_wag_slow": "[[overlay:tail_wag_slow]] — a small, lazy drift when sleepy or content",
+    "tail_wag_fast": "[[overlay:tail_wag_fast]] — three quick, wider wags when excited",
+    "tail_flick": "[[overlay:tail_flick]] — one deliberate teasing flick, hold, then ease back",
     "ear_wiggle": "[[overlay:ear_wiggle]] — quick cat-ear flick (~0.6 s)",
 }
 
@@ -641,15 +645,6 @@ _OVERLAY_GESTURE_DESCRIPTIONS: dict[str, str] = {
 _OVERLAY_GRAMMAR_DESCRIPTIONS: dict[str, str] = {
     **_OVERLAY_EMOTIONAL_DESCRIPTIONS,
     **_OVERLAY_GESTURE_DESCRIPTIONS,
-}
-
-# A few gesture overlays don't have a matching ``has_<cap>`` flag —
-# both winks share ``has_wink``, so the simple
-# ``f"has_{cap}"`` lookup would silently drop them. This table maps
-# the gesture key to the actual capability flag it should consult.
-_OVERLAY_GESTURE_FLAG_OVERRIDES: dict[str, str] = {
-    "wink_left": "has_wink",
-    "wink_right": "has_wink",
 }
 
 def _build_overlay_grammar_addendum(capabilities: dict[str, bool] | None) -> str:
@@ -679,10 +674,7 @@ def _build_overlay_grammar_addendum(capabilities: dict[str, bool] | None) -> str
     gestures = [
         line
         for cap, line in _OVERLAY_GESTURE_DESCRIPTIONS.items()
-        if capabilities.get(
-            _OVERLAY_GESTURE_FLAG_OVERRIDES.get(cap, f"has_{cap}"),
-            False,
-        )
+        if capabilities.get(overlay_capability(cap), False)
     ]
     if not emotional and not gestures:
         return ""

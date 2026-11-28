@@ -333,6 +333,15 @@ patcher is idempotent.
 
 ---
 
+### Tail gestures
+
+Alexia has five Cat tail rotation outputs driven by breath in PhysicsSetting16.
+`[[overlay:tail_wag_slow]]` makes one small drift in four seconds.
+`[[overlay:tail_wag_fast]]` makes three wider wags in two seconds.
+`[[overlay:tail_flick]]` sweeps once and holds from 0.65 to 1.25 seconds before easing back.
+The channel blends into the post-physics pose and releases to the moving idle tail.
+Breathing keeps its own rhythm. The original `tail_wag` still uses its happy burst.
+
 ## 5. Cubism update pipeline — write order matters for lip-sync
 
 > **As of Phase 11 of the engine refactor**, every per-frame

@@ -1114,8 +1114,7 @@ export const api = {
   getLastSystemPrompt: () =>
     jsonFetch<LastSystemPromptResponse>("/api/debug/last-prompt"),
   // Identity (first-run onboarding). The frontend reads ``needs_onboarding``
-  // from the WS hello on connect; this REST pair is used by the modal
-  // submit handler and any "change name" surface in Settings.
+  // from the WS hello on connect; the modal submits the one-time choice here.
   getIdentity: () => jsonFetch<Identity>("/api/settings/identity"),
   setIdentity: (user_display_name: string) =>
     jsonFetch<Identity>("/api/settings/identity", {

@@ -2216,7 +2216,7 @@ class SpeakingWorkersInitMixin:
                             # Personalise concept labels/rationales with the
                             # real names instead of "the user" / "Aiko".
                             user_display_name_provider=(
-                                lambda: self.user_display_name
+                                lambda: self._settings.assistant.user_display_name
                             ),
                             assistant_display_name_provider=(
                                 lambda: self._fact_check_assistant_name()

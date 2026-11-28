@@ -101,3 +101,27 @@ it("combines outfit writes before gating arms and leaves unowned outfit layers f
   adapter.setParam("Param16",0);
   expect(adapter.sampleFrame([])).toMatchObject({"outfit.style":0,"arms.crossed":1});
 });
+
+it("plays the chat flick on the editable phase and releases to the moving Studio idle", () => {
+  let now = 1000;
+  const raf = new ManualRaf();
+  const engineState = createEngineState();
+  const adapter = new RigStudioAdapter(rig, manifest, engineState, () => now);
+  const engine = new AvatarEngine({manifest, engineState, now:() => now,
+    getStoreSnapshot:buildStoreSnapshot, scheduleFrame:raf.schedule, cancelFrame:raf.cancel});
+  engine.register(new GestureChannel());
+  engine.start(adapter);
+  try {
+    const sampleTail = () => adapter.sampleFrame()["tail.curl"];
+    const entry = sampleTail();
+    engine.dispatchOverlay({name:"tail_flick", expiresAt:Date.now()+2000});
+    expect(sampleTail()).toBeCloseTo(entry);
+    now += 750;
+    expect(sampleTail()).toBeCloseTo(-.42);
+    now += 450;
+    expect(sampleTail()).toBeCloseTo(-.42);
+    now += 810;
+    const idle = sampleLayers(rig,idleLayers(rig,now/1000));
+    expect(sampleTail()).toBeCloseTo(idle["tail.curl"]);
+  } finally { engine.stop(); }
+});

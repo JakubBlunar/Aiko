@@ -445,6 +445,26 @@ class MotionDispatchTests(unittest.TestCase):
         self.assertEqual(len(overlay_captured), 1)
         self.assertEqual(overlay_captured[0]["name"], "ear_wiggle")
 
+    def test_tail_gesture_vocabulary_delivers_the_authored_window(self) -> None:
+        from app.core.services.response_text_service import extract_overlays
+        from app.core.session.prompt_support import _build_overlay_grammar_addendum
+
+        avatar = _make_avatar()
+        controller = _make_controller(avatar)
+        captured = []
+        controller._avatar_overlay_listeners.append(captured.append)
+        for enabled in (False, True):
+            avatar.capabilities["has_tail_wag"] = enabled
+            grammar = _build_overlay_grammar_addendum(avatar.capabilities)
+            gestures = {"tail_wag_slow": 4000, "tail_wag_fast": 2000, "tail_flick": 2000}
+            for name, ms in gestures.items():
+                tag = f"[[overlay:{name}]]"
+                self.assertEqual(tag in grammar, enabled)
+                for command, _ in extract_overlays(tag):
+                    controller._emit_avatar_overlay(command)
+                self.assertEqual(captured, [{"name": name, "duration_ms": ms}] if enabled else [])
+                captured.clear()
+
     def test_motion_unknown_and_not_overlay_still_silently_dropped(self) -> None:
         """If the name matches neither a motion stem nor an overlay capability
         we keep the existing silent-drop behaviour — no listeners get poked.

@@ -37,6 +37,10 @@ log = logging.getLogger("app.session")
 _KV_LAST_USER_ACTIVITY = "idle.last_user_activity_at"
 
 
+class DisplayNameAlreadySet(ValueError):
+    """A different name has already been saved during onboarding."""
+
+
 class LifecycleMixin(DebugOverridesHostMixin):
     """Identity, session switch/clear, model getters, accessors, shutdown."""
 
@@ -63,7 +67,7 @@ class LifecycleMixin(DebugOverridesHostMixin):
 
         Single read site for every renderer, transcript formatter, and
         worker LLM prompt. Refreshes implicitly on next read after the
-        identity is updated via ``update_user_display_name``.
+        name is saved during onboarding.
         """
         from app.core.infra.settings import resolve_user_display_name
         return resolve_user_display_name(self._settings)
@@ -74,32 +78,25 @@ class LifecycleMixin(DebugOverridesHostMixin):
         from app.core.infra.settings import is_onboarding_needed
         return is_onboarding_needed(self._settings)
 
-    def update_user_display_name(self, name: str) -> str:
-        """Persist the user display name to ``config/user.json``.
-
-        Validated to 1-32 chars after strip. Empty input is rejected
-        (the caller -- REST handler -- returns 400). Returns the
-        normalized stored value. Broadcasts ``identity_changed`` so the
-        UI and any registered listeners see the new name without a
-        reload.
-        """
-        cleaned = (name or "").strip()[:32]
-        if not cleaned:
-            raise ValueError("user_display_name must be non-empty after trim")
-        self._settings.assistant.user_display_name = cleaned
-        try:
+    def set_initial_user_display_name(self, name: str) -> bool:
+        """Save the first name, returning False for a retry of the same choice."""
+        cleaned = name.strip() if isinstance(name, str) else ""
+        if not 1 <= len(cleaned) <= 32:
+            raise ValueError("Choose a name between 1 and 32 characters.")
+        with self._identity_lock:
+            current = self._settings.assistant.user_display_name.strip()
+            if current == cleaned:
+                return False
+            if current:
+                raise DisplayNameAlreadySet("The name was already set during onboarding.")
             persist_user_overrides({"assistant": {"user_display_name": cleaned}})
-        except Exception:
-            log.warning(
-                "failed to persist user_display_name to user.json",
-                exc_info=True,
-            )
+            self._settings.assistant.user_display_name = cleaned
         for listener in list(getattr(self, "_identity_listeners", []) or []):
             try:
                 listener(cleaned)
             except Exception:
                 log.debug("identity listener raised", exc_info=True)
-        return cleaned
+        return True
 
     def _seed_onboarding_goal_if_first_time(
         self, *, force: bool = False,
@@ -118,7 +115,7 @@ class LifecycleMixin(DebugOverridesHostMixin):
         - ``SessionController.__init__`` (backfill for existing
           users coming back after the feature ships).
         - The identity listener registered against
-          ``update_user_display_name`` — fires automatically on
+          ``set_initial_user_display_name`` — fires automatically on
           first name set.
 
         Defensive: returns ``None`` on any failure, never raises.
@@ -150,10 +147,10 @@ class LifecycleMixin(DebugOverridesHostMixin):
             return None
 
     def add_identity_listener(self, callback: Callable[[str], None]) -> None:
-        """Register a callback fired after ``update_user_display_name``.
+        """Register a callback fired after the onboarding name is saved.
 
         Workers / renderers that cache the name in pre-built prompt
-        strings subscribe here to invalidate or rebuild on rename.
+        strings subscribe here to pick up the first configured name.
         """
         listeners = getattr(self, "_identity_listeners", None)
         if listeners is None:

@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from app.core.concepts.proposers.grounding import source_check_declined
 from app.core.concepts.proposers import (
     AIKO_SELF_KINDS,
     CONCEPT_PROPOSERS,
@@ -174,6 +175,16 @@ def _salvage_concepts(text: str) -> list[dict[str, Any]]:
     bracket = text.find("[", key_pos if key_pos >= 0 else 0)
     if bracket < 0:
         return []
+    # The source verdict precedes the array. Retain it even when the last
+    # candidate is cut off and we can only recover the earlier objects.
+    first = text.find("{")
+    if 0 <= first < key_pos:
+        try:
+            header = json.loads(text[first:bracket] + "[]}")
+        except ValueError:
+            header = None
+        if source_check_declined(header):
+            return []
     out: list[dict[str, Any]] = []
     depth = 0
     start = -1
@@ -300,6 +311,29 @@ class ConceptSynthesisWorker(
         except Exception:
             return fallback
         return name or fallback
+
+    def _proposer_context(self) -> ProposerContext:
+        user_name = self._resolve_name(self._user_name_provider, "")
+        assistant_name = self._resolve_name(self._assistant_name_provider, "Aiko")
+        naming = (
+            f"In the label and rationale, use {user_name} when referring to the person chatting "
+            f"with {assistant_name}. For example, 'the user said' becomes '{user_name} said'."
+            if user_name else
+            "No display name is configured. Use 'the user' when a personal reference is needed."
+        )
+
+        def call(system: str, user: str) -> list[dict[str, Any]]:
+            return self._call_llm(
+                system + "\n\n" + naming + " Preserve literal quotes, technical uses such as "
+                "'user interface', and the assigned subject and point of view.",
+                user + "\n\nBefore writing concept prose, identify who the evidence describes. "
+                "If all the evidence is about a third party, leave the participant's concepts "
+                "empty. In particular, hearing someone's story does not establish that the "
+                "speaker witnessed it or shares the trait.",
+            )
+
+        return ProposerContext(call_llm=call, user_name=user_name or "the user",
+                               assistant_name=assistant_name)
 
     # ── idle worker protocol ──────────────────────────────────────────
 
@@ -1002,13 +1036,7 @@ class ConceptSynthesisWorker(
 
         self._llm_calls = 0
         started = time.monotonic()
-        ctx = ProposerContext(
-            call_llm=self._call_llm,
-            user_name=self._resolve_name(self._user_name_provider, "the user"),
-            assistant_name=self._resolve_name(
-                self._assistant_name_provider, "Aiko"
-            ),
-        )
+        ctx = self._proposer_context()
 
         stats: dict[str, Any] = {
             "added": 0,
@@ -4194,8 +4222,6 @@ class ConceptSynthesisWorker(
         parsed = self._parse(text)
         if not parsed:
             try:
-                from app.core.concepts.proposers.grounding import source_check_declined
-
                 answer = json.loads(text)
                 usable = isinstance(answer, dict) and (
                     answer == {} or answer.get("concepts") == [] or source_check_declined(answer)
@@ -4214,8 +4240,6 @@ class ConceptSynthesisWorker(
             try:
                 parsed = json.loads(match.group(0))
                 if isinstance(parsed, dict):
-                    from app.core.concepts.proposers.grounding import source_check_declined
-
                     if source_check_declined(parsed):
                         return []
                     concepts = parsed.get("concepts")

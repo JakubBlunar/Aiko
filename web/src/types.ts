@@ -2627,8 +2627,7 @@ export type WsServerEvent =
   | {
       /** Pushed by ``PUT /api/settings/identity``. The frontend uses
        * this to dismiss the first-run modal (when ``needs_onboarding``
-       * flips to false) or surface a "Aiko will use your new name"
-       * toast for a later rename. */
+       * flips to false). */
       type: "identity_changed";
       user_display_name: string;
       needs_onboarding: boolean;

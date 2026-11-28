@@ -11,6 +11,8 @@ export class RigStudioAdapter implements Live2DModelAdapter {
   private readonly listeners = new Set<() => void>();
   private readonly persistent: Values = Object.create(null);
   private frameWrites?: Values;
+  private frameLayers?: readonly MotionLayer[];
+  readonly tailPhaseParameter?: string;
   private readonly last = new Map<string, number>();
   private expressionName = "";
   private readonly bindings: { raw: string; id: string; keys: Key[] }[] = [];
@@ -28,6 +30,7 @@ export class RigStudioAdapter implements Live2DModelAdapter {
     private readonly now = () => performance.now(),
   ) {
     this.tail = rig.clips.find(clip => clip.phaseGesture?.parameter === "tail.curl");
+    if (rig.parameters.some(p => p.id === "tail.curl")) this.tailPhaseParameter = "tail.curl";
     for (const control of calibration) {
       if (!rig.parameters.some(p => p.id === control.id)) continue;
       // Multi-state selectors are decoded as a pair below. The tail's five
@@ -42,6 +45,10 @@ export class RigStudioAdapter implements Live2DModelAdapter {
   }
 
   setParam(id: string, value: number) {
+    if (id === this.tailPhaseParameter && this.frameWrites) {
+      this.frameWrites[id] = value;
+      return;
+    }
     if (!Number.isFinite(value) || !this.neutral.has(id)) return;
     if (this.frameWrites) this.frameWrites[id] = value;
     else if (value === this.neutral.get(id)) delete this.persistent[id];
@@ -49,7 +56,12 @@ export class RigStudioAdapter implements Live2DModelAdapter {
     this.last.set(id,value);
   }
 
-  getParam(id: string) { return this.last.get(id); }
+  getParam(id: string) {
+    if (id === this.tailPhaseParameter && this.frameLayers) {
+      return sampleLayers(this.rig,this.frameLayers)[id];
+    }
+    return this.last.get(id);
+  }
 
   expression(name: string) {
     if (Object.hasOwn(this.manifest.expression_params ?? {},name)) this.expressionName = name;
@@ -105,14 +117,18 @@ export class RigStudioAdapter implements Live2DModelAdapter {
     // the persistent map would strand a reaction's tears or grin after reset.
     const frame: Values = Object.create(null);
     this.frameWrites = frame;
+    this.frameLayers = stack;
     try { for (const listener of this.listeners) listener(); }
-    finally { this.frameWrites = undefined; }
+    finally { this.frameWrites = undefined; this.frameLayers = undefined; }
     const raw = {...this.persistent};
     for (const binding of this.manifest.expression_params?.[this.expressionName] ?? []) {
       raw[binding.param_id] = (raw[binding.param_id] ?? 0) + binding.on_value;
     }
     Object.assign(raw,frame);
     const pose = {...this.gaze};
+    if (this.tailPhaseParameter && frame[this.tailPhaseParameter] !== undefined) {
+      pose[this.tailPhaseParameter] = frame[this.tailPhaseParameter];
+    }
     for (const {raw:id,id:target,keys} of this.bindings) {
       if (raw[id] !== undefined) pose[target] = interpolate(keys,raw[id]);
     }

@@ -47,8 +47,12 @@ import type {
   ResolvedOverlayEvent,
 } from "../types";
 
+import { tailGestures } from "../../../../tools/rig-studio/src/tail-gestures";
+
 /** Gesture-named overlays handled by ``GestureChannel`` instead. */
-const GESTURE_NAMES = new Set(["wink_left", "wink_right", "tail_wag", "ear_wiggle"]);
+const GESTURE_NAMES = new Set([
+  "wink_left", "wink_right", "tail_wag", "ear_wiggle", ...tailGestures.map(clip => clip.id),
+]);
 
 /** Optional bridge callback used during the staged refactor.
  *

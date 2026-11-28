@@ -1,6 +1,6 @@
 import { useId } from "react";
 
-export type SettingsTabId = "chat" | "models" | "behavior" | "voice" | "tools" | "avatar"
+export type SettingsTabId = "models" | "behavior" | "voice" | "tools" | "avatar"
   | "memory" | "diary" | "archive" | "world" | "together" | "knowledge" | "tasks";
 
 export const SETTINGS_GROUPS: readonly {
@@ -8,7 +8,7 @@ export const SETTINGS_GROUPS: readonly {
   tabs: readonly { id: SettingsTabId; label: string }[];
 }[] = [
   { label: "Aiko", tabs: [
-    { id: "chat", label: "General" }, { id: "behavior", label: "Behavior" },
+    { id: "behavior", label: "Behavior" },
     { id: "voice", label: "Voice" }, { id: "avatar", label: "Avatar" },
     { id: "world", label: "World" }, { id: "together", label: "Together" },
   ] },

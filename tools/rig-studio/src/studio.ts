@@ -1,4 +1,5 @@
 import type { Clip, Rig, Values } from './model.js'
+import { tailGestures } from './tail-gestures.js'
 import { clamp, gestureLayer, idleLayers, loadImages, movePivot, parameterEnabled, sampleLayers, validateRig } from './runtime.js'
 import { loadReference, type Reference } from './reference.js'
 import { createRigRenderer } from './player.js'
@@ -260,6 +261,10 @@ function showIdleWeights(saved?: Inspection['idleWeights']) {
 }
 
 async function install(candidate: Rig, resolve: (s: string) => string, ticket: number) {
+  // Existing editable atlas exports already contain the calibrated tail shapes.
+  if (candidate.parameters.some(p => p.id === 'tail.curl' && p.min === -1 && p.max === 1)) {
+    candidate.clips.push(...tailGestures.filter(clip => !candidate.clips.some(c => c.id === clip.id)))
+  }
   validateRig(candidate)
   const loaded = await loadImages(candidate, resolve)
   if (ticket !== loading) return

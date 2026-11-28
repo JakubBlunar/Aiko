@@ -31,6 +31,7 @@ describe("settings navigation", () => {
     }
     expect(html).toContain('aria-current="page"');
     expect(html).toContain("Settings section");
+    expect(html).not.toContain(">General<");
     expect(html).toContain(">Behavior</button>");
     expect(html).toContain(">Models</button>");
   });

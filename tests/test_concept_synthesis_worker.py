@@ -731,6 +731,9 @@ class ExistingAwarenessTests(unittest.TestCase):
         # Aiko proposer names both parties.
         self.assertIn("Aiko", captured["aiko"])
         self.assertIn("Jacob", captured["aiko"])
+        for prompt in captured.values():
+            self.assertIn("In the label and rationale, use Jacob", prompt)
+            self.assertIn("Preserve literal quotes", prompt)
 
     def test_missing_name_provider_falls_back(self) -> None:
         h = WorkerHarness(lambda s, u: {"concepts": []})
@@ -744,6 +747,7 @@ class ExistingAwarenessTests(unittest.TestCase):
         h.ollama._responder = responder
         h.worker.run()
         self.assertIn("the user", captured["user"])
+        self.assertIn("No display name is configured", captured["user"])
 
     def test_reinforce_by_id_attaches_evidence_no_duplicate(self) -> None:
         h = WorkerHarness(lambda s, u: {"concepts": []})

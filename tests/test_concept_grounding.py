@@ -135,7 +135,7 @@ def test_contrast_corpus_contains_positive_and_negative_controls_in_both_splits(
         assert {case["contrast"] for case in selected} == {"repetition", "conflict", "promise"}
 
 
-@pytest.mark.parametrize("field", ["source_change", "source_conflict"])
+@pytest.mark.parametrize("field", ["source_change", "source_conflict", "source_ownership"])
 @pytest.mark.parametrize("verdict", ["none", "none: both can be respected", " NONE: repeats only "])
 def test_explicit_source_abstention_wins_over_inconsistent_concept_array(field, verdict):
     raw = json.dumps({field: verdict, "concepts": [{"label": "Invented development"}]})
@@ -149,3 +149,8 @@ def test_positive_source_check_and_other_proposer_contracts_keep_their_concepts(
         raw = json.dumps({**extra, "concepts": concepts})
         assert ConceptSynthesisWorker._parse(raw) == concepts
         assert evaluation.parse_answer(raw) == concepts
+
+
+def test_truncation_cannot_turn_an_explicit_ownership_decline_into_a_user_trait():
+    raw = '{"source_ownership":"NONE","concepts":[{"label":"Reports a relative\'s habit"}, {'
+    assert ConceptSynthesisWorker._parse(raw) == []

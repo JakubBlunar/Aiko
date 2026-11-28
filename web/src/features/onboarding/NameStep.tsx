@@ -32,9 +32,8 @@ export function NameStep({
         Hi! What should Aiko call you?
       </h2>
       <p className="mt-2 text-sm text-neutral-400">
-        Aiko will use this in chat, in her inner thoughts, and when she
-        tells stories about your time together. You can change it later
-        in Settings.
+        Choose carefully. The name you save here is permanent for this profile.
+        Aiko will use it in chat and in her memories of your time together.
       </p>
       <label className="mt-5 block">
         <span className="sr-only">Your name</span>

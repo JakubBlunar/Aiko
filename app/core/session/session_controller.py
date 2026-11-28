@@ -534,8 +534,8 @@ class SessionController(
         self._memory_retriever: MemoryRetriever | None = None
         self._memory_extractor: MemoryExtractor | None = None
         self._memory_listeners: list[Callable[[Any], None]] = []
-        # Identity-rename listeners (workers cache the display name in
-        # pre-built prompt strings and re-render on this event).
+        # Two onboarding windows can submit to the same backend concurrently.
+        self._identity_lock = threading.Lock()
         self._identity_listeners: list[Callable[[str], None]] = []
         # One-shot notices accumulated during boot (before any WS client is
         # connected) and delivered in the ``hello`` payload to the first

@@ -15,6 +15,11 @@ Timeline: [`concept_event_store.py`](../app/core/concepts/concept_event_store.py
 
 ## Evidence routing and bounded reconsideration
 
+New concept labels and rationales use the configured display name when referring
+to the person chatting with Aiko. The `subject` field still records whose concept
+it is. A speaker can describe someone else's preference, and quoted evidence keeps
+the speaker's original words.
+
 Synthesis keeps the existing admission floor and **24-source reinforcement
 ceiling**. A ceiling refusal is not a reason to mint a replacement concept.
 New or substantively revised supporting evidence still refreshes

@@ -51,6 +51,8 @@ export interface Live2DModelAdapter {
    * back from the underlying core model. Channels rarely need this —
    * it exists for tests + the rare introspection path. */
   getParam(paramId: string): number | undefined;
+  /** Sampled atlas rigs expose the entire tail as one public phase control. */
+  readonly tailPhaseParameter?: string;
   /** Apply a named expression (``model.expression(name)``). */
   expression(name: string): void;
   /** Clear the active expression slot

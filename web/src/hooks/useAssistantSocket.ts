@@ -609,7 +609,7 @@ export function useAssistantSocket(): {
         break;
 
       case "identity_changed":
-        // First-run onboarding success or a later "Change name" submit.
+        // The onboarding name has been saved, possibly in another window.
         // Pushed by ``PUT /api/settings/identity`` server-side.
         store.setIdentity({
           user_display_name: evt.user_display_name,

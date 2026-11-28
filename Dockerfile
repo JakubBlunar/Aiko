@@ -31,6 +31,7 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY web/ ./
+COPY tools/rig-studio/src/ /tools/rig-studio/src/
 RUN npm run build
 # -> /web/dist (served by FastAPI in the runtime stage)
 

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from app.core.infra import crash_logging
 from app.core.infra.settings import _norm_api_style, _parse_grounding_line_mode
 from app.core.infra.settings import LlmProvider, persist_user_overrides
+from app.core.session.lifecycle_mixin import DisplayNameAlreadySet
 from app.llm.factory import build_probe_client
 from app.web.server import _classify_test_error, _search_public_snapshot
 
@@ -168,28 +169,23 @@ def register(app, session, hub, _broadcast_context_window, live_session) -> None
 
     @app.put("/api/settings/identity")
     def put_identity(payload: dict[str, Any]) -> JSONResponse:
-        """Persist a new user display name.
-
-        Validates 1-32 chars after strip. Broadcasts ``identity_changed``
-        so workers and other browser windows reconcile their cached
-        prompt strings.
-        """
-        raw_name = payload.get("user_display_name", "")
+        """Complete the name step once, including when two windows submit."""
         try:
-            stored = session.update_user_display_name(str(raw_name))
+            created = session.set_initial_user_display_name(payload.get("user_display_name"))
+        except DisplayNameAlreadySet as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
         except ValueError as exc:
             return JSONResponse(
                 {"error": str(exc)}, status_code=400,
             )
-        hub.broadcast({
-            "type": "identity_changed",
-            "user_display_name": stored,
-            "needs_onboarding": False,
-        })
-        return JSONResponse({
-            "user_display_name": stored,
-            "needs_onboarding": False,
-        })
+        except OSError:
+            log.exception("Could not persist onboarding name")
+            return JSONResponse({"error": "Couldn't save your name. Please try again."},
+                                status_code=503)
+        identity = {"user_display_name": session.user_display_name, "needs_onboarding": False}
+        if created:
+            hub.broadcast({"type": "identity_changed", **identity})
+        return JSONResponse(identity)
 
     # ── REST: settings / models / voices / devices ──────────────────
 

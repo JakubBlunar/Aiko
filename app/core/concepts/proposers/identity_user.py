@@ -97,7 +97,11 @@ def _system(user_name: str, assistant_name: str) -> str:
         "reinforce ids present in the known list.\n"
         "- If nothing genuine connects the focus clusters to others, "
         "return an empty list. Do not invent.\n\n"
-        'Return JSON only: {"concepts": [ '
+        f"First fill source_ownership with the concrete action or preference of {user_name} "
+        "that appears across the cited clusters. Who actually made the choices? When only "
+        "another person's actions are described, write NONE, even if the speaker knows or "
+        "mentioned that person. With NONE, return no concepts.\n"
+        'Return JSON only: {"source_ownership": str, "concepts": [ '
         '{"label": str, "evidence_cluster_reps": [int, ...], "rationale": '
         'str, "confidence": number 0..1}  '
         'OR  {"reinforces_id": int, "evidence_cluster_reps": [int, ...], '

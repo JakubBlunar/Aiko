@@ -1,4 +1,5 @@
 import type { Clip, Parameter, Rig } from './model.js'
+import { tailGestures, tailRotation } from './tail-gestures.js'
 
 // Each source array specifies raw values at the public parameter's knots.
 // This table is shared by the offline sampler and the optional comparison pane.
@@ -14,8 +15,7 @@ function overlay(id: string, label: string, raw: string, group = 'Face overlays'
 // phase zero so the authored rest pose remains available in the inspector.
 const tailPhase = Array.from({length:33},(_,i) => (i-16)/16)
 const tailWave = Object.fromEntries(Array.from({length:5},(_,i) => {
-  const lag = .7*i
-  const degrees = tailPhase.map(phase => 10*(Math.sin(Math.PI*phase + lag) - Math.sin(lag)))
+  const degrees = tailPhase.map(phase => tailRotation(phase,i))
   degrees[degrees.length-1] = degrees[0]
   return ['Param_Angle_Rotation_'+(i+1)+'_ArtMesh202',degrees]
 }))
@@ -78,6 +78,7 @@ export const clips: Clip[] = [
     'eyes.look.y':[[0,0],[1,.4],[3,-.4],[4,0]]}},
   {id:'tail',label:'Tail swing',duration:2,tracks:{'tail.curl':[[0,-1],[2,1]]},
     phaseGesture:{parameter:'tail.curl',duration:6}},
+  ...tailGestures,
   {id:'grin',label:'Toothy grin',duration:2,tracks:{
     'face.grin':[[0,0],[.4,1],[1.45,1],[2,0]],'jaw.drop':[[0,0],[.4,0],[.85,.8],[1.45,0],[2,0]]}},
 ]

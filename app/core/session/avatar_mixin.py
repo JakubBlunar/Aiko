@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.affect import circadian as _circadian
 from app.core.conversation.backchannel_classifier import BackchannelHint
 from app.core.infra.settings import OUTFIT_MODES, persist_user_overrides
+from app.core.persona.avatar_gestures import overlay_capability
 from app.core.touch.touch_gestures import get_gesture
 
 if TYPE_CHECKING:  # pragma: no cover - import-cycle guard
@@ -83,6 +84,9 @@ _BACKCHANNEL_MOTION_MAP: dict[str, tuple[str, ...]] = {
 # ``ParamBreath`` and propagates with the natural physics delay).
 _OVERLAY_DURATION_OVERRIDES_MS: dict[str, int] = {
     "tail_wag": 2000,
+    "tail_wag_slow": 4000,
+    "tail_wag_fast": 2000,
+    "tail_flick": 2000,
 }
 
 
@@ -503,7 +507,7 @@ class AvatarMixin:
         avatar = self._avatar
         if avatar is None:
             return
-        cap_key = f"has_{normalized}"
+        cap_key = overlay_capability(normalized)
         if not avatar.capabilities.get(cap_key, False):
             return
         if duration_ms is None:
@@ -644,7 +648,7 @@ class AvatarMixin:
         # Misroute safety net: the LLM emitted ``[[motion:foo]]`` but
         # ``foo`` is an overlay capability on this rig. Forward to the
         # overlay path so the visual effect actually plays.
-        if avatar.capabilities.get(f"has_{normalized}", False):
+        if avatar.capabilities.get(overlay_capability(normalized), False):
             log.info(
                 "avatar motion '%s' has no motion file but matches "
                 "an overlay capability; routing as overlay",

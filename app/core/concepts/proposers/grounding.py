@@ -19,7 +19,7 @@ def source_check_declined(answer):
     return any(isinstance(value := answer.get(key), str)
                and (value.strip().lower() == "none"
                     or value.strip().lower().startswith("none:"))
-               for key in ("source_change", "source_conflict"))
+               for key in ("source_change", "source_conflict", "source_ownership"))
 
 
 ASPIRATION_GROUNDING = """

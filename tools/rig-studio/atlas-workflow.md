@@ -33,6 +33,11 @@ The sampler keeps the original aspect ratio at a 2048-pixel reference height. Th
 
 ## Identify a source control
 
+The motion menu includes **Slow tail wag**, **Fast tail wag**, and **Teasing tail flick**.
+Use **Load reference** to compare the atlas and installed Alexia side by side. In solo
+playback, the slow wag takes four seconds for one cycle, the fast wag takes two seconds
+for three cycles, and the teasing flick holds its pose from 0.65 to 1.25 seconds.
+
 Run an endpoint sweep for the installed model. Pick a new report filename for each run:
 
 ```powershell
