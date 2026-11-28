@@ -1,4 +1,5 @@
-"""Compare the same fictional scene with a changed image, a changed sound, or just a plan."""
+"""Replay fictional writing curiosities and the practical clock question alongside one."""
+import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 
 import requests
 
+from app.core.conversation.clock_reading import check_clock
 from app.core.proactive.curiosity_seed_worker import CuriositySeedWorker
 from app.core.session.inner_life_part3 import InnerLifePart3Mixin
 from scripts.live_scenarios import require_local_model
@@ -31,7 +33,7 @@ def station_item(second):
                                              plan="Maybe try a second cup."))
 
 
-def replies(client, model, seed):
+def curiosity_context(seed):
     row = SimpleNamespace(subject=seed["topic"], payload={
         **seed, "quality": {"drafts": seed["drafts"], "useful_because": seed["useful_because"]}})
     offers = iter((row, None))
@@ -42,24 +44,75 @@ def replies(client, model, seed):
     path = Path(__file__).resolve().parents[1] / "data/persona/conditional_handling.txt"
     sections = path.read_text(encoding="utf-8")
     handling = sections.split("Quiet curiosity:\n", 1)[1].split("\n\n", 1)[0]
+    return "You are Aiko, a friendly companion.\n" + block + "\n" + handling
+
+
+def ask(client, model, context, text, history=(), *, guided=True):
+    reading = check_clock(text, tuple(turn[1] for turn in history)) if guided else None
+    if reading and reading.reply:
+        return reading.reply
+    guidance = reading.guidance if reading else ""
+    messages = [{"role": "system", "content": context + ("\n" + guidance if guidance else "")},
+                *({"role": role, "content": content} for role, content in history),
+                {"role": "user", "content": text}]
+    return "".join(client.chat_stream(messages, model=model, options={
+        "num_ctx": 8192, "num_predict": 160, "temperature": 0.2}))
+
+
+def replies(client, model, seed):
+    context = curiosity_context(seed)
     for case, text in (
         ("lingering", "I loved how crowded that empty room felt in the film. A single glass "
          "was enough to make me feel someone had just left."),
         ("practical", "The programme lists the film at 18:15. What time does it start?"),
     ):
-        messages = [{"role": "system", "content": "You are Aiko, a friendly companion.\n" +
-                     block + "\n" + handling}, {"role": "user", "content": text}]
-        reply = "".join(client.chat_stream(messages, model=model, options={
-            "num_ctx": 8192, "num_predict": 160, "temperature": 0.2}))
-        print(json.dumps({"case": case, "reply": reply}), flush=True)
+        print(json.dumps({"case": case, "reply": ask(client, model, context, text)}), flush=True)
+
+
+def clock_replies(client, model):
+    # Fix the cue from the original trial so the two arms differ only in reply guidance.
+    context = curiosity_context({
+        "topic": "The Echoing Station",
+        "prompt_text": "If those footsteps had stopped right after the first cup appeared, "
+                       "what would the silence sound like?",
+        "why": SOUND + " | " + CUP,
+        "useful_because": "This explores how a shift from motion to stillness alters the "
+                          "atmosphere without needing new objects.",
+        "drafts": {"title": "Empty Station", "before": {"quote": SOUND}, "after": {"quote": CUP}},
+    })
+    cases = (
+        ("film", (), "The programme lists the film at 18:15. What time does it start?", "18:15"),
+        ("evening", (), "The ferry sails at 21:47. What is that in 12-hour time?", "9:47 PM"),
+        ("morning", (), "My ticket uses a 24-hour clock and says 07:05. Is that AM or PM?",
+         "7:05 AM"),
+        ("noon", (), "The 24-hour listing says 12:00. What is that in 12-hour time?", "12 PM"),
+        ("midnight", (), "The bus leaves at 00:24. Is that AM or PM?", "12:24 AM"),
+        ("unknown period", (), "The slip just says '6:15'. Is that AM or PM?", "unknown"),
+        ("follow-up", (("user", "Doors open at 17:10 and the music starts at 19:40."),
+                       ("assistant", "I'll listen for the opening number.")),
+         "What time does the music start again?", "19:40"),
+        ("other event", (), "The ticket gives doors at 17:10. What time does the music start?",
+         "unknown"),
+    )
+    for name, history, text, expected in cases:
+        for guided in (False, True):
+            reply = ask(client, model, context, text, history, guided=guided)
+            print(json.dumps(dict(case=name, guided=guided, expected=expected, reply=reply)),
+                  flush=True)
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--clock", action="store_true", help="Compare clock replies with one cue")
+    args = parser.parse_args()
     model = "baytout3/qwen3.5-uncensored:9b"
     with requests.Session() as session:
         session.trust_env = False
         require_local_model(session, BASE, model)
         client = OpinionReplayClient(session, model, 67)
+        if args.clock:
+            clock_replies(client, model)
+            return
         for name, second in (("object", CUP), ("sound", LOUD), ("plan", None)):
             item = station_item(second)
             worker = CuriositySeedWorker(

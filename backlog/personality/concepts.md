@@ -2018,6 +2018,14 @@ That reply quoted 18:15 correctly but added an incorrect AM interpretation.
 The worker can also imagine events linking the versions, so the chat offer
 supplies the original passages as alternatives and the reason for raising them.
 
+The clock follow-up reproduced the incorrect AM alternative with the original
+film cue (local Qwen 9B, seed 67). With the event-time guidance, the answer was
+simply “18:15.” Eight paired cases covered lookup, conversion, noon, midnight,
+a bare time with no period, a reminder and a missing start time. Direct conversions
+use clock arithmetic. In three further ordinary-prompt cases (seed 71), the
+gallery and tram times were correct and the unlabelled invitation stayed open.
+The gallery reply still speculated about why the venue chose that hour.
+
 ## L89. Get curious about the judgment inside a familiar skill
 
 **Pilot, 27 November 2026.** The same worker and conditional chat guidance can

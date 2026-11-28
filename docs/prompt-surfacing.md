@@ -297,6 +297,12 @@ identifies a missing participant's list. Unsupported constraints stay with
 ordinary chat. See the [group comparison](../app/core/conversation/group_options.py)
 and the [fictional comparisons](../scripts/everyday_reasoning_replay.py).
 
+When a time question refers to a clock value in the current or preceding exchange,
+current-reply guidance asks Aiko to give the listed time for the requested event.
+For a direct format question about one source reading, the existing practical
+answer path can compute its 12-hour equivalent. If the source omits the event's time
+or leaves a necessary AM/PM distinction open, she can say which detail is missing.
+
 For a direct request for Aiko's impression of creative work, or a comparative
 prediction revisited in light of a new detail, current-reply guidance can ask the
 chat model for a short reply grounded in source wording. On a plain choice between

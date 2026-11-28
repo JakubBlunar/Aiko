@@ -48,6 +48,7 @@ from app.core.conversation.missing_clue import check_missing_clue
 from app.core.conversation.group_options import check_group_options
 from app.core.conversation.story_stakes import check_stakes
 from app.core.conversation.outcome_comparison import check_outcomes
+from app.core.conversation.clock_reading import check_clock
 from app.core.conversation.story_reply import STORY_HEADER, story_contract, story_question
 from app.core.conversation.pursuit_reply import pursuit_reply
 from app.core.conversation.clarification_reply import (
@@ -4059,9 +4060,12 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         current_reply_guidance = ((pursuit_guidance
                                    or practical.guidance
                                    or choice_guidance(user_text, (m.content for m in history_msgs))
-                                   or argument_guidance(user_text, previous_user, prior_assistant)
-                                   or CURRENT_REPLY_GUIDANCE)
+                                   or argument_guidance(user_text, previous_user, prior_assistant))
                                   if (user_text or "").strip() else "")
+        if (user_text or "").strip() and not current_reply_guidance:
+            practical = check_clock(user_text, (previous_user, prior_assistant))
+            practical_kind = "clock_reading"
+            current_reply_guidance = practical.guidance or CURRENT_REPLY_GUIDANCE
         reply_guidance_slot = len(system_parts)
         prompt_history = history_msgs
         if current_reply_guidance:
