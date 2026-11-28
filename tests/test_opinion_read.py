@@ -126,3 +126,34 @@ def test_weighs_a_reason_using_both_original_speakers():
     reply, prompt = run_read("Just admit taking turns picking books is better.",
                              {**data, "quote": None}, guidance=guidance, history=history)
     assert reply and "Just admit" not in prompt and "taking turns picking books is better" in prompt
+
+
+def test_invited_idea_and_its_variation_keep_the_current_speakers_scope():
+    from app.core.conversation.clarification_reply import (
+        ARGUMENT_GUIDANCE, CURRENT_REPLY_GUIDANCE, EXAMPLE_GUIDANCE, ordinary_reply_guidance,
+    )
+    from scripts.opinion_replay import MAP_CLAIM, MAP_HISTORY
+
+    previous = MAP_HISTORY[-1][1]
+    variation = "Oh, a foldout you could leave closed!"
+    assert ordinary_reply_guidance(MAP_CLAIM) == EXAMPLE_GUIDANCE
+    assert ordinary_reply_guidance(variation, MAP_CLAIM, previous) == ARGUMENT_GUIDANCE
+    assert ordinary_reply_guidance(variation) == CURRENT_REPLY_GUIDANCE
+    assert ordinary_reply_guidance("How do I fold a paper crane?", MAP_CLAIM,
+                                   previous) == CURRENT_REPLY_GUIDANCE
+    for pivot in ("What about lunch?", "We could cook lunch."):
+        assert ordinary_reply_guidance(pivot, MAP_CLAIM, previous) == CURRENT_REPLY_GUIDANCE
+    assert ordinary_reply_guidance("I like the map after the last page.") == CURRENT_REPLY_GUIDANCE
+    history = [dict(role=role, content=content) for role, content in MAP_HISTORY]
+    preference = "I love tracing the route after the last chapter. Thoughts?"
+    assert ordinary_reply_guidance(preference) == EXAMPLE_GUIDANCE
+    scene = {"quote": "after the last chapter", "reply": "I'd linger over the detours."}
+    assert run_read(preference, scene, guidance=EXAMPLE_GUIDANCE, history=history)[0]
+    assert not run_read(preference, {**scene, "quote": "every book"}, guidance=EXAMPLE_GUIDANCE,
+                        history=history)[0]
+    data = {"basis": "could give it away", "quote": "leave closed",
+            "reply": "I'd open it once I wanted to know the route."}
+    reply, _ = run_read(variation, data, guidance=ARGUMENT_GUIDANCE, history=history)
+    assert reply == data["reply"]
+    assert not run_read(variation, {**data, "quote": "with a journey"}, guidance=ARGUMENT_GUIDANCE,
+                        history=history)[0]

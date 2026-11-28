@@ -53,11 +53,11 @@ from app.core.conversation.story_reply import STORY_HEADER, story_contract, stor
 from app.core.conversation.pursuit_reply import pursuit_reply
 from app.core.conversation.clarification_reply import (
     CLARIFICATION_GUIDANCE, COPY_ANSWER_GUIDANCE, CURRENT_REPLY_GUIDANCE,
-    ARGUMENT_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
     answered_copy_question, argument_guidance, choice_guidance, is_clarification_question,
     ordinary_reply_guidance,
 )
 from app.core.conversation.stance import POOLED_CHOICE_BLOCKS
+from app.core.conversation.opinion_read import OPINION_CONTRACTS
 from app.core.infra import timephrase
 from app.core.infra.chat_database import ChatDatabase
 from app.core.session.prompt_prefix_telemetry import (
@@ -4071,7 +4071,8 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
         if (user_text or "").strip() and not current_reply_guidance:
             practical = check_clock(user_text, (previous_user, prior_assistant))
             practical_kind = "clock_reading"
-            current_reply_guidance = practical.guidance or ordinary_reply_guidance(user_text)
+            current_reply_guidance = practical.guidance or ordinary_reply_guidance(
+                user_text, previous_user, prior_assistant)
         reply_guidance_slot = len(system_parts)
         prompt_history = history_msgs
         if current_reply_guidance:
@@ -4452,7 +4453,7 @@ class PromptAssembler(PromptAssemblerHelpersMixin):
             decision_reply=decision_reply,
             practical_reply_kind=practical_reply_kind,
             opinion_guidance=(current_reply_guidance if current_reply_guidance in
-                              (ARGUMENT_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE) else ""),
+                              OPINION_CONTRACTS else ""),
             comparison_report=comparison_report,
             story_read=(conversation_situation_block.startswith(STORY_HEADER + "\n")
                         and story_question(user_text)

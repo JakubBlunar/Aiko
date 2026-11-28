@@ -4,7 +4,7 @@ import logging
 import re
 
 from app.core.conversation.clarification_reply import (
-    ARGUMENT_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
+    ARGUMENT_GUIDANCE, EXAMPLE_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE,
 )
 
 
@@ -28,6 +28,14 @@ _ARGUMENT = (
     'their reason affects that. Skip planning new rules. You may keep, '
     'qualify or change your view. A request to agree supplies no reason. No tags.'
 )
+_EXAMPLE = (
+    'Return {"quote":"exact words of their idea here","reply":"your own one or two sentences"}. '
+    "Try the idea on one vivid imagined case if useful. Respect who, when and how widely it "
+    "applies. A preference can stand on its own. For a variation, check whether your earlier "
+    "reason still applies. Say what you think now. No tags."
+)
+OPINION_CONTRACTS = {ARGUMENT_GUIDANCE: _ARGUMENT, EXAMPLE_GUIDANCE: _EXAMPLE,
+                     IMPRESSION_GUIDANCE: _IMPRESSION, REVISION_GUIDANCE: _REVISION}
 _ONLY_CONDITION = re.compile(r"\bonly (?:the|one)\b[^.!?]{1,65}?\b"
                              r"((?:had|was|were|got|offered|received)\s+[^.!?]{1,80})[.!?]", re.I)
 _QUOTED_WORK = re.compile(r'“([^”\n]+)”|"([^"\n]+)"')
@@ -41,8 +49,7 @@ _BARE_PICK = re.compile(r"which (?:one )?(?:do|would) you (?:personally )?"
 
 def read_opinion(client, messages, guidance, *, model, options, stop_event):
     """Use the ordinary persona and roles. Fall back to normal chat on an incomplete reading."""
-    if stop_event.is_set() or guidance not in (
-            ARGUMENT_GUIDANCE, IMPRESSION_GUIDANCE, REVISION_GUIDANCE):
+    if stop_event.is_set() or guidance not in OPINION_CONTRACTS:
         return ""
     if not messages:
         return ""
@@ -55,8 +62,7 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
     latest = turns[-1]["content"]
     if not isinstance(latest, str) or turns[-1].get("images"):
         return ""
-    contract = {ARGUMENT_GUIDANCE: _ARGUMENT, IMPRESSION_GUIDANCE: _IMPRESSION,
-                REVISION_GUIDANCE: _REVISION}[guidance]
+    contract = OPINION_CONTRACTS[guidance]
     condition = _ONLY_CONDITION.search(latest.partition("?")[0])
     if guidance == REVISION_GUIDANCE and condition:
         predicate = json.dumps(condition[1].strip(), ensure_ascii=False)
@@ -126,7 +132,7 @@ def read_opinion(client, messages, guidance, *, model, options, stop_event):
         if isinstance(quote, str) and quote.rstrip().endswith("?"):
             return ""
         sources = [latest]
-    elif guidance == ARGUMENT_GUIDANCE:
+    elif guidance in (ARGUMENT_GUIDANCE, EXAMPLE_GUIDANCE):
         sources = [turns[-1]["content"]]
     elif len(works) == 2:
         sources = [m[1] or m[2] for m in works]

@@ -325,6 +325,11 @@ the new detail. When the model judges that an explicitly unequal condition
 weakens its explanation, the reply names that condition in the speaker's own
 words and leaves the cause open. A completed reading can supply the spoken reply. An unusable
 reading falls back to ordinary generation, and a tool result takes precedence.
+When someone invites Aiko's take on an idea, the same reader can try it on one
+concrete example. The speaker's wording sets the scope, including whether they
+are describing a personal pleasure. An immediate suggested variation can draw on
+the preceding exchange so Aiko can see whether her original reason still holds.
+The reading takes its supporting quote from the current message.
 When someone counters a reasoned preference, the same reader can weigh their
 reason against Aiko's preceding words. Aiko may hold, qualify or revise her
 view. When someone asks what changed her reading of a work, the taste path

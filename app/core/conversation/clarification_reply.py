@@ -31,14 +31,46 @@ CURRENT_REPLY_GUIDANCE = (
 )
 
 
-def ordinary_reply_guidance(text):
-    """Honor an explicit switch to practical help even if the preceding turn was playful."""
+_INVITES_VIEW = re.compile(
+    r"(?:^|[.!?,;:]\s*)(?:what do you (?:think|reckon)(?: about that)?|"
+    r"what['’]s your (?:take|view)|how do you feel about (?:it|that)|"
+    r"do you agree|thoughts)\s*\?\s*$", re.I)
+_IDEA = re.compile(r"\b(?:should|ought to|every|always|never|would be better|"
+                   r"i (?:love|like|prefer|wish)|what if|my idea)\b", re.I)
+_SUGGESTION = re.compile(
+    r"^\s*(?:(?:oh|well|maybe|then)[, ]+)?(?:what (?:if|about)|how about|we could|"
+    r"it could|(?P<detail>an?\b[^.!?]{1,80}\b(?:you|we|that|with|without)))\b", re.I)
+EXAMPLE_GUIDANCE = (
+    "Consider the idea at the scope the speaker gave it. If a particular imagined situation "
+    "helps you find your own view, try it there. One concrete case can show what you like "
+    "or what gives you pause. A personal pleasure can simply be enjoyed. If they offer a "
+    "variation, think about what made your earlier case matter and whether the variation "
+    "changes that. A change of subject gets a fresh response. Speak in your own words."
+)
+
+
+def _invited_idea(text):
+    ask = _INVITES_VIEW.search(text)
+    return bool(ask and _IDEA.search(text[:ask.start()]))
+
+
+def ordinary_reply_guidance(text, previous_user="", previous_assistant=""):
+    """Offer a way to weigh an invited idea or answer a clear switch to practical help."""
     if re.match(r"\s*(?:but |ok(?:ay)?[, ]+)?(?:seriously|jok(?:es|ing) aside|"
                 r"on a serious note)[, .:!-]+(?:how (?:do|can|should)|"
                 r"can you help|what should)\b", text, re.I):
         return ("They've closed the bit and asked for practical help. Use earlier turns only "
                 "to identify what they mean. Treat the earlier invented details as fiction. "
                 "Open with the first useful step, and finish when the steps are clear.")
+    if _invited_idea(text):
+        return EXAMPLE_GUIDANCE
+    if previous_assistant and _invited_idea(previous_user):
+        suggestion = _SUGGESTION.match(text)
+        # A proposed detail can introduce a new word for the solution. For other
+        # proposals, look for continuity before asking the model to revisit a view.
+        if suggestion and (suggestion["detail"] or
+                           terms(text) & (terms(previous_assistant) | terms(previous_user))):
+            return ARGUMENT_GUIDANCE
     return CURRENT_REPLY_GUIDANCE
 
 

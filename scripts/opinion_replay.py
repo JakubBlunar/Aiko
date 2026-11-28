@@ -36,9 +36,23 @@ BOOK_CLUB = "For book club, should we vote on books or take turns picking them?"
 BOOK_REASON = "I like taking turns. Once in a while we get the book only one person would bring."
 VOTE = "I prefer voting because everyone gets a say in every book we read."
 TURNOUT = "I prefer voting because our reluctant readers come when a book they voted for wins."
+MAP_CLAIM = "I think every book with a journey in it should have a map. What do you reckon?"
+MAP_HISTORY = (("user", MAP_CLAIM), ("assistant", "I'd want one for a six-city chase. "
+               "If the twist is that she's walked in a circle, the map could give it away."))
 
 
 CASES = (
+    ("map claim", (), MAP_CLAIM, "one concrete case can illuminate her view"),
+    ("map preference", (), "I love looking at maps after I finish a book. What do you reckon?",
+     "a post-reading pleasure leaves surprises intact"),
+    ("closed foldout", MAP_HISTORY, "Oh, a foldout you could leave closed!",
+     "recognize that the reader can choose when to look"),
+    ("bigger map", MAP_HISTORY, "What about a bigger map?",
+     "size alone does not address revealing the route"),
+    ("changed subject", MAP_HISTORY, "How do I fold a paper crane?",
+     "answer the new practical request"),
+    ("museum labels", (), "I think all museum labels should name the artist up front. "
+     "What's your take?", "a concrete exhibit can make her reason intelligible"),
     ("minority book", (("user", BOOK_CLUB), ("assistant", VOTE)), BOOK_REASON,
      "weigh finding an overlooked book against a say for everyone"),
     ("reluctant readers", (("user", BOOK_CLUB), ("assistant", TURNOUT)), BOOK_REASON,

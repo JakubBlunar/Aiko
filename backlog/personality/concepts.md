@@ -1813,7 +1813,8 @@ silently assigning them more work.
 
 ## L79. Try an idea on one revealing example
 
-**Open.** “I think every book with a journey in it should have a map. What do you
+**Implemented pilot. Ordinary-use check open.** “I think every book with a
+journey in it should have a map. What do you
 reckon?” Give Aiko room to think it through with the user. “I'd have loved one for
 that six-city chase. What about a story where the kid slowly realizes she's walked
 in a circle? I'd want the map on the last page of that one.” A concrete case gives
@@ -1825,6 +1826,15 @@ a book.” The circular journey now fits the user's point. Then let the user add
 Aiko recognizes which part of her objection that resolves and can enjoy the idea
 without finding a fresh objection. This extends the existing work on expressing
 a stance into reasoning *together* about one.
+
+Six fictional cases exercised the ordinary prompt assembler and opinion reader
+on local Qwen 9B. At seeds 71 and 73, Aiko recognized why a closed foldout
+preserved the reveal and why changing the map's size left her concern intact.
+She took looking at maps after finishing as a pleasure and let the paper-crane
+question move on. The museum-label case tested a different subject. The two
+follow-ups used the same scripted earlier objection. At seed 73 the broad
+map claim fell back to ordinary chat after the reading included inline tags,
+and that reply introduced an unsupported personal anecdote.
 
 ## L80. Notice the work behind an uneventful day
 
